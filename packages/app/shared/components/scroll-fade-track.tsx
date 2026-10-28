@@ -1,6 +1,7 @@
 "use client";
 
 import { useScrollFade } from "@repo/app/shared/hooks/use-scroll-fade";
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
 import { cn } from "@repo/design-system/lib/utils";
 import type { ReactNode } from "react";
 
@@ -76,8 +77,7 @@ export function ScrollFadeTrack({
           // Focus ring on the same tokens as `Button` — a tab stop the user
           // cannot see land is worse than no tab stop. Only while the region
           // props are on, since that is the only time the track is focusable.
-          regionProps &&
-            "rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          regionProps && `rounded-sm ${CHIP_FOCUS_RING_CLASS}`,
           // Keeps BOTH edge fades (`w-6` each) off the content: a value that
           // rests under a fade reads as a different value — a half-faded "1.2k"
           // as "1.2" — the UI lying about the number, not merely clipping it.

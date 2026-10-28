@@ -12,9 +12,11 @@ import type {
 } from "@repo/github";
 import {
   desiredReviewThreadProjection,
+  groupReviewThreads,
   keepLatestReviewPerAuthor,
   type PersistableGitHubReview,
   reviewThreadIdentity,
+  reviewThreadRoot,
 } from "./backfill-desired-projection";
 import type {
   GitHubBackfillProjectionDiff,
@@ -32,10 +34,58 @@ import type {
  * payload, or tallies the incoming payload itself.
  */
 
+/**
+ * One repository's diff folded into a running total.
+ *
+ * Written out per field rather than iterated, so the return type is what proves
+ * it exhaustive: a counter added to the diff and not summed here fails `tsc`
+ * instead of silently reporting zero for every repository after the first.
+ */
+export function addProjectionDiff(
+  total: GitHubBackfillProjectionDiff,
+  addend: GitHubBackfillProjectionDiff
+): GitHubBackfillProjectionDiff {
+  return {
+    branchProjectionChangeCount:
+      total.branchProjectionChangeCount + addend.branchProjectionChangeCount,
+    pullRequestProjectionChangeCount:
+      total.pullRequestProjectionChangeCount +
+      addend.pullRequestProjectionChangeCount,
+    lifecycleAtomProjectionChangeCount:
+      total.lifecycleAtomProjectionChangeCount +
+      addend.lifecycleAtomProjectionChangeCount,
+    branchLastActivityProjectionChangeCount:
+      total.branchLastActivityProjectionChangeCount +
+      addend.branchLastActivityProjectionChangeCount,
+    reviewDecisionProjectionChangeCount:
+      total.reviewDecisionProjectionChangeCount +
+      addend.reviewDecisionProjectionChangeCount,
+    checkProjectionChangeCount:
+      total.checkProjectionChangeCount + addend.checkProjectionChangeCount,
+    issueCommentProjectionChangeCount:
+      total.issueCommentProjectionChangeCount +
+      addend.issueCommentProjectionChangeCount,
+    reviewCommentProjectionChangeCount:
+      total.reviewCommentProjectionChangeCount +
+      addend.reviewCommentProjectionChangeCount,
+    reviewThreadProjectionChangeCount:
+      total.reviewThreadProjectionChangeCount +
+      addend.reviewThreadProjectionChangeCount,
+    reviewProjectionChangeCount:
+      total.reviewProjectionChangeCount + addend.reviewProjectionChangeCount,
+    statusCheckProjectionChangeCount:
+      total.statusCheckProjectionChangeCount +
+      addend.statusCheckProjectionChangeCount,
+    skippedBranchCount: total.skippedBranchCount + addend.skippedBranchCount,
+  };
+}
+
 export function emptyProjectionDiff(): GitHubBackfillProjectionDiff {
   return {
     branchProjectionChangeCount: 0,
     pullRequestProjectionChangeCount: 0,
+    lifecycleAtomProjectionChangeCount: 0,
+    branchLastActivityProjectionChangeCount: 0,
     reviewDecisionProjectionChangeCount: 0,
     checkProjectionChangeCount: 0,
     issueCommentProjectionChangeCount: 0,
@@ -219,10 +269,11 @@ async function countReviewThreadProjectionChanges(
     string,
     ReturnType<typeof desiredReviewThreadProjection>
   >();
-  for (const comment of reviewComments) {
+  for (const thread of groupReviewThreads(reviewComments)) {
+    const root = reviewThreadRoot(thread);
     desiredByIdentity.set(
-      reviewThreadIdentity(comment),
-      desiredReviewThreadProjection(comment)
+      reviewThreadIdentity(root),
+      desiredReviewThreadProjection(root)
     );
   }
   if (desiredByIdentity.size === 0) {
@@ -251,6 +302,7 @@ async function countReviewThreadProjectionChanges(
       reviewId: true,
       path: true,
       line: true,
+      originalLine: true,
       side: true,
       startLine: true,
       startSide: true,
@@ -389,6 +441,7 @@ function reviewThreadProjectionWouldChange(
     reviewId: string | null;
     path: string | null;
     line: number | null;
+    originalLine: number | null;
     side: string | null;
     startLine: number | null;
     startSide: string | null;
@@ -404,6 +457,7 @@ function reviewThreadProjectionWouldChange(
     existing.reviewId !== desired.reviewId ||
     existing.path !== desired.path ||
     existing.line !== desired.line ||
+    existing.originalLine !== desired.originalLine ||
     existing.side !== desired.side ||
     existing.startLine !== desired.startLine ||
     existing.startSide !== desired.startSide ||

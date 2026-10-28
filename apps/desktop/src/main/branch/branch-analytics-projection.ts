@@ -9,11 +9,7 @@ import {
 } from "@repo/api/src/types/branch";
 import { median } from "@repo/api/src/utils/math";
 import { countPrLifecycle } from "@repo/lib/branches/branch-lifecycle-count";
-import {
-  isLocEnriched,
-  sumEvenSplitEnrichedSpend,
-} from "@repo/lib/branches/loc-per-dollar";
-import { reportableSpendUsd } from "@repo/lib/branches/spend-kpi";
+import { isLocEnriched } from "@repo/lib/branches/loc-per-dollar";
 
 /**
  * Desktop main-side branch analytics projection (FEA-1948 / Epic B B6).
@@ -66,14 +62,6 @@ function unavailable(): BranchKpi {
   };
 }
 
-/** A priced figure → KPI: a real number is `available`, a `null` is `unavailable`. */
-function pricedKpi(value: number | null): BranchKpi {
-  if (value == null) {
-    return unavailable();
-  }
-  return available(value);
-}
-
 /** A branch carries FEA-1899 LOC enrichment once BOTH line counts have landed. */
 export function isLocEnrichedRow(
   row: BranchRow
@@ -82,23 +70,11 @@ export function isLocEnrichedRow(
 }
 
 /**
- * The LOC-per-$ DENOMINATOR: captured cost even-split-attributed to the
- * LOC-enriched branches. The apportionment (FEA-2032 even-split) is the shared
- * `sumEvenSplitEnrichedSpend` kernel — the same one the web producer adapts into
- * (apps/api/app/branches/branch-read-service.ts), so the two surfaces cannot
- * re-diverge. This adapter owns only desktop's per-session cost map: captured
- * cost SUMMED across a session's model rows, with un-priced rows (`null`) dropped
- * so they never inflate the denominator (matching the dashboard's stored-cost
- * basis). Dropping un-priced rows is why an all-un-priced corpus returns `null`
- * (no map entry) rather than 0.
- */
-/**
  * FEA-3695 — the AUTHORITATIVE per-session captured cost map surfaced on the
  * desktop list wire (`BranchListResponse.sessionCostUsd`). Sums a session's
  * per-model captured cost, dropping un-priced rows so an entirely un-priced
  * session is absent (priced-nothing → the client's `> 0` gate renders "—"),
- * exactly like the `sumLocEnrichedSpend` cost map below and the deduped total
- * spend read — so the client's filtered re-derivation cannot drift from the
+ * exactly like the deduped total spend read — so the client's filtered re-derivation cannot drift from the
  * headline. Keyed by the non-nullable `sessionId`, so a session shared by
  * multiple branches has ONE entry, never one per branch.
  */
@@ -108,7 +84,14 @@ export function sessionCostMapFromUsageRows(
     costUsdEstimated: number | null;
   }>
 ): Record<string, number> {
-  const costBySession: Record<string, number> = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  // On a plain `{}`, `costBySession["__proto__"]` reads back Object.prototype,
+  // so the `?? 0` never fires and `Object.prototype + number` coerces to a
+  // string before the setter discards it. The `continue` above stays as-is:
+  // an all-unpriced session must remain ABSENT so the client renders "-".
+  const costBySession: Record<string, number> = Object.create(null);
   for (const row of usageRows) {
     if (row.costUsdEstimated == null) {
       continue;
@@ -116,65 +99,17 @@ export function sessionCostMapFromUsageRows(
     costBySession[row.sessionId] =
       (costBySession[row.sessionId] ?? 0) + row.costUsdEstimated;
   }
-  return costBySession;
-}
-
-export function sumLocEnrichedSpend(
-  items: BranchRow[],
-  usageRows: ReadonlyArray<{
-    sessionId: string;
-    costUsdEstimated: number | null;
-  }>,
-  // ISS-4689 — each session's GLOBAL branch count, the window-independent
-  // even-split divisor. Build it with `readGlobalBranchCountsForItems` over the
-  // FULL local corpus (the un-windowed item set); omitted, the kernel falls back
-  // to the in-set count and keeps the pre-ISS-4689 window-sensitivity.
-  globalBranchCounts?: ReadonlyMap<string, number>
-): number | null {
-  const costBySession = new Map<string, number>();
-  for (const row of usageRows) {
-    if (row.costUsdEstimated == null) {
-      continue;
-    }
-    costBySession.set(
-      row.sessionId,
-      (costBySession.get(row.sessionId) ?? 0) + row.costUsdEstimated
-    );
-  }
-  return sumEvenSplitEnrichedSpend(
-    items.map((item) => ({
-      enriched: isLocEnrichedRow(item),
-      sessionIds: item.sessionIds,
-    })),
-    costBySession,
-    globalBranchCounts
-  );
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...costBySession };
 }
 
 /**
- * Deduped, pre-priced spend the caller computes from the per-session usage read
- * (`readBranchUsageTokenRows`) — NOT from per-branch `estimatedCostUsd`. Per-branch
- * cost is ATTRIBUTION: a session linked to N branches contributes its full cost to
- * each of those N branches, so column-summing it over-counts every shared session
- * (the AI-spend inflation bug). These numbers count each session ONCE.
+ * The count and PR KPIs of the shared BranchAnalytics card. The two spend-based
+ * KPIs (`totalSpendUsd`, `locPerDollar`) are left unavailable here and filled
+ * from the canonical cards by the caller (ISS-12361), so spend is derived once.
  */
-export type BranchSpendInput = {
-  /** Deduped priced cost across ALL branch-linked sessions — the AI-spend KPI. */
-  totalSpendUsd: number | null;
-  /**
-   * The LOC-per-$ denominator: captured cost EVEN-SPLIT-attributed to the
-   * LOC-enriched branches (`sumLocEnrichedSpend`). A session split across an
-   * enriched and an un-enriched branch contributes only its enriched fraction,
-   * so spend with no LOC to offset it stays out of the ratio. A 0-LOC enriched
-   * branch still counts (known-zero LOC); an un-enriched branch never does.
-   */
-  locEnrichedSpendUsd: number | null;
-};
-
-export function projectBranchAnalytics(
-  items: BranchRow[],
-  spend: BranchSpendInput
-): BranchAnalytics {
+export function projectBranchAnalytics(items: BranchRow[]): BranchAnalytics {
   // Merge rate = merged / decided, computed from local PR lifecycle. FEA-2942:
   // the denominator is DECIDED branches (PR MERGED or CLOSED), NOT every branch
   // that has a PR — a still-open PR has no terminal outcome yet, so counting it
@@ -222,40 +157,6 @@ export function projectBranchAnalytics(
     .map((row) => row.additions + row.deletions);
   const medianPrSize =
     sizes.length > 0 ? available(median(sizes) ?? 0) : unavailable();
-
-  // Value per $ = total code CHURN ÷ enriched spend — needs LOC enrichment AND
-  // priced cost. The numerator is churn: additions + DELETIONS. Removed lines are
-  // work delivered, so they ADD to the total; netting them out (the previous
-  // formula) reported a large refactor as near-zero value and a pure deletion as
-  // negative. Summed over LOC-enriched branches; the denominator
-  // (`spend.locEnrichedSpendUsd`) is the captured cost EVEN-SPLIT-attributed to
-  // those same enriched branches (`sumLocEnrichedSpend`), so a session split
-  // across enriched and un-enriched branches contributes only its enriched share
-  // — un-enriched spend with no LOC to offset it stays out of the ratio. The web
-  // producer (`apps/api/app/branches/branch-read-service.ts` `getBranchAnalytics`)
-  // computes this identically so the ONE shared card matches on both surfaces.
-  const locRows = items.filter(isLocEnrichedRow);
-  const totalChurn = locRows.reduce(
-    (sum, row) => sum + row.additions + row.deletions,
-    0
-  );
-  const totalCost = spend.locEnrichedSpendUsd ?? 0;
-  const locPerDollar =
-    locRows.length > 0 && totalCost > 0
-      ? available(totalChurn / totalCost)
-      : unavailable();
-
-  // Total AI spend — the DEDUPED priced cost across every branch-linked session,
-  // counted ONCE no matter how many branches it touched (so it reconciles with the
-  // usage summary's `totalEstimatedCost` and the agent dashboard, instead of the
-  // per-branch attribution sum that inflated this card). Unavailable (NOT $0) when
-  // nothing prices, so the card shows "—" rather than implying free work.
-  // ISS-4737: unavailable ALSO when the priced rows sum to exactly zero, via the
-  // shared `reportableSpendUsd` rule the web producer and the client-side
-  // filtered re-projection now call too — `sumStoredBranchCost` returns a real 0
-  // for priced-but-zero rows, and rendering that as `$0` claimed the work was
-  // free while the web producer reported the same corpus as no-data.
-  const totalSpendUsd = pricedKpi(reportableSpendUsd(spend.totalSpendUsd));
 
   // Active branches — count still in progress (status not merged/closed). LOCAL:
   // derived from branch status, no GitHub PR state. A count of 0 over a non-empty
@@ -311,8 +212,8 @@ export function projectBranchAnalytics(
     activePrCount,
     mergedCount,
     leadTimeForChangeMs: gated(),
-    locPerDollar,
-    totalSpendUsd,
+    locPerDollar: unavailable(),
+    totalSpendUsd: unavailable(),
     activeBranchCount,
     buildVsReworkSplit: {
       buildPct: null,

@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { autonomyBandFor } from "@repo/api/src/types/session-activity-metrics";
 import { parse as parseYaml } from "yaml";
 import { EVIDENCE_MODEL_VERSION } from "../../src/main/collectors/evidence/evidence-model.js";
 import { listDossierDirs } from "../../src/main/collectors/golden/corpus-layout.js";
@@ -40,7 +41,7 @@ import {
   deriveSessionBoundsMs,
   segmentIndexForMs,
 } from "../../src/main/collectors/parsing/activity-segment-classifier.js";
-import { isClosedloopMcpTool } from "../../src/main/collectors/parsing/artifact-ref-extractor.js";
+import { isClosedloopMcpTool } from "../../src/main/collectors/parsing/artifact-ref-mcp-slugs.js";
 import {
   buildDistillationReport,
   type DistillationReport,
@@ -59,7 +60,6 @@ import {
 } from "../../src/main/collectors/types.js";
 import {
   ATTRIBUTION_METRIC_VERSION,
-  autonomyBandFor,
   COHORT_AXIS_VALUES,
   type CohortAxis,
   type CoverageCell,
@@ -238,7 +238,7 @@ function proseInWindow(
 
 /**
  * Cohort proxy: did the session call the ClosedLoop MCP server at all? Reuses the
- * canonical `isClosedloopMcpTool` SSOT (artifact-ref-extractor.ts), which matches
+ * canonical `isClosedloopMcpTool` SSOT (artifact-ref-mcp-slugs.ts), which matches
  * BOTH the Claude `mcp__closedloop__` name prefix AND Codex's separate
  * `mcpServer === "closedloop"` field. A bare name-prefix check silently drops
  * every Codex ClosedLoop session into the `external` cohort. Closed-set by

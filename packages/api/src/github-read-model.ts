@@ -1,6 +1,10 @@
 import { ChecksStatus, ReviewDecision } from "./types/branch-checks.ts";
 import { GitHubPRState } from "./types/github.ts";
 import {
+  normalizeGitHubActorType,
+  normalizeGitHubProviderUserId,
+} from "./types/github-actor.ts";
+import {
   type GitHubBundledPullRequestsPageOptions,
   type GitHubBundledPullRequestsResult,
   GitHubBundledPullRequestsStopReason,
@@ -20,6 +24,7 @@ import {
   GitHubSyncResultReason,
   type GitHubSyncResultReason as GitHubSyncResultReasonValue,
 } from "./types/github-read-model.ts";
+import { normalizeConstValue } from "./types/normalize-const-value.ts";
 import {
   type RepositoryDefaultAuthority,
   RepositoryDefaultAvailability,
@@ -32,25 +37,54 @@ import {
 } from "./types/repository-default-identity.ts";
 import { VcsProviderKind } from "./types/vcs-provider-kind.ts";
 
-export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE = 100;
+/**
+ * PRs per page of the bundled read (ISS-7891).
+ *
+ * 25, not the 100 GitHub's connection limit allows, because the query's
+ * `statusCheckRollup` blows GitHub's ~10s GraphQL execution budget at 100 and
+ * comes back 502/504 — measured against real repositories with an
+ * authenticated token:
+ *
+ *     closedloop-ai  100  11.1s  502      prisma/prisma  50  6.4s  ok
+ *     closedloop-ai   50   3.9s  ok       prisma/prisma  25  2.2s  ok
+ *     closedloop-ai   25   1.5s  ok       vercel/next.js 25  2.2s  ok
+ *
+ * 50 is NOT the answer even though it passed: rollup cost scales with
+ * checks-per-PR, a property of the repository's CI that we do not control, and
+ * prisma already spends 6.4s of the budget there. 25 holds every measured repo
+ * near 2s.
+ *
+ * Rate-limit cost was 1 point at every page size, so this trades no budget —
+ * only round trips, which is why the reconciler raises its page count to keep
+ * per-tick coverage.
+ *
+ * ISS-7892 then removed the re-fetching this constant was holding back: the
+ * reconcile sweep now stops paging at its watermark and drops the rollup it
+ * never persisted, so the page size no longer carries the lane on its own.
+ */
+export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE = 25;
+/** GitHub's own per-connection ceiling; an explicit caller may still ask for it. */
 export const GITHUB_BUNDLED_PULL_REQUESTS_MAX_PAGE_SIZE = 100;
-export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_MAX_PAGES = 1;
+/**
+ * The default page budget, which exists to make the default ITEM budget
+ * reachable — the provider loop stops at whichever bound it hits first.
+ *
+ * 1 page was enough while a page held 100. At 25 it is not: a caller taking the
+ * defaults asked for 100 items and silently received 25, which is how the live
+ * repository PR list — `getRepositoryPullRequestsWithMetadata`, which forwards
+ * `maxItems`/`maxPages` but never a `pageSize` — started returning 25 rows for a
+ * `limit: 30` request (#5898 review). The three defaults are one triple: page
+ * size × pages must still reach items.
+ */
+export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_MAX_PAGES = 4;
 export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_MAX_ITEMS = 100;
 
-export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY = `
-  query BundledPullRequests($owner: String!, $repo: String!, $pageSize: Int!, $after: String) {
-    rateLimit {
-      cost
-      remaining
-      resetAt
-    }
-    repository(owner: $owner, name: $repo) {
-      pullRequests(first: $pageSize, after: $after, states: [OPEN, CLOSED, MERGED], orderBy: {field: UPDATED_AT, direction: DESC}) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
+/**
+ * The node selection shared by the paged bundled read and the by-number
+ * self-heal read (ISS-7892), so the two cannot drift into projecting different
+ * fields onto the same row.
+ */
+export const GITHUB_PULL_REQUEST_NODE_FIELDS = `
           id
           databaseId
           number
@@ -81,7 +115,13 @@ export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY = `
           }
           author {
             login
-          }
+            __typename
+            ... on User { databaseId }
+            ... on Bot { databaseId }
+            ... on Mannequin { databaseId }
+          }`;
+
+const GITHUB_STATUS_CHECK_ROLLUP_SELECTION = `
           commits(last: 1) {
             nodes {
               commit {
@@ -90,12 +130,53 @@ export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY = `
                 }
               }
             }
-          }
+          }`;
+
+/**
+ * The same selection with the check rollup attached, for the point read in
+ * `packages/github`. `main` extracted this list independently while ISS-7892
+ * was in flight (as `GITHUB_PULL_REQUEST_READ_MODEL_FIELDS`, rollup inlined);
+ * both extractions are the same list, so it is composed from the two pieces
+ * above rather than restated — a second copy is exactly the drift the split
+ * was meant to prevent.
+ */
+export const GITHUB_PULL_REQUEST_READ_MODEL_FIELDS = `${GITHUB_PULL_REQUEST_NODE_FIELDS}${GITHUB_STATUS_CHECK_ROLLUP_SELECTION}`;
+
+function buildBundledPullRequestsQuery(rollupSelection: string): string {
+  return `
+  query BundledPullRequests($owner: String!, $repo: String!, $pageSize: Int!, $after: String) {
+    rateLimit {
+      cost
+      remaining
+      resetAt
+    }
+    repository(owner: $owner, name: $repo) {
+      pullRequests(first: $pageSize, after: $after, states: [OPEN, CLOSED, MERGED], orderBy: {field: UPDATED_AT, direction: DESC}) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {${GITHUB_PULL_REQUEST_NODE_FIELDS}${rollupSelection}
         }
       }
     }
   }
 `;
+}
+
+export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY = buildBundledPullRequestsQuery(
+  GITHUB_STATUS_CHECK_ROLLUP_SELECTION
+);
+
+/**
+ * ISS-7892: the same read with `statusCheckRollup` dropped. Measured against
+ * `closedloop-ai/closedloop-ai` at the ISS-7891 page size of 25, 8 pages:
+ * 24.9s with the rollup, 14.9s without. The reconcile sweep discards check
+ * state entirely (`buildPullRequestDetailUpdate` never writes it), so paying
+ * for the rollup there buys nothing.
+ */
+export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY_WITHOUT_ROLLUP =
+  buildBundledPullRequestsQuery("");
 
 export type BundledPullRequestsGraphqlResponse = {
   rateLimit?: {
@@ -139,7 +220,11 @@ export type BundledPullRequestNode = {
     defaultBranchRef?: { name?: string | null } | null;
   } | null;
   mergeCommit?: { oid?: string | null } | null;
-  author?: { login?: string | null } | null;
+  author?: {
+    login?: string | null;
+    __typename?: string | null;
+    databaseId?: number | null;
+  } | null;
   commits?: {
     nodes?: Array<{
       commit?: {
@@ -247,6 +332,7 @@ export function mapPullRequestNode(
     mergeCommitSha: normalizeOptionalString(node.mergeCommit?.oid),
     updatedAt: normalizeOptionalString(node.updatedAt),
     author: normalizeOptionalString(node.author?.login),
+    ...mapReadModelAuthorIdentity(node.author),
     source,
     ...(headRepository.authority === undefined
       ? {}
@@ -353,6 +439,8 @@ export function normalizeBundledPullRequestsPageOptions(
     maxPages,
     maxItems,
     targetNumbers: normalizeTargetNumbers(options.targetNumbers),
+    stopAtUpdatedAt: normalizeOptionalString(options.stopAtUpdatedAt),
+    includeStatusCheckRollup: options.includeStatusCheckRollup !== false,
   };
 }
 
@@ -670,18 +758,6 @@ function resolveBundledPullRequestsStopReason(input: {
   );
 }
 
-function normalizeConstValue<Value extends string>(
-  value: unknown,
-  values: Record<string, Value> & { Unknown: Value }
-): Value {
-  const knownValues = Object.values(values) as Value[];
-  const matchedValue =
-    typeof value === "string"
-      ? knownValues.find((knownValue) => knownValue === value)
-      : undefined;
-  return matchedValue ?? values.Unknown;
-}
-
 function resolveBudgetState(
   remaining: number | null
 ): GitHubProviderBudgetState {
@@ -692,4 +768,51 @@ function resolveBudgetState(
     return GitHubProviderBudgetState.Low;
   }
   return GitHubProviderBudgetState.Available;
+}
+
+/**
+ * ISS-7892: has this page reached PRs the caller has already processed?
+ *
+ * Sound only because the connection is ordered UPDATED_AT DESC — the first row
+ * at or older than the watermark proves every later page is older still. A row
+ * with no `updatedAt` counts as NOT reached: its position is unknown, and a
+ * gap-repair read must never truncate itself on a row it cannot place. (The
+ * reconciler's cursor guard is conservative in the opposite direction, refusing
+ * to persist a continuation it cannot justify; neither guesses.)
+ *
+ * A row whose `updated_at` is bumped mid-pagination can slip past a cursor, as
+ * with any keyset read over a mutating sort key. It cannot be lost: a stop here
+ * leaves the page mixed, so the reconciler persists no continuation and the next
+ * tick restarts from the newest PR — where that row now sorts above the stored
+ * watermark. The exposure is one tick of staleness on a background lane.
+ */
+export function bundledPullRequestsReachedWatermark(
+  pullRequests: readonly GitHubReadModelPullRequest[],
+  stopAtUpdatedAt: string | null
+): boolean {
+  if (!stopAtUpdatedAt) {
+    return false;
+  }
+  const watermark = Date.parse(stopAtUpdatedAt);
+  if (Number.isNaN(watermark)) {
+    return false;
+  }
+  return pullRequests.some((pullRequest) => {
+    if (pullRequest.updatedAt === null) {
+      return false;
+    }
+    const updatedAt = Date.parse(pullRequest.updatedAt);
+    return !Number.isNaN(updatedAt) && updatedAt <= watermark;
+  });
+}
+
+function mapReadModelAuthorIdentity(author: BundledPullRequestNode["author"]) {
+  const authorProviderUserId = normalizeGitHubProviderUserId(
+    author?.databaseId
+  );
+  const authorActorType = normalizeGitHubActorType(author?.__typename);
+  return {
+    ...(authorProviderUserId === undefined ? {} : { authorProviderUserId }),
+    ...(authorActorType === undefined ? {} : { authorActorType }),
+  };
 }

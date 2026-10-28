@@ -88,18 +88,21 @@ describe("effectiveKeyScopes", () => {
       ["superuser", "org:admin"],
       "all_unrecognized",
     ],
-  ])("fails closed and reports %s on the shared monitor", (_label, scopes, expectedReason) => {
-    expect(effectiveKeyScopes(contextFor(scopes))).toBeNull();
-    expect(logError).toHaveBeenCalledWith(
-      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
-      expect.objectContaining({
-        surface: "mcp_oauth",
-        reason: expectedReason,
-        userId: "user_1",
-        organizationId: "org_1",
-      })
-    );
-  });
+  ])(
+    "fails closed and reports %s on the shared monitor",
+    (_label, scopes, expectedReason) => {
+      expect(effectiveKeyScopes(contextFor(scopes))).toBeNull();
+      expect(logError).toHaveBeenCalledWith(
+        API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+        expect.objectContaining({
+          surface: "mcp_oauth",
+          reason: expectedReason,
+          userId: "user_1",
+          organizationId: "org_1",
+        })
+      );
+    }
+  );
 });
 
 describe("resolveRefreshGrantScopes", () => {
@@ -146,7 +149,7 @@ describe("resolveRefreshGrantScopes", () => {
     ).toBe(RefreshScopeResolutionKind.OverScope);
   });
 
-  // ISS-4905 (wongk review): a key narrowed after the family was issued left
+  // ISS-4905 (whitlockk review): a key narrowed after the family was issued left
   // grantScopes empty; with no request of its own `.some()` was vacuously
   // false, so this returned Ok with `[]` and the handler answered 200 with an
   // access token `isValidTokenScopeClaim` rejects on first use.

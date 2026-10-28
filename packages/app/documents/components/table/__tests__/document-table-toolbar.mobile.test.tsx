@@ -1,11 +1,11 @@
 import { DocumentTableToolbar } from "@repo/app/documents/components/table/document-table-toolbar";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 // The filter-category control the My Tasks page passes as `leadingContent`.
 // The five segments plus the search input, filter popover, and view menu are

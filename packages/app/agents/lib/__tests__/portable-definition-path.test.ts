@@ -52,7 +52,7 @@ describe("portableDefinitionPath", () => {
   });
 
   it.each([
-    ["/Users/mike.angstadt/Code/hermes-agent/optional/1password/SKILL.md"],
+    ["/Users/marisol.ashgrove/Code/hermes-agent/optional/1password/SKILL.md"],
     ["/home/dev/agents/a.md"],
     ["~/agents/a.md"],
     [String.raw`C:\Users\dev\agents\a.md`],
@@ -69,10 +69,10 @@ describe("portableDefinitionPath", () => {
     // The property that matters: whatever comes back, it is not rooted on the
     // capturing machine. A future anchor added to the set stays covered.
     const leaked =
-      "/Users/mike.angstadt/Code/proj/.claude/skills/security/SKILL.md";
+      "/Users/marisol.ashgrove/Code/proj/.claude/skills/security/SKILL.md";
     const rendered = portableDefinitionPath(leaked) ?? "";
 
-    expect(rendered).not.toContain("mike.angstadt");
+    expect(rendered).not.toContain("marisol.ashgrove");
     expect(rendered).not.toContain("/Users/");
     expect(rendered.startsWith("/")).toBe(false);
   });

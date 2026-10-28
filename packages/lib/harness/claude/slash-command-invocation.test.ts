@@ -134,7 +134,7 @@ describe("findSlashCommandInvocations", () => {
     );
   });
 
-  // wongk (#4248): the renderer only ever sees `NormalizedMessage.text` after
+  // whitlockk (#4248): the renderer only ever sees `NormalizedMessage.text` after
   // the 4,096-byte cap, and that cut can land inside the run's last field. The
   // orphaned tail must stay part of the SAME invocation — otherwise the caller's
   // generic unterminated-tag folding renders one command as two chips.

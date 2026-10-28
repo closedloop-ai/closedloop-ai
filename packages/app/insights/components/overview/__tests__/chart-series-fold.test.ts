@@ -61,7 +61,7 @@ describe("foldTimeSeriesToMaxSeries cap resolution", () => {
   it("folds a single overflow series rather than drawing one series past the cap", () => {
     // This previously asserted the OPPOSITE — that 3 series at a cap of 2 draw
     // all three, on the reasoning that folding one series costs it its identity
-    // while the palette "provably had a free slot for it" (wongk review).
+    // while the palette "provably had a free slot for it" (whitlockk review).
     //
     // The palette provably did NOT. The chart clamps the cap to
     // `CHART_SERIES_COLOR_LIMIT`, and the product passes exactly that limit, so
@@ -191,7 +191,7 @@ describe("foldTimeSeriesToMaxSeries aggregate arithmetic", () => {
 
   it("reports a PARTIALLY unknown bucket as unknown, not as the subtotal it can see", () => {
     // This previously asserted `4` — the sum of the folded values that happened
-    // to be present (codex P2 + wongk review). That is the defect: before the
+    // to be present (codex P2 + whitlockk review). That is the defect: before the
     // fold, `b`'s gap was its own visible series and a reader could see exactly
     // what was missing. After it, the band says "Other models (2)" and plots a
     // number, which is read as the total of BOTH. Emitting 4 states a complete
@@ -211,20 +211,27 @@ describe("foldTimeSeriesToMaxSeries aggregate arithmetic", () => {
     ["NaN", Number.NaN],
     ["+Infinity", Number.POSITIVE_INFINITY],
     ["-Infinity", Number.NEGATIVE_INFINITY],
-  ])("reports a bucket as unknown when a folded value is %s, instead of dropping it", (_label, malformed) => {
-    // A present-but-malformed value used to be discarded, letting the one valid
-    // sibling carry the band as a confident subtotal (codex P2). It is not a
-    // measurement of zero and it is not absence — it is a value we cannot add.
-    const series = seriesOf(["a", "b", "c"]);
-    const points = [pointOf("2026-07-01", { a: 100, b: malformed, c: 4 })];
+  ])(
+    "reports a bucket as unknown when a folded value is %s, instead of dropping it",
+    (_label, malformed) => {
+      // A present-but-malformed value used to be discarded, letting the one valid
+      // sibling carry the band as a confident subtotal (codex P2). It is not a
+      // measurement of zero and it is not absence — it is a value we cannot add.
+      const series = seriesOf(["a", "b", "c"]);
+      const points = [pointOf("2026-07-01", { a: 100, b: malformed, c: 4 })];
 
-    const folded = foldTimeSeriesToMaxSeries({ maxSeries: 1, points, series });
+      const folded = foldTimeSeriesToMaxSeries({
+        maxSeries: 1,
+        points,
+        series,
+      });
 
-    expect(folded.points[0].values[CHART_OTHER_SERIES_KEY]).toBeNull();
-  });
+      expect(folded.points[0].values[CHART_OTHER_SERIES_KEY]).toBeNull();
+    }
+  );
 
   it("does not fabricate 0 for a bucket whose folded values are all malformed", () => {
-    // The sharpest form of the same defect (wongk review): with every folded
+    // The sharpest form of the same defect (whitlockk review): with every folded
     // value non-finite, the old code saw no number and no explicit `null`, fell
     // through to the "every key simply absent" branch, and plotted a confident
     // `0` — a measurement of "these models cost nothing" invented out of

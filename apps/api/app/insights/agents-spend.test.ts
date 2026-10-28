@@ -184,7 +184,7 @@ describe("fetchAgentsSpendBreakdowns", () => {
   });
 
   it("reads both spend breakdowns from ONE statement so the siblings share a snapshot", async () => {
-    // wongk (#4282): two separate reads are two implicit transactions, and a
+    // whitlockk (#4282): two separate reads are two implicit transactions, and a
     // session sync landing between them makes the two charts disagree inside a
     // single response. One statement is one MVCC snapshot by construction.
     const { queries, modelBreakdown, spendByOutcome } =
@@ -209,6 +209,45 @@ describe("fetchAgentsSpendBreakdowns", () => {
       { key: "opus", label: "opus", value: 40 },
       { key: "sonnet", label: "sonnet", value: 12.5 },
       { key: "haiku", label: "haiku", value: 1.01 },
+    ]);
+  });
+
+  /**
+   * ISS-8052 — equal spend is broken on the model NAME, not on arrival order.
+   *
+   * The rows a `GROUP BY GROUPING SETS` returns come back in whatever order the
+   * plan produces, and `Array#sort` is stable, so a comparator that only
+   * compared values left tied models in that order. This array is serialized
+   * into the byte-compared Layer 5.3 fixture AND picks the top-N models the
+   * model-usage series stacks, so a tie resolving two ways can change which
+   * model collapses into "Other". The rows below are seeded in DESCENDING name
+   * order so a fall-through to arrival order fails this.
+   */
+  it("breaks equal-spend models on the model name, ascending", async () => {
+    const { modelBreakdown } = await runSpendBreakdowns([
+      modelRow("sonnet", 5),
+      modelRow("opus", 5),
+      modelRow("haiku", 5),
+    ]);
+
+    expect(modelBreakdown.map((bucket) => bucket.key)).toEqual([
+      "haiku",
+      "opus",
+      "sonnet",
+    ]);
+  });
+
+  it("still ranks by spend before the name, so the tiebreak cannot reorder unequal models", async () => {
+    // The positive sibling: a comparator that sorted by label FIRST would
+    // satisfy the tie case above while silently destroying the spend ranking.
+    const { modelBreakdown } = await runSpendBreakdowns([
+      modelRow("zeta", 40),
+      modelRow("alpha", 1),
+    ]);
+
+    expect(modelBreakdown.map((bucket) => bucket.key)).toEqual([
+      "zeta",
+      "alpha",
     ]);
   });
 

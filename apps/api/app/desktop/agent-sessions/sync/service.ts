@@ -3,8 +3,10 @@ import type {
   DesktopAgentSessionsSyncResponse,
 } from "@repo/api/src/types/agent-session";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
+import type { UpsertSessionSliceResult } from "@/app/agent-sessions/service/session-slice-result";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { handleDesktopAgentSessionsEvent } from "@/lib/desktop-agent-sessions-handler";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 
 type DesktopAgentSessionsSyncInput = {
   clerkUserId: string | null;
@@ -28,7 +30,8 @@ export type DesktopAgentSessionsSyncFailure = {
 /** Upserts desktop agent-session payloads for one authenticated compute target. */
 export const desktopAgentSessionsSyncService = {
   async sync(
-    input: DesktopAgentSessionsSyncInput
+    input: DesktopAgentSessionsSyncInput,
+    recordSessionWrite?: RecordWriteInTransaction<UpsertSessionSliceResult>
   ): Promise<
     Result<DesktopAgentSessionsSyncResponse, DesktopAgentSessionsSyncFailure>
   > {
@@ -47,6 +50,7 @@ export const desktopAgentSessionsSyncService = {
       organizationId: input.organizationId,
       targetId: input.computeTargetId,
       userId: input.userId,
+      recordSessionWrite,
     });
 
     if (!ack.accepted) {

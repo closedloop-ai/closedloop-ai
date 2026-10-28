@@ -16,13 +16,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
-import {
-  createSqliteDashboardQueries,
-  TOOL_INVOCATION_EVENT_TYPE,
-} from "../src/main/database/dashboard-queries.js";
+import { afterAll, test } from "vitest";
+import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { getSharedAgentSessionAnalytics } from "../src/main/session/shared-agent-sessions-api.js";
@@ -35,10 +32,10 @@ import { makeSession } from "./normalized-session-test-utils.js";
 // 'localtime'), so a bare UTC assertion here passes only in zones at or behind
 // UTC. Pin the same fixed non-UTC zone the sibling contract file uses, at module
 // evaluation, before any test opens a DB or reads a Date, and restore the
-// caller's TZ afterward per AGENTS.md Test Practices (wongk review).
+// caller's TZ afterward per AGENTS.md Test Practices (whitlockk review).
 const ORIGINAL_TZ = process.env.TZ;
 process.env.TZ = "America/Chicago";
-after(() => {
+afterAll(() => {
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {
@@ -184,22 +181,20 @@ test("ISS-5493: byTool drops an empty-string tool_name on the SQL path exactly a
   }
 });
 
-test("ISS-5493: the four dashboard reads seeded with an empty tool_name drop it from every result", async () => {
+test("ISS-5493: the two dashboard reads seeded with an empty tool_name drop it from every result", async () => {
   const { dir, db, prisma } = await openInsightsDb("iss5493-dashboard-");
   try {
     await db.query(
       "INSERT INTO sessions (id, status, started_at) VALUES ($1, 'inactive', $2)",
       ["s1", STARTED_AT]
     );
-    // A Bash → <empty> → Edit sequence on the tool-invocation event type: the
-    // empty row would otherwise count as its own nameless tool AND split the
-    // one real transition (Bash → Edit) into two bogus ones through it. The two
-    // trailing rows sit outside that event type, so only the reads that do not
-    // scope by it (`getAnalytics`, `getTools`) see them.
+    // A Bash → <empty> → Edit sequence: the empty row would otherwise count as
+    // its own nameless tool. Neither surviving read scopes by event type, so
+    // all five rows are visible to both.
     const events: [string, string, string, string][] = [
-      ["ev1", TOOL_INVOCATION_EVENT_TYPE, "Bash", STARTED_AT],
-      ["ev2", TOOL_INVOCATION_EVENT_TYPE, "", "2026-06-20T15:00:01.000Z"],
-      ["ev3", TOOL_INVOCATION_EVENT_TYPE, "Edit", "2026-06-20T15:00:02.000Z"],
+      ["ev1", "PreToolUse", "Bash", STARTED_AT],
+      ["ev2", "PreToolUse", "", "2026-06-20T15:00:01.000Z"],
+      ["ev3", "PreToolUse", "Edit", "2026-06-20T15:00:02.000Z"],
       ["ev4", "PostToolUse", "Read", "2026-06-20T15:00:03.000Z"],
       ["ev5", "PostToolUse", "", "2026-06-20T15:00:04.000Z"],
     ];
@@ -213,22 +208,12 @@ test("ISS-5493: the four dashboard reads seeded with an empty tool_name drop it 
 
     const dashboard = createSqliteDashboardQueries(prisma);
     const analytics = await dashboard.getAnalytics(NOW);
-    const workflow = await dashboard.getWorkflowData(NOW);
     const tools = await dashboard.getTools();
 
     assert.deepEqual(sortedToolCounts(analytics.toolUsage), [
       { toolName: "Bash", count: 1 },
       { toolName: "Edit", count: 1 },
       { toolName: "Read", count: 1 },
-    ]);
-    assert.deepEqual(sortedToolCounts(workflow.toolFlow.toolCounts), [
-      { toolName: "Bash", count: 1 },
-      { toolName: "Edit", count: 1 },
-    ]);
-    // The empty row is not a hop: dropping it reconnects Bash directly to Edit
-    // rather than leaving `Bash → ""` and `"" → Edit`.
-    assert.deepEqual(workflow.toolFlow.transitions, [
-      { source: "Bash", target: "Edit", value: 1 },
     ]);
     // ORDER BY invocation_count DESC, tool_name ASC — every count is 1 here, so
     // the returned order is deterministic and asserted as-is.
@@ -277,7 +262,7 @@ test("ISS-5493: the stored-row invocation rebuild drops an empty tool_name inste
        VALUES ($1, $2, $3, $4, $5)`,
       "ev-empty",
       sessionId,
-      TOOL_INVOCATION_EVENT_TYPE,
+      "PreToolUse",
       "",
       "2026-06-20T15:00:01.000Z"
     );

@@ -1,15 +1,8 @@
 import type { ManagedKeyHintState } from "../../shared/contracts.js";
+import { ManagedKeyHintIpcChannel } from "../../shared/managed-key-hint-ipc-channel.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
 import { shouldShowManagedKeyHint } from "../settings/saved-config.js";
 import type { SettingsStore } from "../settings/settings-store.js";
-
-export const ManagedKeyHintIpcChannel = {
-  GetManagedKeyHintState: "desktop:get-managed-key-hint-state",
-  DismissManagedKeyHint: "desktop:dismiss-managed-key-hint",
-} as const;
-
-export type ManagedKeyHintIpcChannel =
-  (typeof ManagedKeyHintIpcChannel)[keyof typeof ManagedKeyHintIpcChannel];
 
 type IpcMainLike = {
   handle: (

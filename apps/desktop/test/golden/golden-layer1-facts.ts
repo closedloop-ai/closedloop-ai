@@ -42,6 +42,10 @@ type DossierSubagent = {
   agent_type?: string;
   /** ISS-4702: spawn-declared description — the raw `.meta.json` `description`. */
   description?: string;
+  /** ISS-11330: spawn-tree depth; a child of the main agent is 1. */
+  depth?: number;
+  /** ISS-11330: `"parent"` for the main agent, else the spawning subagent id. */
+  spawned_by?: string;
   model?: string | null;
   tokens?: DossierTokenCounts;
 };
@@ -186,6 +190,7 @@ export type ParsedSessionView = {
     isError?: boolean;
   }[];
   codexForkedFromId?: string | null;
+  claudeForkedFromSessionId?: string | null;
   compactions?: unknown[];
   artifacts?: {
     prs?: Array<{ number?: string }>;
@@ -292,7 +297,11 @@ export const LAYER1_FACTS: Layer1Fact[] = [
   {
     key: "session.lifecycle.forked",
     expected: (e) => e.session?.lifecycle?.forked,
-    actual: (s) => s.codexForkedFromId != null,
+    // ISS-8659: reads BOTH harnesses' lineage pointers. Reading only the Codex
+    // one meant no Claude fork could ever be detected, so the fact reported
+    // `false` for every `/fork` child in the corpus.
+    actual: (s) =>
+      s.codexForkedFromId != null || s.claudeForkedFromSessionId != null,
   },
   {
     key: "session.lifecycle.compacted",
@@ -364,7 +373,7 @@ function subagentTokenTotal(
  *
  * ISS-4702: `agent_type` and `description` were recorded as oracle-class facts
  * but compared to nothing, so a transcription typo in a signed dossier survived
- * (f216298d's "Angle G" description). ISS-4592 writes both onto every Claude
+ * (3870c244's "Angle G" description). ISS-4592 writes both onto every Claude
  * subagent record, so they are assertable against the parse result today.
  */
 export function subagentFacts(exp: DossierExpectations): Layer1Fact[] {

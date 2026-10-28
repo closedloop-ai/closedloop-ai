@@ -1,5 +1,4 @@
 /**
- * @file opt-in-distributions-banner.test.tsx
  * @description Unit tests for the desktop OptInDistributionsBanner
  * (FEA-2923 / §I; app-level mounting + row shape FEA-4007).
  *
@@ -29,6 +28,15 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OptInDistributionsBanner } from "../opt-in-distributions-banner";
 
+// The banner reads `DISTRIBUTION_OPT_IN_BANNER_FEATURE_FLAG_KEY` itself (operator
+// instruction, 2026-09-30) and renders nothing while it is off. These cases are
+// about the banner's own behavior with the prompt enabled, so the flag port
+// resolves open here; both flag directions and the PENDING race live in
+// `opt-in-distributions-banner-flag.test.tsx`.
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: () => true,
+}));
+
 function makeDistribution(
   over: Partial<OptInDistributionDto> = {}
 ): OptInDistributionDto {
@@ -52,6 +60,7 @@ function installDesktopApi(
     coachingInstall?: ReturnType<typeof vi.fn>;
     declineDistribution?: ReturnType<typeof vi.fn>;
     ensureDistributionAssigned?: ReturnType<typeof vi.fn>;
+    acknowledgeDistributionHandled?: ReturnType<typeof vi.fn>;
   } = {}
 ): {
   emit: (distributions: OptInDistributionDto[]) => void;
@@ -59,6 +68,7 @@ function installDesktopApi(
   coachingInstall: ReturnType<typeof vi.fn>;
   declineDistribution: ReturnType<typeof vi.fn>;
   ensureDistributionAssigned: ReturnType<typeof vi.fn>;
+  acknowledgeDistributionHandled: ReturnType<typeof vi.fn>;
   onDistributionsOptInAvailable: ReturnType<typeof vi.fn>;
 } {
   let listener: Listener | null = null;
@@ -79,12 +89,15 @@ function installDesktopApi(
   // exercise the happy path; the withdrawal cases override it with a rejection.
   const ensureDistributionAssigned =
     over.ensureDistributionAssigned ?? vi.fn().mockResolvedValue(undefined);
+  const acknowledgeDistributionHandled =
+    over.acknowledgeDistributionHandled ?? vi.fn().mockResolvedValue(undefined);
   (window as unknown as { desktopApi: unknown }).desktopApi = {
     db: {
       catalogInstall,
       coachingInstall,
       declineDistribution,
       ensureDistributionAssigned,
+      acknowledgeDistributionHandled,
     },
     onDistributionsOptInAvailable,
   };
@@ -94,6 +107,7 @@ function installDesktopApi(
     coachingInstall,
     declineDistribution,
     ensureDistributionAssigned,
+    acknowledgeDistributionHandled,
     onDistributionsOptInAvailable,
   };
 }
@@ -287,6 +301,7 @@ describe("OptInDistributionsBanner (§I)", () => {
     );
     // A non-coaching distribution never touches the coaching-pack bridge.
     expect(api.coachingInstall).not.toHaveBeenCalled();
+    expect(api.acknowledgeDistributionHandled).toHaveBeenCalledWith("dist-1");
     // After accept the row is removed.
     await waitFor(() =>
       expect(screen.queryByTestId("opt-in-banner")).toBeNull()
@@ -400,6 +415,7 @@ describe("OptInDistributionsBanner (§I)", () => {
     // Failure does NOT dismiss the row.
     expect(screen.getByTestId("opt-in-row-dist-fail")).toBeDefined();
     expect(api.catalogInstall).toHaveBeenCalledTimes(1);
+    expect(api.acknowledgeDistributionHandled).not.toHaveBeenCalled();
   });
 
   it("scopes the installing state to its own row", async () => {

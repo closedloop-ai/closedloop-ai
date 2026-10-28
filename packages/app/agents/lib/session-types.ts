@@ -74,10 +74,8 @@ export type {
   RelaySettings,
   RunComposer,
   RunMode,
-  RunSessionRecord,
   // Runs
   RunStatus,
-  RunSummary,
   RuntimePricingDraft,
   RuntimePricingRule,
   SandboxPolicy,

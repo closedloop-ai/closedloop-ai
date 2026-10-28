@@ -2,52 +2,52 @@
 
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import {
-  LOC_PER_DOLLAR_MERGED_LABEL,
-  resolveLocPerDollar,
-} from "@repo/api/src/utils/loc-per-dollar";
+  resolveCanonicalMergedLocPerDollarLabel,
+  resolveMergedLocPerDollarDetail,
+  resolveMergedLocPerDollarHow,
+  resolveMergedLocPerDollarLabel,
+  resolveMergedLocPerDollarWhat,
+} from "@repo/api/src/types/merged-loc-per-dollar-basis";
+import { ONE_LABEL_PER_METRIC_FLAG_KEY } from "@repo/api/src/types/one-label-per-metric-flag";
+import { resolveLocPerDollar } from "@repo/api/src/utils/loc-per-dollar";
+import { resolveSessionsListPerDollar } from "@repo/app/agents/lib/sessions-list-per-dollar";
+import type { GitHubConnectTarget } from "@repo/app/github/lib/github-connect-target";
 import { KPI_NOT_COMPUTED_REASON } from "@repo/app/insights/lib/kpi-no-comparison-copy";
 import {
+  partialStripCardClass,
   SummaryCardRow,
-  summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useMetricCardHideUnavailable } from "@repo/app/shared/feature-flags/use-metric-card-hide-unavailable";
 import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import {
-  SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY,
+  SESSIONS_DELIVERY_CARD_NO_DATA_FEATURE_FLAG_KEY,
   SESSIONS_SUMMARY_HONEST_LOADING_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
-import {
-  formatLocPerDollar,
-  formatNumber,
-  formatTokenCount,
-  KPI_NO_VALUE,
-} from "@repo/app/shared/lib/format-utils";
-import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { TriangleAlertIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { formatNumber } from "@repo/app/shared/lib/format-utils";
+import { hiddenMetricCardIds } from "@repo/app/shared/lib/metric-card-hide-policy";
+import { CardDensity } from "@repo/design-system/components/ui/card-density";
 import type { SessionSummaryDeltas } from "../../lib/session-summary-deltas";
 import {
-  resolveCostCardPresentation,
-  resolveCostTileSlots,
-} from "./cost-card-presentation";
-import { CostMetricCard } from "./cost-metric-card";
+  AlwaysAvailableCards,
+  resolveAlwaysAvailableCardsLoading,
+  resolveAlwaysAvailableSource,
+} from "./sessions-always-available-cards";
 import {
   DeliveryMetricCard,
   resolveDeliveryDeltaPlaceholder,
 } from "./sessions-delivery-metric-card";
-import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
+import { PRS_SHIPPED_METRIC_CARD_LABEL } from "./sessions-summary-card-labels";
 import {
-  PRS_SHIPPED_METRIC_CARD_LABEL,
-  SESSIONS_METRIC_CARD_LABEL,
-  TOTAL_TOKENS_METRIC_CARD_LABEL,
-} from "./sessions-summary-card-labels";
+  areAllSummaryCardsHidden,
+  isSummaryCardVisible,
+  SESSIONS_SUMMARY_CARD_IDS,
+  SessionsSummaryCardId,
+} from "./sessions-summary-card-visibility";
 import { SessionsSummaryCardsLoading } from "./sessions-summary-cards-loading";
 import {
-  costDeltaKey,
   deliveryComparableDeltas,
   deltaSlotProps,
-  resolveComparableDeltas,
-  SUMMARY_NO_PRIOR_PERIOD,
 } from "./sessions-summary-delta-slots";
 
 /**
@@ -72,7 +72,7 @@ import {
  *
  * 1. **Always-available:** Sessions, Total Tokens, Cost. They ALWAYS show the
  *    real value and NEVER a sign-in CTA. Cloud-mode source topology (FEA-3574
- *    review, wongk; corrected by ISS-4429): the desktop swaps the delivery
+ *    review, whitlockk; corrected by ISS-4429): the desktop swaps the delivery
  *    `usage` read to the cloud HTTP source in Cloud mode, and the TABLE beneath
  *    aggregates that same cloud population. So in Cloud mode these cards must
  *    reflect the CLOUD `usage` too — the SAME population the table shows — or
@@ -85,41 +85,47 @@ import {
  *    metric SQLite can still compute — WITHOUT letting local totals override a
  *    healthy cloud read and re-introduce the steady-state divergence. Web and
  *    local mode omit `localUsage`, so the single-`usage` path is byte-identical.
- * 2. **Signed-out empty (cloud-only, requires auth):** PRs Shipped and LOC/$
- *    (Merged) / $ (FEA-4126 removed Median PR Size from this bar — it is not one
- *    of these cards). When signed out (`authenticated === false`) they
- *    ALWAYS render a neutral `—` with NO scope caption — regardless of any
- *    `usage` values still in hand (wongk review): signed out we can't see the
- *    cloud merged-PR layer these describe, so a stray value must never surface as
- *    a real number, and "merged in range" must never caption a dash we can't
- *    vouch for. The ask is hoisted into a SINGLE sign-in prompt
- *    (`SessionsSignInIndicator` banner) rendered ONCE above the row (FEA-4037) —
- *    one ask per surface, not the same sentence-plus-button on three cards; it
- *    also removes the `h-full` height coupling where a per-card CTA (icon + two
- *    lines + a button) dragged its single-number neighbours up. The banner needs
- *    a live `onSignIn` AND that the shell isn't already showing the ask
- *    (`signInPromptSuppressed`); when either fails, the cards keep the
- *    informational per-card copy (there is no single ask to hoist).
- * 3. **Signed-in empty (no data, NO CTA):** the same cloud-only cards when
- *    authenticated but the metric is unavailable — out of range, offline, or
- *    GitHub not connected. They render a neutral `—` with NO CTA, so they never
- *    look like the signed-out state (signing in wouldn't help). Per FEA-3159,
- *    the authenticated-but-GitHub-not-connected case stays here in state 3 —
- *    this bar does NOT render a per-card "Connect GitHub" affordance; that
- *    proactive ask is owned by FEA-3159's modal alone (this intentionally
- *    diverges from Branches/Insights, which DO show a per-card connect CTA).
+ * 2. **Gated (cloud-only, ISS-7866):** PRs Shipped and LOC/$ (FEA-4126
+ *    removed Median PR Size from this bar — it is not one of these cards), in
+ *    EITHER of the two states a Connect GitHub ask answers: signed out, or
+ *    signed in with `githubConnected === false`. Both withdraw the value and
+ *    render the one `ConnectGitHubIndicator` in the caption slot — the same
+ *    affordance, in the same slot, at the same height as Branches, the Insights
+ *    grid and the Dashboard stats row.
  *
- * This mirrors `BranchKpiCard`'s Available / gated / neutral-empty template,
- * except the gated affordance is a **sign-in** CTA (not Connect-GitHub) and the
- * GitHub-not-connected case deliberately lands in neutral-empty rather than a
- * connect CTA.
+ *    Signed out this holds regardless of any `usage` values still in hand
+ *    (whitlockk review): we can't see the cloud merged-PR layer these describe, so a
+ *    stray value must never surface as a real number and "merged in range" must
+ *    never caption a figure we can't vouch for. Signed-in-disconnected ranks
+ *    below a value in hand instead, because a cloud value can outlive the grant
+ *    that produced it.
+ *
+ *    History, because this reversed twice. FEA-3159 gave the ask to a modal and
+ *    said this bar "intentionally diverges from Branches/Insights, which DO show
+ *    a per-card connect CTA". FEA-4037 hoisted a SIGN-IN banner above the row.
+ *    ISS-5958 standardized the CTAs that existed without making the surfaces
+ *    offering one agree. The result was one user, one moment, two verbs: this
+ *    strip said "Sign in" while the dashboard said "Sign up with GitHub" for the
+ *    same wall. There is now one verb and one place it renders. The modal is
+ *    untouched and still owns the proactive ask.
+ * 3. **Empty, no CTA:** the same cloud-only cards when the metric is absent for
+ *    a reason no ask would fix — out of range, offline, or a GitHub status we
+ *    could not READ (`undefined`, never `false`). They render a neutral `—` with
+ *    no CTA, so an unread connection never nags a connected user (ISS-5958).
+ *
+ * This mirrors the Available / gated / neutral-empty template the Branches list
+ * card carried until ISS-9961 removed it, and since ISS-7866 answers the gated
+ * state with the same affordance — there is no longer a sign-in CTA here that
+ * Branches has no equivalent of.
  *
  * Layout: the web caller opts into `wrapBelow` (FEA-3865) so the fixed-width,
  * horizontally-scrolling strip wraps into a two-column grid below `md` — the
  * same breakpoint the sessions table beneath flips to a card list — instead of
  * forcing a phone to scroll sideways above an already-migrated table. The
- * desktop caller passes its own dashboard `className`/`cardClassName` grid and
- * leaves `wrapBelow` off. FIVE cards lay out cleanly in a single row on the
+ * desktop caller opts into the same `wrapBelow` (ISS-4787 follow-up retired its
+ * private grid class) and passes `cardClassName` only for PRESENTATION — its
+ * dashboard card carries no width, so the sizing decision below composes onto it
+ * rather than deferring to it. FIVE cards lay out cleanly in a single row on the
  * responsive tiers the callers pass (FEA-4126 — six wrapped to a second row at
  * the desktop viewport; mind FEA-3985: a wrapping/grid layout, never a fixed
  * non-wrapping row).
@@ -149,22 +155,10 @@ import {
  * skeleton (the whole bar is pending, before any card frame).
  */
 
-// FEA-4128 review (design-critic): the reason caption shown in the three always-
-// available cards' detail slot while their local source hydrates BECAUSE a genuine
-// first-launch import is in flight, so a card that is skeletoning its value says
-// WHY it's blank instead of only shimmering.
-const IMPORTING_HISTORY_DETAIL = "Importing your history";
 // ISS-4429 (design-bot review): the plain pending-fallback wait caption — the
 // local read hasn't settled yet but NO import is running, so the card must not
 // claim an import. A neutral "Loading…" instead of the import-specific line.
 const LOADING_DETAIL = "Loading…";
-// ISS-4429 (design-bot review): the settled source caption for the always-
-// available cards when they are showing the LOCAL fallback totals (the cloud read
-// failed). The three cards then describe a DIFFERENT population than the cloud
-// rows the table paints, so the caption names the source — a number that
-// disagrees with the rows reads as a deliberate degraded read, not a broken one.
-// Mirrors the `ReadSource.Fallback` provenance vocabulary the toolbar badge uses.
-const LOCAL_FALLBACK_DETAIL = "From local history";
 
 export function SessionsSummaryCards({
   className,
@@ -180,14 +174,20 @@ export function SessionsSummaryCards({
   isLocalError = false,
   wrapBelow = false,
   authenticated = true,
-  onSignIn,
-  signInError,
-  signInPromptSuppressed = false,
+  githubConnected,
+  githubConnect,
   costUnknownActive = false,
   deltas,
+  hiddenCardIds,
 }: {
   /** Layout for the card container (desktop passes its dashboard grid). */
   className?: string;
+  /**
+   * FEA-4217: the summary cards the reader has switched OFF in the toolbar's
+   * Options menu, by {@link SessionsSummaryCardId}. Undefined — the flag-off
+   * path and every host that does not offer the control — paints all five.
+   */
+  hiddenCardIds?: ReadonlySet<string>;
   /**
    * Per-card styling. Defaults to the row card sized for the container's layout
    * mode (`wrapBelow` → full-width-below-`md`, otherwise the fixed-width row).
@@ -196,7 +196,7 @@ export function SessionsSummaryCards({
   /** The fetched usage summary, or `undefined` while the parent's read is pending. */
   usage: AgentSessionUsageSummary | undefined;
   /**
-   * FEA-3574 review (wongk); re-scoped by ISS-4429: the LOCAL SQLite totals for
+   * FEA-3574 review (whitlockk); re-scoped by ISS-4429: the LOCAL SQLite totals for
    * the always-available cards (Sessions, Total Tokens, Cost), fed SEPARATELY from
    * the cloud-backed `usage`. These cards are now CLOUD-PRIMARY and this local
    * signal is a FAILURE FALLBACK ONLY — it backs the cards ONLY when the cloud
@@ -261,7 +261,7 @@ export function SessionsSummaryCards({
    * qualifies instead of floating as a detached banner. Defaults to 0 (nothing
    * quarantined → no caveat, plain scope caption). Web mode leaves it null.
    *
-   * ISS-6115 (wongk review): a ready-made PHRASE, not a count. The right verb
+   * ISS-6115 (whitlockk review): a ready-made PHRASE, not a count. The right verb
    * depends on which stage of the local import gave up — a wedged parse means
    * the transcript could not be read, an import stall means it was read and
    * could not be saved — and that stage is only known to the desktop adapter
@@ -273,7 +273,7 @@ export function SessionsSummaryCards({
   /** Error state from the parent's usage read (values collapse to `—`, no badge). */
   isError?: boolean;
   /**
-   * FEA-3574 review (wongk): error state of the SEPARATE local totals read that
+   * FEA-3574 review (whitlockk): error state of the SEPARATE local totals read that
    * backs the always-available cards. Defaults to `false`; ignored unless
    * `localUsage` semantics are in play (the desktop cloud-mode source split).
    */
@@ -285,36 +285,37 @@ export function SessionsSummaryCards({
    */
   wrapBelow?: boolean;
   /**
-   * FEA-3574: does the surface have a durable cloud session? Drives the
-   * cloud-only delivery cards' empty state — signed out (`false`) shows a
-   * sign-in CTA (state 2); signed in (`true`, incl. authenticated-but-offline /
-   * GitHub-not-connected) shows a neutral empty with NO CTA (state 3). Defaults
-   * to `true` so the web Sessions page (always inside an authenticated route)
-   * never shows the CTA.
+   * Does the surface have a durable cloud session? Signed out (`false`) gates
+   * the cloud-only delivery cards behind the connect ask; signed in (`true`,
+   * including authenticated-but-offline) leaves them to the neutral empty
+   * unless `githubConnected` is a definite `false`. Defaults to `true` so the
+   * web Sessions page, always inside an authenticated route, never gates on it.
+   *
+   * Desktop must resolve this with the TRANSIENT-AWARE predicate
+   * (`isDesktopAuthSignedOut`), not a strict `status === "authenticated"`:
+   * `resolveGitHubGateConnected` turns a `false` here into a hard "not
+   * connected", so a strict read asserts a definite disconnect for the whole
+   * sign-in handoff (ISS-7866).
    */
   authenticated?: boolean;
   /**
-   * FEA-3574: surface-owned sign-in action for the signed-out (state 2) delivery
-   * cards. When provided the CTA becomes a live button (desktop passes its
-   * browser-OAuth `beginSignIn` IPC); when omitted the affordance degrades to
-   * informational copy only.
+   * ISS-7869: does this account reach GitHub through EITHER source — an active
+   * personal grant OR an org App installation? Resolved by each surface from
+   * `resolveGitHubGateConnected`, so `undefined` means UNKNOWN (still loading,
+   * or a failed read) and never "disconnected": an unread status must not put an
+   * ask in front of a connected user.
+   *
+   * Only `false` routes the two delivery cards to their connect affordance, and
+   * only when they have nothing to state anyway — see `DeliveryMetricCard`.
    */
-  onSignIn?: () => void;
+  githubConnected?: boolean;
   /**
-   * FEA-3574 review: retryable error copy from the last failed `beginSignIn`
-   * attempt. Rendered on the signed-out (state 2) delivery cards below the
-   * sign-in copy so a browser-OAuth failure (start/open/redirect/exchange)
-   * surfaces with the CTA as the retry, instead of leaving the card unchanged.
+   * ISS-7869: surface-owned connect target for that affordance — an href on web
+   * (native OAuth navigation), a handler on desktop (the connect IPC). Omitted
+   * by a caller with no connect entry point, which degrades the affordance to
+   * informational copy rather than a dead control.
    */
-  signInError?: string | null;
-  /**
-   * FEA-4037 (P2 review): the shell already owns the sign-in ask, so suppress the
-   * hoisted banner here even when signed out — the delivery cards still fall to
-   * their neutral dash, but no second prompt is stacked. The desktop sets this on
-   * `RefreshFailed`, where the app-level `DesktopSessionExpiredBanner` is already
-   * up globally. Defaults to `false` (the plain `SignedOut` case still hoists).
-   */
-  signInPromptSuppressed?: boolean;
+  githubConnect?: GitHubConnectTarget;
   /**
    * ISS-4481 (stage review): the active Cost facet selection is the Unknown /
    * missing-cost option, so every listed row renders "—" (no numeric cost). The
@@ -344,19 +345,25 @@ export function SessionsSummaryCards({
    */
   deltas?: SessionSummaryDeltas;
 }) {
-  // ISS-4773: read here too (same `…Optional` reasoning as above) because the
-  // LOC / $ card's info copy asserts its divisor matches the Cost card's
-  // headline, and this flag is what breaks that. Only the COPY is gated on it;
-  // the divisor itself is unchanged. `AlwaysAvailableCards` reads the same key
-  // for the Cost card's own presentation — one flag, two captions that must not
-  // contradict each other.
-  const costHonestyEnabled = useFeatureFlagEnabledOptional(
-    SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY
-  );
   // ISS-5271 (same `…Optional` reasoning): the never-loaded usage summary must
   // skeleton the value slots instead of rendering a fabricated `0`.
+  // ISS-10667: read where this card swaps its own label; the RESOLVER leaves,
+  // never the gate, so the basis fold stays the single owner of which arm wins.
+  const resolveRatioLabel = useFeatureFlagEnabledOptional(
+    ONE_LABEL_PER_METRIC_FLAG_KEY
+  )
+    ? resolveCanonicalMergedLocPerDollarLabel
+    : resolveMergedLocPerDollarLabel;
   const honestLoadingEnabled = useFeatureFlagEnabledOptional(
     SESSIONS_SUMMARY_HONEST_LOADING_FEATURE_FLAG_KEY
+  );
+  // ISS-7845 (ISS-4779 closed-by-default, same `…Optional` reasoning): opt in to
+  // the delivery pair dashing through the primitive's no-data treatment, the one
+  // ISS-5401 already put the three cards beside them on. Resolved ONCE here and
+  // passed to both, like `deliveryDeltaTreatment` below, so the pair cannot
+  // half-adopt it and render the same absent value two ways.
+  const deliveryNoDataEnabled = useFeatureFlagEnabledOptional(
+    SESSIONS_DELIVERY_CARD_NO_DATA_FEATURE_FLAG_KEY
   );
   // ISS-5842 (ISS-4779 closed-by-default): opt in to the unified delta pill only
   // when this surface's own gate is on — PostHog on web, Labs on desktop.
@@ -366,22 +373,61 @@ export function SessionsSummaryCards({
   // state. It sits with the other flag reads, above the `isLoading` early
   // return, because a hook after a conditional return is a hook-order break.
   const deliveryDeltaTreatment = useMetricDeltaTreatment();
-  const resolvedCardClassName = cardClassName ?? summaryCardClass(wrapBelow);
+  const hideUnavailableMetricCards = useMetricCardHideUnavailable();
+  // The stretching mode divides the row into one `1fr` track per card, so hiding
+  // two of five inflated the survivors from ~208px to ~356px on the desktop
+  // launch track and hiding four gave one card the whole 1099px — widths nobody
+  // designed, holding an 11px label and a number. Falling back to the row's own
+  // non-stretching card (`--summary-card-min`, never shrinks) leaves the freed
+  // space empty instead, which is what the reader asked for by hiding a card.
+  // The non-stretching width is COMPOSED onto the caller's class rather than
+  // discarded by a `??`, because a host's `cardClassName` is presentational and
+  // need not carry any width at all: desktop passes
+  // `DASHBOARD_METRIC_CARD_CLASS_NAME` (`h-full` plus a title size), so a plain
+  // `??` left its partial strip back in the stretching grid and the survivors
+  // inflated on exactly the surface the numbers above were measured on. Only the
+  // hidden case composes — a full strip keeps taking the caller's class verbatim
+  // — and `cn` lets a caller that DOES declare its own width still win.
+  const anyCardHidden = SESSIONS_SUMMARY_CARD_IDS.some((id) =>
+    hiddenCardIds?.has(id)
+  );
+  // whitlockk review on #8082: this is `partialStripCardClass`, so it CALLS it
+  // rather than re-deriving it. The inlined copy hardcoded `summaryCardClass(false)`
+  // for the hidden case, which pins `--summary-card-min` at EVERY breakpoint — on
+  // a `wrapBelow` row that is wider than the two-column track below `md`, so the
+  // loading skeleton overflowed its own cell on a phone while the settled strip,
+  // which already went through the helper, did not.
+  const resolvedCardClassName = partialStripCardClass({
+    anyCardHidden,
+    cardClassName,
+    wrapBelow,
+  });
+
+  // Every card hidden: render NOTHING, not an empty row. `SummaryCardRow` would
+  // otherwise emit a zero-height div inside its host's `flex flex-col gap-*`,
+  // leaving an unexplained band between the toolbar and the table — and, when
+  // signed out, a sign-in banner sitting above no cards at all. The hosts read
+  // the SAME helper to drop their padded wrapper, so the band does not simply
+  // move up a level.
+  if (areAllSummaryCardsHidden(hiddenCardIds)) {
+    return null;
+  }
 
   if (isLoading) {
     return (
       <SessionsSummaryCardsLoading
         cardClassName={resolvedCardClassName}
         className={className}
+        hiddenCardIds={hiddenCardIds}
         loadingDetail={LOADING_DETAIL}
-        locPerDollarLabel={LOC_PER_DOLLAR_MERGED_LABEL}
+        locPerDollarLabel={resolveRatioLabel(undefined)}
         reservesDeltaSlot={deltas !== undefined}
         wrapBelow={wrapBelow}
       />
     );
   }
 
-  // FEA-4037 — two independent decisions, kept separate (wongk review):
+  // FEA-4037 — two independent decisions, kept separate (whitlockk review):
   //
   // 1. Is the surface SIGNED OUT? This is a data-honesty decision, NOT a layout
   //    one. When signed out, the two cloud-only delivery cards (PRs Shipped +
@@ -394,29 +440,25 @@ export function SessionsSummaryCards({
   //    routes to the "Unavailable" dim instead.
   const deliverySignedOut = !(authenticated || isError);
   //
-  // 2. Do we HOIST the single banner here? Only when signed out, the surface owns
-  //    a live sign-in action, AND the shell isn't already showing the ask
-  //    (`signInPromptSuppressed` — the desktop sets it on `RefreshFailed`, where
-  //    the app-level session-expired banner already owns the prompt, so we don't
-  //    stack a second one). When the banner IS hoisted, the per-card CTA/error is
-  //    dropped so the ask lives in exactly one place; when it's suppressed OR
-  //    there's no handler, the cards keep their per-card sign-in affordance. Web
-  //    is always authenticated, so nothing hoists and it renders byte-identically.
-  const showSignInPrompt =
-    deliverySignedOut && onSignIn !== undefined && !signInPromptSuppressed;
-  // Drop the per-card affordance when the ask lives elsewhere: either this
-  // surface hoisted the single banner above the row, OR the shell already owns
-  // the ask (`signInPromptSuppressed`, e.g. desktop `RefreshFailed` under the
-  // app-level session-expired banner) — in both cases the delivery cards are
-  // caption-less neutral dashes. Otherwise the signed-out cards render their own
-  // per-card `SessionsSignInIndicator` (a live CTA with `onSignIn`, else the
-  // informational-copy degrade when there is no ask to hoist).
-  const perCardIndicatorSuppressed = showSignInPrompt || signInPromptSuppressed;
+  // 2. Where does the ask live? ON THE CARD (ISS-7869). FEA-4037 hoisted it into
+  //    a single banner above the row; that made this the one GitHub-truth strip
+  //    whose ask sat somewhere other than the card it unlocks, while Branches,
+  //    the Insights grid and the Dashboard all put a compact affordance in the
+  //    card's own caption slot. The hoist is gone and the per-card affordance
+  //    FEA-4037 replaced is what renders again — same `GatedMetricIndicator`
+  //    Card variant those three surfaces use, so the heights match theirs.
+  //
+  // ISS-7866: the delivery cards' connect ask for a user who IS signed in. The
+  // signed-out case is excluded because it asks the same thing one branch
+  // earlier, where it also outranks a value in hand; a failed read is its own
+  // state. `=== false` is load-bearing: an UNKNOWN status must not ask.
+  const deliveryGitHubDisconnected =
+    !(deliverySignedOut || isError) && githubConnected === false;
   // The always-available cards skeleton their value while the local FALLBACK
   // source hydrates (unless it terminally errored — then they dash, not spin).
   // Mark the row `aria-busy` for that window so assistive tech announces the region
   // is updating rather than reading the skeletoned value slots as stable content
-  // (wongk review). Mirrors `AlwaysAvailableCards`' own `cardsLoading` gate exactly
+  // (whitlockk review). Mirrors `AlwaysAvailableCards`' own `cardsLoading` gate exactly
   // via the shared `resolveAlwaysAvailableCardsLoading` helper — ISS-4429 scoped the
   // skeleton to the cloud-failure fallback path (a healthy cloud read paints its
   // real values and never skeletons), so this gate must carry the same cloud-state
@@ -434,18 +476,99 @@ export function SessionsSummaryCards({
   // cannot half-adopt the comparison. Flag-off this is `undefined` and the two
   // cards render exactly the ISS-5315 footer — no chip and no placeholder.
   const deliveryDeltas = deliveryComparableDeltas(deltas);
+  const alwaysAvailableSource = resolveAlwaysAvailableSource({
+    alwaysAvailableLoading,
+    isError,
+    isLocalError,
+    localUsage,
+    usage,
+  });
+  // ISS-10354: the card PUBLISHES its ratio. A completeness verdict over an
+  // operand is a caveat, never grounds to withhold a number we hold both
+  // operands for. What stood here refused whenever coverage was not `Complete`,
+  // which on a real row rendered `Total estimated cost $37,927` beside
+  // `PRs shipped 362` and `LOC / $ —`. That is not a state the world can be in:
+  // if the dollars render and the merged work renders, the quotient is
+  // arithmetic. One refused state (`MigrationPending`, "still being rebuilt")
+  // can never clear either, because nothing rebuilds session costs (ISS-10353),
+  // so the blackout was permanent rather than transient.
+  const locPerDollarValue = resolveLocPerDollar(
+    usage?.mergedLocPerDollar,
+    usage?.mergedKlocPerDollar
+  );
+  // ISS-11117: the card's figure, label, caption, unit and both info sentences
+  // resolved in ONE object, so a points number cannot reach the row under LOC's
+  // words. The LOC arm's four strings still come from the basis fold that owns
+  // them, resolved here and handed in.
+  const perDollar = resolveSessionsListPerDollar(usage, {
+    locValue: locPerDollarValue,
+    locCopy: {
+      label: resolveRatioLabel(usage?.mergedLocPerDollarBasis),
+      detail: resolveMergedLocPerDollarDetail(usage?.mergedLocPerDollarBasis),
+      what: resolveMergedLocPerDollarWhat(usage?.mergedLocPerDollarBasis),
+      how: resolveMergedLocPerDollarHow(usage?.mergedLocPerDollarBasis),
+    },
+  });
+  // Only the cards the reader still has ON are candidates. That keeps the
+  // all-or-nothing rule measured against the row as it is actually painted, so
+  // the gate can never take the last visible card: a strip is empty iff the
+  // reader emptied it, which is the answer the hosts' own band guards already
+  // hold (whitlockk review on #6914).
+  // A card is not computable when it HAS NO NUMBER. That is the whole test.
+  //
+  // What stood here ran the question through five business-logic flags, so
+  // "does this value exist" was answered by loading state, error state, and a
+  // coverage verdict. Those are different questions: loading is not absent,
+  // errored is not absent, and a coverage verdict is our own refusal rather
+  // than a fact about the data. Routing them through this predicate is how a
+  // value we declined to compute got hidden as though nobody had one.
+  const gateHiddenCardIds = hiddenMetricCardIds({
+    cards: [
+      {
+        id: SessionsSummaryCardId.Cost,
+        notComputable:
+          alwaysAvailableSource.alwaysAvailableUsage?.totalEstimatedCost ==
+          null,
+      },
+      {
+        id: SessionsSummaryCardId.PrsShipped,
+        notComputable: usage?.mergedPrCount == null,
+      },
+      {
+        id: SessionsSummaryCardId.LocPerDollar,
+        notComputable: perDollar.value == null,
+      },
+    ].filter((card) => isSummaryCardVisible(card.id, hiddenCardIds)),
+    enabled: hideUnavailableMetricCards,
+  });
+  const settledHiddenCardIds: ReadonlySet<string> = new Set([
+    ...(hiddenCardIds ?? []),
+    ...gateHiddenCardIds,
+  ]);
+  const settledCardClassName = partialStripCardClass({
+    anyCardHidden: SESSIONS_SUMMARY_CARD_IDS.some((id) =>
+      settledHiddenCardIds.has(id)
+    ),
+    cardClassName,
+    wrapBelow,
+  });
   const row = (
     <SummaryCardRow
       busy={alwaysAvailableCardsLoading}
       className={className}
+      // ISS-10540: one density tier on both listing strips (see the row's
+      // `density` prop); the Branches strip and both loading rows pin the same.
+      density={CardDensity.Compact}
       wrapBelow={wrapBelow}
     >
       <AlwaysAvailableCards
         alwaysAvailableLoading={alwaysAvailableLoading}
-        cardClassName={resolvedCardClassName}
+        cardClassName={settledCardClassName}
         costUnknownActive={costUnknownActive}
         couldNotImportLabel={couldNotImportLabel}
         deltas={deltas}
+        hiddenCardIds={settledHiddenCardIds}
+        hideSettledEmptyCost={gateHiddenCardIds.has(SessionsSummaryCardId.Cost)}
         importInProgress={importInProgress}
         isError={isError}
         isLocalError={isLocalError}
@@ -453,29 +576,38 @@ export function SessionsSummaryCards({
         transientRecovering={transientRecovering}
         usage={usage}
       />
-      <DeliveryMetricCard
-        availableDetail="merged in range"
-        cardClassName={resolvedCardClassName}
-        deltaPlaceholder={resolveDeliveryDeltaPlaceholder(deliveryDeltas)}
-        deltaProps={deltaSlotProps(
-          deliveryDeltas,
-          "prsShipped",
-          deliveryDeltaTreatment
-        )}
-        deltaTreatment={deliveryDeltaTreatment}
-        formatValue={formatNumber}
-        info={{
-          what: "Pull requests merged from the matched sessions.",
-          how: "Count of merged PRs linked to sessions in range.",
-        }}
-        isError={isError}
-        label={PRS_SHIPPED_METRIC_CARD_LABEL}
-        onSignIn={onSignIn}
-        perCardIndicatorSuppressed={perCardIndicatorSuppressed}
-        signedOut={deliverySignedOut}
-        signInError={signInError}
-        value={usage?.mergedPrCount}
-      />
+      {isSummaryCardVisible(
+        SessionsSummaryCardId.PrsShipped,
+        settledHiddenCardIds
+      ) ? (
+        <DeliveryMetricCard
+          availableDetail="merged in range"
+          cardClassName={settledCardClassName}
+          deliveryNoDataEnabled={deliveryNoDataEnabled}
+          deltaPlaceholder={resolveDeliveryDeltaPlaceholder(
+            deliveryDeltas,
+            undefined,
+            honestLoadingEnabled
+          )}
+          deltaProps={deltaSlotProps(
+            deliveryDeltas,
+            "prsShipped",
+            deliveryDeltaTreatment
+          )}
+          deltaTreatment={deliveryDeltaTreatment}
+          formatValue={formatNumber}
+          githubConnect={githubConnect}
+          githubDisconnected={deliveryGitHubDisconnected}
+          info={{
+            what: "Pull requests merged from the matched sessions.",
+            how: "Count of merged PRs linked to sessions in range.",
+          }}
+          isError={isError}
+          label={PRS_SHIPPED_METRIC_CARD_LABEL}
+          signedOut={deliverySignedOut}
+          value={usage?.mergedPrCount}
+        />
+      ) : null}
       {/* FEA-4126: Median PR Size is intentionally NOT rendered here — it was
           removed from the Sessions bar (FEA-3937 layout, undoing FEA-3574's
           re-add) and lives only on the Branches bar, which reads its OWN
@@ -485,67 +617,79 @@ export function SessionsSummaryCards({
           still send it) — do not repurpose it as a signal that the card belongs
           here. Do not reintroduce the card; a regression guard in the tests fails
           if this label returns to the Sessions bar. */}
-      <DeliveryMetricCard
-        // ISS-4866 (review cid 3701359138): the label already carries "(Merged)",
-        // so repeating "merged" in the caption directly under the value spent a
-        // third of a 124px card re-saying one word. The caption names the
-        // population it is measured over instead — the same "… in range" shape
-        // PRs Shipped uses one card to the left. NOT "per merged PR": this figure
-        // is merged gross lines ÷ cost across the matched
-        // SESSIONS, so a per-PR caption would misname its own denominator.
-        availableDetail="across sessions in range"
-        cardClassName={resolvedCardClassName}
-        // FEA-4202: never compared — the prior window's spend is read too late in
-        // the request to reach the delivery pass (ISS-6398 windowed the current
-        // divisor; see `session-summary-deltas.ts`). It takes the ISS-4995 "not
-        // computed" reason rather than the range-shaped default; otherwise the
-        // tooltip would point at the range control, which cannot help here.
-        deltaPlaceholder={resolveDeliveryDeltaPlaceholder(
-          deliveryDeltas,
-          KPI_NOT_COMPUTED_REASON
-        )}
-        deltaTreatment={deliveryDeltaTreatment}
-        formatValue={formatLocPerDollar}
-        // ISS-4773 (stage review x2 + wongk): the "same figure the Cost card
-        // shows" clause is only true while that card sums `apiEstimatedCost`.
-        // With honesty ON the Cost headline drops to `meteredEstimatedCost`
-        // while this card keeps dividing by the broader non-subscription bucket
-        // (`delivery-metrics.ts` feeds `mergedLocPerDollar` off it) — two cards
-        // in one strip on different bases, one of them announcing they match, so
-        // a reader multiplying LOC/$ by the headline cannot recover merged lines.
-        //
-        // The flag-ON copy NAMES ITS OWN DIVISOR instead of pointing at a
-        // neighbour. Deliberately it does not mention the Cost card at all: the
-        // honest presentation ALSO requires a producer that actually sent the
-        // split, so on a version-skewed payload that card still reads
-        // "cost" and copy naming an "API-billed Cost" card
-        // would describe a tile that is not on screen. Naming only this card's
-        // own denominator is true in both cases, which is why the gate can be
-        // the flag alone and not the resolved presentation.
-        info={{
-          what: "Lines of code merged per dollar, output efficiency. Higher is better.",
-          how: costHonestyEnabled
-            ? "Merged gross lines divided by cost across matched sessions — confirmed API-billed spend plus usage whose billing could not be determined."
-            : "Merged gross lines divided by cost across matched sessions, the same figure the Cost card shows.",
-        }}
-        isError={isError}
-        // ISS-4866: the merged-scope label, built FROM the shared unit constant so
-        // the unit itself cannot drift away from the column that shares it. It
-        // names the population this card actually computes (merged PRs only), so
-        // the bare unit stops reading as "the efficiency of everything on this
-        // row" beside the whole-cohort tiles.
-        label={LOC_PER_DOLLAR_MERGED_LABEL}
-        onSignIn={onSignIn}
-        perCardIndicatorSuppressed={perCardIndicatorSuppressed}
-        signedOut={deliverySignedOut}
-        signInError={signInError}
-        // ISS-4667: read through the shared skew resolver so a producer still on
-        // the KLOC-unit field is scaled into LOC/$ rather than rendering ~0.00.
-        value={resolveLocPerDollar(
-          usage?.mergedLocPerDollar,
-          usage?.mergedKlocPerDollar
-        )}
-      />
+      {isSummaryCardVisible(
+        SessionsSummaryCardId.LocPerDollar,
+        settledHiddenCardIds
+      ) ? (
+        <DeliveryMetricCard
+          // ISS-4866 (review cid 3701359138): the caption names the POPULATION
+          // this figure is measured over rather than restating the metric — the
+          // word "merged" under the value spent a third of a 124px card on a
+          // fact the card's own definition carries. (ISS-9964 / ISS-9980 retired
+          // the "(Merged)" label variant that used to carry it in the label;
+          // the caption's job is unchanged.) The same "… in range" shape
+          // PRs Shipped uses one card to the left. NOT "per merged PR": this figure
+          // is merged gross lines ÷ cost across the matched
+          // SESSIONS, so a per-PR caption would misname its own denominator.
+          // ISS-9978: the population claim is basis-dependent too, and reads
+          // from the payload through the SAME fold as the two info sentences
+          // and the label, so all four land on one arm. Absence and the stated
+          // total-cost basis both resolve to the sentence above, so nothing
+          // moves against any server deployed today.
+          availableDetail={perDollar.detail}
+          cardClassName={settledCardClassName}
+          deliveryNoDataEnabled={deliveryNoDataEnabled}
+          // FEA-4202: never compared — the prior window's spend is read too late in
+          // the request to reach the delivery pass (ISS-6398 windowed the current
+          // divisor; see `session-summary-deltas.ts`). It takes the ISS-4995 "not
+          // computed" reason rather than the range-shaped default; otherwise the
+          // tooltip would point at the range control, which cannot help here.
+          // ISS-7422: the flag is threaded for symmetry with its rowmate, but the
+          // reason argument is what decides — a never-computed comparison has no
+          // pending state, so this card keeps its sentence through every read.
+          deltaPlaceholder={resolveDeliveryDeltaPlaceholder(
+            deliveryDeltas,
+            KPI_NOT_COMPUTED_REASON,
+            honestLoadingEnabled
+          )}
+          deltaTreatment={deliveryDeltaTreatment}
+          formatValue={perDollar.format}
+          githubConnect={githubConnect}
+          githubDisconnected={deliveryGitHubDisconnected}
+          info={{
+            // ISS-9848: BOTH sentences read from the payload, not compiled in.
+            // The cloud deploys ahead of installed Desktop builds, so a
+            // hardcoded sentence describes whatever basis was current when the
+            // CLIENT shipped. Absence resolves to the same two sentences this
+            // card used to hard-code (every server that omits the field predates
+            // it); an unrecognized basis coarsens BOTH — `what` named the
+            // numerator and the unit ("Lines of code merged per dollar"), so
+            // coarsening only `how` left the card still asserting a ratio the
+            // response had declined to name (codex review on #6929). One
+            // resolution, one arm, two sentences that cannot disagree.
+            what: perDollar.info.what,
+            how: perDollar.info.how,
+          }}
+          isError={isError}
+          // ISS-4866: the merged-scope label, built FROM the shared unit constant so
+          // the unit itself cannot drift away from the column that shares it. It
+          // names the population this card actually computes (merged PRs only), so
+          // the bare unit stops reading as "the efficiency of everything on this
+          // row" beside the whole-cohort tiles.
+          //
+          // ISS-9978: and it is basis-dependent, through the same fold. That
+          // label asserts the UNIT and the NUMERATOR, which is exactly what an
+          // unrecognized basis declines to state — the card used to coarsen both
+          // info sentences and then go on calling the figure LOC/$ in the
+          // largest type on the tile. The info hint's accessible name is derived
+          // from this label (`About {label}`), so it coarsens with it.
+          label={perDollar.label}
+          signedOut={deliverySignedOut}
+          // ISS-4667: read through the shared skew resolver so a producer still on
+          // the KLOC-unit field is scaled into LOC/$ rather than rendering ~0.00.
+          value={perDollar.value}
+        />
+      ) : null}
     </SummaryCardRow>
   );
 
@@ -553,23 +697,9 @@ export function SessionsSummaryCards({
   // floats as a separate line above the row — a caveat detached from the number it
   // qualifies reads as a second banner and can contradict the import splash. It now
   // rides the Sessions card's own detail slot (see `AlwaysAvailableCards`), so the
-  // honesty travels WITH the count it qualifies, in place.
-  if (showSignInPrompt) {
-    // The single sign-in ask (FEA-4037) sits above the row. gap-3 matches the
-    // desktop parent's block rhythm (coaching tips → this bar → row) so the
-    // stacking isn't looser than its surroundings.
-    return (
-      <div className="flex flex-col gap-3">
-        <SessionsSignInIndicator
-          banner
-          onSignIn={onSignIn}
-          signInError={signInError}
-        />
-        {row}
-      </div>
-    );
-  }
-
+  // honesty travels WITH the count it qualifies, in place. ISS-7869 applied the
+  // same reasoning to the sign-in ask FEA-4037 had hoisted above the row: it
+  // rides the card it unlocks now, so the strip is one element again.
   return row;
 }
 
@@ -586,443 +716,3 @@ export function SessionsSummaryCards({
  * mode pass no local signal, so this resolves to the single `usage`/`isError` path
  * byte-for-byte.
  */
-function AlwaysAvailableCards({
-  usage,
-  localUsage,
-  isError,
-  isLocalError,
-  alwaysAvailableLoading,
-  transientRecovering,
-  importInProgress,
-  couldNotImportLabel,
-  cardClassName,
-  costUnknownActive,
-  deltas,
-}: {
-  usage: AgentSessionUsageSummary | undefined;
-  localUsage: AgentSessionUsageSummary | undefined;
-  isError: boolean;
-  isLocalError: boolean;
-  alwaysAvailableLoading: boolean;
-  transientRecovering: boolean;
-  importInProgress: boolean;
-  couldNotImportLabel: string | null;
-  cardClassName: string;
-  /**
-   * ISS-4481: the active Cost facet is Unknown, so the Cost tile renders its
-   * honest-empty "—" instead of summing an all-unknown cohort to a fabricated
-   * "$0" (stage review).
-   */
-  costUnknownActive: boolean;
-  /** ISS-5315 — see the public prop's docblock. */
-  deltas: SessionSummaryDeltas | undefined;
-}) {
-  // ISS-4429 (source resolution): cloud-primary, local-fallback-only. The canonical
-  // explanation of WHY — and the exact "cloud read failed with nothing to show"
-  // condition — lives on `isCloudReadFailed` below; this is just the wiring.
-  // `localFallbackAvailable` is false in web/local mode (no local signal passed), so
-  // this resolves to the plain `usage`/`isError` path byte-for-byte there.
-  // ISS-4773 (ISS-4779 closed-by-default): ON ⇒ the Cost card reports only spend
-  // it can stand behind — see `resolveCostCardPresentation`.
-  // `…Optional` (not the throwing variant): this is a SHARED component with mount
-  // sites that have no FeatureFlagAdapterProvider (Storybook, mini-table tests).
-  // The gate is purely additive, so resolving to OFF there is correct; throwing
-  // would take the whole subtree down.
-  const costHonestyEnabled = useFeatureFlagEnabledOptional(
-    SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY
-  );
-  // ISS-5271 (same `…Optional` reasoning): read here too so this component's
-  // own `cardsLoading` cannot drift from the parent row's `aria-busy` gate —
-  // both feed `resolveAlwaysAvailableCardsLoading` with the same flag state.
-  const honestLoadingEnabled = useFeatureFlagEnabledOptional(
-    SESSIONS_SUMMARY_HONEST_LOADING_FEATURE_FLAG_KEY
-  );
-  const localFallbackAvailable = localUsage !== undefined || isLocalError;
-  const onCloudFailurePath = isCloudReadFailed(isError, usage);
-  const useLocalFallback = localFallbackAvailable && onCloudFailurePath;
-  // The fallback (and its loading skeleton) engages ONLY on the cloud-failure path
-  // (`isCloudReadFailed`): a healthy cloud read shows the cloud population — the same
-  // one the table paints — immediately, so a background local import never skeletons
-  // over a populated cloud card.
-  const localFallbackPending = alwaysAvailableLoading && onCloudFailurePath;
-  const onLocalFallbackPath = useLocalFallback || localFallbackPending;
-  const alwaysAvailableUsage = onLocalFallbackPath ? localUsage : usage;
-  const costPresentation = resolveCostCardPresentation(
-    costHonestyEnabled,
-    alwaysAvailableUsage
-  );
-  const alwaysAvailableError = onLocalFallbackPath ? isLocalError : isError;
-  // FEA-4128 review (design-critic): while the local FALLBACK source hydrates
-  // (cloud read failed and we are waiting on local), keep each card's frame —
-  // label, info popover, and a reason caption — and skeleton ONLY the value (the
-  // MetricCard `loading` prop), instead of replacing the card with a bare grey slab
-  // that drops the label and info while its delivery siblings keep theirs. The card
-  // carries its own height, so no magic-number placeholder can drift from it. A
-  // failed local read outranks loading (dash to `—`). ISS-4429: the skeleton is
-  // scoped to the fallback path — a healthy cloud read paints its real values and
-  // never skeletons over them while a background local import runs. Shared with the
-  // parent row's `aria-busy` gate via `resolveAlwaysAvailableCardsLoading` so the
-  // two cannot drift.
-  const cardsLoading = resolveAlwaysAvailableCardsLoading({
-    alwaysAvailableLoading,
-    transientRecovering,
-    isError,
-    isLocalError,
-    usage,
-    honestLoadingEnabled,
-  });
-  // ISS-4429 (design-bot review): are the SETTLED cards showing the LOCAL fallback
-  // totals (cloud read failed, local data in hand and not loading)? Then their
-  // numbers describe a different population than the cloud rows, so caption them
-  // with the source instead of the "matched by the current filters" scope claim.
-  const showingLocalFallback = useLocalFallback && !cardsLoading;
-  // The wait caption: only a genuine in-flight import earns the "Importing your
-  // history" line; a plain pending-fallback read gets a neutral "Loading…".
-  const loadingDetail = importInProgress
-    ? IMPORTING_HISTORY_DETAIL
-    : LOADING_DETAIL;
-  const totalTokens =
-    (alwaysAvailableUsage?.totalInputTokens ?? 0) +
-    (alwaysAvailableUsage?.totalOutputTokens ?? 0);
-  // ISS-5315: a delta is only shown when the value beside it is the settled
-  // cloud figure the prior-period read was computed against. While the cards are
-  // loading, errored, or painting the LOCAL fallback totals, the two aggregates
-  // describe different populations — so the chip drops back to the
-  // "No prior period" placeholder rather than grading a mismatch.
-  const comparableDeltas = resolveComparableDeltas(deltas, {
-    cardsLoading,
-    errored: alwaysAvailableError,
-    showingLocalFallback,
-  });
-  const costSlots = resolveCostTileSlots({
-    cardsLoading,
-    costPresentation,
-    costUnknownActive,
-    errored: alwaysAvailableError,
-    loadingDetail,
-    localFallbackDetail: LOCAL_FALLBACK_DETAIL,
-    showingLocalFallback,
-    usage: alwaysAvailableUsage,
-  });
-  // ISS-5842 (ISS-4779 closed-by-default): opt in to the unified delta pill only
-  // when this surface's own gate is on — PostHog on web, Labs on desktop.
-  // Threaded through `deltaSlotProps` rather than passed card-by-card: the bag
-  // each card already spreads is the one place a card cannot be wired without
-  // it, which is what stopped Sessions and Total Tokens silently keeping the
-  // `Legacy` default while the Cost card beside them rendered the unified pill.
-  const deltaTreatment = useMetricDeltaTreatment();
-  const sessionsDeltaProps = deltaSlotProps(
-    comparableDeltas,
-    "sessions",
-    deltaTreatment
-  );
-  const tokensDeltaProps = deltaSlotProps(
-    comparableDeltas,
-    "tokens",
-    deltaTreatment
-  );
-  // #4480: Cost carries a chip too — it is the card where a period comparison is
-  // most obviously useful, and leaving it out left the strip's bottom edge
-  // ragged beside the two that had one. The BASIS has to match the headline,
-  // which `resolveCostCardPresentation` may resolve to either the metered or the
-  // API figure, so the card reads the entry for the basis it actually rendered
-  // rather than one this component picked.
-  // ISS-5401: and no chip at all once the headline dashed — `deltaSlotProps`
-  // returns the empty slot, so `MetricCard` falls through to the placeholder
-  // rather than grading a movement in a value the card just refused to state.
-  // ISS-5842 (follow-up, review on #4907): `CostMetricCard` now DECLARES
-  // `deltaTreatment`, so the value in this bag actually reaches it. Until that
-  // review it did not, and the bag's copy was silently dropped on the spread —
-  // the card rendered correctly only because it resolved the same flag itself.
-  // Two sources agreeing by coincidence is not one source; this is now one.
-  const costDeltaProps = deltaSlotProps(
-    costSlots.dashed ? undefined : comparableDeltas,
-    costDeltaKey(costPresentation),
-    deltaTreatment
-  );
-  // ISS-5315: the placeholder is only honest on a surface that actually
-  // compares periods. `deltas` being present IS that declaration — a host that
-  // never computes a comparison passes nothing and keeps the chip-free footer
-  // instead of a permanent "No prior period". ISS-6041: that host is no longer
-  // "desktop" wholesale, only desktop in LOCAL mode, whose SQLite producer has no
-  // prior-window read; in Cloud mode desktop reads the same HTTP producer web
-  // does and passes a delta object like web.
-  const noPriorPeriod = comparableDeltas ? SUMMARY_NO_PRIOR_PERIOD : undefined;
-  // ISS-5401 (design review): a DASHED tile drops the slot entirely rather than
-  // borrowing that wording. Its prior period exists and its delta was computed —
-  // the card declined to grade it for want of a current value — so "No prior
-  // period" would state a second false fact on the very tile this ticket exists
-  // to stop overclaiming. Substituting a "No comparison" line instead just
-  // stacked a third negation under the `—` and the reason caption, on the one
-  // card in the row trying to explain itself.
-  //
-  // FEA-4202 update: the supporting observation ISS-5401 recorded here — that
-  // `PRs Shipped` and `LOC / $` already render with no delta row, so the footer
-  // tolerates one — now holds only while the delivery comparison is OFF. With it
-  // on, both delivery cards fill their slot with `KpiDeltaPlaceholder` and this
-  // dashed tile is the ONLY card in the strip that drops the row. The RULING
-  // stands unchanged either way (a card that dashed its own value must not
-  // caption a comparison of it); only its "the neighbours do it too" evidence is
-  // flag-dependent. Equal height still holds under grid stretch in both.
-  const costDeltaPlaceholder = costSlots.dashed ? undefined : noPriorPeriod;
-  // ISS-5401 (stage review, threads on #4667): the two tiles below dash through
-  // `value={null}` + `valueUnavailableLabel`, NOT a pre-formatted `"—"` string.
-  // Handing `MetricCard` the literal left `value` non-null, so `noData` stayed
-  // false and their failed-read dash painted bold 2xl at full foreground while
-  // the Cost tile beside them — which this ticket moved onto the primitive's
-  // muted no-data treatment — went muted and normal-weight. Three tiles, one
-  // failed read, two renderings of the identical state, which a reader would
-  // reasonably take to mean something. The GLYPH is unchanged (`KPI_NO_VALUE`,
-  // the same em-dash `formatCurrencyTileValue` hands the Cost tile); only the
-  // weight and colour move, and the whole strip now lands on one NO-DATA
-  // treatment.
-  //
-  // ISS-5842 (follow-up): "treatment" above means the no-data dash treatment
-  // ONLY — it is not, and never was, a claim about `MetricDeltaTreatment`. The
-  // strip did NOT land on one DELTA treatment: the two cards below spread a bag
-  // that carried no `deltaTreatment`, so they fell to `MetricCard`'s `Legacy`
-  // default (a bare grey "-52%") while the Cost card beside them, which resolves
-  // the flag itself, rendered the unified pill. The delta treatment now rides
-  // `deltaSlotProps` for exactly that reason — see `deltaTreatment` above and the
-  // required-parameter rationale on `deltaSlotProps` — so the two axes are one
-  // strip-wide statement each rather than one true claim standing in for both.
-  return (
-    <>
-      <MetricCard
-        className={cardClassName}
-        detail={resolveSessionsCardDetail({
-          loading: cardsLoading,
-          loadingDetail,
-          errored: alwaysAvailableError,
-          showingLocalFallback,
-          couldNotImportLabel,
-        })}
-        info={{
-          what: "Agent sessions matching the current filters and time range.",
-          how: "Count of session records in the active filter set.",
-        }}
-        {...sessionsDeltaProps}
-        deltaPlaceholder={noPriorPeriod}
-        label={SESSIONS_METRIC_CARD_LABEL}
-        loading={cardsLoading}
-        value={
-          alwaysAvailableError
-            ? null
-            : formatNumber(alwaysAvailableUsage?.totalSessions ?? 0)
-        }
-        valueUnavailableLabel={KPI_NO_VALUE}
-      />
-      <MetricCard
-        className={cardClassName}
-        detail={resolveAlwaysAvailableDetail(
-          cardsLoading,
-          loadingDetail,
-          showingLocalFallback,
-          "input + output"
-        )}
-        info={{
-          what: "Total input and output tokens across the matched sessions.",
-          how: "Sum of per-session input and output token counts in range.",
-        }}
-        {...tokensDeltaProps}
-        deltaPlaceholder={noPriorPeriod}
-        label={TOTAL_TOKENS_METRIC_CARD_LABEL}
-        loading={cardsLoading}
-        value={alwaysAvailableError ? null : formatTokenCount(totalTokens)}
-        valueUnavailableLabel={KPI_NO_VALUE}
-      />
-      {/* FEA-3818: the Cost card is the shared CostMetricCard, the SAME
-          component the org Dashboard KPI row renders, so the two surfaces can't
-          drift on value basis, formatting, info copy, or the honest-empty
-          `—` (an unavailable metric never reads as a misleading `$0`). ISS-4401:
-          the LABEL is now intentionally per-surface — Sessions passes
-          `SESSIONS_COST_METRIC_CARD_LABEL` ("cost") for its
-          not-subscription-covered figure, while the Dashboard keeps the default
-          "Cost" for its subscription-inclusive total, so the two numbers no
-          longer read as the same word disagreeing across screens. The
-          headline is the not-subscription-covered spend (apiEstimatedCost) — the
-          SAME basis the "LOC / $" card divides by.
-
-          ISS-4773: BOTH of those last two facts change when
-          `sessions-cost-billing-honesty` is ON and the producer sent a usable
-          three-way split — the label becomes
-          `SESSIONS_COST_HONEST_METRIC_CARD_LABEL` ("API-billed Cost", a THIRD
-          per-surface name, not the bare word) and the headline narrows to
-          `meteredEstimatedCost`, at which point it is NO LONGER the basis
-          "LOC / $" divides by, which is why that card's info copy is gated on
-          the same flag. All of it is decided by `resolveCostCardPresentation`.
-          The detail line
-          names the API-EQUIVALENT cost of subscription-covered usage — what it
-          would have cost if metered (a "+$X if billed to API" delta, FEA-4231),
-          NOT a real seat fee charged — read from the canonical
-          `subscriptionEstimatedCost` field BOTH producers populate, independent
-          of the subscription-inclusive `totalEstimatedCost` grand total the two
-          producers now agree on (FEA-3986). The line drops only when that
-          field is zero/unavailable or would render as $0.00. */}
-      <CostMetricCard
-        className={cardClassName}
-        cost={costSlots.cost}
-        // ISS-5842: the honest breakdown caption renders in the card's ordinary
-        // muted caption tone — NOT amber. A subscription-covered figure and an
-        // unclassified figure are facts about the account, not faults the reader
-        // can act on, and warning colour is a call to action there is no action
-        // for. A permanently-amber caption also spends the one signal we would
-        // need to warn about something real later.
-        detail={costSlots.detail}
-        info={costPresentation.info}
-        {...costDeltaProps}
-        deltaPlaceholder={costDeltaPlaceholder}
-        label={costPresentation.label}
-        loading={cardsLoading}
-      />
-    </>
-  );
-}
-
-/**
- * ISS-4429 (design-bot review): the always-available (Sessions / Total Tokens)
- * cards' detail caption. While loading, the honest wait line (import vs plain
- * pending); on the settled LOCAL fallback path, the source caption so a number
- * that disagrees with the cloud rows reads as deliberate; otherwise the card's
- * own scope/composition caption.
- */
-function resolveAlwaysAvailableDetail(
-  loading: boolean,
-  loadingDetail: string,
-  showingLocalFallback: boolean,
-  scopeDetail: string
-): string {
-  if (loading) {
-    return loadingDetail;
-  }
-  if (showingLocalFallback) {
-    return LOCAL_FALLBACK_DETAIL;
-  }
-  return scopeDetail;
-}
-
-/**
- * ISS-4444 (design review): the Sessions card's detail line. Normally the scope
- * caption ("matched by the current filters" / the loading / local-fallback
- * variants via `resolveAlwaysAvailableDetail`). When the local boot import had to
- * quarantine poison transcripts AND the card is settled on real values (not
- * loading, not errored), the caveat rides HERE instead, so the honesty travels
- * with the count it qualifies, in place, rather than as a detached line above the
- * whole row that reads as a second banner and can contradict the import splash.
- * ISS-6115 (wongk review): the sentence itself now ARRIVES from the desktop
- * adapter rather than being assembled here, so the splash and this card cannot
- * phrase one fact two ways — and so this surface cannot keep saying "couldn't be
- * read" about an import that never got that far. The icon is tokenized
- * (`text-warning-foreground` — colored glyph, muted text) per the DS mute-the-
- * text-color-the-icon pattern, not a gray decoration.
- */
-function resolveSessionsCardDetail({
-  loading,
-  loadingDetail,
-  errored,
-  showingLocalFallback,
-  couldNotImportLabel,
-}: {
-  loading: boolean;
-  loadingDetail: string;
-  errored: boolean;
-  showingLocalFallback: boolean;
-  couldNotImportLabel: string | null;
-}): ReactNode {
-  const scopeDetail = resolveAlwaysAvailableDetail(
-    loading,
-    loadingDetail,
-    showingLocalFallback,
-    "matched by the current filters"
-  );
-  if (loading || errored || !couldNotImportLabel) {
-    return scopeDetail;
-  }
-  // shafty023 review (ISS-4444): the phrase counts quarantined SOURCE
-  // TRANSCRIPTS, not sessions — one poison source (e.g. an OpenCode DB) can hold
-  // many sessions, and because it never parsed we cannot know how many. The
-  // caller says "transcripts" so the caveat states exactly what it measures
-  // instead of implying a scope-matched session tally it is not.
-  const label = couldNotImportLabel;
-  return (
-    <span className="flex items-center gap-1.5">
-      <TriangleAlertIcon
-        aria-hidden
-        className="size-3.5 shrink-0 text-warning-foreground"
-      />
-      {label}
-    </span>
-  );
-}
-
-/**
- * ISS-4429: has the CLOUD delivery read FAILED with nothing to show — errored AND
- * no cloud totals in hand? Only then do the always-available cards fall back to
- * the local SQLite totals (FEA-3574's original intent). A cloud read that merely
- * lacks data (`usage` present, `isError` false) is NOT a failure: the cloud
- * population — the same one the table shows — is the truth, even for a confirmed
- * empty. Keeping this in one predicate stops the value-source resolution and the
- * loading gate from drifting on the cloud-failure condition.
- */
-function isCloudReadFailed(
-  isError: boolean,
-  usage: AgentSessionUsageSummary | undefined
-): boolean {
-  return isError && usage === undefined;
-}
-
-/**
- * ISS-4429 / ISS-4483: the shared always-available-cards loading gate, so the
- * parent row's `aria-busy` announcement and the child cards' value-slot skeleton
- * cannot drift. Two independent value-only-skeleton windows resolve here:
- *
- * - The FEA-4128 local-FALLBACK skeleton (`alwaysAvailableLoading`) is scoped to
- *   the cloud-failure path — it fires ONLY while the cloud read has failed (no
- *   cloud totals) AND the local fallback source is still hydrating AND that local
- *   read has not itself errored (a failed local read dashes to `—` rather than
- *   spinning). A healthy cloud read paints its real values and never skeletons
- *   over them while a background local import runs.
- * - The ISS-4483 TRANSIENT-recover skeleton (`transientRecovering`, review cid
- *   3679535439) fires while a transient db-host list error is auto-retrying with
- *   no last-good `usage` in hand. It is NOT gated on the cloud read having failed:
- *   the reported case is Local mode, which has no cloud read, so requiring
- *   `isCloudReadFailed` would (correctly) never skeleton there and the cards would
- *   settle to a confirmed `0`. Both windows still yield to a terminal local error
- *   (`isLocalError` dashes, never spins).
- */
-function resolveAlwaysAvailableCardsLoading({
-  alwaysAvailableLoading,
-  transientRecovering,
-  isError,
-  isLocalError,
-  usage,
-  honestLoadingEnabled,
-}: {
-  alwaysAvailableLoading: boolean;
-  transientRecovering: boolean;
-  isError: boolean;
-  isLocalError: boolean;
-  usage: AgentSessionUsageSummary | undefined;
-  honestLoadingEnabled: boolean;
-}): boolean {
-  if (isLocalError) {
-    return false;
-  }
-  if (transientRecovering) {
-    return true;
-  }
-  // ISS-5271 (flag-gated, default off): a NEVER-LOADED usage summary with no
-  // error skeletons the value slots rather than letting the cards read `?? 0`
-  // into a confident zero beside a Cost card that honestly dashes. Like the
-  // ISS-4483 transient arm above, this is deliberately NOT gated on the cloud
-  // read having failed — the lying state is reachable with no failure at all
-  // (a disabled/pending query, an enabled-flip window). Last-good values are
-  // unaffected: a summary held by `keepPreviousData` keeps `usage` defined, so
-  // this arm covers only the nothing-ever-loaded case. A terminal error still
-  // outranks it (the `isError` guard here, `isLocalError` above) — errors dash,
-  // never spin.
-  if (honestLoadingEnabled && usage === undefined && !isError) {
-    return true;
-  }
-  return alwaysAvailableLoading && isCloudReadFailed(isError, usage);
-}

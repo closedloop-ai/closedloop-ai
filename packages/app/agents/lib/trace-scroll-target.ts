@@ -19,7 +19,7 @@
  * jump row at all (an "idle" bucket, the single biggest contributor to "some
  * scroll, others don't"), an unresolvable row, and a transcript with no
  * rendered anchors. All four read to the reader as a dead control, which is
- * what Mike reported: "only some of the columns actually scroll the transcript,
+ * what Marisol reported: "only some of the columns actually scroll the transcript,
  * others don't — exact same thing w/ the dots."
  *
  * So the resolution is unchanged and the OUTCOME is now explicit: the caller

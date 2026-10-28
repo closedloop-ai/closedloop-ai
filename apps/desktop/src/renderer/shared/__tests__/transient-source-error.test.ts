@@ -16,9 +16,12 @@ describe("isTransientDbHostError", () => {
     "db-host is closed (op: pageData)",
     // Case-insensitive + wrapped by the Electron IPC prefix.
     "Error invoking remote method 'x': Error: DB-HOST EXITED (code: 11)",
-  ])("classifies the db-host lifecycle signature %s as transient", (message) => {
-    expect(isTransientDbHostError(new Error(message))).toBe(true);
-  });
+  ])(
+    "classifies the db-host lifecycle signature %s as transient",
+    (message) => {
+      expect(isTransientDbHostError(new Error(message))).toBe(true);
+    }
+  );
 
   it.each([
     "SQLITE_CORRUPT: database disk image is malformed",
@@ -100,7 +103,7 @@ describe("isTransientSourceError", () => {
   });
 
   it("recognizes a bare Error whose message IS a transient code (the sanitized Branches boundary)", () => {
-    // ISS-4483 (review cid 3679616167, wongk): the Branches main-process boundary
+    // ISS-4483 (review cid 3679616167, whitlockk): the Branches main-process boundary
     // (`rethrowAsSourceError`) discards the raw db-host error and rethrows a bare
     // `Error(SHARED_BRANCHES_TRANSIENT_ERROR_CODE)` with NO `.code` property, so the
     // classification arrives only in the message text. The guard must still route it

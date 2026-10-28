@@ -10,6 +10,8 @@ import {
   type CreatedDocumentInlineImage,
   type Document,
   MAX_CREATE_DOCUMENT_INLINE_IMAGE_REQUEST_BODY_BYTES,
+  type SourceLinkedPlanAmbiguousResponse,
+  SourceLinkedPlanCreateErrorCode,
 } from "@repo/api/src/types/document";
 import { NextResponse } from "next/server";
 import { mapCreateInlineImageAttachmentFailure } from "@/app/documents/attachment-route-responses";
@@ -17,6 +19,10 @@ import type {
   CreateDocumentError,
   CreateDocumentWithInlineImagesSuccess,
 } from "@/app/documents/document-service";
+import type {
+  SourceLinkedPlanCreateError,
+  SourceLinkedPlanCreateSuccess,
+} from "@/app/documents/source-linked-plan-service";
 import {
   badRequestResponse,
   formatZodErrors,
@@ -39,6 +45,15 @@ export function shapeCreateDocumentResponse(
     ...document,
     inlineImages: result.inlineImages.map(toCreatedDocumentInlineImageResponse),
     versionContent: result.versionContent,
+  };
+}
+
+export function shapeSourceLinkedPlanCreateResponse(
+  result: SourceLinkedPlanCreateSuccess
+): CreateDocumentResponse {
+  return {
+    ...result.document,
+    sourceLinkedPlanResult: result.sourceLinkedPlanResult,
   };
 }
 
@@ -103,6 +118,29 @@ export function mapCreateDocumentFailure(error: CreateDocumentError) {
         getUnhandledCreateDocumentFallback(error.code),
         error
       );
+  }
+}
+
+export function mapSourceLinkedPlanCreateFailure(
+  error: SourceLinkedPlanCreateError
+) {
+  switch (error.code) {
+    case SourceLinkedPlanCreateErrorCode.Ambiguous: {
+      const body: SourceLinkedPlanAmbiguousResponse = {
+        code: error.code,
+        error:
+          "Multiple linked implementation plans already exist for this source",
+        plans: error.plans,
+        success: false,
+      };
+      return NextResponse.json(body, { status: 409 });
+    }
+    case 400:
+      return badRequestResponse(error.message);
+    case 404:
+      return NextResponse.json(failure(error.message), { status: 404 });
+    default:
+      return badRequestResponse(getUnhandledSourceLinkedPlanFallback(error));
   }
 }
 
@@ -214,6 +252,12 @@ function getUnhandledCreateDocumentFallback(
   _code: never
 ): "Invalid create document request" {
   return "Invalid create document request";
+}
+
+function getUnhandledSourceLinkedPlanFallback(
+  _error: never
+): "Invalid source-linked implementation plan create request" {
+  return "Invalid source-linked implementation plan create request";
 }
 
 function toCreatedDocumentInlineImageResponse(

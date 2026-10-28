@@ -12,8 +12,7 @@ import {
 // FEA-4299: usage OWNS the Repository filter facet. Both desktop usage paths now
 // carry a `byRepository` rollup, so the renderer must NOT let the analytics
 // breakdown (`repositoryBreakdown`) clobber a populated usage-owned facet —
-// including when analytics returns an empty array from its catch fallback
-// (shafty023). Analytics is only a legacy fallback for a usage summary that
+// including when analytics returns an empty array (davetho). Analytics is only a legacy fallback for a usage summary that
 // reports no repositories at all.
 
 function repo(
@@ -72,7 +71,7 @@ describe("buildSessionsRenderModel Repository facet ownership (FEA-4299)", () =>
         repo("acme/widgets", 3),
         repo("acme/gadgets", 1),
       ]),
-      // The aggregateAnalytics catch fallback yields [] — it must NOT clobber.
+      // An empty analytics breakdown must NOT clobber the usage-owned options.
       repositoryBreakdown: [],
     });
 

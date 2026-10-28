@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   branchCostEvidenceByteBudget,
   branchCostEvidenceFixedRowBytes,
@@ -11,6 +10,7 @@ import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance.js";
+import { describe, test } from "vitest";
 import {
   type BranchUsageCostEvidenceKey,
   readBoundedBranchUsageCostEvidence,

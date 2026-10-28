@@ -1,5 +1,5 @@
 /**
- * Relay / Gateway tab toggle success-path tests.
+ * Relay / Gateway toggle success-path tests.
  *
  * The existing settings-panel-toggle-errors.test.tsx covers IPC-reject paths.
  * These tests cover the resolved paths: each toggle calls the expected IPC with
@@ -7,8 +7,9 @@
  * resolves with (not merely the requested value), and a mount-time getter that
  * resolves late does not clobber a value the user already applied.
  *
- * FEA-4133: Account is the default tab, so we navigate to relay-gateway via the
- * custom event before interacting with its toggles.
+ * ISS-10246: the mount is `DesktopAppPanel`, where the block ships now that the
+ * legacy tabbed Settings panel is gone — every block is on screen, so the
+ * toggles are reachable on render.
  */
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
@@ -22,8 +23,9 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentMonitorHooksResult } from "../../../../shared/contracts";
+import { DesktopAppPanel } from "../../../settings-v2/panels/desktop-app-panel";
 import { DesktopAuthProvider } from "../../../shared-agent-sessions/desktop-auth-provider";
-import { SettingsPanel } from "../SettingsPanel";
+import { desktopAppPanelMountReads } from "./desktop-app-panel-mount-reads";
 
 const originalDesktopApi = Object.getOwnPropertyDescriptor(
   window,
@@ -60,11 +62,7 @@ function installDesktopApi(overrides: DesktopApiOverrides = {}): {
   setAgentMonitorHooksEnabled: ReturnType<typeof vi.fn>;
 } {
   const defaults = {
-    getSettings: vi.fn(async () => ({})),
-    getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-    getCloudCommandsPaused: vi.fn(async () => false),
-    getCloudConnectionEnabled: vi.fn(async () => true),
-    getAgentMonitorHooksEnabled: vi.fn(async () => false),
+    ...desktopAppPanelMountReads(),
     // The setters read back the post-apply field from the source of truth and
     // resolve with that canonical shape ({ paused } / { enabled } /
     // AgentMonitorHooksResult) — mirror that here rather than resolving void so
@@ -94,21 +92,13 @@ function renderPanel(): void {
   render(
     <FeatureFlagAdapterProvider adapter={createStaticFeatureFlagAdapter()}>
       <DesktopAuthProvider>
-        <SettingsPanel />
+        <DesktopAppPanel />
       </DesktopAuthProvider>
     </FeatureFlagAdapterProvider>
   );
-  // Navigate to the Relay / Gateway tab where the toggles live.
-  act(() => {
-    window.dispatchEvent(
-      new CustomEvent("desktop:navigate-settings-tab", {
-        detail: "relay-gateway",
-      })
-    );
-  });
 }
 
-describe("SettingsPanel Relay/Gateway tab toggle success paths", () => {
+describe("Settings Relay / Gateway toggle success paths", () => {
   it("calls setCloudCommandsPaused(true) and reflects the { paused } readback when toggled ON", async () => {
     const { setCloudCommandsPaused } = installDesktopApi();
     renderPanel();

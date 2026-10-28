@@ -87,7 +87,7 @@ import {
 /**
  * Projection-format revision, folded into the checkpoint fingerprint.
  *
- * ISS-5238 (wongk review): the fingerprint was `name:mtimeMs:size` over the DB
+ * ISS-5238 (whitlockk review): the fingerprint was `name:mtimeMs:size` over the DB
  * files ONLY, so it answered "did `opencode.db` change?" and nothing else. An
  * install upgrading to a build with a CORRECTED serializer — or a corrected
  * parser feeding it — matched its old checkpoint against an untouched store,
@@ -121,8 +121,19 @@ import {
  *     keeps serving the pre-upgrade layout — the one the collector lane never
  *     produced — until its `opencode.db` happens to change again, which is the
  *     opposite of the cross-lane parity that re-root exists to establish.
+ *  3. ISS-10736 (whitlockk review) — a BYTE change: every `toolUse` record now
+ *     carries `outputFootprintTokens`, the count of the full result taken by the
+ *     collector before `output` is capped at 4 KiB. It cannot be recomputed from
+ *     the projection, so without this bump an untouched `opencode.db` keeps
+ *     serving footprint-free records and every OpenCode `tool`/`mcp` row stays
+ *     NULL after the DATA_REVISION 103 rebuild — the precise hole this ticket
+ *     exists to close, left open on one harness.
+ *  4. ISS-12251 (C7) — a BYTE change: the session header now carries the
+ *     optional `fileCreatedAt`, taken from the session row's `time_created`.
+ *     Without this bump an untouched `opencode.db` keeps serving headers
+ *     without it.
  */
-const OPENCODE_PROJECTION_REVISION = 2;
+const OPENCODE_PROJECTION_REVISION = 4;
 
 /**
  * Per-session serialized-body ceiling (256 MiB). A pathological session must not
@@ -155,7 +166,7 @@ export type OpencodeMaterializerDeps = {
   loadSessions?: () => OpencodeSessionLoad;
   /**
    * Read `(id, parent_id)` linkage, REPORTING WHY it is empty (default: the real
-   * DB reader). ISS-4649 (wongk review): this deliberately does NOT use the
+   * DB reader). ISS-4649 (whitlockk review): this deliberately does NOT use the
    * legacy `loadSessionParentLinksFromDb` shim, which flattens a FAILED read to
    * the same `[]` a legacy no-`parent_id` DB yields. On this caller that
    * conflation is destructive, not just lossy: an empty map re-files every
@@ -207,6 +218,9 @@ export function serializeSessionToJsonl(session: NormalizedSession): string {
       permissionMode: session.permissionMode,
       entrypoint: session.entrypoint,
       fileModifiedAt: session.fileModifiedAt,
+      ...(session.fileCreatedAt === undefined
+        ? {}
+        : { fileCreatedAt: session.fileCreatedAt }),
       tokensByModel: session.tokensByModel,
       messageTimestamps: session.messageTimestamps,
       diffStats: session.diffStats,
@@ -537,7 +551,7 @@ export function materializeOpencodeTranscripts(
     return;
   }
 
-  // ISS-4649 (wongk review): a FAILED linkage read is not a legacy DB. Bail
+  // ISS-4649 (whitlockk review): a FAILED linkage read is not a legacy DB. Bail
   // BEFORE any write, prune, or checkpoint — writing on an empty map would
   // re-root every subagent, the prune would then delete the correct
   // `subagent:<childId>.jsonl` projections, and the fingerprint would advance

@@ -5,6 +5,11 @@ import {
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopSessionService } from "../service";
 
 const refreshRequestValidator = z
@@ -13,8 +18,11 @@ const refreshRequestValidator = z
   })
   .strict();
 
-export async function POST(request: Request) {
-  const rawBody = await request.json().catch(() => null);
+async function handlePost(request: Request) {
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = refreshRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
     return desktopContractError(400, "INVALID_DESKTOP_SESSION_REFRESH", false);
@@ -37,3 +45,5 @@ export async function POST(request: Request) {
 
   return desktopContractSuccess(outcome.value);
 }
+
+export const POST = withRequestCompleted(handlePost);

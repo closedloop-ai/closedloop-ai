@@ -17,6 +17,8 @@ import type {
 } from "../collectors/types.js";
 import { MAX_EVENT_DATA_BYTES } from "./db-constants.js";
 import { strOf } from "./db-helpers.js";
+import type { SubagentAncestry } from "./subagent-ancestry.js";
+import { toolUseHasResult } from "./tool-result-outcome.js";
 
 // FEA-3527: drop the non-additive `reasoning_output_tokens` subdivision from the
 // serialized `usageExtras` blob, preserving the rest of the shape (including the
@@ -39,12 +41,18 @@ import { strOf } from "./db-helpers.js";
 // hash-stability workaround awaiting a nullable rewrite. Do not widen it to an
 // "unknown" representation — that would drift the frozen golden metadata
 // sha256s for a distinction the cost rollup deliberately does not make.
+// ISS-7258: `efforts` follows the same omit-when-empty rule, for the same
+// reason. Its three array siblings are emitted unconditionally, so adding a
+// fourth unconditional key would drift EVERY stored blob and every frozen
+// golden-layer2 sha256 — including the sessions that report no effort at all,
+// which is every non-Claude source and every pre-`effort` transcript. Omitted,
+// only the sessions that actually ran at a stated tier move.
 function shapePersistedUsageExtras(
   usageExtras: NormalizedSession["usageExtras"] | undefined
 ): Omit<
   NormalizedSession["usageExtras"],
-  "reasoning_output_tokens" | "web_search_requests"
-> & { web_search_requests?: number } {
+  "reasoning_output_tokens" | "web_search_requests" | "efforts"
+> & { web_search_requests?: number; efforts?: string[] } {
   if (!usageExtras) {
     return {
       service_tiers: [],
@@ -55,6 +63,7 @@ function shapePersistedUsageExtras(
   const {
     reasoning_output_tokens: _reasoning,
     web_search_requests: webSearchRequests,
+    efforts,
     ...rest
   } = usageExtras;
   return {
@@ -62,6 +71,42 @@ function shapePersistedUsageExtras(
     ...(webSearchRequests > 0
       ? { web_search_requests: webSearchRequests }
       : {}),
+    ...(efforts && efforts.length > 0 ? { efforts } : {}),
+  };
+}
+
+/**
+ * ISS-7258: worktree provenance and the background-session marker.
+ *
+ * Both are emitted ONLY when the parser reported them and omitted — never
+ * `null` — otherwise, so every session that states neither (every non-Claude
+ * source, every non-worktree session, every pre-ISS-7258 payload) yields a
+ * byte-identical blob: no golden-layer2 snapshot moves, a re-import does not
+ * flip `sessionDataChanged`, and no DATA_REVISION bump is required.
+ *
+ * SCOPE, stated rather than left to be discovered: for a row imported BEFORE
+ * this shipped, an absent key means "stated none" and "predates this build"
+ * alike — the same ambiguity revisions 26, 32 and 86 each bumped DATA_REVISION
+ * to erase. Nothing consumes either field yet (D3 keeps them blob-only until
+ * something needs to operate on them), so no reader can be misled today, and
+ * imposing a full corpus rebuild for data with no consumer is a cost this
+ * change is not entitled to take — the call ISS-7534 made in the same spot. The
+ * first consumer either tolerates absence or asks for the bump.
+ *
+ * Extracted rather than inlined with its siblings because `buildImportMetadata`
+ * sits at the file's cognitive-complexity band; two more conditional spreads
+ * put it over, and the band caps growth rather than waiving it.
+ */
+function shapeWorktreeProvenance(
+  session: NormalizedSession
+): Pick<NormalizedSession, "worktreeEntries" | "sessionKind"> {
+  return {
+    ...(session.worktreeEntries?.length
+      ? { worktreeEntries: session.worktreeEntries }
+      : {}),
+    ...(session.sessionKind == null
+      ? {}
+      : { sessionKind: session.sessionKind }),
   };
 }
 
@@ -137,6 +182,58 @@ export function buildImportMetadata(
     session.codexLastTokenUsage.length === 0
       ? {}
       : { codexLastTokenUsage: session.codexLastTokenUsage }),
+    // ISS-7198: persist the Claude Desktop launch origin so the row records that
+    // the session came from the app, and so it reaches cloud sync. Emitted ONLY
+    // when a sidecar was found; omitted for every terminal-launched session,
+    // non-Claude harness, and sidecar-free host — so those blobs stay
+    // byte-identical, no golden layer-2 snapshot moves, a re-import does not flip
+    // `sessionDataChanged`, and no DATA_REVISION bump is required.
+    ...(session.claudeDesktopOrigin == null
+      ? {}
+      : { claudeDesktopOrigin: session.claudeDesktopOrigin }),
+    // ISS-7259: persist the normalized launch-attribution facet so the row
+    // records the harness's own account of how the session came to run, and so
+    // it reaches cloud sync. Emitted ONLY when the parser captured at least one
+    // member; omitted — never `null` — for every unattributed session and every
+    // harness that states none, so those blobs stay byte-identical and a
+    // re-import does not flip `sessionDataChanged` for them.
+    //
+    // DATA_REVISION 86 accompanies this. Omission alone would have left an
+    // absent facet meaning both "attributed nothing" and "imported before this
+    // build", which no consumer could tell apart; the rebuild re-derives already
+    // imported sessions so absence means only the first.
+    ...(session.harnessLaunchAttribution == null
+      ? {}
+      : { harnessLaunchAttribution: session.harnessLaunchAttribution }),
+    // ISS-7534: persist what the worker-response budget cut off `tokenSeries`,
+    // beside the truncated series itself. Without it the local consumers that
+    // read `$.tokenSeries` — `turn-buckets.ts`, `session-analytics-rollup.ts`,
+    // and the per-subagent attribution built on them — sum a truncated series
+    // and report the result as a total, while `$.tokensByModel` still holds the
+    // full parse's rollup. Emitted ONLY when the clamp actually removed records;
+    // omitted — never `null` — for every session that fit, so those blobs stay
+    // byte-identical and a re-import does not flip `sessionDataChanged`.
+    //
+    // SCOPE: this marks sessions imported from here on. Rows ALREADY truncated
+    // by the pre-existing clamp carry no marker, so for them an absent key means
+    // either "fit" or "predates this build" — the same ambiguity revisions 26,
+    // 32, and 86 each bumped DATA_REVISION to erase. Backfilling them needs that
+    // bump plus the corpus rebuild it triggers, which is a cost this change is
+    // not entitled to impose on its own; escalated on ISS-7534 rather than
+    // decided here.
+    ...(session.tokenSeriesTruncation == null
+      ? {}
+      : { tokenSeriesTruncation: session.tokenSeriesTruncation }),
+    ...shapeWorktreeProvenance(session),
+    // ISS-5822: persist the worker response-budget clamp signal so it survives
+    // the session row, cloud sync, and detail reads — same reason FEA-2771
+    // persists `parseQuality`. Without it the flag dies with the in-memory
+    // session and only the 5-minute aggregate counter ever sees it. Emitted ONLY
+    // when the clamp fired, so every unclamped and pre-ISS-5822 session yields a
+    // byte-identical blob and no DATA_REVISION bump is required. Sessions
+    // imported BEFORE this change keep no flag: go-forward by design rather than
+    // forcing a full-corpus re-parse, the same scope call ISS-7534 made.
+    ...(session.payloadClamped === true ? { payloadClamped: true } : {}),
     ...internalMetadata,
   });
 }
@@ -189,10 +286,22 @@ export function importToolEventData(toolUse: NormalizedToolUse): string | null {
   if (toolUse.kind && !payload.kind) {
     payload.kind = toolUse.kind;
   }
-  // Carry the tool-result error flag so the projection's status detail and the
-  // usage/error SQL (`$.isError`) work for imported rows at parity with live.
-  if (toolUse.isError) {
-    payload.isError = true;
+  // A tool action with no result remains incomplete and gains no synthetic
+  // success marker.
+  if (toolUseHasResult(toolUse)) {
+    payload.isError = toolUse.isError === true;
+  }
+  if (toolUse.resultTimestamp != null) {
+    payload.resultTimestamp = toolUse.resultTimestamp;
+  }
+  // ISS-10736: the result's context footprint, counted at parse time over the
+  // untruncated payload. It rides the SMALL analytics keys, not `detail` below:
+  // `detail` is dropped wholesale when the row would exceed MAX_EVENT_DATA_BYTES,
+  // and the rows that trip that cap are exactly the big-result ones whose
+  // footprint matters most. It cannot be recomputed from `tool_response`, which
+  // is a byte-capped prefix.
+  if (toolUse.outputFootprintTokens !== undefined) {
+    payload.toolFootprintTokens = toolUse.outputFootprintTokens;
   }
   // Bug 019f881c: persist the per-call input/output under the SAME
   // `tool_input`/`tool_response` keys the live-hook path delivers, so the Session
@@ -237,7 +346,7 @@ export function importToolEventData(toolUse: NormalizedToolUse): string | null {
  * 019f881c: preserves both the FEA-3547 trace detail AND the FEA-2642 analytics
  * signals for oversized imported tool calls.
  */
-function importToolPayloadWithinCap(
+export function importToolPayloadWithinCap(
   base: Record<string, unknown>,
   detail: Record<string, unknown>
 ): string | null {
@@ -263,12 +372,29 @@ function importToolPayloadWithinCap(
   return Object.keys(base).length > 0 ? importEventData(base) : null;
 }
 
+/**
+ * ISS-10714: the reconstructed-ancestry facts persisted alongside a subagent
+ * row, so `parent_agent_id` alone never has to carry two different claims.
+ *
+ * `parentSource` says whether the parent was reconstructed from the spawn
+ * evidence or is the writer's main-agent fallback, and `depth` is present ONLY
+ * when the chain to the main agent was actually walked — main is 0, its direct
+ * children are 1. An unreconstructable ancestry therefore reads as an absent
+ * depth, never as a confident 1.
+ */
 export function buildSubagentMetadata(
-  subagent: NormalizedSubagent
+  subagent: NormalizedSubagent,
+  ancestry?: SubagentAncestry
 ): string | null {
   const metadata: Record<string, unknown> = {
     ...(subagent.metadata ?? {}),
   };
+  if (ancestry) {
+    metadata.ancestry = {
+      parentSource: ancestry.parentSource,
+      ...(ancestry.depth === undefined ? {} : { depth: ancestry.depth }),
+    };
+  }
   if (subagent.nativeSubagentId) {
     metadata.nativeSubagentId = subagent.nativeSubagentId;
   }

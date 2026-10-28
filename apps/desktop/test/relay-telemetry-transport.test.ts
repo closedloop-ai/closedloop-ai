@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   KEYLESS_TELEMETRY_EXPORT_EVENT,
   KEYLESS_TELEMETRY_HANDSHAKE_EVENT,
@@ -9,6 +8,7 @@ import {
   type KeylessTelemetrySessionAck,
   KeylessTelemetrySignal,
 } from "@repo/shared-platform/keyless-telemetry";
+import { test } from "vitest";
 import {
   createRelayTelemetryTransport,
   type TelemetrySessionContext,
@@ -100,6 +100,11 @@ class FakeTelemetrySocket implements TelemetrySocketLike {
     for (const ack of acks) {
       ack(response);
     }
+  }
+
+  /** Answers only the oldest held export, so a test picks the answer order. */
+  resolveOldestPendingExport(response: KeylessTelemetryExportAck): void {
+    this.pendingExportAcks.shift()?.(response);
   }
 
   disconnect(): this {
@@ -552,5 +557,48 @@ test("disabled origin keeps the transport inert", async () => {
   const ok = await transport.export(KeylessTelemetrySignal.Traces, body(8));
   assert.equal(ok, false);
   assert.equal(socket.handshakeCount, 0);
-  transport.stop();
+  await transport.stop();
+});
+
+test("a shorter collector_unavailable answered after a rate_limited keeps the rate_limited window", async () => {
+  const { transport, socket, clock } = makeHarness();
+  const t0 = clock.now;
+  transport.start(CONTEXT);
+  socket.triggerConnect();
+  await tick();
+
+  socket.deferExportAck = true;
+  const rateLimited = transport.export(KeylessTelemetrySignal.Traces, body(8));
+  const collectorDown = transport.export(KeylessTelemetrySignal.Logs, body(8));
+  await tick();
+  assert.equal(socket.exportCount, 2);
+
+  socket.resolveOldestPendingExport({
+    accepted: false,
+    reason: KeylessTelemetryRejectionReason.RateLimited,
+    retryAfterSeconds: 60,
+  });
+  assert.equal(await rateLimited, false);
+  socket.resolveOldestPendingExport({
+    accepted: false,
+    reason: KeylessTelemetryRejectionReason.CollectorUnavailable,
+    retryAfterSeconds: 30,
+  });
+  assert.equal(await collectorDown, false);
+
+  socket.deferExportAck = false;
+  clock.now = t0 + 59_999;
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Traces, body(8)),
+    false
+  );
+  assert.equal(socket.exportCount, 2, "the rate_limited 60 s window holds");
+
+  clock.now = t0 + 60_000;
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Traces, body(8)),
+    true
+  );
+  assert.equal(socket.exportCount, 3);
+  await transport.stop();
 });

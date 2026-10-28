@@ -1,27 +1,35 @@
-import {
-  Priority,
-  type Priority as PriorityType,
-} from "@repo/api/src/types/common";
+import type { Priority as PriorityType } from "@repo/api/src/types/common";
+import { comparePriorityByRank } from "@repo/design-system/lib/priority-order";
 
-const PRIORITY_SORT_ORDER: Record<PriorityType, number> = {
-  [Priority.Urgent]: 0,
-  [Priority.High]: 1,
-  [Priority.Medium]: 2,
-  [Priority.Low]: 3,
-};
-
+/**
+ * Orders artifacts most urgent first with an unset priority last. Delegates so
+ * this and the cells showing the same values cannot disagree on rank; callers
+ * consume the sign, not the magnitude.
+ */
 export function comparePriorityValues(
   aPriority: PriorityType | null | undefined,
   bPriority: PriorityType | null | undefined
 ): number {
-  if (!(aPriority || bPriority)) {
+  return comparePriorityByRank(aPriority, bPriority);
+}
+
+export function comparePriorityValuesForSort(
+  aPriority: PriorityType | null | undefined,
+  bPriority: PriorityType | null | undefined,
+  direction: "asc" | "desc"
+): number {
+  const aMissing = aPriority == null;
+  const bMissing = bPriority == null;
+  if (aMissing && bMissing) {
     return 0;
   }
-  if (!aPriority) {
+  if (aMissing) {
     return 1;
   }
-  if (!bPriority) {
+  if (bMissing) {
     return -1;
   }
-  return PRIORITY_SORT_ORDER[aPriority] - PRIORITY_SORT_ORDER[bPriority];
+
+  const result = comparePriorityValues(aPriority, bPriority);
+  return direction === "asc" ? result : -result;
 }

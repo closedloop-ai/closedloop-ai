@@ -6,7 +6,7 @@
  * reads.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import {
   cacheWriteTtlFacts,

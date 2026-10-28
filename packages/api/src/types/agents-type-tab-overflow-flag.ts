@@ -21,9 +21,10 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_TYPE_TAB_OVERFLOW_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_TYPE_TAB_OVERFLOW_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_TYPE_TAB_OVERFLOW_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * `AgentsGroupedList` is the DEFAULT layout for both the web `/[orgSlug]/agents`
  * route and the packaged desktop Agents view, so a single-surface gate would let

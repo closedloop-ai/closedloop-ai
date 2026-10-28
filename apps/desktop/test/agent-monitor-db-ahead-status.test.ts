@@ -14,8 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { AuthorizedCommandKeyStore } from "../src/main/command-signing/authorized-command-key-store.js";
+import { afterAll, test } from "vitest";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import {
   type EmbeddedMigration,
@@ -23,7 +22,6 @@ import {
   runDesktopMigrations,
 } from "../src/main/database/migration/migration-runner.js";
 import {
-  RuntimeInfoIpcChannel,
   type RuntimeInfoIpcDeps,
   registerRuntimeInfoIpcHandlers,
 } from "../src/main/ipc/runtime-info-ipc.js";
@@ -37,6 +35,7 @@ import {
   AgentMonitorRuntimeStatusKind,
 } from "../src/shared/agent-monitor-status.js";
 import { unknownCloudReadReadiness } from "../src/shared/cloud-read-readiness-contract.js";
+import { RuntimeInfoIpcChannel } from "../src/shared/runtime-info-ipc-channel.js";
 import {
   emptyTranscriptStatusCounts,
   TranscriptEgressGate,
@@ -101,25 +100,20 @@ function buildRuntimeStatusPayload(
     isTrustedSender: () => true,
     getAppVersion: () => "0.0.0-test",
     getIsPackaged: () => true,
+    getNodeUuid: () => "2f1c8f8e-3b7a-4c1d-9e2f-5a6b7c8d9e0f",
     settingsStore: {
       getAllFlags: () => ({}),
       getRelayOrigin: () => "",
       getApiOrigin: () => "",
       getSandboxBaseDirectory: () => "",
-      getCommandSigningEnforcementEnabled: () => false,
     } as RuntimeInfoIpcDeps["settingsStore"],
-    // A REAL store pointed at a path that does not exist: `list()` reads the
-    // empty set, matching the previous fake, without a structural double that
-    // could never satisfy this class's private state.
-    authorizedCommandKeys: new AuthorizedCommandKeyStore({
-      filePath: path.join(os.tmpdir(), "db-ahead-status-no-such-keys.json"),
-    }),
     getTranscriptSyncStatus: () =>
       Promise.resolve({
         enabled: false,
         online: false,
         tierGate: TranscriptEgressGate.Denied,
         storeReady: false,
+        computeTargetId: null,
         statusCounts: emptyTranscriptStatusCounts(),
       }),
     getActivePort: () => 0,
@@ -127,7 +121,6 @@ function buildRuntimeStatusPayload(
     getCloudCommandsPaused: () => false,
     getCloudConnectionEnabled: () => false,
     getConnectionSecurityStatus: () => ({ mode: "standard", detail: "" }),
-    getServerCommandSigningSupported: () => false,
     isServerAlive: () => false,
     getGatewayHealthy: () => true,
     getIngestProgress: () => null,
@@ -137,6 +130,11 @@ function buildRuntimeStatusPayload(
       identified: false,
       pendingBackfillSessions: 0,
       pendingIncrementalSessions: 0,
+      readyBackfillSessions: 0,
+      readyIncrementalSessions: 0,
+      deliveredSessions: 0,
+      inFlightTotalSessions: 0,
+      sendingSessions: 0,
       backfilling: false,
       caughtUp: false,
       deadLetteredSessions: 0,
@@ -161,7 +159,7 @@ function buildRuntimeStatusPayload(
   return handler(TRUSTED_EVENT);
 }
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );

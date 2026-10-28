@@ -22,13 +22,14 @@
  * enough.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import { test } from "vitest";
 import {
-  MAX_CONSECUTIVE_TIMEOUTS,
   MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS,
   TRANSPORT_TIMEOUT_BACKOFF_MS,
 } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
+import { AgentSessionSyncTransportError } from "../src/main/agent-sync/agent-session-sync-service-helpers.js";
 import { DesktopAgentSessionsAckReason } from "../src/main/cloud/cloud-protocol.js";
 import {
   type DesktopSyncBatchEventInput,
@@ -36,6 +37,7 @@ import {
 } from "../src/main/telemetry/app-otel-runtime.js";
 import {
   flushAgentSessionSync,
+  PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS,
   runWithMockedNow,
 } from "./agent-session-sync-service-fixtures.js";
 import { type Deferred, deferred } from "./deferred.js";
@@ -145,24 +147,28 @@ function deadLetterCount(events: DesktopSyncBatchEventInput[]): number {
 
 test("ISS-5088: client-side aborts do not dead-letter at the server-408 budget", async () => {
   // Pre-ISS-5088 a client abort resolved `AckTimeout`, so the third consecutive
-  // one (MAX_CONSECUTIVE_TIMEOUTS) dead-lettered a perfectly healthy session
-  // whose only sin was being queued while the machine's network stalled.
+  // one dead-lettered a perfectly healthy session whose only sin was being
+  // queued while the machine's network stalled. ISS-8605 has since deleted that
+  // 3-strike budget outright (408 is environmental), so the bound this test
+  // drives to is now `transport_timeout`'s OWN budget — which is the class
+  // distinction it was always really about.
   const { service, sync } = makeHarness("aborting-session");
+  const rounds = MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS - 1;
 
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
-    for (let i = 1; i < MAX_CONSECUTIVE_TIMEOUTS; i += 1) {
+    for (let i = 1; i < rounds; i += 1) {
       await attemptAgain(service, advance);
     }
   });
   service.stop();
 
-  assert.equal(sync.length, MAX_CONSECUTIVE_TIMEOUTS);
+  assert.equal(sync.length, rounds);
   assert.equal(
     deadLetterCount(sync),
     0,
-    "a run of client aborts at the ack_timeout threshold must not dead-letter"
+    "a run of client aborts inside the transport-timeout budget must not dead-letter"
   );
   for (const event of sync) {
     assert.equal(event.outcome, DesktopSyncBatchOutcome.Failure);
@@ -331,13 +337,22 @@ test("ISS-5088: a thrown transport error also suppresses the abort budget", asyn
   const { service, sync, throwOnNextSend } = makeHarness(
     "thrown-then-aborting"
   );
+  let eventsBeforeAborts = 0;
 
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
 
-    throwOnNextSend(new TypeError("fetch failed"));
+    // The shape the production client throws for a dropped connection.
+    throwOnNextSend(
+      new AgentSessionSyncTransportError("fetch failed", {
+        cause: new TypeError("fetch failed"),
+      })
+    );
     await attemptAgain(service, advance);
+    // ISS-10602: that throw also holds the lane for one gate rung.
+    advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
+    eventsBeforeAborts = sync.length;
 
     for (let i = 0; i < MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS; i += 1) {
       await attemptAgain(service, advance);
@@ -349,5 +364,12 @@ test("ISS-5088: a thrown transport error also suppresses the abort budget", asyn
     deadLetterCount(sync),
     0,
     "a thrown send records the connectivity loss, so the aborts after it defer with budgets intact"
+  );
+  assert.equal(
+    sync
+      .slice(eventsBeforeAborts)
+      .filter((event) => event.reason === SyncReason.TransportTimeout).length,
+    MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS,
+    "every abort after the throw was actually attempted"
   );
 });

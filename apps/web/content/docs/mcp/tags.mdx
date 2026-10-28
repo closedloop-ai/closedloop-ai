@@ -1,0 +1,173 @@
+---
+title: Tags
+description: 'List, apply, and remove the free-form labels that group work across projects'
+---
+
+## Overview
+
+Tags are free-form labels applied to documents. They are how work is grouped **thematically** — by customer, platform, or initiative — without changing which project it lives in. A project answers *where does this work live*; a tag answers *what is this work about*.
+
+Tags are readable **and** writable over MCP. Use `list-tags` to read the catalogue, `tag-artifact` to apply one, and `untag-artifact` to remove one. If you want to group a set of issues under a theme, apply a tag — do not create a project for it.
+
+Tag names are unique case-insensitively within an organization, so `dsp` and `DSP` are the same tag.
+
+| Rule | Value |
+|------|-------|
+| Name length **when creating a new tag** | 1–40 characters |
+| Allowed characters **when creating a new tag** | letters, numbers, spaces, hyphens |
+| Colour | assigned by the server, cycling the palette |
+| Taggable entities | documents only (`PRD-*`, `PLN-*`, `ISS-*`, `DOC-*`) |
+
+The length and character rules apply to **creating** a tag, not to every name the organization holds. `tags.name` is an unconstrained column, so a legacy or directly-written tag can carry a name outside them. Such a tag stays fully addressable: `list-tags` returns it, and `tag-artifact` / `untag-artifact` match it by its stored name. Only a **new** name is rejected for breaking these rules.
+
+### Two behaviours worth knowing before you write
+
+- **An unknown tag name is created, not rejected.** Applying a name the organization has never used creates the tag and then applies it, in one call.
+- **Applying a tag can reach GitHub.** Tagging a document reconciles labels on that document's linked pull requests, so a label may appear on GitHub. Reconciliation is **additive**: removing the tag afterwards does **not** retract a label that was already pushed.
+
+---
+
+## Listing Tags
+
+**Tool**: `list-tags`
+**Underlying API**: `GET /tags?limit=25&offset=0&includeTotal=true` (plus `&search=<term>` when a filter is given)
+
+```
+list-tags(
+  limit?: number,   // 1–100, default 25
+  offset?: number,  // Pagination offset, default 0
+  search?: string   // Case-insensitive substring filter on the tag name
+)
+```
+
+The page is bounded by the **server**. `limit`, `offset`, and `search` travel to
+`GET /tags` as query parameters and the counts come back with the page, so listing a
+25-tag page does not read the organization's whole catalogue. Use `search` to check
+whether a tag exists instead of paging through everything.
+
+`%` and `_` in `search` match literally — they are not pattern operators.
+
+`search` is always sent with a bound. The tool resolves its own default `limit` before
+the request, and `GET /tags` rejects a `search` without one: the substring match is
+unindexed, so an unbounded search would scan the whole organization — the very work
+this page exists to avoid.
+
+Returns a paginated envelope. Each item is the tag's `id`, `name`, and `color`:
+
+```json
+{
+  "total": 3,
+  "offset": 0,
+  "limit": 25,
+  "returned": 3,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    { "id": "019fae2d-27f1-7702-9921-5db4096cbcca", "name": "agent-fleet", "color": "green" }
+  ]
+}
+```
+
+---
+
+## Applying a Tag
+
+**Tool**: `tag-artifact`
+**Underlying API**: `GET /documents/:documentId`, then `GET /tags?name=<tagName>&includeTotal=true`, then `POST /tags` if needed, then `POST /entity-tags`
+**Scopes**: `read` and `write`
+
+```
+tag-artifact(
+  documentId: string,   // PRD-*, PLN-*, ISS-*, DOC-* slug or UUID
+  tagName: string       // Matched case-insensitively; created if unknown
+)
+```
+
+The document is resolved first, so a bad `documentId` fails without leaving a new tag behind. Matching is case-insensitive, so passing `dsp` reuses an existing `DSP` tag rather than creating a second one.
+
+Name resolution is a single exact lookup — `GET /tags?name=<tagName>&includeTotal=true` — not a scan of the catalogue. The `(organization_id, lower(name))` unique index makes that match 0-or-1 by construction. Names are compared with **no trimming**, exactly as that index compares them, so a tag stored with a leading or trailing space is a different tag from one without.
+
+`includeTotal` is sent so the response comes back as an envelope. That is what tells the client its filter was applied: an older API that predates the parameter ignores it and returns the whole catalogue as a bare array, and a bare zero-or-one array would look the same. Getting that wrong means re-filtering a match the database already made — which fails for any name where PostgreSQL's `lower()` and JavaScript's `toLowerCase()` disagree.
+
+Re-applying a tag the document already has adds no second link — but it is **not** a no-op. The server swallows the duplicate and still runs the pull-request label reconciliation described above, so a re-apply can push a label that was previously missing.
+
+```json
+{
+  "applied": true,
+  "artifactId": "01a010cc-42ad-7422-8d1d-8a35bf07e344",
+  "tag": { "id": "019fae2d-27f1-7702-9921-5db4096cbcca", "name": "DSP", "color": "green" },
+  "created": false
+}
+```
+
+`created` tells you whether this call minted the tag or reused an existing one.
+
+**Example workflow**:
+
+```
+1. list-tags()
+   → no tag named "DSP"
+
+2. tag-artifact(documentId: "ISS-1035", tagName: "DSP")
+   → { "applied": true, "created": true, ... }
+
+3. tag-artifact(documentId: "ISS-1036", tagName: "dsp")
+   → { "applied": true, "created": false, ... }   // reused, not duplicated
+```
+
+---
+
+## Removing a Tag
+
+**Tool**: `untag-artifact`
+**Underlying API**: `GET /documents/:documentId`, then `GET /tags?name=<tagName>&includeTotal=true`, then `DELETE /entity-tags`
+**Scopes**: `read` and `delete`
+
+```
+untag-artifact(
+  documentId: string,   // PRD-*, PLN-*, ISS-*, DOC-* slug or UUID
+  tagName: string       // Matched case-insensitively
+)
+```
+
+Only the link between the tag and this document is removed; the tag itself stays in the organization for reuse. A name that matches no existing tag is reported rather than raised as an error, because the state it asks for already holds:
+
+```json
+{
+  "removed": false,
+  "artifactId": "01a010cc-42ad-7422-8d1d-8a35bf07e344",
+  "tagName": "nonexistent",
+  "reason": "No tag named \"nonexistent\" exists in this organization, so nothing was removed."
+}
+```
+
+On success, `removed: true` means the tag is not on the document any more — it is a statement about the end state, not a count of rows deleted.
+
+**Removal is not purely subtractive.** After deleting the link, the server runs the same additive pull-request label reconciliation an apply runs, over the document's *remaining* tags. So a removal never retracts a label, and it can **add** a missing label for another tag the document still carries.
+
+```json
+{
+  "removed": true,
+  "artifactId": "01a010cc-42ad-7422-8d1d-8a35bf07e344",
+  "tag": { "id": "019fae2d-27f1-7702-9921-5db4096cbcca", "name": "DSP", "color": "green" }
+}
+```
+
+---
+
+## Not Supported
+
+Projects can carry tags in the product, but no MCP tool writes them today. Branches, deployments, and agent sessions cannot be tagged through these tools either — `tag-artifact` and `untag-artifact` resolve their target as a document.
+
+Templates are rejected. A template UUID is a document as far as `GET /documents/:id` is concerned, so both tools check the resolved subtype and refuse it: a template is an internal blueprint with no user-facing slug and no surface that would show the tag, so a tag applied to one is invisible and unremovable from the product. Tag the PRD, plan, issue, or document created from the template instead.
+
+---
+
+## Version skew
+
+`list-tags`, `tag-artifact`, and `untag-artifact` all tolerate an API that predates the
+query parameters above. The MCP server and the API deploy independently, so a newer MCP
+image can briefly talk to an older API, which ignores the parameters and answers with the
+full tag array. In that case the tools apply the same filtering and paging locally, so
+the answers stay correct — a search still returns only matching tags, and an existing tag
+still resolves instead of being reported missing and re-created.

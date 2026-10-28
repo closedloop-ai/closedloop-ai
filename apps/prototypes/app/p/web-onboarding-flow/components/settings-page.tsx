@@ -157,17 +157,17 @@ const ProfilePanel = ({ workspaceName }: { workspaceName: string }) => (
           </AvatarFallback>
         </Avatar>
         <div>
-          <p className="font-medium text-sm">Kaiti</p>
+          <p className="font-medium text-sm">Kaito</p>
           <p className="text-muted-foreground text-sm">{workspaceName}</p>
         </div>
       </div>
       <div className="space-y-2">
         <Label htmlFor="profile-name">Name</Label>
-        <Input defaultValue="Kaiti" id="profile-name" />
+        <Input defaultValue="Kaito" id="profile-name" />
       </div>
       <div className="space-y-2">
         <Label htmlFor="profile-email">Email</Label>
-        <Input defaultValue="kaiti@acme.dev" id="profile-email" type="email" />
+        <Input defaultValue="kaito@acme.dev" id="profile-email" type="email" />
       </div>
     </CardContent>
   </Card>

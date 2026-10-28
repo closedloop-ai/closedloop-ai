@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import { getShellEnv } from "../shell-path.js";
 
 export const ClaudeCodeOtelEnvVar = {
@@ -83,11 +82,6 @@ const receiverStatusSchema = z.discriminatedUnion("state", [
   }),
 ]);
 
-const defaultClaudeCodeShellEnvProvider = createClaudeCodeShellEnvProvider({
-  getReceiverStatus: getDefaultClaudeCodeOtelReceiverStatus,
-  diagnostics: gatewayLog,
-});
-
 export function createClaudeCodeShellEnvProvider(
   options: ClaudeCodeShellEnvProviderOptions
 ): ClaudeCodeShellEnvProvider {
@@ -130,19 +124,6 @@ export function createClaudeCodeShellEnvProvider(
       }
     }
     return merged;
-  };
-}
-
-export function getClaudeCodeShellEnv(
-  extra?: Record<string, string>
-): Promise<Record<string, string>> {
-  return defaultClaudeCodeShellEnvProvider(extra);
-}
-
-export function getDefaultClaudeCodeOtelReceiverStatus(): ClaudeCodeOtelReceiverStatus {
-  return {
-    state: ClaudeCodeOtelReceiverState.Unavailable,
-    reason: ClaudeCodeOtelUnavailableReason.ReceiverNotStarted,
   };
 }
 

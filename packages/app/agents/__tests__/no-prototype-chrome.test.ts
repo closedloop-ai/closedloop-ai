@@ -7,7 +7,7 @@
  *      version-switcher.tsx, agents-workspace.tsx) were NOT copied into the
  *      agents workspace slice.
  *   3. packages/app/agents/lib/component-meta.tsx imports only from
- *      @repo/api, @closedloop-ai/design-system, lucide-react, and slice-relative paths
+ *      @repo/api, @repo/design-system, lucide-react, and slice-relative paths
  *      — not from apps/prototypes.
  *
  * Note: agent-component-sample-data.ts was deleted in T-9.2 (stub removal).
@@ -40,7 +40,7 @@ const PROTOTYPE_CHROME_FILES = [
 const TYPESCRIPT_SOURCE_RE = /\.(ts|tsx)$/;
 
 // Allowed import prefix regexes at module top-level per useTopLevelRegex rule.
-// Allow: @repo/api, @closedloop-ai/design-system, @repo/app (sibling slice imports),
+// Allow: @repo/api, @repo/design-system, @repo/app (sibling slice imports),
 // lucide-react, react, and slice-relative paths starting with ".".
 // Disallow: apps/prototypes and any other unexpected external dependency.
 const COMPONENT_META_ALLOWED_PREFIX_RE =
@@ -70,6 +70,7 @@ function listProductionSourceFiles(dir: string): string[] {
 }
 
 describe("no-prototype-chrome guardrail (T-3.8 / AC-005)", () => {
+  // Parses every file in the agents slice: 5.7s under coverage (ISS-10512).
   it("no file in packages/app/agents/ imports from apps/prototypes/", () => {
     // AST-based (FEA-4112), like the component-meta case below: the raw-text
     // regex this replaced could be tripped by a comment or string mentioning
@@ -86,7 +87,7 @@ describe("no-prototype-chrome guardrail (T-3.8 / AC-005)", () => {
     expect(violations).toEqual([]);
     // Non-vacuity: an empty or failed walk must not pass silently.
     expect(files.length).toBeGreaterThan(0);
-  });
+  }, 60_000);
 
   it("prototype chrome files were NOT ported into the workspace slice", () => {
     for (const fileName of PROTOTYPE_CHROME_FILES) {
@@ -99,7 +100,7 @@ describe("no-prototype-chrome guardrail (T-3.8 / AC-005)", () => {
     }
   });
 
-  it("component-meta.tsx imports only from @repo/api, @closedloop-ai/design-system, lucide-react, or slice-relative paths", () => {
+  it("component-meta.tsx imports only from @repo/api, @repo/design-system, lucide-react, or slice-relative paths", () => {
     // AST-based (FEA-4112): asserting on resolved module specifiers rather than
     // on the file text means a prototype path named in a comment is not a
     // violation, and a real import cannot hide behind unusual formatting.

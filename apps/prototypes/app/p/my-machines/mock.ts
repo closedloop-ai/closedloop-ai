@@ -224,7 +224,7 @@ export const DEMO_MACHINES: readonly Machine[] = [
 // available update is installed-but-stale, so it counts as installed for the
 // ratio; it's also actionable, so it counts there too. An offline machine's
 // state is unknown, so it counts as neither installed nor known-missing.
-export const isInstalledState = (state: InstallState): boolean =>
+const isInstalledState = (state: InstallState): boolean =>
   state === InstallState.Installed || state === InstallState.Updatable;
 
 // A component needs a member action when it can hold an install but isn't

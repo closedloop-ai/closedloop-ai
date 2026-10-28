@@ -1,4 +1,7 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { BoundedMap } from "@repo/lib/bounded-map";
+import { isForkReplayedRecord } from "@repo/lib/harness/claude/fork-replay";
+import { toIso } from "@repo/lib/harness/parser-utils";
 import type {
   CacheWriteTtl,
   NormalizedTokenRecord,
@@ -10,6 +13,7 @@ import {
   recordUsageLine,
   type UsageDedupEntry,
 } from "../collectors/engine/usage-dedup.js";
+import { TRANSCRIPT_MAX_READ_BYTES } from "../collectors/parsing/transcript-read-limit.js";
 import {
   addStorageTokenCounts,
   readStorageTokenCount,
@@ -17,7 +21,7 @@ import {
 import { hasTrailingUnrecoveredApiError } from "./trailing-api-error.js";
 
 const TRANSCRIPT_CACHE_MAX = 200;
-const LARGE_FILE_SIZE_BYTES = 200 * 1024 * 1024;
+const LARGE_FILE_SIZE_BYTES = TRANSCRIPT_MAX_READ_BYTES;
 
 type CacheEntry = {
   mtimeMs: number;
@@ -27,6 +31,18 @@ type CacheEntry = {
   compactionCount: number;
   latestApiErrorTs: string | null;
   latestAssistantTs: string | null;
+  /** The fork skip this entry was read with; another one re-reads. */
+  forkSkip: TranscriptForkSkip | undefined;
+};
+
+/**
+ * ISS-12552 (PRD-800 "Rollout"): what the extraction skips of a fork's
+ * inherited history, under the attribution policy only. `replayed` is the
+ * entries a headless fork copied (`resolveClaudeForkLineage`). Absent, nothing
+ * is skipped, as before PRD-800.
+ */
+export type TranscriptForkSkip = {
+  readonly replayed: ReadonlySet<string> | undefined;
 };
 
 /**
@@ -39,9 +55,9 @@ type CacheEntry = {
  * (FEA-1459 / PR #1511 review).
  *
  * This parses the absolute `transcript_path` supplied on a hook payload. It is
- * intentionally separate from `src/main/token-usage.ts` `parseTokenUsage`,
- * which resolves a symphony-loop run output directory (`claude-output*.jsonl`)
- * rather than an arbitrary hook transcript path.
+ * intentionally separate from the harness result parser in
+ * `src/main/cost/token-usage.ts`, which resolves a harness run output directory
+ * (`claude-output*.jsonl`) rather than an arbitrary hook transcript path.
  *
  * FEA-1459: Token usage is now deduped by (message.id, requestId) to prevent
  * 2.8-68x inflation from Claude Code's one-line-per-content-block format.
@@ -89,20 +105,6 @@ function asUsage(value: unknown): UsageRecord | null {
 }
 
 /**
- * Normalize entry.timestamp to an ISO string. Handles string pass-through,
- * epoch-number conversion, and missing values.
- */
-function normalizeTimestamp(raw: unknown): string {
-  if (typeof raw === "string") {
-    return raw;
-  }
-  if (typeof raw === "number") {
-    return new Date(raw).toISOString();
-  }
-  return "";
-}
-
-/**
  * Read and parse a transcript JSONL file, accumulating per-model token usage.
  * Returns `null` when the file is missing/unreadable so callers can no-op.
  * Malformed lines are skipped. A model id of `<synthetic>` (Claude's
@@ -113,7 +115,8 @@ function normalizeTimestamp(raw: unknown): string {
  * repeated usage blocks across content-block lines.
  */
 export function extractTranscriptTokens(
-  transcriptPath: string
+  transcriptPath: string,
+  forkSkip?: TranscriptForkSkip
 ): TranscriptExtract | null {
   // FEA-3132 (B1): size-admission before buffering the whole transcript.
   // `readFileSync` + `split("\n")` materializes the entire file (and its line
@@ -136,7 +139,7 @@ export function extractTranscriptTokens(
   }
 
   const dedupMap = new Map<string, UsageDedupEntry>();
-  const result = processLinesIntoMap(content, dedupMap, null, 0);
+  const result = processLinesIntoMap(content, dedupMap, null, 0, forkSkip);
   return buildExtractFromDedupMap(
     dedupMap,
     result.latestModel,
@@ -233,20 +236,6 @@ function readFileRangeSync(path: string, start: number, end: number): string {
 }
 
 /**
- * Promote a Map entry to the most-recently-used position (delete + re-set).
- */
-function promoteLruEntry<K, V>(map: Map<K, V>, key: K, value: V): void {
-  map.delete(key);
-  if (map.size >= TRANSCRIPT_CACHE_MAX) {
-    const oldest = map.keys().next();
-    if (!oldest.done) {
-      map.delete(oldest.value);
-    }
-  }
-  map.set(key, value);
-}
-
-/**
  * Process raw JSONL content into an existing dedup map.
  * Returns the updated latestModel and compactionCount.
  */
@@ -255,6 +244,7 @@ function processLinesIntoMap(
   dedupMap: Map<string, UsageDedupEntry>,
   initialModel: string | null,
   initialCompactionCount: number,
+  forkSkip: TranscriptForkSkip | undefined,
   initialApiErrorTs: string | null = null,
   initialAssistantTs: string | null = null
 ): {
@@ -277,6 +267,9 @@ function processLinesIntoMap(
     } catch {
       continue;
     }
+    if (isReplayedEntry(entry, forkSkip)) {
+      continue;
+    }
 
     if (entry.isCompactSummary === true) {
       compactionOut += 1;
@@ -289,7 +282,13 @@ function processLinesIntoMap(
       entry.isApiErrorMessage === true ||
       (message.type === "error" && message.error != null)
     ) {
-      const ts = normalizeTimestamp(entry.timestamp);
+      // ISS-6417: the canonical reader, matching `subagent-scanner.ts`. The copy
+      // this replaced called `toISOString` on any number, which THROWS for one no
+      // `Date` can represent — a nanosecond epoch, `NaN`, the `Infinity`
+      // `JSON.parse` yields for an overflowing literal. Thrown from here it
+      // escaped `extractTranscriptTokens` to the caller, costing every other
+      // record in the file.
+      const ts = toIso(entry.timestamp);
       if (ts && (!apiErrorTs || ts > apiErrorTs)) {
         apiErrorTs = ts;
       }
@@ -306,7 +305,7 @@ function processLinesIntoMap(
 
     modelOut = model;
 
-    const ts = normalizeTimestamp(entry.timestamp);
+    const ts = toIso(entry.timestamp);
     if (ts && (!assistantTs || ts > assistantTs)) {
       assistantTs = ts;
     }
@@ -325,7 +324,10 @@ function processLinesIntoMap(
       messageId,
       lineUuid: entry.uuid,
       requestId,
-      timestamp: ts,
+      // `recordUsageLine` takes a non-nullable stamp and falls back to
+      // `messageId ?? lineUuid` when it is empty, which is what an absent stamp
+      // already produced here.
+      timestamp: ts ?? "",
       model,
       input: readUsageCount(usage.input_tokens, "input_tokens"),
       output: readUsageCount(usage.output_tokens, "output_tokens"),
@@ -364,11 +366,12 @@ function processLinesIntoMap(
  * so it can be injected directly into `deps.extractTranscript`.
  */
 export function createTranscriptCache(): (
-  path: string
+  path: string,
+  forkSkip?: TranscriptForkSkip
 ) => TranscriptExtract | null {
-  const cache = new Map<string, CacheEntry>();
+  const cache = new BoundedMap<string, CacheEntry>(TRANSCRIPT_CACHE_MAX);
 
-  return (path: string) => {
+  return (path: string, forkSkip?: TranscriptForkSkip) => {
     let st: ReturnType<typeof getFileStat>;
     try {
       st = statSync(path);
@@ -376,7 +379,9 @@ export function createTranscriptCache(): (
       return null;
     }
 
-    const cached = cache.get(path);
+    const hit = cache.get(path);
+    const cached =
+      hit && sameForkSkip(hit.forkSkip, forkSkip) ? hit : undefined;
 
     // FEA-3132 (B1): size-admission caps EVERY path, not just the cold full
     // read. A 200MB+ file buffers/accumulates more than the db-host heap can
@@ -387,7 +392,7 @@ export function createTranscriptCache(): (
     // into the cache, so the exact-hit rebuild below never legitimately fires
     // for one.) Skips instead of only warning and reading anyway (prior behavior).
     if (st.size > LARGE_FILE_SIZE_BYTES) {
-      if (cached) {
+      if (hit) {
         cache.delete(path);
       }
       return null;
@@ -398,7 +403,7 @@ export function createTranscriptCache(): (
       cached.mtimeMs === st.mtimeMs &&
       cached.fileSize === st.size
     ) {
-      promoteLruEntry(cache, path, cached);
+      cache.set(path, cached);
       return buildExtractFromDedupMap(
         cached.dedupMap,
         cached.latestModel,
@@ -416,6 +421,7 @@ export function createTranscriptCache(): (
           cached.dedupMap,
           cached.latestModel,
           cached.compactionCount,
+          forkSkip,
           cached.latestApiErrorTs,
           cached.latestAssistantTs
         );
@@ -425,7 +431,7 @@ export function createTranscriptCache(): (
         cached.latestAssistantTs = result.latestAssistantTs;
       }
       cached.fileSize = st.size;
-      promoteLruEntry(cache, path, cached);
+      cache.set(path, cached);
       return buildExtractFromDedupMap(
         cached.dedupMap,
         cached.latestModel,
@@ -447,7 +453,7 @@ export function createTranscriptCache(): (
     }
 
     const dedupMap = new Map<string, UsageDedupEntry>();
-    const result = processLinesIntoMap(content, dedupMap, null, 0);
+    const result = processLinesIntoMap(content, dedupMap, null, 0, forkSkip);
 
     const entry: CacheEntry = {
       mtimeMs: st.mtimeMs,
@@ -457,9 +463,10 @@ export function createTranscriptCache(): (
       compactionCount: result.compactionCount,
       latestApiErrorTs: result.latestApiErrorTs,
       latestAssistantTs: result.latestAssistantTs,
+      forkSkip,
     };
 
-    promoteLruEntry(cache, path, entry);
+    cache.set(path, entry);
 
     return buildExtractFromDedupMap(
       dedupMap,
@@ -482,4 +489,34 @@ function getFileStat(path: string): { size: number; mtimeMs: number } | null {
 
 function readUsageCount(value: unknown, fieldName: string): number {
   return readStorageTokenCount(value, `transcript.${fieldName}`);
+}
+
+/**
+ * ISS-12552 (AC-020): a fork's inherited history is the parent's usage, so the
+ * hook path skips it exactly as the collector does: a stamped `forkedFrom`
+ * replay, or an entry a headless fork copied. Only under a fork skip.
+ */
+function isReplayedEntry(
+  entry: Record<string, unknown>,
+  forkSkip: TranscriptForkSkip | undefined
+): boolean {
+  if (forkSkip === undefined) {
+    return false;
+  }
+  const replayed = forkSkip.replayed;
+  return (
+    isForkReplayedRecord(entry) ||
+    (replayed !== undefined &&
+      typeof entry.uuid === "string" &&
+      replayed.has(entry.uuid))
+  );
+}
+
+function sameForkSkip(
+  left: TranscriptForkSkip | undefined,
+  right: TranscriptForkSkip | undefined
+): boolean {
+  return left === undefined || right === undefined
+    ? left === right
+    : left.replayed === right.replayed;
 }

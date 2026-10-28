@@ -1,5 +1,5 @@
 /**
- * ISS-4898 regression (wongk + codex review on PR #4275): a renderer-opened link
+ * ISS-4898 regression (whitlockk + codex review on PR #4275): a renderer-opened link
  * on the CONFIGURED web-app origin actually reaches the OS, driven through the
  * LAUNCHED Electron app's real window-open guard.
  *
@@ -37,16 +37,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ElectronApplication, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { launchDesktopApp, seedDesktopSettings } from "./helpers/desktop-app";
+import {
+  installOpenExternalSpy,
+  openedUrls,
+} from "./helpers/open-external-spy";
 
 /** A non-production profile — the exact case the fixed host set rejected. */
-const STAGE_ORIGIN = "https://app.closedloop-stage.ai";
+const STAGE_ORIGIN = "https://app.stage.example";
 /** The shape `buildArtifactWebHref` produces for a linked artifact. */
 const STAGE_ARTIFACT_URL = `${STAGE_ORIGIN}/acme/issues/ISS-4898`;
 /** A same-suffix host the configured origin must NOT admit. */
-const NEIGHBOUR_ORIGIN_URL = "https://evil.closedloop-stage.ai/acme/issues/X";
+const NEIGHBOUR_ORIGIN_URL = "https://evil.stage.example/acme/issues/X";
 /** Always admitted by the fixed production host set, on any profile. */
 const PRODUCTION_DOCS_URL = "https://docs.closedloop.ai/getting-started";
 
@@ -93,33 +97,6 @@ test.describe("Renderer external-link guard on a configured origin (ISS-4898)", 
     }
   });
 });
-
-/**
- * Replace `shell.openExternal` in the MAIN process with a recorder. The window
- * open handler and the allowlist are untouched — only the OS hand-off at the end
- * of the real path is captured.
- */
-async function installOpenExternalSpy(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ shell }) => {
-    const opened: string[] = [];
-    (
-      globalThis as unknown as { __openedExternalUrls: string[] }
-    ).__openedExternalUrls = opened;
-    shell.openExternal = (url: string) => {
-      opened.push(url);
-      return Promise.resolve();
-    };
-  });
-}
-
-/** Every URL the main process handed to `shell.openExternal` so far. */
-function openedUrls(app: ElectronApplication): Promise<string[]> {
-  return app.evaluate(
-    () =>
-      (globalThis as unknown as { __openedExternalUrls?: string[] })
-        .__openedExternalUrls ?? []
-  );
-}
 
 /**
  * Ask the renderer to open `url` in a new window — the same request an

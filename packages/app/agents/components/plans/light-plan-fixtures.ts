@@ -1,3 +1,4 @@
+// gardener-support: test and story data, not shipped
 import type { LightPlan, LightPlanVersion } from "./light-plans-shell";
 import {
   getLightPlanStatusLabel,

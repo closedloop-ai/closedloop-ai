@@ -1,14 +1,13 @@
 "use client";
 
 import type { SessionPR } from "@repo/api/src/types/agent-session";
-import { SESSION_EMPTY_PULL_REQUESTS_LABEL } from "./detail-content";
 import { PullRequestPill } from "./session-pull-request-pill";
+import { SESSION_EMPTY_PULL_REQUESTS_LABEL } from "./session-pull-requests-label";
 
 /**
- * The session-detail Properties-pane "Pull requests" row, extracted out of the
- * grandfathered `agent-session-detail-view.tsx` (shrink-only per the file-size
- * rules) as a sibling of `session-linked-artifacts-row.tsx` and
- * `session-output-diff.tsx`.
+ * The session-detail Properties-pane "Pull requests" row, extracted out of
+ * `agent-session-detail-view.tsx` as a sibling of
+ * `session-linked-artifacts-row.tsx` and `session-output-diff.tsx`.
  *
  * ISS-4769: this row is where the contradiction actually lives. The row lists
  * only the PRs the session AUTHORED — referenced and reviewed links are filtered

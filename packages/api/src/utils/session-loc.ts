@@ -7,7 +7,7 @@
 // and a component is used across them, summing each session's LOC counts the same
 // branch total N times — the same code counted N times.
 //
-// DECISION (Mike, FEA-3633). LOC basis = "branch-total, DEDUP PER BRANCH." KEEP
+// DECISION (Marisol, FEA-3633). LOC basis = "branch-total, DEDUP PER BRANCH." KEEP
 // the branch/PR-total fallback (it's the only signal when commits aren't
 // enriched), but in any aggregation that sums session LOC across MULTIPLE
 // sessions, a branch whose LOC came from the fallback contributes its total ONCE

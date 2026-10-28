@@ -1,13 +1,14 @@
 import {
-  act,
   fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { BinaryResolveSource } from "../../../../shared/cli-binary-tools";
-import { SettingsPanel } from "../SettingsPanel";
+import { DesktopAppPanel } from "../../../settings-v2/panels/desktop-app-panel";
+import { desktopAppPanelMountReads } from "./desktop-app-panel-mount-reads";
 
 const INVALID_PATH_ERROR = "Binary path for claude does not exist: /bad/path";
 const NOT_FOUND_GUIDANCE_RE = /couldn't find/i;
@@ -37,30 +38,33 @@ function installDesktopApi(
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
     value: {
-      getSettings: vi.fn(async () => ({})),
-      getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      getCloudCommandsPaused: vi.fn(async () => false),
-      getCloudConnectionEnabled: vi.fn(async () => true),
-      getAgentMonitorHooksEnabled: vi.fn(async () => false),
-      getBinaryPaths: vi.fn(async () => ({})),
+      ...desktopAppPanelMountReads(),
       detectCliTools: vi.fn(async () => detectResult),
       patchBinaryPaths,
     },
   });
 }
 
-function navigateToBinaryPathsTab() {
-  act(() => {
-    window.dispatchEvent(
-      new CustomEvent("desktop:navigate-settings-tab", {
-        detail: "binary-paths",
-      })
-    );
-  });
+/**
+ * The CLI Tools card subtree.
+ *
+ * ISS-10246: this suite mounts `DesktopAppPanel`, which renders Security beside
+ * CLI Tools, and the global sandbox card there has a "Save" button of its own.
+ * Scoping keeps every assertion below a statement about the binary-path row.
+ */
+function cliToolsCard(): ReturnType<typeof within> {
+  const card = screen.getByText("CLI Tools").closest('[data-slot="card"]');
+  if (card === null) {
+    throw new Error("CLI Tools card not found");
+  }
+  return within(card as HTMLElement);
+}
+
+function cliToolsSaveButton(): HTMLElement {
+  return cliToolsCard().getByRole("button", { name: "Save" });
 }
 
 async function openClaudeEditor(badValue: string) {
-  navigateToBinaryPathsTab();
   // The claude row is the first listed tool; enter its edit mode.
   const editButtons = await screen.findAllByRole("button", { name: "Edit" });
   fireEvent.click(editButtons[0]);
@@ -69,26 +73,18 @@ async function openClaudeEditor(badValue: string) {
   return input;
 }
 
-describe("SettingsPanel CLI Tools binary path loading", () => {
+describe("Settings CLI Tools binary path loading", () => {
   it("stops loading when the initial detectCliTools IPC rejects on mount", async () => {
     Object.defineProperty(window, "desktopApi", {
       configurable: true,
       value: {
-        getSettings: vi.fn(async () => ({})),
-        getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-        getCloudCommandsPaused: vi.fn(async () => false),
-        getCloudConnectionEnabled: vi.fn(async () => true),
-        getAgentMonitorHooksEnabled: vi.fn(async () => false),
-        getBinaryPaths: vi.fn(async () => ({})),
+        ...desktopAppPanelMountReads(),
         detectCliTools: vi.fn(() =>
           Promise.reject(new Error("IPC unavailable"))
         ),
-        patchBinaryPaths: vi.fn(async () => undefined),
       },
     });
-    render(<SettingsPanel />);
-
-    navigateToBinaryPathsTab();
+    render(<DesktopAppPanel />);
 
     // The loading placeholder must clear even though the IPC rejected, so the
     // tool rows (each with an Edit button) render instead of hanging forever.
@@ -105,12 +101,7 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
     Object.defineProperty(window, "desktopApi", {
       configurable: true,
       value: {
-        getSettings: vi.fn(async () => ({})),
-        getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-        getCloudCommandsPaused: vi.fn(async () => false),
-        getCloudConnectionEnabled: vi.fn(async () => true),
-        getAgentMonitorHooksEnabled: vi.fn(async () => false),
-        getBinaryPaths: vi.fn(async () => ({})),
+        ...desktopAppPanelMountReads(),
         detectCliTools: vi.fn(() => {
           call += 1;
           // First call (mount) resolves; the retry click rejects.
@@ -118,12 +109,9 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
             ? Promise.resolve({})
             : Promise.reject(new Error("IPC unavailable"));
         }),
-        patchBinaryPaths: vi.fn(async () => undefined),
       },
     });
-    render(<SettingsPanel />);
-
-    navigateToBinaryPathsTab();
+    render(<DesktopAppPanel />);
 
     const detectButton = await screen.findByRole("button", {
       name: "Detect Tools",
@@ -155,9 +143,7 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
         ),
       }
     );
-    render(<SettingsPanel />);
-
-    navigateToBinaryPathsTab();
+    render(<DesktopAppPanel />);
 
     expect(
       await screen.findByText("/Users/me/.claude/local/claude")
@@ -184,9 +170,7 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
         ),
       }
     );
-    render(<SettingsPanel />);
-
-    navigateToBinaryPathsTab();
+    render(<DesktopAppPanel />);
 
     expect(await screen.findByText("/opt/custom/claude")).toBeDefined();
     // An override hit is a success — never "Not found" for that tool.
@@ -202,9 +186,7 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
         claude: detectEntry("claude", "fallback", null),
       }
     );
-    render(<SettingsPanel />);
-
-    navigateToBinaryPathsTab();
+    render(<DesktopAppPanel />);
 
     expect((await screen.findAllByText("Not found")).length).toBeGreaterThan(0);
     // Guidance names what's missing and points at the next steps.
@@ -214,21 +196,21 @@ describe("SettingsPanel CLI Tools binary path loading", () => {
   });
 });
 
-describe("SettingsPanel CLI Tools binary path editing", () => {
+describe("Settings CLI Tools binary path editing", () => {
   it("surfaces an inline error and keeps the row in edit mode when Save fails", async () => {
     const patchBinaryPaths = vi.fn(() =>
       Promise.reject(new Error(INVALID_PATH_ERROR))
     );
     installDesktopApi(patchBinaryPaths);
-    render(<SettingsPanel />);
+    render(<DesktopAppPanel />);
 
     await openClaudeEditor("/bad/path");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(cliToolsSaveButton());
 
     expect(await screen.findByText(INVALID_PATH_ERROR)).toBeDefined();
     // Row stays in edit mode so the user can correct the value.
     expect(screen.getByLabelText("claude")).toBeDefined();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDefined();
+    expect(cliToolsSaveButton()).toBeDefined();
   });
 
   it("clears the inline error and exits edit mode on a successful save", async () => {
@@ -240,20 +222,20 @@ describe("SettingsPanel CLI Tools binary path editing", () => {
         : Promise.resolve();
     });
     installDesktopApi(patchBinaryPaths);
-    render(<SettingsPanel />);
+    render(<DesktopAppPanel />);
 
     await openClaudeEditor("/bad/path");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(cliToolsSaveButton());
     expect(await screen.findByText(INVALID_PATH_ERROR)).toBeDefined();
 
     fireEvent.change(screen.getByLabelText("claude"), {
       target: { value: "/usr/bin/claude" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(cliToolsSaveButton());
 
     await waitFor(() => {
       expect(screen.queryByText(INVALID_PATH_ERROR)).toBeNull();
-      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(cliToolsCard().queryByRole("button", { name: "Save" })).toBeNull();
     });
   });
 
@@ -265,17 +247,17 @@ describe("SettingsPanel CLI Tools binary path editing", () => {
     installDesktopApi(patchBinaryPaths, {
       claude: detectEntry("claude", "override_invalid", null, "/bad/override"),
     });
-    render(<SettingsPanel />);
+    render(<DesktopAppPanel />);
 
     // Open the claude editor (prefilled with the invalid override) and clear it.
     await openClaudeEditor("");
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(cliToolsSaveButton());
 
     await waitFor(() => {
       expect(patchBinaryPaths).toHaveBeenCalledWith({ claude: null });
       // Row exits edit mode after clearing.
-      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(cliToolsCard().queryByRole("button", { name: "Save" })).toBeNull();
     });
   });
 });

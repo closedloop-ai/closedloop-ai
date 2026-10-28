@@ -1,8 +1,8 @@
 "use client";
 
+import { useDeleteBranch } from "@repo/app/branches/hooks/use-delete-branch";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
-import { useDeleteBranch } from "@repo/app/documents/hooks/use-branch-view";
 import { useDeleteDocument } from "@repo/app/documents/hooks/use-documents";
 import { useCallback } from "react";
 

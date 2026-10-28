@@ -1,9 +1,15 @@
 import {
+  CollaboratorArtifactType,
+  unavailableArtifactCollaboratorBatchResponse,
+} from "@repo/api/src/types/artifact-collaborators";
+import type { UpdateArtifactPriorityRequest } from "@repo/api/src/types/artifact-priority-mutation";
+import {
   BranchCommentsState,
   type BranchPageDetail,
   encodeBranchId,
 } from "@repo/api/src/types/branch";
 import { branchAnalyticsCohortConsumerResponseSchema } from "@repo/api/src/types/branch-analytics-cohort";
+import { BranchListPageMode } from "@repo/api/src/types/branch-list-contract";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
 import {
   BranchSelectedPullRequestChecksAvailability,
@@ -18,8 +24,14 @@ import {
   GitHubDirtyScopeKind,
   type GitHubResyncNudgeBody,
 } from "@repo/api/src/types/github-dirty-scope-constants";
+import { buildBranchListQueryIpcRequest } from "@repo/api/src/types/list-query-client-requests";
+import type { ListQueryExpression } from "@repo/api/src/types/list-query-expression";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { SelectedPullRequestEvidenceUnavailableReason } from "@repo/api/src/types/selected-pull-request-evidence";
+import {
+  hasBranchServerPageCapability,
+  parseBranchServerPageResponse,
+} from "@repo/app/branches/data-source/branch-server-page-response";
 import type {
   BranchesChange,
   BranchesDataSource,
@@ -28,10 +40,12 @@ import { buildLocalCommentsResponse } from "@repo/app/branches/lib/local-pr-comm
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { withReadSource } from "@repo/app/shared/lib/read-source";
 import {
+  LOCAL_BRANCH_READ,
   SHARED_BRANCHES_NOT_FOUND_CODE,
   SHARED_BRANCHES_SOURCE_ERROR_CODE,
   SHARED_BRANCHES_TRANSIENT_ERROR_CODE,
 } from "../../shared/shared-branches-contract";
+import { resolveLocalPriorityWrite } from "../shared/local-priority-write";
 import { runSource } from "../shared/run-source";
 import type { DesktopApi } from "../types/desktop-api";
 
@@ -57,7 +71,8 @@ type DesktopLocalBranchesApi = Pick<DesktopApi, "branchesApi"> &
  * (`SHARED_BRANCHES_SOURCE_ERROR_CODE`) — the raw error is discarded so no local
  * filesystem/SQL detail leaks to the renderer. `ApiError` (vs a bare `Error`)
  * preserves the HTTP path's retry semantics: the shared query client skips
- * retries for any `ApiError`, so both the 404 and the 500 opt out of retry.
+ * retries for an `ApiError` carrying an HTTP status (ISS-5083), so both the 404
+ * and the 500 opt out of retry.
  *
  * `onDbChanged`'s `{ sessionId? }` payload maps to a BROAD `BranchesChange`
  * (`branchId` left undefined) since any session DB change can move branch rows;
@@ -81,7 +96,7 @@ export function createLocalBranchesDataSource(
     // IPC layer already reported).
     list: async (filters) => {
       const response = await sanitize(() =>
-        desktopApi.branchesApi.list(filters)
+        desktopApi.branchesApi.list(localReadRequest(withListQuery(filters)))
       );
       return withReadSource(response, ReadSource.Local);
     },
@@ -98,6 +113,11 @@ export function createLocalBranchesDataSource(
       }
       return suppressMismatchedSelectedPullRequest(data, options);
     },
+    collaborators: async (artifactIds) =>
+      unavailableArtifactCollaboratorBatchResponse(
+        CollaboratorArtifactType.Branch,
+        artifactIds
+      ),
     comments: async (id, options) => {
       const detail = await sanitize(() =>
         desktopApi.branchesApi.detail(detailRequest(id, options))
@@ -139,14 +159,17 @@ export function createLocalBranchesDataSource(
         );
       }
     },
-    usage: (filters) => sanitize(() => desktopApi.branchesApi.usage(filters)),
+    usage: (filters) =>
+      sanitize(() => desktopApi.branchesApi.usage(localReadRequest(filters))),
     analytics: (filters) =>
-      sanitize(() => desktopApi.branchesApi.analytics(filters)),
+      sanitize(() =>
+        desktopApi.branchesApi.analytics(localReadRequest(filters))
+      ),
     cohortAnalytics: (request) => {
       const cohortAnalytics = desktopApi.branchesApi.cohortAnalytics;
       return cohortAnalytics
         ? sanitize(async () => {
-            const response = await cohortAnalytics(request);
+            const response = await cohortAnalytics(localReadRequest(request));
             return response === null
               ? null
               : branchAnalyticsCohortConsumerResponseSchema.parse(response);
@@ -154,18 +177,56 @@ export function createLocalBranchesDataSource(
         : Promise.resolve(null);
     },
     // Same FEA-3120 stamp as `list` above, applied to the nested list — the
-    // combined read still carries local provenance for the ReadSourceBadge.
+    // combined read still carries local provenance for the ReadSourceBadge the
+    // Branches toolbar renders until ISS-9923's removal flag opens, and for the
+    // ISS-5714 cross-surface parity suite either way.
+    //
+    // These rows carry no `artifactId`: the local producer has no cloud Branch
+    // artifact to name. A consumer keyed on it (Related Sessions, ISS-9456)
+    // must treat the missing key as "cannot ask" and make no request, never
+    // as an empty answer. Local write-evidence links are not that provenance.
     pageData: async (filters) => {
-      const response = await sanitize(() =>
-        desktopApi.branchesApi.pageData(filters)
+      let response = await sanitize(() =>
+        desktopApi.branchesApi.pageData(
+          localReadRequest(withListQuery(filters))
+        )
       );
+      if (filters.pageMode === BranchListPageMode.Server) {
+        if (hasBranchServerPageCapability(response.list)) {
+          response = {
+            ...response,
+            list: parseLocalServerPage(response.list),
+          };
+        } else {
+          response = await sanitize(() =>
+            desktopApi.branchesApi.pageData({
+              ...LOCAL_BRANCH_READ,
+              ...(filters.startDate ? { startDate: filters.startDate } : {}),
+              ...(filters.endDate ? { endDate: filters.endDate } : {}),
+            })
+          );
+        }
+      }
       return {
         ...response,
         list: withReadSource(response.list, ReadSource.Local),
       };
     },
     subscribe: createBranchChangeSubscription(desktopApi),
+    ...localBranchPriorityWrite(desktopApi, sanitize),
   };
+}
+
+function parseLocalServerPage(value: unknown) {
+  try {
+    return parseBranchServerPageResponse(value);
+  } catch {
+    throw new ApiError(
+      "Branches server page response is invalid.",
+      500,
+      SHARED_BRANCHES_SOURCE_ERROR_CODE
+    );
+  }
 }
 
 function detailRequest(
@@ -173,10 +234,11 @@ function detailRequest(
   options: Parameters<BranchesDataSource["detail"]>[1]
 ) {
   if (!options) {
-    return id;
+    return { id, ...LOCAL_BRANCH_READ };
   }
   return {
     id,
+    ...LOCAL_BRANCH_READ,
     ...(options.forceRefresh ? { forceRefresh: true } : {}),
     ...(options.repositoryFullName === undefined
       ? {}
@@ -368,4 +430,56 @@ function isGitHubResyncNudgeBody(
       !Array.isArray(value) &&
       Array.isArray((value as { scopes?: unknown }).scopes)
   );
+}
+
+/**
+ * ISS-10332 / PLN-2086 Milestone 3: the local-mode priority write, probed so an
+ * older preload without the bridge offers no `updatePriority` — which is the
+ * signal the Branches host keys its Priority column on. This source is selected
+ * exactly where local reads are, so in cloud mode the local row is never edited.
+ */
+function localBranchPriorityWrite(
+  desktopApi: DesktopLocalBranchesApi,
+  sanitize: <T>(run: () => Promise<T>) => Promise<T>
+): Pick<BranchesDataSource, "updatePriority"> {
+  const updatePriority = desktopApi.branchesApi?.updatePriority?.bind(
+    desktopApi.branchesApi
+  );
+  if (!updatePriority) {
+    return {};
+  }
+  return {
+    updatePriority: async (
+      id: string,
+      input: UpdateArtifactPriorityRequest
+    ) => {
+      const result = await sanitize(() => updatePriority({ ...input, id }));
+      const priority = resolveLocalPriorityWrite(
+        result,
+        () =>
+          new ApiError("Branch not found.", 404, SHARED_BRANCHES_NOT_FOUND_CODE)
+      );
+      return { id, priority };
+    },
+  };
+}
+
+function localReadRequest<T extends object>(
+  request: T | undefined
+): T & typeof LOCAL_BRANCH_READ {
+  return { ...request, ...LOCAL_BRANCH_READ } as T & typeof LOCAL_BRANCH_READ;
+}
+
+/**
+ * PRD-721 / ISS-9346: the list read's filter and sort as the canonical
+ * `listQuery` expression, which main compiles back to the same server-page
+ * params (`compileBranchListQueryRequest`). Renderer and main ship in one
+ * Electron build, so the main receiving this always has that compiler. A
+ * request the expression cannot state (recency buckets beside a date window,
+ * a legacy single-value spelling) keeps its legacy params.
+ */
+function withListQuery<TFilters extends Readonly<Record<string, unknown>>>(
+  filters: TFilters
+): TFilters | (Partial<TFilters> & { listQuery: ListQueryExpression }) {
+  return buildBranchListQueryIpcRequest(filters) ?? filters;
 }

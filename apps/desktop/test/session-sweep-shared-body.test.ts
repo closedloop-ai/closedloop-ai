@@ -10,8 +10,8 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import {
   DESKTOP_AGENT_STATUS,
   EVENT_INSERT_PARAM_CAP,
@@ -308,7 +308,7 @@ test("ISS-5429: the live SessionStart sweep holds back a non-canonical row and r
 });
 
 /*
- * ISS-5330 (wongk): the offset form is not the only way byte order stops being
+ * ISS-5330 (whitlockk): the offset form is not the only way byte order stops being
  * time order — MIXED PRECISION does it too, and the pre-ISS-5330
  * `isCanonicalUtcTimestamp` accepted both sides of it.
  *

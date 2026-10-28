@@ -19,7 +19,7 @@
  * holds only the constant, never from `local-insights-range.ts`. That module
  * reaches `db-helpers.ts` and `@repo/api/src/types/agent-component`, which the
  * Playwright loader cannot resolve: importing it here aborted the entire
- * `desktop-e2e` run before any spec executed (wongk, PR #4974).
+ * `desktop-e2e` run before any spec executed (whitlockk, PR #4974).
  */
 import { TREND_LOOKBACK_DAYS } from "../../../src/main/database/insights-trend-window.js";
 

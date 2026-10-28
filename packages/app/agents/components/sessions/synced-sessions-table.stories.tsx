@@ -1,21 +1,24 @@
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
+import { ArtifactTagAvailability, TagColor } from "@repo/api/src/types/tag";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import {
+  SESSIONS_ARTIFACT_TAGS_FEATURE_FLAG_KEY,
+  SESSIONS_COMMENT_COUNT_TAG_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
-import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
-import { ExternalLinkIcon, FilterXIcon } from "lucide-react";
-import { AgentSessionsListContent } from "./agent-sessions-list";
+import { ExternalLinkIcon } from "lucide-react";
 import {
   createAgentSessionListItemFixture,
   mixedAgentSessionListFixtures,
   populatedAgentSessionListFixtures,
 } from "./session-list-fixtures";
-import { SessionsRecoveryAction } from "./sessions-recovery-action";
 import { SyncedSessionsTable } from "./synced-sessions-table";
 
 const meta = {
-  title: "App Core/Agents/Synced Sessions Table",
+  title: "Composites v1.0/Sessions/Synced Sessions Table",
+  tags: ["deprecated"],
   component: SyncedSessionsTable,
   parameters: {
     layout: "padded",
@@ -31,84 +34,6 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Populated: Story = {};
-
-export const EmptyList: Story = {
-  render: () => (
-    <AgentSessionsListContent
-      getSessionHref={(item) => `/sessions/${item.id}`}
-      isLoading={false}
-      items={[]}
-    />
-  ),
-};
-
-// PRD-536 §5: a connected org with zero matching rows keeps the neutral
-// "filters" message.
-export const EmptyWithConnectedAgent: Story = {
-  render: () => (
-    <AgentSessionsListContent
-      getSessionHref={(item) => `/sessions/${item.id}`}
-      hasConnectedAgent
-      isLoading={false}
-      items={[]}
-    />
-  ),
-};
-
-// PRD-536 §5: an org that has never connected an agent gets the onboarding CTA,
-// including the host-supplied action button that routes to compute-target setup.
-export const EmptyOnboarding: Story = {
-  render: () => (
-    <AgentSessionsListContent
-      getSessionHref={(item) => `/sessions/${item.id}`}
-      hasConnectedAgent={false}
-      isLoading={false}
-      items={[]}
-      onboardingAction={<Button size="sm">Connect a compute target</Button>}
-    />
-  ),
-};
-
-// ISS-4534: the errored/unavailable Sessions-list state, whose single primary
-// affordance is the host-supplied `SessionsRecoveryAction` recovery Link. This
-// is the only state where that button is the sole way out, so it gets a canvas
-// here — matching how `EmptyOnboarding` above canvases `onboardingAction`.
-export const Errored: Story = {
-  render: () => (
-    <AgentSessionsListContent
-      emptySignals={{ isUnavailable: true, hasActiveFilters: true }}
-      errorRecoveryAction={
-        <SessionsRecoveryAction
-          href="/sessions"
-          onClearFilters={() => {
-            // presentational-only: the real host resets filter state here.
-          }}
-        />
-      }
-      getSessionHref={(item) => `/sessions/${item.id}`}
-      isLoading={false}
-      items={[]}
-    />
-  ),
-};
-
-export const FilteredEmpty: Story = {
-  render: () => (
-    <AgentSessionsListContent
-      emptyState={
-        <EmptyState
-          className="py-12"
-          description="No synced sessions match the selected filters."
-          icon={FilterXIcon}
-          title="No matching sessions"
-        />
-      }
-      getSessionHref={(item) => `/sessions/${item.id}`}
-      isLoading={false}
-      items={[]}
-    />
-  ),
-};
 
 export const MixedFallbacks: Story = {
   args: {
@@ -191,4 +116,84 @@ export const SyncingStatusPill: Story = {
       items={syncStateStoryItems}
     />
   ),
+};
+
+/**
+ * FEA-4204, gate OPEN. Without this story the tag is invisible in Storybook
+ * until the flag flips for everyone.
+ *
+ * The rows are built here rather than reusing `populatedAgentSessionListFixtures`
+ * because that set carries no `commentCount` at all — it would render the gate-on
+ * state as four untagged rows and show nothing. All three cases are present on
+ * purpose: a discussed row, a row COUNTED at zero, and a row nobody counted (the
+ * key absent, which is what the desktop local read emits). The last two must look
+ * identical and must not show a "0".
+ */
+const commentTagStoryItems = [
+  createAgentSessionListItemFixture({
+    id: "discussed-session",
+    name: "Discussed session",
+    commentCount: 3,
+  }),
+  createAgentSessionListItemFixture({
+    id: "single-comment-session",
+    name: "One comment session",
+    commentCount: 1,
+  }),
+  createAgentSessionListItemFixture({
+    id: "counted-zero-session",
+    name: "Counted, no comments",
+    commentCount: 0,
+  }),
+  createAgentSessionListItemFixture({
+    id: "uncounted-session",
+    name: "Never counted",
+  }),
+];
+
+export const CommentCountTagFlagOn: Story = {
+  args: { items: commentTagStoryItems },
+  parameters: {
+    appCore: { enabledFlags: [SESSIONS_COMMENT_COUNT_TAG_FEATURE_FLAG_KEY] },
+  },
+};
+
+/**
+ * ISS-8712: the `Tags` column, wired on. `showTagsColumn` alone is not
+ * enough — `SessionsTable` additionally gates the column behind
+ * `SESSIONS_ARTIFACT_TAGS_FEATURE_FLAG_KEY`, so this story enables both. One
+ * row carries applied tags, one is available-but-empty (the picker's own
+ * empty affordance), and one never had the relation loaded at all (renders
+ * the shared unknown-cell em dash, `ArtifactTagAvailability.Unavailable`).
+ */
+const tagsColumnStoryItems = [
+  createAgentSessionListItemFixture({
+    id: "tagged-session",
+    name: "Flaky retry on desktop sync",
+    tagAvailability: ArtifactTagAvailability.Available,
+    tagPermissions: { canApply: true, canRemove: true },
+    tags: [
+      { id: "tag-regression", name: "Regression", color: TagColor.Red },
+      { id: "tag-needs-review", name: "Needs review", color: TagColor.Amber },
+    ],
+  }),
+  createAgentSessionListItemFixture({
+    id: "untagged-session",
+    name: "Onboarding polish pass",
+    tagAvailability: ArtifactTagAvailability.Available,
+    tagPermissions: { canApply: true, canRemove: true },
+    tags: [],
+  }),
+  createAgentSessionListItemFixture({
+    id: "tag-relation-unloaded-session",
+    name: "Legacy import cleanup",
+    tagAvailability: ArtifactTagAvailability.Unavailable,
+  }),
+];
+
+export const TagsColumn: Story = {
+  args: { items: tagsColumnStoryItems, showTagsColumn: true },
+  parameters: {
+    appCore: { enabledFlags: [SESSIONS_ARTIFACT_TAGS_FEATURE_FLAG_KEY] },
+  },
 };

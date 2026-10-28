@@ -29,9 +29,8 @@ const MUTED_TONE = "text-[var(--muted-foreground)]";
  * The field is optional: an empty value means "inherit the global sandbox"
  * (shown as the placeholder), so it never scolds a profile that predates it.
  *
- * Split into its own module (rather than living in the already-oversized
- * SettingsPanel.tsx) so that grandfathered file trends smaller, per the repo
- * file-size discipline.
+ * Split into its own module rather than living in SettingsPanel.tsx, so that
+ * file trends smaller per the repo file-size discipline.
  */
 export function ProfileSandboxField({
   value,
@@ -45,7 +44,7 @@ export function ProfileSandboxField({
   onEnter?: () => void;
   globalSandbox: string;
   /**
-   * ISS-4577 (wongk review): report whether the field's current value is a
+   * ISS-4577 (whitlockk review): report whether the field's current value is a
    * KNOWN-invalid sandbox (settled risky root / missing directory) so the owning
    * profile form can block its Save. Without this the field showed the invalid
    * state inline but both profile Save paths still persisted it. Blank (inherit)

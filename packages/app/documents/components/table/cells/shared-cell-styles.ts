@@ -1,8 +1,7 @@
 /**
  * Shared layout class strings for the document table column cells
  * (FEA-1763 / PLN-874). Centralizes the fixed-width cell box so the ~18
- * repetitions across edit-cells, static-cells, score-cell, and tags-cell
- * stay in sync.
+ * repetitions across edit-cells, static-cells, and tags-cell stay in sync.
  */
 
 /** Standard cell box: fixed-width, vertically centered, left border. */

@@ -5,12 +5,8 @@ import {
   getUserDisplayName,
   getUserInitials,
 } from "@repo/app/shared/lib/user-utils";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
 import { Badge } from "@repo/design-system/components/ui/badge";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 
 type UserProfileHeaderProps = {
   user: User;
@@ -21,12 +17,14 @@ export function UserProfileHeader({ user }: UserProfileHeaderProps) {
 
   return (
     <div className="flex items-center gap-4">
-      <Avatar className="h-16 w-16">
-        <AvatarImage alt={displayName} src={user.avatarUrl ?? undefined} />
-        <AvatarFallback className="text-lg">
-          {getUserInitials(user.firstName, user.lastName) || "?"}
-        </AvatarFallback>
-      </Avatar>
+      <PersonAvatar
+        avatarUrl={user.avatarUrl}
+        className="h-16 w-16"
+        fallbackClassName="text-lg"
+        imageAlt={displayName}
+        initials={getUserInitials(user.firstName, user.lastName) || "?"}
+        name={displayName}
+      />
       <div>
         <h1 className="font-semibold text-2xl">{displayName}</h1>
         <div className="flex items-center gap-2 text-muted-foreground text-sm">

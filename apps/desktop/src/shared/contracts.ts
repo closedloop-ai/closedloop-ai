@@ -1,3 +1,10 @@
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level.ts";
+import { RECOMMENDED_DATA_SYNC_LEVEL } from "@repo/api/src/types/data-sync-level.ts";
+import type { DesktopBootstrapOrganizationRequest } from "@repo/api/src/types/desktop-bootstrap.ts";
+import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity.ts";
+import type { OnboardingAccountOutcome } from "@repo/api/src/types/onboarding-analytics.ts";
+import type { BinaryPaths } from "./cli-binary-tools.js";
+
 export const DEFAULT_GATEWAY_PORT = 19_432;
 export const FALLBACK_GATEWAY_PORTS = [19_433, 19_434, 19_435] as const;
 export const PORT_PROBE_ORDER = [
@@ -47,41 +54,6 @@ export type SaveConfigPayload = {
   sandboxBaseDirectory?: string;
 };
 
-export const COMMAND_SIGNING_REJECTION_REASONS = {
-  noKeysAuthorized: "unauthorized: no keys authorized",
-  unsignedCommand: "unauthorized: unsigned command",
-  unknownSigningKey: "unauthorized: unknown signing key",
-  invalidSignature: "unauthorized: invalid signature",
-  staleOrReplayedCommand: "unauthorized: stale or replayed command",
-  payloadMismatch: "unauthorized: payload_mismatch",
-} as const;
-
-export type CommandSigningRejectionReason =
-  (typeof COMMAND_SIGNING_REJECTION_REASONS)[keyof typeof COMMAND_SIGNING_REJECTION_REASONS];
-
-export const BROWSER_COMMAND_KEY_REVOKE_OPERATION_ID = "browser_key_revoke";
-export const BROWSER_COMMAND_KEY_REVOKE_PATH =
-  "/api/gateway/internal/browser-key/revoke";
-export const BROWSER_COMMAND_KEY_REVOKE_METHOD = "POST";
-export const BROWSER_COMMAND_KEY_REVOKE_INVALID_REASON =
-  "invalid browser command key revocation payload";
-export const BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID =
-  "browser_key_approval_request";
-export const BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH =
-  "/api/gateway/internal/browser-key/approval-request";
-export const BROWSER_COMMAND_KEY_APPROVAL_REQUEST_METHOD = "POST";
-export const BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON =
-  "invalid browser command key approval request payload";
-export const BROWSER_COMMAND_KEY_TARGET_CONTEXT_MISMATCH_REASON =
-  "browser command key target context mismatch";
-
-/** Browser-key trust is owner-target scoped; shared targets are not valid here. */
-export const BROWSER_KEY_TARGET_ACCESS = {
-  OwnedTarget: "owned_target",
-} as const;
-export type BrowserKeyTargetAccess =
-  (typeof BROWSER_KEY_TARGET_ACCESS)[keyof typeof BROWSER_KEY_TARGET_ACCESS];
-
 /**
  * Read a process env override without referencing the bare `process` global.
  * This file is shared between the Electron main process (Node, where the
@@ -104,14 +76,14 @@ export const DEFAULT_WEB_APP_ORIGIN =
 /**
  * Additional first-party web-app origins the gateway trusts for browser
  * (health-probe / command) requests alongside the primary `webAppOrigin`.
- * The stage web app (`app.closedloop-stage.ai`) probes the local gateway's
- * health-check the same way prod does, but the gateway's CORS allowlist only
+ * The stage web app (`app.stage.example`) probes the local gateway's
+ * `/health` endpoint the same way prod does, but the gateway's CORS allowlist only
  * matched the single configured `webAppOrigin` (prod), so the stage probe was
  * CORS-blocked. Additive and forward-compatible: unknown origins still fall
  * through to the existing prod-origins-only / loopback gates.
  */
 export const ADDITIONAL_TRUSTED_WEB_APP_ORIGINS: readonly string[] = [
-  "https://app.closedloop-stage.ai",
+  "https://app.stage.example",
 ];
 /** REST API origin — used for auth verification and other REST calls (not the Socket.IO relay). */
 export const DEFAULT_AUTH_API_ORIGIN =
@@ -119,29 +91,31 @@ export const DEFAULT_AUTH_API_ORIGIN =
 
 export type CapabilityToolName = "claude" | "codex" | "git" | "gh" | "python3";
 
+/**
+ * ISS-10591 retired the `tools` member on the operator's ruling. It was
+ * hardcoded all-false at both publishers (`/health` and `desktop.hello`) with no
+ * reader anywhere, so it could only ever misreport.
+ *
+ * Cross-repo: a skewed peer may still SEND `tools`. It survives as an unknown
+ * key in the capabilities blob and is never re-emitted; readers that still
+ * address it get `undefined`, which is the safe default they already handle.
+ */
 export type ComputeTargetCapabilities = {
-  tools: Record<CapabilityToolName, boolean>;
   versions: Partial<Record<CapabilityToolName, string>>;
-  /** Desktop can verify browser-origin Ed25519 command signatures. */
-  commandSigning?: boolean;
-  /** Desktop requires browser-origin Ed25519 command signatures for cloud commands. */
-  commandSigningRequired?: boolean;
-  /** Desktop supports the loop runner token-refresh protocol. */
-  loopRunnerRefreshSupported?: boolean;
-  /** Desktop supports the loop runner heartbeat protocol. */
-  loopRunnerHeartbeatSupported?: boolean;
+  /**
+   * ISS-12784: always `false`. Every earlier build sent `true`, and the server
+   * merges new capabilities over the stored ones without clearing this key, so
+   * omitting it would leave every upgraded target marked as signing-capable.
+   * Readers test `=== true`, so `false` means "unsupported" to old and new
+   * servers alike. Drop it once no server or web code reads the key (the
+   * web/API half of PLN-2216 T-5.2–T-5.5).
+   */
+  commandSigning: false;
 };
 
 export const EMPTY_CAPABILITIES: ComputeTargetCapabilities = {
-  tools: {
-    claude: false,
-    codex: false,
-    git: false,
-    gh: false,
-    python3: false,
-  },
   versions: {},
-  commandSigning: true,
+  commandSigning: false,
 };
 
 export type HealthResponse = {
@@ -165,7 +139,14 @@ export type RiskTier = "none" | "low" | "medium" | "high";
  * nothing leaves the machine. Stored as `null` until the user consents (nothing
  * syncs by default).
  */
-export type SyncObservabilityTier = "full" | "metadata" | "local";
+export const SyncObservabilityTier = {
+  Full: "full",
+  Metadata: "metadata",
+  Local: "local",
+} as const;
+
+export type SyncObservabilityTier =
+  (typeof SyncObservabilityTier)[keyof typeof SyncObservabilityTier];
 
 /**
  * FEA-3907 — the graduated "data sync level" the desktop Settings "Data & Sync"
@@ -176,13 +157,20 @@ export type SyncObservabilityTier = "full" | "metadata" | "local";
  * {@link SyncObservabilityTier} — so both this contract type and the mapping
  * module can share it without a circular import.
  */
-export const DataSyncLevel = {
-  Off: "off",
-  Metadata: "metadata",
-  Redacted: "redacted",
-  Full: "full",
-} as const;
-export type DataSyncLevel = (typeof DataSyncLevel)[keyof typeof DataSyncLevel];
+// ISS-6147: `DataSyncLevel` is NOT declared here any more — it lives in
+// `@repo/api/src/types/data-sync-level`, which `@repo/app` imports too. Consumers
+// import that leaf directly: re-exporting it here would be a barrel (biome
+// `noBarrelFile`).
+//
+// ISS-10554: both imports of that leaf at the top of this file carry an explicit
+// `.ts` extension, and must keep it. The desktop e2e specs import this module, so
+// Playwright's ESM loader reads it verbatim — and that loader cannot resolve an
+// extensionless `@repo/api/src/types/…` specifier. A TYPE-only import is erased at
+// transpile and never reached it; the VALUE import this file now needs is not, and
+// an extensionless one aborts the whole `desktop-e2e` suite at load. `.ts` is the
+// form every spec and `src/main/packs/convert-engine.ts` already use;
+// `apps/desktop/tsconfig.json` enables `allowImportingTsExtensions` for it, and
+// Vite resolves it away when it bundles main and the renderer.
 
 /**
  * PRD-532 §7 consent gate — does the chosen tier permit the SESSION-METADATA
@@ -216,113 +204,6 @@ export function syncTierAllowsTranscripts(
   tier: SyncObservabilityTier | null
 ): boolean {
   return tier === "full";
-}
-
-/**
- * FEA-4169 / ISS-4623 / ISS-4705 — the two NON-boolean states the cached org sync policy
- * can hold. They look alike ("we hold no explicit boolean") but mean opposite
- * things, so {@link orgPolicyAllowsSessionSync} resolves them differently:
- *
- * - `Unknown` — the desktop has NOT resolved a policy value for a server that is
- *   KNOWN to support one. Either nothing has been fetched yet (pre-first-fetch,
- *   offline, signed out, every attempt failed), OR — ISS-4705 — a CURRENT server
- *   that advertised policy support (`sessionSyncPolicySupported === true`)
- *   returned an otherwise well-formed identity that dropped ONLY
- *   `sessionSyncPolicyEnabled` (a buggy-current-server response). This is the
- *   LOADING / cannot-trust state, and it fails CLOSED.
- * - `Unsupported` — the server answered successfully but advertised NO policy
- *   support (omitted the `sessionSyncPolicySupported` capability marker), i.e. an
- *   OLD server that predates the field. This is the VERSION-SKEW state, and it
- *   degrades to the prior device-consent behavior (rationale on
- *   {@link orgPolicyAllowsSessionSync}).
- */
-export const OrgSessionSyncPolicyUnresolved = {
-  Unknown: "unknown",
-  Unsupported: "unsupported",
-} as const;
-export type OrgSessionSyncPolicyUnresolved =
-  (typeof OrgSessionSyncPolicyUnresolved)[keyof typeof OrgSessionSyncPolicyUnresolved];
-
-/**
- * FEA-4169 — the server-owned ORG POLICY value the desktop caches from
- * `GET /desktop/identity` (`sessionSyncPolicyEnabled`). This is the OUTER gate
- * ABOVE per-device sync consent (PRD-542/FEA-4103); the pure predicate
- * {@link orgPolicyAllowsSessionSync} maps a cached value to an allow/deny
- * decision.
- *
- * States:
- * - `true`  — a NEW server explicitly enabled the org (e.g. the Closedloop org).
- * - `false` — a NEW server explicitly disabled the org (the default). Fail-closed:
- *             no session data may egress.
- * - `"unknown"` / `"unsupported"` — see {@link OrgSessionSyncPolicyUnresolved}.
- */
-export type OrgSessionSyncPolicyState =
-  | boolean
-  | OrgSessionSyncPolicyUnresolved;
-
-/**
- * FEA-4169 / ISS-4705 — decide whether the org policy permits ANY local session
- * data to egress, given the cached policy state.
- *
- * This is the OUTER gate: callers still AND it with the existing per-tier device
- * consent (`syncTierAllows*`). It never *widens* consent — it can only suppress.
- *
- * Semantics (privacy gate → fail CLOSED):
- * - policy `true`  → allow (org explicitly enabled; the tier gate decides the rest).
- * - policy `false` → DENY (org explicitly disabled by a NEW server; nothing egresses).
- * - policy `"unknown"` (not resolved for a policy-supporting server: pre-first-fetch,
- *   offline, signed out, every attempt failed, OR — ISS-4705 — a buggy CURRENT
- *   server that advertised support but dropped only the policy field) → DENY.
- *   ISS-4623: this used to allow, which turned the whole load window into an
- *   unknown→allow race where the auth/cloud-online paths could tick a sync lane
- *   before the org policy had ever been read. A privacy gate must not read "still
- *   loading" or a malformed capable-server response as consent, so the load window
- *   now fails closed and opens only once the policy explicitly resolves.
- *   `OrgSyncPolicyStore` self-heals (`ensureResolved` plus its own retry timer), so
- *   unresolved is a latency window rather than a permanent stall.
- * - policy `"unsupported"` (a NEW desktop talking to an OLD server that never sent
- *   the capability marker) → degrade to the prior device-consent behavior (allow
- *   at THIS gate; the tier gate still applies). Rationale (repo cross-repo skew
- *   rule): a server with no policy capability to state must not newly suppress
- *   sync for users who already consented via their device tier — that would be a
- *   regression caused purely by a desktop upgrade. A CURRENT server ALWAYS
- *   advertises support and sends an explicit boolean (default `false` for a
- *   disabled org, `true` for the Closedloop org), so it never lands here: an
- *   explicit `false` still fails closed, and only a genuinely capability-less
- *   response degrades.
- *
- * Egress safety while unsupported: this is the org-policy layer only. The tier
- * gate is ANDed on top, and by default a user who has not consented to a sync
- * tier syncs nothing anyway (tier `null` → no metadata / no transcripts once
- * unified-auth-onboarding is on). So the skew degrade does not itself open an
- * egress path; it defers to the pre-existing device consent. The server also
- * enforces the same policy independently at every ingest boundary
- * (`apps/api/lib/org-session-sync-policy.ts`), so this gate is defense in depth.
- */
-export function orgPolicyAllowsSessionSync(
-  policy: OrgSessionSyncPolicyState
-): boolean {
-  if (typeof policy === "boolean") {
-    return policy;
-  }
-  switch (policy) {
-    case OrgSessionSyncPolicyUnresolved.Unsupported:
-      // Old server that never advertised policy support → version skew, degrade
-      // to the prior device-consent behavior (the tier gate still applies).
-      return true;
-    case OrgSessionSyncPolicyUnresolved.Unknown:
-      // Not yet resolved, or a capable-but-buggy current server that dropped the
-      // policy field → fail closed until the policy explicitly resolves.
-      return false;
-    default: {
-      // Exhaustiveness guard: a newly added unresolved state must add an arm
-      // above rather than inherit an allow/deny nobody reviewed. The `never`
-      // assertion is the compile-time half; the runtime half still DENIES,
-      // because a privacy gate that lets an unmapped state through fails OPEN.
-      const _exhaustive: never = policy;
-      return false;
-    }
-  }
 }
 
 export type AlwaysAllowRule = {
@@ -385,6 +266,13 @@ export type SavedConfig = {
   desktopSecurityUpgradeProtocolVersion?: 1;
   /** Last relay compute target observed for this profile. */
   lastComputeTargetId?: string | null;
+  /**
+   * ISS-9003: the environment key `lastComputeTargetId` was minted under,
+   * stamped by the same hello that recorded the id. Additive and optional: a
+   * profile saved before this field existed omits it, which reads as unknown and
+   * is refused rather than trusted — see `retained-compute-target-identity.ts`.
+   */
+  lastComputeTargetEnvironmentKey?: string | null;
   /** One-time Settings prompt dismissal scoped to this profile. */
   desktopSecurityPromptDismissedAt?: string | null;
   /** Pending managed onboarding attempt scoped to this profile, if any. */
@@ -440,6 +328,21 @@ export type DesktopSettings = {
   /** First-launch Agent Dashboard welcome has been shown and dismissed (FEA-1333). */
   dashboardWelcomeSeen: boolean;
   /**
+   * ISS-12552 (PRD-800 "Rollout"): the last settled answer of the
+   * `attribution-evidence-policy` flag, held while no answer is available: the
+   * organization it turned the policy on for, or null for off. Hidden: no Labs
+   * toggle and no UI reads it. Default off.
+   */
+  attributionEvidenceParsePolicyOrganizationId: string | null;
+  /**
+   * ISS-12135: organizations whose invite spotlight is already answered on this
+   * profile, set by a seeded profile (`scripts/vibe-profile/sign-in.ts`). The
+   * renderer's own answer stays in `localStorage`; this is read beside it, for
+   * a launcher whose renderer origin (and so its `localStorage`) is new each
+   * launch.
+   */
+  inviteSpotlightAnsweredOrganizationIds: string[];
+  /**
    * ISS-5061 re-gate bookkeeping: whether the one-shot clear of any
    * `agent-collaboration-network` value persisted before that toggle was
    * re-registered has already run. Not a user-facing setting.
@@ -469,28 +372,20 @@ export type DesktopSettings = {
    * feature-flags.ts.
    */
   showRedactedSyncLevel: boolean;
-  /** Desktop-local opt-in that requires trusted browser command signatures. */
-  commandSigningEnforcementEnabled: boolean;
   defaultApprovalTier: RiskTier;
   relayOrigin: string;
   apiOrigin: string;
   webAppOrigin: string;
   verboseLogging: boolean;
-  binaryPaths?: {
-    claude?: string;
-    gh?: string;
-    codex?: string;
-    cursor?: string;
-    opencode?: string;
-    python3?: string;
-    git?: string;
-  };
+  binaryPaths?: BinaryPaths;
   savedConfigs: SavedConfig[];
   activeConfigId: string | null;
-  updateAndRestartEnabled: boolean;
   sessionCompletionNotifications: boolean;
-  /** Opt-in OS notification when a loop you launched reaches terminal success. */
-  loopCompletedNotificationsEnabled: boolean;
+  /**
+   * ISS-6170: opt-in OS notification the first time a cloud-assigned required
+   * plugin proves uninstallable on this build.
+   */
+  terminalInstallFailureNotifications: boolean;
   /**
    * Gates the main-process TranscriptSyncService raw-transcript archive lane
    * (FEA-2715). Off by default and restart-scoped pending end-to-end validation.
@@ -500,6 +395,15 @@ export type DesktopSettings = {
    * PRD-532 §7 — the user's chosen sync-observability tier from the unified
    * onboarding SyncConsent step. `null` until they consent (see
    * {@link SyncObservabilityTier}).
+   *
+   * ISS-10554: the null is written EXPLICITLY on a first launch, and the key's
+   * PRESENCE is load-bearing. Absence is what every build — including an older one
+   * that cannot know about a newer build's markers — reads as "never chose, infer
+   * from behavior", and the first-launch seed also writes the connectivity flags a
+   * full-syncing install would carry, which is exactly the evidence that inference
+   * uses. A recorded `null` says "answered, and the answer is no consent", so the
+   * tier stays the user's to give. It grants nothing: every gate reads the VALUE,
+   * and a null tier fails closed.
    */
   syncObservabilityTier: SyncObservabilityTier | null;
   /**
@@ -509,6 +413,15 @@ export type DesktopSettings = {
    * {@link hasRecordedSyncConsent}) and on a consent recorded with no org.
    */
   syncConsentOrganizationId: string | null;
+  /**
+   * ISS-10890 — whether this DEVICE agreed to local session analysis, by
+   * pressing Welcome's "Start Analyzing My Sessions" (operator decision,
+   * 2026-09-24). Releases the ISS-10950 boot gate; it grants no egress, which
+   * stays on the tier above. Not org-scoped and never cleared: it is the consent
+   * record itself, like the tier, so nothing closes it. Its one writer is the
+   * `desktop:record-session-analysis-agreement` IPC the Welcome Start calls.
+   */
+  sessionAnalysisAgreed: boolean;
   /**
    * ISO timestamp when the user last dismissed the managed-key revival hint
    * (D5 / AC-010). Null means never dismissed.
@@ -530,79 +443,106 @@ export type DesktopSettings = {
    */
   "db-ahead-banner": boolean;
   /**
-   * ISS-4715: desktop-only Labs flag gating the startup-readiness experience.
-   * Off by default; the existing first-launch import banner remains the fallback.
-   */
-  startupReadinessExperience: boolean;
-  /**
    * ISS-5574 (ISS-4779 closed-by-default policy): shared web+desktop UI flag
    * (PostHog key "sessions-branches-tab-titles") gating per-page browser tab
    * titles on the Sessions and Branches surfaces. Every one of those pages
    * reported the application-wide title, so several open tabs were
-   * indistinguishable. Off by default. Registered here so the same shared key
-   * resolves OFF on desktop (Labs opt-in) instead of via the build-type dev
-   * default, keeping it from leaking on desktop while hidden on web.
+   * indistinguishable. Off by default. Declared here so the key carries a
+   * default-off `DesktopSettings` field and is never absent from `getAll()` on
+   * a fresh profile; the renderer resolves the gate itself from the signed-in
+   * account's PostHog assignment — the same key space the web app reads — so
+   * one key gates both surfaces.
    */
   "sessions-branches-tab-titles": boolean;
   /**
-   * ISS-6241 (ISS-4779 closed-by-default): desktop-only Labs flag surfacing the
-   * real per-session count on the import splash's live Compute step, so a
-   * multi-hour data-revision rebuild stops reading as a hang. Off by default —
-   * with it off the step renders the bare activity dot exactly as today.
-   * Registered here so getFlag/setFlag type casts remain sound.
+   * ISS-6207 (ISS-4779 closed-by-default): desktop-only Labs flag gating the
+   * renderer surfacing the second degraded terminal of the boot import — it settled
+   * with source files outstanding after their automatic re-drive budget was
+   * spent (`retriesExhausted`). Off by default.
+   *
+   * Gates exactly one thing: the first-launch splash's new give-up SENTENCE
+   * (`isBootImportGiveUpVisible`). It gates NO predicate and NO projection — the
+   * terminal fact stays on the ingest snapshot with the flag off, and the
+   * startup-readiness panel, the Sessions summary cards and the Sessions read
+   * gate fold it unconditionally. That is deliberate and load-bearing: the
+   * main-process half of this ticket is unconditional, so dropping the field
+   * behind a closed flag leaves a stopped import reading as still running and
+   * hangs those consumers. Rationale in full, and the revision that proved it,
+   * live on `DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY` in
+   * `feature-flags-labs-surfaces.ts` — the canonical owner; do not restate it
+   * here.
+   *
+   * Desktop-only surface — `apps/app` has no boot import — so there is
+   * no web flag to keep in parity. Registered here so getFlag/setFlag type
+   * casts remain sound and `getAll()` reports the closed default on a fresh
+   * profile.
    */
-  "compute-progress-count": boolean;
-  /**
-   * ISS-5112 (ISS-4779 closed-by-default): desktop-only Labs flag gating
-   * guest-mode first-run onboarding — a signed-out device reaches the Dashboard
-   * instead of the blocking auth overlay, and the contextual sign-up entry
-   * points that replace it. Off by default: with it off the first-launch
-   * onboarding overlay blocks the Dashboard exactly as it does today (PRD-532
-   * M4). Desktop-only surface — `apps/app` has no pre-auth desktop first run —
-   * so the Labs toggle is the only opt-in and there is no web flag to keep in
-   * parity. Registered here so getFlag/setFlag type casts remain sound.
-   */
-  "guest-onboarding": boolean;
+  "boot-import-degraded-terminal": boolean;
   /**
    * ISS-5607 (ISS-4779 closed-by-default): desktop-only Labs flag gating the
    * read-source badge in the session DETAIL pane's header. Off by default: with
    * it off the pane renders exactly as it does today and shows no badge.
    * Desktop-only surface — the split is between this machine's SQLite reader and
-   * the cloud reader, which `apps/app` has no analogue of — so the Labs toggle
-   * is the only opt-in. Registered here so getFlag/setFlag type casts remain
-   * sound.
+   * the cloud reader, which `apps/app` has no analogue of. Registered here so
+   * getFlag/setFlag type casts remain sound.
    */
   "session-detail-read-source": boolean;
   /**
-   * ISS-4890 / ISS-4906 / ISS-4901: shared web+desktop UI flag (PostHog key
-   * "sessions-grid-fold-legibility") gating the Sessions grid horizontal-fold
-   * legibility pass — relocating a saved column order's Cost column back in
-   * front of the fold, damping the resize sawtooth, and fading the scroll
-   * region's edges while more columns exist past it. Off by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
-   * type casts remain sound.
+   * FEA-4204: shared web+desktop UI flag (PostHog key
+   * "sessions-comment-count-tag") gating the comment-count tag in the Sessions
+   * list's lead cell. Off by default (ISS-4779 closed-by-default); the renderer now reads
+   * the signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound and
+   * `getAll()` resolves the closed default rather than `undefined` on a fresh
+   * profile.
    */
-  "sessions-grid-fold-legibility": boolean;
+  "sessions-comment-count-tag": boolean;
+  /**
+   * ISS-6959: shared web+desktop UI flag (PostHog key
+   * "branches-pinned-name-column") gating the pinned Name column on the Branches
+   * list. Off by default (ISS-4779 closed-by-default); the renderer now reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag type casts remain sound and `getAll()` resolves the
+   * closed default rather than `undefined` on a fresh profile.
+   */
+  "branches-pinned-name-column": boolean;
   /**
    * ISS-5125: shared web+desktop UI flag (PostHog key
    * "member-self-service-install") gating the member self-service install
    * affordance on the packs per-machine block. Off by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
    * type casts remain sound.
    */
   "member-self-service-install": boolean;
   /**
-   * GridTable v2: shared web+desktop UI flag (PostHog key "grid-table-v2")
-   * gating the shared `GridTable` enhancement pass — the per-column options
-   * menu, hover-revealed sort affordance, row selection and activation,
-   * click-to-keyboard cell navigation, the leading utility column, and the
-   * rows-per-page control. Off by default (ISS-4779 closed-by-default); users
-   * opt in via the Labs panel since the packaged desktop renderer has no
-   * PostHog wiring. Registered here so getFlag/setFlag type casts remain sound.
+   * ISS-6384: shared web+desktop UI flag (PostHog key
+   * "artifact-cell-primitives") gating adoption of the shared artifact cell
+   * primitives (`CountCell`, `MonoIdCell`, `InlineScalarCell`) by the four
+   * production tables that each hand-rolled the same data types. Off by default
+   * (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
+   * getFlag/setFlag type casts remain sound.
    */
-  "grid-table-v2": boolean;
+  "artifact-cell-primitives": boolean;
+  /**
+   * ISS-6385 (ISS-4779 closed-by-default): the desktop half of the shared
+   * web+desktop key gating the create-a-tag-then-pick-its-colour step in
+   * `TagPicker`, which this renderer mounts through `BranchesView` ->
+   * `BranchesListSurfaceV2` -> `ApprovedBranchesTable`.
+   */
+  "tag-create-color": boolean;
+  /**
+   * ISS-8215 / ISS-8214: shared web+desktop UI flag (PostHog key
+   * "custom-field-editor-contracts") over the two custom-field editor contract
+   * corrections deferred from PR #6074 — persisting the canonical enum-option
+   * colour id instead of the add-field dialog's Tailwind class, and excluding
+   * the owning row from a reference picker. Off by default (ISS-4779
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
+   * type casts remain sound.
+   */
+  "custom-field-editor-contracts": boolean;
+  /** ISS-6400: shared eligible Branch navigation cutover; default off. */
+  "eligible-branch-navigation": boolean;
   /**
    * ISS-5523: shared web+desktop UI flag (PostHog key
    * "chart-distinguishable-series") gating distinguishable series colors on the
@@ -610,8 +550,8 @@ export type DesktopSettings = {
    * palette has slots cycles the palette and draws unrelated series in the same
    * fill; on, it caps at one series per distinguishable color and folds the
    * remainder into a neutral "Other (N)" band. Off by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
    * type casts remain sound.
    */
   "chart-distinguishable-series": boolean;
@@ -621,19 +561,28 @@ export type DesktopSettings = {
    * the TokenOps lens splitting AI spend by the originating session's lifecycle
    * outcome (ended clean / ended with error / still running / not recorded). Off
    * by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
    * type casts remain sound.
    */
   "insights-spend-outcome": boolean;
+  /**
+   * FEA-4201: shared web+desktop UI flag (PostHog key
+   * "sessions-custom-date-window") gating the Sessions listing's explicit
+   * from/to date window — the `?from=`/`?to=` URL params, the Custom entry point
+   * beside the preset pills, and the clear control beside it.
+   * Off, both params are inert and the listing reads over the rolling preset
+   * exactly as before. Off by default (ISS-4779 closed-by-default); the renderer now reads
+   * the signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound.
+   */
+  "sessions-custom-date-window": boolean;
   /**
    * ISS-5061: shared web+desktop UI flag (PostHog key
    * "agent-collaboration-network") gating the "Agent Collaboration Network" row
    * on the Insights overview dashboard — the aggregate subagent-collaboration
    * graph (FEA-3537). Off, the row is absent entirely rather than degrading to
    * the graph's own empty state. Off by default (ISS-4779 closed-by-default);
-   * users opt in via the Labs panel since the packaged desktop renderer has no
-   * PostHog wiring. Registered here so getFlag/setFlag type casts remain sound.
+   * the renderer reads the signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound.
    *
    * DELIBERATELY RE-INTRODUCED after ISS-5280 (#4482) retired it — see
    * `@repo/api/src/types/agent-collaboration-network-flag`.
@@ -644,8 +593,8 @@ export type DesktopSettings = {
    * "agents-default-sort-usage") gating the Agents catalog's usage-bearing
    * default sort (Invocations descending) and the one-time rewrite of a
    * persisted view still carrying the untouched alphabetical default. Off by
-   * default (ISS-4779 closed-by-default); users opt in via the Labs panel since
-   * the packaged desktop renderer has no PostHog wiring. Registered here so
+   * default (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
    * getFlag/setFlag type casts remain sound.
    */
   "agents-default-sort-usage": boolean;
@@ -658,8 +607,8 @@ export type DesktopSettings = {
    * renders that provenance with the source type it actually came from, and the
    * Source facet's options, counts and membership all key on the same honest
    * value so an offered option can never match zero rows. Off by default
-   * (ISS-4779 closed-by-default); users opt in via the Labs panel since the
-   * packaged desktop renderer has no PostHog wiring. Registered here so
+   * (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
    * getFlag/setFlag type casts remain sound.
    */
   "agents-source-provenance-honesty": boolean;
@@ -670,12 +619,92 @@ export type DesktopSettings = {
    * rendered subtotal rather than the branch's own attributed total — including
    * the arm where the branch has no total at all, which previously rendered a
    * fallback figure with nothing saying it was one. Off by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
    * type casts remain sound and `getAll()` resolves the closed default rather
    * than `undefined` on a fresh profile.
    */
   "branch-timeline-cost-fallback-marker": boolean;
+  /** ISS-7090 — finite-window retained Last-active cohort explanation. */
+  "branches-cohort-transparency": boolean;
+  /**
+   * ISS-8510 — Branches approved summary honest first-load shell. Registered
+   * here so Desktop settings and Labs metadata keep the shared key typed and
+   * default-off while the renderer reads signed-in PostHog assignment.
+   */
+  "branches-summary-honest-loading": boolean;
+  /**
+   * ISS-7229 — session-detail "Claude reported" cost row, beside the ClosedLoop
+   * estimate. Off by default (ISS-4779 closed-by-default); the renderer reads the
+   * signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound and `getAll()`
+   * resolves the closed default rather than `undefined` on a fresh profile.
+   */
+  "session-claude-reported-cost": boolean;
+  /**
+   * ISS-7259 — session-detail harness launch-attribution rows. Off by default
+   * (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
+   * getFlag/setFlag type casts remain sound and `getAll()` resolves the closed
+   * default rather than `undefined` on a fresh profile.
+   */
+  "session-launch-attribution": boolean;
+  /**
+   * ISS-5637: the session-detail Tokens row distinguishing a session that
+   * recorded NO token usage from one measured at zero. Off by default (ISS-4779
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
+   * type casts remain sound and `getAll()` resolves the closed default rather
+   * than `undefined` on a fresh profile.
+   */
+  "session-tokens-recorded-honesty": boolean;
+  /**
+   * ISS-7737: the session-detail Turns, Tokens, and Cost rows each naming the
+   * population they count, so a parent-only turn count and a subagent-folded
+   * token/cost rollup stop reading as a numerator over a denominator. Off by
+   * default (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
+   * getFlag/setFlag type casts remain sound and `getAll()` resolves the closed
+   * default rather than `undefined` on a fresh profile.
+   */
+  "session-metric-population-disclosure": boolean;
+  /**
+   * ISS-7427: the Session Trace header's evidence disclosure, naming where the
+   * count came from when the session's main transcript is permanently absent.
+   * Off by default (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here
+   * so getFlag/setFlag type casts remain sound and `getAll()` resolves the
+   * closed default rather than `undefined` on a fresh profile.
+   */
+  "session-trace-evidence-disclosure": boolean;
+  /**
+   * ISS-8652: the Session Trace's idle rows, giving a pause between two turns
+   * its own row and its duration. Off by default (ISS-4779 closed-by-default);
+   * the renderer reads the signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound
+   * and `getAll()` resolves the closed default rather than `undefined` on a
+   * fresh profile.
+   */
+  "session-trace-idle-rows": boolean;
+  /**
+   * ISS-7427 AC5: the Session Timeline's coverage disclosure, saying the bars
+   * cover only the intervals with synced activity when the session's main
+   * transcript is permanently absent. Off by default (ISS-4779
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
+   * type casts remain sound and `getAll()` resolves the closed default rather
+   * than `undefined` on a fresh profile.
+   */
+  "session-timeline-coverage-disclosure": boolean;
+  /**
+   * ISS-7516: shared web+desktop UI flag (PostHog key
+   * "session-transcript-never-expected") gating the session-detail transcript
+   * panel's NEVER-EXPECTED absence state. A machine whose data-sync level keeps
+   * transcripts local never queues one, so its sessions were told indefinitely
+   * that the source machine would upload a transcript it is never going to
+   * send. Off by default (ISS-4779 closed-by-default). Registered here so
+   * getFlag/setFlag type casts remain sound and `getAll()` resolves the closed
+   * default rather than `undefined` on a fresh profile.
+   */
+  "session-transcript-never-expected": boolean;
   /**
    * ISS-5500: shared web+desktop UI flag (PostHog key
    * "agents-definition-empty-state-honesty") gating the Agents component detail
@@ -685,8 +714,8 @@ export type DesktopSettings = {
    * demonstrably holds whose body did not load, so the two are indistinguishable
    * on screen. With this on, the empty state is derived from the component's
    * resolution state and says which. Off by default (ISS-4779
-   * closed-by-default); users opt in via the Labs panel since the packaged
-   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so getFlag/setFlag
    * type casts remain sound.
    */
   "agents-definition-empty-state-honesty": boolean;
@@ -698,9 +727,8 @@ export type DesktopSettings = {
    * and the "Lines shipped" / "Total cost" cards — which reduce over branch rows
    * the server emits with null measurements, so they are permanently dashed —
    * are dropped instead of sitting beside `LOC / $` as its apparent missing
-   * operands. Off by default (ISS-4779 closed-by-default); users opt in via the
-   * Labs panel since the packaged desktop renderer has no PostHog wiring.
-   * Registered here so getFlag/setFlag type casts remain sound AND so `getAll()`
+   * operands. Off by default (ISS-4779 closed-by-default); the renderer reads the
+   * signed-in PostHog assignment. Registered here so getFlag/setFlag type casts remain sound AND so `getAll()`
    * carries the key on a fresh profile.
    */
   "agents-detail-honesty": boolean;
@@ -709,12 +737,23 @@ export type DesktopSettings = {
    * "agents-type-tab-overflow") gating the Agents catalog type-tab strip
    * disclosing the tabs it cannot fit behind a real overflow menu, instead of
    * clipping them behind an edge fade no keyboard user can reach. Off by
-   * default (ISS-4779 closed-by-default); users opt in via the Labs panel since
-   * the packaged desktop renderer has no PostHog wiring. Registered here so
+   * default (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
    * getFlag/setFlag type casts remain sound AND so `getAll()` — which spreads
    * `DEFAULT_DESKTOP_SETTINGS` — reports the key on a fresh profile.
    */
   "agents-type-tab-overflow": boolean;
+  /**
+   * ISS-5532: shared web+desktop UI flag (PostHog key
+   * "agents-card-attribute-labels") gating the Agents catalog card naming the
+   * attributes it promotes into its header, instead of opening with a bare
+   * value — `Tool —` — that nothing on the card identifies. Off by default
+   * (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
+   * getFlag/setFlag type casts remain sound AND so `getAll()` — which spreads
+   * `DEFAULT_DESKTOP_SETTINGS` — reports the key on a fresh profile.
+   */
+  "agents-card-attribute-labels": boolean;
   /**
    * ISS-5534: shared web+desktop UI flag (PostHog key
    * "agents-invocations-dedupe") gating the Agents list Invocations summary
@@ -722,14 +761,25 @@ export type DesktopSettings = {
    * directly — its invocations are the SUM of its skill/command/subagent/mcp
    * children's — so on the "All" type tab, where the plugin and those children
    * are all rows, the card's flat sum double-counts them. Off by default
-   * (ISS-4779 closed-by-default); users opt in via the Labs panel since the
-   * packaged desktop renderer has no PostHog wiring. Registered here so
+   * (ISS-4779 closed-by-default); the renderer reads the signed-in PostHog assignment. Registered
+   * here so
    * getFlag/setFlag type casts remain sound AND so `getAll()` — which spreads
    * `DEFAULT_DESKTOP_SETTINGS` — reports the key on a fresh profile.
    */
   "agents-invocations-dedupe": boolean;
   /**
-   * ISS-6544 — the ten Labs flags below were registered in `FEATURE_FLAGS`
+   * ISS-6822: shared web+desktop UI flag (PostHog key
+   * "agents-bounded-page-data") gating the Agents list's bounded page-data
+   * read — one call returning the visible page, the facet counts, and both
+   * summary windows, instead of loading the whole inventory into the renderer
+   * to derive them there. Off by default (ISS-4779 closed-by-default); the renderer now reads the signed-in PostHog assignment.
+   * Registered here so getFlag/setFlag type casts remain sound AND so
+   * `getAll()` — which spreads `DEFAULT_DESKTOP_SETTINGS` — reports the key on a
+   * fresh profile.
+   */
+  "agents-bounded-page-data": boolean;
+  /**
+   * ISS-6544 — these Labs flags were registered in `FEATURE_FLAGS`
    * WITHOUT a field here, so `getAll()` reported `undefined` for them on a fresh
    * profile instead of the closed `false`. `getFlag` hid it: it reaches the
    * registry default through a `FlagKey` cast, so only the `getAll()` spread of
@@ -739,34 +789,37 @@ export type DesktopSettings = {
    * `feature-flags.ts` — the single source of truth for what a flag means. These
    * declarations exist so the persisted contract carries the key; they
    * deliberately do not restate it.
-   *
-   * ISS-4556/ISS-4559 — the Sessions displayed-status SSOT. Read in the desktop
-   * MAIN process (not the renderer) via `displayed-status-parity-gate.ts`.
    */
-  "sessions-displayed-status-parity": boolean;
   /** ISS-6206 — the honest whole-app cloud-readiness verdict. Desktop-only. */
   stoppedLaneReadiness: boolean;
-  /** ISS-4773 — the Sessions Cost card's confirmed-billed headline. */
-  "sessions-cost-billing-honesty": boolean;
   /** ISS-5842 — the unified delta-chip treatment on the metric primitives. */
   "metric-delta-unified-pill": boolean;
+  /** ISS-6493 — the neutral delta chip taking the same pill as its siblings. */
+  "metric-delta-neutral-pill": boolean;
+  "sessions-delivery-card-no-data": boolean;
   /** ISS-5266 — the Diagnostics → Withheld tab. Desktop-only. */
   "opencode-withheld-diagnostics": boolean;
+  /** ISS-6758 — the Diagnostics → Coverage tab (PRD-488 FR-12). Desktop-only. */
+  "activity-coverage-diagnostics": boolean;
   /** ISS-5271 — the Sessions summary cards' honest never-loaded state. */
   "sessions-summary-honest-loading": boolean;
-  /** ISS-5548 — full-column click targets on the Session Timeline bars. */
-  "session-timeline-column-hit-target": boolean;
   /** ISS-5566 — the Session Timeline's synthesized-cost disclosure. */
   "session-timeline-synthesized-cost": boolean;
-  /** ISS-5564 — the Activity breakdown's confidence-basis footer. */
-  "session-phase-confidence-disclosure": boolean;
-  /** ISS-5841 — the Session Activity phases breakdown. */
-  "session-activity-phases": boolean;
+  /** ISS-5850 — the Session Timeline's unmeasured-interval disclosure. */
+  "session-timeline-source-extent": boolean;
+  /** ISS-8241 — the Branch pull-request box's MEASURED checks projection. */
+  "branch-detail-measured-checks": boolean;
+  /** ISS-8241 — the Branch pull-request box's base ref and author. */
+  "branch-detail-pr-base-and-author": boolean;
+  /** ISS-6954/6955/6957/6958 — the Branch detail outcome presentation. */
+  "branch-detail-metric-honesty": boolean;
+  /** ISS-8427 — session detail's plural Branches row. */
+  "session-touched-branches": boolean;
   /**
    * PRD-538 (R5 + R6): desktop-only Labs flag gating the ENTIRE subscription
    * session-limits feature — both the `/usage` capture (ISS-5353) and the nav
    * bars + detail drawer that render it (ISS-5354). Off by default: the feature
-   * is not product-approved yet (Mike, 2026-08-07).
+   * is not product-approved yet (Marisol, 2026-08-07).
    *
    * The gate is deliberately at the CAPTURE, not the render: with this off the
    * desktop performs no credential read, issues no `/usage` request, schedules
@@ -780,17 +833,31 @@ export type DesktopSettings = {
   /**
    * FEA-3843 / PRD-555: desktop-only Labs flag gating the in-app Docs & Help
    * experience (Help view, command-palette docs answers, contextual "Help on
-   * this" anchors). Off by default; users opt in via the Labs panel. The
+   * this" anchors). Off by default; users opt in through the surviving Labs gate. The
    * `docs-help` IPC itself is always registered — this flag only keeps the
    * renderer surfaces dark until graduation. Registered here so getFlag/setFlag
    * type casts remain sound.
    */
   docsHelp: boolean;
   /**
+   * ISS-7352 (ISS-4779 closed-by-default): persist the Claude Code OTel cost,
+   * API-request, and tool-permission signals the local OTLP receiver already
+   * decodes and drops. Off by default, and INTERNAL — unlike its neighbours here
+   * there is no opt-in surface: its registry entry is `hiddenFromLabs: true`, and its category is `"Labs"` rather than
+   * the `"Data Collection"` that `data-collection-card.tsx` selects on, so
+   * neither settings surface renders it and the only way to turn it on is to
+   * edit the settings record. Why it ships without that surface (the open
+   * consent and partial-coverage questions):
+   * `claude-code-otel-capture-flag.ts`. The receiver still binds and ACKs either
+   * way — this flag only decides whether what it decodes reaches the local
+   * store. Registered here so getFlag/setFlag type casts remain sound.
+   */
+  claudeCodeOtelCapture: boolean;
+  /**
    * ISS-5808 (ISS-4779 closed-by-default): gates the Requests view's live
-   * behavior — the while-mounted re-read of events and jobs, and the copy that
+   * behavior — the while-mounted re-read of events, and the copy that
    * separates a failed read from a genuinely empty list. Off by default; users
-   * opt in via the Labs panel. Registered here so getFlag/setFlag type casts
+   * opt in through the surviving Labs gate. Registered here so getFlag/setFlag type casts
    * remain sound.
    */
   requestsLiveRefresh: boolean;
@@ -807,34 +874,6 @@ export type DesktopSettings = {
   collectCursorEnabled: boolean;
   collectCopilotEnabled: boolean;
   /**
-   * PRD-566 / FEA-4348 (formerly FEA-3813 / PRD-553 M1): desktop-side gate for
-   * Routines (the renamed "Scheduled Tasks" feature) — the local crewd scheduler
-   * host (SchedulerService + SqliteTaskStore daemon) plus the renderer nav/view.
-   * Off by default; restart-scoped (the daemon is snapshotted at boot). The key
-   * `"routines"` equals the PostHog flag so the same key gates both surfaces.
-   * Registered here so getFlag/setFlag type casts remain sound.
-   */
-  routines: boolean;
-  /**
-   * Legacy pre-rename "Scheduled Tasks" Labs flag (PRD-553 M1). Optional and NOT
-   * in the flag registry. PRD-566 / FEA-4348 renamed the field to `routines` but
-   * keeps this key as a compatibility SHADOW so the rename is not a one-way door:
-   * `routines` is authoritative on new builds and is mirrored here on boot and on
-   * every `setFlag`, so a downgrade to a pre-rename build still reads the current
-   * value instead of defaulting the scheduler off (see
-   * `migrateScheduledTasksToRoutines` + `SettingsStore.setFlag`). Do not remove
-   * until all installs are past the rename (Compatibility Guardrail).
-   */
-  scheduledTasks?: boolean;
-  /**
-   * FEA-3847 (PRD-556 M1): desktop-owned Labs flag gating the in-app Audit Bot
-   * (`audit:run` — run a crewd review character against the open repo via the
-   * harness cascade). Off by default; when off the IPC refuses the run before
-   * spawning any harness. Registered here so getFlag/setFlag type casts remain
-   * sound. M1 ships no UI (that is M2/FEA-3848).
-   */
-  auditBot: boolean;
-  /**
    * ISS-4922: desktop-owned Labs flag gating the Authored PR gate on the Local
    * session lane, so Local and the cloud projection agree on which PRs belong to
    * a session. Off by default (the suppression is user-perceivable). Registered
@@ -842,14 +881,14 @@ export type DesktopSettings = {
    */
   localSessionAuthoredPrGate: boolean;
   /**
-   * FEA-4174 / PRD-545: desktop-owned Labs flag gating Value Numerator 2.0 —
-   * the Pensero-powered delivery-metrics numerator normalized onto our
-   * session/branch/PR entities (`@repo/pensero`). Off by default; users opt in
-   * via the Labs panel. The Pensero client is server-side and env-configured,
-   * so an unconfigured install is a no-op regardless of this flag. Registered
-   * here so getFlag/setFlag type casts remain sound.
+   * ISS-7830: desktop-owned Labs flag gating whether this device RECORDS that a
+   * user opened a thread — the signal that then overrides the launch-time
+   * headless default for an agent-spawned thread. Off by default (the
+   * classification it flips is rendered). It gates the CAPTURE, in Electron main
+   * where the resolver lives; the classification read runs in the db-host child
+   * and could never see it. Registered here so getFlag/setFlag casts stay sound.
    */
-  valueNumeratorV2: boolean;
+  threadViewershipSignal: boolean;
   /**
    * ISS-5037 (ISS-4779 closed-by-default): desktop-owned gate over the ENTIRE
    * Labs navigation section — sidebar section AND every destination displayed
@@ -874,10 +913,10 @@ export type DesktopSettings = {
    * much data goes to the cloud. It supersedes the scattered
    * `cloudConnectionEnabled` / `cloudCommandsPaused` / `transcriptSyncEnabled` /
    * `syncObservabilityTier` combination: the settings store persists this level
-   * and derives those flags from it (see `data-sync-level.ts`). `null` on a
-   * fresh field means "not yet migrated / persisted" — the settings store
-   * reconciles it from the legacy flags on first read without escalating
-   * exposure. Defaults to the recommended `metadata` level for new installs.
+   * and derives those flags from it (see `data-sync-level.ts`). `null` is still
+   * a legal PERSISTED value — an upgrading install carries it until the boot
+   * migration reconciles the legacy flags — so the field stays nullable even
+   * though `getAll()` always reports the reconciled level.
    */
   dataSyncLevel: DataSyncLevel | null;
 };
@@ -890,6 +929,8 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   onboardingCompleted: false,
   onboardingPopupDismissedPermanent: false,
   dashboardWelcomeSeen: false,
+  attributionEvidenceParsePolicyOrganizationId: null,
+  inviteSpotlightAnsweredOrganizationIds: [],
   // ISS-5061 re-gate: false on a fresh profile so the one-shot residue clear
   // runs once on the first launch of a build that carries the re-registered
   // toggle, then flips true and never clears again.
@@ -900,7 +941,6 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   agentCoachingTips: false,
   agentCoachingPacks: false,
   showRedactedSyncLevel: false,
-  commandSigningEnforcementEnabled: false,
   defaultApprovalTier: "high",
   relayOrigin: DEFAULT_RELAY_ORIGIN,
   apiOrigin: DEFAULT_AUTH_API_ORIGIN,
@@ -909,45 +949,54 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   binaryPaths: {},
   savedConfigs: [],
   activeConfigId: null,
-  updateAndRestartEnabled: false,
   sessionCompletionNotifications: false,
-  loopCompletedNotificationsEnabled: false,
+  terminalInstallFailureNotifications: false,
   transcriptSyncEnabled: false,
   syncObservabilityTier: null,
   syncConsentOrganizationId: null,
+  sessionAnalysisAgreed: false,
   managedKeyHintDismissedAt: null,
   managedKeyHintLastSeenProvenance: null,
   // ISS-4714 (ISS-4779 closed-by-default): the DB-ahead banner dark-launches
-  // OFF; users opt in via the Labs panel.
+  // OFF; users opt in through the surviving Labs gate.
   "db-ahead-banner": false,
-  startupReadinessExperience: false,
   "sessions-branches-tab-titles": false,
-  // ISS-6241 (ISS-4779 closed-by-default): the import splash's Compute count
-  // dark-launches OFF; users opt in via the Labs panel.
-  "compute-progress-count": false,
-  // ISS-5112 (ISS-4779 closed-by-default): guest-mode first-run onboarding
-  // dark-launches OFF, so the signed-out Dashboard keeps its blocking auth
-  // overlay; users opt in via the Labs panel.
-  "guest-onboarding": false,
+  // ISS-6207 (ISS-4779 closed-by-default): the honest partial-import state
+  // dark-launches OFF, so every import surface keeps today's reading; users opt
+  // in through the surviving Labs gate.
+  "boot-import-degraded-terminal": false,
   // ISS-5607 (ISS-4779 closed-by-default): the session-detail read-source badge
-  // dark-launches OFF; users opt in via the Labs panel.
+  // dark-launches OFF; users opt in through the surviving Labs gate.
   "session-detail-read-source": false,
-  // ISS-4890/4906/4901 (ISS-4779 closed-by-default): the Sessions grid fold
-  // legibility pass dark-launches OFF; users opt in via the Labs panel.
-  "sessions-grid-fold-legibility": false,
-  // GridTable v2 (ISS-4779 closed-by-default): the shared GridTable
-  // enhancement pass dark-launches OFF; users opt in via the Labs panel.
-  "grid-table-v2": false,
+  // FEA-4204 (ISS-4779 closed-by-default): the Sessions lead-cell comment-count
+  // tag dark-launches OFF; users opt in through the surviving Labs gate.
+  "sessions-comment-count-tag": false,
+  // ISS-6959 (ISS-4779 closed-by-default): the Branches pinned Name column
+  // dark-launches OFF; users opt in through the surviving Labs gate.
+  "branches-pinned-name-column": false,
+  // ISS-6384 (ISS-4779 closed-by-default): adoption of the shared artifact cell
+  // primitives by the four hand-rolling tables dark-launches OFF; users opt in
+  // through the surviving Labs gate.
+  "artifact-cell-primitives": false,
+  "tag-create-color": false,
+  // ISS-8215 / ISS-8214 (ISS-4779 closed-by-default): the custom-field editor
+  // contract corrections dark-launch OFF; users opt in through the surviving Labs gate.
+  "custom-field-editor-contracts": false,
+  "eligible-branch-navigation": false,
   // ISS-4463 (ISS-4779 closed-by-default): the Insights "Spend by outcome" lens
   // — both Agents-section tiles over the same `spendByOutcome` data, so the bar
   // and the donut flip together — dark-launches OFF; users opt in via the Labs
-  // panel. (The comment here used to describe ISS-5149's track-width density
+  // gate. (The comment here used to describe ISS-5149's track-width density
   // tier: that entry was removed by ISS-5366 and its comment was left stranded
   // above the next key down.)
   "insights-spend-outcome": false,
+  // FEA-4201 (ISS-4779 closed-by-default): the Sessions custom from/to window
+  // dark-launches OFF; with it off `?from=`/`?to=` are inert and the listing
+  // reads over the rolling preset, with no Custom entry point offered.
+  "sessions-custom-date-window": false,
   // ISS-5061 (ISS-4779 closed-by-default): the Agent Collaboration Network row
   // on the Insights overview dashboard dark-launches OFF; users opt in via the
-  // Labs panel. Deliberately re-introduced after ISS-5280 (#4482) retired it —
+  // surviving Labs gate. Deliberately re-introduced after ISS-5280 (#4482) retired it —
   // with it off the row is absent entirely, no card and no grid slot.
   "agent-collaboration-network": false,
   // ISS-5523 (ISS-4779 closed-by-default): distinguishable series colors on the
@@ -970,6 +1019,41 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   // marker dark-launches OFF; with it off the headline keeps marking only the
   // timing-incomplete fallback, exactly as today.
   "branch-timeline-cost-fallback-marker": false,
+  "branches-cohort-transparency": false,
+  "branches-summary-honest-loading": false,
+  // ISS-7229 (ISS-4779 closed-by-default): the Claude-reported cost row
+  // dark-launches OFF; with it off session detail shows the estimate alone,
+  // exactly as today.
+  "session-claude-reported-cost": false,
+  // ISS-7259 (ISS-4779 closed-by-default): the launch-attribution rows
+  // dark-launch OFF; with it off session detail shows no attribution rows,
+  // exactly as today.
+  "session-launch-attribution": false,
+  // ISS-5637 (ISS-4779 closed-by-default): the Tokens row's reachable unknown
+  // state dark-launches OFF; with it off a zero-usage session keeps printing
+  // four zeros, exactly as today.
+  "session-tokens-recorded-honesty": false,
+  // ISS-7737 (ISS-4779 closed-by-default): the population disclosure
+  // dark-launches OFF; with it off Turns, Tokens, and Cost each render bare,
+  // exactly as today.
+  "session-metric-population-disclosure": false,
+  // ISS-7427 (ISS-4779 closed-by-default): the Session Trace evidence
+  // disclosure dark-launches OFF; with it off the header prints the count
+  // alone, exactly as today.
+  "session-trace-evidence-disclosure": false,
+  // ISS-8652 (ISS-4779 closed-by-default): the trace's idle rows dark-launch
+  // OFF; with it off `buildTraceGroups` drops the `idle` turn item exactly as
+  // today and the trace renders turn-to-turn with no interstitial.
+  "session-trace-idle-rows": false,
+  // ISS-7427 AC5 (ISS-4779 closed-by-default): the Session Timeline coverage
+  // disclosure dark-launches OFF; with it off the strip renders with no caption,
+  // exactly as today.
+  "session-timeline-coverage-disclosure": false,
+  // ISS-7516 (ISS-4779 closed-by-default): the never-expected transcript state
+  // dark-launches OFF; with it off a metadata-level machine's session keeps
+  // reading "It'll show up here once the source machine uploads it", exactly as
+  // today.
+  "session-transcript-never-expected": false,
   // ISS-5500 (ISS-4779 closed-by-default): the honest Definition empty state
   // dark-launches OFF; with it off the panel keeps the single legacy line.
   "agents-definition-empty-state-honesty": false,
@@ -981,28 +1065,52 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   // dark-launches OFF; with it off the strip renders every segment and only the
   // scroll track clips them, exactly as today.
   "agents-type-tab-overflow": false,
+  // ISS-5532 (ISS-4779 closed-by-default): the named card attributes
+  // dark-launch OFF; with it off the card header stacks the bare Type chip and
+  // the hand-built metric label exactly as today.
+  "agents-card-attribute-labels": false,
   // ISS-5534 (ISS-4779 closed-by-default): the Invocations de-duplication
   // dark-launches OFF; with it off the card sums invocations across every row
   // exactly as today.
   "agents-invocations-dedupe": false,
-  // ISS-6544: the ten flags below were registered as Labs toggles with no
-  // default here, so `getAll()` reported `undefined` — unspecified, not closed.
-  // Each matches its registry `default`, which is OFF for all ten (ISS-4779
+  // ISS-6822 (ISS-4779 closed-by-default): the bounded page-data read
+  // dark-launches OFF; with it off the list loads the whole inventory and
+  // reduces it in the renderer exactly as today.
+  "agents-bounded-page-data": false,
+  // ISS-6544: the flags below were registered as Labs toggles with no default
+  // here, so `getAll()` reported `undefined` — unspecified, not closed. Each
+  // matches its registry `default`, which is OFF for all of them (ISS-4779
   // closed-by-default). See the matching block in the `DesktopSettings` type.
-  "sessions-displayed-status-parity": false,
   stoppedLaneReadiness: false,
-  "sessions-cost-billing-honesty": false,
   "metric-delta-unified-pill": false,
+  // ISS-6493 (ISS-4779 closed-by-default): the neutral delta pill dark-launches
+  // OFF; with it off a neutral tone renders bare exactly as today.
+  "metric-delta-neutral-pill": false,
+  "sessions-delivery-card-no-data": false,
   "opencode-withheld-diagnostics": false,
+  "activity-coverage-diagnostics": false,
   "sessions-summary-honest-loading": false,
-  "session-timeline-column-hit-target": false,
   "session-timeline-synthesized-cost": false,
-  "session-phase-confidence-disclosure": false,
-  "session-activity-phases": false,
+  "session-timeline-source-extent": false,
+  // ISS-8241 Half A: the measured-checks projection dark-launches OFF; with it
+  // off the box asks GitHub live exactly as it does today.
+  "branch-detail-measured-checks": false,
+  // ISS-8241 Half B: the Branch pull-request box's base ref and author
+  // dark-launches OFF; with it off the box reads exactly as today.
+  "branch-detail-pr-base-and-author": false,
+  // ISS-6954/6955/6957/6958: the Branch detail outcome presentation
+  // dark-launches OFF; with it off the screen reads exactly as today.
+  "branch-detail-metric-honesty": false,
+  // ISS-8427: the plural Branches row dark-launches OFF; with it off the
+  // Properties pane renders the single-branch row exactly as today.
+  "session-touched-branches": false,
   // PRD-538 (ISS-5353/ISS-5354): subscription session limits dark-launch OFF —
   // not product-approved. Off means no credential read and no /usage call.
   subscriptionSessionLimits: false,
   docsHelp: false,
+  // ISS-7352: Claude Code OTel capture dark-launches OFF; with it off the
+  // receiver decodes and ACKs exactly as today and writes nothing.
+  claudeCodeOtelCapture: false,
   // ISS-5808: Requests live-refresh dark-launches OFF; with it off the view
   // keeps its mount-time snapshot and its previous empty-state copy exactly.
   requestsLiveRefresh: false,
@@ -1011,30 +1119,25 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   collectClaudeEnabled: true,
   collectCursorEnabled: true,
   collectCopilotEnabled: true,
-  // PRD-566 / FEA-4348: Routines (renamed "Scheduled Tasks") OFF by default (dark
-  // launch); users opt in via the Labs panel. Key equals the PostHog flag.
-  routines: false,
-  // FEA-3847 (PRD-556 M1): in-app Audit Bot OFF by default (dark launch); users
-  // opt in via the Labs panel. M1 has no UI, so the flag only enables the IPC.
-  auditBot: false,
   // ISS-4922: the Local Authored-PR gate is OFF by default (dark launch); users
-  // opt in via the Labs panel.
+  // opt in through the surviving Labs gate.
   localSessionAuthoredPrGate: false,
-  // FEA-4174 / PRD-545: Value Numerator 2.0 OFF by default (dark launch); users
-  // opt in via the Labs panel.
-  valueNumeratorV2: false,
+  // ISS-7830 (ISS-4779 closed-by-default): thread-viewership capture is OFF by
+  // default; users opt in through the surviving Labs gate.
+  threadViewershipSignal: false,
   // ISS-5037 (ISS-4779 closed-by-default): the Labs nav section is OFF by
   // default; the only opt-in is the "Enable Labs" application-menu checkbox.
   labsNav: false,
   // ISS-5310 (ISS-4779 closed-by-default): the Agents destination is OFF by
-  // default and nested inside `labsNav`; users opt in via the Labs panel once
+  // default and nested inside `labsNav`; users opt in through the surviving Labs gate once
   // Labs itself is enabled from the application menu.
   agentsNav: false,
-  // FEA-3907: the graduated data sync level. `null` here means "not yet
-  // reconciled" for an upgrading install — the settings store migrates it from
-  // the legacy flags on first read (see SettingsStore). A brand-new install with
-  // no legacy flags reconciles to the recommended `metadata` default.
-  dataSyncLevel: null,
+  // ISS-10554: a new install defaults to FULL sync. Egress is unchanged by this
+  // default — the first-launch seed records an explicit not-consented
+  // `syncObservabilityTier` (`null`) alongside the level, and the egress gate reads
+  // that tier, not this level, so it fails closed until the user answers the
+  // onboarding consent step.
+  dataSyncLevel: RECOMMENDED_DATA_SYNC_LEVEL,
 };
 
 /**
@@ -1057,11 +1160,24 @@ export const DesktopAuthStatus = {
   OpeningBrowser: "opening_browser",
   /** Browser launched; awaiting the loopback redirect carrying the auth code. */
   AwaitingRedirect: "awaiting_redirect",
-  /** Redirect received; redeeming the code (+ PKCE verifier + PoP) for tokens. */
+  /**
+   * Redirect received; redeeming the code (+ PKCE verifier + PoP) for tokens.
+   * A sign-in that asked to confirm its account also waits here, with
+   * {@link DesktopAuthState.pendingAccount} set, until the user answers
+   * (ISS-11345). Nothing is adopted until then.
+   */
   Exchanging: "exchanging",
   /** A durable session exists; access tokens are minted on demand. */
   Authenticated: "authenticated",
-  /** Stored credentials became invalid/expired/revoked and were cleared. */
+  /**
+   * The install holds a session it cannot currently use, and the user must act.
+   * The in-memory credential is always dropped, so this status means the same
+   * thing to every reader. What differs is the PERSISTED record: a credential
+   * the server invalidated/expired/revoked is wiped, while (ISS-11273) a
+   * startup restore that threw before it could decide — an unreadable keystore,
+   * an `apiOrigin` that fails validation — leaves it on disk, because the cause
+   * says nothing about the credential and the next launch re-reads it.
+   */
   RefreshFailed: "refresh_failed",
 } as const;
 export type DesktopAuthStatus =
@@ -1073,6 +1189,51 @@ export type DesktopAuthState = {
   /** Internal user id, for display/bootstrapping only — never authorization. */
   userId: string | null;
   organizationId: string | null;
+  /** True while main holds a short-lived, one-operation bootstrap credential. */
+  awaitingOrganization?: boolean;
+  /**
+   * Clerk subject for the signed-up user while no internal org-bound user row
+   * exists yet. Additive and separate from `userId`, whose value is always an
+   * internal database id and must not be overloaded with a provider id.
+   */
+  pendingUserId?: string;
+  /**
+   * ISS-10913: the evaluated outcome of the last auth return, for the FTUE
+   * funnel's `account_mode`. ADDITIVE and optional: a gateway that predates it
+   * omits the field, and `onboardingAccountModesForOutcome` folds that absence
+   * to `["unknown"]` rather than guessing from the status such a payload does
+   * still carry.
+   */
+  accountOutcome?: OnboardingAccountOutcome;
+  /**
+   * ISS-11345: the account a confirmation-gated sign-in redeemed and is holding
+   * UNADOPTED — present only while status is `Exchanging` and the user has not
+   * yet confirmed. The browser picks the account, so a shared browser can hand
+   * Desktop someone else's; this is what the user is shown before it is used.
+   */
+  pendingAccount?: DesktopIdentity;
+  /**
+   * ISS-12257: main's count of sign-in flips, each time `status` enters or
+   * leaves `Authenticated`. A replay recording reports the count it started
+   * under, and main refuses its batches once the count has moved on.
+   */
+  authGeneration?: number;
+};
+
+export type DesktopBootstrapOrganizationInput =
+  DesktopBootstrapOrganizationRequest;
+
+export type DesktopBootstrapOrganizationResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * ISS-11345: per-call options for a browser sign-in. `confirmAccount` holds the
+ * redeemed session unadopted until the user confirms the account the browser
+ * returned (see {@link DesktopAuthState.pendingAccount}).
+ */
+export type DesktopSignInOptions = {
+  confirmAccount?: boolean;
 };
 
 /** Closed set of terminal browser sign-in failure reasons. */
@@ -1093,6 +1254,12 @@ export type DesktopBrowserSignInFailure =
   | "expired"
   /** Sign-in was cancelled (explicit cancel or sign-out). */
   | "cancelled"
+  /**
+   * ISS-11345: the user answered Cancel to the account a confirmation-gated
+   * sign-in held. Main settles that run as `cancelled`; the renderer's
+   * `DesktopAuthProvider`, which renders the confirmation, reports it as this.
+   */
+  | "declined"
   /** The code redeem (token exchange) failed on the network / PoP / server. */
   | "exchange_failed";
 

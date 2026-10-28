@@ -34,12 +34,12 @@ export type SandboxPathInspection = {
 /**
  * Probe whether a candidate sandbox path is an existing directory, skipping the
  * `statSync` for anything at or under a TCC-protected user folder (Music,
- * Pictures, Documents, …) — mirroring `isGitRepository` (FEA-3641) so we never
- * trigger a macOS permission prompt for a folder that is never a valid sandbox
- * anyway. `isTccProtectedDirectory` only matches the protected folder itself, so
- * we additionally short-circuit *descendants* of a protected root before any
- * filesystem probe (wongk review), otherwise `statSync` on `~/Documents/foo`
- * would still pop the permission prompt. `expandedPath` is the ~-expanded,
+ * Pictures, Documents, …) — mirroring `isGitRepository` (FEA-3641), since such a
+ * folder is never a valid sandbox anyway (ISS-11914 measured that the stat
+ * itself raises no permission prompt). `isTccProtectedDirectory` only matches
+ * the protected folder itself, so we additionally short-circuit *descendants*
+ * of a protected root before any filesystem probe (whitlockk review), otherwise
+ * `~/Documents/foo` would still be stat'd. `expandedPath` is the ~-expanded,
  * resolved absolute path (the value the persist layer stats), so a home-relative
  * path such as `~/projects` is probed at its real location rather than a literal
  * `~` entry under the Electron cwd. Returns `undefined` when the probe is skipped
@@ -76,7 +76,7 @@ export function inspectSandboxPath(targetPath: string): SandboxPathInspection {
   // Probe the ~-expanded, resolved path — the same value the persist layer
   // (`normalizeScopePath`) stats — so a supported home-relative path like
   // `~/projects` is inspected at its real location instead of a literal `~`
-  // entry under the Electron cwd (codex/wongk review). `path` stays the raw
+  // entry under the Electron cwd (codex/whitlockk review). `path` stays the raw
   // input so the renderer can match it against the field's trimmed value.
   const expandedPath = path.resolve(expandHomePath(targetPath));
   const isGitRepo = isGitRepository(expandedPath);

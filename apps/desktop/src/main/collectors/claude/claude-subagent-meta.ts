@@ -14,9 +14,11 @@
  *    its parent subagent's transcript. The index is built once per parse pass
  *    (collectors AGENTS.md parent-scan caching).
  * 3. Delegation `toolUseResult` payloads collected while streaming the sidecar
- *    files (`{agentId, agentType, prompt}`) — this is what recovers the full
- *    kickoff prompt for nested delegations, whose scanned tool_use `input` is
- *    bounded at 1000 JSON chars and so fails to re-parse for real prompts.
+ *    files (`{agentId, agentType, prompt}`). This was the ONLY source of a
+ *    nested delegation's full kickoff prompt while the scanned tool_use
+ *    `input` was bounded at 1000 JSON chars; ISS-6480 removed that bound, so
+ *    source 2 can now carry it too and this is a redundant path rather than
+ *    the only one (ISS-7164).
  *
  * Fail-silent throughout: a missing/corrupt meta file or an unresolvable join
  * degrades to partial or no enrichment, never an error — version-skewed

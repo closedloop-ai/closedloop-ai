@@ -10,13 +10,14 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   applyCatalogFetchPlan,
   type CatalogFetchTransport,
   catalogSourceFingerprint,
   collectCatalogFetchPlan,
 } from "../src/main/packs/catalog-fetcher.js";
+import { GitHubJsonFetchStatus } from "../src/main/packs/catalog-github-client.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
 type TransportCall = { fn: string; args: unknown[] };
@@ -27,22 +28,25 @@ function fakeTransport(overrides: Partial<CatalogFetchTransport> = {}): {
 } {
   const calls: TransportCall[] = [];
   const transport: CatalogFetchTransport = {
-    fetchRepoStats: (owner, repo, useGh) => {
-      calls.push({ fn: "fetchRepoStats", args: [owner, repo, useGh] });
+    fetchRepoStats: (owner, repo) => {
+      calls.push({ fn: "fetchRepoStats", args: [owner, repo] });
       return overrides.fetchRepoStats
-        ? overrides.fetchRepoStats(owner, repo, useGh)
+        ? overrides.fetchRepoStats(owner, repo)
         : Promise.resolve({
-            repo: { stargazers_count: 7, forks_count: 3, description: "d" },
-            release: "v1.2.3",
+            status: GitHubJsonFetchStatus.Success,
+            value: {
+              repo: { stargazers_count: 7, forks_count: 3, description: "d" },
+              release: "v1.2.3",
+            },
           });
     },
-    fetchPluginManifest: (owner, repo, pluginPath, useGh) => {
+    fetchPluginManifest: (owner, repo, pluginPath) => {
       calls.push({
         fn: "fetchPluginManifest",
-        args: [owner, repo, pluginPath, useGh],
+        args: [owner, repo, pluginPath],
       });
       return overrides.fetchPluginManifest
-        ? overrides.fetchPluginManifest(owner, repo, pluginPath, useGh)
+        ? overrides.fetchPluginManifest(owner, repo, pluginPath)
         : Promise.resolve({ description: "plugin desc", version: "9.9.9" });
     },
   };
@@ -54,7 +58,7 @@ test("an unparseable github_url is skipped, not fetched", async () => {
 
   const plan = await collectCatalogFetchPlan(
     [{ packId: "p1", githubUrl: "not-a-url", contents: null }],
-    { ghAvailable: false, transport }
+    { transport }
   );
 
   assert.equal(plan.skipped, 1);
@@ -73,7 +77,7 @@ test("a standalone repo entry carries its stars, forks, description and release"
         contents: { type: "github" },
       },
     ],
-    { ghAvailable: true, transport }
+    { transport }
   );
 
   assert.equal(plan.entries.length, 1);
@@ -97,12 +101,16 @@ test("a standalone repo entry carries its stars, forks, description and release"
 
 test("a repo whose stats cannot be fetched counts as failed and yields no entry", async () => {
   const { transport } = fakeTransport({
-    fetchRepoStats: () => Promise.resolve(null),
+    fetchRepoStats: () =>
+      Promise.resolve({
+        status: GitHubJsonFetchStatus.Unavailable,
+        value: null,
+      }),
   });
 
   const plan = await collectCatalogFetchPlan(
     [{ packId: "p1", githubUrl: "https://github.com/o/r", contents: null }],
-    { ghAvailable: false, transport }
+    { transport }
   );
 
   assert.equal(plan.failed, 1);
@@ -124,7 +132,7 @@ test("a marketplace sub-plugin in its own marketplace leaves stars null", async 
         },
       },
     ],
-    { ghAvailable: false, transport }
+    { transport }
   );
 
   // github_url IS the marketplace, so the row is a subdirectory with no
@@ -155,11 +163,47 @@ test("a marketplace sub-plugin with a distinct upstream DOES fetch that upstream
         },
       },
     ],
-    { ghAvailable: false, transport }
+    { transport }
   );
 
   assert.equal(plan.entries[0].stars, 7);
   // The manifest comes from the MARKETPLACE repo; the stars from the upstream.
+  assert.deepEqual(
+    calls.find((c) => c.fn === "fetchPluginManifest")?.args.slice(0, 3),
+    ["anthropics", "claude-plugins-official", "plugins/context7"]
+  );
+  assert.deepEqual(
+    calls.find((c) => c.fn === "fetchRepoStats")?.args.slice(0, 2),
+    ["upstash", "context7"]
+  );
+});
+
+test("a marketplace sub-plugin with an unavailable distinct upstream yields no entry", async () => {
+  const { transport, calls } = fakeTransport({
+    fetchRepoStats: () =>
+      Promise.resolve({
+        status: GitHubJsonFetchStatus.Unavailable,
+        value: null,
+      }),
+  });
+
+  const plan = await collectCatalogFetchPlan(
+    [
+      {
+        packId: "context7",
+        githubUrl: "https://github.com/upstash/context7",
+        contents: {
+          type: "github-claude-plugin",
+          marketplace_repo: "anthropics/claude-plugins-official",
+          plugin_path: "plugins/context7",
+        },
+      },
+    ],
+    { transport }
+  );
+
+  assert.equal(plan.failed, 1);
+  assert.equal(plan.entries.length, 0);
   assert.deepEqual(
     calls.find((c) => c.fn === "fetchPluginManifest")?.args.slice(0, 3),
     ["anthropics", "claude-plugins-official", "plugins/context7"]
@@ -188,22 +232,11 @@ test("the manifest version wins over the release tag", async () => {
         },
       },
     ],
-    { ghAvailable: false, transport }
+    { transport }
   );
 
   // No manifest version → fall through to the upstream's release tag.
   assert.equal(plan.entries[0].lastRelease, "v1.2.3");
-});
-
-test("gh availability is forwarded to the transport rather than re-resolved", async () => {
-  const { transport, calls } = fakeTransport();
-
-  await collectCatalogFetchPlan(
-    [{ packId: "p", githubUrl: "https://github.com/o/r", contents: null }],
-    { ghAvailable: true, transport }
-  );
-
-  assert.equal(calls[0]?.args[2], true);
 });
 
 // ---------------------------------------------------------------------------
@@ -265,9 +298,9 @@ test("apply writes a matching entry and skips one whose source moved", async () 
 
     const summary = await applyCatalogFetchPlan(prisma, {
       startedAt: new Date().toISOString(),
-      usedGhCli: false,
       skipped: 0,
       failed: 0,
+      bundled: 0,
       entries: [
         {
           packId: "fresh",
@@ -311,9 +344,9 @@ test("apply carries the collect half's skipped and failed counts through", async
   try {
     const summary = await applyCatalogFetchPlan(prisma, {
       startedAt: new Date().toISOString(),
-      usedGhCli: true,
       skipped: 2,
       failed: 3,
+      bundled: 0,
       entries: [],
     });
 
@@ -322,7 +355,6 @@ test("apply carries the collect half's skipped and failed counts through", async
     assert.equal(summary.skipped, 2);
     assert.equal(summary.failed, 3);
     assert.equal(summary.succeeded, 0);
-    assert.equal(summary.used_gh_cli, true);
     assert.ok(summary.ended_at);
   } finally {
     await close();

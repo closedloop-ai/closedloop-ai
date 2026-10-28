@@ -3,11 +3,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { SettingsPage } from "../components/settings-page";
 import { SettingsTab } from "../settings-tabs";
 
 /**
- * wongk, PR #4501 (ISS-5011): the `/organization` forward lands on
+ * whitlockk, PR #4501 (ISS-5011): the `/organization` forward lands on
  * `/settings?tab=organization`. When Settings is ALREADY mounted, that is a soft
  * navigation that changes only the search params, so the App Router re-renders
  * this component in place with a new `initialTab` instead of remounting it.
@@ -48,7 +49,7 @@ vi.mock("@repo/analytics/client", () => ({
   usePostHogDistinctId: () => CLERK_USER_ID,
 }));
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
+vi.mock("@repo/app/shared/feature-flags/feature-flagged", () => ({
   FeatureFlagged: ({ children }: { children: ReactNode }) => children,
 }));
 
@@ -82,10 +83,6 @@ vi.mock("../components/transcript-search-card", () => ({
   TranscriptSearchCard: () => null,
 }));
 
-vi.mock("../components/session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: () => null,
-}));
-
 vi.mock("../components/session-frustration-card", () => ({
   SessionFrustrationCard: () => null,
 }));
@@ -94,28 +91,12 @@ vi.mock("../components/api-keys-settings-panel", () => ({
   ApiKeysSettingsPanel: () => null,
 }));
 
-vi.mock("../components/anthropic-api-key-card", () => ({
-  AnthropicApiKeyCard: () => null,
-}));
-
-vi.mock("../components/cloud-compute-mode-card", () => ({
-  CloudComputeModeCard: () => null,
-}));
-
-vi.mock("../components/local-compute-targets-card", () => ({
-  LocalComputeTargetsCard: () => null,
-}));
-
 vi.mock("../components/github-integration-card", () => ({
   GitHubIntegrationCard: () => null,
 }));
 
-vi.mock("../components/google-integration-card", () => ({
-  GoogleIntegrationCard: () => null,
-}));
-
-vi.mock("../components/linear-integration-card", () => ({
-  LinearIntegrationCard: () => null,
+vi.mock("@repo/app/settings/v2/panels/plugins/google-drive-card", () => ({
+  GoogleDriveCard: () => null,
 }));
 
 function renderSettings(initialTab: string) {
@@ -125,7 +106,8 @@ function renderSettings(initialTab: string) {
   const view = render(
     <QueryClientProvider client={queryClient}>
       <SettingsPage initialTab={initialTab} isAdmin={false} />
-    </QueryClientProvider>
+    </QueryClientProvider>,
+    { wrapper: WebFeatureFlagProvider }
   );
 
   return {

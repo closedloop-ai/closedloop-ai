@@ -1,5 +1,6 @@
 "use client";
 
+import { useLinkedSearchWriter } from "@repo/app/shared/hooks/use-linked-search-writer";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -34,25 +35,37 @@ export function useReplaceListParams<TFilters>(
 ): (
   filters: TFilters,
   pageIndex?: number,
-  clearParamKeys?: readonly string[]
+  clearParamKeys?: readonly string[],
+  writeExtraParams?: (params: URLSearchParams) => void
 ) => void {
   const navigation = useNavigation();
   const pathname = usePath();
-  const searchParams = useSearchParamsValue();
+  const { readLatest, replaceSearch } = useLinkedSearchWriter(
+    pathname,
+    useSearchParamsValue(),
+    navigation.replace
+  );
 
   return useCallback(
-    (filters: TFilters, pageIndex = 0, clearParamKeys?: readonly string[]) => {
-      const nextParams = new URLSearchParams(searchParams.toString());
+    (
+      filters: TFilters,
+      pageIndex = 0,
+      clearParamKeys?: readonly string[],
+      writeExtraParams?: (params: URLSearchParams) => void
+    ) => {
+      const nextParams = readLatest();
       for (const key of clearParamKeys ?? []) {
         nextParams.delete(key);
       }
       writeFilters(nextParams, filters);
       writePage?.(nextParams, pageIndex);
-      const qs = nextParams.toString();
-      navigation.replace(qs ? `${pathname}?${qs}` : pathname, {
-        scroll: false,
-      });
+      // FEA-4201: a caller-owned param written in the SAME snapshot as the
+      // facets and the page reset. A second `replace` would start from the
+      // pre-click params and restore what this one removed (the ISS-4728 trap),
+      // so a window set alongside a page reset has to ride this write.
+      writeExtraParams?.(nextParams);
+      replaceSearch(nextParams);
     },
-    [navigation, pathname, searchParams, writeFilters, writePage]
+    [readLatest, replaceSearch, writeFilters, writePage]
   );
 }

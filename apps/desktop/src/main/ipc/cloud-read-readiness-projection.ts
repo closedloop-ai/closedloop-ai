@@ -1,6 +1,6 @@
 /**
  * @file cloud-read-readiness-projection.ts
- * @description ISS-6206 (wongk review on #5050): the main process's readiness
+ * @description ISS-6206 (whitlockk review on #5050): the main process's readiness
  * projection, as a pure factory over three getters rather than a closure buried
  * in the composition root.
  *
@@ -43,8 +43,8 @@ export type CloudReadReadinessProjectionDeps = {
 };
 
 /**
- * The `getCloudReadReadiness` handler body. A `null` sample projects to an
- * explicitly UNKNOWN snapshot — never a drained one.
+ * The `getCloudReadReadiness` projection the runtime-status payload carries. A
+ * `null` sample projects to an explicitly UNKNOWN snapshot — never a drained one.
  */
 export function createCloudReadReadinessProjector(
   deps: CloudReadReadinessProjectionDeps
@@ -53,7 +53,7 @@ export function createCloudReadReadinessProjector(
     projectCloudReadReadiness({
       importComplete: deps.isImportComplete(),
       snapshot: deps.getLatestSnapshot(),
-      // ISS-6206 (shafty023 review on #5050): the CONFIGURATION answer for each
+      // ISS-6206 (davetho review on #5050): the CONFIGURATION answer for each
       // lane, read fresh on every projection so flipping the setting is
       // reflected on the next sample. A stopped sample can never supply this —
       // see `cloud-read-lane-applicability.ts`.

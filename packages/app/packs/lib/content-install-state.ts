@@ -15,7 +15,7 @@
  * components actually detected on disk for the pack, by name. The desktop adapter
  * feeds those names in; this module matches each content entry against them.
  *
- * Honesty over optimism (the FEA-4088 / FEA-4083 Parker principle):
+ * Honesty over optimism (the FEA-4088 / FEA-4083 Pascoe principle):
  *  - A component the machine reports installed → `Installed`.
  *  - A component NOT in the installed set, on a pack that IS installed → an
  *    explicit `NotInstalled` (the pack is here but this piece isn't — the member

@@ -1,62 +1,55 @@
 import { randomUUID } from "node:crypto";
 import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
-import {
-  AgentSessionSyncMode,
-  SyncPayloadEncoding,
-} from "@repo/api/src/types/agent-session";
-import { isDbHostShutdownError } from "../../shared/db-host-shutdown-error.js";
+import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import type { DesktopAgentSessionsAck } from "../cloud/cloud-protocol.js";
-import { DesktopAgentSessionsAckReason } from "../cloud/cloud-protocol.js";
-import { errorMessage } from "../diagnostics/component-sync-diagnostics.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { DesktopSyncBatchOutcome } from "../telemetry/app-otel-runtime.js";
+import { reportFreshestSessionLagAnomaly } from "../telemetry/sync-freshness-lag-telemetry.js";
+import { adoptStrandedOutboxRows } from "./adopt-stranded-outbox-rows.js";
 import type { SessionAttributionResolverCache } from "./agent-session-attribution.js";
+import { classifyDeadLetteredSession } from "./agent-session-dead-letter-sync-state.js";
 import {
   advanceIncrementalPassCount,
   selectDrainCandidates,
 } from "./agent-session-drain-selection.js";
+import { resolveFreshestUpdatedAtMs } from "./agent-session-freshness-lag.js";
 import { resolveEmptyHydration } from "./agent-session-hydration-absence.js";
 import { hydrateSyncCandidates } from "./agent-session-hydration-budget.js";
-import {
-  clearOutboxOnAck as clearOutboxOnAckWrite,
-  recordOutboxDeadLetter as recordOutboxDeadLetterWrite,
-  recordOutboxEnqueue as recordOutboxEnqueueWrite,
-  recordOutboxReEnqueue as recordOutboxReEnqueueWrite,
-  recordOutboxRetry as recordOutboxRetryWrite,
-} from "./agent-session-outbox-writers.js";
+import { createOutboxWriters } from "./agent-session-outbox-writers.js";
+import { collectOwedIds, dequeueOwedIds } from "./agent-session-owed-queues.js";
 import {
   handlePreparationFailures,
+  inProcessAgentSessionPayloadPreparer,
   prepareCandidatePayloadsIsolated,
   selectHydratableCandidateIds,
 } from "./agent-session-payload-preparation.js";
-import type { SessionCursorRow } from "./agent-session-read-model.js";
-import { processAcceptedAck } from "./agent-session-sync-accepted-ack.js";
+import { SessionProgressTally } from "./agent-session-progress-tally.js";
 import {
-  applyBoundedFailureFold,
-  type BoundedFailureFoldConfig,
-} from "./agent-session-sync-ack-fold.js";
+  acceptedAckInput,
+  processAcceptedAck,
+  type SentBatchAttempt,
+} from "./agent-session-sync-accepted-ack.js";
 import {
-  INGESTION_FAILED_BACKOFF_MS,
-  MAX_CONSECUTIVE_INGESTION_FAILED,
-  MAX_CONSECUTIVE_RATE_LIMITED,
-  MAX_CONSECUTIVE_TIMEOUTS,
   MAX_CONSECUTIVE_TRANSPORT_ERRORS,
-  RATE_LIMIT_BACKOFF_MS,
   SESSION_PAYLOAD_BYTE_CAP,
   SESSION_PAYLOAD_CONTENT_BYTE_CAP,
-  TARGET_NOT_OWNED_BACKOFF_MS,
-  UNAUTHENTICATED_BACKOFF_MS,
   UNCONFIRMED_ABSENCE_BACKOFF_MS,
 } from "./agent-session-sync-backoff-policy.js";
-import { SessionSyncCapability } from "./agent-session-sync-capabilities.js";
+import {
+  resolvePreSendDeferral,
+  SessionSyncCapability,
+} from "./agent-session-sync-capabilities.js";
 import { AgentComponentSyncLane } from "./agent-session-sync-component-lane.js";
 import { syncPayloadSizerFor } from "./agent-session-sync-compression.js";
 import {
-  AGENT_SESSION_SYNC_SCHEMA_VERSION,
   type AgentSessionSyncBatch,
   AgentSessionSyncClass,
+  buildAgentSessionSyncBatch,
   type SyncedAgentSession,
 } from "./agent-session-sync-contract.js";
+import { createSessionCursorPersister } from "./agent-session-sync-cursor-persist.js";
+import type { SessionCursorBoundary } from "./agent-session-sync-cursor-prefix.js";
 import {
   type DeadLetterLifecycleDeps,
   enforceDeadLetterCap,
@@ -66,11 +59,17 @@ import {
   resetDeadLetterRevisitAfterDrainedAck,
 } from "./agent-session-sync-dead-letter-lifecycle.js";
 import {
+  applyPendingChunkDiscard,
   deadLetterOversizedLocalSession,
-  dropIdleCandidates,
   reconcilePendingOutboxIfIdle,
   type SessionDispositionDeps,
+  screenUploadableCandidates,
 } from "./agent-session-sync-dispositions.js";
+import { createSessionFoldRunners } from "./agent-session-sync-fold-runners.js";
+import {
+  createSyncPassIdentityGuard,
+  type SyncPassIdentityGuard,
+} from "./agent-session-sync-pass-identity.js";
 import {
   SyncPassPump,
   type SyncPassRun,
@@ -81,42 +80,36 @@ import {
 } from "./agent-session-sync-pass-trace.js";
 import {
   type AgentSessionPayloadPreparer,
-  prepareAgentSessionPayload,
+  tilingStrippedSessionIds,
+  type UnsendableComponentUnits,
 } from "./agent-session-sync-payload.js";
 import {
   accumulatePreparedPayloads,
+  isPendingChunkDiscard,
   type PendingChunks,
+  type PreparedPayloadAccumulator,
+  pendingChunkSendState,
   resolvePendingChunkTransition,
 } from "./agent-session-sync-pending-chunks.js";
+import { pickReadyCandidates } from "./agent-session-sync-progress-counts.js";
+import { dispatchRejectedAck } from "./agent-session-sync-rejection-dispatch.js";
 import {
-  capPersistedTopIds,
   collectIdsAtTimestamp,
   formatBytes,
-  isLocalSerializationError,
 } from "./agent-session-sync-service-helpers.js";
 import type {
   AgentSessionSyncProgress,
   AgentSessionSyncServiceOptions,
   AgentSessionSyncStartOptions,
 } from "./agent-session-sync-service-options.js";
-import type {
-  AgentSessionOutboxEntry,
-  AgentSessionSyncSource,
-  OutboxRetryState,
-  PersistedSyncState,
-} from "./agent-session-sync-source.js";
+import type { AgentSessionSyncSource } from "./agent-session-sync-source.js";
 import {
-  logActivityChunkingDowngradeDeferral,
-  logCompressionDowngradeDeferral,
+  logSyncPreSendDeferral,
   logSyncTickFailure,
 } from "./agent-session-sync-tick-failure-log.js";
 import { applyTransportErrorFold } from "./agent-session-sync-transport-error-fold.js";
 import { TransportTimeoutBudget } from "./agent-session-sync-transport-timeout-budget.js";
-import {
-  applyValidationFailure,
-  isMultiPartSyncEnvelope,
-  isValidationFailureReason,
-} from "./agent-session-sync-validation-failure.js";
+import { isMultiPartSyncEnvelope } from "./agent-session-sync-validation-failure.js";
 import {
   type BackfillQueueFeedContext,
   type BackfillQueueFeedState,
@@ -124,10 +117,25 @@ import {
   injectIdsIntoLiveQueue,
 } from "./backfill-queue-feed.js";
 import { feedIncrementalCursorRows } from "./incremental-cursor-feed.js";
+import { runInitialBackfillWalk } from "./initial-backfill-walk.js";
+import { hydratePersistedCursorForPass } from "./persisted-cursor-hydration.js";
+import { priorityUploadClaims } from "./priority-upload-claims.js";
+import { createLongLivedSessionAttributionCache } from "./session-attribution-cache.js";
+import {
+  failureCountForReason,
+  reportSessionMetadataAttemptFailure,
+  resolveSyncPayloadShapingPair,
+  syncReasonForAckReason,
+} from "./sync-failure-diagnostic.js";
 import { SyncPollTimers } from "./sync-poll-timers.js";
-import { syncedSessionIsSubstantive } from "./synced-session-substantive.js";
 
 const TAG = "agent-session-sync";
+const agentSessionSyncLogDeps = {
+  logError: (message: string) => gatewayLog.error(TAG, message),
+  logInfo: (message: string) => gatewayLog.info(TAG, message),
+  logWarn: (message: string) => gatewayLog.warn(TAG, message),
+};
+
 /**
  * Goal stage 3: the FALLBACK SWEEP cadence — no longer the thing that makes
  * sync happen. The event-driven pump (`notifyLocalSessionActivity`, the ack
@@ -152,6 +160,14 @@ export class AgentSessionSyncService {
   private observedTopUpdatedAt: string | null = null;
   private observedIdsAtTopUpdatedAt = new Set<string>();
   /**
+   * ISS-8041: `sessions.updated_at` per queued id, for ids a live cursor scan
+   * admitted. It is the only evidence that can place a still-owed row against a
+   * candidate watermark, so an id ABSENT here refuses cursor advancement
+   * outright — see `agent-session-sync-cursor-prefix.ts`. Bounded by the queues:
+   * written on admission, evicted in `dequeue`, dropped on identity change.
+   */
+  private readonly queuedUpdatedAtById = new Map<string, string>();
+  /**
    * FEA-2733: whether the initial cursor enumeration has run for the current
    * identity. Distinguishes "not yet started the first-connect walk" (queues
    * transiently empty before the first tick, or an empty local store) from
@@ -159,12 +175,32 @@ export class AgentSessionSyncService {
    */
   private initialBackfillPassRun = false;
   /**
-   * FEA-1962: the source key the in-memory cursor was last hydrated for. `null`
-   * means "not yet hydrated" (or hydrated for an unknown identity). When the
-   * computed source key differs from this, the next sync clears cursor/queue
-   * state and re-hydrates from the new key's persisted row.
+   * Every durable-outbox write, bound to this lane's live target. The target is
+   * re-resolved per call with the `hydratedSourceKey ?? resolveSyncSourceKey()`
+   * precedence every writer used, so a hydration or account switch can never let
+   * a write land on the previous identity's partition.
+   */
+  private readonly outbox = createOutboxWriters(() => ({
+    sourceKey:
+      this.hydratedSourceKey ?? SessionSyncCapability.sourceKey(this.options),
+    source: this.options.getSource?.() ?? null,
+  }));
+  /**
+   * FEA-1962: the source key the in-memory cursor was last hydrated for; `null`
+   * is "not yet hydrated" (or for an unknown identity). When the computed key
+   * differs, the next sync clears cursor/queue state and re-hydrates from it.
    */
   private hydratedSourceKey: string | null = null;
+  /**
+   * ISS-6067: the identity the in-memory source-derived state (cursor, queues,
+   * dead-letters, retry counters) belongs to. NOT a synonym for
+   * `hydratedSourceKey`, whose `null` means "re-run the once-per-identity resume
+   * read": the discard path un-hydrates a pass that already seeded this state, so
+   * keying the clear on that marker let the next identity inherit the previous
+   * target's cursor. Nulled by `clearSourceDerivedState`, which is what keeps it
+   * describing the state.
+   */
+  private sourceDerivedStateKey: string | null = null;
   private lastIncrementalBatchAttemptedAtMs = 0;
   private featureDisabledForSession = false;
   private firstAckReceived = false;
@@ -177,21 +213,33 @@ export class AgentSessionSyncService {
   private consecutiveIncrementalPasses = 0;
   private backfillQueue: string[] = [];
   private readonly backfillQueuedIds = new Set<string>();
-  private readonly attributionCache: SessionAttributionResolverCache = {
-    attributionByCwd: new Map(),
-    launchMetadataRootByCwd: new Map(),
-    repoFullNameByPath: new Map(),
-  };
-  /** Consecutive timeout count per session ID for dead-letter detection. */
-  private readonly timeoutCountById = new Map<string, number>();
+  // ISS-8611: bounded — a FIELD, so see `session-attribution-cache.ts`.
+  private readonly attributionCache: SessionAttributionResolverCache =
+    createLongLivedSessionAttributionCache();
   /**
-   * FEA-1461: consecutive `rate_limited` count per session ID. Parallel to
-   * `timeoutCountById` — kept separate so the existing timeout dead-letter
-   * threshold and the new rate-limit threshold do not contaminate each other.
+   * The four ENVIRONMENTAL attempt TALLIES: `ack_timeout` (ISS-8605 F2),
+   * `rate_limited` (ISS-8605 F1), `ingestion_failed` (ISS-7730), and an ack
+   * reason this build cannot name (ISS-8595). None is a budget — every one of
+   * those classes is lane-wide, so `main/sync/AGENTS.md` invariant 4 forbids a
+   * terminal path reading it and `laneStalledSinceMsById` below is the bound.
+   * They are kept, and kept SEPARATE so no class is charged for another's
+   * failures, because `attempt_count` is what a dead-letter row and the ISS-7248
+   * diagnostic report, and what `loadPendingSessionOutboxEngineState` selects on
+   * (`attempt_count > 0`) to find a stalled row and rehydrate its clock.
    */
+  private readonly timeoutCountById = new Map<string, number>();
   private readonly rateLimitedCountById = new Map<string, number>();
-  /** Consecutive `ingestion_failed` count per session ID. */
+  private readonly unknownAckReasonCountById = new Map<string, number>();
   private readonly ingestionFailedCountById = new Map<string, number>();
+  /**
+   * ISS-7730: when each session's current unbroken LANE-WIDE failure run began
+   * (ms since epoch), rehydrated from the durable `lane_stalled_since`. This is
+   * the bound that replaces the retry budget `ingestion_failed` is exempt from,
+   * so invariant 5's terminal path stays reachable. Cleared with every other
+   * per-class budget by `clearFailureStateForId`, so a recovered row starts a
+   * fresh run instead of inheriting an already-expired one.
+   */
+  private readonly laneStalledSinceMsById = new Map<string, number>();
   /**
    * FEA-3366: consecutive `validation_failed` count per session ID. Parallel to
    * the other retry counters so a transient validation rejection gets a small
@@ -215,8 +263,8 @@ export class AgentSessionSyncService {
    */
   private readonly validationBisectIds = new Set<string>();
   /**
-   * FEA-3364: consecutive THROWN-transport-error count per session ID. A thrown
-   * `sendBatch` (dropped socket / serialization failure) never produced an ack,
+   * FEA-3364: consecutive THROWN-error count per session ID. A throw the fold
+   * charges to the row (never a dropped connection, ISS-10602) produced no ack,
    * so it is tracked separately from the ack-reason counters above. Bounded by
    * `MAX_CONSECUTIVE_TRANSPORT_ERRORS` so a persistently failing send is
    * eventually dead-lettered instead of retrying every 5s forever.
@@ -234,6 +282,8 @@ export class AgentSessionSyncService {
    * deadline is in the future, `pickReadyCandidates` skips the session.
    */
   private readonly nextRetryAfterMs = new Map<string, number>();
+  /** ISS-7099: the renderer-facing progress counters for one source identity. */
+  private readonly progressTally = new SessionProgressTally();
   /**
    * Session IDs removed from the queue after exceeding a retry threshold, mapped
    * to their retry-after deadline (ms since epoch). FEA-3363: the deadline lets
@@ -243,18 +293,11 @@ export class AgentSessionSyncService {
    */
   private readonly deadLetteredIds = new Map<string, number>();
   /**
-   * FEA-3795 (PRD-536 E2): consecutive dead-letter count per session ID, driving
-   * the PROGRESSIVE retry backoff (`deadLetterRetryDelayMs`). Incremented each
-   * time an id is dead-lettered (recoverable class), so the first dead-letter
-   * gets the short base window and each subsequent re-dead-letter of the same id
-   * doubles it toward the 24h cap. Unlike the per-class retry counters, this is
-   * DELIBERATELY NOT cleared by `clearFailureStateForId` (the recovery path):
-   * clearing it would reset a persistently-failing id back to the short window on
-   * every recovery, defeating the escalation. It is cleared only on a verified
-   * server ack (genuine forward progress). Scoped to a running process: a cold
-   * restart re-derives it from zero (the durable recovery machinery — FEA-3697 —
-   * still re-drives every dead-letter to the cloud; the escalation just restarts
-   * at the base, which is harmless and avoids a schema change).
+   * FEA-3795 / ISS-8617: consecutive recoverable dead-letter count per session
+   * ID, driving the progressive retry backoff (`deadLetterRetryDelayMs`).
+   * Incremented each time an id is dead-lettered recoverably, cleared only on a
+   * verified server ack, and seeded from the durable outbox on resume so a
+   * relaunch cannot restart the short recovery window.
    */
   private readonly deadLetterCountById = new Map<string, number>();
   /**
@@ -276,9 +319,17 @@ export class AgentSessionSyncService {
    * Goal stage 2: the ack-omitted-ONLY re-drive cycle count, the exact sibling
    * of `chunkValidationCycleById` above and charged on its own class for the
    * same reason. Spends `MAX_ACK_OMITTED_DEAD_LETTERS`; survives recovery,
-   * cleared only by a verified ack, evicted by `enforceDeadLetterCap`. The same
-   * cold-restart KNOWN GAP applies, with the same guarantee: each process spends
-   * one capped allowance, then the class goes terminal.
+   * cleared only by a verified ack, evicted by `enforceDeadLetterCap`.
+   *
+   * ISS-9182 gave this class a DURABLE sibling the other one still lacks —
+   * `ack_omitted_cycle_count`, charged on every ack-omitted dead-letter
+   * (terminal ones too, which this map skips) and never reset. A resume seeds
+   * this map from it, so the three-cycle bound survives a restart whichever
+   * door re-drives the row; the boot re-pend also reads it and leaves a row
+   * that has spent its cycles dead-lettered. `promoteDeadLetterIfIdle` still
+   * revisits a set-aside row once per idle cycle, but a spent row's next
+   * dead-letter is terminal rather than a fresh recoverable cycle
+   * (`sqliteSelectRedrivableSessionDeadLetters` states why that trickle stays).
    */
   private readonly ackOmittedCycleById = new Map<string, number>();
   /**
@@ -304,6 +355,16 @@ export class AgentSessionSyncService {
    * enqueue before a pass has ever claimed the lane.
    */
   private currentPassGuard: () => boolean = () => false;
+  /**
+   * ISS-8116 (davetho / whitlockk review): the same publication for the
+   * IDENTITY-ONLY half, which the accepted-ack continuation needs and
+   * {@link currentPassGuard} cannot supply — that one folds in `shouldRun()`,
+   * and an ack the server already accepted must survive a readiness drop.
+   * Published rather than threaded for the reason above; a new pass can never
+   * overwrite it mid-continuation, because `syncSessionsOnce` is single-flight
+   * on `syncing` for exactly as long as the pass's awaits are outstanding.
+   */
+  private currentPassIdentityGuard: () => boolean = () => false;
   /** Remaining chunks for an oversized session being sent in parts. */
   // FEA-4138/FEA-4152: the in-flight tail of an oversized session being drained
   // one chunk per tick. The `PendingChunks.compress` encoding contract (pinned
@@ -338,6 +399,35 @@ export class AgentSessionSyncService {
    */
   private readonly pump = new SyncPassPump(gatewayLog, TAG);
 
+  /**
+   * ISS-7730: every rejection fold, bound once to this service's counters,
+   * queues, and outbox. Declared after the counter maps above so the view
+   * captures live references; the queues ARE reassigned on an identity change,
+   * which is why `queueSizes` reads them through a closure.
+   */
+  private readonly folds = createSessionFoldRunners({
+    sourceKey: () => SessionSyncCapability.sourceKey(this.options),
+    nextRetryAfterMs: this.nextRetryAfterMs,
+    rateLimitedCountById: this.rateLimitedCountById,
+    timeoutCountById: this.timeoutCountById,
+    unknownAckReasonCountById: this.unknownAckReasonCountById,
+    ingestionFailedCountById: this.ingestionFailedCountById,
+    laneStalledSinceMsById: this.laneStalledSinceMsById,
+    validationFailedCountById: this.validationFailedCountById,
+    chunkValidationCycleById: this.chunkValidationCycleById,
+    validationBisectIds: this.validationBisectIds,
+    clearFailureStateForId: (id) => this.clearFailureStateForId(id),
+    markDeadLettered: (...args) => this.markDeadLettered(...args),
+    dequeue: (syncMode, ids) => this.dequeue(syncMode, ids),
+    ...this.outbox.slices.folds,
+    queueSizes: () => ({
+      incremental: this.incrementalQueue.length,
+      backfill: this.backfillQueue.length,
+      deadLettered: this.deadLetteredIds.size,
+    }),
+    ...agentSessionSyncLogDeps,
+  });
+
   constructor(options: AgentSessionSyncServiceOptions) {
     this.options = options;
     this.componentLane = new AgentComponentSyncLane(options, {
@@ -345,21 +435,7 @@ export class AgentSessionSyncService {
       isStarted: () => this.started,
     });
     this.preparePayloads =
-      options.preparePayloads ??
-      ((sessions, maxBytes, compress, activityChunkingSupported) => {
-        const sizer = syncPayloadSizerFor(compress === true);
-        return Promise.resolve(
-          sessions.map((session) =>
-            prepareAgentSessionPayload(
-              session,
-              maxBytes,
-              sizer,
-              undefined,
-              activityChunkingSupported === true
-            )
-          )
-        );
-      });
+      options.preparePayloads ?? inProcessAgentSessionPayloadPreparer;
   }
 
   start(options: AgentSessionSyncStartOptions = {}): void {
@@ -381,41 +457,30 @@ export class AgentSessionSyncService {
     this.resetSourceState();
   }
 
-  /**
-   * FEA-2733: content-blind snapshot of local→cloud sync progress for the
-   * renderer "syncing your history" indicator. Reads in-memory queue state only
-   * (no DB access, no ids) so it is cheap to poll on the runtime-status cadence.
-   * `caughtUp` is gated on `initialBackfillPassRun` so it never reports "up to
-   * date" before the first-connect walk has enumerated local history.
-   */
+  /** The renderer-facing progress snapshot; the projection is pure (ISS-7099). */
   getSyncProgress(): AgentSessionSyncProgress {
-    const pendingBackfillSessions = this.backfillQueue.length;
-    const pendingIncrementalSessions = this.incrementalQueue.length;
-    const hasPendingParts = this.pendingChunks !== null;
-    const sourceKey = SessionSyncCapability.sourceKey(this.options);
-    const identified = sourceKey !== null;
-    // FEA-2733: the in-memory queue/flag state belongs to `hydratedSourceKey`.
-    // Between a compute-target (account) switch and the next sync tick that
-    // re-hydrates, the current source key differs from the hydrated one, so the
-    // drained queues actually describe the PRIOR identity. Gate `caughtUp` on
-    // the keys matching so a freshly-switched target never inherits the old
-    // account's "up to date" before its own walk has run.
-    const sourceMatchesHydrated =
-      identified && sourceKey === this.hydratedSourceKey;
-    const queuesDrained =
-      pendingBackfillSessions === 0 &&
-      pendingIncrementalSessions === 0 &&
-      !hasPendingParts;
-    return {
-      identified,
-      pendingBackfillSessions,
-      pendingIncrementalSessions,
-      backfilling: pendingBackfillSessions > 0,
-      caughtUp:
-        sourceMatchesHydrated && this.initialBackfillPassRun && queuesDrained,
+    return this.progressTally.sample({
+      backfillQueue: this.backfillQueue,
+      incrementalQueue: this.incrementalQueue,
+      nextRetryAfterMs: this.nextRetryAfterMs,
+      nowMs: Date.now(),
+      hasPendingParts: this.pendingChunks !== null,
+      sourceKey: SessionSyncCapability.sourceKey(this.options),
+      hydratedSourceKey: this.hydratedSourceKey,
+      initialBackfillPassRun: this.initialBackfillPassRun,
       deadLetteredSessions: this.deadLetteredIds.size,
       deadLetteredComponents: this.componentLane.deadLetteredCount,
-    };
+    });
+  }
+
+  /** ISS-11427: this session's dead-letter sync state, if it is set aside. */
+  readDeadLetterState(id: string) {
+    return classifyDeadLetteredSession(id, this.deadLetterLifecycleDeps());
+  }
+
+  /** ISS-10429: the row the durable cursor is waiting on, for the burn-down. */
+  readCursorBoundary(): SessionCursorBoundary | null {
+    return this.cursor.readBoundary();
   }
 
   /**
@@ -458,25 +523,27 @@ export class AgentSessionSyncService {
     this.incrementalQueuedIds.clear();
     this.backfillQueue = [];
     this.backfillQueuedIds.clear();
+    // ISS-8041: both halves of the prefix-boundary state are derived from THIS
+    // identity's rows and its `sync_state` row, so neither may survive into the
+    // next one.
+    this.queuedUpdatedAtById.clear();
+    this.cursor.reset();
     this.attributionCache.attributionByCwd.clear();
     this.attributionCache.launchMetadataRootByCwd.clear();
     this.attributionCache.repoFullNameByPath.clear();
-    this.timeoutCountById.clear();
-    this.rateLimitedCountById.clear();
-    this.ingestionFailedCountById.clear();
-    this.validationFailedCountById.clear();
+    // ISS-8610: every tally, deadline and stall clock the FOLDS own, reset in
+    // the collaborator that declares them rather than listed again here.
+    this.folds.resetForIdentity();
     // Goal stage 2: drop the ack-omitted budget with the other per-row counters.
     this.ackOmittedCountById.clear();
-    // FEA-4375: drop pending validation-bisection flags on identity change/stop.
-    this.validationBisectIds.clear();
     this.transportErrorCountById.clear();
     // ISS-5088: drop the client-abort budget on identity change / hard reset too.
     this.transportTimeoutBudget.clearAll();
-    this.nextRetryAfterMs.clear();
+    // ISS-7099: a new identity starts its own counters.
+    this.progressTally.reset();
     this.deadLetteredIds.clear();
     // FEA-3795: drop the progressive-backoff escalation counters too.
     this.deadLetterCountById.clear();
-    this.chunkValidationCycleById.clear();
     this.ackOmittedCycleById.clear();
     this.deadLetterRevisitedThisIdleCycle = false;
     this.pendingChunks = null;
@@ -486,6 +553,8 @@ export class AgentSessionSyncService {
     // position and no prior account's dead-lettered ids leak into the next
     // identity's lane.
     this.componentLane.clearCursorState();
+    // ISS-6067: nothing above is derived from an identity any more.
+    this.sourceDerivedStateKey = null;
   }
 
   refresh(): void {
@@ -501,7 +570,7 @@ export class AgentSessionSyncService {
       // happening was a lane-wide symptom, not a payload verdict — refund it.
       this.noteTransportLoss("cloud transport not ready");
     }
-    if (!this.shouldRun()) {
+    if (!(this.shouldRun() || this.options.isHttpReady())) {
       this.timers.stopPoll();
       return;
     }
@@ -522,8 +591,8 @@ export class AgentSessionSyncService {
    * import path (invariant 9; the ISS-5990 direction).
    */
   notifyLocalSessionActivity(): void {
-    if (!(this.started && this.shouldRun())) {
-      // Not startable right now (stopped, consent off, transport down). The
+    if (!(this.started && (this.shouldRun() || this.options.isHttpReady()))) {
+      // Not startable right now (stopped or transport down). The
       // trigger is deliberately dropped rather than latched: the readiness
       // subscriptions call refresh() when the gate re-opens, and the fallback
       // sweep covers anything that slips between.
@@ -573,7 +642,7 @@ export class AgentSessionSyncService {
         // live queue). `feedIdsIntoBackfillQueue` then queues it as new work.
         this.deadLetteredIds.delete(id);
         this.clearFailureStateForId(id);
-        this.recordOutboxReEnqueue(id);
+        void this.outbox.reEnqueue(id);
       },
       resetDeadLetterRevisitGuard: () => {
         this.deadLetterRevisitedThisIdleCycle = false;
@@ -652,8 +721,8 @@ export class AgentSessionSyncService {
     const nowMs = Date.now();
     const hasReadyWork =
       this.pendingChunks !== null ||
-      this.pickReadyCandidates(this.backfillQueue, 1, nowMs).length > 0 ||
-      this.pickReadyCandidates(this.incrementalQueue, 1, nowMs).length > 0;
+      this.selectReadyCandidates(this.backfillQueue, 1, nowMs).length > 0 ||
+      this.selectReadyCandidates(this.incrementalQueue, 1, nowMs).length > 0;
     if (!hasReadyWork) {
       return;
     }
@@ -665,12 +734,40 @@ export class AgentSessionSyncService {
    * awaits all complete and the single-flight guard clears). Returns immediately
    * when the lane is idle. This is the REAL completion signal for the
    * fire-and-forget component lane — tests await it instead of guessing a fixed
-   * flush count (FEA-2399 determinism / shafty023 review). It never throws (the
+   * flush count (FEA-2399 determinism / davetho review). It never throws (the
    * lane's awaits are all try/caught internally). The mechanics live on the lane
    * (ISS-4676); this stays the public name callers and tests use.
    */
   whenComponentSyncSettled(): Promise<void> {
     return this.componentLane.whenSettled();
+  }
+
+  /**
+   * ISS-9418/ISS-8610: a precondition a blocked lane may have been waiting on
+   * changed — an auth-session change that `wireAuthSessionLaneRecovery`'s own
+   * identity diff proved is a genuine account switch. Re-arms a give-up and ends
+   * the environmental pacing window,
+   * so the next tick gets ONE attempt on both lanes.
+   *
+   * Deliberately SEPARATE from {@link refresh}, which is also the work-arrival
+   * trigger: re-arming on that would let an ordinary collector import clear a
+   * terminal state that says the CLOUD is unreachable. A routine same-account
+   * token renewal is on the same footing and gets
+   * {@link noteCredentialsRefreshed} instead. A compute-target change needs no
+   * call at all — `heldEnvironmentally` drops a run whose lane identity moved.
+   */
+  noteLaneRecoverySignal(): void {
+    this.componentLane.noteRecoverySignal();
+    this.folds.noteLaneRecoverySignal();
+  }
+
+  /**
+   * ISS-8610: the access token was re-minted for the SAME account. Ends the
+   * session lane's environmental PACING window and nothing else — the narrow
+   * door 401 needs, without the give-up re-arm the seam above owns.
+   */
+  noteCredentialsRefreshed(): void {
+    this.folds.noteCredentialsRefreshed();
   }
 
   /**
@@ -690,20 +787,18 @@ export class AgentSessionSyncService {
   }
 
   /**
-   * FEA-4375: the SESSION-ONLY sync pass — the session backfill/incremental lane
-   * WITHOUT the component inventory lane. The immediate self-continue drain and
-   * the chunk-drain continuation drive THIS (not `syncOnce`) so a large backfill
-   * advances the session queue back-to-back without re-entering the component
-   * lane per batch; the component lane keeps its own 5s `setInterval` tick so a fast
-   * component-lane failure retries on that cadence, not once per session batch
-   * (wongk review). `syncOnce` above is the only caller that also runs components.
+   * FEA-4375: the SESSION-ONLY sync pass — the session lane WITHOUT the component
+   * inventory lane. The self-continue and chunk-drain continuations drive THIS
+   * (not `syncOnce`) so a large backfill advances back-to-back without
+   * re-entering the component lane per batch; that lane keeps its own 5s tick so
+   * a fast failure there retries on that cadence rather than once per session
+   * batch (whitlockk review). `syncOnce` is the only caller that runs both.
    */
   private syncSessionsOnce(): Promise<void> {
-    // The gate is evaluated here, exactly once per tick, and a bounced tick still
-    // resolves immediately — the historical semantics. Only a tick that actually
-    // STARTS a pass publishes `sessionSyncPromise`, so the settled signal below
-    // can never be clobbered by a bounced tick's already-resolved promise.
-    if (this.syncing || !this.shouldRun()) {
+    // Only a tick that STARTS a pass publishes `sessionSyncPromise`, so the
+    // settled signal below is never clobbered by a bounced tick. The hold is
+    // re-checked after hydration (ISS-8610) — admission precedes the stamp read.
+    if (this.syncing || !this.shouldRun() || this.folds.heldEnvironmentally()) {
       return Promise.resolve();
     }
     // Goal stage 3: this tick is ADMITTED — the pump consumes the pending
@@ -742,12 +837,24 @@ export class AgentSessionSyncService {
     const sourceStateGeneration = this.sourceStateGeneration;
     this.activeSyncToken = syncToken;
     this.syncing = true;
-    const isCurrentSourceState = () =>
-      this.activeSyncToken === syncToken &&
-      this.sourceStateGeneration === sourceStateGeneration &&
-      this.started &&
-      this.shouldRun();
+    // ISS-8116: the pass captures its identity ONCE, here, and every guard below
+    // compares the LIVE key against it. A compute-target/account switch — and a
+    // hello-ack renegotiation that moves `monitoredActivity`, which the key folds
+    // — changes identity WITHOUT bumping `sourceStateGeneration`, so the
+    // generation half alone was blind to exactly the case these guards exist for.
+    // `currentPassGuard` is what `dispositionDeps()` hands every disposition
+    // write, so strengthening it here strengthens those too.
+    const passIdentity = createSyncPassIdentityGuard({
+      isActivePass: () =>
+        this.activeSyncToken === syncToken &&
+        this.sourceStateGeneration === sourceStateGeneration &&
+        this.started,
+      shouldRun: () => this.shouldRun(),
+      readLiveSourceKey: () => SessionSyncCapability.sourceKey(this.options),
+    });
+    const isCurrentSourceState = passIdentity.isCurrentSourceState;
     this.currentPassGuard = isCurrentSourceState;
+    this.currentPassIdentityGuard = passIdentity.isCurrentSourceIdentity;
 
     try {
       await this.options.waitForBackgroundSlot?.();
@@ -765,14 +872,20 @@ export class AgentSessionSyncService {
       let syncIds: string[] = [];
       let batch: AgentSessionSyncBatch | null = null;
       let accumulatedBytes = 0;
+      // ISS-6999: the skip this payload owes, carried to the ack.
+      let unsendableComponentUnits: UnsendableComponentUnits | undefined;
       // ISS-4541: is THIS tick draining a chunk off an already-open pending tail
       // (vs. shipping chunk 0 of a fresh sequence)? A thrown transport error on a
       // mid-sequence chunk must discard the whole remaining tail rather than let
       // later chunks drain and dequeue the session with the thrown chunk missing
-      // (shafty023 P1) — the shifted chunk is already gone from the tail, so the
+      // (davetho P1) — the shifted chunk is already gone from the tail, so the
       // only safe recovery is to re-prepare the session from chunk 0 next tick,
       // exactly as the capability-downgrade discard path already does.
       let drainingPendingChunkTail = false;
+      // ISS-7775: the level a FRESH batch was sanitized under. Read below beside
+      // the prepare (not here, like `sendCompress`) so its staleness window is
+      // no wider than the awaits; hoisted only to reach the pre-send gate.
+      let capturedDataSyncLevel: DataSyncLevel | undefined;
       // FEA-4138: whether THIS batch ships compressed. For a fresh batch it
       // follows the currently-negotiated capability; a pending-chunk drain
       // honors the encoding the chunks were sized for so the sequence stays
@@ -783,27 +896,34 @@ export class AgentSessionSyncService {
       // ISS-4541: captured once at the top of the tick (like sendCompress) so a
       // fresh batch's chunk decision and any sequestered tail agree on it.
       const activityChunkingSupported = syncCapabilities.activityChunking;
+      // ISS-9859: captured once per tick, for the same reason as the tiling flag.
+      const prRefChunkingSupported = syncCapabilities.prRefChunking;
       const monitoredActivitySupported = syncCapabilities.monitoredActivity;
+      // ISS-7265 AC3: the server can merge a multi-part tiling now, so every
+      // tiling an earlier strip left owed can finally be re-delivered. Once per
+      // lane, gated and drained inside the writer.
+      this.outbox.repairOwedTilings(activityChunkingSupported);
 
       const pendingTransition = resolvePendingChunkTransition(
         this.pendingChunks,
         syncCapabilities.compression,
         activityChunkingSupported,
-        monitoredActivitySupported
+        monitoredActivitySupported,
+        this.options.getDataSyncLevel?.(),
+        undefined,
+        prRefChunkingSupported,
+        syncCapabilities.tokenEventOwner
       );
-      if (pendingTransition.kind === "discard-downgrade") {
-        // FEA-4152 / ISS-4541: the pinned chunks can't ship — the server no
-        // longer negotiates decompression, OR no longer merges multi-part
-        // tilings additively (shipping an activity-chunked tail to an old
-        // REPLACE-ALL server would store a partial tiling). Drop the tail and
-        // skip the send; the session stays queued and re-prepares (identity
-        // encoding / tiling-in-base) on the next tick.
-        gatewayLog.info(
-          TAG,
-          `discarding ${pendingTransition.chunkCount} sized chunk(s) for session ${pendingTransition.sessionId} after a sync capability downgrade (compression/activity-chunking); ` +
-            "re-preparing under the current capabilities on the next tick"
-        );
+      if (isPendingChunkDiscard(pendingTransition)) {
+        // The two transitions that clear the tail without sending; which one
+        // and why is `applyPendingChunkDiscard`. Cleared BEFORE applying, so a
+        // verdict it folds cannot re-read a tail this tick already abandoned.
         this.pendingChunks = null;
+        applyPendingChunkDiscard(
+          pendingTransition,
+          this.folds.validationFailureDeps(),
+          this.dispositionDeps()
+        );
         return;
       }
 
@@ -815,16 +935,10 @@ export class AgentSessionSyncService {
         if (pendingTransition.isLast) {
           this.pendingChunks = null;
         }
-        sendCompress = pendingTransition.compress;
-        batch = pendingTransition.batch;
-        accumulatedBytes = pendingTransition.accumulatedBytes;
-        syncMode = pendingTransition.syncMode;
-        syncIds = [pendingTransition.sessionId];
-        gatewayLog.info(
-          TAG,
-          `sending chunked session ${pendingTransition.sessionId} (~${formatBytes(accumulatedBytes)}); ` +
-            `${pendingTransition.remainingChunks} chunk(s) remaining`
-        );
+        const drain = pendingChunkSendState(pendingTransition);
+        ({ sendCompress, batch, accumulatedBytes, syncMode, syncIds } = drain);
+        unsendableComponentUnits = pendingTransition.unsendableComponentUnits;
+        gatewayLog.info(TAG, drain.logLine);
         // Skip DB access — go straight to send.
       } else {
         const source = injectedSource;
@@ -833,16 +947,29 @@ export class AgentSessionSyncService {
           // incremental. A hydrated watermark makes initializeBackfillQueueIfNeeded
           // short-circuit (no full re-upload); a fresh/absent row leaves it null
           // → full backfill as today.
-          await this.hydratePersistedCursorIfNeeded(source);
-          await this.initializeBackfillQueueIfNeeded(source);
-          await this.enqueueIncrementalUpdates(source);
+          const hydrated = await this.hydratePersistedCursorIfNeeded(
+            source,
+            isCurrentSourceState
+          );
+          // ISS-8116 / ISS-8594: ABANDON the pass, rather than merely leaving
+          // the identity un-hydrated, when the identity moved across a
+          // hydration await OR either resume read — the un-acked prefix or the
+          // retry budget — did not land. Nulling alone lets
+          // `initializeBackfillQueueIfNeeded` repopulate `observedTopUpdatedAt`
+          // under a null `sourceDerivedStateKey` a THIRD identity inherits
+          // (ISS-6067), and an unread budget uploads against empty maps.
+          if (!(hydrated && isCurrentSourceState())) {
+            return;
+          }
+          await this.initializeBackfillQueueIfNeeded(source, passIdentity);
+          await this.enqueueIncrementalUpdates(source, isCurrentSourceState);
 
           const nowMs = Date.now();
           // FEA-3363: give any dead-lettered session whose retry-after window has
           // elapsed a fresh path back onto the backfill queue before selecting
           // this tick's candidates, so it can eventually reach the cloud without
           // requiring an app restart.
-          this.recoverExpiredDeadLetters(nowMs);
+          recoverExpiredDeadLetters(nowMs, this.deadLetterLifecycleDeps());
           // ISS-6031: before falling through to the dead-letter revisit, reconcile
           // the durable outbox against the in-memory queues. A `pending` row that
           // neither queue is tracking is owed work nothing will ever select — the
@@ -853,7 +980,7 @@ export class AgentSessionSyncService {
           // this promote a single set-aside dead-letter onto the backfill lane,
           // and only once per idle cycle. Genuinely-new incremental/backfill work
           // enqueued above resets the guard so live/backfill always drain first.
-          this.promoteDeadLetterIfIdle();
+          promoteDeadLetterIfIdle(this.deadLetterLifecycleDeps());
           // ISS-6166: which lane wins this tick, including the backfill fairness
           // reservation. See `agent-session-drain-selection.ts` for the policy.
           const selection = selectDrainCandidates({
@@ -864,7 +991,7 @@ export class AgentSessionSyncService {
               this.lastIncrementalBatchAttemptedAtMs,
             consecutiveIncrementalPasses: this.consecutiveIncrementalPasses,
             pickReady: (queue, limit, at) =>
-              this.pickReadyCandidates(queue, limit, at),
+              this.selectReadyCandidates(queue, limit, at),
             validationBisectIds: this.validationBisectIds,
           });
           this.consecutiveIncrementalPasses = advanceIncrementalPassCount(
@@ -879,13 +1006,21 @@ export class AgentSessionSyncService {
             return;
           }
           syncMode = selection.syncMode;
-          const candidateIds = selection.candidateIds;
 
+          // ISS-8116: no guard of its own, and none is owed. The only write this
+          // await can produce is the oversize dead-letter, and
+          // `deadLetterOversizedLocalSession` now refuses it on
+          // `deps.isCurrentSourceState()` — `currentPassGuard`, identity-bearing
+          // — as its first statement (tamsinb review: it took that guard in its
+          // deps bag and never read it). The refusal therefore happens at the
+          // write, which is strictly later and strictly narrower than a check
+          // here; adding one would only skip the still-correct in-memory
+          // selection alongside it.
           const hydratableCandidateIds =
             await this.selectHydratableCandidateIds(
               source,
               syncMode,
-              candidateIds,
+              selection.candidateIds,
               sendCompress
             );
           if (hydratableCandidateIds.length === 0) {
@@ -954,43 +1089,22 @@ export class AgentSessionSyncService {
             return;
           }
 
-          // FEA-3287: withhold "phantom" sessions from cloud sync AT THE SOURCE.
-          // The desktop live-hook INSERTs a `sessions` row on `SessionStart`
-          // (and bumps `updated_at`) before any real turn/token/tool-use, so an
-          // idle row lands in the incremental cursor and would sync as a 0-turn /
-          // 0-token / abandoned phantom. Split the hydrated batch into
-          // substantive (uploaded) and idle (deferred) using the FEA-3284 SSOT
-          // predicate applied identically to the read path. Idle rows are
-          // DEQUEUED WITHOUT dead-lettering (unlike unhydratable/oversized rows),
-          // so the cursor advances past them this pass but they are NOT
-          // permanently skipped: the instant a real event arrives the live hook
-          // bumps `sessions.updated_at`, re-selecting the now-substantive session
-          // via `enqueueIncrementalUpdates` on the next pass. No real session is
-          // lost, and the local live-Kanban still shows the row as "Waiting on
-          // start" (that read never routes through this sync boundary).
-          const idleCandidateIds: string[] = [];
-          candidateSessions = candidateSessions.filter((session) => {
-            if (syncedSessionIsSubstantive(session)) {
-              return true;
-            }
-            // The sync queues + cursor key sessions by `externalSessionId` (the
-            // desktop stores the external id AS the local `sessions.id` primary
-            // key, and `preparePayloads` dequeues by `sanitized.externalSessionId`
-            // after a send), so dequeue the idle rows by that same key.
-            idleCandidateIds.push(session.externalSessionId);
-            return false;
-          });
-          if (idleCandidateIds.length > 0) {
-            dropIdleCandidates(
-              { syncMode, ids: idleCandidateIds },
-              this.dispositionDeps()
-            );
-          }
+          // FEA-3287 + ISS-7096 + ISS-8271: the pre-payload candidate screen
+          // (withhold idle/foreign, then defer sentinel revisions) lives whole
+          // in agent-session-sync-dispositions.ts.
+          candidateSessions = screenUploadableCandidates(
+            {
+              syncMode,
+              sessions: candidateSessions,
+              identity: this.options.getSyncIdentity?.() ?? null,
+            },
+            this.dispositionDeps()
+          );
           if (candidateSessions.length === 0) {
-            // Every hydrated candidate this pass was idle — nothing to upload.
-            // dropIdleCandidates already dequeued them and persisted the cursor
-            // if both queues drained, so just return (mirrors the unhydratable
-            // all-dropped path above).
+            // Every hydrated candidate this pass was idle, foreign-owned, or
+            // sentinel-deferred — nothing to upload. The drop paths already
+            // dequeued and persisted; a deferred id keeps its queue slot behind
+            // its deadline (mirrors the unhydratable all-dropped path above).
             return;
           }
 
@@ -998,19 +1112,17 @@ export class AgentSessionSyncService {
           syncIds = [];
           const batchId = randomUUID();
           const selectedSyncMode = syncMode;
+          capturedDataSyncLevel = this.options.getDataSyncLevel?.();
           const buildBatch = (
             batchSessions: SyncedAgentSession[]
-          ): AgentSessionSyncBatch => ({
-            schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-            batchId,
-            syncMode: selectedSyncMode,
-            sessionCount: batchSessions.length,
-            sessions: batchSessions,
-            ...(sendCompress ? { encoding: SyncPayloadEncoding.Gzip } : {}),
-            // Goal stage 2: request the per-session ack echo (additive in both
-            // skew directions — an old server strips it and answers whole-batch).
-            wantsAcceptedSessionIds: true,
-          });
+          ): AgentSessionSyncBatch =>
+            buildAgentSessionSyncBatch({
+              batchId,
+              syncMode: selectedSyncMode,
+              sessions: batchSessions,
+              compress: sendCompress,
+              dataSyncLevel: capturedDataSyncLevel,
+            });
           // FEA-4014: isolate + bound prep failures (see
           // agent-session-payload-preparation.ts). A batch failure falls back to
           // per-session prep so only the offender(s) burn the FEA-3364
@@ -1024,7 +1136,8 @@ export class AgentSessionSyncService {
               candidateSessions,
               SESSION_PAYLOAD_CONTENT_BYTE_CAP,
               sendCompress,
-              activityChunkingSupported
+              syncCapabilities,
+              capturedDataSyncLevel
             );
           // If stop()/a source reset raced the prep await, service state was
           // already cleared synchronously; leave a superseded sync cleared rather
@@ -1060,7 +1173,7 @@ export class AgentSessionSyncService {
           candidateSessions = [];
           // FEA-4152: fold lives in agent-session-sync-pending-chunks.ts (keeps
           // this grandfathered file shrinking); it mutates `acc` in place.
-          const acc = {
+          const acc: PreparedPayloadAccumulator = {
             sessions,
             syncIds,
             accumulatedBytes,
@@ -1070,7 +1183,10 @@ export class AgentSessionSyncService {
             syncMode: selectedSyncMode,
             sendCompress,
             activityChunked: activityChunkingSupported,
+            prRefChunked: prRefChunkingSupported,
             monitoredActivityIncluded: monitoredActivitySupported,
+            tokenEventOwnerIncluded: syncCapabilities.tokenEventOwner,
+            dataSyncLevel: capturedDataSyncLevel,
             sizer,
             byteCap: SESSION_PAYLOAD_BYTE_CAP,
             buildBatch,
@@ -1090,10 +1206,14 @@ export class AgentSessionSyncService {
           // place); only the byte total and pinned tail need copying back.
           accumulatedBytes = acc.accumulatedBytes;
           this.pendingChunks = acc.pendingChunks;
+          unsendableComponentUnits = acc.unsendableComponentUnits;
           if (!batch) {
             batch = buildBatch(sessions);
           }
         } finally {
+          // ISS-8116: unguarded on purpose — releasing the read handle this pass
+          // opened writes no service state and no durable row, and it must run
+          // for a superseded pass exactly as for a current one.
           await source.close?.();
         }
       }
@@ -1109,55 +1229,37 @@ export class AgentSessionSyncService {
         return;
       }
 
-      // FEA-4152: a FRESH batch captured `sendCompress` at the top of the tick,
-      // then awaited hydration + worker prep. If the server reconnected without
-      // gzip during those awaits, the batch was built + sized under the gzip cap
-      // and stamps `Content-Encoding: gzip`, but posting it now would 400
-      // (`Invalid compressed body`) on a server that no longer decompresses.
-      // Re-read the capability and skip the send: the candidates were never
-      // dequeued (only an ack advances them), so the next tick re-prepares them
-      // under identity. A pending-chunk drain is exempt — its encoding was
-      // re-checked in `resolvePendingChunkTransition` and pinned intentionally.
-      if (
-        pendingTransition.kind !== "send" &&
-        sendCompress &&
-        !SessionSyncCapability.capture(this.options).compression
-      ) {
-        logCompressionDowngradeDeferral(TAG, syncIds.length);
-        return;
-      }
-      // ISS-4578 (shafty023 P1): mirror the gzip freshness guard for ACTIVITY
-      // CHUNKING. A FRESH batch captured `activityChunkingSupported` at the top of
-      // the tick, then awaited hydration + worker prep. If the socket reconnected
-      // to an OLDER server (one that REPLACE-ALLs the tiling on every chunk and
-      // never negotiated additive merge) during those awaits, sending chunk 0 of a
-      // split tiling would leave that server holding a PARTIAL tiling — the exact
-      // silent loss this ticket fixes. Re-read the capability and skip the send:
-      // the candidates were never dequeued (only an ack advances them), so the
-      // next tick re-prepares them with the tiling whole in the base (fits or
-      // dead-letters, never partial). A pending-chunk drain is exempt — its tail
-      // was already re-checked in `resolvePendingChunkTransition`.
-      if (
-        pendingTransition.kind !== "send" &&
-        activityChunkingSupported &&
-        !SessionSyncCapability.capture(this.options).activityChunking
-      ) {
-        logActivityChunkingDowngradeDeferral(TAG, syncIds.length);
-        return;
-      }
-      if (
-        pendingTransition.kind !== "send" &&
-        monitoredActivitySupported !==
-          (this.options.isSyncMonitoredActivitySupported?.() ?? false)
-      ) {
+      // Pre-send freshness: this payload was built before hydration and worker
+      // prep, so a CAPABILITY may have renegotiated and the data-sync-level
+      // POLICY may have changed during those awaits. Both decisions, and why
+      // each defers, live in `agent-session-sync-capabilities.ts`.
+      const preSendDeferral = resolvePreSendDeferral({
+        isPendingChunkDrain: pendingTransition.kind === "send",
+        captured: { ...syncCapabilities, compression: sendCompress },
+        current: SessionSyncCapability.capture(this.options),
+        capturedDataSyncLevel,
+        currentDataSyncLevel: this.options.getDataSyncLevel?.(),
+      });
+      if (preSendDeferral) {
+        logSyncPreSendDeferral(TAG, preSendDeferral, syncIds.length);
         return;
       }
 
       const sendStartedMs = Date.now();
+      // ISS-7265: read the strip off the payload about to be sent, so the ids
+      // and the bytes can never disagree. Covers the pending-chunk drain too —
+      // the flag is spread into every chunk of a stripped session.
+      const strippedIds = tilingStrippedSessionIds(batch.sessions);
+      const tilingStrippedSessionCount = strippedIds.length;
+      // ISS-7496: read the freshest `updatedAt` off the SAME payload, for the
+      // same reason — a timestamp resolved anywhere else could describe rows
+      // this batch is not carrying. The lag itself is taken when the ack lands.
+      const freshestUpdatedAtMs = resolveFreshestUpdatedAtMs(batch.sessions);
       // Goal stage 3: a batch reached the wire — productive work whatever the
       // ack says (trace outcome only; ack handling is unchanged).
       pass.noteOutcome(SyncPassOutcome.Sent);
       let ack: DesktopAgentSessionsAck;
+      this.progressTally.noteSending(syncIds);
       try {
         ack = await this.options.sendBatch(batch, { compress: sendCompress });
       } catch (sendError) {
@@ -1165,29 +1267,56 @@ export class AgentSessionSyncService {
         // itself a batch failure. FEA-3364: unlike an ack rejection it used to
         // increment no counter, so the batch stayed queued at retry-count 0 and
         // re-sent every 5s forever (a persistent transport/serialization fault =
-        // infinite retry, never dead-lettered). Bound it here: a local
-        // serialization bug dead-letters immediately, a transient socket throw
-        // after MAX_CONSECUTIVE_TRANSPORT_ERRORS. Emit the batch outcome so the
-        // dashboard counts it (dead_letter when the throw stranded a session,
-        // else failure) instead of silently undercounting — the outer catch only
-        // logs. Rethrow so the existing "sync failed" log and finally-block
-        // cleanup still run.
+        // infinite retry, never dead-lettered). Bound it here: a serialization
+        // bug dead-letters at once, a dropped connection defers the lane
+        // (ISS-10602), anything else after MAX_CONSECUTIVE_TRANSPORT_ERRORS.
+        // Emit the batch outcome so the dashboard counts it (dead_letter when
+        // the throw stranded a session, else failure) instead of silently
+        // undercounting — the outer catch only logs. Rethrow so the existing
+        // "sync failed" log and finally-block cleanup still run.
+        // ISS-7248: read the budget BEFORE the fold. An exhausting fold
+        // dead-letters the row and clears its counters, so reading afterwards
+        // would blank the attempt number on exactly the record that proves the
+        // retries never landed.
+        const attemptBefore = this.failureCountFor(
+          SyncReason.TransportError,
+          syncIds
+        );
+        // Whether a pinned remainder actually existed to discard. The final
+        // chunk of a sequence already cleared the tail when it was shifted off,
+        // so assuming the discard from `drainingPendingChunkTail` alone would
+        // report an abandoned sequence for a batch that abandoned nothing.
+        const hadPinnedChunkTail = this.pendingChunks !== null;
         const deadLettered = this.handleTransportError(
           syncMode,
           syncIds,
           accumulatedBytes,
           sendError
         );
-        this.options.onSyncBatchTelemetry?.({
+        // ISS-7248: a throw while draining a tail discards the WHOLE remainder
+        // a few lines below, so the shaping this attempt is reported with must
+        // say so — resolving it after that assignment would read `pendingChunks`
+        // already nulled and be unable to tell the two cases apart.
+        this.reportAttemptFailure({
+          attemptBefore,
+          batchId: batch.batchId,
           outcome: deadLettered
             ? DesktopSyncBatchOutcome.DeadLetter
             : DesktopSyncBatchOutcome.Failure,
-          payloadBytes: accumulatedBytes,
-          latencyMs: Math.max(0, Date.now() - sendStartedMs),
           reason: SyncReason.TransportError,
+          payloadBytes: accumulatedBytes,
+          sessionIds: syncIds,
+          ...resolveSyncPayloadShapingPair({
+            drainingPendingChunkTail,
+            hasPinnedChunkTail: hadPinnedChunkTail,
+            chunkTailDiscarded: drainingPendingChunkTail && hadPinnedChunkTail,
+            activityTilingStripped: tilingStrippedSessionCount > 0,
+          }),
+          tilingStrippedSessionCount,
+          latencyMs: Math.max(0, Date.now() - sendStartedMs),
         });
         if (drainingPendingChunkTail) {
-          // ISS-4541 (shafty023 P1): this throw stranded a chunk that
+          // ISS-4541 (davetho P1): this throw stranded a chunk that
           // `resolvePendingChunkTransition` had ALREADY shifted off the pending
           // tail. Draining the remaining tail on later ticks would dequeue the
           // session with this chunk permanently missing from the cloud tiling.
@@ -1204,11 +1333,18 @@ export class AgentSessionSyncService {
       // throwing inside emitSyncBatchEvent and dropping the event. Mirrors the
       // existing Math.max(0, …) duration guard elsewhere in the desktop main.
       const latencyMs = Math.max(0, Date.now() - sendStartedMs);
-      if (
-        this.activeSyncToken !== syncToken ||
-        this.sourceStateGeneration !== sourceStateGeneration ||
-        !this.started
-      ) {
+      // ISS-8116: token + generation + `started` + the LIVE identity, and
+      // deliberately NOT `shouldRun()`. The readiness omission is pre-existing
+      // and load-bearing — the server already accepted this batch, so a
+      // readiness drop must not discard its ack and force a re-upload. An
+      // identity move is the opposite case: folding the ack clears outbox rows
+      // and advances a cursor that now belong to a different account.
+      //
+      // ENTRY only — the same predicate is re-read after the tiling-debt and
+      // durable-clear awaits inside `processAcceptedAck` (`AcceptedAckDeps.
+      // isCurrentSourceIdentity`), because a check here cannot see an identity
+      // that moves while those are outstanding (davetho / whitlockk review).
+      if (!passIdentity.isCurrentSourceIdentity()) {
         gatewayLog.debug(
           TAG,
           "ignoring agent-session batch ack from a stale dashboard source"
@@ -1222,23 +1358,32 @@ export class AgentSessionSyncService {
         accumulatedBytes,
         ack,
         latencyMs,
-        isMultiPartSyncEnvelope(batch)
+        isMultiPartSyncEnvelope(batch),
+        {
+          batchId: batch.batchId,
+          drainingPendingChunkTail,
+          tilingStrippedSessionIds: strippedIds,
+          freshestUpdatedAtMs,
+          unsendableComponentUnits,
+          priorityUploadClaims: priorityUploadClaims(batch.sessions),
+        }
       );
     } catch (error) {
-      // ISS-5262: a graceful db-host teardown is abandonment, not failure — the
-      // trace must keep the same distinction as the failure log below, or a
-      // normal quit would print an INFO `outcome=failed` right after a clean
-      // shutdown verdict (the exact lie ISS-5262 removed).
+      // ISS-5262/ISS-8776: derived ONCE, from the failure log's own verdict.
+      // This was a parallel switch on `isDbHostShutdownError`, and it drifted
+      // the moment a SECOND abandonment case (a db-host the supervisor has
+      // given up restarting) was added to that helper — the trace would have
+      // printed `outcome=failed` for a pass the log called abandoned.
       pass.noteOutcome(
-        isDbHostShutdownError(error)
-          ? SyncPassOutcome.Abandoned
-          : SyncPassOutcome.Failed
+        logSyncTickFailure(TAG, error)
+          ? SyncPassOutcome.Failed
+          : SyncPassOutcome.Abandoned
       );
-      logSyncTickFailure(TAG, error);
     } finally {
       if (this.activeSyncToken === syncToken) {
         this.activeSyncToken = null;
         this.syncing = false;
+        this.progressTally.noteSending([]);
       }
       // Goal stage 3 (ISS-5993): one trace line per pass — the instrument that
       // names which stage gated a starved tick.
@@ -1272,91 +1417,66 @@ export class AgentSessionSyncService {
     });
   }
 
-  private async initializeBackfillQueueIfNeeded(
-    source: AgentSessionSyncSource
+  /**
+   * FEA-2733 / FEA-3473: the once-per-identity full-corpus walk, its durable
+   * outbox seed and the cursor persist that follows — all in the cohesive
+   * sibling `initial-backfill-walk.ts`. This file keeps only the delegate that
+   * hands its own fields through (ISS-8116; same split as
+   * `backfill-queue-feed.ts` and `incremental-cursor-feed.ts`).
+   */
+  private initializeBackfillQueueIfNeeded(
+    source: AgentSessionSyncSource,
+    passIdentity: SyncPassIdentityGuard
   ): Promise<void> {
-    if (this.observedTopUpdatedAt !== null) {
-      // FEA-2733: a cursor is already established for this identity — either a
-      // prior tick's walk (which set the flag below) or a persisted cursor that
-      // `hydratePersistedCursorIfNeeded` just resumed on an already-synced
-      // restart (it sets `observedTopUpdatedAt` and skips this walk). Mark the
-      // initial pass complete so a resumed session settles to "up to date"
-      // instead of latching on "checking" forever.
-      this.initialBackfillPassRun = true;
-      return;
-    }
-
-    const rows = await this.listInitialCursorRows(source);
-    // FEA-2733: the initial enumeration has now run for this identity — even on
-    // an empty store (no rows) — so `getSyncProgress()` can report "caught up"
-    // rather than latching on a pre-walk "checking" state.
-    this.initialBackfillPassRun = true;
-    if (rows.length === 0) {
-      return;
-    }
-
-    this.observedTopUpdatedAt = rows[0].updated_at;
-    this.observedIdsAtTopUpdatedAt = collectIdsAtTimestamp(
-      rows,
-      this.observedTopUpdatedAt
-    );
-    if (!this.historicalBackfillEnabled) {
-      gatewayLog.info(
-        TAG,
-        `deferred historical backfill; initialized incremental cursor at ${this.observedTopUpdatedAt} with ${this.observedIdsAtTopUpdatedAt.size} top session(s)`
-      );
-      return;
-    }
-
-    const newlyQueued: string[] = [];
-    for (const row of rows) {
-      if (this.backfillQueuedIds.has(row.id)) {
-        continue;
-      }
-      this.backfillQueuedIds.add(row.id);
-      this.backfillQueue.push(row.id);
-      newlyQueued.push(row.id);
-    }
-    // FEA-3473: durably seed the outbox for the initial full-corpus backfill
-    // walk, then persist the cursor so a cold restart resumes from the pending
-    // outbox (loadPendingOutboxIds) instead of re-walking the whole corpus and
-    // resurrecting already-synced sessions. AWAIT the seed (not fire-and-forget)
-    // so the cursor is persisted ONLY AFTER the outbox is a complete ledger of
-    // remaining work — a crash mid-seed leaves the cursor unpersisted and the
-    // safe full re-walk runs next start (anti-stranding invariant, see
-    // persistInitialBackfillCursor).
-    const sourceKey =
-      this.hydratedSourceKey ?? SessionSyncCapability.sourceKey(this.options);
-    let seeded = false;
-    if (sourceKey && newlyQueued.length > 0) {
-      seeded = await this.seedBackfillOutboxDurably(sourceKey, newlyQueued);
-    }
-    // Genuinely-new backfill work preempts dead-letter retries: reset the
-    // idle-cycle revisit guard so the whole backfill drains before any
-    // dead-letter is revisited.
-    this.deadLetterRevisitedThisIdleCycle = false;
-
-    gatewayLog.info(
-      TAG,
-      `queued historical backfill for ${rows.length} agent sessions`
-    );
-
-    if (sourceKey && seeded) {
-      await this.persistInitialBackfillCursor(sourceKey);
-    }
-  }
-
-  private async listInitialCursorRows(
-    source: AgentSessionSyncSource
-  ): Promise<SessionCursorRow[]> {
-    if (this.historicalBackfillEnabled || !source.listTopSessionCursorRows) {
-      return await source.listAllSessionCursorRows();
-    }
-    return await source.listTopSessionCursorRows();
+    return runInitialBackfillWalk({
+      source,
+      isCurrentSourceState: passIdentity.isCurrentSourceState,
+      isCurrentSourceIdentity: passIdentity.isCurrentSourceIdentity,
+      historicalBackfillEnabled: this.historicalBackfillEnabled,
+      readObservedTopUpdatedAt: () => this.observedTopUpdatedAt,
+      markInitialPassRun: () => {
+        this.initialBackfillPassRun = true;
+      },
+      seedObservedTop: (rows) => {
+        this.observedTopUpdatedAt = rows[0].updated_at;
+        this.observedIdsAtTopUpdatedAt = collectIdsAtTimestamp(
+          rows,
+          this.observedTopUpdatedAt
+        );
+        return this.observedIdsAtTopUpdatedAt.size;
+      },
+      enqueueBackfillRows: (rows) => {
+        const newlyQueued: string[] = [];
+        for (const row of rows) {
+          if (this.backfillQueuedIds.has(row.id)) {
+            continue;
+          }
+          this.backfillQueuedIds.add(row.id);
+          this.backfillQueue.push(row.id);
+          this.queuedUpdatedAtById.set(row.id, row.updated_at);
+          newlyQueued.push(row.id);
+        }
+        return newlyQueued;
+      },
+      resetDeadLetterRevisit: () => {
+        this.deadLetterRevisitedThisIdleCycle = false;
+      },
+      resolveSourceKey: () =>
+        this.hydratedSourceKey ?? SessionSyncCapability.sourceKey(this.options),
+      seedThenPersistInitialBackfill: (sourceKey, ids, isCurrentIdentity) =>
+        this.cursor.seedThenPersistInitialBackfill(
+          sourceKey,
+          ids,
+          isCurrentIdentity
+        ),
+      logInfo: (message) => gatewayLog.info(TAG, message),
+    });
   }
 
   private async enqueueIncrementalUpdates(
-    source: AgentSessionSyncSource
+    source: AgentSessionSyncSource,
+    /** ISS-8116: the pass guard — see `initializeBackfillQueueIfNeeded`. */
+    isCurrentSourceState: () => boolean
   ): Promise<void> {
     if (!this.observedTopUpdatedAt) {
       return;
@@ -1369,10 +1489,9 @@ export class AgentSessionSyncService {
     // excluding exactly the already-seen ids — `WHERE updated_at > $1 OR
     // (updated_at = $1 AND id NOT IN (<observed ids>))`. This catches a
     // genuinely-new sibling that lands at the SAME top `updated_at` with a
-    // LOWER-sorting id (a historical-import row stamped `updated_at = endedAt`,
-    // or two same-millisecond writes) — the previous `id > maxId` boundary
-    // silently skipped such a row forever (data loss), since it is neither
-    // `> maxId` nor at a strictly-greater timestamp. Already-seen ids stay
+    // LOWER-sorting id (two same-millisecond writes) — the previous `id > maxId`
+    // boundary silently skipped such a row forever (data loss), since it is
+    // neither `> maxId` nor at a strictly-greater timestamp. Already-seen ids stay
     // excluded, so the seen cluster is not needlessly re-emitted (the keyset
     // perf win — no re-walk of the whole corpus — is preserved). The
     // `previousTopIds` JS filter below is retained as belt-and-suspenders for the
@@ -1383,6 +1502,14 @@ export class AgentSessionSyncService {
       previousTopUpdatedAt,
       [...previousTopIds]
     );
+    // ISS-8116: the fold below writes the incremental queue, advances
+    // `observedTopUpdatedAt`, and issues two DURABLE outbox writes (`enqueue` +
+    // `rePend`) whose key the writers re-resolve at call time — so a superseded
+    // read would enqueue rows selected under the departing account onto the
+    // arriving one, against a watermark that never described it.
+    if (!isCurrentSourceState()) {
+      return;
+    }
     if (rows.length === 0) {
       return;
     }
@@ -1396,6 +1523,7 @@ export class AgentSessionSyncService {
           incrementalQueue: this.incrementalQueue,
           incrementalQueuedIds: this.incrementalQueuedIds,
           backfillQueuedIds: this.backfillQueuedIds,
+          queuedUpdatedAtById: this.queuedUpdatedAtById,
         },
         rows,
         previousTopUpdatedAt,
@@ -1409,426 +1537,115 @@ export class AgentSessionSyncService {
     }
 
     // FEA-3473: durably record the incremental enqueue in the outbox.
-    this.recordOutboxEnqueue(newlyQueued, AgentSessionSyncClass.Incremental);
+    this.outbox.enqueue(newlyQueued, AgentSessionSyncClass.Incremental);
+    // ISS-7246: a bumped `updated_at` is NEW EVIDENCE about a session this lane
+    // previously withheld as unsubstantive, so its row returns to `pending` to
+    // be re-judged. The enqueue above cannot do this itself: its `ON CONFLICT`
+    // clause deliberately never touches `status` (so a re-enqueue can never
+    // resurrect a dead-letter), which would otherwise leave a withheld row
+    // withheld forever and a session that became substantive would never
+    // upload. Scoped to the INCREMENTAL feed on purpose — the whole-corpus
+    // backfill re-seed carries no new information about a session, so re-pending
+    // there would reintroduce a per-boot phantom cycle.
+    this.outbox.rePend(newlyQueued);
 
     this.observedTopUpdatedAt = nextTopUpdatedAt;
     this.observedIdsAtTopUpdatedAt = nextTopIds;
   }
 
   /**
-   * FEA-1962: load the persisted cursor for the current principal/target the
-   * first time we sync for it (and re-load after an identity change). A present
-   * watermark resumes incremental sync from the last uploaded position; an
-   * absent one leaves the cursor null so `initializeBackfillQueueIfNeeded`
-   * performs a full backfill exactly as before. Runs at most once per identity
-   * (guarded by `hydratedSourceKey`) so it never re-queries mid-stream.
+   * FEA-1962 / FEA-3473 / FEA-3659: the once-per-identity hydration — stranded-row
+   * adoption, the durable cursor load and what it seeds, the un-acked prefix
+   * resume and its retry counters — all in the cohesive sibling
+   * `persisted-cursor-hydration.ts`. This file keeps only the delegate that hands
+   * its own fields through (ISS-8116; same split as `initial-backfill-walk.ts`).
    */
-  private async hydratePersistedCursorIfNeeded(
-    source: AgentSessionSyncSource
-  ): Promise<void> {
-    const sourceKey = SessionSyncCapability.sourceKey(this.options);
-    if (sourceKey === this.hydratedSourceKey) {
-      return;
-    }
-    // Identity changed (account / compute-target switch) or first hydration:
-    // drop cursor/queue state derived from a different principal so we never
-    // upload the new account's sessions against the old account's watermark.
-    if (this.hydratedSourceKey !== null) {
-      this.clearSourceDerivedState();
-    }
-    if (!(sourceKey && source.loadSyncState)) {
-      // No identity yet, or a source without persistence → in-memory only,
-      // which means today's full-backfill-on-restart behavior. Nothing async
-      // can fail here, so mark the identity hydrated immediately.
-      this.hydratedSourceKey = sourceKey;
-      return;
-    }
-    // Mark the identity hydrated only AFTER a successful load. If loadSyncState
-    // throws (e.g. the sync_state table is transiently unavailable), leaving
-    // hydratedSourceKey unchanged lets the next sync tick retry the load instead
-    // of the early-return guard permanently wedging the session on a full
-    // backfill and ignoring the persisted watermark until restart.
-    const persisted = await source.loadSyncState(sourceKey);
-    this.hydratedSourceKey = sourceKey;
-    if (persisted?.observedTopUpdatedAt) {
-      this.observedTopUpdatedAt = persisted.observedTopUpdatedAt;
-      this.observedIdsAtTopUpdatedAt = new Set(
-        persisted.observedIdsAtTopUpdatedAt
-      );
-      // Seed the recorded dead-letters SET ASIDE — do NOT push them onto the
-      // backfill queue. They are revisited last (only once both queues are drained,
-      // via promoteDeadLetterIfIdle), so a resumed session settles to the persisted
-      // watermark without re-walking the whole corpus and without eagerly retrying
-      // the abandoned rows. INFINITE deadline keeps recoverExpiredDeadLetters from
-      // re-enqueueing them ahead of live work; the idle-cycle revisit is their path
-      // back. Absent/legacy cursors carry `deadLetteredIds: []`.
-      const deadLetteredIds = persisted.deadLetteredIds ?? [];
-      for (const id of deadLetteredIds) {
-        if (!this.deadLetteredIds.has(id)) {
-          this.deadLetteredIds.set(id, Number.POSITIVE_INFINITY);
-        }
-      }
-      // Bound the seeded set (a legacy cursor persisted before the cap could
-      // carry more than MAX_DEAD_LETTERED_IDS); the next persist rewrites it
-      // capped.
-      this.enforceDeadLetterCap();
-      const deadLetterSuffix =
-        deadLetteredIds.length > 0
-          ? ` and set ${deadLetteredIds.length} dead-lettered session(s) aside for later`
-          : "";
-      gatewayLog.info(
-        TAG,
-        `resumed agent-session sync from persisted cursor (${persisted.observedIdsAtTopUpdatedAt.length} id(s) at top) — skipping full backfill${deadLetterSuffix}`
-      );
-    }
-
-    // FEA-3473 (AC-1): re-enqueue the sessions that were enqueued but not acked
-    // before a kill/restart. Their durable `pending` outbox rows survived the
-    // crash; an acked session's row was cleared on ack, so this re-uploads ONLY
-    // the un-acked prefix (bounded by the outbox size), NOT the whole corpus.
-    // Runs even when no cursor was persisted (a kill mid-first-backfill leaves a
-    // populated outbox but no cursor yet). Skipped for legacy/fake sources
-    // without the delegate. A pending id already set aside as a resumed
-    // dead-letter is left alone (the dead-letter revisit is its path back).
-    if (sourceKey && source.loadPendingOutboxIds) {
-      let pendingIds: string[] = [];
-      try {
-        pendingIds = await source.loadPendingOutboxIds(sourceKey);
-      } catch (error) {
-        gatewayLog.warn(
-          TAG,
-          `failed to load pending outbox on resume: ${errorMessage(error)}`
-        );
-      }
-      // ISS-4546 (PR #4098 review, wongk): route the hydration re-enqueue through
-      // the SAME `feedIdsIntoBackfillQueue` helper the live `injectBackfillIds`
-      // path uses, so the dedup discipline (skip an id already tracked on the
-      // backfill/incremental queues or set aside as a dead-letter) cannot drift
-      // between the restart-hydration path and the live-inject path.
-      const requeued = feedIdsIntoBackfillQueue(
-        this.backfillQueueFeedState(),
-        pendingIds
-      );
-      if (requeued > 0) {
-        // New durable work to drain preempts dead-letter revisits.
-        this.deadLetterRevisitedThisIdleCycle = false;
-        // FEA-3473 (AC-1): the outbox re-enqueue above recovers only the un-acked
-        // prefix — the ids that were enqueued but not yet acked. It is NOT proof
-        // that every earlier row is either acked or represented in the outbox.
-        // When a cursor WAS persisted, `observedTopUpdatedAt` is already set (by
-        // hydratePersistedCursorIfNeeded) and the drain-gated persist guarantees
-        // everything up to that watermark was acked, so the corpus re-walk stays
-        // correctly skipped. When NO cursor was persisted (a kill mid-first-
-        // backfill), we deliberately leave `observedTopUpdatedAt === null` so
-        // `initializeBackfillQueueIfNeeded` still runs its full enumeration. Do
-        // NOT seed the watermark from the current top here: a partially-written
-        // outbox can be missing sessions that were never enqueued, and those rows
-        // also fall below the incremental `updated_at >= watermark` scan, so a
-        // seed would drop them permanently. The full walk re-queues the whole
-        // corpus (dedup-safe against the ids already queued above; the server
-        // dedupes any already-acked rows per recordOutboxEnqueue), guaranteeing no
-        // locally-captured session is stranded.
-        gatewayLog.info(
-          TAG,
-          `re-enqueued ${requeued} un-acked agent session(s) from the durable outbox on resume`
-        );
-      }
-    }
-
-    // FEA-3659: rehydrate the in-memory retry budget + deferred-retry deadline
-    // from the durable outbox. Re-enqueuing the pending ids above is not enough:
-    // the per-session counters (`ingestionFailedCountById`, …) and
-    // `nextRetryAfterMs` start empty on a fresh process, so without this a row
-    // that was mid-backoff (e.g. `attempt_count=4`) would be retried IMMEDIATELY
-    // and its next rejection would recompute `(0 + 1) = 1`, overwriting the
-    // persisted budget back to 1 and letting an outage that spans restarts dodge
-    // the intended dead-letter cap. Seeding the counters preserves the budget and
-    // seeding `nextRetryAfterMs` re-arms the backoff so `pickReadyCandidates`
-    // keeps deferring the row until its persisted `next_attempt_at` elapses.
-    if (sourceKey && source.loadPendingOutboxRetryState) {
-      let retryRows: OutboxRetryState[] = [];
-      try {
-        retryRows = await source.loadPendingOutboxRetryState(sourceKey);
-      } catch (error) {
-        gatewayLog.warn(
-          TAG,
-          `failed to load pending outbox retry state on resume: ${errorMessage(error)}`
-        );
-      }
-      let seeded = 0;
-      for (const row of retryRows) {
-        // A row set aside as a resumed dead-letter is revisited via its own
-        // deadline path; don't also seed a live retry budget for it.
-        if (row.attemptCount <= 0 || this.deadLetteredIds.has(row.id)) {
-          continue;
-        }
-        const counter = this.retryCounterMapForReason(row.lastError);
-        if (counter) {
-          counter.set(row.id, row.attemptCount);
-        }
-        const deadlineMs = row.nextAttemptAt
-          ? Date.parse(row.nextAttemptAt)
-          : Number.NaN;
-        if (Number.isFinite(deadlineMs)) {
-          this.nextRetryAfterMs.set(row.id, deadlineMs);
-        }
-        seeded += 1;
-      }
-      if (seeded > 0) {
-        gatewayLog.info(
-          TAG,
-          `rehydrated retry budget/backoff for ${seeded} agent session(s) from the durable outbox on resume`
-        );
-      }
-    }
-  }
-
-  /**
-   * FEA-3659: map a persisted outbox `last_error` reason to the in-memory
-   * consecutive-failure counter it belongs to, so resume seeds the SAME budget
-   * the original failure was accruing. Only the transient classes that defer with
-   * backoff have a counter; an unrecognized/absent reason returns null (the
-   * `next_attempt_at` deadline is still re-armed class-agnostically by the
-   * caller). Today only `ingestion_failed` persists a retry, but routing by
-   * reason keeps this correct if the other transient classes start persisting.
-   */
-  private retryCounterMapForReason(
-    reason: string | null
-  ): Map<string, number> | null {
-    switch (reason) {
-      case "ingestion_failed":
-        return this.ingestionFailedCountById;
-      case "rate_limited":
-        return this.rateLimitedCountById;
-      case SyncReason.AckOmitted:
-        // Goal stage 2: recorded durably on defer, so resume re-seeds it too.
-        return this.ackOmittedCountById;
-      default:
-        // ISS-5090: every validation-rejection reason (row-attributable,
-        // envelope-attributable, envelope-exhausted) shares ONE budget, so all
-        // three seed the same counter.
-        return isValidationFailureReason(reason)
-          ? this.validationFailedCountById
-          : null;
-    }
-  }
-
-  /**
-   * The resolved durable-outbox write target (identity + source) the outbox-writer
-   * helpers need. Resolves the source key with the same
-   * `hydratedSourceKey ?? resolveSyncSourceKey()` precedence every writer used.
-   */
-  private outboxWriteTarget(): {
-    sourceKey: string | null;
-    source: AgentSessionSyncSource | null;
-  } {
-    return {
-      sourceKey:
-        this.hydratedSourceKey ?? SessionSyncCapability.sourceKey(this.options),
-      source: this.options.getSource?.() ?? null,
-    };
-  }
-
-  private recordOutboxEnqueue(
-    ids: string[],
-    syncClass: AgentSessionSyncClass
-  ): void {
-    recordOutboxEnqueueWrite(this.outboxWriteTarget(), ids, syncClass);
-  }
-
-  /** Goal stage 2: awaited + success-reporting (see the writer's doc). */
-  private clearOutboxOnAck(ids: string[]): Promise<boolean> {
-    return clearOutboxOnAckWrite(this.outboxWriteTarget(), ids);
-  }
-
-  private recordOutboxDeadLetter(
-    id: string,
-    reason: string,
-    attemptCount = 0
-  ): void {
-    recordOutboxDeadLetterWrite(
-      this.outboxWriteTarget(),
-      id,
-      reason,
-      attemptCount
-    );
-  }
-
-  private recordOutboxReEnqueue(id: string): void {
-    recordOutboxReEnqueueWrite(this.outboxWriteTarget(), id);
-  }
-
-  private recordOutboxRetry(
-    id: string,
-    attemptCount: number,
-    nextAttemptAtMs: number,
-    reason: string
-  ): void {
-    recordOutboxRetryWrite(
-      this.outboxWriteTarget(),
-      id,
-      attemptCount,
-      nextAttemptAtMs,
-      reason
-    );
-  }
-
-  /**
-   * FEA-1962: persist the durable cursor once the client is fully caught up —
-   * both queues drained and no pending chunks. At that moment every NON-dead row
-   * up to `observedTopUpdatedAt` has been accepted, so it is a safe resume point.
-   * Persisting only when the queues are drained is the acked-contiguous rule: we
-   * never record a watermark ahead of an unaccepted/queued/retrying row, so a
-   * restart can never skip a row that was not yet uploaded. Fire-and-forget:
-   * a failed write just means the next cold start re-backfills (no data loss).
-   *
-   * Dead-lettered rows do NOT block persistence — they are RECORDED. A
-   * dead-lettered session is one this run intentionally abandoned (locally
-   * oversize / validation_failed / exhausted-retry); it was dropped from the
-   * queues, so leaving the watermark blocked kept the cursor pinned forever and
-   * forced a full re-walk of every local session on every restart (the observed
-   * `queued historical backfill for 3456` + `deadLettered=21` loop). Recording
-   * the dead ids in `deadLetteredIds` lets the watermark advance past them while
-   * remembering exactly which rows were abandoned: nothing un-uploaded is skipped
-   * (every non-dead row up to the watermark was acked before we got here, since
-   * both queues are empty), and on resume the dead ids are set aside and revisited
-   * last instead of re-walking the whole corpus.
-   */
-  private persistCursorIfCaughtUp(): void {
-    if (
-      !this.historicalBackfillEnabled ||
-      this.incrementalQueue.length > 0 ||
-      this.backfillQueue.length > 0 ||
-      this.pendingChunks !== null
-    ) {
-      return;
-    }
-    const sourceKey = this.hydratedSourceKey;
-    const source = this.options.getSource?.() ?? null;
-    if (!(sourceKey && source?.advanceSyncState && this.observedTopUpdatedAt)) {
-      return;
-    }
-    void Promise.resolve(
-      source.advanceSyncState(sourceKey, this.buildCursorState())
-    ).catch((error) => {
-      gatewayLog.warn(
-        TAG,
-        `failed to persist agent-session sync cursor: ${errorMessage(error)}`
-      );
-    });
-  }
-
-  /**
-   * FEA-1962/FEA-3473: build the durable cursor snapshot from the current
-   * in-memory watermark, tied-top ids, and dead-letter set. Single source of
-   * truth shared by `persistCursorIfCaughtUp` (drained-queues persist) and
-   * `persistInitialBackfillCursor` (post-initial-seed persist).
-   */
-  private buildCursorState(): PersistedSyncState {
-    return {
-      observedTopUpdatedAt: this.observedTopUpdatedAt,
-      // FEA-3473 (G6): cap the tied-top id set in the PERSISTED JSON only — the
-      // in-memory working set stays complete (so incremental dedup is exact),
-      // but a pathological cluster of same-`updated_at` sessions can never bloat
-      // the `observed_ids_at_top_updated_at` column without bound. On overflow
-      // the serialized set is truncated and a restart falls back to
-      // re-scan-from-timestamp: an empty observed set omits the incremental
-      // query's `id NOT IN (...)` exclusion, so `updated_at = watermark`
-      // re-selects the whole tied-top group and the outbox + server idempotently
-      // dedupe the re-enqueue — nothing un-uploaded is skipped.
-      observedIdsAtTopUpdatedAt: capPersistedTopIds(
-        this.observedIdsAtTopUpdatedAt,
-        (message) => gatewayLog.warn(TAG, message)
-      ),
-      deadLetteredIds: [...this.deadLetteredIds.keys()],
-    };
-  }
-
-  /**
-   * FEA-3473: AWAIT the durable outbox seed for the initial full-corpus backfill
-   * walk. Unlike the fire-and-forget `recordOutboxEnqueue`, the caller must know
-   * the seed COMMITTED before persisting the cursor: the anti-stranding
-   * invariant requires the outbox to be a complete ledger of remaining work
-   * before a restart is allowed to skip the full re-walk. Returns true on a
-   * committed seed, false on throw or an absent delegate (warn-log on throw,
-   * mirroring `recordOutboxEnqueue`).
-   */
-  private async seedBackfillOutboxDurably(
-    sourceKey: string,
-    ids: string[]
+  private hydratePersistedCursorIfNeeded(
+    source: AgentSessionSyncSource,
+    isCurrentSourceState: () => boolean
   ): Promise<boolean> {
-    if (ids.length === 0) {
-      return false;
-    }
-    const source = this.options.getSource?.() ?? null;
-    if (!source?.enqueueOutboxEntries) {
-      return false;
-    }
-    const entries: AgentSessionOutboxEntry[] = ids.map((externalSessionId) => ({
-      externalSessionId,
-      syncClass: AgentSessionSyncClass.Backfill,
-    }));
-    try {
-      await source.enqueueOutboxEntries(sourceKey, entries);
-      return true;
-    } catch (error) {
-      gatewayLog.warn(
-        TAG,
-        `failed to record ${entries.length} outbox enqueue(s): ${errorMessage(error)}`
-      );
-      return false;
-    }
+    return hydratePersistedCursorForPass({
+      source,
+      isCurrentSourceState,
+      resolveLiveSourceKey: () => SessionSyncCapability.sourceKey(this.options),
+      readContract: () => SessionSyncCapability.contract(this.options),
+      readHydratedSourceKey: () => this.hydratedSourceKey,
+      setHydratedSourceKey: (sourceKey) => {
+        this.hydratedSourceKey = sourceKey;
+      },
+      readSourceDerivedStateKey: () => this.sourceDerivedStateKey,
+      setSourceDerivedStateKey: (sourceKey) => {
+        this.sourceDerivedStateKey = sourceKey;
+      },
+      clearSourceDerivedState: () => this.clearSourceDerivedState(),
+      syncOptions: this.options,
+      applyResumedCursor: (observedTopUpdatedAt, observedIdsAtTopUpdatedAt) => {
+        this.observedTopUpdatedAt = observedTopUpdatedAt;
+        this.observedIdsAtTopUpdatedAt = new Set(observedIdsAtTopUpdatedAt);
+        // ISS-8041: what is already on disk for this identity, so a prefix
+        // boundary below it is refused instead of rewinding the cursor.
+        this.cursor.noteResumedFrom(observedTopUpdatedAt);
+      },
+      adoptLaneRun: this.folds.adoptLaneRun,
+      deadLetteredIds: this.deadLetteredIds,
+      enforceDeadLetterCap: () =>
+        enforceDeadLetterCap(this.deadLetterLifecycleDeps()),
+      dispositionDeps: () => this.dispositionDeps(),
+      retryCounters: {
+        ackOmitted: this.ackOmittedCountById,
+        ackTimeout: this.timeoutCountById,
+        ingestionFailed: this.ingestionFailedCountById,
+        rateLimited: this.rateLimitedCountById,
+        unknownAckReason: this.unknownAckReasonCountById,
+        validationFailed: this.validationFailedCountById,
+        nextRetryAfterMs: this.nextRetryAfterMs,
+        laneStalledSinceMsById: this.laneStalledSinceMsById,
+        deadLetterRecoveryCountById: this.deadLetterCountById,
+        ackOmittedCycleById: this.ackOmittedCycleById,
+      },
+      ...agentSessionSyncLogDeps,
+      // ISS-8610: the give-up stamp is adopted in here, after admission ran.
+    }).then((hydrated) => hydrated && !this.folds.heldEnvironmentally());
   }
 
   /**
-   * FEA-3473: persist the durable cursor immediately after the initial backfill
-   * walk's outbox seed has committed — WITHOUT the both-queues-empty gate of
-   * `persistCursorIfCaughtUp`. Once the full-corpus seed durably commits, the
-   * outbox is a complete ledger of remaining work (acked→deleted, dead→marked,
-   * pending→remaining), so a cold restart can safely resume from
-   * `loadPendingOutboxIds` and skip the full re-walk. Called ONLY after
-   * `seedBackfillOutboxDurably` returns true, preserving the anti-stranding
-   * ordering: a crash mid-seed leaves the cursor unpersisted so the next start
-   * runs the safe full re-walk. Warn-log on throw.
+   * ISS-8041: the two durable-cursor writes and the outbox seed that orders one
+   * of them, bound to this lane's live state. The state getter is re-resolved per
+   * call for the same reason `outbox` is — hydration and account switches move
+   * the identity under it. What the prefix boundary may claim lives in
+   * `agent-session-sync-cursor-prefix.ts`.
    */
-  private async persistInitialBackfillCursor(sourceKey: string): Promise<void> {
-    const source = this.options.getSource?.() ?? null;
-    if (!(source?.advanceSyncState && this.observedTopUpdatedAt)) {
-      return;
-    }
-    try {
-      await source.advanceSyncState(sourceKey, this.buildCursorState());
-    } catch (error) {
-      gatewayLog.warn(
-        TAG,
-        `failed to persist initial backfill cursor: ${errorMessage(error)}`
-      );
-    }
-  }
+  private readonly cursor = createSessionCursorPersister(
+    () => ({
+      historicalBackfillEnabled: this.historicalBackfillEnabled,
+      sourceKey: this.hydratedSourceKey,
+      source: this.options.getSource?.() ?? null,
+      contract: SessionSyncCapability.contract(this.options),
+      unackedIds: collectOwedIds(
+        this.incrementalQueue,
+        this.backfillQueue,
+        this.pendingChunks?.sessionId ?? null
+      ),
+      queuedUpdatedAtById: this.queuedUpdatedAtById,
+      observedTopUpdatedAt: this.observedTopUpdatedAt,
+      observedIdsAtTopUpdatedAt: this.observedIdsAtTopUpdatedAt,
+      deadLetteredIds: this.deadLetteredIds.keys(),
+    }),
+    (message) => gatewayLog.warn(TAG, message),
+    AgentSessionSyncClass.Backfill
+  );
 
-  /**
-   * FEA-1461: pick up to `limit` session IDs from `queue`, skipping any whose
-   * deferred-retry deadline (set by a prior `rate_limited` failure) is still
-   * in the future. Order is preserved for selected IDs so the queue remains
-   * stable; only the backed-off entries are skipped, not reordered.
-   */
-  private pickReadyCandidates(
+  private selectReadyCandidates(
     queue: readonly string[],
     limit: number,
     nowMs: number
   ): string[] {
-    const result: string[] = [];
-    for (const id of queue) {
-      const deadline = this.nextRetryAfterMs.get(id);
-      if (deadline !== undefined && deadline > nowMs) {
-        continue;
-      }
-      result.push(id);
-      if (result.length >= limit) {
-        break;
-      }
-    }
-    return result;
+    return pickReadyCandidates({
+      queue,
+      limit,
+      nowMs,
+      nextRetryAfterMs: this.nextRetryAfterMs,
+    });
   }
 
   private async handleBatchAck(
@@ -1841,7 +1658,8 @@ export class AgentSessionSyncService {
     // ISS-5090: whether the sent envelope was one part of a MULTI-part chunk
     // sequence. A `validation_failed` on such a part is not attributable to the
     // persisted row, so it may not spend the deterministic dead-letter budget.
-    multiPartEnvelope: boolean
+    multiPartEnvelope: boolean,
+    attempt: SentBatchAttempt
   ): Promise<void> {
     if (ack.accepted) {
       this.firstAckReceived = true;
@@ -1855,25 +1673,24 @@ export class AgentSessionSyncService {
         ids.length === 1 &&
         this.pendingChunks.sessionId === ids[0];
       await processAcceptedAck(
-        {
+        acceptedAckInput({
           syncMode,
           ids,
           sessionCount,
           payloadBytes,
           latencyMs,
           hasMoreChunks,
-          remainingChunks: hasMoreChunks
-            ? (this.pendingChunks?.chunks.length ?? null)
-            : null,
-          ...(ack.acceptedSessionIds
-            ? { acceptedSessionIds: ack.acceptedSessionIds }
-            : {}),
-        },
+          pendingChunkCount: this.pendingChunks?.chunks.length ?? null,
+          acceptedSessionIds: ack.acceptedSessionIds,
+          attempt,
+        }),
         {
           rowState: {
             timeoutCountById: this.timeoutCountById,
             rateLimitedCountById: this.rateLimitedCountById,
+            unknownAckReasonCountById: this.unknownAckReasonCountById,
             ingestionFailedCountById: this.ingestionFailedCountById,
+            laneStalledSinceMsById: this.laneStalledSinceMsById,
             validationFailedCountById: this.validationFailedCountById,
             ackOmittedCountById: this.ackOmittedCountById,
             validationBisectIds: this.validationBisectIds,
@@ -1884,13 +1701,23 @@ export class AgentSessionSyncService {
             deadLetterCountById: this.deadLetterCountById,
             chunkValidationCycleById: this.chunkValidationCycleById,
             ackOmittedCycleById: this.ackOmittedCycleById,
+            deadLetteredIds: this.deadLetteredIds,
           },
-          clearOutboxDurably: (ackedIds) => this.clearOutboxOnAck(ackedIds),
+          ...this.outbox.slices.acceptedAck,
+          clearLaneGiveUp: this.folds.clearLaneGiveUp,
           sourceStateGeneration: () => this.sourceStateGeneration,
           isStarted: () => this.started,
-          dequeue: (mode, ackedIds) => this.dequeue(mode, ackedIds),
-          persistCursorIfCaughtUp: () => this.persistCursorIfCaughtUp(),
-          applyBoundedFold: (config) => this.applyBoundedFailureFold(config),
+          isCurrentSourceIdentity: () => this.currentPassIdentityGuard(),
+          // ISS-7099: the ONE proven-delivery site. `processAcceptedAck` calls
+          // this only after the server verified the ack AND the durable outbox
+          // clear committed, and a chunked session reaches it once, on its
+          // final chunk — so this cannot double-count or credit a withhold.
+          dequeue: (mode, ackedIds) => {
+            this.progressTally.noteDelivered(ackedIds.length);
+            this.dequeue(mode, ackedIds);
+          },
+          persistCursorIfCaughtUp: () => this.cursor.persistIfAdvanced(),
+          applyBoundedFold: (config) => this.folds.applyBoundedFold(config),
           deadLetteredCount: () => this.deadLetteredIds.size,
           resetDeadLetterRevisitAfterDrainedAck: () =>
             this.resetDeadLetterRevisitAfterDrainedAck(),
@@ -1905,8 +1732,8 @@ export class AgentSessionSyncService {
           scheduleImmediateDrainIfReadyWorkRemains: () =>
             this.scheduleImmediateDrainIfReadyWorkRemains(),
           emitTelemetry: (event) => this.options.onSyncBatchTelemetry?.(event),
-          logInfo: (message) => gatewayLog.info(TAG, message),
-          logError: (message) => gatewayLog.error(TAG, message),
+          reportFreshnessAnomaly: reportFreshestSessionLagAnomaly,
+          ...agentSessionSyncLogDeps,
         }
       );
       return;
@@ -1915,197 +1742,90 @@ export class AgentSessionSyncService {
     // On any failure, discard remaining chunks for this session — partial
     // chunk sequences are not useful without server-side reassembly.
     //
-    // FEA-1461: the next retry will re-fetch + re-chunk the source session
-    // from the dashboard sync source. That re-chunk work is bounded for transient failures
-    // (rate_limited) by the per-session backoff added below — the same
-    // session is not re-attempted within RATE_LIMIT_BACKOFF_MS — and by the
-    // MAX_CONSECUTIVE_RATE_LIMITED dead-letter trip. True resume-from-chunk-N
-    // would eliminate the re-chunk work entirely but requires server-side
-    // partial-payload reassembly that does not exist today; tracked as out
-    // of scope on FEA-1461.
+    // FEA-1461: the next retry re-fetches + re-chunks the source session. That
+    // work is bounded by the per-session backoff added below and, terminally, by
+    // whichever bound the reason's class carries. True resume-from-chunk-N needs
+    // server-side partial reassembly and is out of scope on FEA-1461.
+    // ISS-7248: whether THIS ack threw away a pinned remainder. Latched before
+    // the tail is nulled, because after that the two cases — "one chunk failed"
+    // and "the whole in-flight sequence was abandoned" — are indistinguishable.
+    let chunkTailDiscarded = false;
     if (this.pendingChunks && ids.includes(this.pendingChunks.sessionId)) {
       gatewayLog.warn(
         TAG,
         `discarding ${this.pendingChunks.chunks.length} remaining chunk(s) for session ${this.pendingChunks.sessionId} after batch failure (${ack.reason})`
       );
       this.pendingChunks = null;
+      chunkTailDiscarded = true;
     }
 
-    // FEA-1995: a batch is a `dead_letter` for sync.* telemetry when this ack
-    // permanently removes one or more sessions — validation_failed,
-    // ack-timeout, and rate-limit trips all grow `deadLetteredIds`.
-    // Transient outcomes (retryable timeout, deferred rate-limit, deferred
-    // validation-retry (FEA-3366), feature disabled, unknown reason) leave the
-    // set unchanged and report `failure`.
+    /* FEA-1995: a batch is a `dead_letter` for sync.* telemetry when this ack
+       removes one or more sessions from the queue. Since ISS-8605 that happens
+       two ways: a budgeted class exhausting its counter (validation_failed,
+       transport_timeout), or ANY environmental class crossing the 24h wall clock
+       — including an unrecognized reason. Every other outcome defers and reports
+       `failure`. */
     const deadLetteredCountBefore = this.deadLetteredIds.size;
+    // ISS-7248: same reason as the thrown-transport path — an exhausting fold
+    // clears the counter it just consumed, so the pre-fold reading is the only
+    // place the exhausted attempt number is still legible.
+    // ISS-8595: one reading, so the budget and the failure record cannot disagree.
+    const failureReason = syncReasonForAckReason(ack.reason);
+    const attemptBefore = this.failureCountFor(failureReason, ids);
 
-    if (ack.reason === DesktopAgentSessionsAckReason.ValidationFailed) {
-      // ISS-5090: which budget this rejection may spend depends on what was
-      // actually rejected — a multi-id envelope, one part of a multi-part chunk
-      // sequence, or a whole session. See
-      // `agent-session-sync-validation-failure.ts`.
-      applyValidationFailure(
-        {
-          syncMode,
-          ids,
-          payloadBytes,
-          multiPartEnvelope,
-          ...(ack.detail ? { detail: ack.detail } : {}),
+    await dispatchRejectedAck(
+      { ack, ids, syncMode, payloadBytes, multiPartEnvelope },
+      {
+        nextRetryAfterMs: this.nextRetryAfterMs,
+        applyBoundedFold: (config) => this.folds.applyBoundedFold(config),
+        validationFailureDeps: () => this.folds.validationFailureDeps(),
+        applyLaneStallFold: (config) => this.folds.applyLaneStall(config),
+        transportTimeoutFoldPolicy: () =>
+          this.transportTimeoutBudget.foldPolicy(),
+        // Referenced, not re-wrapped: every fold runner is already a closure
+        // over the one captured view, so there is no `this` to rebind.
+        deferLaneEnvironmental: this.folds.deferLaneEnvironmental,
+        noteLaneAnswered: this.folds.noteLaneAnswered,
+        noteTransportLoss: (cause) => this.noteTransportLoss(cause),
+        pauseForFeatureDisabled: () => {
+          this.featureDisabledForSession = true;
+          this.timers.stopPoll();
         },
-        {
-          counter: this.validationFailedCountById,
-          recoverableDeadLetterCountFor: (id) =>
-            this.chunkValidationCycleById.get(id) ?? 0,
-          markForBisection: (bisectIds, retryDeadlineMs) => {
-            for (const id of bisectIds) {
-              this.validationBisectIds.add(id);
-              this.nextRetryAfterMs.set(id, retryDeadlineMs);
-            }
-          },
-          clearBisectionFlag: (id) => this.validationBisectIds.delete(id),
-          applyBoundedFold: (config) => this.applyBoundedFailureFold(config),
-          logInfo: (message) => gatewayLog.info(TAG, message),
-          formatBytes,
-        }
-      );
-    } else if (ack.reason === DesktopAgentSessionsAckReason.FeatureDisabled) {
-      this.featureDisabledForSession = true;
-      this.timers.stopPoll();
-      gatewayLog.info(
-        TAG,
-        "pausing agent-session sync until readiness is regained because the server rejected agent-session batches with feature_disabled"
-      );
-    } else if (ack.reason === DesktopAgentSessionsAckReason.Unauthenticated) {
-      // FEA-3425: auth loss from the HTTP transport. Defer WITHOUT touching any
-      // failure counter (the same no-budget-burn class as the FEA-3792
-      // `transport_unavailable` no-target defer below): the batch stays queued,
-      // every budget stays intact, and the lane resumes when the desktop
-      // session refreshes. Since Phase 4a there is no socket write path to fall
-      // back to — the HTTP transport is the only path.
-      this.deferWithBudgetsIntact(ids, UNAUTHENTICATED_BACKOFF_MS);
-      gatewayLog.info(
-        TAG,
-        `agent-session batch (${syncMode}, ~${formatBytes(payloadBytes)}) rejected as unauthenticated; ` +
-          `deferring ${ids.length} session(s) for ${Math.round(UNAUTHENTICATED_BACKOFF_MS / 1000)}s ` +
-          "with retry budgets intact until the desktop session refreshes"
-      );
-    } else if (ack.reason === DesktopAgentSessionsAckReason.TargetNotOwned) {
-      // FEA-3425: the server's ownership check refused the sent computeTargetId.
-      // Waiting cannot fix a wrong id, and dead-lettering would strand good
-      // sessions — defer with budgets intact and surface loudly; identity
-      // re-resolves via the normal hello/refresh path.
-      this.deferWithBudgetsIntact(ids, TARGET_NOT_OWNED_BACKOFF_MS);
-      gatewayLog.warn(
-        TAG,
-        `agent-session batch (${syncMode}, ~${formatBytes(payloadBytes)}) rejected: computeTargetId not owned by the authenticated identity; ` +
-          `deferring ${ids.length} session(s) for ${Math.round(TARGET_NOT_OWNED_BACKOFF_MS / 1000)}s ` +
-          "(budgets intact) awaiting identity re-resolution"
-      );
-    } else if (ack.reason === DesktopAgentSessionsAckReason.AckTimeout) {
-      // Ack timeouts are transient (oversized/slow round-trip) → eligible for
-      // live retry-after recovery. A deferred timeout just re-attempts on the
-      // next tick (no backoff deadline), so `backoffMs: null`.
-      this.applyBoundedFailureFold({
-        ids,
-        syncMode,
-        payloadBytes,
-        counter: this.timeoutCountById,
-        maxConsecutive: MAX_CONSECUTIVE_TIMEOUTS,
-        reason: "ack_timeout",
-        recoverable: true,
-        backoffMs: null,
-        recordOutboxOnDefer: false,
-      });
-    } else if (ack.reason === DesktopAgentSessionsAckReason.TransportTimeout) {
-      // ISS-5088: the local request deadline fired with no server answer — an
-      // ambiguous failure the `TransportTimeoutBudget` resolves by suppressing
-      // the charge inside a known outage and refunding earlier ones, while
-      // still bounding a genuinely undeliverable row.
-      this.applyBoundedFailureFold({
-        ids,
-        syncMode,
-        payloadBytes,
-        ...this.transportTimeoutBudget.foldPolicy(),
-      });
-    } else if (ack.reason === DesktopAgentSessionsAckReason.RateLimited) {
-      // FEA-3792 (PRD-536 D9): `RateLimited` is now UNAMBIGUOUSLY a genuine
-      // server-side throttle (the HTTP wiring returns `TransportUnavailable`
-      // when the compute target is not yet known — offline or the socket hello
-      // is pending — handled in its own branch below). No more racy post-hoc
-      // `isHttpReady()` re-read to guess the cause: a server throttle always
-      // increments the per-session counter and dead-letters once the budget is
-      // spent.
-      this.handleThrottleAck({
-        ids,
-        syncMode,
-        payloadBytes,
-        countsById: true,
-      });
-    } else if (
-      ack.reason === DesktopAgentSessionsAckReason.TransportUnavailable
-    ) {
-      // FEA-3792 (PRD-536 D9): local transport unavailability (no compute target
-      // yet — offline, or the socket hello landed after the batch was prepared).
-      // A missing target is not a session-payload problem, so defer with backoff
-      // but NEVER increment the dead-letter counter — treating it as a throttle
-      // would dead-letter perfectly good sessions after MAX_CONSECUTIVE_RATE_LIMITED
-      // no-target defers (the FEA-1461 regression this split makes structural
-      // instead of racy).
-      //
-      // ISS-5088: reaching here is unambiguous proof the cloud connection is
-      // down (no live compute target). Any `transport_timeout` charge taken
-      // before this ack was therefore taken during a lane-wide outage window —
-      // hand it back before it can dead-letter a healthy session.
-      this.noteTransportLoss("cloud transport unavailable");
-      this.handleThrottleAck({
-        ids,
-        syncMode,
-        payloadBytes,
-        countsById: false,
-      });
-    } else if (ack.reason === DesktopAgentSessionsAckReason.IngestionFailed) {
-      // ingestion_failed is transient server-side backpressure → eligible for
-      // live recovery. FEA-3659: the deferred retry is durably recorded in the
-      // outbox (attempt_count / next_attempt_at) and the exhausted count is
-      // stamped at dead-letter time, so a transient burst dead-letters only once
-      // its full backoff budget is spent (the 179-row-burst fix).
-      this.applyBoundedFailureFold({
-        ids,
-        syncMode,
-        payloadBytes,
-        counter: this.ingestionFailedCountById,
-        maxConsecutive: MAX_CONSECUTIVE_INGESTION_FAILED,
-        reason: "ingestion_failed",
-        recoverable: true,
-        backoffMs: INGESTION_FAILED_BACKOFF_MS,
-        recordOutboxOnDefer: true,
-      });
-    } else {
-      gatewayLog.debug(
-        TAG,
-        `agent-session batch rejected by server (${syncMode}): ${ack.reason}`
-      );
-    }
+        ...agentSessionSyncLogDeps,
+      }
+    );
 
     this.options.onBatchOutcome?.({
       outcome: DesktopSyncBatchOutcome.Failure,
+      // UNFOLDED: free-form product analytics keeps the skew class.
       reason: ack.reason,
       syncMode,
       sessionCount,
       payloadBytes,
     });
-    this.options.onSyncBatchTelemetry?.({
+    // ISS-7248: one record per failed attempt, to both sinks. The server ack
+    // reason (ack_timeout / rate_limited / ingestion_failed / validation_failed
+    // / feature_disabled) is the failure/dead-letter cause; surfacing it is the
+    // whole point of FEA-3426 (the SLO can split by reason instead of inferring
+    // from payload_bytes/latency_ms).
+    this.reportAttemptFailure({
+      attemptBefore,
+      batchId: attempt.batchId,
       outcome:
         this.deadLetteredIds.size > deadLetteredCountBefore
           ? DesktopSyncBatchOutcome.DeadLetter
           : DesktopSyncBatchOutcome.Failure,
+      reason: failureReason,
       payloadBytes,
+      sessionIds: ids,
+      ...resolveSyncPayloadShapingPair({
+        drainingPendingChunkTail: attempt.drainingPendingChunkTail,
+        hasPinnedChunkTail: this.pendingChunks !== null,
+        chunkTailDiscarded,
+        activityTilingStripped: attempt.tilingStrippedSessionIds.length > 0,
+      }),
+      tilingStrippedSessionCount: attempt.tilingStrippedSessionIds.length,
       latencyMs,
-      // The server ack reason (ack_timeout / rate_limited / ingestion_failed /
-      // validation_failed / feature_disabled) is the failure/dead-letter cause;
-      // surfacing it here is the whole point of FEA-3426 (the SLO can now split
-      // by reason instead of inferring from payload_bytes/latency_ms).
-      reason: ack.reason,
     });
 
     // A dead-letter dequeues its rows and may have just drained both queues
@@ -2114,10 +1834,10 @@ export class AgentSessionSyncService {
     // next restart (the accepted path persists via handleBatchAck's success
     // branch; this covers the "only remaining rows dead-lettered" case).
     if (this.deadLetteredIds.size > deadLetteredCountBefore) {
-      this.persistCursorIfCaughtUp();
+      this.cursor.persistIfAdvanced();
       // FEA-4375: a terminal rejection that dead-letters rows is forward progress
       // — self-continue so a failure-heavy corpus behind repeatedly-rejected
-      // batches does not pay the 5s poll per terminal batch (shafty023 / wongk).
+      // batches does not pay the 5s poll per terminal batch (davetho / whitlockk).
       // Gated on a genuine dead-letter THIS ack: a purely-deferred rejection or a
       // lane-wide pause (feature_disabled / unauthenticated / transport_unavailable)
       // leaves the set unchanged and does NOT self-continue, and the rescheduler
@@ -2127,91 +1847,67 @@ export class AgentSessionSyncService {
   }
 
   /**
-   * FEA-3425: park a batch's ids behind a retry deadline WITHOUT touching any
-   * failure counter — the shared shape of the no-budget-burn ack classes
-   * (`unauthenticated`, `target_not_owned`), whose precondition is external
-   * (auth/identity state) and can only be fixed by waiting, never by burning
-   * retry budget toward dead-letter. Call sites own their log line.
-   */
-  private deferWithBudgetsIntact(ids: string[], backoffMs: number): void {
-    const retryDeadline = Date.now() + backoffMs;
-    for (const id of ids) {
-      this.nextRetryAfterMs.set(id, retryDeadline);
-    }
-  }
-
-  /**
-   * FEA-3792 (PRD-536 D9): the two throttle-shaped acks the batch can receive,
-   * routed through the shared bounded fold (FEA-4375):
+   * ISS-7248: report ONE failed sync attempt — the durable local record plus the
+   * `sync.batch` span — from the single seam every failure path goes through.
    *
-   * - `RateLimited` (server payload throttle, `countsById: true`): counts toward
-   *   `rateLimitedCountById` and dead-letters at `MAX_CONSECUTIVE_RATE_LIMITED` —
-   *   a persistently-throttled session must eventually be set aside.
-   * - `TransportUnavailable` (no compute target yet, `countsById: false`): defers
-   *   with the same backoff but NEVER counts or dead-letters (`countsToward:
-   *   false`) — a missing target is not a payload problem, so offline/hello-pending
-   *   ticks must not burn a good session's budget.
+   * Called strictly AFTER the reason fold, so the attempt number it reads is the
+   * count including this failure. The ids reach only the DURABLE sink; the span
+   * seam is fed a strict transport-health subset by `reportSyncAttemptFailure`,
+   * so no session id can cross the wire from here.
    */
-  private handleThrottleAck(params: {
-    ids: string[];
-    syncMode: AgentSessionSyncMode;
-    payloadBytes: number;
-    countsById: boolean;
-  }): void {
-    const { ids, syncMode, payloadBytes, countsById } = params;
-    this.applyBoundedFailureFold({
-      ids,
-      syncMode,
-      payloadBytes,
-      counter: this.rateLimitedCountById,
-      maxConsecutive: MAX_CONSECUTIVE_RATE_LIMITED,
-      reason: "rate_limited",
-      recoverable: true,
-      backoffMs: RATE_LIMIT_BACKOFF_MS,
-      recordOutboxOnDefer: false,
-      countsToward: countsById,
-      deferLabel: countsById
-        ? "rate_limited (server payload throttle)"
-        : "transport_unavailable (no compute target)",
+  private reportAttemptFailure(
+    // `deadLetteredThisAttempt` is derived from `outcome` below, so callers must
+    // not have to supply it — only this wrapper holds DesktopSyncBatchOutcome as
+    // a value, which is what keeps the diagnostic module's telemetry import
+    // type-only.
+    input: Omit<
+      Parameters<typeof reportSessionMetadataAttemptFailure>[1],
+      "deadLetteredThisAttempt"
+    >
+  ): void {
+    reportSessionMetadataAttemptFailure(
+      {
+        emitTelemetry: this.options.onSyncBatchTelemetry,
+        writeDurableRecord: (line) => gatewayLog.warn(TAG, line),
+        getOrganizationId: () =>
+          this.options.getSyncIdentity?.()?.organizationId,
+        failureCountFor: (reason, ids) => this.failureCountFor(reason, ids),
+      },
+      {
+        ...input,
+        deadLetteredThisAttempt:
+          input.outcome === DesktopSyncBatchOutcome.DeadLetter,
+      }
+    );
+  }
+
+  /**
+   * Highest consecutive-failure count these ids carry in the budget THIS reason
+   * charges — not across every budget. Maxing across all of them reports a count
+   * the current failure did not cause: a session holding an old `ingestion_failed`
+   * charge would make an `unauthenticated` deferral (which burns nothing) look
+   * like a retry.
+   */
+  private failureCountFor(reason: SyncReason, ids: readonly string[]): number {
+    return failureCountForReason(reason, ids, {
+      ackTimeout: this.timeoutCountById,
+      transportTimeout: this.transportTimeoutBudget.charges(),
+      rateLimited: this.rateLimitedCountById,
+      ingestionFailed: this.ingestionFailedCountById,
+      validationFailed: this.validationFailedCountById,
+      ackOmitted: this.ackOmittedCountById,
+      transportError: this.transportErrorCountById,
     });
   }
 
   /**
-   * FEA-4375: shared bounded-retry-then-dead-letter fold for the per-session
-   * ack-reason classes with the identical shape (`validation_failed`,
-   * `ack_timeout`, `ingestion_failed`). Delegates to the pure
-   * `applyBoundedFailureFold` in `agent-session-sync-ack-fold.ts`, wiring this
-   * service's counters/queues/outbox as the collaborator so the three call sites
-   * are one line each and the fold shape cannot drift between reasons.
-   */
-  private applyBoundedFailureFold(config: BoundedFailureFoldConfig): void {
-    applyBoundedFailureFold(config, {
-      nextRetryAfterMs: this.nextRetryAfterMs,
-      clearFailureStateForId: (id) => this.clearFailureStateForId(id),
-      markDeadLettered: (id, recoverable, reason, attemptCount) =>
-        this.markDeadLettered(id, recoverable, reason, attemptCount),
-      dequeue: (syncMode, ids) => this.dequeue(syncMode, ids),
-      recordOutboxRetry: (id, attemptCount, nextAttemptAt, reason) =>
-        this.recordOutboxRetry(id, attemptCount, nextAttemptAt, reason),
-      queueSizes: () => ({
-        incremental: this.incrementalQueue.length,
-        backfill: this.backfillQueue.length,
-        deadLettered: this.deadLetteredIds.size,
-      }),
-      logWarn: (message) => gatewayLog.warn(TAG, message),
-      logInfo: (message) => gatewayLog.info(TAG, message),
-      formatBytes,
-    });
-  }
-
-  /**
-   * FEA-3364: bound retries on a THROWN `sendBatch` (dropped socket /
-   * serialization failure), which produces no ack and so cannot ride the
-   * ack-reason fold. Delegates to the pure `applyTransportErrorFold`, wiring
-   * this service's counters/queues/chunks as the collaborator. Returns whether
-   * any id was dead-lettered so the caller can pick the batch telemetry outcome
-   * (`dead_letter` vs `failure`); the classification itself is documented on the
-   * fold module.
+   * FEA-3364: fold a THROWN `sendBatch` or payload prep, which produces no ack
+   * and so cannot ride the ack-reason fold. Delegates to the pure
+   * `applyTransportErrorFold`, wiring this service's counters/queues/chunks and
+   * the lane gate as the collaborator. Returns whether any id was dead-lettered
+   * so the caller can pick the batch telemetry outcome (`dead_letter` vs
+   * `failure`); the fold module owns the classification (a dropped connection
+   * defers the lane, ISS-10602) and documents it.
    */
   private handleTransportError(
     syncMode: AgentSessionSyncMode,
@@ -2219,22 +1915,12 @@ export class AgentSessionSyncService {
     payloadBytes: number,
     error: unknown
   ): boolean {
-    const isSerialization = isLocalSerializationError(error);
-    if (!isSerialization) {
-      // ISS-5088: a thrown (non-serialization) send is the HTTP analogue of a
-      // dropped socket — in a network blackout it is the signal that arrives
-      // FIRST and most often. Treat it as the same unambiguous connectivity
-      // loss the `transport_unavailable` ack and a readiness drop record, so a
-      // blackout can never quietly spend a healthy session's abort budget.
-      this.noteTransportLoss("thrown transport error");
-    }
     return applyTransportErrorFold(
       {
         syncMode,
         ids,
         payloadBytes,
         error,
-        isSerialization,
         maxConsecutive: MAX_CONSECUTIVE_TRANSPORT_ERRORS,
       },
       {
@@ -2259,11 +1945,12 @@ export class AgentSessionSyncService {
           backfill: this.backfillQueue.length,
           deadLettered: this.deadLetteredIds.size,
         }),
-        persistCursorIfCaughtUp: () => this.persistCursorIfCaughtUp(),
+        persistCursorIfCaughtUp: () => this.cursor.persistIfAdvanced(),
         scheduleImmediateDrainIfReadyWorkRemains: () =>
           this.scheduleImmediateDrainIfReadyWorkRemains(),
-        logWarn: (message) => gatewayLog.warn(TAG, message),
-        logError: (message) => gatewayLog.error(TAG, message),
+        noteTransportLoss: (cause) => this.noteTransportLoss(cause),
+        deferLaneEnvironmental: this.folds.deferLaneEnvironmental,
+        ...agentSessionSyncLogDeps,
       }
     );
   }
@@ -2280,7 +1967,13 @@ export class AgentSessionSyncService {
   private clearFailureStateForId(id: string): void {
     this.timeoutCountById.delete(id);
     this.rateLimitedCountById.delete(id);
+    this.unknownAckReasonCountById.delete(id);
     this.ingestionFailedCountById.delete(id);
+    // ISS-7730: the stall clock is per-class state like every counter beside it.
+    // Dropping it on a dead-letter or a recovery is what stops a recovered row
+    // from carrying an already-expired run back onto the queue and
+    // dead-lettering on its very first post-recovery failure.
+    this.laneStalledSinceMsById.delete(id);
     this.validationFailedCountById.delete(id);
     // Goal stage 2: keep the ack-omitted budget in the shared clear set.
     this.ackOmittedCountById.delete(id);
@@ -2298,7 +1991,7 @@ export class AgentSessionSyncService {
 
   /**
    * ISS-5088: record unambiguous connectivity loss on the client-abort budget —
-   * a `transport_unavailable` ack, a thrown non-serialization send, or
+   * a `transport_unavailable` ack, a send that failed at the network, or
    * readiness going false. See `TransportTimeoutBudget` for why this both
    * refunds and suppresses.
    */
@@ -2318,34 +2011,17 @@ export class AgentSessionSyncService {
     id: string,
     recoverable: boolean,
     reason: string,
-    attemptCount = 0
+    attemptCount = 0,
+    permanentAttemptCount: number | null = null
   ): void {
     markDeadLettered(
       id,
       recoverable,
       reason,
       attemptCount,
+      permanentAttemptCount,
       this.deadLetterLifecycleDeps()
     );
-  }
-
-  /**
-   * Delegates to `enforceDeadLetterCap` in
-   * `agent-session-sync-dead-letter-lifecycle.ts`, which bounds the in-memory
-   * set and — because `persistCursorIfCaughtUp` serializes its keys — the
-   * persisted `dead_lettered_ids` JSON with it.
-   */
-  private enforceDeadLetterCap(): void {
-    enforceDeadLetterCap(this.deadLetterLifecycleDeps());
-  }
-
-  /**
-   * Delegates to `recoverExpiredDeadLetters` in
-   * `agent-session-sync-dead-letter-lifecycle.ts` — the TRANSIENT
-   * (finite-deadline) recovery door.
-   */
-  private recoverExpiredDeadLetters(nowMs: number): void {
-    recoverExpiredDeadLetters(nowMs, this.deadLetterLifecycleDeps());
   }
 
   /**
@@ -2385,24 +2061,15 @@ export class AgentSessionSyncService {
           this.outboxReconcileInFlight = value;
         },
         hasProbe: Boolean(source.loadPendingOutboxIds),
-        loadPendingIds: (key) => source.loadPendingOutboxIds?.(key) ?? [],
+        loadPendingIds: (key) => source.loadPendingOutboxIds?.(key),
       },
       this.dispositionDeps()
     );
   }
 
   /**
-   * Delegates to `promoteDeadLetterIfIdle` in
-   * `agent-session-sync-dead-letter-lifecycle.ts` — the PERMANENTLY-STUCK
-   * (infinite-deadline) revisit door, at most once per idle cycle.
-   */
-  private promoteDeadLetterIfIdle(): void {
-    promoteDeadLetterIfIdle(this.deadLetterLifecycleDeps());
-  }
-
-  /**
-   * The service-owned state and collaborators the dead-letter lifecycle reads
-   * and mutates. Collections go by REFERENCE (same discipline as
+   * The service-owned state/collaborators the dead-letter lifecycle mutates.
+   * Collections go by REFERENCE (same discipline as
    * `backfillQueueFeedState`); the scalars the service reassigns are threaded
    * as accessors so no snapshot can go stale between passes.
    */
@@ -2424,11 +2091,9 @@ export class AgentSessionSyncService {
         this.deadLetterRevisitedThisIdleCycle = revisited;
       },
       clearFailureStateForId: (id) => this.clearFailureStateForId(id),
-      recordOutboxDeadLetter: (id, reason, attemptCount) =>
-        this.recordOutboxDeadLetter(id, reason, attemptCount),
-      recordOutboxReEnqueue: (id) => this.recordOutboxReEnqueue(id),
-      logInfo: (message) => gatewayLog.info(TAG, message),
-      logWarn: (message) => gatewayLog.warn(TAG, message),
+      recordOutboxDeadLetter: (...args) => this.outbox.deadLetter(...args),
+      recordOutboxReEnqueue: (id) => this.outbox.reEnqueue(id),
+      ...agentSessionSyncLogDeps,
     };
   }
 
@@ -2437,10 +2102,15 @@ export class AgentSessionSyncService {
    * cause. Delegated so the decision and its two outcomes live in one tested
    * module (`agent-session-hydration-absence.ts`).
    *
-   * The probe is invoked as a MEMBER call, never through a detached reference:
-   * in the db-host build `source` is the FEA-2038 forwarding Proxy, whose `get`
-   * trap answers `call`/`apply`/`bind` with `undefined`, so a detached
-   * `probe.call(source, ids)` would throw and permanently degrade the probe to
+   * ISS-8115 — `source` is handed over WHOLE rather than as a pre-built probe
+   * thunk. Building the thunk here (`source.findExistingSessionIds?.(ids)`)
+   * destroyed the one fact the callee needs: optional chaining answers
+   * `undefined` both for a delegate that is missing and for a delegate that
+   * returned nothing, and only the second is a fault. `buildSessionPresenceProbe`
+   * now decides it where the delegate is still visible, and still invokes it as
+   * a MEMBER call — in the db-host build `source` is the FEA-2038 forwarding
+   * Proxy, whose `get` trap answers `call`/`apply`/`bind` with `undefined`, so a
+   * detached reference would throw and permanently degrade the probe to
    * "unverified" on exactly the build that matters.
    */
   private resolveEmptyHydration(
@@ -2453,7 +2123,7 @@ export class AgentSessionSyncService {
         syncMode,
         ids,
         backoffMs: UNCONFIRMED_ABSENCE_BACKOFF_MS,
-        probe: () => source.findExistingSessionIds?.(ids),
+        source,
       },
       this.dispositionDeps()
     );
@@ -2477,11 +2147,10 @@ export class AgentSessionSyncService {
         backfill: this.backfillQueue.length,
         deadLettered: this.deadLetteredIds.size,
       }),
-      logWarn: (message) => gatewayLog.warn(TAG, message),
-      logInfo: (message) => gatewayLog.info(TAG, message),
+      ...agentSessionSyncLogDeps,
       emitDeadLetterTelemetry: (input) =>
         this.options.onSyncBatchTelemetry?.(input),
-      persistCursorIfCaughtUp: () => this.persistCursorIfCaughtUp(),
+      persistCursorIfCaughtUp: () => this.cursor.persistIfAdvanced(),
       scheduleImmediateDrainIfReadyWorkRemains: () =>
         this.scheduleImmediateDrainIfReadyWorkRemains(),
       isTracked: (id) =>
@@ -2493,26 +2162,41 @@ export class AgentSessionSyncService {
       onDurableWorkQueued: () => {
         this.deadLetterRevisitedThisIdleCycle = false;
       },
+      // ISS-7096: durably park the withheld rows — the maintenance's active-key
+      // sweep re-reads ownership from `sessions` itself, so this cannot drift
+      // from the in-memory gate's predicate. Fire-and-forget; it never throws.
+      parkForeignOutboxRows: () => {
+        const source = this.options.getSource?.() ?? null;
+        if (source && this.hydratedSourceKey) {
+          void adoptStrandedOutboxRows(
+            source,
+            this.hydratedSourceKey,
+            this.options
+          );
+        }
+      },
+      // ISS-7246: the idle withhold's durable half. Fire-and-forget like the
+      // parking above: a failed write leaves the rows `pending`, which is the
+      // pre-ISS-7246 behavior (re-queued and re-withheld on a later pass) —
+      // wasted work, never lost data.
+      markOutboxWithheld: (ids) => this.outbox.markWithheld(ids),
       isCurrentSourceState: this.currentPassGuard,
       readSourceKey: () => this.hydratedSourceKey,
     };
   }
 
   private dequeue(syncMode: AgentSessionSyncMode, ids: string[]): void {
-    const removeIds = new Set(ids);
-    if (syncMode === AgentSessionSyncMode.Incremental) {
-      this.incrementalQueue = this.incrementalQueue.filter(
-        (id) => !removeIds.has(id)
-      );
-      for (const id of removeIds) {
-        this.incrementalQueuedIds.delete(id);
-      }
+    const incremental = syncMode === AgentSessionSyncMode.Incremental;
+    const remaining = dequeueOwedIds(
+      incremental ? this.incrementalQueue : this.backfillQueue,
+      incremental ? this.incrementalQueuedIds : this.backfillQueuedIds,
+      this.queuedUpdatedAtById,
+      ids
+    );
+    if (incremental) {
+      this.incrementalQueue = remaining;
       return;
     }
-
-    this.backfillQueue = this.backfillQueue.filter((id) => !removeIds.has(id));
-    for (const id of removeIds) {
-      this.backfillQueuedIds.delete(id);
-    }
+    this.backfillQueue = remaining;
   }
 }

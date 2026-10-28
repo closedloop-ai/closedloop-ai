@@ -4,13 +4,15 @@
  * `Edit`, `Write`, and `MultiEdit` form one cohesive unit: each derives a
  * per-tool-use line delta and folds it into the session's aggregate diffStats
  * (added/removed line totals + the distinct-file set). Splitting them into this
- * sibling keeps the grandfathered `parse-claude.ts` shrinking rather than
+ * sibling keeps `parse-claude.ts` shrinking rather than
  * growing (root AGENTS.md file-size rule) while the parser's tool-name registry
  * simply spreads this list in.
  *
- * Behavior is byte-identical to the previous inline handlers — the same
- * closures over the same accumulator fields — so parser output (and the golden
- * layer-2 snapshots) is unchanged.
+ * The extraction was byte-identical to the previous inline handlers; changes
+ * since are issue-scoped corrections, each with a `DATA_REVISION` entry
+ * recording what it re-derives. Parser output here is PERSISTED, so any edit
+ * that moves a delta needs that bump — and needs the layer-2 golden snapshots
+ * checked rather than assumed immovable.
  */
 
 import { z } from "zod";
@@ -63,14 +65,23 @@ export const DIFF_STATS_TOOL_HANDLERS = [
     "Edit",
     (acc: DiffStatsAccumulator, tu: DiffDeltaTarget, toolInput: unknown) => {
       const inp = asRecord(toolInput);
+      // ISS-6737: no path, no delta. `diffFiles` was already guarded on a string
+      // `file_path` while the totals were added unconditionally, so
+      // `linesAdded`/`linesRemoved` moved while `filesChanged` did not — a delta
+      // attributable to no file. One valid edit elsewhere in the same sidecar
+      // keeps `diffStats` alive, and the pathless record's lines then fold into
+      // the totals invisibly. Dropping it whole is what the module's contract
+      // already says: partially counting a corrupt payload is the same
+      // fabrication in a quieter form.
+      if (typeof inp.file_path !== "string") {
+        return;
+      }
       const oldStr = typeof inp.old_string === "string" ? inp.old_string : null;
       const newStr = typeof inp.new_string === "string" ? inp.new_string : null;
       tu.diffDelta = computeLineDelta(oldStr, newStr);
       acc.totalAdded += tu.diffDelta.add;
       acc.totalRemoved += tu.diffDelta.del;
-      if (typeof inp.file_path === "string") {
-        acc.diffFiles.add(inp.file_path);
-      }
+      acc.diffFiles.add(inp.file_path);
     },
   ],
   // CR-4 / FEA-1899 (AC-5): Compute diffDelta for Write tool uses.
@@ -78,24 +89,47 @@ export const DIFF_STATS_TOOL_HANDLERS = [
     "Write",
     (acc: DiffStatsAccumulator, tu: DiffDeltaTarget, toolInput: unknown) => {
       const inp = asRecord(toolInput);
-      const fileContent = typeof inp.content === "string" ? inp.content : "";
-      const filePath = typeof inp.file_path === "string" ? inp.file_path : null;
+      // ISS-6762: a `content` that is not a string tells us NOTHING about the
+      // file — it neither reveals a new known state nor evidences a deletion.
+      // The handler stays total anyway — ISS-6761 put the schema gate in front
+      // of BOTH lanes, but these are exported and a direct caller reaches them
+      // ungated — so such a record must only ever take the fresh-file path
+      // below: it must not diff against the path's real baseline, nor replace
+      // it.
+      const writtenContent =
+        typeof inp.content === "string" ? inp.content : null;
+      // ISS-6737: same rule as Edit — a Write with no path booked its content as
+      // added lines against no file (measured: 3 added, 0 files).
+      if (typeof inp.file_path !== "string") {
+        return;
+      }
+      const filePath = inp.file_path;
       // FEA-1899 (AC-5): if this path was Read earlier in the session the Write
       // is an overwrite — diff Read-vs-Write so deletions are counted. Without a
-      // prior Read it is a fresh file (all added).
+      // prior Read there is no baseline, and the SAME formula books every line
+      // as added and nothing as removed.
       const priorRead =
-        filePath == null ? undefined : acc.readContentByPath.get(filePath);
-      tu.diffDelta =
-        priorRead === undefined
-          ? { add: fileContent.split("\n").length, del: 0 }
-          : computeLineDelta(priorRead, fileContent);
+        writtenContent === null
+          ? undefined
+          : acc.readContentByPath.get(filePath);
+      tu.diffDelta = computeLineDelta(priorRead, writtenContent);
       acc.totalAdded += tu.diffDelta.add;
       acc.totalRemoved += tu.diffDelta.del;
-      if (filePath != null) {
-        acc.diffFiles.add(filePath);
-        // A Write makes its content the new known state for any later Write of
-        // the same path in this session.
-        acc.readContentByPath.set(filePath, fileContent);
+      acc.diffFiles.add(filePath);
+      // A Write makes its content the new known state for any later Write of
+      // the same path in this session.
+      //
+      // ISS-6762: only a Write that actually CARRIES content does. Caching the
+      // coerced `""` for a corrupt payload would erase the path's real
+      // baseline, and the next genuine overwrite would then diff against an
+      // empty file — every one of its deletions vanishing and its additions
+      // over-counted, from one malformed record earlier in the session. Since
+      // ISS-6761 both lanes' entry points refuse such a payload outright, but
+      // the invariant is still enforced here, where both lanes share it —
+      // these handlers are exported and total, so a direct caller must not be
+      // able to poison the baseline either.
+      if (writtenContent !== null) {
+        acc.readContentByPath.set(filePath, writtenContent);
       }
     },
   ],
@@ -106,6 +140,10 @@ export const DIFF_STATS_TOOL_HANDLERS = [
     "MultiEdit",
     (acc: DiffStatsAccumulator, tu: DiffDeltaTarget, toolInput: unknown) => {
       const inp = asRecord(toolInput);
+      // ISS-6737: same rule as Edit and Write.
+      if (typeof inp.file_path !== "string") {
+        return;
+      }
       const edits = Array.isArray(inp.edits) ? inp.edits : [];
       let add = 0;
       let del = 0;
@@ -120,9 +158,7 @@ export const DIFF_STATS_TOOL_HANDLERS = [
       tu.diffDelta = { add, del };
       acc.totalAdded += add;
       acc.totalRemoved += del;
-      if (typeof inp.file_path === "string") {
-        acc.diffFiles.add(inp.file_path);
-      }
+      acc.diffFiles.add(inp.file_path);
     },
   ],
 ] as const satisfies ReadonlyArray<readonly [string, DiffStatsToolHandler]>;
@@ -152,7 +188,7 @@ const DIFF_STATS_TOOL_HANDLER_BY_NAME: ReadonlyMap<
 /**
  * The tool names that contribute a changed file path, DERIVED from
  * {@link DIFF_STATS_TOOL_HANDLERS} rather than re-declared beside it
- * (thadeusb review, PR #4531).
+ * (tamsinb review, PR #4531).
  *
  * The desktop sidecar lane recovers the parent's own changed-file paths with
  * this set so the parent/sidecar union can tell a genuinely new sidecar file
@@ -185,13 +221,23 @@ export function createDiffStatsAccumulator(): DiffStatsAccumulator {
  * Routing it here rather than re-deriving line deltas at the call site is what
  * keeps the parent lane and the sidecar lane from inventing a second formula.
  *
- * Returns whether the payload was actually counted. Unlike the parent's registry
- * dispatch (`TOOL_USE_HANDLERS`, which runs the handlers directly on records the
- * parser has already normalized), this entry point is fed raw transcript JSON,
- * so it gates on {@link isUsableDiffStatsToolInput} first: a malformed block is
- * dropped whole rather than coerced into a fabricated delta. The parent lane's
- * behavior is deliberately unchanged — this is a guard on the new raw-input
- * caller, not a redefinition of the shared formula.
+ * Returns whether the payload was actually counted. It gates on
+ * {@link isUsableDiffStatsToolInput} first: a malformed block is dropped whole
+ * rather than coerced into a fabricated delta.
+ *
+ * ISS-6761: the parent's registry dispatch (`TOOL_USE_HANDLERS`) applies that
+ * same gate before running these handlers. It used to be described here as
+ * running "on records the parser has already normalized", which was false — it
+ * hands the handlers `block.input` straight off the parsed `.jsonl` line, with
+ * no normalization of `content`/`old_string`/`edits` at all. Both lanes are fed
+ * raw transcript JSON, so both gate: one formula, one answer for a corrupt
+ * payload.
+ *
+ * The shared `Write` handler still holds its own narrower line (ISS-6762: a
+ * payload carrying no content neither diffs against the path's overwrite
+ * baseline nor replaces it). That is not made redundant by the gate — the
+ * handlers are exported and total, so the invariant belongs where every caller
+ * shares it rather than in each lane's entry point.
  */
 export function applyDiffStatsToolUse(
   acc: DiffStatsAccumulator,
@@ -207,7 +253,7 @@ export function applyDiffStatsToolUse(
 }
 
 /**
- * ISS-5426 (wongk review, PR #4715): run a tool use through the SAME registry
+ * ISS-5426 (whitlockk review, PR #4715): run a tool use through the SAME registry
  * handler for its STATE transition only, discarding its line and changed-file
  * contribution.
  *
@@ -292,15 +338,28 @@ const MULTI_EDIT_ENTRY_SCHEMA = z.object({
  * The handlers above are deliberately total — they coerce a missing or
  * non-string field to a default so a single odd record never aborts a parse. On
  * a well-formed transcript that is the right posture, but it means a corrupt
- * payload still produces a number: a `Write` whose `content` is not a string
- * becomes `""`, and `"".split("\n").length` books ONE added line that nobody
- * wrote; an `Edit` or `MultiEdit` carrying no string side yields a `{0, 0}`
- * delta while still claiming a changed file. Both are believable-but-false LOC.
+ * payload is still counted: a `Write` whose `content` is not a string becomes
+ * `""`, and an `Edit` or `MultiEdit` carrying no string side yields a `{0, 0}`
+ * delta — each contributing a changed FILE (and, before ISS-6764 rewrote the
+ * fresh-Write branch, a phantom added line) off a record the formula cannot
+ * actually read. That is believable-but-false diffStats.
  *
  * A record that fails its schema is dropped whole rather than counted in part:
  * partially counting a corrupt payload is the same fabrication in a quieter
  * form. Unknown keys are ignored (`replace_all`, `structuredPatch`, …) — this
  * validates the fields the formula reads, not the tool's whole surface.
+ *
+ * ISS-6737: `MultiEdit` is the ONE deliberate exception, and it is stated here
+ * because the sentence above otherwise reads as contradicted by the code. Its
+ * refine is `some`, not `every`, so a payload keeps its valid entries when one
+ * entry carries neither string side. That is not partial counting of a corrupt
+ * record: an entry with no string side yields `{0, 0}`, contributing nothing to
+ * either total, so the alternative — `every`, discarding a large valid
+ * MultiEdit over one empty entry — would DROP real lines rather than prevent
+ * fabricated ones. The rule the contract protects is that nothing uncountable
+ * is counted, and `some` satisfies it. If a future entry shape can contribute a
+ * NON-zero delta while still failing to describe an edit, this choice has to be
+ * revisited with it.
  *
  * ISS-5544: the keys are a keys-covered `Record<DiffStatsToolName, …>` over the
  * handler registry rather than a hand-written list, because
@@ -316,6 +375,9 @@ const DIFF_STATS_TOOL_INPUT_SCHEMA_BY_NAME: ReadonlyMap<string, z.ZodType> =
     Object.entries({
       Edit: z
         .object({
+          // ISS-6737: required. A delta with no file is unattributable — the
+          // totals moved while `filesChanged` did not.
+          file_path: z.string(),
           old_string: z.string().optional(),
           new_string: z.string().optional(),
         })
@@ -325,9 +387,12 @@ const DIFF_STATS_TOOL_INPUT_SCHEMA_BY_NAME: ReadonlyMap<string, z.ZodType> =
           (input) =>
             input.old_string !== undefined || input.new_string !== undefined
         ),
-      Write: z.object({ content: z.string() }),
+      Write: z.object({ file_path: z.string(), content: z.string() }),
       MultiEdit: z
-        .object({ edits: z.array(MULTI_EDIT_ENTRY_SCHEMA).min(1) })
+        .object({
+          file_path: z.string(),
+          edits: z.array(MULTI_EDIT_ENTRY_SCHEMA).min(1),
+        })
         .refine((input) =>
           input.edits.some(
             (edit) =>
@@ -340,11 +405,12 @@ const DIFF_STATS_TOOL_INPUT_SCHEMA_BY_NAME: ReadonlyMap<string, z.ZodType> =
 /**
  * ISS-5402: whether a raw tool payload can produce a line delta worth counting.
  *
- * Callers that feed the formula UNVALIDATED transcript JSON — the desktop
- * sidecar lane reads `tool_use.input` straight off the raw sub-agent `.jsonl` —
- * must gate on this before dispatching, so a malformed block drops out of both
+ * Callers that feed the formula UNVALIDATED transcript JSON must gate on this
+ * before dispatching, so a malformed block drops out of both
  * `linesAdded/linesRemoved` and `filesChanged` instead of materializing a
- * plausible-but-wrong number. A tool with no diffStats handler is not "unusable",
+ * plausible-but-wrong number. Since ISS-6761 that is BOTH lanes — the desktop
+ * sidecar reads `tool_use.input` off the raw sub-agent `.jsonl`, and the parent
+ * parser hands its registry `block.input` off the parsed line just as raw. A tool with no diffStats handler is not "unusable",
  * it is simply not a diffStats tool, so it returns `true` here and is filtered by
  * the handler lookup instead. Since ISS-5544 that is the ONLY tool this can
  * return `true` unchecked for: every registered handler is guaranteed a schema

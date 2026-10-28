@@ -2,12 +2,15 @@ import {
   execFileSync,
   execFile as execFileWithCallback,
 } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  assertBindMountVisible,
+  makeVisibleBindSource,
+} from "../bind-mount-visibility";
 
 const execFile = promisify(execFileWithCallback);
 
@@ -100,11 +103,18 @@ type CommandResult = {
 };
 
 async function startTlsPostgresFixture(): Promise<TlsPostgresFixture> {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "database-tls-test-"));
+  // ISS-10032: anchored under $HOME, never `os.tmpdir()`. On macOS the latter
+  // resolves under /var/folders, which a VM-backed daemon (Dory) does not share,
+  // so `--volume` below mounted an EMPTY dir and the entrypoint's `cp` of the
+  // certs failed inside a container this fixture never reads the logs of.
+  const tempDir = await makeVisibleBindSource("database-tls-test-");
   let containerId: string | null = null;
 
   try {
     const certs = await generateCertificates(tempDir);
+    // Refuse before the container carries the fault into an unrelated-looking
+    // failure ("Unable to parse mapped Postgres port from: ").
+    await assertBindMountVisible({ hostPath: tempDir, image: POSTGRES_IMAGE });
     const dockerRun = await runCommand("docker", [
       "run",
       "--detach",

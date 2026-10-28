@@ -11,19 +11,32 @@ import {
 } from "@/lib/route-utils";
 import { mergeDocumentsValidator } from "../validators";
 
+/**
+ * Platform function time budget (seconds). Declared explicitly rather than
+ * inheriting the platform default so the ceiling is intentional and stays above
+ * `MERGE_REQUEST_TIMEOUT_MS`: the merge generation's `abortSignal` must fire
+ * first, so a hung Anthropic call surfaces as this route's JSON error envelope
+ * instead of an opaque platform 504. The client pairs it with
+ * `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes), which declaring the same ceiling
+ * here is what makes meaningful (PR #4321 review).
+ */
+export const maxDuration = 300;
+
 const SAME_PROJECT_ERROR_RE = /same project/i;
 const TEMPLATE_ERROR_RE = /TEMPLATE/i;
 const TOO_LARGE_ERROR_RE = /too large to merge/i;
 
 /**
- * POST /artifacts/merge
+ * POST /documents/merge
  * Merge two artifacts into one: combines content via LLM, saves to primary,
  * and deletes the secondary artifact.
  *
- * Why withAuth (not withAnyAuth): merge combines a write operation (new version on
- * primary) with a delete operation (secondary artifact). API key access would require
- * both write and delete scopes simultaneously, which is not supported. Restrict to
- * session-based auth only.
+ * Session-only (`withAuth`), so an API key or a Desktop token gets 401 before
+ * the handler runs: the merge is a server-side Anthropic generation billed to
+ * ClosedLoop's own key, and API callers must not spend that budget (ISS-11795).
+ * The `withAuth` use is declared, with this reason, in `SESSION_ONLY_HANDLERS`
+ * (scripts/lint/rules/no-unpaved-api-route-handler.ts); moving the route back
+ * to `withAnyAuth` needs a new ruling, not just removing that entry.
  */
 export const POST = withAuth<Document, "/documents/merge">(
   async ({ user }, request) => {

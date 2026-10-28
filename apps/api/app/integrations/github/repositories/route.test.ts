@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const authMock = vi.fn();
 const findOrCreateUserMock = vi.fn();
 const getDesktopManagedPopRequestFailureMock = vi.fn();
+const getObservedRepositoriesMock = vi.fn();
 const getPublicRepositoriesMock = vi.fn();
 const getRepositoriesMock = vi.fn();
 const isPublicGithubReposEnabledMock = vi.fn();
@@ -77,6 +78,7 @@ vi.mock("../public-repositories/service", () => ({
 
 vi.mock("../service", () => ({
   githubService: {
+    getObservedRepositories: getObservedRepositoriesMock,
     getRepositories: getRepositoriesMock,
   },
 }));
@@ -111,12 +113,13 @@ describe("GET /integrations/github/repositories", () => {
       active: true,
     });
     getDesktopManagedPopRequestFailureMock.mockResolvedValue(null);
+    getObservedRepositoriesMock.mockResolvedValue([]);
     isPublicGithubReposEnabledMock.mockResolvedValue(true);
     getRepositoriesMock.mockResolvedValue([
       {
         id: "repo-1",
-        fullName: "closedloop-ai/symphony-alpha",
-        name: "symphony-alpha",
+        fullName: "closedloop-ai/closedloop-ai",
+        name: "closedloop-ai",
         owner: "closedloop-ai",
         private: true,
         githubRepoId: "123",
@@ -203,7 +206,7 @@ describe("GET /integrations/github/repositories", () => {
           repository: {
             provider: VcsProviderKind.GitHub,
             providerRepositoryId: "123",
-            fullName: "closedloop-ai/symphony-alpha",
+            fullName: "closedloop-ai/closedloop-ai",
           },
           evidence: {
             availability: RepositoryDefaultAvailability.Available,
@@ -429,6 +432,56 @@ describe("GET /integrations/github/repositories", () => {
       expect.objectContaining({
         id: "repo-1",
         source: GitHubRepositorySource.Installation,
+      }),
+    ]);
+  });
+
+  it("serves verified observed repositories under their own source", async () => {
+    // PLN-1775 M7. `observed` is NOT reported as `installation`: the id resolves
+    // through a user credential, not an App installation, and a consumer that
+    // routes on `source` has to be able to tell the two lanes apart.
+    getRepositoriesMock.mockResolvedValue([]);
+    getPublicRepositoriesMock.mockResolvedValue([]);
+    getObservedRepositoriesMock.mockResolvedValue([
+      {
+        id: "observed-1",
+        fullName: "Closedloop-AI/ClosedLoop-AI",
+        name: "ClosedLoop-AI",
+        owner: "Closedloop-AI",
+        isPrivate: true,
+        githubRepoId: "999",
+        lastPushedAt: new Date("2026-08-19T00:00:00.000Z"),
+        defaultBranchName: null,
+        defaultBranchAvailability: null,
+        defaultBranchCompleteness: null,
+        defaultBranchReason: null,
+        defaultBranchSource: null,
+        defaultBranchMechanism: null,
+        defaultBranchTrigger: null,
+        defaultBranchCredentialType: null,
+        defaultBranchCredentialOwnerId: null,
+        defaultBranchObservationKey: null,
+        defaultBranchObservedAt: null,
+        defaultBranchEventAt: null,
+      },
+    ]);
+
+    const response = await GET(
+      request({ token: "clerk-session" }),
+      EMPTY_CONTEXT
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(getObservedRepositoriesMock).toHaveBeenCalledWith("org-1");
+    expect(body.data).toEqual([
+      expect.objectContaining({
+        id: "observed-1",
+        fullName: "Closedloop-AI/ClosedLoop-AI",
+        private: true,
+        githubRepoId: "999",
+        lastPushedAt: "2026-08-19T00:00:00.000Z",
+        source: GitHubRepositorySource.Observed,
       }),
     ]);
   });

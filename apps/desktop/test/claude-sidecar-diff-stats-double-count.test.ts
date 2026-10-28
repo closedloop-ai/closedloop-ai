@@ -24,7 +24,7 @@
  * keyed on `tool_use.id` against the parent's own counted set, the second on
  * `uuid` within one sidecar file. Neither test pins the pre-fix numbers.
  *
- * PR #4715 review (codex + wongk, independently) found the first version of this
+ * PR #4715 review (codex + whitlockk, independently) found the first version of this
  * dedup only HALF closed, and the suite passing anyway because it asserted only
  * the metric each fix moved. Four more properties are pinned here, each with a
  * positive control proving the branch is actually reached:
@@ -43,7 +43,7 @@
  *     invisible to the caller's `tool_use.id` dedup.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 import {
@@ -130,7 +130,7 @@ test("ISS-5426: a sub-agent present BOTH inline and as a sidecar contributes its
   // authored 2 added / 1 removed over 1 file — not double that.
   assert.deepEqual(parsed.diffStats, ONE_EDIT_DIFF_STATS);
 
-  // codex + wongk review (PR #4715): and the COST side of the same turn must
+  // codex + whitlockk review (PR #4715): and the COST side of the same turn must
   // dedup on the same identity. Two round-trips happened here — the parent's own
   // turn and the sub-agent's — so the session bills two, not the three it billed
   // while `mergeFoldedUsage` re-folded a turn the core had already booked. This
@@ -282,7 +282,7 @@ test("ISS-5426: a replayed sidecar line with NO tool_use id still contributes on
   // this case is reachable ONLY by the uuid replay filter, which is why it is
   // asserted separately from the id-keyed cases above.
   //
-  // wongk review (PR #4715): `diffStats` alone was NOT enough to prove this. The
+  // whitlockk review (PR #4715): `diffStats` alone was NOT enough to prove this. The
   // parser then read each sidecar TWICE — once through `collectEntriesFromFile`
   // (which runs the uuid filter, hence the correct `diffStats`) and once through
   // `scanSubagentTranscriptStream`, which had no filter and whose caller can
@@ -376,7 +376,7 @@ test("ISS-5426: two DISTINCT idless sidecar tool uses are both merged", async ()
 });
 
 test("ISS-5426: a duplicated Write still advances the baseline the NEXT Write diffs from", async () => {
-  // wongk review (PR #4715): the dedup suppresses the COUNT; it must not
+  // whitlockk review (PR #4715): the dedup suppresses the COUNT; it must not
   // suppress the STATE. `Write` makes its own content the known state of that
   // path, and the next `Write` to it is diffed against exactly that. Returning
   // early on an already-counted record left the path looking never-written, so
@@ -420,7 +420,7 @@ test("ISS-5426: a duplicated Write still advances the baseline the NEXT Write di
 });
 
 test("ISS-5426: a MALFORMED inline record never suppresses the sidecar's valid copy", async () => {
-  // wongk review (PR #4715): the parent's counted-id seed used to key on the
+  // whitlockk review (PR #4715): the parent's counted-id seed used to key on the
   // TOOL NAME alone, on the reasoning that the parent's handlers are total so a
   // registered name is always "already counted". Total is not the same as
   // trustworthy: a truncated inline `Edit` carrying no edited side is coerced

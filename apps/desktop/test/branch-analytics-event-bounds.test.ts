@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { encodeBranchId } from "@repo/api/src/types/branch.js";
+import { describe, test } from "vitest";
 import { getSharedBranchAnalytics } from "../src/main/branch/branch-analytics-read.js";
 import { getSharedBranchCohortAnalytics } from "../src/main/branch/branch-cohort-analytics.js";
 import { getSharedBranchesPageData } from "../src/main/branch/shared-branches-api.js";
+import { BRANCH_COST_SLICES_SQL_TAG } from "../src/main/database/branch-cost-window-reads.js";
 import { link, makeSource } from "./shared-branches-test-helpers.js";
 
 const branchId = encodeBranchId({
@@ -85,7 +86,10 @@ function captureMetricEventQueries(): {
 } {
   const queries: CapturedQuery[] = [];
   const source = makeSource({ links: [link({})] }, (sql, parameters = []) => {
-    if (sql.includes("FROM token_events")) {
+    if (
+      sql.includes("FROM token_events") &&
+      !sql.includes(BRANCH_COST_SLICES_SQL_TAG)
+    ) {
       queries.push({
         provenance: sql.includes("canonical_outside_events AS"),
         sql,

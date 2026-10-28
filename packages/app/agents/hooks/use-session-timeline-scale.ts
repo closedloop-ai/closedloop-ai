@@ -3,18 +3,20 @@
 import type {
   ActivityBucket,
   SessionSpan,
-  SyncedActivitySegmentRow,
 } from "@repo/api/src/types/agent-session";
 import { getRowPercent } from "@repo/app/agents/components/detail/activity-bucket-rendering";
 import {
   type ActivityMarker,
   getSessionSpan,
 } from "@repo/app/agents/components/detail/session-timeline-axis";
+import { resolveTimelinePeakColumnCost } from "@repo/app/agents/lib/session-timeline-peak";
 import {
   hasProducerBinBounds,
   type ProjectedTimeline,
   projectSessionTimeline,
   resolveBinMidpointMs,
+  TimelineColumnCoverage,
+  type TimelineSourceExtent,
 } from "@repo/app/agents/lib/session-timeline-projection";
 import {
   clampTimelineWindowStart,
@@ -32,7 +34,6 @@ import { useCallback, useMemo, useState } from "react";
 import {
   buildTimelineModelColors,
   buildTimelineStacks,
-  resolveTimelineStackGrouping,
   TimelineStackGrouping as StackGrouping,
   type TimelineStackGrouping,
   type TimelineStackSegment,
@@ -54,8 +55,8 @@ import {
  * own inputs straight back, so such a strip renders exactly the bars it was
  * handed.
  *
- * The FALLBACKS LIVE HERE, not at the call site. The strip is inside a
- * grandfathered file, and a caller that has to write `projection?.x ?? x` five
+ * The FALLBACKS LIVE HERE, not at the call site. A caller that has to write
+ * `projection?.x ?? x` five
  * times is both five chances to fall back to the wrong array and five points of
  * cognitive complexity in a component already at the lint ceiling.
  */
@@ -65,10 +66,28 @@ export type SessionTimelineScaleState = {
   /** The bars to render — the projected columns, or the caller's own buckets. */
   readonly columns: readonly ActivityBucket[];
   /**
+   * ISS-5850: parallel to `columns` — what each rendered column's value is
+   * backed by, so the caller can withhold a figure for an interval the producer
+   * never measured instead of printing it as observed quiet.
+   *
+   * Every entry is `Measured` on the UNPROJECTED strip, and that is not a
+   * default standing in for an unknown: without a window there is no
+   * re-projection, so each rendered bar IS one source bin and the source covers
+   * it by construction. The extent question only arises once bins are spread
+   * across columns the producer did not choose.
+   */
+  readonly columnCoverage: readonly TimelineColumnCoverage[];
+  /**
    * The `.tl-here` marker's position, as a percentage of the rendered strip;
    * `null` when the reader has not moved, or has scrubbed off-window.
    */
   readonly herePercent: number | null;
+  /**
+   * ISS-12665: the costliest column at the current scale across the WHOLE
+   * session, not the visible window — see `resolveTimelinePeakColumnCost`.
+   * `null` with no scale (no `controls`) or no measured figure.
+   */
+  readonly peakColumnCost: number | null;
   /** `null` when no source window resolved: no scale toggle, no "Group by". */
   readonly controls: {
     readonly grouping: TimelineStackGrouping;
@@ -90,7 +109,7 @@ export type SessionTimelineScaleState = {
   /** Parallel to `columns`; `null` keeps the bars' hardcoded in/out/cache stack. */
   readonly stacks: TimelineStackSegment[][] | null;
   /**
-   * ISS-5819 review (wongk): `true` when the chosen scale draws columns NARROWER
+   * ISS-5819 review (whitlockk): `true` when the chosen scale draws columns NARROWER
    * than the source bins they were cut from, so the bars are interpolated inside
    * a measured bin rather than separately measured.
    *
@@ -119,12 +138,12 @@ export type SessionTimelineScaleState = {
 
 export function useSessionTimelineScale({
   activeRow,
-  activityPhasesEnabled,
+  activeRowMs,
   limitDotEvents,
   markers,
   buckets,
   ownerLabel,
-  segmentRows,
+  sourceExtent,
   sourceWindow,
 }: {
   /**
@@ -135,20 +154,23 @@ export function useSessionTimelineScale({
    * point at different instants (ISS-5819, ahead of ISS-5843).
    */
   activeRow: number | null;
+  /**
+   * ISS-7115 — the INSTANT of {@link activeRow}, or `null` when that row carries
+   * no parseable timestamp.
+   *
+   * Required, not optional, because the row ordinal alone cannot answer where
+   * the reader is: `_row` is non-monotonic across a sub-session boundary (see
+   * `buildTraceRowInstants`), so a caller that omits the instant silently
+   * reinstates a thumb that jumps BACKWARD when the reader scrolls forward.
+   * Making it part of the contract is what stops the next call site from
+   * forgetting it.
+   */
+  activeRowMs: number | null;
   /** The strip as produced upstream, and the bars rendered when no window resolves. */
   buckets: readonly ActivityBucket[];
-  /**
-   * ISS-5841: when activity phases are gated off the phase cut must not survive
-   * as the effective grouping. The control no longer offers it, so the only way
-   * to arrive here is a flag flipping OFF mid-session with the cut on screen --
-   * which would otherwise leave the chart stacked by a dimension its own control
-   * no longer lists.
-   */
-  activityPhasesEnabled: boolean;
   limitDotEvents: readonly ActivityMarker[];
   markers: readonly ActivityMarker[];
   ownerLabel: string;
-  segmentRows: readonly SyncedActivitySegmentRow[];
   /**
    * The window this page's MARKERS were positioned over — the SAME window the
    * axis already runs on. `null` when none resolved, and the projection is then
@@ -159,9 +181,21 @@ export function useSessionTimelineScale({
    * window are different clocks (see `source` below).
    */
   sourceWindow: { endMs: number; startMs: number } | null;
+  /**
+   * ISS-5850: the extent the producer's bins actually TILE, already resolved off
+   * the wire by `resolveTimelineSourceExtent`, or `null` when the producer did
+   * not state one.
+   *
+   * A SEPARATE input from `sourceWindow`, not a refinement of it. `sourceWindow`
+   * is this page's axis window — the clock the reader is shown; this is the
+   * clock the bins were measured on. Passing one where the other belongs is the
+   * exact conflation that made every column outside the measured extent render
+   * as observed quiet.
+   */
+  sourceExtent: TimelineSourceExtent | null;
 }): SessionTimelineScaleState {
   /*
-   * ISS-5819 review (wongk): the projection runs ONLY on a strip whose bins each
+   * ISS-5819 review (whitlockk): the projection runs ONLY on a strip whose bins each
    * state the wall-clock span they were binned over.
    *
    * `sourceWindow` is this page's axis window, resolved from transcript, phase
@@ -186,9 +220,10 @@ export function useSessionTimelineScale({
         : {
             buckets,
             endMs: sourceWindow.endMs,
+            extent: sourceExtent,
             startMs: sourceWindow.startMs,
           },
-    [buckets, sourceWindow]
+    [buckets, sourceExtent, sourceWindow]
   );
   /*
    * `null` until the reader picks one, and the DEFAULT is derived every render
@@ -197,7 +232,7 @@ export function useSessionTimelineScale({
    * at mount — and a captured initializer would pin a 3-day session to the `5m`
    * scale forever, needing 800 scrubber steps to cross.
    *
-   * #4753 review (wongk): the default is asked of the RESOLVED GEOMETRY, not of
+   * #4753 review (whitlockk): the default is asked of the RESOLVED GEOMETRY, not of
    * the raw duration, so it accounts for the clock-boundary floor the same
    * geometry applies. See `defaultTimelineScale`.
    */
@@ -240,7 +275,13 @@ export function useSessionTimelineScale({
           scale,
           startMs: source.startMs,
         });
-  const rowColumn = resolveRowColumn({ activeRow, geometry, scale, source });
+  const rowColumn = resolveRowColumn({
+    activeRow,
+    activeRowMs,
+    geometry,
+    scale,
+    source,
+  });
   const activeColumn =
     scrub && scrub.forRow === activeRow ? scrub.column : rowColumn;
   /*
@@ -266,11 +307,10 @@ export function useSessionTimelineScale({
             limitDotEvents,
             markers,
             scale,
-            segmentRows,
             source,
             windowStart: followedWindowStart,
           }),
-    [followedWindowStart, limitDotEvents, markers, scale, segmentRows, source]
+    [followedWindowStart, limitDotEvents, markers, scale, source]
   );
 
   /*
@@ -283,23 +323,23 @@ export function useSessionTimelineScale({
     [buckets]
   );
 
-  const effectiveGrouping = resolveTimelineStackGrouping(
-    grouping,
-    activityPhasesEnabled
-  );
-
   const stacks = useMemo(
     () =>
       projection == null
         ? EMPTY_STACKS
         : buildTimelineStacks({
             buckets: projection.buckets,
-            grouping: effectiveGrouping,
+            grouping,
             modelColors,
             ownerLabel,
-            phaseCosts: projection.phaseCosts,
           }),
-    [effectiveGrouping, modelColors, ownerLabel, projection]
+    [grouping, modelColors, ownerLabel, projection]
+  );
+
+  const peakColumnCost = useMemo(
+    () =>
+      source == null ? null : resolveTimelinePeakColumnCost({ scale, source }),
+    [scale, source]
   );
 
   const setPosition = useCallback(
@@ -392,11 +432,13 @@ export function useSessionTimelineScale({
     return {
       columnLimitDots: limitDotEvents,
       columnMarkers: markers,
+      columnCoverage: buckets.map(() => TimelineColumnCoverage.Measured),
       columns: buckets,
       controls: null,
       // With nothing to project onto, the marker derives its position over the
       // caller's own bars, exactly as the strip did before this hook existed.
       herePercent: activeRow == null ? null : getRowPercent(activeRow, buckets),
+      peakColumnCost: null,
       scrubber: null,
       stacks: null,
       subColumnSource: false,
@@ -414,9 +456,11 @@ export function useSessionTimelineScale({
   return {
     columnLimitDots: projection.limitDotEvents,
     columnMarkers: projection.markers,
+    columnCoverage: projection.columnCoverage,
     columns: projection.buckets,
-    controls: { grouping: effectiveGrouping, scale, setGrouping, setScale },
+    controls: { grouping, scale, setGrouping, setScale },
     herePercent: getHerePercent(activeColumn, projection.windowStart),
+    peakColumnCost,
     scrubber:
       projection.maxWindowStart > 0
         ? {
@@ -444,20 +488,37 @@ export function useSessionTimelineScale({
  * Resolved from the SOURCE strip rather than from the projected columns, and
  * that ordering is load-bearing: the projection is built over the window, the
  * window follows this position, so deriving the position from the projection
- * would close a cycle. The source bin's midpoint is the instant used, then
- * placed on the clock grid.
+ * would close a cycle.
  *
- * The bin is picked by the same "last bin whose `tl0` is at or before the row"
- * rule `getRowPercent` uses on the unprojected strip, so projecting moves WHERE
- * the answer is used without changing how a row resolves to a place.
+ * ISS-7115 — the instant is the READER'S OWN, not a bin's. This used to pick a
+ * bin by "the last bin whose `tl0` is at or before the row" and take that bin's
+ * midpoint, which reads a row ORDINAL as if it were reading order. It is not:
+ * `projectAgentSessionTurnItems` sorts the transcript by TIME and mints a
+ * sub-session turn with `_row = timeline.length + index`, so scrolling DOWN past
+ * a sub-session steps the active `_row` up into the high hundreds and then back
+ * down — and the `tl0 <= activeRow` comparison walked the bin index up with it
+ * and then back, moving the `.tl-here` line and the scrubber thumb BACKWARD
+ * while the reader scrolled forward.
+ *
+ * The timeline is a clock, so the fix keeps it one: the row's own timestamp goes
+ * straight onto the grid. That is monotonic under a forward scroll BECAUSE the
+ * transcript is rendered in time order — the thumb tracks reading position and
+ * still means "when", with no trade between the two. It is also strictly more
+ * precise than the bin midpoint it replaces, and lands in the same bin the bars
+ * for that instant are drawn in, so the marker and the bars still agree.
+ *
+ * The bin rule survives only as {@link resolveBinInstantMs}, for a row whose own
+ * timestamp did not parse.
  */
 function resolveRowColumn({
   activeRow,
+  activeRowMs,
   geometry,
   scale,
   source,
 }: {
   activeRow: number | null;
+  activeRowMs: number | null;
   geometry: TimelineScaleGeometry | null;
   scale: TimelineScale;
   source: {
@@ -469,21 +530,11 @@ function resolveRowColumn({
   if (activeRow == null || geometry == null || source == null) {
     return null;
   }
-  let binIndex = 0;
-  for (const [index, bucket] of source.buckets.entries()) {
-    if (bucket.tl0 != null && bucket.tl0 <= activeRow) {
-      binIndex = index;
-    }
-  }
-  const bin = source.buckets[binIndex];
-  // The bin's OWN midpoint, not `startMs + (binIndex + 0.5) * (span / count)`.
-  // The bars are placed from these bounds, so placing the marker from a second,
-  // window-derived arithmetic would let the two disagree about which column the
-  // reader is standing in. `null` is unreachable behind the caller's
-  // `hasProducerBinBounds` gate and is answered as "no position" rather than a
-  // fabricated one.
-  const binMidpointMs = bin == null ? null : resolveBinMidpointMs(bin);
-  if (binMidpointMs == null) {
+  const instantMs =
+    activeRowMs != null && Number.isFinite(activeRowMs)
+      ? activeRowMs
+      : resolveBinInstantMs(activeRow, source.buckets);
+  if (instantMs == null) {
     return null;
   }
   return Math.max(
@@ -491,12 +542,41 @@ function resolveRowColumn({
     Math.min(
       geometry.totalColumns - 1,
       resolveTimelineColumnIndex({
-        instantMs: binMidpointMs,
+        instantMs,
         originMs: geometry.originMs,
         scale,
       })
     )
   );
+}
+
+/**
+ * The fallback instant for a row that carries no parseable timestamp of its own:
+ * the midpoint of the last bin whose `tl0` is at or before it.
+ *
+ * Kept because a row with no clock has no better answer available, and losing
+ * the marker entirely would be worse than an approximate one. It is NOT
+ * monotonic across a sub-session boundary — see {@link resolveRowColumn} — but a
+ * row that reached here has no timestamp, so neither is any other answer this
+ * function could give.
+ *
+ * The bin's OWN midpoint, not `startMs + (binIndex + 0.5) * (span / count)`: the
+ * bars are placed from these bounds, so a second, window-derived arithmetic
+ * would let the two disagree about which column the reader is standing in.
+ * `null` is answered as "no position" rather than a fabricated one.
+ */
+function resolveBinInstantMs(
+  activeRow: number,
+  buckets: readonly ActivityBucket[]
+): number | null {
+  let binIndex = 0;
+  for (const [index, bucket] of buckets.entries()) {
+    if (bucket.tl0 != null && bucket.tl0 <= activeRow) {
+      binIndex = index;
+    }
+  }
+  const bin = buckets[binIndex];
+  return bin == null ? null : resolveBinMidpointMs(bin);
 }
 
 /**

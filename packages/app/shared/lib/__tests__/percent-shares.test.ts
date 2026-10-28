@@ -45,4 +45,16 @@ describe("largestRemainderPercents", () => {
   it("returns nothing for no values", () => {
     expect(largestRemainderPercents([], 10)).toEqual([]);
   });
+
+  // Pins the reachability the allocator's `reclaimDeficit` docstring names
+  // (ISS-7640). This module does not screen negatives, and the allocator clamps
+  // one to 0 while the target is still summed from the UNCLAMPED shares — so the
+  // floors exceed the target and the deficit branch runs. Every share still
+  // comes back a non-negative integer rather than a negative percentage.
+  it("still returns non-negative shares when a value is negative", () => {
+    // The exact column, not just its shape: -100% clamps to 0 and the reclaim
+    // takes the surplus off the row that has it. `[100, 0]` and `[50, 50]` are
+    // both wrong here and both sum to 100, so shape alone would prove nothing.
+    expect(largestRemainderPercents([-1, 2], 1)).toEqual([0, 100]);
+  });
 });

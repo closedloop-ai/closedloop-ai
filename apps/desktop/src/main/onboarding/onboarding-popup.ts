@@ -1,11 +1,22 @@
 import { z } from "zod";
 import {
   extractApiErrorMessage,
+  isAbortTimeoutError,
   unwrapApiResultData,
 } from "../util/api-response-utils.js";
+import { desktopClientAttributionHeaders } from "../util/desktop-client-attribution-provider.js";
 
 export const ONBOARDING_STATUS_PATH = "/onboarding";
 export const ONBOARDING_WIZARD_PATH = "/onboarding";
+
+/**
+ * Wall-clock budget for the status GET, sized to match the sibling desktop API
+ * client (`src/main/auth/managed-key-provision.ts`). Without it a wedged cloud API leaves the
+ * promise pending forever: the `try`/`catch` below only covers a THROW, never a
+ * HANG, so `resolveOnboardingPopupDecision`'s fail-open branch would be
+ * unreachable in exactly the situation it was written for.
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 const onboardingStatusSchema = z.object({
   wizardCompleted: z.boolean(),
@@ -28,12 +39,22 @@ export type OnboardingStatusFailureReason =
 export type FetchOnboardingStatusOptions = {
   apiOrigin: string;
   apiKey: string;
+  /**
+   * Overrides {@link REQUEST_TIMEOUT_MS}. Unlike `fetchJsonAndParse`'s
+   * same-named option, omitting it does NOT leave the request unbounded — the
+   * default applies, because a hang here silently swallows the reminder.
+   */
+  timeoutMs?: number;
   fetchImpl?: typeof fetch;
 };
 
 /**
  * Calls GET /onboarding on the cloud API and returns the desktop-relevant
  * `wizardCompleted` flag. Validates the response shape with Zod.
+ *
+ * The request is bounded by an `AbortSignal.timeout`, which also aborts the
+ * response body read, so every outcome — including a hung API — settles as
+ * either `ok` or `failed` rather than leaving the caller awaiting forever.
  */
 export async function fetchOnboardingStatus(
   options: FetchOnboardingStatusOptions
@@ -46,9 +67,11 @@ export async function fetchOnboardingStatus(
     response = await fetchFn(url.toString(), {
       method: "GET",
       headers: {
+        ...desktopClientAttributionHeaders(),
         Accept: "application/json",
         Authorization: `Bearer ${options.apiKey}`,
       },
+      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
   } catch {
     return {
@@ -59,9 +82,15 @@ export async function fetchOnboardingStatus(
   }
 
   let body: unknown = null;
+  let bodyReadTimedOut = false;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
+    // The same signal aborts the RESPONSE BODY read, so a server that answers
+    // headers and then stalls rejects here rather than in the fetch `catch`
+    // above. Record it: otherwise a client-side timeout falls through to
+    // `invalid_response` and blames the server for a body it never sent.
+    bodyReadTimedOut = isAbortTimeoutError(error);
     body = null;
   }
 
@@ -73,6 +102,15 @@ export async function fetchOnboardingStatus(
       error:
         extractApiErrorMessage(body) ??
         `onboarding status failed (${response.status})`,
+    };
+  }
+
+  if (bodyReadTimedOut) {
+    return {
+      kind: "failed",
+      reason: "request_failed",
+      statusCode: response.status,
+      error: "onboarding status request timed out",
     };
   }
 

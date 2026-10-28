@@ -1,4 +1,5 @@
 import {
+  PrototypeDeliveryMode,
   type PrototypeMeta,
   PrototypeStatus,
   PrototypeTag,
@@ -9,10 +10,11 @@ export const meta = {
   title: "Packs Page",
   summary:
     "Top-level Packs discovery page: a card grid of team packs with filters and sort, a team activity rail, and a full-screen pack detail view.",
-  author: "Parker",
+  author: "Pascoe",
   status: PrototypeStatus.ReadyForReview,
   tags: [PrototypeTag.Feature],
   createdAt: "2026-07-13",
   linearIssue: null,
   closedloopDoc: null,
+  deliveryMode: PrototypeDeliveryMode.DisposableSketch,
 } satisfies PrototypeMeta;

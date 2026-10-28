@@ -495,13 +495,15 @@ describe("publicKeysService.unregisterUserPublicKey", () => {
       fingerprint: "cl:abcdefghijklmnopqrstuv",
     });
 
-    expect(findFirst).toHaveBeenCalledWith({
-      where: {
-        userId: "user-1",
-        organizationId: "org-1",
-        fingerprint: "cl:abcdefghijklmnopqrstuv",
-      },
-    });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: "user-1",
+          organizationId: "org-1",
+          fingerprint: "cl:abcdefghijklmnopqrstuv",
+        },
+      })
+    );
     expect(deleteMany).toHaveBeenCalledWith({
       where: {
         id: "key-1",

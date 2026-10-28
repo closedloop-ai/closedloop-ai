@@ -27,7 +27,7 @@ describe("useInsights team scope", () => {
           InsightsScope.Team,
           undefined
         ),
-      { wrapper: createWrapper(source) }
+      { wrapper: createInsightsWrapper(source) }
     );
 
     expect(source.getDelivery).not.toHaveBeenCalled();
@@ -38,7 +38,7 @@ describe("useInsights team scope", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const wrapper = createWrapper(source, queryClient);
+    const wrapper = createInsightsWrapper(source, queryClient);
 
     const { rerender } = renderHook(
       ({ teamId }) =>
@@ -100,7 +100,7 @@ function createSource(): InsightsDataSource {
   };
 }
 
-function createWrapper(
+function createInsightsWrapper(
   source: InsightsDataSource,
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },

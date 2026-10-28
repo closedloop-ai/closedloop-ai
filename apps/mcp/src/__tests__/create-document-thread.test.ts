@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { registerCreateDocumentThread } from "../tools/create-document-thread.js";
+import {
+  expectIssue,
+  NON_EMPTY_STRING_REJECTION,
+} from "./fixtures/zod-issues.js";
 
 const registerTool = vi.fn();
 const apiClient = {
@@ -62,8 +66,11 @@ describe("create-document-thread MCP tool", () => {
   it("rejects an empty string for anchorText via schema validation", () => {
     const schema = registeredSchema();
     const anchorTextSchema = schema?.anchorText as z.ZodType | undefined;
-    const result = anchorTextSchema?.safeParse("");
-    expect(result?.success).toBe(false);
+    expectIssue(
+      anchorTextSchema?.safeParse(""),
+      [],
+      NON_EMPTY_STRING_REJECTION
+    );
   });
 });
 

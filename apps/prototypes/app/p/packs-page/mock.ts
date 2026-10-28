@@ -55,7 +55,7 @@ type SourceMeta = {
   icon: LucideIcon;
 };
 
-export const installSourceMeta: Record<InstallSource, SourceMeta> = {
+const installSourceMeta: Record<InstallSource, SourceMeta> = {
   [InstallSource.Required]: {
     label: "Required by your org",
     description: "Pushed by an admin and can't be removed.",
@@ -80,7 +80,7 @@ export const installSourceMeta: Record<InstallSource, SourceMeta> = {
 
 // Compat-safe fallback for a source value the client doesn't recognize (a
 // newer/legacy contract value). Never render blank or guess a stronger claim.
-export const unknownSourceMeta: SourceMeta = {
+const unknownSourceMeta: SourceMeta = {
   label: "Installed",
   description: "Installed on your machine.",
   icon: DownloadCloudIcon,

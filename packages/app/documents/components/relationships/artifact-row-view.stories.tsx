@@ -14,9 +14,9 @@ import { FileCodeIcon, SparklesIcon } from "lucide-react";
 import { ArtifactRowView } from "./artifact-row-view";
 
 const meta = {
-  title: "App Core/Documents/Artifact Row View",
+  title: "Composites v1.0/Documents/Artifact Row View",
   component: ArtifactRowView,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     assignee: (
       <Avatar className="size-6">

@@ -333,10 +333,12 @@ describe("createAgentCoachingApi", () => {
     await api.loadTips();
     const event = requests[0]?.localEvidence.recentEvents[0];
 
+    // ISS-6709: the shared redactor's marker preserves the KIND of secret, so
+    // each call site now pins the family it actually matched.
     expect(event?.summary).not.toContain("sk_live_DEADBEEF1234");
-    expect(event?.summary).toContain("[REDACTED_SECRET]");
+    expect(event?.summary).toContain("[REDACTED:sk_live]");
     expect(event?.data).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
-    expect(event?.data).toContain("[REDACTED_SECRET]");
+    expect(event?.data).toContain("[REDACTED:authorization]");
   });
 
   it("bridges subscribeToActivity to the desktop DB-change push", () => {

@@ -1,7 +1,10 @@
 import type {
+  FilterMenuGroup,
   TableFiltersController,
   TableFiltersState,
+  TableFiltersViewModel,
 } from "@repo/design-system/components/ui/table-filters";
+import { toggleListValue } from "./toggle-list-value";
 
 /**
  * Shared scaffolding for the generic `FilterPopover` when it is driven purely by
@@ -39,7 +42,17 @@ export const NOOP_TABLE_FILTERS_CONTROLLER: TableFiltersController = {
 
 /** Add or remove a value from a multi-select facet selection. */
 export function toggleFacetValue(values: string[], value: string): string[] {
-  return values.includes(value)
-    ? values.filter((entry) => entry !== value)
-    : [...values, value];
+  return toggleListValue(values, value);
+}
+
+export function buildFacetOnlyFiltersViewModel(
+  facetGroups: readonly FilterMenuGroup[] | undefined
+): TableFiltersViewModel {
+  return {
+    teamMembers: [],
+    statusOptions: [],
+    priorityOptions: [],
+    hideQuickToggles: true,
+    facetGroups: facetGroups ? [...facetGroups] : undefined,
+  };
 }

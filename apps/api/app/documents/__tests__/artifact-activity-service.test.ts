@@ -9,8 +9,9 @@
  *   - recordActivityEvent rejects out-of-vocabulary actorType / action and
  *     missing ids via Zod before touching the DB.
  *   - recordActivityEvents (batch) inserts the whole batch through ONE
- *     tenant-scoped transaction (one findMany + one createMany — bounded
- *     fan-out) and drops events for artifacts outside the org.
+ *     tenant-scoped transaction (one findMany + one createMany per slice of
+ *     ACTIVITY_EVENT_WRITE_CHUNK_SIZE — bounded fan-out, bounded bind width)
+ *     and drops events for artifacts outside the org.
  *   - listActivityEvents scopes by (organizationId, artifactId), orders
  *     newest-first, and paginates by keyset cursor with a lookahead nextCursor.
  */
@@ -29,12 +30,20 @@ vi.mock("@repo/database", () => {
 });
 
 import { Prisma, withDb } from "@repo/database";
-import { artifactActivityService } from "../artifact-activity-service";
+import { POSTGRES_MAX_ACCEPTED_BIND_PARAMETERS } from "@/lib/postgres-bind-parameters";
+import {
+  ACTIVITY_EVENT_WRITE_CHUNK_SIZE,
+  artifactActivityService,
+  BIND_PARAMETERS_PER_ACTIVITY_EVENT_ROW,
+} from "../artifact-activity-service";
 
 const mockWithDb = withDb as unknown as Mock;
 const mockWithDbTx = withDb.tx as unknown as Mock;
 
 const ORG_ID = "org-1";
+const UNDO_OF_TRANSACTION_ID = "11111111-1111-4111-8111-111111111111";
+/** `id` and `createdAt` are client-side defaults, so the row literal omits them. */
+const PRISMA_CLIENT_FILLED_BINDS_PER_ROW = 2;
 const ARTIFACT_ID = "artifact-1";
 const USER_ID = "user-1";
 
@@ -326,6 +335,86 @@ describe("artifactActivityService.recordActivityEvents (batch)", () => {
       after: "APPROVED",
     });
     expect(inserted).toBe(2);
+  });
+
+  it("slices a batch past the bind ceiling into per-slice findMany + createMany inside ONE transaction", async () => {
+    // ISS-9158 (whitlockk review): an uncapped `includeDownstream` move has walked
+    // 9,875-node graphs. One `createMany` for that batch is refused outright,
+    // so the store slices at the bind budget rather than asking callers to.
+    const total = ACTIVITY_EVENT_WRITE_CHUNK_SIZE * 2 + 1;
+    const ids = Array.from({ length: total }, (_, i) => `a${i}`);
+    const { artifactFindMany, createMany } = mockBatchCreate(ids);
+
+    const inserted = await artifactActivityService.recordActivityEvents({
+      organizationId: ORG_ID,
+      events: ids.map((artifactId) => ({
+        artifactId,
+        actorType: ArtifactActivityActorType.User,
+        actorId: USER_ID,
+        action: ArtifactActivityAction.FieldChange,
+        before: { field: "projectId", value: "p-old" },
+        after: { field: "projectId", value: "p-new" },
+      })),
+    });
+
+    expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledTimes(3);
+    expect(artifactFindMany).toHaveBeenCalledTimes(3);
+    const sizes = createMany.mock.calls.map((call) => call[0].data.length);
+    expect(sizes).toEqual([
+      ACTIVITY_EVENT_WRITE_CHUNK_SIZE,
+      ACTIVITY_EVENT_WRITE_CHUNK_SIZE,
+      1,
+    ]);
+    for (const call of artifactFindMany.mock.calls) {
+      expect(call[0].where.id.in.length).toBeLessThanOrEqual(
+        ACTIVITY_EVENT_WRITE_CHUNK_SIZE
+      );
+    }
+    // Every event lands exactly once, in order, across the slices.
+    expect(
+      createMany.mock.calls.flatMap((call) =>
+        (call[0].data as Array<{ artifactId: string }>).map(
+          (row) => row.artifactId
+        )
+      )
+    ).toEqual(ids);
+    expect(inserted).toBe(total);
+  });
+
+  it("pins the bind width one row actually costs against the budget the chunk is sized on", async () => {
+    // ISS-10458 (whitlockk review): the slice size is floor(ceiling / that budget),
+    // so a column added to the row literal without the budget moving makes every
+    // FULL slice a statement Postgres refuses — and `recordBatchEvents` swallows
+    // the refusal, losing the slice with no signal. Measured off a row the store
+    // actually built, so the NEXT column fails here instead of in production; a
+    // test that re-derived the width from the budget could never fail at all.
+    const { createMany } = mockBatchCreate(["a1"]);
+
+    await artifactActivityService.recordActivityEvents({
+      organizationId: ORG_ID,
+      transactionId: "txn-1",
+      undoOfTransactionId: UNDO_OF_TRANSACTION_ID,
+      events: [
+        {
+          artifactId: "a1",
+          actorType: ArtifactActivityActorType.User,
+          actorId: USER_ID,
+          action: ArtifactActivityAction.StatusChange,
+          before: "DRAFT",
+          after: "APPROVED",
+        },
+      ],
+    });
+
+    const row = createMany.mock.calls[0][0].data[0] as Record<string, unknown>;
+    const bindsPerRow =
+      Object.keys(row).length + PRISMA_CLIENT_FILLED_BINDS_PER_ROW;
+
+    expect(bindsPerRow).toBe(BIND_PARAMETERS_PER_ACTIVITY_EVENT_ROW);
+    expect(ACTIVITY_EVENT_WRITE_CHUNK_SIZE * bindsPerRow).toBeLessThanOrEqual(
+      POSTGRES_MAX_ACCEPTED_BIND_PARAMETERS
+    );
   });
 
   it("TENANT GUARD: drops events whose artifact does not belong to the org", async () => {

@@ -20,7 +20,7 @@ const ENV_SUFFIXES = ["stage", "prod"] as const;
  *   {appType}-{env}-git-{branch}-{team}.vercel.app
  *
  * This is more reliable than VERCEL_PROJECT_PRODUCTION_URL which can be a custom domain
- * (e.g., "marketing.closedloop-stage.ai" instead of "web-stage.vercel.app").
+ * (e.g., "marketing.stage.example" instead of "web-stage.vercel.app").
  *
  * For production environments, falls back to VERCEL_PROJECT_PRODUCTION_URL.
  *
@@ -156,23 +156,10 @@ export const keys = () =>
     server: {
       ANALYZE: z.string().optional(),
 
-      // Shared runner JWT secret used by the chat runner and loop runner
-      // token helpers. Centralized here so every Next.js app that extends
-      // these keys validates it consistently. Optional because not every
-      // environment (tests, standalone preview) exercises runner flows.
-      CLOSEDLOOP_RUNNER_JWT_SECRET: z
-        .string()
-        .min(RUNNER_JWT_MIN_SECRET_LENGTH)
-        .refine((value) => new Set(value).size >= RUNNER_JWT_MIN_UNIQUE_CHARS, {
-          message: `CLOSEDLOOP_RUNNER_JWT_SECRET is too weak (must contain at least ${RUNNER_JWT_MIN_UNIQUE_CHARS} unique characters)`,
-        })
-        .optional(),
-
       // Dedicated secret for signing first-party desktop session access tokens
-      // (FEA-1514). Separate from the runner secret on purpose: desktop session
-      // tokens must never be signed or verified with runner/gateway/Clerk/
-      // API-key/webhook material. Optional because not every environment
-      // exercises desktop-session flows.
+      // (FEA-1514). Separate on purpose: desktop session tokens must never be
+      // signed or verified with gateway/Clerk/API-key/webhook material.
+      // Optional because not every environment exercises desktop-session flows.
       DESKTOP_SESSION_JWT_SECRET: z
         .string()
         .min(RUNNER_JWT_MIN_SECRET_LENGTH)
@@ -200,7 +187,6 @@ export const keys = () =>
     },
     runtimeEnv: {
       ANALYZE: process.env.ANALYZE,
-      CLOSEDLOOP_RUNNER_JWT_SECRET: process.env.CLOSEDLOOP_RUNNER_JWT_SECRET,
       DESKTOP_SESSION_JWT_SECRET: process.env.DESKTOP_SESSION_JWT_SECRET,
       NEXT_RUNTIME: process.env.NEXT_RUNTIME,
       VERCEL: process.env.VERCEL,

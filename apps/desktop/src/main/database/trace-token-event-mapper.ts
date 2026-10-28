@@ -20,7 +20,7 @@
  */
 
 import { InvalidTokenCountError } from "@repo/lib/harness/token-counts";
-import { writePersistentLog } from "../logging/persistent-log.js";
+import { writePersistentLog } from "../logging/durable-log-sink.js";
 import { optionalTokenCountValue, tokenCountValue } from "./db-helpers.js";
 import type { SqliteTokenEventRow } from "./db-row-types.js";
 import type { SessionTraceSyncInput } from "./session-trace.js";
@@ -28,7 +28,8 @@ import type { SessionTraceSyncInput } from "./session-trace.js";
 const TRACE_TOKEN_EVENT_LOG_SCOPE = "sync-source";
 
 export function normalizeTraceTokenEvent(
-  row: SqliteTokenEventRow
+  row: SqliteTokenEventRow,
+  subdivisions?: TraceTokenCacheWriteSubdivisions
 ): SessionTraceSyncInput["tokenEvents"][number] {
   return {
     model: row.model,
@@ -43,14 +44,18 @@ export function normalizeTraceTokenEvent(
       row.cache_write_tokens,
       "trace.cache_write"
     ),
-    cache_write_5m_tokens: optionalTokenCountValue(
-      row.cache_write_5m_tokens,
-      "trace.cache_write_5m"
-    ),
-    cache_write_1h_tokens: optionalTokenCountValue(
-      row.cache_write_1h_tokens,
-      "trace.cache_write_1h"
-    ),
+    cache_write_5m_tokens: subdivisions
+      ? subdivisions.cacheWrite5mTokens
+      : optionalTokenCountValue(
+          row.cache_write_5m_tokens,
+          "trace.cache_write_5m"
+        ),
+    cache_write_1h_tokens: subdivisions
+      ? subdivisions.cacheWrite1hTokens
+      : optionalTokenCountValue(
+          row.cache_write_1h_tokens,
+          "trace.cache_write_1h"
+        ),
     cost_usd_estimated: row.cost_usd_estimated,
     input_cost_usd_estimated: row.input_cost_usd_estimated,
     output_cost_usd_estimated: row.output_cost_usd_estimated,
@@ -87,14 +92,13 @@ export function mapTraceTokenEvents(
   rows: readonly SqliteTokenEventRow[]
 ): SessionTraceSyncInput["tokenEvents"] {
   return rows.map((row) =>
-    normalizeTraceTokenEvent({
-      ...row,
-      cache_write_5m_tokens: degradedOptionalTokenCount(
+    normalizeTraceTokenEvent(row, {
+      cacheWrite5mTokens: degradedOptionalTokenCount(
         sessionId,
         row.cache_write_5m_tokens,
         "trace.cache_write_5m"
       ),
-      cache_write_1h_tokens: degradedOptionalTokenCount(
+      cacheWrite1hTokens: degradedOptionalTokenCount(
         sessionId,
         row.cache_write_1h_tokens,
         "trace.cache_write_1h"
@@ -102,6 +106,26 @@ export function mapTraceTokenEvents(
     })
   );
 }
+
+/**
+ * ISS-6227: the two optional subdivisions {@link mapTraceTokenEvents} has
+ * already parsed, handed to {@link normalizeTraceTokenEvent} INSTEAD of a
+ * rewritten copy of the row.
+ *
+ * Passing them beats the `{ ...row, cache_write_5m_tokens, cache_write_1h_tokens }`
+ * spread this replaced, which allocated a full duplicate of every persisted row
+ * — 15-17 properties each — solely to override two of them, once per row of
+ * every hydrated session. The output is byte-identical either way.
+ *
+ * PRESENCE, not the values, selects the branch: a degraded subdivision is
+ * legitimately `null`, so a `??` fallback here would silently re-derive the
+ * rejected value off the row and undo the isolation this exists to provide.
+ * `trace-token-event-mapper.test.ts` pins that with a `??`-shaped counterfactual.
+ */
+type TraceTokenCacheWriteSubdivisions = {
+  cacheWrite5mTokens: number | null;
+  cacheWrite1hTokens: number | null;
+};
 
 /**
  * Parse one optional subdivision strictly, degrading a rejected value to `null`

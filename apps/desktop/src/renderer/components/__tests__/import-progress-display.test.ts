@@ -49,8 +49,8 @@ describe("describeImportProgress", () => {
 
 // ISS-4444: the derived "couldn't import" count is clamped so a version-skewed or
 // malformed main-process payload can never render a nonsense number. ISS-5281
-// moved the helper here from `sessions/sessions-summary-cards-state.ts` so the
-// React-free import-splash derivation can share the one clamp.
+// moved the helper here from `sessions/sessions-summary-cards-state.ts` so every
+// reader shares the one clamp.
 describe("resolveCouldNotImportCount", () => {
   it("returns a positive quarantined count", () => {
     expect(
@@ -99,17 +99,16 @@ describe("formatCount", () => {
 });
 
 /**
- * ISS-6115 (wongk review): `quarantinedCount` changed meaning when the import
+ * ISS-6115 (whitlockk review): `quarantinedCount` changed meaning when the import
  * bound started charging the quarantine store, and every renderer went on saying
  * the transcript "couldn't be read". Two of those claims are false on the import
  * path: the file WAS read — the write is what did not finish — and the isolated
  * importer commits its record groups one at a time, so a later group timing out
  * leaves the earlier ones already written.
  *
- * These are the copy contract for all four surfaces that report the population
- * (the startup-readiness detail, the import splash alert, the splash body, and
- * the shared Sessions summary card), which is why the phrase is built in one
- * place instead of at each of them.
+ * These are the copy contract for every surface that reports the population —
+ * today the shared Sessions summary card — which is why the phrase is built in
+ * one place instead of at each of them.
  */
 describe("describeQuarantinedSources", () => {
   it("says 'couldn't be read' only for the parse-stage population", () => {
@@ -203,7 +202,7 @@ function remainder(
 }
 
 /**
- * ISS-6206 (thadeusb review on #5050): the collapse path had no unit coverage —
+ * ISS-6206 (tamsinb review on #5050): the collapse path had no unit coverage —
  * the integration tests only ever fed it two lanes, so the comma/and/tail
  * formatting was unpinned for exactly the case it exists to handle.
  */
@@ -228,7 +227,7 @@ describe("describeLaneRemainders", () => {
   });
 
   it("collapses a third lane into a tail that names what it counts", () => {
-    // wongk review on #5050: the tail counts KINDS while every clause beside it
+    // whitlockk review on #5050: the tail counts KINDS while every clause beside it
     // counts ITEMS, so a bare "and 1 more" read as one more item — for a lane
     // that here owes a million. Its unit is not optional.
     expect(
@@ -247,9 +246,8 @@ describe("describeLaneRemainders", () => {
         remainder(SyncLaneId.InvocationParts, 40),
         remainder(SyncLaneId.TranscriptArchive, 12),
         remainder(SyncLaneId.ComponentInventory, 7),
-        remainder(SyncLaneId.TraceComments, 3),
       ])
-    ).toBe("2,900 sessions, 40 session details and 3 other kinds");
+    ).toBe("2,900 sessions, 40 session details and 2 other kinds");
   });
 
   it("never ends on a bare count the reader can take for items", () => {
@@ -258,7 +256,7 @@ describe("describeLaneRemainders", () => {
     // hidden lane owes 2,985 here — the size of the misread.
     const hiddenSets = [
       [SyncLaneId.ComponentInventory],
-      [SyncLaneId.ComponentInventory, SyncLaneId.TraceComments],
+      [SyncLaneId.ComponentInventory, SyncLaneId.InvocationParts],
     ];
     for (const hidden of hiddenSets) {
       const label = describeLaneRemainders([
@@ -275,14 +273,14 @@ describe("describeLaneRemainders", () => {
     expect(
       describeLaneRemainders([
         remainder(SyncLaneId.ComponentInventory, 2985, true),
-        remainder(SyncLaneId.TraceComments, 1),
+        remainder(SyncLaneId.InvocationParts, 1),
       ])
-    ).toBe("at least 2,985 activity records and 1 comment");
+    ).toBe("at least 2,985 activity records and 1 session detail");
   });
 });
 
 /**
- * ISS-6206 (wongk review on #5050): the label may collapse the tail; the detail
+ * ISS-6206 (whitlockk review on #5050): the label may collapse the tail; the detail
  * may not. A third lane owing a million transcripts has to be reachable
  * somewhere on the screen, and a collapsed "and 1 other kind" in both strings is
  * nowhere.
@@ -310,9 +308,11 @@ describe("describeAllLaneRemainders", () => {
       describeAllLaneRemainders([
         remainder(SyncLaneId.SessionMetadata, 5, true),
         remainder(SyncLaneId.TranscriptArchive, 12),
-        remainder(SyncLaneId.TraceComments, 3, true),
+        remainder(SyncLaneId.InvocationParts, 3, true),
       ])
-    ).toBe("at least 5 sessions, 12 transcripts and at least 3 comments");
+    ).toBe(
+      "at least 5 sessions, 12 transcripts and at least 3 session details"
+    );
   });
 });
 

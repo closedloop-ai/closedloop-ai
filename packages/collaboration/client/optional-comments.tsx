@@ -5,14 +5,8 @@ import "@liveblocks/react-ui/styles.css";
 import "./comments.css";
 import "./inbox.css";
 
-import { useThreads } from "@liveblocks/react/suspense";
 import type { AnchoredThreadsProps } from "@liveblocks/react-tiptap";
-import {
-  AnchoredThreads,
-  FloatingComposer,
-  FloatingThreads,
-  FloatingToolbar,
-} from "@liveblocks/react-tiptap";
+import { FloatingComposer, FloatingToolbar } from "@liveblocks/react-tiptap";
 import { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import { useEffect, useState } from "react";
 import { useConstrainFloatingWithinEditor } from "./use-constrain-floating-within-editor";
@@ -22,17 +16,6 @@ const ANCHOR_PREVIEW_MAX_LEN = 150;
 type OptionalCommentsProps = {
   editor: AnchoredThreadsProps["editor"];
   roomId: string | null | undefined;
-  mode?: CommentsMode;
-  /**
-   * When false, do NOT render the gutter `AnchoredThreads`/`FloatingThreads`
-   * — used when the Feed sidebar is mounted at the host level and owns
-   * thread display. `FloatingComposer` and `FloatingToolbar` continue to
-   * render either way (they own thread creation, which is unchanged).
-   *
-   * Default true preserves today's behavior for any consumer that hasn't
-   * been migrated to the rail.
-   */
-  renderGutterThreads?: boolean;
   /**
    * The version of the document the user is editing. Stamped into the
    * `FloatingComposer`'s default metadata so newly-created threads carry
@@ -43,41 +26,27 @@ type OptionalCommentsProps = {
   currentVersion?: number;
 };
 
-type CommentsMode = "floating" | "anchored";
-
 /**
- * Renders liveblocks floating toolbar, composer and threads when in a Liveblocks room.
+ * Renders the Liveblocks floating toolbar and composer when in a Liveblocks
+ * room. Threads are displayed by the host's feed rail, not here.
  */
 export function OptionalComments({
   editor,
-  mode = "floating",
   roomId,
-  renderGutterThreads = true,
   currentVersion,
 }: Readonly<OptionalCommentsProps>) {
   if (!roomId) {
     return null;
   }
 
-  return (
-    <CommentsWithHooks
-      currentVersion={currentVersion}
-      editor={editor}
-      mode={mode}
-      renderGutterThreads={renderGutterThreads}
-    />
-  );
+  return <CommentsWithHooks currentVersion={currentVersion} editor={editor} />;
 }
 
 function CommentsWithHooks({
   editor,
-  mode,
-  renderGutterThreads,
   currentVersion,
 }: Readonly<{
   editor: AnchoredThreadsProps["editor"];
-  mode: CommentsMode;
-  renderGutterThreads: boolean;
   currentVersion?: number;
 }>) {
   useConstrainFloatingWithinEditor(editor);
@@ -93,7 +62,6 @@ function CommentsWithHooks({
 
   return (
     <>
-      {renderGutterThreads && <Threads editor={editor} mode={mode} />}
       <FloatingComposer
         autoFocus
         className="lb-collab-floating lb-collab-floating-composer"
@@ -144,35 +112,4 @@ function useSelectionAnchorPreview(
   }, [editor]);
 
   return preview;
-}
-
-function Threads({
-  editor,
-  mode,
-}: Readonly<{
-  editor: AnchoredThreadsProps["editor"];
-  mode: CommentsMode;
-}>) {
-  const { threads } = useThreads();
-  const hasThreads = threads.some((thread) => !thread.resolved);
-
-  if (mode === "anchored") {
-    return hasThreads ? (
-      <div className="pr-4 pl-2">
-        <AnchoredThreads
-          className="lb-collab-anchored-threads"
-          editor={editor}
-          threads={threads}
-        />
-      </div>
-    ) : null;
-  }
-
-  return (
-    <FloatingThreads
-      className="lb-collab-floating lb-collab-floating-threads"
-      editor={editor}
-      threads={threads}
-    />
-  );
 }

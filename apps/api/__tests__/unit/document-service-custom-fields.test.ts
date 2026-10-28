@@ -2,6 +2,14 @@ import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { DocumentWithProject } from "@repo/api/src/types/document";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { customFieldValuesService } from "@/app/custom-fields/values-service";
+// ISS-7211 moved the list read out of `document-service.ts` (which is
+// grandfathered shrink-only) into `document-list-read.ts`, so the seam this
+// suite stubs moved with it: `findAllWithCustomFields` now delegates, and the
+// underlying page read is `documentListRead.findAllDocuments`. The CONTRACT
+// under test is unchanged — custom-field values are batch-attached to the list,
+// and the value read is skipped entirely when the list is empty — so every
+// assertion below still stands as written.
+import { documentListRead } from "@/app/documents/document-list-read";
 import { documentService } from "@/app/documents/document-service";
 
 vi.mock("@/app/custom-fields/values-service", () => ({
@@ -22,7 +30,7 @@ afterEach(() => {
 
 describe("documentService.findAllWithCustomFields", () => {
   it("returns early without querying custom fields when there are no documents", async () => {
-    vi.spyOn(documentService, "findAll").mockResolvedValue([]);
+    vi.spyOn(documentListRead, "findAllDocuments").mockResolvedValue([]);
 
     const result = await documentService.findAllWithCustomFields({
       organizationId: ORG_ID,
@@ -33,7 +41,7 @@ describe("documentService.findAllWithCustomFields", () => {
   });
 
   it("attaches an empty customFields array to documents without values", async () => {
-    vi.spyOn(documentService, "findAll").mockResolvedValue([
+    vi.spyOn(documentListRead, "findAllDocuments").mockResolvedValue([
       makeDocument("doc-1"),
       makeDocument("doc-2"),
     ]);
@@ -55,7 +63,7 @@ describe("documentService.findAllWithCustomFields", () => {
   });
 
   it("groups multiple custom field values by entityId onto the right documents", async () => {
-    vi.spyOn(documentService, "findAll").mockResolvedValue([
+    vi.spyOn(documentListRead, "findAllDocuments").mockResolvedValue([
       makeDocument("doc-1"),
       makeDocument("doc-2"),
       makeDocument("doc-3"),

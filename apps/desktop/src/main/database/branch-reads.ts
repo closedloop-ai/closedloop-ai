@@ -1,4 +1,5 @@
 import type { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
+import type { Priority } from "@repo/api/src/types/common";
 import type { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
 import type {
   TokenCostSummary,
@@ -23,9 +24,14 @@ import {
 import {
   BRANCH_PUSH_METHOD_VALUES,
   BRANCH_WRITE_METHOD_VALUES,
+  jsonIdListInSql,
   sqlStringList,
 } from "./db-constants.js";
 import type { DbHostPrisma } from "./prisma-client.js";
+import {
+  allOrNothingCanonicalSortSql,
+  canonicalRankingKeySql,
+} from "./session-timestamp-form.js";
 
 // FEA-2531 method-value lists as SQL string-literal fragments, built from the
 // `db-constants` tuples so raw reads never inline a method string.
@@ -42,9 +48,57 @@ function branchPushEvidenceSql(artifactAlias: string): string {
 }
 
 /**
+ * ISS-10324 (review): latest push occurrence per branch artifact, aggregated
+ * ONCE over the push links and joined, NOT re-derived per outer row. As a
+ * correlated subquery this re-scanned a branch's whole link set for every
+ * session that wrote it, which is quadratic on a long-lived branch and had only
+ * `idx_sal_artifact` to lean on.
+ *
+ * Ranked by the canonical INSTANT, never by stored bytes: `observed_at` is TEXT,
+ * so a byte-wise `MAX` returns the EARLIER instant whenever a group mixes
+ * `…:00Z` with `…:00.500Z` (`Z` is 0x5A, `.` is 0x2E). The all-or-nothing fold
+ * partitions by `artifact_id` because the answer is a value from WITHIN each
+ * artifact's own group — it is never a ranking BETWEEN artifacts, which is the
+ * mode-mixing shape that fold must not be used for.
+ *
+ * The projected value stays the RAW stored `observed_at` of the winning row, so
+ * this read surfaces exactly what the retired nested `orderBy … take 1` did.
+ * That relies on SQLite's documented bare-column rule: in a grouped query whose
+ * only aggregate is a single `MAX`/`MIN`, the non-aggregated columns come from
+ * the row that produced it.
+ */
+const LATEST_PUSH_PER_ARTIFACT_SQL = `(
+        SELECT
+          ranked.artifact_id AS artifact_id,
+          ranked.observed_at AS latest_push_observed_at,
+          MAX(push_canonical_sort)
+        FROM (
+          SELECT
+            sal_push.artifact_id AS artifact_id,
+            sal_push.observed_at AS observed_at,
+            ${allOrNothingCanonicalSortSql(
+              canonicalRankingKeySql("sal_push.observed_at"),
+              "sal_push.observed_at",
+              "PARTITION BY sal_push.artifact_id"
+            )} AS push_canonical_sort
+          FROM session_artifact_links sal_push
+          WHERE sal_push.method IN (${BRANCH_PUSH_METHOD_SQL})
+        ) ranked
+        GROUP BY ranked.artifact_id
+      )`;
+
+/** Branch artifacts carrying at least one push link, aggregated once. */
+const PUSHED_ARTIFACT_IDS_SQL = `(
+        SELECT DISTINCT sal_push.artifact_id AS artifact_id
+          FROM session_artifact_links sal_push
+         WHERE sal_push.method IN (${BRANCH_PUSH_METHOD_SQL})
+      )`;
+
+/**
  * Active-write-link SQL predicate for the internal Wrote corpus. Publication
- * evidence is projected separately so Product membership can require both
- * signals without removing pre-publication branches from metric authority.
+ * evidence is projected separately; the eligibility coordinator requires it
+ * for Product membership AND the metric divisor (ISS-8148, PRD-683 D7) — the
+ * raw corpus itself retains every Wrote link.
  * Repository-default eligibility is applied by the Branches read coordinator.
  */
 export function activeWriteLinkSql(linkAlias: string, _artifactAlias: string) {
@@ -55,25 +109,21 @@ export function activeWriteLinkSql(linkAlias: string, _artifactAlias: string) {
  * Local SQLite read layer for the Branches serving ops (FEA-1948 / Epic B B1).
  *
  * Since FEA-1899 a "branch" is a row in the `artifacts` table (`kind='branch'`,
- * carrying `repo_full_name`/`branch_name` plus the GitHub enrichment columns);
+ * carrying `repo_full_name`/`branch_name`);
  * `session_artifact_links` became a pure join (`session_id` ↔ `artifact_id`). So
  * these reads JOIN `artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'`
  * to recover the sessions that worked each branch. PR metadata still comes from
  * `pull_requests`; token cost from `token_usage` joined back through the link
- * table. The FEA-1899 enrichment columns on `artifacts` (`lines_added` /
- * `lines_removed` / `files_changed`) ARE now surfaced: the link read carries the
- * branch artifact's net LOC (null until the branch is enriched — never 0), which
- * the list / detail / analytics projections expose as `additions` / `deletions`
- * / `filesChanged`. The remaining GitHub-only columns (base ref, checks, review
- * decision, ahead/behind) still have no local producer and stay `null`.
+ * table. The GitHub-only columns (LOC, PR state, base ref, checks, review
+ * decision, ahead/behind) have no local store and stay `null`.
  *
  * Every function takes the read-only `DbHostPrisma` client (prisma.client). The reads split by
  * whether the SQL has a clean typed-delegate form:
  *
  * - TYPED delegates (preferred — `prisma.client.<model>.findMany`):
- *   `readLocalBranchLinkRows` (link → branch artifact + session, COALESCE folded
- *   in JS), `readDistinctBranchKeyRows` (`distinct` on the branch artifact key),
- *   and `readBranchUsageTokenRows` (two keyed reads — branch-linked sessions via
+ *   `readLocalBranchLinkRowsForBranch` (the branch-SCOPED link read, whose
+ *   nested selects are bounded by one branch), and `readBranchUsageTokenRows`
+ *   (two keyed reads — branch-linked sessions via
  *   the link table's `session` relation, then their `token_usage` rows by
  *   `sessionId IN (…)` — joined in JS, since `token_usage` has no session
  *   relation to model without drifting the migration). Typed Int columns come
@@ -82,6 +132,10 @@ export function activeWriteLinkSql(linkAlias: string, _artifactAlias: string) {
  *
  * - RAW reads on the read-only `prisma.client.$queryRawUnsafe` escape hatch,
  *   each because it has no clean typed form (NOT as a shortcut):
+ *   `readLocalBranchLinkRows` and `readDistinctBranchKeyRows` (BOTH raw since
+ *   ISS-10324 — a nested select binds one host parameter per parent row, so the
+ *   typed form's bind count scaled with the corpus and overflowed SQLite's
+ *   `SQLITE_MAX_VARIABLE_NUMBER`; a JOIN binds nothing per row),
  *   `readLocalBranchPrRows` (value-based `(repo, branch)` match with null-safe
  *   `IS NOT DISTINCT FROM` — `pull_requests` has no key relation to artifacts),
  *   `readLocalBranchCommitRows` (`DISTINCT` self-join across the link table via a
@@ -107,24 +161,18 @@ export type BranchLinkRow = {
   branchName: string;
   /** Verified local publication retained separately from Product membership. */
   hasLocalPublication?: boolean;
+  /** Latest trustworthy successful-push occurrence, when persisted locally. */
+  successfulPushAt?: string | null;
   sessionId: string;
   sessionName: string | null;
+  /** ISS-11915: Sessions window timestamp, excluding link/import observation. */
+  sessionLastActivityAt?: string | null;
   isPrimary: boolean;
   /** When the link was *observed/scanned* (wall-clock import time). */
   observedAt: string;
-  /**
-   * The linked session's real last-activity time — `ended_at`, else
-   * `started_at`, both derived from the transcript turns (NOT scan time). Used
-   * to age the branch in the list; falls back to `observedAt` only when a
-   * session somehow has no turn timestamps. See FEA-2022.
-   */
+  /** Legacy turn-time projection; never the ISS-11915 window fallback. */
   activityAt: string;
-  /**
-   * Net branch LOC from FEA-1899 enrichment, read off the joined branch artifact
-   * (`kind='branch'`). Identical across a branch's link rows (the value lives on
-   * the one branch artifact); `null` until the branch is enriched — never
-   * 0-as-unknown. Surfaced as `additions` / `deletions` / `filesChanged`.
-   */
+  /** Always `null`: the local store holds no branch LOC. */
   linesAdded: number | null;
   linesRemoved: number | null;
   filesChanged: number | null;
@@ -134,6 +182,8 @@ export type BranchLinkRow = {
    * against the cloud org directory when the branch row is projected.
    */
   ownerUserId: string | null;
+  /** ISS-10332: the joined branch artifact's priority; `null` is none. */
+  priority: Priority | null;
 };
 
 /** One `pull_requests` row keyed to a branch (branch_name non-null). */
@@ -151,14 +201,7 @@ export type BranchPrRow = {
   /** GitHub PR createdAt (PRD-486) — the PR-opened lifecycle dot; null until enriched. */
   openedAt: string | null;
   observedAt: string | null;
-  /**
-   * LOC from the matching PR artifact's FEA-1899 enrichment (the
-   * `kind='pull_request'` row in `artifacts`, joined by `(repo, pr_number)`).
-   * This is the SAME source the delivery dashboard medians (FEA-2159): branch
-   * artifacts are often un-enriched while their merged PR artifact carries LOC,
-   * so the list projection falls back to these when the branch's own LOC is
-   * null. `null` until the PR artifact is enriched — never 0-as-unknown.
-   */
+  /** Always `null`: the local store holds no PR LOC. */
   linesAdded: number | null;
   linesRemoved: number | null;
   filesChanged: number | null;
@@ -247,12 +290,11 @@ type BranchLinkSelectRow = {
     repoFullName: string | null;
     branchName: string | null;
     firstPushedAt: string | null;
-    artifactLinks: Array<{ id: string }>;
-    linesAdded: number | null;
-    linesRemoved: number | null;
-    filesChanged: number | null;
+    artifactLinks: Array<{ id: string; observedAt: string }>;
+    priority: Priority | null;
   };
   session: {
+    lastActivityAt: string | null;
     endedAt: string | null;
     name: string | null;
     startedAt: string | null;
@@ -279,23 +321,21 @@ function mapBranchLinkRows(rows: BranchLinkSelectRow[]): BranchLinkRow[] {
         hasLocalPublication:
           row.artifact.firstPushedAt !== null ||
           row.artifact.artifactLinks.length > 0,
+        successfulPushAt:
+          row.artifact.artifactLinks[0]?.observedAt ??
+          row.artifact.firstPushedAt,
         sessionId: row.sessionId,
         sessionName: row.session.name,
+        sessionLastActivityAt: row.session.lastActivityAt,
         isPrimary: row.isPrimary,
         observedAt: row.observedAt,
-        linesAdded: row.artifact.linesAdded,
-        linesRemoved: row.artifact.linesRemoved,
-        filesChanged: row.artifact.filesChanged,
-        // `activity_at` is the linked session's real last-activity time
-        // (ended/started, from the transcript turns) — NOT `observed_at`,
-        // the wall-clock time the importer last *scanned* the link, which
-        // reads "just now" on every re-import (FEA-2022). `??` matches SQL
-        // COALESCE(s.ended_at, s.started_at, sal.observed_at): it falls
-        // through on NULL only (an empty string is kept), and falls back to
-        // observed_at if a session has neither timestamp.
+        linesAdded: null,
+        linesRemoved: null,
+        filesChanged: null,
         activityAt:
           row.session.endedAt ?? row.session.startedAt ?? row.observedAt,
         ownerUserId: row.session.userId,
+        priority: row.artifact.priority,
       },
     ];
   });
@@ -308,54 +348,102 @@ function mapBranchLinkRows(rows: BranchLinkSelectRow[]): BranchLinkRow[] {
 export function readLocalBranchLinkRows(
   prisma: DbHostPrisma
 ): Promise<BranchLinkRow[]> {
-  // A branch is an `artifacts` row with kind='branch' (ArtifactRefTargetKind
-  // .Branch); the link table joins it to the sessions that worked it. Only
-  // branch artifacts define a branch, so a PR/commit artifact can't inflate the
-  // list or usage. The `session` relation is the link's FK to `sessions` (a real
-  // DB FK with cascade), so the nested select never drops a wanted row.
-  return prisma.client.sessionArtifactLink
-    .findMany({
-      // Keep every active Wrote link in the internal corpus. Product-facing
-      // readers apply publication eligibility after this projection; metric
-      // denominator authority deliberately retains pre-publication branches.
-      where: {
-        method: { in: [...BRANCH_WRITE_METHOD_VALUES] },
-        artifact: {
-          kind: "branch",
-          branchName: { not: null },
-        },
-      },
-      select: {
-        sessionId: true,
-        isPrimary: true,
-        observedAt: true,
-        artifact: {
-          select: {
-            repoFullName: true,
-            branchName: true,
-            firstPushedAt: true,
-            artifactLinks: {
-              where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
-              select: { id: true },
-              take: 1,
-            },
-            linesAdded: true,
-            linesRemoved: true,
-            filesChanged: true,
-          },
-        },
-        session: {
-          select: {
-            endedAt: true,
-            name: true,
-            startedAt: true,
-            userId: true,
-          },
-        },
-      },
-      orderBy: [{ artifact: { branchName: "asc" } }, { observedAt: "desc" }],
-    })
-    .then(mapBranchLinkRows);
+  // RAW, not the typed delegate (ISS-10324). A `findMany` selecting nested
+  // relations resolves each one with a SECOND statement that binds one host
+  // parameter per parent row, so the bind count scaled with the corpus: this
+  // read crossed SQLite's SQLITE_MAX_VARIABLE_NUMBER floor (999 on older
+  // builds) and threw, and `getSharedBranchesPageData` treats it as fatal, so
+  // the whole Branches screen lost its data. BOTH nested selects overflowed --
+  // the to-many `artifact.artifactLinks` on a profile wide in branches, and the
+  // to-one `session` on one wide in sessions -- so chunking either alone leaves
+  // the other live. JOINs bind nothing per row, and the method lists are
+  // inlined as literals by `sqlStringList`, so this statement's parameter count
+  // is a constant zero at any corpus size.
+  //
+  // The joined `latest_push_observed_at` reproduces the nested `orderBy
+  // observed_at desc, take 1` (see `LATEST_PUSH_PER_ARTIFACT_SQL`): the column
+  // is NOT NULL, so the LEFT JOIN misses — and the value is null — exactly when
+  // the branch has no push link, the same signal the empty array carried.
+  // Rows are mapped
+  // back into the select shape so `mapBranchLinkRows` stays the ONE place the
+  // COALESCE and publication derivations live, per its own contract.
+  return prisma.client
+    .$queryRawUnsafe<BranchLinkRawRow[]>(
+      `SELECT
+         sal.session_id   AS session_id,
+         sal.is_primary   AS is_primary,
+         sal.observed_at  AS observed_at,
+         a.repo_full_name AS repo_full_name,
+         a.branch_name    AS branch_name,
+         a.first_pushed_at AS first_pushed_at,
+         a.priority       AS priority,
+         s.last_activity_at AS last_activity_at,
+         s.ended_at       AS ended_at,
+         s.name           AS session_name,
+         s.started_at     AS started_at,
+         s.user_id        AS user_id,
+         push.latest_push_observed_at AS latest_push_observed_at
+       FROM session_artifact_links sal
+       JOIN artifacts a
+         ON a.id = sal.artifact_id
+        AND a.kind = 'branch'
+       JOIN sessions s
+         ON s.id = sal.session_id
+       LEFT JOIN ${LATEST_PUSH_PER_ARTIFACT_SQL} push
+         ON push.artifact_id = a.id
+       WHERE ${activeWriteLinkSql("sal", "a")}
+         AND a.branch_name IS NOT NULL
+       ORDER BY a.branch_name ASC, sal.observed_at DESC`
+    )
+    .then((rows) => mapBranchLinkRows(rows.map(toBranchLinkSelectRow)));
+}
+
+/** Flat row shape of the `readLocalBranchLinkRows` raw statement. */
+type BranchLinkRawRow = {
+  session_id: string;
+  is_primary: number | boolean;
+  observed_at: string;
+  repo_full_name: string | null;
+  branch_name: string | null;
+  first_pushed_at: string | null;
+  priority: Priority | null;
+  last_activity_at: string | null;
+  ended_at: string | null;
+  session_name: string | null;
+  started_at: string | null;
+  user_id: string | null;
+  latest_push_observed_at: string | null;
+};
+
+/**
+ * Re-shape one raw row into the delegate's select shape so the derivations stay
+ * in `mapBranchLinkRows`. The synthesized `artifactLinks` entry carries only the
+ * two fields that mapper reads.
+ */
+function toBranchLinkSelectRow(row: BranchLinkRawRow): BranchLinkSelectRow {
+  return {
+    sessionId: row.session_id,
+    // SQLite stores the Boolean column as 0/1, which raw reads return as-is.
+    isPrimary: Boolean(row.is_primary),
+    observedAt: row.observed_at,
+    artifact: {
+      repoFullName: row.repo_full_name,
+      branchName: row.branch_name,
+      firstPushedAt: row.first_pushed_at,
+      artifactLinks:
+        row.latest_push_observed_at === null
+          ? []
+          : [{ id: "", observedAt: row.latest_push_observed_at }],
+      priority: row.priority,
+    },
+    session: {
+      lastActivityAt: row.last_activity_at,
+      endedAt: row.ended_at,
+      name: row.session_name,
+      startedAt: row.started_at,
+      userId: row.user_id,
+    },
+  };
 }
 
 /** A distinct `(repo_full_name, branch_name)` branch key. */
@@ -374,35 +462,65 @@ export type BranchKeyRow = {
  * publication evidence; the caller counts via `encodeBranchId` so null-repo
  * collapsing matches the list projection byte-for-byte.
  *
- * `artifactLinks: { some: {} }` reproduces the inner JOIN against the link
- * table — a branch artifact with no Session Wrote links never appears.
+ * The inner JOIN against the link table reproduces `artifactLinks: { some: {} }`
+ * — a branch artifact with no Session Wrote links never appears.
  */
 export function readDistinctBranchKeyRows(
   prisma: DbHostPrisma
 ): Promise<BranchKeyRow[]> {
-  return prisma.client.artifact
-    .findMany({
-      // Same internal Wrote gate as `readLocalBranchLinkRows`; publication and
-      // authority eligibility are resolved later.
-      where: {
-        kind: "branch",
-        branchName: { not: null },
-        artifactLinks: {
-          some: { method: { in: [...BRANCH_WRITE_METHOD_VALUES] } },
-        },
-      },
-      select: {
-        repoFullName: true,
-        branchName: true,
-        firstPushedAt: true,
-        artifactLinks: {
-          where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
-          select: { id: true },
-          take: 1,
-        },
-      },
-    })
-    .then(mapDistinctBranchKeyRows);
+  // RAW, not the typed delegate (ISS-10324 review). The retired `findMany`
+  // selected the nested to-many `artifactLinks` for its push evidence, which
+  // Prisma resolves with a SECOND statement binding one host parameter per
+  // parent artifact row — the same overflow `readLocalBranchLinkRows` hit, on
+  // the same serving path (`getSharedBranchesPageData` reads this for the
+  // branch count), so fixing only that one left the page dying at the same
+  // corpus width. JOINs bind nothing per row and the method lists are inlined
+  // as literals, so this statement's parameter count is a constant zero.
+  return prisma.client
+    .$queryRawUnsafe<BranchKeyRawRow[]>(
+      `SELECT DISTINCT
+         a.repo_full_name  AS repo_full_name,
+         a.branch_name     AS branch_name,
+         a.first_pushed_at AS first_pushed_at,
+         CASE WHEN push.artifact_id IS NULL THEN 0 ELSE 1 END AS has_push_link
+       FROM artifacts a
+       JOIN session_artifact_links sal
+         ON sal.artifact_id = a.id
+        AND ${activeWriteLinkSql("sal", "a")}
+       LEFT JOIN ${PUSHED_ARTIFACT_IDS_SQL} push
+         ON push.artifact_id = a.id
+       WHERE a.kind = 'branch'
+         AND a.branch_name IS NOT NULL`
+    )
+    .then((rows) => mapDistinctBranchKeyRows(rows.map(toBranchKeySelectRow)));
+}
+
+/** Flat row shape of the `readDistinctBranchKeyRows` raw statement. */
+type BranchKeyRawRow = {
+  repo_full_name: string | null;
+  branch_name: string | null;
+  first_pushed_at: string | null;
+  has_push_link: number | bigint | boolean;
+};
+
+/**
+ * Re-shape one raw key row into the delegate's select shape so the publication
+ * derivation stays in `mapDistinctBranchKeyRows`. The synthesized
+ * `artifactLinks` entry carries only the presence that mapper reads.
+ */
+function toBranchKeySelectRow(row: BranchKeyRawRow): {
+  repoFullName: string | null;
+  branchName: string | null;
+  firstPushedAt: string | null;
+  artifactLinks: Array<{ id: string }>;
+} {
+  return {
+    repoFullName: row.repo_full_name,
+    branchName: row.branch_name,
+    firstPushedAt: row.first_pushed_at,
+    // SQLite returns the CASE as 0/1; some libSQL builds widen it to bigint.
+    artifactLinks: Number(row.has_push_link) === 0 ? [] : [{ id: "" }],
+  };
 }
 
 /** The raw PR-row shape both PR reads (global + branch-scoped) map. */
@@ -411,22 +529,15 @@ type BranchPrRawRow = {
   branch_name: string;
   pr_number: number | bigint | null;
   pr_url: string | null;
-  title: string | null;
-  state: string | null;
-  is_draft: boolean | number | null;
-  merged_at: string | null;
   closed_at: string | null;
   opened_at: string | null;
   observed_at: string | null;
-  lines_added: number | bigint | null;
-  lines_removed: number | bigint | null;
-  files_changed: number | bigint | null;
 };
 
 /**
- * Shared bigint→number coercion for the PR reads, so the global
- * `readLocalBranchPrRows` and the branch-scoped `readLocalBranchPrRowsForBranch`
- * cannot drift in how they surface PR artifact LOC.
+ * Shared mapper so the global `readLocalBranchPrRows` and the branch-scoped
+ * `readLocalBranchPrRowsForBranch` cannot drift. Title, state, draft, merge time
+ * and LOC have no local store and map to `null`.
  */
 function mapBranchPrRawRows(rows: BranchPrRawRow[]): BranchPrRow[] {
   return rows.map((row) => ({
@@ -435,17 +546,16 @@ function mapBranchPrRawRows(rows: BranchPrRawRow[]): BranchPrRow[] {
     // Number()-coerce: the Prisma raw path can return INTEGER as bigint.
     prNumber: row.pr_number == null ? null : Number(row.pr_number),
     prUrl: row.pr_url,
-    title: row.title,
-    state: row.state,
-    isDraft:
-      row.is_draft == null ? null : row.is_draft === true || row.is_draft === 1,
-    mergedAt: row.merged_at,
+    title: null,
+    state: null,
+    isDraft: null,
+    mergedAt: null,
     closedAt: row.closed_at,
     openedAt: row.opened_at,
     observedAt: row.observed_at,
-    linesAdded: row.lines_added == null ? null : Number(row.lines_added),
-    linesRemoved: row.lines_removed == null ? null : Number(row.lines_removed),
-    filesChanged: row.files_changed == null ? null : Number(row.files_changed),
+    linesAdded: null,
+    linesRemoved: null,
+    filesChanged: null,
   }));
 }
 
@@ -470,31 +580,9 @@ export function readLocalBranchPrRows(
 ): Promise<BranchPrRow[]> {
   return prisma.client
     .$queryRawUnsafe<BranchPrRawRow[]>(
-      // The PR artifact's FEA-1899 LOC (`kind='pull_request'`) is joined in by
-      // `(repo, pr_number)` so the Branches list can surface PR size even when
-      // the branch artifact itself is un-enriched — the same enriched source the
-      // delivery dashboard medians (FEA-2159). The join target is pre-grouped to
-      // ONE row per `(repo, pr_number)` (MAX folds the identical/least-null LOC)
-      // so it can never fan a `pull_requests` row out into duplicate PR rows.
       `SELECT pr.repo_full_name, pr.branch_name, pr.pr_number, pr.pr_url,
-              pr.title, pr.state, pr.merged_at, pr.closed_at, pr.opened_at,
-              pr.observed_at,
-              pr_status.is_draft,
-              pra.lines_added, pra.lines_removed, pra.files_changed
+              pr.closed_at, pr.opened_at, pr.observed_at
        FROM pull_requests pr
-       LEFT JOIN pull_request_status_observations pr_status
-         ON pr_status.repo_full_name = pr.repo_full_name
-        AND pr_status.pr_number = pr.pr_number
-       LEFT JOIN (
-         SELECT repo_full_name, pr_number,
-                MAX(lines_added) AS lines_added,
-                MAX(lines_removed) AS lines_removed,
-                MAX(files_changed) AS files_changed
-         FROM artifacts
-         WHERE kind = 'pull_request' AND pr_number IS NOT NULL
-         GROUP BY repo_full_name, pr_number
-       ) pra ON pra.pr_number = pr.pr_number
-            AND pra.repo_full_name IS NOT DISTINCT FROM pr.repo_full_name
        WHERE pr.branch_name IS NOT NULL
          -- Push-evidence gate: PRs only appear for push-qualified branches.
          AND EXISTS (
@@ -636,16 +724,16 @@ export function readLocalBranchLinkRowsForBranch(
             firstPushedAt: true,
             artifactLinks: {
               where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
-              select: { id: true },
+              select: { id: true, observedAt: true },
+              orderBy: { observedAt: "desc" },
               take: 1,
             },
-            linesAdded: true,
-            linesRemoved: true,
-            filesChanged: true,
+            priority: true,
           },
         },
         session: {
           select: {
+            lastActivityAt: true,
             endedAt: true,
             name: true,
             startedAt: true,
@@ -666,8 +754,7 @@ export function readLocalBranchLinkRowsForBranch(
  * The global read EXISTS-scopes PRs through a branch artifact to uphold the
  * session-scoping invariant; the detail does not need that guard because it only
  * reaches this read for a branch that already has link rows (the detail 404s
- * otherwise), so a `(repo, branch)`-keyed read is exact AND cheaper. This still
- * joins the PR artifact's LOC by `(repo, pr_number)`, matching the global read.
+ * otherwise), so a `(repo, branch)`-keyed read is exact AND cheaper.
  * Ordered newest-observed first (SQLite sorts NULLs last under DESC, matching
  * the global read's explicit `NULLS LAST`) so the projection's `[0]` is the
  * displayed PR.
@@ -679,24 +766,8 @@ export function readLocalBranchPrRowsForBranch(
   return prisma.client
     .$queryRawUnsafe<BranchPrRawRow[]>(
       `SELECT pr.repo_full_name, pr.branch_name, pr.pr_number, pr.pr_url,
-              pr.title, pr.state, pr.merged_at, pr.closed_at, pr.opened_at,
-              pr.observed_at,
-              pr_status.is_draft,
-              pra.lines_added, pra.lines_removed, pra.files_changed
+              pr.closed_at, pr.opened_at, pr.observed_at
        FROM pull_requests pr
-       LEFT JOIN pull_request_status_observations pr_status
-         ON pr_status.repo_full_name = pr.repo_full_name
-        AND pr_status.pr_number = pr.pr_number
-       LEFT JOIN (
-         SELECT repo_full_name, pr_number,
-                MAX(lines_added) AS lines_added,
-                MAX(lines_removed) AS lines_removed,
-                MAX(files_changed) AS files_changed
-         FROM artifacts
-         WHERE kind = 'pull_request' AND pr_number IS NOT NULL
-         GROUP BY repo_full_name, pr_number
-       ) pra ON pra.pr_number = pr.pr_number
-            AND pra.repo_full_name IS NOT DISTINCT FROM pr.repo_full_name
        WHERE pr.branch_name = ?
          AND pr.repo_full_name IS NOT DISTINCT FROM ?
        ORDER BY pr.observed_at DESC NULLS LAST, pr.pr_number DESC NULLS LAST`,
@@ -715,51 +786,54 @@ export function readLocalBranchPrRowsForBranch(
  * global read projects the BRANCH's identity onto each commit row, not the commit
  * artifact's own repo. Returned oldest-committed first, matching the global
  * read's `ORDER BY committed_at ASC` (ISO-8601 text sorts chronologically).
+ *
+ * ISS-10365: the session set is passed through `jsonIdListInSql` as ONE bound
+ * JSON array, not one host parameter per session. The typed delegate this
+ * replaced bound `sessionId: { in: [...] }` one-per-id, so a branch written by
+ * more than ~999 sessions threw `SQLITE_MAX_VARIABLE_NUMBER` and the detail page
+ * would not open. Every session that wrote the branch is still read — the list
+ * is folded into the statement rather than capped or chunked.
  */
 export function readBranchCommitRowsForSessions(
   prisma: DbHostPrisma,
   sessionIds: readonly string[],
   key: BranchKeyRow
 ): Promise<BranchCommitRow[]> {
-  if (sessionIds.length === 0) {
+  const ids = [...new Set(sessionIds)];
+  if (ids.length === 0) {
     return Promise.resolve([]);
   }
-  return prisma.client.sessionArtifactLink
-    .findMany({
-      where: {
-        sessionId: { in: [...new Set(sessionIds)] },
-        artifact: {
-          kind: "commit",
-          sha: { not: null },
-          committedAt: { not: null },
-        },
-      },
-      select: {
-        artifact: { select: { sha: true, committedAt: true, title: true } },
-      },
-    })
+  return prisma.client
+    .$queryRawUnsafe<
+      { sha: string; committed_at: string; message: string | null }[]
+    >(
+      `SELECT DISTINCT c.sha, c.committed_at, c.title AS message
+       FROM session_artifact_links sal
+       JOIN artifacts c ON c.id = sal.artifact_id AND c.kind = 'commit'
+       WHERE ${jsonIdListInSql("sal.session_id")}
+         AND c.sha IS NOT NULL
+         AND c.committed_at IS NOT NULL
+       ORDER BY c.committed_at ASC`,
+      JSON.stringify(ids)
+    )
     .then((rows) => {
       const bySha = new Map<string, BranchCommitRow>();
-      for (const { artifact } of rows) {
-        const { sha, committedAt } = artifact;
-        // where-filtered non-null; narrow for the BranchCommitRow contract and
-        // collapse a commit reached via more than one of the branch's sessions.
-        if (sha === null || committedAt === null || bySha.has(sha)) {
+      for (const row of rows) {
+        // Collapse a commit reached via more than one of the branch's sessions;
+        // the statement already orders by instant, so the surviving row for a
+        // sha is its earliest and the map's insertion order IS the rail order.
+        if (bySha.has(row.sha)) {
           continue;
         }
-        bySha.set(sha, {
+        bySha.set(row.sha, {
           repoFullName: key.repoFullName,
           branchName: key.branchName,
-          sha,
-          committedAt,
-          message: artifact.title,
+          sha: row.sha,
+          committedAt: row.committed_at,
+          message: row.message,
         });
       }
-      // ISO-8601 text sorts chronologically, matching the global read's
-      // `ORDER BY committed_at ASC` (a plain SQL text sort).
-      return [...bySha.values()].sort((a, b) =>
-        a.committedAt.localeCompare(b.committedAt)
-      );
+      return [...bySha.values()];
     });
 }
 
@@ -799,9 +873,15 @@ export function readBranchTokenAggregateRowsForBranch(
  * cannot see how many OTHER branches a session touches; the activity rollup needs
  * that count to even-split each session's attributed segment cost consistently with
  * the total. Counts DISTINCT active-write `(session, repo, branch)` per session
- * (active Wrote links only, mirroring the aggregate's pre-publication
- * denominator). Session ids are BOUND parameters; the detail's session set is
- * small, so the `IN (…)` is well under SQLite's parameter limit.
+ * (active Wrote links only, restricted by the caller's publication-gated
+ * `denominatorKeys` — ISS-8148).
+ *
+ * ISS-10365: the session ids bind as ONE JSON array via `jsonIdListInSql`, not
+ * one host parameter each. This read takes the SAME `sessionIds` list as
+ * `readBranchCommitRowsForSessions` from the same `getSharedBranchDetail` call,
+ * so a `?`-per-id `IN (…)` here overflowed `SQLITE_MAX_VARIABLE_NUMBER` at the
+ * same corpus width and left the detail page dead after the commit read was
+ * fixed.
  */
 export function readSessionBranchCounts(
   prisma: DbHostPrisma,
@@ -812,7 +892,6 @@ export function readSessionBranchCounts(
   if (ids.length === 0 || denominatorKeys?.length === 0) {
     return Promise.resolve(new Map());
   }
-  const placeholders = ids.map(() => "?").join(", ");
   const eligibilityCte = denominatorKeys
     ? `WITH eligible_branches AS (
          SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
@@ -827,9 +906,10 @@ export function readSessionBranchCounts(
                AND eb.repo_full_name IS a.repo_full_name
            )`
     : "";
+  const idListJson = JSON.stringify(ids);
   const params = denominatorKeys
-    ? [JSON.stringify(denominatorKeys), ...ids]
-    : ids;
+    ? [JSON.stringify(denominatorKeys), idListJson]
+    : [idListJson];
   return prisma.client
     .$queryRawUnsafe<{ session_id: string; branch_count: number | bigint }[]>(
       `${eligibilityCte}
@@ -838,7 +918,7 @@ export function readSessionBranchCounts(
          FROM session_artifact_links sal
          JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
          WHERE a.branch_name IS NOT NULL
-           AND sal.session_id IN (${placeholders})
+           AND ${jsonIdListInSql("sal.session_id")}
            AND ${activeWriteLinkSql("sal", "a")}
            ${eligibilitySql}
        )
@@ -884,7 +964,7 @@ export function readBranchLifecycleEventRowsForBranch(
   );
 }
 
-/** Per-Session token totals using the pre-publication denominator authority. */
+/** Per-Session token totals using the publication-gated denominator authority. */
 export function readBranchSessionTokenRowsForBranch(
   prisma: DbHostPrisma,
   key: BranchKeyRow,

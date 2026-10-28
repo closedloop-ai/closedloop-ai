@@ -3,9 +3,9 @@
  * pack scan (FEA-3628).
  *
  * This process owns NO database connection. It receives the recent project
- * roots from the db-host, runs `computePackScan` (filesystem walk,
- * execFileSync, frontmatter/marketplace parsing — the heavy work), and returns
- * a serializable `PackScanComputeResult`. The db-host replays that plan as the
+ * roots from the db-host, runs `computePackScan` (the heavy work: filesystem
+ * walk, CLI and git child processes, frontmatter/marketplace parsing), and
+ * returns a serializable `PackScanComputeResult`. The db-host replays that plan as the
  * sole SQLite writer. Keeping this compute off the db-host is what stops pack
  * scanning from starving renderer DB reads.
  *

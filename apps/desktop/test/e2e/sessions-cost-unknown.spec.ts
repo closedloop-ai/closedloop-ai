@@ -3,7 +3,7 @@
  * option on the shared Sessions list, driven seed-to-render through the real
  * desktop SQLite store and the renderer's `SessionsView` -> `SessionsToolbar` /
  * `SyncedSessionsTable`. The web twin is `e2e/sessions-cost-unknown.spec.ts`;
- * both mount the same shared surface (`packages/app`), so wongk's cross-surface
+ * both mount the same shared surface (`packages/app`), so whitlockk's cross-surface
  * rule requires a real-surface regression on each adapter.
  *
  * The corpus: one PRICED (known-cost) worked session that renders a `$` figure,
@@ -19,7 +19,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
+import {
+  mapInactiveLinuxCiWindow,
+  selectInactiveLinuxCiMapping,
+} from "./helpers/inactive-linux-ci-window";
 import {
   type SessionListSeed,
   seedSessionsList,
@@ -70,7 +79,7 @@ test.describe("Sessions Cost = Unknown filter (ISS-4481)", () => {
       await seedSessionsList(userDataDir, SEEDED);
 
       // Launch 2 — drive the real Filter menu.
-      const { page, pageErrors, cleanup } = await launchDesktopApp({
+      const { app, page, pageErrors, cleanup } = await launchDesktopApp({
         env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
         keepUserDataDir: true,
         userDataDir,
@@ -80,8 +89,8 @@ test.describe("Sessions Cost = Unknown filter (ISS-4481)", () => {
         await gotoNav(page, "sessions");
 
         // Widen to "All time" so the seeded corpus is in range regardless of the
-        // run clock. `:visible` scopes to the mounted Sessions toolbar.
-        await page.locator('[aria-label="All time"]:visible').click();
+        // run clock.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // Prove the full corpus rendered first (both rows) — a negative
         // assertion below passes vacuously on a never-rendered page.
@@ -94,9 +103,22 @@ test.describe("Sessions Cost = Unknown filter (ISS-4481)", () => {
           page.getByRole("link", { name: UNKNOWN_NAME })
         ).toBeVisible({ timeout: 30_000 });
 
+        await mapInactiveLinuxCiWindow(
+          app,
+          page,
+          selectInactiveLinuxCiMapping(
+            { platform: process.platform, env: process.env },
+            true
+          )
+        );
+
         // Open Filter -> Cost -> Unknown.
         await page
-          .getByRole("button", { name: "Filter" })
+          // ISS-8909: `exact` matters now. Accessible-name matching is substring
+          // based, and forcing the v2 surface mounts the chip row whose "Add
+          // filter" trigger also contains "Filter" -- two matches, strict-mode
+          // violation. The toolbar's own control is the exact name.
+          .getByRole("button", { exact: true, name: "Filter" })
           .filter({ visible: true })
           .click();
         // FilterPopover -> FilterRow renders each option as a plain Radix

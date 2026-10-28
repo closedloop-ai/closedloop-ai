@@ -15,9 +15,9 @@ const text = [
 ].join("\n");
 
 const meta = {
-  title: "Design System/Primitives/Markdown Content",
+  title: "Composites v1.0/Content/Markdown Content",
   component: MarkdownContent,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { text },
 } satisfies Meta<typeof MarkdownContent>;

@@ -4,19 +4,26 @@ import type {
   UserJudgeRatingsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
+import type { DocumentRatingWrite } from "@/app/documents/document-rating-receipt";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
 
 /**
  * Submit or update a human rating for a specific judge score.
- * Upserts on (judgeScoreId, userId, organizationId).
+ * Upserts on (judgeScoreId, userId, organizationId). `recordWrite` runs on the
+ * rating's own transaction once it is stored (ISS-12552).
  */
 export async function submitJudgeRating(
   organizationId: string,
   userId: string,
   documentId: string,
   judgeScoreId: string,
-  rating: number
+  rating: number,
+  recordWrite?: RecordWriteInTransaction<DocumentRatingWrite>
 ): Promise<SubmitJudgeRatingResponse | null> {
   const judgeScore = await withDb((db) =>
     db.judgeScore.findFirst({
@@ -41,13 +48,16 @@ export async function submitJudgeRating(
     return null;
   }
 
-  const isUpdate = await writeJudgeHumanScore({
-    evaluationId: judgeScore.evaluationId,
-    judgeScoreId,
-    organizationId,
-    rating,
-    userId,
-  });
+  const isUpdate = await writeJudgeHumanScore(
+    {
+      evaluationId: judgeScore.evaluationId,
+      judgeScoreId,
+      organizationId,
+      rating,
+      userId,
+    },
+    recordWrite
+  );
 
   const promptName = judgeScore.prompt
     ? normalizeJudgeName(judgeScore.prompt.name)
@@ -100,20 +110,40 @@ type WriteJudgeHumanScoreInput = {
 };
 
 /**
- * Writes the one `(judgeScoreId, userId, organizationId)` rating row, resolving
- * a lost insert race into an update. Returns true when the row already existed.
- *
- * The two writes MUST NOT share an interactive transaction: PostgreSQL aborts
- * the whole transaction on the unique violation, so an update issued after the
- * failed create is rejected with `25P02` rather than applied. Each `withDb` call
- * here is its own implicit transaction, which lets the create roll back on its
- * own before the update starts (root AGENTS.md, Prisma-transaction rule) — but
- * only while no caller wraps `submitJudgeRating` in `withDb.tx`, since `withDb`
- * joins an ambient transaction when one is in scope. Keeping this path off
- * `withDb.tx` is therefore the caller's obligation, not a guarantee this module
- * can enforce.
+ * Writes the one `(judgeScoreId, userId, organizationId)` rating row and
+ * returns true when the row already existed. Recorded (ISS-12552), the write
+ * and `recordWrite` share one transaction; unrecorded, it is main's two
+ * autocommit statements (flag-off parity).
  */
-async function writeJudgeHumanScore(
+function writeJudgeHumanScore(
+  input: WriteJudgeHumanScoreInput,
+  recordWrite?: RecordWriteInTransaction<DocumentRatingWrite>
+): Promise<boolean> {
+  return writeInShape(recordWrite, {
+    unrecorded: () => writeJudgeHumanScoreUnrecorded(input),
+    recorded: (record) => writeJudgeHumanScoreRecorded(input, record),
+  });
+}
+
+function judgeHumanScoreKey(input: WriteJudgeHumanScoreInput) {
+  return {
+    judgeScoreId_userId_organizationId: {
+      judgeScoreId: input.judgeScoreId,
+      userId: input.userId,
+      organizationId: input.organizationId,
+    },
+  };
+}
+
+/**
+ * Main's shape: a lost insert race resolves into an update. The two writes
+ * MUST NOT share an interactive transaction: PostgreSQL aborts the whole
+ * transaction on the unique violation, so an update issued after the failed
+ * create is rejected with `25P02` rather than applied. Each `withDb` call here
+ * is its own implicit transaction, which holds only while no caller wraps it
+ * in `withDb.tx`.
+ */
+async function writeJudgeHumanScoreUnrecorded(
   input: WriteJudgeHumanScoreInput
 ): Promise<boolean> {
   try {
@@ -137,13 +167,7 @@ async function writeJudgeHumanScore(
 
     await withDb((db) =>
       db.judgeHumanScore.update({
-        where: {
-          judgeScoreId_userId_organizationId: {
-            judgeScoreId: input.judgeScoreId,
-            userId: input.userId,
-            organizationId: input.organizationId,
-          },
-        },
+        where: judgeHumanScoreKey(input),
         data: {
           score: input.rating,
         },
@@ -152,4 +176,47 @@ async function writeJudgeHumanScore(
     );
     return true;
   }
+}
+
+/**
+ * The insert is `ON CONFLICT DO NOTHING` (`skipDuplicates`), so a lost insert
+ * race never raises a unique violation. A caught violation would abort the
+ * whole transaction and PostgreSQL would refuse the update after it with
+ * `25P02` (ISS-6320, proven in `judge-ratings-unique-race.test.ts`).
+ */
+function writeJudgeHumanScoreRecorded(
+  input: WriteJudgeHumanScoreInput,
+  recordWrite: RecordWriteInTransaction<DocumentRatingWrite>
+): Promise<boolean> {
+  const key = judgeHumanScoreKey(input);
+  return withDb.tx(async (tx) => {
+    const inserted = await tx.judgeHumanScore.createMany({
+      data: [
+        {
+          evaluationId: input.evaluationId,
+          judgeScoreId: input.judgeScoreId,
+          userId: input.userId,
+          organizationId: input.organizationId,
+          score: input.rating,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (inserted.count > 0) {
+      await recordWrite(tx, { changed: true });
+      return false;
+    }
+
+    const previous = await tx.judgeHumanScore.findUnique({
+      where: key,
+      select: { score: true },
+    });
+    await tx.judgeHumanScore.update({
+      where: key,
+      data: { score: input.rating },
+      select: { id: true },
+    });
+    await recordWrite(tx, { changed: previous?.score !== input.rating });
+    return true;
+  });
 }

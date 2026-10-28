@@ -20,6 +20,8 @@ export type ResolvedDesktopSessionContext = {
   organizationId: string;
   /** The organization's Clerk id, for `AuthContext.clerkOrgId`. */
   clerkOrgId: string;
+  /** Internal session id carried by the verified access token. */
+  desktopSessionId: string;
 };
 
 /**
@@ -73,5 +75,6 @@ export async function resolveDesktopSessionContext(
     user,
     organizationId: organization.id,
     clerkOrgId: organization.clerkId,
+    desktopSessionId: claims.sessionId,
   };
 }

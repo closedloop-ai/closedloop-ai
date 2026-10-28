@@ -9,7 +9,7 @@
  * folding this in would leave the next seed with nowhere to go. Sibling module
  * per `apps/desktop/test/AGENTS.md`.
  */
-import type { MergedUnenrichedBranchSeed } from "./seed-branches-db";
+import type { ClosedAtOnlyBranchSeed } from "./seed-branches-db";
 
 /** One `INSERT` in the FK-ordered batch the caller runs. */
 export type SeedBatchItem = {
@@ -35,7 +35,7 @@ export type SeedBatchItem = {
  * slug.
  */
 export function closedloopArtifactBatchItems(
-  seed: MergedUnenrichedBranchSeed,
+  seed: ClosedAtOnlyBranchSeed,
   observedAt: string,
   slug: string
 ): SeedBatchItem[] {

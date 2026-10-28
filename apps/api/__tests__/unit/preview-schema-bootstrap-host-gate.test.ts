@@ -1,8 +1,9 @@
 import { normalizePreviewSchemaName } from "@repo/database/schema-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ENSURE_ROUTE_CEILING_MS } from "@/app/preview-schemas/ensure/constants";
 
 /**
- * ISS-6403 Finding 2, second entry point (review: shafty023).
+ * ISS-6403 Finding 2, second entry point (review: davetho).
  *
  * The non-production host check first shipped on the `/preview-schemas/ensure`
  * ROUTE. `ensurePreviewSchemaBootstrap` imports `ensureSchemaAtHead` directly
@@ -47,6 +48,10 @@ vi.mock("@repo/database/scripts/iam-database-url", async () => {
 
 vi.mock("@repo/database/scripts/migrate-telemetry", () => ({
   flushMigrateTelemetry: mockFlushMigrateTelemetry,
+  // Unreachable from this path (the bootstrap gate passes no budget, so nothing
+  // times out), but a factory mock must still supply every binding the module
+  // under test imports or the import itself throws.
+  cutMigrateRunsAtDeadline: () => 0,
 }));
 
 vi.mock("@/app/preview-schemas/ensure/prisma-runtime-layout", async () => {
@@ -152,7 +157,7 @@ describe("preview schema bootstrap — host invariant", () => {
   });
 
   it("keeps the hostnames out of the message it throws", async () => {
-    // Same sink concern as the route body (review: wongk): this rejection is
+    // Same sink concern as the route body (review: whitlockk): this rejection is
     // what a caller logs.
     vi.stubEnv("PGHOST", PROD_HOST);
     const { ensurePreviewSchemaBootstrap } = await loadGate();
@@ -177,5 +182,54 @@ describe("preview schema bootstrap — host invariant", () => {
     const [databaseUrl, schema] = mockRunMigrationPipeline.mock.calls[0];
     expect(schema).toBe(EXPECTED_SCHEMA);
     expect(databaseUrl).toBe(`postgresql://minted/${EXPECTED_SCHEMA}`);
+  });
+
+  it("is NOT bound by the ensure route's deadline", async () => {
+    // ISS-6403 Finding 1, and the second-entry-point argument cuts the other
+    // way here than it does for the host gate. This path runs inside whatever
+    // ordinary request first touched a cold preview, whose `maxDuration` is far
+    // below the ensure route's 300s. Arming the route's timer here would let it
+    // outlive its own request and fire later on the warm instance, clearing
+    // `bootstrapAttempt` while the abandoned migrate still holds the serialize
+    // lock — so the next request would start a SECOND concurrent migrate on the
+    // same schema, the exact P1002 contention the FEA-3065 gate exists to
+    // prevent. The budget is therefore the ROUTE's to supply, and this caller
+    // supplies none.
+    vi.useFakeTimers();
+    try {
+      mockRunMigrationPipeline.mockImplementation(
+        () =>
+          new Promise(() => {
+            // Never settles: the migrate is still running.
+          })
+      );
+      const { ensurePreviewSchemaBootstrap } = await loadGate();
+
+      let settled = false;
+      ensurePreviewSchemaBootstrap({ ...PREVIEW_ENV })
+        .then(() => {
+          settled = true;
+        })
+        .catch(() => {
+          settled = true;
+        });
+
+      // The pipeline must actually have been REACHED, or `settled === false`
+      // and a zero timer count would both hold for a run that never started —
+      // including one where this path DID pass a budget (review).
+      await vi.waitFor(() => {
+        expect(mockRunMigrationPipeline).toHaveBeenCalledOnce();
+      });
+
+      // Well past the ensure route's whole ceiling. If this path had armed the
+      // route's timer it would have rejected by now — and, on the real warm
+      // instance, cleared the bootstrap memo out from under a live migrate.
+      await vi.advanceTimersByTimeAsync(ENSURE_ROUTE_CEILING_MS * 2);
+
+      expect(settled).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

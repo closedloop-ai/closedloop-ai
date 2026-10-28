@@ -3,7 +3,7 @@ import { GitHubPRState, ReviewDecision, withDb } from "@repo/database";
 import {
   artifactScope,
   type InsightsScopeContext,
-} from "@/app/insights/service";
+} from "@/app/insights/service/scope";
 
 export type ReviewQueueSnapshot = {
   buckets: CategoryBucket[];
@@ -51,12 +51,24 @@ export async function fetchReviewQueue(
       backlog += row._count._all;
     }
   }
+  // ISS-8052: emitted in REVIEW_QUEUE_LABELS' own declared order rather than in
+  // `byDecision` insertion order, which is the arrival order of an unordered
+  // `groupBy` — so two reads of the same data could serialize this chart's bars
+  // differently, and this array reaches the byte-compared Layer 5.3 fixture. A
+  // decision with no rows is still omitted, exactly as before; only the order of
+  // the ones present is now decided here instead of by the planner.
+  const orderedDecisions = Object.keys(REVIEW_QUEUE_LABELS) as (
+    | ReviewDecision
+    | "PENDING"
+  )[];
   return {
     backlog,
-    buckets: [...byDecision].map(([key, value]) => ({
-      key,
-      label: REVIEW_QUEUE_LABELS[key],
-      value,
-    })),
+    buckets: orderedDecisions
+      .filter((key) => byDecision.has(key))
+      .map((key) => ({
+        key,
+        label: REVIEW_QUEUE_LABELS[key],
+        value: byDecision.get(key) ?? 0,
+      })),
   };
 }

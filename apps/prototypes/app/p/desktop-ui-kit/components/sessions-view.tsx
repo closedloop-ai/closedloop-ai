@@ -9,7 +9,7 @@ import {
 } from "@repo/design-system/components/ui/grid-table";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
-import { TablePagination } from "@repo/design-system/components/ui/table-pagination";
+import { TablePagination } from "@repo/design-system/components/ui/table-pagination-v2";
 import {
   ToggleGroup,
   ToggleGroupItem,

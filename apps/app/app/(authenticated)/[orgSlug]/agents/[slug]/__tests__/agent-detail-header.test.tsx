@@ -13,6 +13,7 @@
  * correct, the wiring was missing. So these assertions drive the real component
  * and read the crumb the `Header` was actually handed.
  */
+import { AGENT_BREADCRUMB_HONESTY_PARITY } from "@repo/app/agents/lib/agent-breadcrumb-honesty-parity";
 import { AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,9 +40,14 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
 
 /** The root layout's default (`apps/app/app/layout.tsx`). */
 const ROOT_LAYOUT_TITLE = "Closedloop.ai";
-const DIGEST =
-  "c22ccd465ae7be300736a0ed014fbbc9a9721872ab6cf5cab5c1e5f72d5e26dd";
-const HASH_SLUG = `skill::${DIGEST}`;
+// ISS-6643: the same component the desktop parity suite mounts, so the two
+// surfaces' crumbs are two rows of one table rather than two unrelated fixtures.
+const PARITY = AGENT_BREADCRUMB_HONESTY_PARITY;
+const HASH_SLUG = PARITY.hashSlug;
+// Sliced off the slug under test rather than re-typed: a second copy could drift
+// from it, and the digest-leak assertion below would then search the crumb for a
+// string the route never carried and pass vacuously.
+const DIGEST = HASH_SLUG.slice(HASH_SLUG.indexOf("::") + 2);
 
 const lastCrumbs = (): { label: string; href?: string }[] => {
   const [props] = headerMock.mock.calls.at(-1) as [
@@ -56,7 +62,7 @@ describe("ISS-5518: agent detail identity", () => {
     headerMock.mockReset();
     headerMock.mockImplementation(() => null);
     detailMock.mockReset();
-    detailMock.mockReturnValue({ data: { name: "RTK Optimizer" } });
+    detailMock.mockReturnValue({ data: { name: PARITY.componentName } });
     featureFlagEnabledMock.mockReset();
     featureFlagEnabledMock.mockImplementation(
       (flag: string) => flag === AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY
@@ -70,7 +76,7 @@ describe("ISS-5518: agent detail identity", () => {
   it("names the component in the last crumb instead of the literal 'Agent'", () => {
     render(<AgentDetailHeader orgSlug="acme" slug={HASH_SLUG} />);
 
-    expect(lastCrumbs().at(-1)?.label).toBe("RTK Optimizer");
+    expect(lastCrumbs().at(-1)?.label).toBe(PARITY.flagOn.web);
   });
 
   // The crumb's name is only free if this read hits the query key the BODY
@@ -109,10 +115,13 @@ describe("ISS-5518: agent detail identity", () => {
     expect(document.title).toBe("Agent | Closedloop.ai");
   });
 
-  it("keeps the Agents crumb pointing at the org-scoped list", () => {
+  it("keeps the Agentic Components crumb pointing at the org-scoped list", () => {
     render(<AgentDetailHeader orgSlug="acme" slug={HASH_SLUG} />);
 
-    expect(lastCrumbs()[0]).toEqual({ href: "/acme/agents", label: "Agents" });
+    expect(lastCrumbs()[0]).toEqual({
+      href: "/acme/agents",
+      label: "Agentic Components",
+    });
   });
 
   // ISS-4776: a router hop can double-encode the segment. The crumb must decode
@@ -138,10 +147,18 @@ describe("ISS-5518: agent detail identity", () => {
       featureFlagEnabledMock.mockReturnValue(false);
     });
 
-    it("falls back to the neutral crumb, exactly as it shipped", () => {
+    // ISS-6643: also the web half of the cross-surface parity pin. Ungating this
+    // crumb (converging web UP to desktop) reddens here on the first assertion;
+    // gating desktop's Topbar publish (converging desktop DOWN to web) reddens
+    // the desktop suite. Either way the author lands in
+    // `agent-breadcrumb-honesty-parity.ts`, where both rows sit together and the
+    // direction is an open product question, not an implementation detail.
+    it("falls back to the neutral crumb, exactly as it shipped — where desktop shows the name", () => {
       render(<AgentDetailHeader orgSlug="acme" slug={HASH_SLUG} />);
 
-      expect(lastCrumbs().at(-1)?.label).toBe("Agent");
+      const crumb = lastCrumbs().at(-1)?.label;
+      expect(crumb).toBe(PARITY.flagOff.web);
+      expect(crumb).not.toBe(PARITY.flagOff.desktop);
     });
 
     it("leaves the route's static metadata title in place", () => {

@@ -1,5 +1,10 @@
 import { InsightsSection } from "@repo/api/src/types/insights";
+import {
+  INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY,
+  MERGED_LOC_LABEL,
+} from "@repo/api/src/types/insights-loc-terminology-flag";
 import { INSIGHTS_SPEND_OUTCOME_FLAG_KEY } from "@repo/api/src/types/insights-spend-outcome-flag";
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
 import {
   InsightsKpiKey,
   KPI_METRIC_POLARITY,
@@ -28,6 +33,20 @@ export type TileGroupBy = {
   key: string;
   label: string;
 };
+
+/**
+ * ISS-9842: the grouping keys a consumer matches on by name. `key` is the
+ * stable machine identifier (the label is free display copy), so a consumer
+ * that keys a behavior on it reads it from here rather than restating the
+ * literal — the donut's "Other" noun in `tile-content.tsx` is the one today.
+ * Model and provider groupings are `UsageGrouping`, which the usage-graph
+ * toggle owns; these two have no toggle.
+ */
+export const TileGrouping = {
+  Tool: "tool",
+  EventType: "event-type",
+} as const;
+export type TileGrouping = (typeof TileGrouping)[keyof typeof TileGrouping];
 
 type TileDescriptorBase = {
   id: string;
@@ -110,30 +129,6 @@ export type KpiTileDescriptor = TileDescriptorBase & {
 /** A chart tile — no single period-over-period delta, so no polarity. */
 export type ChartTileDescriptor = TileDescriptorBase & {
   kind: Exclude<TileKind, typeof TileKind.Kpi>;
-  /**
-   * ISS-5507: the chart-SHAPE half of a heading whose metric noun is
-   * surface-dependent — "over time", "by day", "heatmap".
-   *
-   * The catalog is one cross-surface table, so a `title` written here is the
-   * same string for every peer. That is wrong for a tile whose POPULATION
-   * differs by surface: `chart:klocTrend` draws merged-PR KLOC on the cloud
-   * dashboard and captured-PR KLOC on desktop — the merged-vs-captured split
-   * FEA-2947 and the desktop "KLOC captured" KPI exist to keep straight — and
-   * each producer already labels its own series accordingly. A tile that
-   * declares a suffix has its heading rebuilt at render time from the
-   * response's own metric noun plus this suffix, so the card cannot say "KLOC
-   * merged over time" above a legend reading "KLOC captured".
-   *
-   * `title` stays the surface-agnostic default (used while the response is
-   * still loading, and by every catalog reader that has no response in hand —
-   * the metric picker, the share/export copy). It MUST read
-   * `${metricLabel} ${titleSuffix}` so the two cannot drift; the catalog test
-   * pins that.
-   *
-   * Undefined for every tile whose heading is fixed copy, which is the common
-   * case — a suffix is only worth carrying where the surfaces disagree.
-   */
-  titleSuffix?: string;
 };
 
 export type TileDescriptor = KpiTileDescriptor | ChartTileDescriptor;
@@ -150,7 +145,7 @@ function kpiTile(
   unitLabel?: string
 ): KpiTileDescriptor {
   return {
-    id: `kpi:${key}`,
+    id: kpiTileId(key),
     section,
     title,
     kind: TileKind.Kpi,
@@ -204,15 +199,10 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     "Median PR size",
     "lines"
   ),
-  // ISS-5507: the KLOC trend's metric noun is surface-dependent (cloud sums
-  // merged PRs, desktop sums captured ones), so all three variants carry a
-  // `titleSuffix` and let the response name the metric — see
-  // {@link ChartTileDescriptor.titleSuffix}.
   chartTile({
     id: "chart:klocTrend",
     section: InsightsSection.Delivery,
     title: "KLOC merged over time",
-    titleSuffix: "over time",
     kind: TileKind.TimeSeries,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -225,7 +215,6 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     id: "chart:klocTrend:bar",
     section: InsightsSection.Delivery,
     title: "KLOC merged by day",
-    titleSuffix: "by day",
     kind: TileKind.TimeSeriesBar,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -238,7 +227,6 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     id: "chart:klocTrend:heatmap",
     section: InsightsSection.Delivery,
     title: "KLOC merged heatmap",
-    titleSuffix: "heatmap",
     kind: TileKind.Heatmap,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -506,7 +494,7 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     dataKey: "eventsByType",
     metricKey: "events",
     metricLabel: "Events",
-    groupBy: { key: "event-type", label: "Event type" },
+    groupBy: { key: TileGrouping.EventType, label: "Event type" },
     infoKey: "chart:eventsByType",
   }),
   chartTile({
@@ -517,9 +505,9 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     dataKey: "eventsByType",
     metricKey: "events",
     metricLabel: "Events",
-    groupBy: { key: "event-type", label: "Event type" },
+    groupBy: { key: TileGrouping.EventType, label: "Event type" },
     horizontal: true,
-    infoKey: "chart:eventsByType",
+    infoKey: "chart:eventsByType:bar",
   }),
   chartTile({
     id: "chart:userBreakdown",
@@ -634,7 +622,7 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     dataKey: "toolUsage",
     metricKey: "tool-runs",
     metricLabel: "Tool runs",
-    groupBy: { key: "tool", label: "Tool" },
+    groupBy: { key: TileGrouping.Tool, label: "Tool" },
     horizontal: true,
     infoKey: "chart:toolUsage",
     wide: true,
@@ -647,8 +635,8 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     dataKey: "toolUsage",
     metricKey: "tool-runs",
     metricLabel: "Tool runs",
-    groupBy: { key: "tool", label: "Tool" },
-    infoKey: "chart:toolUsage",
+    groupBy: { key: TileGrouping.Tool, label: "Tool" },
+    infoKey: "chart:toolUsage:donut",
   }),
   chartTile({
     id: "chart:agentsByStatus",
@@ -911,3 +899,126 @@ export function isTileEnabled(
 ): boolean {
   return tile.featureFlag === undefined || isFlagEnabled(tile.featureFlag);
 }
+
+function kpiTileId(key: InsightsKpiKey): string {
+  return `kpi:${key}`;
+}
+
+/**
+ * ISS-8184: the LOC-terminology shape of every tile whose heading names a volume
+ * unit — the whole shape, not a word swap, because the flag changes the OPERAND
+ * as well as the label.
+ *
+ * `dataKey` moves to the producers' raw-line twins (`loc`, `locTrend`), so the
+ * number under "Merged LOC" is lines rather than the same figure relabelled. The
+ * operator ruled the thousand-line factor deleted rather than disclosed, which
+ * means the rendered value falls by 1000x on the volume tiles' inverse ratio and
+ * rises by 1000x here.
+ *
+ * `unitLabel` goes away with the word: DOC-27 R4a settles that a value never
+ * repeats a unit its label already carries, and "Merged LOC" carries it.
+ *
+ * Keyed by the EXISTING tile ids so a pinned dashboard survives the flag flip. A
+ * parallel `kpi:loc` tile would have read as the pinned tile disappearing.
+ */
+type TileVocabulary = {
+  title: string;
+  metricLabel: string;
+  dataKey: string;
+  /**
+   * Moves with `dataKey`, ALWAYS. `buildMetricOptions` keys the picker by it,
+   * so a stale one splits the volume metric into two identically-labelled
+   * options.
+   */
+  metricKey: InsightsKpiKey;
+};
+
+const LOC_TERMINOLOGY_VOCABULARY: Readonly<Record<string, TileVocabulary>> = {
+  [kpiTileId(InsightsKpiKey.Kloc)]: {
+    title: MERGED_LOC_LABEL,
+    metricLabel: MERGED_LOC_LABEL,
+    dataKey: InsightsKpiKey.Loc,
+    metricKey: InsightsKpiKey.Loc,
+  },
+  "chart:klocTrend": {
+    title: "Merged LOC over time",
+    metricLabel: MERGED_LOC_LABEL,
+    dataKey: "locTrend",
+    metricKey: InsightsKpiKey.Loc,
+  },
+  "chart:klocTrend:bar": {
+    title: "Merged LOC by day",
+    metricLabel: MERGED_LOC_LABEL,
+    dataKey: "locTrend",
+    metricKey: InsightsKpiKey.Loc,
+  },
+  "chart:klocTrend:heatmap": {
+    title: "Merged LOC heatmap",
+    metricLabel: MERGED_LOC_LABEL,
+    dataKey: "locTrend",
+    metricKey: InsightsKpiKey.Loc,
+  },
+};
+
+/**
+ * The tile as the reader should see it, given the flag adapter the grid and the
+ * picker already hold.
+ *
+ * Sits beside {@link isTileEnabled} and is called the same way, for the same
+ * reason: the catalog stays a pure data table and the components own the flag.
+ */
+export function resolveTileVocabulary(
+  tile: TileDescriptor,
+  isFlagEnabled: (key: string) => boolean
+): TileDescriptor {
+  const vocabulary = LOC_TERMINOLOGY_VOCABULARY[tile.id];
+  if (
+    vocabulary === undefined ||
+    !isFlagEnabled(INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY)
+  ) {
+    return tile;
+  }
+  if (isKpiTile(tile)) {
+    return {
+      ...tile,
+      title: vocabulary.title,
+      metricLabel: vocabulary.metricLabel,
+      dataKey: vocabulary.dataKey,
+      metricKey: vocabulary.metricKey,
+      // Derived, never carried: polarity is a property of the METRIC, and the
+      // swap changes which metric the tile reads. Both volume keys are
+      // higher-is-better today, so copying would be accidentally correct — and
+      // silently wrong for the next vocabulary entry.
+      polarity: KPI_METRIC_POLARITY[vocabulary.metricKey],
+      unitLabel: undefined,
+    };
+  }
+  return {
+    ...tile,
+    title: vocabulary.title,
+    metricLabel: vocabulary.metricLabel,
+    dataKey: vocabulary.dataKey,
+    metricKey: vocabulary.metricKey,
+  };
+}
+
+/** The Dashboard/Insights cost KPI tile, the one a dollar label names. */
+export const INSIGHTS_COST_KPI_TILE_ID = kpiTileId(InsightsKpiKey.Cost);
+
+/** The merged-PR GitHub-truth tiles a local source cannot measure. */
+export const INSIGHTS_MERGED_KPI_TILE_ID = kpiTileId(InsightsKpiKey.Merged);
+export const INSIGHTS_KLOC_KPI_TILE_ID = kpiTileId(InsightsKpiKey.Kloc);
+export const INSIGHTS_PR_SIZE_KPI_TILE_ID = kpiTileId(InsightsKpiKey.PrSize);
+export const INSIGHTS_PR_BY_REPO_CHART_TILE_ID = "chart:prByRepo";
+export const INSIGHTS_PR_BY_REPO_DONUT_TILE_ID = "chart:prByRepo:donut";
+
+/**
+ * ISS-9971: metric-picker labels by `metricKey`. Puts the one dollar phrase on
+ * the picker's option for the cost series, where "Cost" and "Spend" were two
+ * words for one series (this file, the model-cost tiles beside the
+ * spend-by-outcome ones). The chart TITLES ("Cost by model", "Spend by session
+ * outcome") are not in this map and keep their catalog wording.
+ */
+export const TOTAL_ESTIMATED_COST_METRIC_LABEL_OVERRIDES: Readonly<
+  Record<string, string>
+> = { [InsightsKpiKey.Cost]: TOTAL_ESTIMATED_COST_LABEL };

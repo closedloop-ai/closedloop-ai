@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import {
   loadSessionParentLinksFromDb,
@@ -326,8 +326,7 @@ test("OpenCode fold recomputes root artifacts so a child-only PR ref surfaces on
   });
   // Child runs a bash tool whose output contains a PR URL — the ONLY artifact
   // reference in the whole batch, and it lives on the folded child.
-  const childPrUrl =
-    "https://github.com/closedloop-ai/symphony-alpha/pull/4097";
+  const childPrUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/4097";
   db.prepare(`
     INSERT INTO session (
       id, parent_id, slug, directory, title, version, agent, model, permission,
@@ -588,7 +587,7 @@ const UNREADABLE_LINKAGE_REASON_RE = /parent linkage unreadable/;
 const UNDERLYING_SQLITE_ERROR_RE = /database is locked/;
 
 test("ISS-4649: an unreadable LINKAGE on an otherwise-loadable DB refuses the tick and logs on the monitored channel", async () => {
-  // wongk review: the corrupt-file case above dies in `loadSessionsFromDb`, so it
+  // whitlockk review: the corrupt-file case above dies in `loadSessionsFromDb`, so it
   // never reaches the linkage branch. Drive that branch directly, over a VALID
   // DB whose sessions load fine — the shape a SQLITE_BUSY on the second
   // connection produces (the two opens are independent).

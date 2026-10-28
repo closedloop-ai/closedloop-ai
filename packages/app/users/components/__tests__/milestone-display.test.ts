@@ -3,7 +3,7 @@ import { formatMilestoneEarned } from "../milestone-display";
 
 // FEA-4108: the earned-month label must read the server's UTC crossing instant
 // in UTC, so a first-of-month timestamp does not slip into the previous month
-// for viewers west of UTC (the wongk review case).
+// for viewers west of UTC (the whitlockk review case).
 
 describe("formatMilestoneEarned (FEA-4108)", () => {
   const originalTz = process.env.TZ;

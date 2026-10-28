@@ -7,11 +7,10 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
-import {
-  COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
-  DATA_REVISION,
-} from "../src/main/collectors/engine/data-revision.js";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
+import { COMPONENT_INVOCATION_STORED_REBUILD_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import {
   ACTIVITY_CLASSIFIER_VERSION,
   ACTIVITY_IDLE_GAP_MS,
@@ -21,7 +20,6 @@ import {
   deriveSessionBoundsMs,
   segmentIndexForMs,
 } from "../src/main/collectors/parsing/activity-segment-classifier.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import { BUILTIN_TRANSCRIPT_SOURCES } from "../src/main/collectors/parsing/transcript-sources.js";
 import {
   Harness,
@@ -458,7 +456,7 @@ test("ambiguous window (read + mutate tie) lands in explicit `other` below the f
 });
 
 test("FEA-4184: a bare-human → declared-plan transition is not absorbed by hysteresis (no retro-relabel)", () => {
-  // wongk's case: a bare human tick (scores `other` — no plan-specific
+  // whitlockk's case: a bare human tick (scores `other` — no plan-specific
   // declaration) followed by ONE declared-plan tick. With dwell = 2 the lone plan
   // tick used to be a transient, absorbed into the leading `other` run;
   // appendActiveSegments then rescored the COMBINED {human, DeclaredPlan} counts as
@@ -563,7 +561,7 @@ function humanMsg(timestamp: string): NormalizedMessage {
 }
 
 test("AA-01: a zero-assistant-turn session detects idle from human-message instants", () => {
-  // edac412f shape: no tokenSeries at all, only two human turns ~22 min apart.
+  // eca0b151 shape: no tokenSeries at all, only two human turns ~22 min apart.
   // Before AA-01 the idle-gap loop (sourced from tokenSeries only) never ran and
   // the whole span tiled active; now the human-message instants anchor the gap.
   // Uses NO tool vocabulary, so it proves idle detection with zero harness signal.
@@ -594,7 +592,7 @@ test("AA-01: a zero-assistant-turn session detects idle from human-message insta
 
 for (const harness of [Harness.Claude, Harness.Codex]) {
   test(`AA-01: dead time AFTER the last activity instant tiles as trailing idle (${harness})`, () => {
-    // f7441d99 shape: one turn, then the declared session end driven far past it by
+    // 96fef0b5 shape: one turn, then the declared session end driven far past it by
     // trailing machine records. The tail must be idle, not swallowed by an active
     // segment. Runs for a non-Claude harness too — the union is harness-blind.
     const session = makeSession({
@@ -630,7 +628,7 @@ test("AA-01: dead time BEFORE the first activity instant tiles as leading idle",
   assertContiguousComplete(segments, session);
 });
 
-// ── FEA-4184 (wongk): the classifier-version backfill enumerates only
+// ── FEA-4184 (whitlockk): the classifier-version backfill enumerates only
 // BUILTIN_TRANSCRIPT_SOURCES (Claude/Codex/Cursor), so Copilot/OpenCode re-tile
 // through the DATA_REVISION-driven collector rebuild instead. These pin both
 // halves of that routing so a future classifier bump can't silently strand
@@ -660,7 +658,7 @@ test("FEA-4184: the classifier re-tiles Copilot/OpenCode sessions at the current
   }
 });
 
-test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source list (the gap the DATA_REVISION bump covers)", () => {
+test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source list (the gap the effectiveDataRevision() bump covers)", () => {
   const backfillHarnesses = new Set(
     BUILTIN_TRANSCRIPT_SOURCES.map((s) => s.harness)
   );
@@ -676,7 +674,7 @@ test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source lis
   // the collector rebuild (which reprocesses every harness). Guard that the bump
   // advanced past the last rebuild-worthy revision, so the rebuild actually runs.
   assert.ok(
-    DATA_REVISION > COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
-    "DATA_REVISION advanced so the collector rebuild reprocesses Copilot/OpenCode to the new classifier version"
+    effectiveDataRevision() > COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
+    "effectiveDataRevision() advanced so the collector rebuild reprocesses Copilot/OpenCode to the new classifier version"
   );
 });

@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { afterEach, test } from "vitest";
 import {
   cleanupTempDirs,
   makeTempDir,

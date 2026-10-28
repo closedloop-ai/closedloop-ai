@@ -8,9 +8,9 @@ describe("normalizeRepositoryIdentity (ISS-4996)", () => {
     // it sits under. (`normalizeRepoFullName` in packages/api/src/types/branch.ts
     // is the artifact-KEY normalizer and DOES lowercase — different lane.)
     expect(normalizeRepositoryIdentity("Owner/Repo.js")).toBe("Owner/Repo.js");
-    expect(
-      normalizeRepositoryIdentity("  closedloop-ai/symphony-alpha  ")
-    ).toBe("closedloop-ai/symphony-alpha");
+    expect(normalizeRepositoryIdentity("  closedloop-ai/closedloop-ai  ")).toBe(
+      "closedloop-ai/closedloop-ai"
+    );
   });
 
   it.each([
@@ -41,7 +41,7 @@ describe("normalizeRepositoryIdentity (ISS-4996)", () => {
     ["a gitolite remote", "~user/repo"],
     ["a non-ASCII self-hosted owner", "Grüne/repo"],
     ["a deeper self-hosted path", "group/subgroup/repo"],
-    ["a single-segment name", "symphony-alpha"],
+    ["a single-segment name", "closedloop-ai"],
   ])("accepts %s rather than rejecting it as malformed", (_label, value) => {
     expect(normalizeRepositoryIdentity(value)).toBe(value);
   });

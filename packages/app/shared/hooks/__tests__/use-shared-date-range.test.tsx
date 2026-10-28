@@ -23,24 +23,24 @@ describe("useSharedDateRange", () => {
     expect(result.current.dateRange).toBe("30d");
     expect(localStorage.getItem("shared:date-range:flagged")).toBeNull();
   });
-  it("defaults to the 90d window when nothing is persisted", () => {
+  it("defaults to the 7d window when nothing is persisted", () => {
     const { result } = renderHook(() => useSharedDateRange("test"));
-    expect(result.current.dateRange).toBe("90d");
+    expect(result.current.dateRange).toBe("7d");
   });
 
   it("persists and restores a selection", () => {
     const first = renderHook(() => useSharedDateRange("test"));
-    act(() => first.result.current.setDateRange("7d"));
-    expect(first.result.current.dateRange).toBe("7d");
+    act(() => first.result.current.setDateRange("30d"));
+    expect(first.result.current.dateRange).toBe("30d");
 
     const second = renderHook(() => useSharedDateRange("test"));
-    expect(second.result.current.dateRange).toBe("7d");
+    expect(second.result.current.dateRange).toBe("30d");
   });
 
   it("falls back to default for an invalid persisted value", () => {
     localStorage.setItem(SHARED_KEY, JSON.stringify("bogus"));
     const { result } = renderHook(() => useSharedDateRange("test"));
-    expect(result.current.dateRange).toBe("90d");
+    expect(result.current.dateRange).toBe("7d");
   });
 
   it("migrates from the legacy dashboard key on first mount", () => {
@@ -52,28 +52,28 @@ describe("useSharedDateRange", () => {
   });
 
   it("does not migrate if the shared key already exists", () => {
-    localStorage.setItem(SHARED_KEY, JSON.stringify("7d"));
+    localStorage.setItem(SHARED_KEY, JSON.stringify("30d"));
     localStorage.setItem(LEGACY_KEY, "90d");
 
     const { result } = renderHook(() => useSharedDateRange("test"));
-    expect(result.current.dateRange).toBe("7d");
+    expect(result.current.dateRange).toBe("30d");
   });
 
   it("ignores an invalid legacy key value during migration", () => {
     localStorage.setItem(LEGACY_KEY, "invalid-range");
 
     const { result } = renderHook(() => useSharedDateRange("test"));
-    expect(result.current.dateRange).toBe("90d");
+    expect(result.current.dateRange).toBe("7d");
   });
 
   it("isolates surfaces by key", () => {
     const desktop = renderHook(() => useSharedDateRange("desktop"));
     const web = renderHook(() => useSharedDateRange("web"));
 
-    act(() => desktop.result.current.setDateRange("7d"));
+    act(() => desktop.result.current.setDateRange("90d"));
 
-    expect(desktop.result.current.dateRange).toBe("7d");
-    expect(web.result.current.dateRange).toBe("90d");
+    expect(desktop.result.current.dateRange).toBe("90d");
+    expect(web.result.current.dateRange).toBe("7d");
   });
 
   it("syncs across hook instances via StorageEvent", () => {
@@ -92,7 +92,7 @@ describe("useSharedDateRange", () => {
     });
 
     const { result } = renderHook(() => useSharedDateRange("test"));
-    expect(result.current.dateRange).toBe("90d");
+    expect(result.current.dateRange).toBe("7d");
 
     vi.restoreAllMocks();
   });

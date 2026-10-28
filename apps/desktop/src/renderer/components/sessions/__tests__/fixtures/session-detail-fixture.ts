@@ -1,7 +1,5 @@
-import {
-  type AgentSessionDetail,
-  AgentSessionState,
-} from "@repo/api/src/types/agent-session";
+import type { AgentSessionDetail } from "@repo/api/src/types/agent-session";
+import { LEGACY_WAITING_WIRE_STATUS } from "@repo/api/src/types/session-status";
 
 /**
  * The shared desktop session-detail fixture. Extracted from
@@ -13,29 +11,40 @@ export function sessionDetail({
   id,
   name,
   overrides = {},
-  state,
   status,
 }: {
   id: string;
   name: string;
   overrides?: Partial<AgentSessionDetail>;
-  state: AgentSessionState;
   status: string;
 }): AgentSessionDetail {
   const timestamp = new Date("2026-01-01T00:00:00.000Z");
+  /*
+   * ISS-7019: a LIVE activity anchor, read per call rather than at module
+   * load so it cannot go stale between import and render.
+   *
+   * `startedAt` stays pinned — the suites override timeline events at fixed
+   * instants relative to it, and duration is measured from it. But the detail
+   * Status row reads the displayed status now that the second axis is gone,
+   * and the displayed fold judges liveness on the ACTIVITY anchor. Against the
+   * old fixed one this session was silent for months, so a fixture the suites
+   * describe as RUNNING folded to `stale` and its Duration cell rendered "—".
+   * It only ever read as running because the deleted axis ignored the clock.
+   */
+  const activityAt = new Date(Date.now() - 5 * 60 * 60 * 1000);
   return {
     activeAgent: "8m",
     agentCount: 1,
     agents: [],
     attribution: {
       baseBranch: "main",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       sourceArtifactId: "FEA-1943",
       sourceLoopId: null,
-      worktreePath: "/tmp/symphony-alpha",
+      worktreePath: "/tmp/closedloop-ai",
     },
     awaitingInputSince:
-      state === AgentSessionState.PendingApproval ? timestamp : null,
+      status === LEGACY_WAITING_WIRE_STATUS ? timestamp : null,
     autonomy: 82,
     baseBranch: "main",
     branch: "feat/fea-1943-session-details-local-data",
@@ -51,9 +60,9 @@ export function sessionDetail({
       machineName: "Local Desktop",
     },
     cost: "$0.01",
-    cwd: "/tmp/symphony-alpha",
+    cwd: "/tmp/closedloop-ai",
     endedAt: null,
-    errorCount: state === AgentSessionState.Blocked ? 1 : 0,
+    errorCount: status === "active" ? 1 : 0,
     estimatedCost: 0.01,
     events: [],
     externalSessionId: id,
@@ -61,7 +70,7 @@ export function sessionDetail({
     harness: "codex",
     id,
     inputTokens: 10,
-    lastActivityAt: timestamp,
+    lastActivityAt: activityAt,
     lastSyncedAt: timestamp,
     linesAdded: 12,
     linesRemoved: 2,
@@ -74,17 +83,15 @@ export function sessionDetail({
     project: null,
     prs: [{ num: 1686, status: "merged", title: "Complete local details" }],
     prsMerged: 1,
-    repo: "closedloop-ai/symphony-alpha",
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repo: "closedloop-ai/closedloop-ai",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     slug: null,
     sourceArtifact: null,
     sourceArtifactId: "FEA-1943",
     sourceLoopId: null,
     steeringEpisodes: 1,
     startedAt: timestamp,
-    state,
     status,
-    timeline: [],
     tokenUsageByModel: [],
     tokensIn: 10,
     tokensOut: 20,
@@ -96,8 +103,8 @@ export function sessionDetail({
     user: null,
     userColor: null,
     wallClock: "10m",
-    waitingUser: state === AgentSessionState.PendingApproval ? "2m" : null,
-    worktreePath: "/tmp/symphony-alpha",
+    waitingUser: status === LEGACY_WAITING_WIRE_STATUS ? "2m" : null,
+    worktreePath: "/tmp/closedloop-ai",
     ...overrides,
   };
 }

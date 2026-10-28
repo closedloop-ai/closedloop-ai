@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Table added for ISS-10966; no code reads or writes it yet."
+}

@@ -13,6 +13,12 @@ describe("formatTimelineCompletenessDisclosure", () => {
   // The disclosure states the span cap in days. Deriving the expected day count
   // from the span the timeline ACTUALLY rendered (rather than re-typing 90) is
   // what makes this fail if the sentence and `MAX_TIMELINE_DAYS` ever disagree.
+  //
+  // ISS-8771: read off `fullStartMs`/`fullEndMs`, not `startMs`/`endMs`. Those
+  // two pairs used to coincide because a caller that passed no window got every
+  // column back; the window is now always the canonical 24, so `startMs`/`endMs`
+  // are the VIEWPORT and the span the cap applies to is the `full` pair. Same
+  // expectation, read off the field that still carries it.
   it("names the day cap the timeline actually enforced", () => {
     const timeline = buildSessionTimeline(
       makeBranchDetail({
@@ -30,7 +36,7 @@ describe("formatTimelineCompletenessDisclosure", () => {
       buildActorColorDomain([])
     );
     const renderedSpanDays =
-      ((timeline.endMs ?? 0) - (timeline.startMs ?? 0)) / DAY_MS;
+      ((timeline.fullEndMs ?? 0) - (timeline.fullStartMs ?? 0)) / DAY_MS;
 
     expect(
       timeline.truncatedSessions.map((session) => session.sessionId)

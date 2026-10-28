@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Node } from "typescript6";
 import {
@@ -13,9 +12,13 @@ import {
   ScriptKind,
   ScriptTarget,
 } from "typescript6";
+import { describe, it } from "vitest";
+import type { Importer } from "../src/main/dashboard/agent-dashboard-db-types.js";
 import {
+  callDbHostOp,
   type DbHostInvokeDeps,
   dispatchDbHostInvoke,
+  UNDISPATCHED_WRITE_PROBE_OP,
 } from "../src/main/database/db-host/db-host-invoke-dispatch.js";
 import {
   DB_HOST_EXCLUSIVE_OP,
@@ -26,6 +29,11 @@ import {
   createDbHostOpLanes,
 } from "../src/main/database/db-host/db-host-op-lanes.js";
 import { DB_HOST_STORE_OP_PREFIX } from "../src/main/database/db-host/db-host-store-op-registry.js";
+import {
+  type WriteDispatchProbe,
+  WriteDispatchState,
+  WriteQueueCancelOutcome,
+} from "../src/main/database/write-queue.js";
 
 /**
  * ISS-5941 — the worker's invoke dispatch, driven for real.
@@ -45,8 +53,22 @@ import { DB_HOST_STORE_OP_PREFIX } from "../src/main/database/db-host/db-host-st
 
 const FANOUT = 15;
 const TURN_BUDGET = 20;
+/**
+ * The op path main's proxy builds for the ISS-4572 task-scoped eviction. Spelled
+ * from `keyof Importer` so renaming the method fails `tsc` here rather than
+ * leaving a test that pins a string nothing answers.
+ */
+const CANCEL_IN_FLIGHT_WRITE_METHOD =
+  "cancelInFlightWrite" satisfies keyof Importer;
+const CANCEL_IN_FLIGHT_WRITE_OP =
+  `importer.${CANCEL_IN_FLIGHT_WRITE_METHOD}` as const;
+/** The default answer for harnesses whose case is not about the probe. */
+const ABSENT_PROBE: WriteDispatchProbe = {
+  state: WriteDispatchState.Absent,
+  taskSeq: null,
+};
 const HEAVY_BACKFILL_OP = "artifactLinks.backfill";
-const LIGHT_STORE_OP = "traceComments.list";
+const LIGHT_STORE_OP = "plans.confirm";
 const NOT_INITIALIZED = /db-host not initialized/;
 const NOT_CALLABLE = /not callable/;
 
@@ -60,6 +82,8 @@ async function turnBudget(turns: number): Promise<"blocked"> {
 
 type Harness = {
   deps: DbHostInvokeDeps;
+  /** The `store:` arm of `runOnStore`; a test swaps this, not the whole dep. */
+  runStoreOp: (op: string, args: unknown[]) => Promise<unknown>;
   /** Ordered `task:<marker>` / `deliver:<marker>` log, as they happened. */
   events: string[];
   delivered: unknown[];
@@ -79,6 +103,7 @@ function makeHarness(): Harness {
     maxActive: 0,
     delivered: [],
     events: [],
+    runStoreOp: () => Promise.reject(new Error("replaced below")),
     deps: undefined as unknown as DbHostInvokeDeps,
   };
   const track = async (marker: unknown): Promise<unknown> => {
@@ -102,12 +127,25 @@ function makeHarness(): Harness {
     },
     dashboard: { getInsights: track, getPlans: track },
   };
+  // ISS-8246 M1 — the `store:` half of `runOnStore`, swappable per test. It is a
+  // harness field rather than a `deps` override because `runOnStore` now serves
+  // BOTH halves: a test that replaced the whole function would take the dotted
+  // path down with it and stop exercising `callDbHostOp`.
+  harness.runStoreOp = (_op: string, args: unknown[]) => track(args[0]);
   harness.deps = {
     lanes: createDbHostOpLanes(),
-    getRoot: () => root,
-    runStoreOp: (_op: string, args: unknown[]) => track(args[0]),
+    isOpen: () => true,
+    // The dotted branch calls PRODUCTION `callDbHostOp` against the fake
+    // runtime, so op resolution, the not-callable refusal, and the apply are
+    // all still the real ones — they moved to the store thread, they did not
+    // stop being covered.
+    runOnStore: (op: string, args: unknown[]) =>
+      op.startsWith(DB_HOST_STORE_OP_PREFIX)
+        ? harness.runStoreOp(op, args)
+        : callDbHostOp(root, op, args),
     // A pass-through stand-in for InsightsResultCache: no caching, so every
     // call reaches the compute and the exclusive gate behind it.
+    probeUndispatchedWrite: () => ABSENT_PROBE,
     getInsights: (args, compute) =>
       compute(() => undefined).then(() => args[0]),
     deliver: (value: unknown) => {
@@ -322,13 +360,10 @@ describe("dispatchDbHostInvoke — the real routing branches", () => {
     const backfillHeld = new Promise<void>((resolve) => {
       releaseBackfill = resolve;
     });
-    harness.deps = {
-      ...harness.deps,
-      runStoreOp: async () => {
-        harness.events.push("task:backfill");
-        await backfillHeld;
-        return "backfill";
-      },
+    harness.runStoreOp = async () => {
+      harness.events.push("task:backfill");
+      await backfillHeld;
+      return "backfill";
     };
 
     const backfill = dispatchDbHostInvoke(
@@ -349,8 +384,16 @@ describe("dispatchDbHostInvoke — the real routing branches", () => {
     assert.deepEqual(harness.delivered, ["read", "backfill"]);
   });
 
+  // ISS-8246 M1 — this is also the §1.6 regression, and it did not need a new
+  // case: the value now crosses TWO structured clones (store thread →
+  // dispatcher, then dispatcher → main) and both must sit inside one permit, or
+  // a corpus-sized read escapes BOUNDED_READ_OP_LIMIT while a copy is still in
+  // flight. `runOnStore` covers the first — it resolves only when the store's
+  // reply has landed — and `deliver` the second, and the assertion below spans
+  // from the start of one to the completion of the other. Hoisting either out
+  // of the lane callback reddens this.
   it("holds the lane permit until the result is DELIVERED, not merely produced", async () => {
-    // wongk: the permit used to end when the callable resolved, but the result
+    // whitlockk: the permit used to end when the callable resolved, but the result
     // then still had to flow through `measureOp` and be structured-cloned by
     // `postMessage` in the worker's message handler. `release()` hands the
     // permit straight to the next waiter, so a further hydration could start
@@ -435,7 +478,7 @@ describe("dispatchDbHostInvoke — the real routing branches", () => {
 
   it("refuses every branch before the runtime is open", async () => {
     const harness = makeHarness();
-    const closed: DbHostInvokeDeps = { ...harness.deps, getRoot: () => null };
+    const closed: DbHostInvokeDeps = { ...harness.deps, isOpen: () => false };
 
     for (const op of [
       "syncSource.aggregateUsage",
@@ -457,6 +500,171 @@ describe("dispatchDbHostInvoke — the real routing branches", () => {
     assert.ok(
       readCallsInHandleInvoke().includes("dispatchDbHostInvoke"),
       "handleInvoke must dispatch through db-host-invoke-dispatch.ts"
+    );
+  });
+});
+
+describe("ISS-8246 M3: a write eviction is an ordinary store op", () => {
+  it("forwards the eviction to the store thread instead of answering it here", async () => {
+    const evictedSessionId = "session-1";
+    const reason = new Error("historical import evicted");
+    const storeCalls: { op: string; args: unknown[] }[] = [];
+    const delivered: unknown[] = [];
+    // The store answers only when this is released, so "the dispatcher waited"
+    // is observable rather than assumed. A `Promise.resolve` fake cannot tell a
+    // forwarded answer from a synthesized one.
+    let answerStore: (outcome: unknown) => void = () => undefined;
+    const storeAnswer = new Promise<unknown>((resolve) => {
+      answerStore = resolve;
+    });
+    const deps: DbHostInvokeDeps = {
+      lanes: createDbHostOpLanes(),
+      isOpen: () => true,
+      runOnStore: (op: string, args: unknown[]) => {
+        storeCalls.push({ op, args });
+        return storeAnswer;
+      },
+      probeUndispatchedWrite: () => {
+        throw new Error("an eviction must not take the probe branch");
+      },
+      getInsights: () =>
+        Promise.reject(new Error("an eviction must not take the cache branch")),
+      deliver: (value: unknown) => {
+        delivered.push(value);
+      },
+    };
+
+    const dispatched = dispatchDbHostInvoke(
+      CANCEL_IN_FLIGHT_WRITE_OP,
+      [evictedSessionId, reason],
+      deps
+    );
+    await turnBudget(TURN_BUDGET);
+
+    // The whole point of the case: there is NO dispatcher-side answer for an
+    // eviction. The write queue that owns both outcomes lives on the store
+    // thread, so the request travels the same path as every other op and is
+    // picked up only when that thread's loop turns — which is why
+    // `IMPORT_EVICTION_CLASSIFY_TIMEOUT_MS` still governs after M1 and why
+    // PLN-1837 M3's "Queued becomes trivially correct" does not hold.
+    //
+    // The ARGUMENTS are asserted, not just the op path: ISS-4572 eviction is
+    // task-scoped, so a dispatcher that forwarded the call while dropping or
+    // rewriting the session id would evict the wrong write — or none — and an
+    // op-only assertion would stay green through it.
+    assert.deepEqual(storeCalls, [
+      { op: CANCEL_IN_FLIGHT_WRITE_OP, args: [evictedSessionId, reason] },
+    ]);
+    assert.deepEqual(
+      delivered,
+      [],
+      "main must not be told an outcome the store has not reported"
+    );
+
+    answerStore(WriteQueueCancelOutcome.Queued);
+    await dispatched;
+
+    assert.deepEqual(delivered, [WriteQueueCancelOutcome.Queued]);
+  });
+});
+
+/**
+ * ISS-7256 (whitlockk review) — the ONE op the dispatcher answers itself.
+ *
+ * The eviction case above pins that a queue MUTATION still forwards. This is its
+ * counterpart, and the asymmetry is the design: the read-only probe is asked at a
+ * deadline that fires BECAUSE the store thread is inside a long synchronous
+ * write, so forwarding it parks the request on the very thread whose blockage is
+ * the question. The bound then waits out its own backstop, gets no evidence, and
+ * takes the old expiry path — ISS-7256 fixing nothing in the production topology.
+ */
+describe("ISS-7256: the undispatched-write probe is answered by the dispatcher", () => {
+  it("never forwards the probe, even while the store thread answers nothing", async () => {
+    const storeCalls: { op: string; args: unknown[] }[] = [];
+    const delivered: unknown[] = [];
+    const probed: string[] = [];
+    const queuedProbe: WriteDispatchProbe = {
+      state: WriteDispatchState.Queued,
+      taskSeq: 41,
+    };
+    const deps: DbHostInvokeDeps = {
+      lanes: createDbHostOpLanes(),
+      isOpen: () => true,
+      // A store that never answers ANYTHING — the blocked thread, modelled.
+      runOnStore: (op: string, args: unknown[]) => {
+        storeCalls.push({ op, args });
+        return new Promise<unknown>(() => undefined);
+      },
+      probeUndispatchedWrite: (token: string) => {
+        probed.push(token);
+        return queuedProbe;
+      },
+      getInsights: () =>
+        Promise.reject(new Error("the probe must not take the cache branch")),
+      deliver: (value: unknown) => {
+        delivered.push(value);
+      },
+    };
+
+    await dispatchDbHostInvoke(
+      UNDISPATCHED_WRITE_PROBE_OP,
+      ["session-1"],
+      deps
+    );
+    await turnBudget(TURN_BUDGET);
+
+    assert.deepEqual(
+      storeCalls,
+      [],
+      "the probe must never reach the thread whose blockage it asks about"
+    );
+    assert.deepEqual(
+      probed,
+      ["session-1"],
+      "and the session id must survive the hop, or it answers about the wrong write"
+    );
+    assert.deepEqual(delivered, [queuedProbe]);
+  });
+
+  it("resolves an unusable token to Absent rather than inventing a waiter", async () => {
+    const delivered: unknown[] = [];
+    const probed: string[] = [];
+    const deps: DbHostInvokeDeps = {
+      lanes: createDbHostOpLanes(),
+      isOpen: () => true,
+      runOnStore: () => Promise.reject(new Error("must not forward")),
+      probeUndispatchedWrite: (token: string) => {
+        probed.push(token);
+        return ABSENT_PROBE;
+      },
+      getInsights: () => Promise.reject(new Error("must not cache")),
+      deliver: (value: unknown) => {
+        delivered.push(value);
+      },
+    };
+
+    // `args` crossed a structured clone, so its shape is not constrained by the
+    // caller's types.
+    await dispatchDbHostInvoke(UNDISPATCHED_WRITE_PROBE_OP, [42], deps);
+
+    assert.deepEqual(probed, [""], "a non-string token is not passed through");
+    assert.deepEqual(delivered, [ABSENT_PROBE]);
+  });
+
+  it("refuses before the store is open, like every other op", async () => {
+    const deps: DbHostInvokeDeps = {
+      lanes: createDbHostOpLanes(),
+      isOpen: () => false,
+      runOnStore: () => Promise.reject(new Error("must not forward")),
+      probeUndispatchedWrite: () => {
+        throw new Error("must not probe before open");
+      },
+      getInsights: () => Promise.reject(new Error("must not cache")),
+      deliver: () => undefined,
+    };
+    await assert.rejects(
+      dispatchDbHostInvoke(UNDISPATCHED_WRITE_PROBE_OP, ["s"], deps),
+      NOT_INITIALIZED
     );
   });
 });

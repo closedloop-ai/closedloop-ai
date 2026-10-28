@@ -15,9 +15,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * content of the screen.
  */
 const meta: Meta<typeof SheetContent> = {
-  title: "Design System/Primitives/Sheet",
+  title: "Primitives v1.0/Overlays/Sheet",
   component: Sheet,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     side: {
       options: ["top", "bottom", "left", "right"],

@@ -2,6 +2,7 @@
 
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { useApiClient } from "../../shared/api/use-api-client";
+import { useApiClientOptional } from "../../shared/api/use-api-client-optional";
 import {
   type AgentComponentsDataSource,
   createHttpAgentComponentsDataSource,
@@ -9,6 +10,7 @@ import {
 import {
   type AgentSessionsDataSource,
   createHttpAgentSessionsDataSource,
+  HTTP_DATA_SOURCE_SCOPE,
 } from "./agent-sessions-data-source";
 
 // ─── AgentComponentsDataSource ───────────────────────────────────────────────
@@ -101,5 +103,39 @@ export function useAgentSessionsDataSource(): AgentSessionsDataSource {
   return useMemo(
     () => injected ?? createHttpAgentSessionsDataSource(apiClient),
     [injected, apiClient]
+  );
+}
+
+/**
+ * Non-throwing counterpart to {@link useAgentSessionsDataSource} (ISS-10332):
+ * the injected source, else the HTTP source when an `ApiAdapterProvider` is
+ * mounted, else `null`. For a shared CELL that gains an optional write and must
+ * still mount where no API port exists — a bare table render, Storybook — and
+ * there renders its mark read-only rather than throwing.
+ */
+export function useAgentSessionsDataSourceOptional(): AgentSessionsDataSource | null {
+  const injected = useContext(AgentSessionsDataSourceContext);
+  const apiClient = useApiClientOptional();
+  return useMemo(
+    () =>
+      injected ??
+      (apiClient ? createHttpAgentSessionsDataSource(apiClient) : null),
+    [injected, apiClient]
+  );
+}
+
+/**
+ * The active agent-sessions source's `scope`, without constructing the fallback
+ * HTTP client.
+ *
+ * {@link useAgentSessionsDataSource} needs an `ApiAdapterProvider` ancestor
+ * because it always builds that fallback. A caller that only wants to NAME the
+ * source — to key a cache or a persisted snapshot by it — must not inherit that
+ * requirement, so this reads the context alone and reports the HTTP source's own
+ * scope when nothing is injected.
+ */
+export function useAgentSessionsDataSourceScope(): string {
+  return (
+    useContext(AgentSessionsDataSourceContext)?.scope ?? HTTP_DATA_SOURCE_SCOPE
   );
 }

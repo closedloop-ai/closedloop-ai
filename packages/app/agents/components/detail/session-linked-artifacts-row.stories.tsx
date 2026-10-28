@@ -124,9 +124,9 @@ function buildArtifactHref(artifact: SessionLinkedArtifact): string | null {
 // own single-column min drives the width — no hard-coded pixel value needed.
 
 const meta = {
-  title: "App Core/Agents/Session Linked Artifacts Row",
+  title: "Composites v1.0/Agents/Detail/Session Linked Artifacts Row",
   component: SessionLinkedArtifactsRow,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -183,7 +183,7 @@ export const TruncatedBeyondReceived: Story = {
 };
 
 /**
- * ISS-5366 (wongk review): the FOURTH visual state, and the only one that
+ * ISS-5366 (whitlockk review): the FOURTH visual state, and the only one that
  * asserts nothing.
  *
  * The other three stories all show settled answers — a navigable pill, an inert

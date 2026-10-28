@@ -1,4 +1,5 @@
 import {
+  PrototypeDeliveryMode,
   type PrototypeMeta,
   PrototypeStatus,
   PrototypeTag,
@@ -9,10 +10,11 @@ export const meta = {
   title: "Desktop UI Kit",
   summary:
     "Desktop counterpart to the Web UI Kit: a full-viewport Electron frame (macOS stoplights, focus-mode sidebar, Gateway footer) wrapping a flush content area, shown with the Sessions page.",
-  author: "Parker",
+  author: "Pascoe",
   status: PrototypeStatus.ReadyForReview,
   tags: [PrototypeTag.UiKit],
   createdAt: "2026-07-15",
   linearIssue: null,
   closedloopDoc: null,
+  deliveryMode: PrototypeDeliveryMode.DisposableSketch,
 } satisfies PrototypeMeta;

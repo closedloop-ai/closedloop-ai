@@ -1,5 +1,5 @@
+import { redactSecrets } from "@repo/lib/security/redact-secrets";
 import { summarizeLookback } from "./agent-coaching-lookback";
-import { redactSecrets } from "./agent-coaching-redaction";
 import {
   type AgentCoachingLever,
   categoriesForWarrantedLevers,
@@ -12,6 +12,7 @@ import {
   type AgentCoachingLlmRequest,
   type AgentCoachingTip,
   type AgentCoachingTipCategory,
+  COACHING_NUMBER_LOCALE,
 } from "./agent-coaching-types";
 
 /**
@@ -86,13 +87,28 @@ export function buildAgentCoachingLlmRequest(
     localEvidence: {
       analytics: input.analytics,
       workflow: input.workflow,
-      // Free-text event fields can carry secrets (sk_live…, Bearer …). Scrub
-      // them here so a non-local LLM provider never receives raw credentials —
-      // matching the redaction already applied to representative commands.
+      // Free-text event fields can carry secrets. The LLM seam is pluggable and
+      // may point at an EXTERNAL provider, so scrub them here through the one
+      // shared pattern set (`@repo/lib/security/redact-secrets`) rather than a
+      // renderer-local list that drifts behind it — matching the redaction
+      // already applied to representative commands and prompt excerpts.
+      // `sessionName` is included because it is user-editable free text that
+      // `formatSessionLogExcerpts` renders into the prompt as the excerpt label
+      // — a credential typed into a session name reached the provider in clear.
+      // `toolName` is included for the same reason: hook input accepts it as an
+      // unconstrained string (an MCP tool name is caller-supplied), and
+      // `formatSessionLogExcerpts` interpolates it into the same excerpt line,
+      // so it is free text on this seam like the other three.
       recentEvents: input.recentEvents.map((event) => ({
         ...event,
         summary: event.summary ? redactSecrets(event.summary) : event.summary,
         data: event.data ? redactSecrets(event.data) : event.data,
+        sessionName: event.sessionName
+          ? redactSecrets(event.sessionName)
+          : event.sessionName,
+        toolName: event.toolName
+          ? redactSecrets(event.toolName)
+          : event.toolName,
       })),
       skills: input.skills,
     },
@@ -280,7 +296,10 @@ function formatCoachingMetricBlocks(
 
   return [
     `Windowed metrics (${windowLabel}) — the ONLY figures that honor the selected date range:`,
-    `- tokens: ${m.totalTokens.toLocaleString()} (in ${m.totalInputTokens.toLocaleString()}, out ${m.totalOutputTokens.toLocaleString()})`,
+    // Same canonical locale as the seed builders: a generated batch REPLACES
+    // the seed tips, and the prompt requires every tip to restate a quantified
+    // figure, so an inherited locale here reaches the reader through the model.
+    `- tokens: ${m.totalTokens.toLocaleString(COACHING_NUMBER_LOCALE)} (in ${m.totalInputTokens.toLocaleString(COACHING_NUMBER_LOCALE)}, out ${m.totalOutputTokens.toLocaleString(COACHING_NUMBER_LOCALE)})`,
     `- estimated cost: ${cost}`,
     `- favorite model (token share): ${favoriteModel}`,
     "",

@@ -6,7 +6,7 @@
  * slash invocation it could PAIR with a `Skill` tool_use of the same bare name.
  * The dominant real shape has no partner to pair with — Claude Code expands a
  * slash-invoked skill without emitting a `Skill` tool_use at all (golden session
- * `3b820c31` invokes `/code-review:deep` with four unrelated `Skill` tool_uses
+ * `56f2ab4a` invokes `/code-review:deep` with four unrelated `Skill` tool_uses
  * and none for `code-review:deep`) — so the Command candidate survived and minted
  * an `agent_components` row beside the resolved skill row. Two records for one
  * entity, with the invocations and modal usage on one and the definition on the
@@ -24,7 +24,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { ComponentResolvedState } from "@repo/api/src/types/agent-component";
 import {
   AgentComponentInvocationAnchorKind,
@@ -34,6 +33,7 @@ import {
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
 import { NormalizedDefinitionKind } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import type { AgentComponentInvocationCandidate } from "../src/main/database/component-invocation-row-writer.js";
 import { repointSkillInvokedCommandCandidates } from "../src/main/database/component-invocation-skill-repoint.js";
 import { EVENT_INSERT_PARAM_CAP } from "../src/main/database/db-constants.js";
@@ -240,7 +240,7 @@ describe("ISS-5260 slash-invoked skill resolves to ONE Skill record", () => {
 });
 
 describe("ISS-5260 inventory read stays inside the SQLite bind budget", () => {
-  // wongk review: the inventory read binds each distinct bare name TWICE (bare
+  // whitlockk review: the inventory read binds each distinct bare name TWICE (bare
   // for the skill arm, slash-prefixed for the command arm) plus three fixed
   // parameters, so an unchunked statement costs `3 + 2n` binds and crosses the
   // 999-variable floor `EVENT_INSERT_PARAM_CAP` documents at 499 names — rolling
@@ -360,7 +360,8 @@ describe("ISS-5260 rollups reconcile with no double-count", () => {
   // a `/prune-tests` the user escaped, the skill rolls up one invocation more
   // than fired — the transcript records the two identically, so no rule can
   // separate them. That deliberate tradeoff is recorded in the revision-68 note
-  // in `data-revision.ts`; this test pins the reading the revision chose.
+  // in `docs/desktop-data-revision-history.md`; this test pins the reading
+  // the revision chose.
   test("two paired plus one unpaired slash invocation still total three", async () => {
     await withDb("aci-repoint-mixed-", async (db) => {
       await insertResolvedSkill(db, SKILL_KEY);
@@ -481,6 +482,10 @@ function slashCommandCandidates(
     anchorKind: AgentComponentInvocationAnchorKind.UserTurn,
     anchorValue: INVOKED_AT,
     attributionStatus: AgentComponentInvocationAttributionStatus.Unresolved,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    footprintTokens: null,
+    estimatedCost: null,
     childSessionId: null,
     componentKey: name,
     componentKind: Kind.Command,
@@ -492,11 +497,14 @@ function slashCommandCandidates(
     externalInvocationId: `inv-bulk-${index}`,
     externalSourceId: null,
     gitBranch: null,
+    inputTokens: null,
     invokedAt: INVOKED_AT,
     localComponentId: null,
     localComponentVersionId: null,
+    model: null,
     normalizedName: name,
     normalizerContractVersion: null,
+    outputTokens: null,
     parentAgentId: null,
     providerToolUseId: null,
     rawName: name,
@@ -506,6 +514,14 @@ function slashCommandCandidates(
     sourceOrder: index,
     succeeded: null,
     updatedAt: NOW,
+    usageMeasurement: null,
+    linesAdded: null,
+    linesRemoved: null,
+    findingsEmitted: null,
+    findingsInvalidated: null,
+    // ISS-11325: no disposition recorded on a fixture the findings ingest never reached.
+    findingsDisposition: null,
+    attributionSource: null,
   }));
 }
 
@@ -513,7 +529,7 @@ function slashCommandCandidates(
  * `count` user turns, each typing a DISTINCT slash key, exactly one of which
  * (`/prune-tests`) answers to a resolved skill. Every distinct key becomes one
  * bare name in the inventory read, so this is the shape that exercises the
- * bind-count budget (wongk review).
+ * bind-count budget (whitlockk review).
  */
 function manyDistinctSlashSession(
   sessionId: string,

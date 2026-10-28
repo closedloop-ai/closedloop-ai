@@ -10,7 +10,7 @@ import { SessionLimitsProvenance } from "./session-limits-provenance";
  * opens, so the sibling nav story never reaches it. The stale path is the one
  * worth looking at and the one hardest to reach any other way: producing it in
  * the running app means waiting past the five-minute display horizon or moving
- * the clock (wongk, PR #4572).
+ * the clock (whitlockk, PR #4572).
  *
  * The two wordings are not cosmetic variants. Fresh leads with a duration and
  * puts the instant behind it; stale drops the duration entirely and states the
@@ -18,8 +18,9 @@ import { SessionLimitsProvenance } from "./session-limits-provenance";
  * a snapshot that stopped refreshing must read as "the figures are from THEN".
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Provenance",
+  title: "Composites v1.0/Session Limits/Session Limits Provenance",
   component: SessionLimitsProvenance,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

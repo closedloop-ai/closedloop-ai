@@ -20,9 +20,9 @@ function ToggleDemo() {
 }
 
 const meta = {
-  title: "Design System/Layout/Section Header",
+  title: "Primitives v1.0/Data Display/Section Header",
   component: SectionHeader,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },

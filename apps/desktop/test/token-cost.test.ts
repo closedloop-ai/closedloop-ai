@@ -11,7 +11,7 @@
  * the canonical fresh shape every parser emits (see NormalizedTokenCounts).
  */
 import assert from "node:assert/strict";
-import { describe, it, test } from "node:test";
+import { describe, it, test } from "vitest";
 import {
   buildUsage as buildUsageTwin,
   computeTokenCost as computeTokenCostTwin,
@@ -210,12 +210,10 @@ const INVALID_INPUT_FIXTURE: Array<{
 
 // HARNESS 1 — valid inputs must price: priced=true, expected provider, and the
 // exact expected costUsd. One parameterized `it` per fixture row so each model
-// passes/fails independently and the suite runs concurrently. Any model that
+// passes/fails independently. Any model that
 // silently stops pricing (library bump, model-id variant) flips priced to false
 // and fails only its own case.
-describe("valid inputs price to the expected costUsd with priced=true", {
-  concurrency: true,
-}, () => {
+describe("valid inputs price to the expected costUsd with priced=true", () => {
   for (const {
     name,
     input,
@@ -234,10 +232,8 @@ describe("valid inputs price to the expected costUsd with priced=true", {
 
 // HARNESS 2 — invalid inputs must refuse cleanly: priced=false, costUsd null,
 // and a non-empty typed reason matching the expected refusal path. One
-// parameterized `it` per fixture row, run concurrently.
-describe("invalid inputs refuse cleanly: priced=false, null cost, typed reason", {
-  concurrency: true,
-}, () => {
+// parameterized `it` per fixture row.
+describe("invalid inputs refuse cleanly: priced=false, null cost, typed reason", () => {
   for (const { name, input, expectedReason } of INVALID_INPUT_FIXTURE) {
     it(name, () => {
       const result = computeTokenCostTwin(input);
@@ -420,12 +416,14 @@ test("estimateTokenCost prices a non-zero costUsd for current flagship models", 
 
 test("FEA-3546: estimateTokenCost prices an unknown Codex model at the Opus-standard fallback (never $0)", () => {
   // SES-57401: a COMPLETED codex/DESKTOP_SYNC session on gpt-5.6-sol with heavy
-  // token usage reported cost=null / estimatedCost=$0 because genai-prices has
-  // no price entry for gpt-5.6-sol (no_match). The pure engine still refuses,
-  // but the estimate wrapper now applies the Opus-standard unknown-model
-  // fallback so the session is priced instead of collapsing to $0.
+  // token usage reported cost=null / estimatedCost=$0 because genai-prices had
+  // no price entry for it (no_match). gpt-5.6-sol is priced since 0.1.6
+  // (ISS-7361), so the fixture is a version-suffixed id the table will not
+  // learn. The pure engine still refuses, but the estimate wrapper applies the
+  // Opus-standard unknown-model fallback so the session is priced instead of
+  // collapsing to $0.
   const pure = computeTokenCostTwin({
-    model: "gpt-5.6-sol",
+    model: "gpt-5.9-zzz-unknown",
     inputTokens: 346_789,
     outputTokens: 12_366,
     cacheReadTokens: 2_560_256,
@@ -439,7 +437,7 @@ test("FEA-3546: estimateTokenCost prices an unknown Codex model at the Opus-stan
   assert.equal(pure.reason, TokenCostNotPricedReason.NoMatch);
 
   const estimate = estimateTokenCost({
-    model: "gpt-5.6-sol",
+    model: "gpt-5.9-zzz-unknown",
     inputTokens: 346_789,
     outputTokens: 12_366,
     cacheReadTokens: 2_560_256,
@@ -477,6 +475,10 @@ test("estimateTokenCost coerces absent counts to zero rather than refusing the r
     cacheWriteTokens: undefined,
   });
   assert.ok(estimate !== undefined, "a countless row is still priceable");
+  // ISS-7762 added `unknownModelFallbackApplied` to the result contract. This
+  // whole-shape deepEqual is where that contract is pinned: a field added to
+  // `EstimateTokenCostResult` and never populated fails HERE rather than
+  // silently reaching the cost_source writers as a dropped signal.
   assert.deepEqual(estimate, {
     costUsd: 0,
     inputCostUsd: 0,
@@ -484,6 +486,8 @@ test("estimateTokenCost coerces absent counts to zero rather than refusing the r
     cacheReadCostUsd: 0,
     cacheWriteCostUsd: 0,
     cacheWriteTtlPremiumUsd: 0,
+    // `claude-opus-4-5` IS in the pinned table, so this is a library rate.
+    unknownModelFallbackApplied: false,
   });
 });
 
@@ -509,7 +513,7 @@ test("estimateTokenCost returns undefined for a row with no model, never a fabri
   // library simply has no entry for (`no_match`) IS fallback-priced.
   assert.ok(
     estimateTokenCost({
-      model: "gpt-5.6-sol",
+      model: "gpt-5.9-zzz-unknown",
       inputTokens: 346_789,
       outputTokens: 12_366,
       cacheReadTokens: 0,

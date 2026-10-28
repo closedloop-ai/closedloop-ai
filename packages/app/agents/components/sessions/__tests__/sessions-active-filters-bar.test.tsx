@@ -35,7 +35,7 @@ const UNRESOLVED_SCOPE_USER_ID_TEXT = /^Owner: user-not-in-usage$/;
 const RETIRED_SCOPE_PLACEHOLDER_TEXT = /Selected user/;
 // ISS-5355: the Project facet the project-detail strip links into.
 const PROJECT_ID = "019f8008-1969-74f9-b056-99c13cca9a07";
-const PROJECT_NAME = "Symphony Alpha";
+const PROJECT_NAME = "ClosedLoop AI";
 const PROJECT_CHIP_LABEL = `Project: ${PROJECT_NAME}`;
 const PROJECT_CHIP_TEXT = /Project:/;
 
@@ -92,13 +92,10 @@ describe("SessionsActiveFiltersBar", () => {
     expect(screen.getByText("Owner: Ada Lovelace")).toBeVisible();
   });
 
-  it("renders a removable chip for a flag-gated Changes selection even when the flag is off", async () => {
-    // ISS-4605 (codex P1 + stage review): `sessions-change-pr-filters` is OFF in
-    // the story providers (default), so the Filter popover omits the Changes /
-    // Pull request facets. A `changes=` selection can still arrive from a shared
-    // list URL, and the chip row must surface EVERY active filter — otherwise it
-    // silently narrows the list with no chip to name or remove it, and Clear all
-    // would wipe a facet the row never showed.
+  it("renders a removable chip for a Changes selection from the URL", async () => {
+    // ISS-4605 (codex P1 + stage review): a `changes=` selection can arrive from
+    // a shared list URL, and the chip row must surface EVERY active filter —
+    // otherwise it silently narrows the list with no chip to name or remove it.
     const user = userEvent.setup();
     const changeOptionLabel = SESSION_CHANGE_PRESENCE_OPTIONS[0].label;
     render(

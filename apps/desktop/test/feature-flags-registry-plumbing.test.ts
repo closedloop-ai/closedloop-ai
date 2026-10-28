@@ -16,15 +16,16 @@
  * byte-identical to the `@repo/api` constant its web PostHog twin also aliases.
  */
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { RECOMMENDED_DATA_SYNC_LEVEL } from "@repo/api/src/types/data-sync-level";
+import { afterEach, test } from "vitest";
 import { DEFAULT_DESKTOP_SETTINGS } from "../src/shared/contracts.js";
+import { dataSyncLevelToBooleans } from "../src/shared/data-sync-level.js";
+import { FEATURE_FLAGS, type FlagKey } from "../src/shared/feature-flags.js";
 import {
   DESKTOP_COLLECT_CLAUDE_ENABLED_FEATURE_FLAG_KEY,
   DESKTOP_COLLECT_COPILOT_ENABLED_FEATURE_FLAG_KEY,
   DESKTOP_COLLECT_CURSOR_ENABLED_FEATURE_FLAG_KEY,
-  FEATURE_FLAGS,
-  type FlagKey,
-} from "../src/shared/feature-flags.js";
+} from "../src/shared/feature-flags-collection.js";
 import {
   cleanupFeatureFlagStores,
   makeFeatureFlagStore,
@@ -90,7 +91,7 @@ test("ISS-6544: every registered flag carries a DEFAULT_DESKTOP_SETTINGS default
  * The individual keys that may legitimately ship ON, so that every OTHER key —
  * including one added later to an already-exempt category — is covered.
  *
- * Per-KEY, not per-category (wongk, PR #5117). A category exemption grants
+ * Per-KEY, not per-category (whitlockk, PR #5117). A category exemption grants
  * itself to flags that do not exist yet: `Cloud` was exempted for the one
  * operational connection switch below, and that exemption would have silently
  * covered every future Cloud flag, so a new user-facing Cloud toggle shipping
@@ -100,7 +101,7 @@ test("ISS-6544: every registered flag carries a DEFAULT_DESKTOP_SETTINGS default
  *
  * Nor is the reverse framing available — `category === "Labs"` would be far too
  * narrow. The Labs settings panel groups by category and renders every
- * non-hidden registry flag, so "Labs toggle" in ISS-4779's sense spans
+ * non-hidden registry flag, so "flag toggle" in ISS-4779's sense spans
  * `Experimental` ("Unfinished work. Expect rough edges."), `Diagnostics` and
  * `Security` as well.
  *
@@ -161,9 +162,9 @@ test("ISS-6544 / ISS-4779: every key exempted from closed-by-default is hidden f
   // docstring on `FlagKeyAllowedToShipOpen` justifies each `default: true` on
   // three properties; this is the machine-checkable one. `hiddenFromLabs` is
   // optional on the definition, so dropping it typechecks, and `LAB_FLAGS` in
-  // `labs-tab.tsx` is `FEATURE_FLAGS.filter((flag) => !flag.hiddenFromLabs)` —
+  // a future generic flag surface would read `FEATURE_FLAGS.filter((flag) => !flag.hiddenFromLabs)` —
   // an exempt key that loses the property renders an ON-by-default toggle in
-  // the Labs panel while the exemption keeps suppressing the gate that would
+  // a future generic flag surface while the exemption keeps suppressing the gate that would
   // have caught the default. Three of the four are pinned in
   // `feature-flags.test.ts` as collectors; that leaves the fourth to whoever
   // remembers, which is what this closes. The walk is over the registry, so an
@@ -177,7 +178,7 @@ test("ISS-6544 / ISS-4779: every key exempted from closed-by-default is hidden f
   assert.deepEqual(
     exposed,
     [],
-    `Keys exempted from closed-by-default that are NOT hiddenFromLabs: ${exposed.join(", ")}. The exemption in FlagKeyAllowedToShipOpen rests on each key having a dedicated surface and staying out of the generic Labs panel; without hiddenFromLabs the flag renders as an ON-by-default Labs toggle, which is exactly what ISS-4779 forbids. Either restore hiddenFromLabs or drop the key from the exemption and ship it closed.`
+    `Keys exempted from closed-by-default that are NOT hiddenFromLabs: ${exposed.join(", ")}. The exemption in FlagKeyAllowedToShipOpen rests on each key having a dedicated surface and staying out of the generic flag surface; without hiddenFromLabs the flag renders as an ON-by-default flag toggle, which is exactly what ISS-4779 forbids. Either restore hiddenFromLabs or drop the key from the exemption and ship it closed.`
   );
 });
 
@@ -201,6 +202,16 @@ test("ISS-6544: getAll() reports a boolean for every registered flag on a fresh 
   );
 });
 
+/**
+ * ISS-10554: the first-launch seed PERSISTS the connectivity/transcript flags the
+ * recommended data sync level derives, so on a fresh store those three resolve to
+ * the seeded value rather than to their registry default. Every other flag still
+ * resolves its registry default, and the setFlag round-trip below is unchanged
+ * for all of them.
+ */
+const FIRST_LAUNCH_SEEDED_FLAGS: Record<string, unknown> =
+  dataSyncLevelToBooleans(RECOMMENDED_DATA_SYNC_LEVEL);
+
 test("ISS-6544: every registered flag round-trips through getFlag/setFlag", () => {
   // One store for the whole sweep: the boot migrations run at CONSTRUCTION, so
   // within a single session `getFlag`/`setFlag` on distinct keys cannot interact.
@@ -209,12 +220,17 @@ test("ISS-6544: every registered flag round-trips through getFlag/setFlag", () =
   const broken: string[] = [];
 
   for (const def of FEATURE_FLAGS) {
-    if (store.getFlag(def.key as FlagKey) !== def.default) {
-      broken.push(`${def.key}: getFlag did not resolve the registry default`);
+    const seeded = FIRST_LAUNCH_SEEDED_FLAGS[def.key];
+    const expected = typeof seeded === "boolean" ? seeded : def.default;
+    if (store.getFlag(def.key as FlagKey) !== expected) {
+      broken.push(`${def.key}: getFlag did not resolve its fresh-store value`);
       continue;
     }
-    store.setFlag(def.key as FlagKey, !def.default);
-    if (store.getFlag(def.key as FlagKey) !== !def.default) {
+    // Flip away from the value actually on a fresh store, not from the registry
+    // default: for a flag the first-launch seed persists they differ, and
+    // flipping from the default would "set" it to the value it already has.
+    store.setFlag(def.key as FlagKey, !expected);
+    if (store.getFlag(def.key as FlagKey) !== !expected) {
       broken.push(`${def.key}: setFlag did not round-trip`);
     }
   }
@@ -224,7 +240,7 @@ test("ISS-6544: every registered flag round-trips through getFlag/setFlag", () =
 
 test("ISS-6544: a user's opt-in to any registered flag survives a relaunch", () => {
   // A key that is BOTH registered and swept by `removeRetiredKeys` is deleted on
-  // every boot, so the Labs toggle silently reverts to OFF after each restart.
+  // every boot, so the flag toggle silently reverts to OFF after each restart.
   // That is how `cloud-read-cutover-gate` behaved: retired by #4633, then
   // resurrected into the registry by a stale branch while its sweep entry
   // stayed. Written against the STORE, not the sweep list, so any future cause
@@ -241,7 +257,13 @@ test("ISS-6544: a user's opt-in to any registered flag survives a relaunch", () 
   for (const def of FEATURE_FLAGS) {
     const dir = makeFeatureFlagStoreDir();
     const first = openFeatureFlagStore(dir);
-    const optIn = !def.default;
+    // Same reason as the sweep above: opt IN away from the value a fresh store
+    // actually holds, which the first-launch seed makes differ from the registry
+    // default for the flags that seed writes.
+    const seededValue = FIRST_LAUNCH_SEEDED_FLAGS[def.key];
+    const optIn = !(typeof seededValue === "boolean"
+      ? seededValue
+      : def.default);
     first.setFlag(def.key as FlagKey, optIn);
     const second = openFeatureFlagStore(dir);
     if (second.getFlag(def.key as FlagKey) !== optIn) {

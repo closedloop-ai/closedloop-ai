@@ -69,8 +69,8 @@ const TURN_TIMES = [
 
 /**
  * Where the marker lands: the centre of the column holding the transcript row
- * the click RESOLVED to, which is one column left of the column clicked — the
- * marker reads the active row's own position, not the pointer's.
+ * the click RESOLVED to — the marker reads the active row's own position, not
+ * the pointer's.
  *
  * ISS-5999 made ISS-5819's clock window unconditional, so the strip is 24
  * columns wide regardless of how many bins the producer sent; before that this
@@ -78,8 +78,19 @@ const TURN_TIMES = [
  * exact string production emits rather than recomputed from
  * `TIMELINE_VISIBLE_COLUMNS`, so this asserts the strip's own arithmetic instead
  * of agreeing with a copy of it.
+ *
+ * ISS-7115 moved this one column right, from `47.91666666666667%`, and the
+ * sentence above is why: the marker is supposed to be the row's OWN position,
+ * and until ISS-7115 it was not. The column used to be derived from the
+ * MIDPOINT of the source bin the row fell in; this fixture's four bins are
+ * 22.5 minutes wide, so the row at 13:00 was drawn from its bin's midpoint of
+ * 12:56:15 — column 11 (12:55–13:00) — while the row itself is at 13:00, which
+ * is column 12 (13:00–13:05). The bin midpoint is a proxy for the row that can
+ * sit a whole column away from it; the row's instant is the row. That proxy is
+ * also what made the scrubber walk BACKWARD across a sub-session boundary,
+ * which is the defect ISS-7115 fixes.
  */
-const RESOLVED_ROW_COLUMN_CENTRE = "47.91666666666667%";
+const RESOLVED_ROW_COLUMN_CENTRE = "52.083333333333336%";
 /**
  * An idle bar's name. The accessible name opens with the ACTION, so a bar with
  * nowhere to send a click reads "Activity bucket …" and a jumpable one reads
@@ -135,7 +146,7 @@ function positionSession(buckets: ActivityBucket[]): AgentSessionDetail {
     lastActivityAt: new Date("2026-06-10T13:31:00.000Z"),
     transcripts: [],
     turnItems: timedTurnItems(),
-    // ISS-5819 review (wongk): stamped over the run the turn items span, so the
+    // ISS-5819 review (whitlockk): stamped over the run the turn items span, so the
     // strip states the clock its bins were measured on and the clock projection
     // this suite drives can run at all.
     activityBuckets: withProducerBinBounds(buckets, {

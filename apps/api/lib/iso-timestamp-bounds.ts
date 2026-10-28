@@ -12,7 +12,7 @@
  * ordering when both sides are in the same normalized form, so a payload
  * carrying `2026-01-01T00:00:00+02:00` alongside a `Z` timestamp would order
  * differently in the two folds. Extracted here so the two merge paths cannot
- * quietly disagree about which timestamp wins (thadeusb, PR #4322).
+ * quietly disagree about which timestamp wins (tamsinb, PR #4322).
  *
  * `Date.parse` is the surviving implementation because it compares the instant
  * rather than the spelling. An unparseable input yields `NaN`, and every `NaN`

@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { ClaudeCodeAnalyticsService } from "../src/main/cost/claude-code-analytics-service.js";
 import type { CostReconciliationService } from "../src/main/cost/cost-reconciliation-service.js";
-import {
-  CostReconciliationIpcChannel,
-  registerCostReconciliationIpcHandlers,
-} from "../src/main/ipc/cost-reconciliation-ipc.js";
+import { registerCostReconciliationIpcHandlers } from "../src/main/ipc/cost-reconciliation-ipc.js";
+import { CostReconciliationIpcChannel } from "../src/shared/cost-reconciliation-ipc-channel.js";
 import {
   createIpcRegistrar,
   isTrustedSenderDouble,
@@ -17,7 +14,7 @@ import {
 
 // ISS-5300 (PRD-618): `cost-reconciliation-ipc.ts` was reached by no test.
 // Three channels: `RunCostReconciliation` gates on sender trust; the other two do
-// not. FINDING FOR ISS-4514 (Kris Wong): `ListCostReconciliation` and
+// not. FINDING FOR ISS-4514 (Kerensa Whitlock): `ListCostReconciliation` and
 // `GetClaudeCodeAnalytics` both parse renderer-supplied input — the latter feeds
 // `windowDays` directly into the Anthropic Admin API — while ungated, in a module
 // that already takes `isTrustedSender` and uses it only on one of three channels.

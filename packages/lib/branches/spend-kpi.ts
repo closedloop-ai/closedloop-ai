@@ -1,6 +1,8 @@
 /**
- * The AI-spend KPI's null-on-zero rule, shared by every producer of the ONE
- * Branches "AI spend" summary card so they cannot re-diverge:
+ * The AI-spend KPI's null-on-zero rule, shared by every producer of the
+ * Branches `aiSpendUsd` figure so they cannot re-diverge. ISS-9970 retired the
+ * summary card that used to render it; the field itself remains on the wire as
+ * compatibility surface, and these producers still populate it:
  *
  * - web server — apps/api/app/branches/branch-read-service.ts (`getBranchAnalytics`)
  * - desktop    — apps/desktop/src/main/branch/branch-analytics-projection.ts

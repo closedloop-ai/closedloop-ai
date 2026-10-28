@@ -99,9 +99,6 @@ const SERVER_INFO: Record<
 url = "https://mcp.closedloop.ai/mcp"
 
 [mcp_servers.closedloop.tools.get-me]
-approval_mode = "approve"
-
-[mcp_servers.closedloop.tools.list-loops]
 approval_mode = "approve"`,
   },
   context7: {
@@ -342,12 +339,12 @@ export const versionsFor = (
       .slice(0, Math.max(6, lines.length - offset * 4))
       .join("\n");
     return {
-      id: `v${number}`,
+      id: String(number),
       isCurrent,
       createdAgo: isCurrent ? "Current" : (VERSION_AGO[offset - 1] ?? "Older"),
       source: isCurrent
         ? currentSource
-        : `# Revision v${number} (earlier draft)\n\n${trimmed}`,
+        : `# Revision ${number} (earlier draft)\n\n${trimmed}`,
     };
   });
 };
@@ -797,8 +794,8 @@ export type Branch = {
 };
 
 const BRANCH_TEMPLATES: readonly { title: string; repo: string }[] = [
-  { title: "Harden webhook replay handling", repo: "symphony-alpha" },
-  { title: "Inbox v2 saved filters", repo: "symphony-alpha" },
+  { title: "Harden webhook replay handling", repo: "closedloop-ai" },
+  { title: "Inbox v2 saved filters", repo: "closedloop-ai" },
   { title: "SAML SSO groundwork", repo: "astoria-service" },
   { title: "Dashboard KPI unit labels", repo: "astoria-frontend" },
   { title: "Prompt cache hit metrics", repo: "agent-evaluation-framework" },
@@ -851,7 +848,7 @@ export const branchesFor = (component: AgentComponent): readonly Branch[] => {
 // mock lacks repo/branch/PR fields, so they are synthesized deterministically.
 // ---------------------------------------------------------------------------
 
-const SESSION_REPOS = ["symphony-alpha", "astoria-frontend", "astoria-service"];
+const SESSION_REPOS = ["closedloop-ai", "astoria-frontend", "astoria-service"];
 const SLUG_NON_ALNUM = /[^a-z0-9]+/g;
 const TRIM_DASHES = /^-+|-+$/g;
 
@@ -954,7 +951,14 @@ export const componentMetrics = (
       sessionsCard,
       mergedCard,
       { key: "lines", label: "Lines shipped", value: numOrDash(linesShipped) },
-      { key: "cost", label: "Total cost", value: `$${totalCost.toFixed(2)}` },
+      {
+        key: "cost",
+        label: "Est. Total",
+        value: `$${totalCost.toFixed(2)}`,
+        info: {
+          what: "Known API costs plus estimated subscription costs.",
+        },
+      },
     ];
   }
 

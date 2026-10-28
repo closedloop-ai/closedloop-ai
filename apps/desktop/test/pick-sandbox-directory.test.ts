@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { isGitRepository } from "../src/shared/git-utils.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 

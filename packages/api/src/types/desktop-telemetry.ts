@@ -1,9 +1,8 @@
 import { z } from "zod";
 
 /**
- * FEA-3425 (PLN-1437 Phase 3): REST wire contract for `POST /desktop/telemetry`,
- * the HTTP twin of the relay socket's `desktop.telemetry` event. The event
- * payload itself is validated server-side against `desktopTelemetryEventSchema`
+ * FEA-3425 (PLN-1437 Phase 3): REST wire contract for `POST /desktop/telemetry`.
+ * The event payload itself is validated server-side against `desktopTelemetryEventSchema`
  * (`@repo/observability/telemetry/schema`); this module only names the HTTP
  * success-response envelope.
  *

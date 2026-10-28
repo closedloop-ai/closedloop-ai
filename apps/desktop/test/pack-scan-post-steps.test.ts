@@ -7,7 +7,7 @@
  * units are covered directly in component-scanner-installed-plugins.test.ts and
  * plugin-child-kind-parity.test.ts; this test guards that the settle path
  * actually invokes them, so a wiring regression that leaves a step dead in
- * production is caught (PR #3693 review — wongk; PR #4916 review — codex).
+ * production is caught (PR #3693 review — whitlockk; PR #4916 review — codex).
  *
  * Both store ops call `runPackScanPostSteps(db.prisma)`, so exercising that one
  * helper against a real test store proves the registered paths reach discovery.
@@ -16,11 +16,11 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import {
   AgentComponentKind,
   Harness,
 } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { runPackScanPostSteps } from "../src/main/packs/pack-scan-post-steps.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 

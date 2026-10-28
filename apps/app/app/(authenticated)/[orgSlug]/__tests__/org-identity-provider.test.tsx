@@ -1,9 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Mock setup — hoisted so vi.mock factories can reference them
-// ---------------------------------------------------------------------------
 
 const {
   mockSetActive,
@@ -46,9 +44,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-// ---------------------------------------------------------------------------
 // Component under test — imported after mocks are registered
-// ---------------------------------------------------------------------------
 
 import OrgIdentityProvider from "../org-identity-provider";
 

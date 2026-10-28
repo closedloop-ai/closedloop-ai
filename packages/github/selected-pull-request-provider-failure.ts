@@ -4,7 +4,10 @@ import {
   SelectedPullRequestEvidenceUnavailableReason,
 } from "@repo/api/src/types/selected-pull-request-evidence";
 import { z } from "zod";
-import { classifyGitHubProviderError } from "./provider-error-classification";
+import {
+  classifyGitHubProviderError,
+  type GitHubProviderErrorClassification,
+} from "./provider-error-classification";
 import { GitHubProviderResultStatus } from "./provider-result";
 
 const providerErrorSchema = z.object({
@@ -51,21 +54,24 @@ export function classifySelectedPullRequestProviderError(
       SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut
     );
   }
-  const classification = classifyGitHubProviderError(error);
-  if (classification.status === GitHubProviderResultStatus.ProviderRateLimit) {
-    return failure(
-      SelectedPullRequestEvidenceUnavailableReason.ProviderRateLimited,
-      classification.retryAfterSeconds
-    );
-  }
   const parsed = providerErrorSchema.safeParse(error);
   const status = parsed.success
     ? (parsed.data.status ?? parsed.data.response?.status)
     : undefined;
+  // A 401 is the provider's authoritative verdict on the credential, while
+  // rate-limit detection is a heuristic over provider message text. Classifying
+  // the heuristic first told consumers to back off a credential that will never
+  // succeed again instead of prompting reauthentication. 403 is deliberately
+  // left below: GitHub really does report secondary rate limits as 403, so
+  // there the heuristic must keep outranking the insufficient-scope reading.
   if (status === 401) {
     return failure(
       SelectedPullRequestEvidenceUnavailableReason.CredentialUnauthorized
     );
+  }
+  const rateLimited = rateLimitedFailure(classifyGitHubProviderError(error));
+  if (rateLimited) {
+    return rateLimited;
   }
   if (status === 403) {
     return failure(
@@ -97,6 +103,35 @@ function unavailableFromFailure(
     status: SelectedPullRequestEvidenceAvailability.Unavailable,
     ...providerFailure,
   };
+}
+
+/**
+ * Rate-limit failure for a generic classification, or null when that
+ * classification carries no rate-limit meaning and status-based handling below
+ * should decide. Exhaustive so a newly added classification member fails
+ * typecheck here rather than silently falling through to `ProviderFailure`.
+ */
+function rateLimitedFailure(
+  classification: GitHubProviderErrorClassification
+): SelectedPullRequestProviderFailure | null {
+  switch (classification.status) {
+    case GitHubProviderResultStatus.ProviderRateLimit:
+      return failure(
+        SelectedPullRequestEvidenceUnavailableReason.ProviderRateLimited,
+        classification.retryAfterSeconds
+      );
+    case GitHubProviderResultStatus.ProviderPermissionFiltered:
+    case GitHubProviderResultStatus.ProviderUnavailable:
+      return null;
+    default:
+      return assertNeverClassification(classification);
+  }
+}
+
+function assertNeverClassification(value: never): never {
+  throw new Error(
+    `Unhandled GitHub provider error classification: ${String(value)}`
+  );
 }
 
 function failure(

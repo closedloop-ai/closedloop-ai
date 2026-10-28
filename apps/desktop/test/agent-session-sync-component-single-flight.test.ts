@@ -20,7 +20,7 @@
  * `sendComponents` keeps the first run in flight while later ticks fire.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { ComponentSyncSendResult } from "../src/main/agent-sync/agent-component-sync-dead-letter.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";

@@ -4,7 +4,7 @@
  * Exercises the real route handler (not a mock self-check):
  * - admin caller → 200 { catalogItemId, distributionId } and both creates
  *   happen inside a single `withDb.tx` invocation (atomicity);
- * - non-admin caller (isOrgAdmin=false) → 403 forbiddenResponse;
+ * - non-admin caller (requireOrgAdmin refuses) → 403 forbiddenResponse;
  * - unknown agentComponentId → 404.
  */
 import {
@@ -21,7 +21,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  requireOrgAdmin: vi.fn(),
 }));
 
 let mockAuthContext: AuthContext;
@@ -38,9 +38,13 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  requireOrgAdmin: mocks.requireOrgAdmin,
 }));
 
+import {
+  ORG_ADMIN_ADMITTED,
+  orgAdminRefused,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { POST } from "@/app/agent-components/promote/route";
 
 beforeEach(() => {
@@ -60,7 +64,7 @@ const VALID_AC_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("POST /agent-components/promote", () => {
   it("promotes an AgentComponent to CatalogItem + Distribution (admin)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
 
     const catalogCreate = vi.fn().mockResolvedValue({ id: "new-item-1" });
     const versionCreate = vi.fn().mockResolvedValue({ id: "new-version-1" });
@@ -145,8 +149,8 @@ describe("POST /agent-components/promote", () => {
     );
   });
 
-  it("returns 403 for a non-admin caller (isOrgAdmin=false)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+  it("returns 403 for a non-admin caller (requireOrgAdmin refuses)", async () => {
+    mocks.requireOrgAdmin.mockImplementation(orgAdminRefused);
 
     const response = await POST(
       createMockRequest({
@@ -164,7 +168,7 @@ describe("POST /agent-components/promote", () => {
   });
 
   it("returns 404 when the AgentComponent is not found in the org", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
     mocks.withDb.mockImplementation((cb: (db: unknown) => unknown) =>
       cb({
         agentComponent: {
@@ -188,7 +192,7 @@ describe("POST /agent-components/promote", () => {
   });
 
   it("returns 400 for an invalid body (non-uuid agentComponentId)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
 
     const response = await POST(
       createMockRequest({

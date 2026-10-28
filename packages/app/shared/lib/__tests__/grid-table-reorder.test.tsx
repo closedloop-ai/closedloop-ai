@@ -411,7 +411,7 @@ function resolveNeighbourResizeReach(container: HTMLElement): {
   // overshoot is what lands in the next column. A non-negative offset (the
   // pre-v2 `right-0` handle) hangs over nothing.
   //
-  // ISS-5812 (wongk review): the overshoot must then be re-expressed in the NEXT
+  // ISS-5812 (whitlockk review): the overshoot must then be re-expressed in the NEXT
   // cell's frame before it can be compared with anything the grip resolver
   // returns, because the two frames are not the same origin — they are one
   // `border-l` apart. Reporting the raw 6px overshoot in the grip's coordinates
@@ -559,7 +559,7 @@ describe("GridTable reorder grip — position within its own column (ISS-5356)",
       const header = reorderableHeaderCell(container, column.id);
       const { box, ink } = resolveGripGeometry(header);
       // ISS-5356's defect, closed from the other side — and re-closed by ISS-5812
-      // (wongk review) on the axis that actually reaches the user.
+      // (whitlockk review) on the axis that actually reaches the user.
       //
       // The grip's BOX may still overlap the strip's reach: the box is invisible
       // and `pointer-events-none`, so an overlap there costs nothing and is

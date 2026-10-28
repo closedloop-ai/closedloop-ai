@@ -13,6 +13,8 @@ import {
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { PRD_TEMPLATE } from "@/app/documents/template-seeds";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 
 // ISS-4532: bound the seed transaction. The advisory-lock wait — a blocked
 // loser waits for the winner to COMMIT, not just to release a row lock — counts
@@ -66,7 +68,12 @@ export const documentTemplatesService = {
    */
   async ensureDefaultTemplates(
     organizationId: string,
-    userId: string
+    userId: string,
+    /**
+     * Runs on the seed transaction (ISS-12552); the steady-state fast path
+     * opens none and does not call it.
+     */
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<void> {
     // ISS-4532 FAST PATH (steady state): a cheap pooled read that takes NO lock.
     // ensureDefaultTemplates runs on EVERY template GET; if the org's PRD
@@ -120,6 +127,7 @@ export const documentTemplatesService = {
           });
 
           let templateId: string;
+          let changed = false;
           if (existing) {
             templateId = existing.artifactId;
           } else {
@@ -154,6 +162,7 @@ export const documentTemplatesService = {
               select: { id: true },
             });
             templateId = created.id;
+            changed = true;
           }
 
           const existingVersion =
@@ -165,7 +174,9 @@ export const documentTemplatesService = {
               null,
               PRD_TEMPLATE
             );
+            changed = true;
           }
+          await recordWrite?.(tx, { changed });
         },
         {
           maxWait: SEED_TEMPLATE_TX_MAX_WAIT_MS,
@@ -217,6 +228,7 @@ export const documentTemplatesService = {
               PRD_TEMPLATE
             );
           }
+          await recordWrite?.(tx, { changed: !existingVersion });
         },
         {
           maxWait: SEED_TEMPLATE_TX_MAX_WAIT_MS,

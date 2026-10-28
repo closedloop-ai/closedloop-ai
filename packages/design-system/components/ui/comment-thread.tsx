@@ -36,6 +36,9 @@ export function CommentThreadCard({
 }: Readonly<CommentThreadCardProps>) {
   return (
     <div
+      data-analytics-action={onClick ? "true" : undefined}
+      data-analytics-keyboard={onKeyDown ? "true" : undefined}
+      data-analytics-label="Open comment thread"
       className={cn(
         "relative min-w-0 overflow-hidden rounded-lg border border-border",
         interactive &&
@@ -60,6 +63,7 @@ type CommentThreadMainProps = {
   content: ReactNode;
   actions?: ReactNode;
   className?: string;
+  contentClassName?: string;
 };
 
 export function CommentThreadMain({
@@ -67,6 +71,7 @@ export function CommentThreadMain({
   avatar,
   className,
   content,
+  contentClassName,
 }: Readonly<CommentThreadMainProps>) {
   return (
     <div
@@ -76,7 +81,11 @@ export function CommentThreadMain({
       )}
     >
       {avatar}
-      <div className="flex w-0 flex-1 flex-col gap-2">{content}</div>
+      <div
+        className={cn("flex w-0 flex-1 flex-col gap-2", contentClassName)}
+      >
+        {content}
+      </div>
       {actions}
     </div>
   );

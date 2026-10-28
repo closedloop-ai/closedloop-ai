@@ -172,7 +172,7 @@ describe("detailHeaderSubtitle (FEA-3978)", () => {
 describe("detailHeaderSubtitle path disclosure (ISS-4805)", () => {
   /** The exact value observed in production. */
   const LEAKED_PATH =
-    "/Users/mike.angstadt/Code/hermes-agent/optional-skills/security/1password/SKILL.md";
+    "/Users/marisol.ashgrove/Code/hermes-agent/optional-skills/security/1password/SKILL.md";
 
   it("never renders the absolute home path observed in production", () => {
     // `?? ""`: dropping the subtitle entirely is also a pass — the assertion is
@@ -185,7 +185,7 @@ describe("detailHeaderSubtitle path disclosure (ISS-4805)", () => {
       }) ?? "";
 
     expect(subtitle).not.toBe(LEAKED_PATH);
-    expect(subtitle).not.toContain("mike.angstadt");
+    expect(subtitle).not.toContain("marisol.ashgrove");
     expect(subtitle).not.toContain("/Users/");
   });
 

@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   alignBucketRowsToTranscript,
+  buildTraceRowInstants,
   getLimitDotPercent,
   getWindowPercent,
   resolveSessionTimelineWindow,
@@ -42,6 +43,75 @@ const ACTOR = {
   name: "gpt-5.5",
   sessionId: "session-timeline-window",
 };
+
+/**
+ * ISS-7115: the `_row` → instant lookup that stops the timeline reading a row
+ * ORDINAL as reading order.
+ */
+describe("buildTraceRowInstants", () => {
+  const subSessionAt = "2026-06-10T09:04:00.000Z";
+  /** As `projectAgentSessionTurnItems` mints it: `timeline.length + index`. */
+  const subSessionRow = 900;
+  const transcript: TurnItem[] = [
+    promptRow(0, "2026-06-10T09:00:00.000Z"),
+    subagentRow(subSessionRow, subSessionAt),
+    promptRow(1, "2026-06-10T09:08:00.000Z"),
+  ];
+
+  it("answers a sub-session's out-of-order row with its own early instant", () => {
+    const instants = buildTraceRowInstants(transcript);
+
+    // The point of the map: `900` is a LATER ordinal than `1` and an EARLIER
+    // instant. Comparing the ordinals answers "which came first?" backwards;
+    // this is the answer that does not.
+    expect(instants.get(subSessionRow)).toBe(Date.parse(subSessionAt));
+    expect(instants.get(subSessionRow)).toBeLessThan(
+      instants.get(1) ?? Number.NaN
+    );
+  });
+
+  it("omits a row whose timestamp does not parse rather than inventing one", () => {
+    const instants = buildTraceRowInstants([
+      ...transcript,
+      untimedPromptRow(2),
+    ]);
+
+    expect(instants.has(2)).toBe(false);
+    expect(instants.size).toBe(3);
+  });
+});
+
+/** A transcript row whose timestamp does not parse — `getTurnItemMs` gives NaN. */
+function untimedPromptRow(row: number): TurnItem {
+  return {
+    _row: row,
+    actor: ACTOR,
+    cum: 0,
+    t: "not-a-date",
+    text: `turn ${row}`,
+    tMs: Number.NaN,
+    type: "prompt",
+  };
+}
+
+function subagentRow(row: number, at: string): TurnItem {
+  return {
+    _row: row,
+    actor: ACTOR,
+    body: [],
+    cost: null,
+    cum: 0,
+    duration: null,
+    model: null,
+    status: "completed",
+    sub: "review",
+    subagentType: "review",
+    t: at,
+    tMs: Date.parse(at),
+    tokens: null,
+    type: "subagent",
+  };
+}
 
 function promptRow(row: number, at: string): TurnItem {
   return {
@@ -527,15 +597,15 @@ describe("resolveSessionTimelineWindow phase-tiling bounds (ISS-5137)", () => {
     expect(window?.endMs).toBe(Date.parse(LAST_ACTIVITY_AT));
   });
 
-  it("covers transcript rows past a TRUNCATED phase prefix, even though the caption then reports a smaller span", () => {
-    // wongk review: a truncated tiling is a start-ordered PREFIX. The axis has to
-    // cover everything drawn, so it legitimately exceeds the phase-only span the
-    // "phases span …" caption formats. Pinned so the divergence is a documented
-    // contract on the partial-data path rather than silent drift.
+  it("covers transcript rows past the tiling's own span", () => {
+    // whitlockk review (ISS-4833): a tiling can be a start-ordered PREFIX, and the
+    // axis has to cover everything drawn, so it legitimately exceeds the
+    // tiling's span when the transcript continues past it. The truncation flag
+    // is not an input here (ISS-9858): the resolver reads the tiling's bounds
+    // only, so this pins the widening on the rows alone.
     const window = resolveSessionTimelineWindow(
       staleEndedSource({
         activitySegmentRows: [activeRow(FIRST_ROW_AT, POST_END_ROW_AT)],
-        activitySegmentRowsTruncated: true,
       })
     );
 

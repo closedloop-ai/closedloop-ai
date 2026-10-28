@@ -79,10 +79,10 @@ type AssignmentTitleParams = {
  *
  * Once the actor is named, the varying part (who assigned it) leads, so
  * consecutive rows differ from their first character. The name stays plain and
- * the strong stays on the entity title: every other row in this list — the
- * awaiting-input row, the loop-completed row, and the actor-less fallback below
- * — bolds the thing you are clicking through to, and the bold mass must not
- * jump to the front of the line just because the lookup resolved. The bold also
+ * the strong stays on the entity title: every other row in this list (the
+ * awaiting-input row and the actor-less fallback below) bolds the thing you are
+ * clicking through to, and the bold mass must not jump to the front of the line
+ * just because the lookup resolved. The bold also
  * marks where the entity type ends and its title begins, which "assigned you
  * artifact Fix session transcripts" otherwise leaves to the reader.
  *

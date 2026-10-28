@@ -26,8 +26,8 @@ import {
  * attribute value, on purpose: attribute values are scrubbed by the renderer
  * bridge's `isSafeString`, which rejects the substring "session" (a sensitive
  * key) and would null-drop the whole batch. Event/identifier fields are not
- * value-scrubbed, so the descriptive `sessions_list`/`sessions_detail` survives
- * there. (Proven by the sanitizer round-trip test.) */
+ * value-scrubbed, so the descriptive view name survives there. (Proven by the
+ * sanitizer round-trip test.) */
 export const RENDERER_RENDER_COMMIT_EVENT_NAME_BASE =
   "desktop.renderer.render_commit";
 
@@ -39,6 +39,7 @@ export function renderCommitEventName(view: RendererRenderView): string {
 
 /** Which instrumented view produced the commit. */
 export const RendererRenderView = {
+  BranchesList: "branches_list",
   SessionsList: "sessions_list",
   SessionsDetail: "sessions_detail",
 } as const;

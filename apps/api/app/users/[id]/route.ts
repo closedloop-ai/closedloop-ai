@@ -1,7 +1,10 @@
 import type { User } from "@repo/api/src/types/user";
+import { requireOrgAdmin } from "@/lib/auth/org-admin";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
+  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
@@ -9,7 +12,7 @@ import {
 import { usersService } from "../service";
 import { updateUserValidator } from "../validators";
 
-export const GET = withAuth<User, "/users/[id]">(
+export const GET = withAnyAuth<User, "/users/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -29,7 +32,7 @@ export const GET = withAuth<User, "/users/[id]">(
 );
 
 export const PUT = withAuth<User, "/users/[id]">(
-  async ({ user }, request, params) => {
+  async ({ clerkOrgId, clerkUserId, user }, request, params) => {
     try {
       const { id } = await params;
 
@@ -45,6 +48,21 @@ export const PUT = withAuth<User, "/users/[id]">(
       );
       if (parseError) {
         return parseError;
+      }
+
+      // Closedloop roles are organization-managed. Do not let members change
+      // their own role or another member's role through the general profile
+      // update endpoint. Keep the check server-side and use the authenticated
+      // Clerk organization, not a client supplied organization identifier.
+      if (body.role !== undefined) {
+        if (existing.id === user.id) {
+          return forbiddenResponse();
+        }
+
+        const adminDenial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+        if (adminDenial) {
+          return adminDenial;
+        }
       }
 
       const updatedUser = await usersService.update(

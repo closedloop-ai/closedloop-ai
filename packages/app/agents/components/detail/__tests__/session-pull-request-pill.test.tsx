@@ -1,4 +1,4 @@
-// ISS-4793: focused tests for the PR pill extracted out of the grandfathered
+// ISS-4793: focused tests for the PR pill extracted out of
 // agent-session-detail-view.tsx. Covers the href resolution, the link-vs-inert
 // branch, and the tooltip copy rules (status title-casing, subject truncation,
 // absent-subject omission) that the pill's description depends on.
@@ -18,7 +18,7 @@ import {
   PullRequestPill,
 } from "../session-pull-request-pill";
 
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 const PR_NUMBER_RE = /4170/;
 const NO_REPOSITORY_REASON_RE = /No repository is linked to this session/;
 
@@ -34,7 +34,7 @@ function pr(overrides: Partial<SessionPR> = {}): SessionPR {
 describe("getPullRequestHref (ISS-4793)", () => {
   it("builds the GitHub URL from the repo and a positive PR number", () => {
     expect(getPullRequestHref(pr(), REPO)).toBe(
-      "https://github.com/closedloop-ai/symphony-alpha/pull/4170"
+      "https://github.com/closedloop-ai/closedloop-ai/pull/4170"
     );
   });
 
@@ -44,14 +44,12 @@ describe("getPullRequestHref (ISS-4793)", () => {
     expect(getPullRequestHref(pr(), null)).toBeNull();
   });
 
-  it.each([
-    0,
-    -3,
-    "abc",
-    "",
-  ])("returns null for the non-PR-number %p", (num) => {
-    expect(getPullRequestHref(pr({ num }), REPO)).toBeNull();
-  });
+  it.each([0, -3, "abc", ""])(
+    "returns null for the non-PR-number %p",
+    (num) => {
+      expect(getPullRequestHref(pr({ num }), REPO)).toBeNull();
+    }
+  );
 });
 
 describe("buildPullRequestTitle (ISS-4793)", () => {
@@ -130,7 +128,7 @@ describe("PullRequestPill (ISS-4793)", () => {
     const link = screen.getByRole("link", { name: PR_NUMBER_RE });
     expect(link).toHaveAttribute(
       "href",
-      "https://github.com/closedloop-ai/symphony-alpha/pull/4170"
+      "https://github.com/closedloop-ai/closedloop-ai/pull/4170"
     );
     expect(link).toHaveAttribute("target", "_blank");
     // rel guards the opened tab against reverse-tabnabbing.

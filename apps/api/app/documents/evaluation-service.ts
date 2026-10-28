@@ -6,9 +6,15 @@ import {
 } from "@repo/api/src/types/evaluation";
 import type { DocumentRatingSummary } from "@repo/api/src/types/rating";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
-import { ArtifactType, withDb } from "@repo/database";
+import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { documentWhere } from "@/lib/artifact-adapters";
+import { fieldsThatMoved } from "@/lib/operation-receipts/changed-fields";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
+import type { DocumentRatingWrite } from "./document-rating-receipt";
 
 /**
  * Document evaluation service - ratings + judge feedback for DOCUMENT artifacts.
@@ -41,6 +47,17 @@ export const documentEvaluationService = {
             userId,
             organizationId,
           },
+        },
+        // `artifactId`/`organizationId` are the lookup key, not part of the
+        // summary the route returns.
+        select: {
+          id: true,
+          userId: true,
+          score: true,
+          comment: true,
+          artifactVersion: true,
+          createdAt: true,
+          updatedAt: true,
         },
       })
     );
@@ -86,74 +103,30 @@ export const documentEvaluationService = {
    * Returns `Result.err(Status.NotFound)` when no DOCUMENT artifact with this
    * id exists in the caller's organization (defence in depth — also blocks
    * cross-org access).
+   *
+   * `recordWrite` runs on the same transaction once the rating is stored, so
+   * an operation receipt that cannot be stored rolls the rating back
+   * (ISS-12552). `changed` is false when the caller's rating already held this
+   * score, comment and document version.
    */
   upsertRating(
     documentId: string,
     userId: string,
     organizationId: string,
     score: number,
-    comment?: string
+    comment?: string,
+    recordWrite?: RecordWriteInTransaction<DocumentRatingWrite>
   ): Promise<Result<DocumentRatingSummary, StatusCode>> {
-    return withDb.tx(async (tx) => {
-      const currentDetail = await tx.documentDetail.findFirst({
-        where: {
-          artifactId: documentId,
-          artifact: { organizationId, type: ArtifactType.DOCUMENT },
-        },
-        select: { latestVersion: true },
-      });
-
-      if (!currentDetail) {
-        return Result.err(Status.NotFound);
-      }
-
-      const rating = await tx.artifactRating.upsert({
-        where: {
-          artifactId_userId_organizationId: {
-            artifactId: documentId,
-            userId,
-            organizationId,
-          },
-        },
-        update: {
-          score,
-          comment,
-          artifactVersion: currentDetail.latestVersion,
-          updatedAt: new Date(),
-        },
-        create: {
-          artifactId: documentId,
-          userId,
-          organizationId,
-          score,
-          comment,
-          artifactVersion: currentDetail.latestVersion,
-        },
-      });
-
-      const [avgResult, count] = await Promise.all([
-        tx.artifactRating.aggregate({
-          where: { artifactId: documentId, organizationId },
-          _avg: { score: true },
-        }),
-        tx.artifactRating.count({
-          where: { artifactId: documentId, organizationId },
-        }),
-      ]);
-
-      return Result.ok({
-        average: avgResult._avg?.score ?? 0,
-        count,
-        userRating: {
-          id: rating.id,
-          userId: rating.userId,
-          score: rating.score,
-          comment: rating.comment ?? undefined,
-          documentVersion: rating.artifactVersion ?? 0,
-          createdAt: rating.createdAt,
-          updatedAt: rating.updatedAt,
-        },
-      });
+    const input = { documentId, userId, organizationId, score, comment };
+    // Unrecorded is main's statement list exactly: no read of the previous
+    // rating, which only a receipt needs (ISS-12552 flag-off parity).
+    return writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb.tx((tx) => upsertRatingInTransaction(tx, input, undefined)),
+      recorded: (record) =>
+        withDb.tx((tx) =>
+          upsertRatingInTransaction(tx, input, recordRatingChange(record))
+        ),
     });
   },
 
@@ -278,3 +251,142 @@ export const documentEvaluationService = {
     return result;
   },
 };
+
+/** The rating columns a re-rate can move, for its receipt (ISS-12552). */
+const RATED_FIELDS = ["score", "comment", "artifactVersion"] as const;
+
+const RATED_FIELDS_SELECT = {
+  score: true,
+  comment: true,
+  artifactVersion: true,
+} as const satisfies Record<(typeof RATED_FIELDS)[number], true>;
+
+type RatingUpsertInput = {
+  documentId: string;
+  userId: string;
+  organizationId: string;
+  score: number;
+  comment: string | undefined;
+};
+
+type RatingKey = {
+  artifactId_userId_organizationId: {
+    artifactId: string;
+    userId: string;
+    organizationId: string;
+  };
+};
+
+type StoredRating = Awaited<
+  ReturnType<TransactionClient["artifactRating"]["upsert"]>
+>;
+
+/**
+ * Runs before the upsert, on its transaction, and returns what to run after
+ * it: how a recorded rating compares the stored row with the previous one.
+ */
+type RatingWriteHook = (
+  tx: TransactionClient,
+  key: RatingKey
+) => Promise<
+  (
+    rating: StoredRating,
+    requested: {
+      score: number;
+      comment: string | undefined;
+      artifactVersion: number;
+    }
+  ) => Promise<void>
+>;
+
+function recordRatingChange(
+  recordWrite: RecordWriteInTransaction<DocumentRatingWrite>
+): RatingWriteHook {
+  return async (tx, key) => {
+    const previous = await tx.artifactRating.findUnique({
+      where: key,
+      select: RATED_FIELDS_SELECT,
+    });
+    return (rating, requested) =>
+      recordWrite(tx, {
+        changed:
+          fieldsThatMoved(RATED_FIELDS, requested, previous ?? {}, rating)
+            .length > 0,
+      });
+  };
+}
+
+async function upsertRatingInTransaction(
+  tx: TransactionClient,
+  input: RatingUpsertInput,
+  hook: RatingWriteHook | undefined
+): Promise<Result<DocumentRatingSummary, StatusCode>> {
+  const { documentId, userId, organizationId, score, comment } = input;
+  const currentDetail = await tx.documentDetail.findFirst({
+    where: {
+      artifactId: documentId,
+      artifact: { organizationId, type: ArtifactType.DOCUMENT },
+    },
+    select: { latestVersion: true },
+  });
+
+  if (!currentDetail) {
+    return Result.err(Status.NotFound);
+  }
+
+  const ratingKey: RatingKey = {
+    artifactId_userId_organizationId: {
+      artifactId: documentId,
+      userId,
+      organizationId,
+    },
+  };
+  const afterUpsert = await hook?.(tx, ratingKey);
+
+  const rating = await tx.artifactRating.upsert({
+    where: ratingKey,
+    update: {
+      score,
+      comment,
+      artifactVersion: currentDetail.latestVersion,
+      updatedAt: new Date(),
+    },
+    create: {
+      artifactId: documentId,
+      userId,
+      organizationId,
+      score,
+      comment,
+      artifactVersion: currentDetail.latestVersion,
+    },
+  });
+  await afterUpsert?.(rating, {
+    score,
+    comment,
+    artifactVersion: currentDetail.latestVersion,
+  });
+
+  const [avgResult, count] = await Promise.all([
+    tx.artifactRating.aggregate({
+      where: { artifactId: documentId, organizationId },
+      _avg: { score: true },
+    }),
+    tx.artifactRating.count({
+      where: { artifactId: documentId, organizationId },
+    }),
+  ]);
+
+  return Result.ok({
+    average: avgResult._avg?.score ?? 0,
+    count,
+    userRating: {
+      id: rating.id,
+      userId: rating.userId,
+      score: rating.score,
+      comment: rating.comment ?? undefined,
+      documentVersion: rating.artifactVersion ?? 0,
+      createdAt: rating.createdAt,
+      updatedAt: rating.updatedAt,
+    },
+  });
+}

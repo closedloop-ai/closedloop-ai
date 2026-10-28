@@ -79,7 +79,7 @@ function response(
         id: "session-1",
         lossClass: LossClass.Systemic,
         minutes: 45,
-        repo: "closedloop-ai/symphony-alpha",
+        repo: "closedloop-ai/closedloop-ai",
         title: "Org usage limit reached mid-run",
       },
     ],

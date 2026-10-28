@@ -27,7 +27,7 @@
  *     fold: with a persisted `[repo, branch, owner, status, pr, cost]` the last
  *     surviving predecessor is Status, whose track already ends at 972px, so
  *     anchoring after it leaves Cost ending at 1,072px — still past the fold,
- *     i.e. the inverse of the repair (wongk + stage review). So the resolved
+ *     i.e. the inverse of the repair (whitlockk + stage review). So the resolved
  *     slot is then CLAMPED left until Cost's own track ends within
  *     `SESSIONS_LEGIBLE_COLUMN_BUDGET_PX`. Relative placement is the preference;
  *     the budget is the guarantee.
@@ -39,6 +39,11 @@
  * relocation is unit-testable on its own and the hook stays responsible only for
  * wiring it to the restore boundary.
  */
+
+import {
+  runViewStateMigration,
+  type ViewStateMigrationSpec,
+} from "../../shared/lib/view-state-migration";
 
 /**
  * Schema version stamped onto a Sessions saved view once every migration below
@@ -145,18 +150,17 @@ export function relocateColumnToCanonicalSlot(
  * {@link SESSIONS_SAVED_VIEW_VERSION} or beyond — including a view written by a
  * NEWER build than this one, whose higher version is preserved rather than
  * rolled back, so a user moving between builds never has a future migration
- * silently re-run against them.
- *
- * Deliberately UNLIKE {@link migrateSavedHiddenColumns}, which clamps a future
- * stamp down. The restore drops unknown ids from both arrays, but the losses are
- * not the same defect: an id missing from `columnOrder` is placed at its natural
- * position by `orderColumns`, so the view degrades to a layout the user did not
- * choose, while an id missing from `hiddenColumns` RENDERS A COLUMN this build
- * ships hidden. Only the second is worth re-running a future migration to heal.
+ * silently re-run against them. ISS-9447 M3 put the hidden-columns axis on that
+ * same policy, so the two no longer differ.
  *
  * An empty `columnOrder` (the natural-order convention) still advances the
  * version: there is nothing to repair, and stamping it means the next load skips
  * this check entirely instead of re-deriving the same no-op.
+ *
+ * The step table is built per call rather than at module scope because the v1
+ * repair is parameterized by the CALLER's canonical order and track geometry —
+ * the migration stays a pure function over ids and numbers, and the Sessions
+ * table keeps owning its own geometry.
  */
 export function migrateSavedColumnOrder(
   columnOrder: readonly string[],
@@ -164,46 +168,47 @@ export function migrateSavedColumnOrder(
   fromVersion: number,
   geometry?: ColumnBudgetGeometry
 ): { columnOrder: string[]; version: number } {
-  if (fromVersion >= SESSIONS_SAVED_VIEW_VERSION) {
-    return { columnOrder: [...columnOrder], version: fromVersion };
-  }
-  // v1 (ISS-4890): put Cost back in front of the fold. Guarded on the version,
-  // not on the current position, so a user who deliberately drags it back after
-  // the migration keeps their choice.
-  const migrated =
-    fromVersion < SESSIONS_SAVED_VIEW_VERSION_COST_RELOCATION
-      ? relocateColumnToCanonicalSlot(
-          columnOrder,
-          canonicalOrder,
-          SESSIONS_MIGRATED_COST_COLUMN_ID,
-          geometry
-        )
-      : [...columnOrder];
-  return { columnOrder: migrated, version: SESSIONS_SAVED_VIEW_VERSION };
+  const migrated = runViewStateMigration<readonly string[]>(
+    {
+      currentVersion: SESSIONS_SAVED_VIEW_VERSION,
+      steps: [
+        {
+          // v1 (ISS-4890): put Cost back in front of the fold. Guarded on the
+          // version, not on the current position, so a user who deliberately
+          // drags it back after the migration keeps their choice.
+          apply: (order) =>
+            relocateColumnToCanonicalSlot(
+              order,
+              canonicalOrder,
+              SESSIONS_MIGRATED_COST_COLUMN_ID,
+              geometry
+            ),
+          version: SESSIONS_SAVED_VIEW_VERSION_COST_RELOCATION,
+        },
+      ],
+    },
+    columnOrder,
+    fromVersion
+  );
+  return { columnOrder: [...migrated.value], version: migrated.version };
 }
 
 /**
  * ISS-6005: version stamp for the HIDDEN-COLUMNS migrations, tracked separately
  * from {@link SESSIONS_SAVED_VIEW_VERSION}.
  *
- * Separate on purpose, not as a second copy of the same idea: the column-ORDER
- * migrations above are applied only while the `sessions-grid-fold-legibility`
- * flag is on (an ISS-4890 review decision), so their version stamp advances only
- * on flag-on loads. The hidden-columns migration must reach EVERY user — Mike's
- * defect is precisely that persisted views predating ISS-5315 keep showing the
- * PR/Merge columns — so it runs unconditionally in both parsers. Sharing one
- * scalar would force a choice between skipping the ungated repair while the flag
- * is off, or stamping a version that silently retires the gated v1 relocation
- * for users it never ran for. Two dimensions, two markers.
+ * Separate on purpose, not as a second copy of the same idea: column order and
+ * hidden-column repairs are independent persisted dimensions. Sharing one scalar
+ * would let one repair stamp the other as done without proving it ran.
  *
  * ISS-6065 raised this to 2. v1 shipped only three of the six default-hidden
  * ids, so `started` (default-hidden since ISS-5315) kept rendering on every
- * pre-ISS-5315 view, and `projects` / `issues` were set to auto-show the moment
- * `grid-table-v2` flips on. A new step rather than an edit to the v1 payload:
+ * pre-ISS-5315 view, and `projects` / `issues` were set to auto-show as soon as
+ * their gate opened — which ISS-10301 made unconditional by retiring it. A new step rather than an edit to the v1 payload:
  * views loaded since ISS-6005 are already stamped 1, and the version guard would
  * skip a widened v1 for exactly the population that needs it.
  */
-export const SESSIONS_SAVED_VIEW_HIDDEN_VERSION = 2;
+export const SESSIONS_SAVED_VIEW_HIDDEN_VERSION = 3;
 
 /**
  * The column ids the v1 hidden-columns migration hides in a persisted view.
@@ -247,9 +252,9 @@ export const SESSIONS_HIDDEN_MIGRATION_V1_VERSION = 1;
  * the other two, and `started` is ungated, so every pre-ISS-5315 saved view kept
  * rendering it.
  *
- * `projects` / `issues`: ISS-5770 made them default-hidden so flipping
- * `grid-table-v2` on would not grow two columns the prototype's default view
- * does not have. That is a DEFAULT, and the same columnIds-minus-hidden
+ * `projects` / `issues`: ISS-5770 made them default-hidden so opening their gate
+ * would not grow two columns the prototype's default view does not have —
+ * load-bearing now rather than hypothetical, since ISS-10301 ungated them. That is a DEFAULT, and the same columnIds-minus-hidden
  * derivation would auto-show them on every persisted view the moment the gate
  * opens — the precise outcome that ticket exists to prevent.
  */
@@ -268,6 +273,26 @@ const SESSIONS_HIDDEN_MIGRATION_V2_COLUMN_IDS = [
  * exists to keep.
  */
 const SESSIONS_HIDDEN_MIGRATION_V2_VERSION = 2;
+
+/**
+ * ISS-8712: `tags` ships default-hidden, the default the approved prototype
+ * contract gave it.
+ *
+ * Its own step for the same reason v2 was: a view loaded since ISS-6065 is
+ * already stamped 2, so widening the v2 payload would be skipped by the version
+ * guard for exactly the population that needs it. And the id must be named
+ * SOMEWHERE — the shared `columnIds minus hiddenColumns` derivation would
+ * auto-show a column absent from a persisted hidden set the moment the flag
+ * opens, which is the outcome the default-OFF decision exists to prevent.
+ */
+const SESSIONS_HIDDEN_MIGRATION_V3_COLUMN_IDS = ["tags"];
+
+/**
+ * The stamp a view carries once the v3 step has been applied. FROZEN at 3, for
+ * the reason the v2 constant states: a later step must not re-hide `tags` for a
+ * user who has deliberately shown it.
+ */
+const SESSIONS_HIDDEN_MIGRATION_V3_VERSION = 3;
 
 /**
  * Every hidden-columns migration in version order: a step's ids are appended to
@@ -294,6 +319,10 @@ export const SESSIONS_HIDDEN_MIGRATION_STEPS: readonly {
     version: SESSIONS_HIDDEN_MIGRATION_V2_VERSION,
     columnIds: SESSIONS_HIDDEN_MIGRATION_V2_COLUMN_IDS,
   },
+  {
+    version: SESSIONS_HIDDEN_MIGRATION_V3_VERSION,
+    columnIds: SESSIONS_HIDDEN_MIGRATION_V3_COLUMN_IDS,
+  },
 ];
 
 /**
@@ -319,45 +348,62 @@ export const SESSIONS_HIDDEN_MIGRATION_COLUMN_IDS: readonly string[] =
  * membership, so a user who shows a migrated column again AFTER its step keeps
  * that choice on every later load.
  *
- * The returned VERSION is always this build's stamp — a marker from a NEWER
- * build is clamped DOWN rather than preserved (ISS-6065, wongk). Preserving it
- * was the intent, but this build cannot honour what it certifies: the shared
- * `usePersistedTableViewState` restore drops every hidden id outside this
- * build's `columnIds` and then re-persists the filtered set alongside the
- * untouched marker, so a v3-only default-hidden id is destroyed while the stamp
- * still swears v3 ran. Back on v3 the version guard short-circuits and the
- * column silently renders — ISS-6065's own defect, reintroduced by a downgrade.
- * Clamping re-runs exactly the steps above this build on return, which is
- * exactly the set whose ids this build may have dropped. The cost is bounded and
- * strictly smaller: a column deliberately re-shown on the newer build is hidden
- * once more, rather than a hidden column silently coming back.
+ * A marker from a NEWER build is now PRESERVED (ISS-9447 M3), as this axis's
+ * sibling always did. ISS-6065 clamped it down instead, to answer a restore that
+ * DROPPED every hidden id outside this build's `columnIds` and re-persisted the
+ * filtered set alongside the untouched marker: a v3-only default-hidden id was
+ * destroyed while the stamp still swore v3 ran, so back on v3 the version guard
+ * short-circuited and the column silently rendered. ISS-9447 D1 removed that
+ * erasure — the shared restore carries those ids and writes them back — so there
+ * is nothing left for a forced re-run to heal, and only the clamp's own cost
+ * remained: a column deliberately re-shown on the newer build was hidden once
+ * more on every trip through an older one.
+ *
+ * The clamp also covered a SECOND route to that same defect, which a read-time
+ * policy is the wrong place to answer: "Reset view" rewrites the hidden set to
+ * THIS build's defaults, which left a newer stamp vouching for a payload the
+ * reset had just replaced. The reset writes the stamp with the payload now —
+ * `resetColumnVersions` on the shared persisted-view hook — so the record stays
+ * self-consistent without re-running anything on load.
  */
 export function migrateSavedHiddenColumns(
   hiddenColumns: readonly string[],
   fromVersion: number
 ): { hiddenColumns: string[]; version: number } {
-  if (fromVersion >= SESSIONS_SAVED_VIEW_HIDDEN_VERSION) {
-    return {
-      hiddenColumns: [...hiddenColumns],
-      version: SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
-    };
-  }
-  const present = new Set(hiddenColumns);
-  const added: string[] = [];
-  const pending = SESSIONS_HIDDEN_MIGRATION_STEPS.filter(
-    (step) => fromVersion < step.version
-  ).flatMap((step) => step.columnIds);
-  for (const id of pending) {
-    if (!present.has(id)) {
-      present.add(id);
-      added.push(id);
-    }
-  }
-  return {
-    hiddenColumns: [...hiddenColumns, ...added],
-    version: SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
-  };
+  const migrated = runViewStateMigration<readonly string[]>(
+    SESSIONS_HIDDEN_MIGRATION_SPEC,
+    hiddenColumns,
+    fromVersion
+  );
+  return { hiddenColumns: [...migrated.value], version: migrated.version };
 }
+
+/** Append the ids of one migration step that `hiddenColumns` does not already carry. */
+function appendMissingHiddenColumns(
+  hiddenColumns: readonly string[],
+  columnIds: readonly string[]
+): string[] {
+  const present = new Set(hiddenColumns);
+  const added = columnIds.filter((id) => !present.has(id));
+  return [...hiddenColumns, ...added];
+}
+
+/**
+ * {@link SESSIONS_HIDDEN_MIGRATION_STEPS} as the shared runner's step table.
+ *
+ * Derived rather than restated, so the payload a step applies and the payload
+ * the guard test pins are one declaration.
+ */
+const SESSIONS_HIDDEN_MIGRATION_SPEC: ViewStateMigrationSpec<
+  readonly string[]
+> = {
+  currentVersion: SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
+  steps: SESSIONS_HIDDEN_MIGRATION_STEPS.map((step) => ({
+    apply: (hiddenColumns: readonly string[]) =>
+      appendMissingHiddenColumns(hiddenColumns, step.columnIds),
+    version: step.version,
+  })),
+};
 
 /** Index of the LAST element satisfying `predicate`, or -1 when none does. */
 function findLastIndex<T>(
@@ -375,7 +421,7 @@ function findLastIndex<T>(
 /**
  * The track arithmetic {@link relocateColumnToCanonicalSlot} needs to tell a
  * legible destination from one that is past the horizontal fold (ISS-4890,
- * wongk + stage review).
+ * whitlockk + stage review).
  *
  * Kept as a caller-supplied value rather than imported here so this module stays
  * a pure function over ids and numbers — the Sessions table owns its geometry,

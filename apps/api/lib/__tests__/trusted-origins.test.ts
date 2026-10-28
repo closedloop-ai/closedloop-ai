@@ -4,7 +4,7 @@ import { isTrustedOrigin } from "@/lib/trusted-origins";
 describe("isTrustedOrigin", () => {
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("NEXT_PUBLIC_PREVIEW_DOMAIN", "preview.closedloop-stage.ai");
+    vi.stubEnv("NEXT_PUBLIC_PREVIEW_DOMAIN", "preview.stage.example");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.closedloop.ai");
     vi.stubEnv("NEXT_PUBLIC_WEB_URL", "https://www.closedloop.ai");
   });
@@ -24,21 +24,19 @@ describe("isTrustedOrigin", () => {
   });
 
   it("allows preview suffix hosts and their subdomains", () => {
-    expect(isTrustedOrigin("https://preview.closedloop-stage.ai")).toBe(true);
+    expect(isTrustedOrigin("https://preview.stage.example")).toBe(true);
     expect(
-      isTrustedOrigin("https://app-stage-9e4itcla9.preview.closedloop-stage.ai")
+      isTrustedOrigin("https://app-stage-9e4itcla9.preview.stage.example")
     ).toBe(true);
     expect(
       isTrustedOrigin(
-        "https://app-stage-git-multi-repo-team-config-ui.preview.closedloop-stage.ai"
+        "https://app-stage-git-multi-repo-team-config-ui.preview.stage.example"
       )
     ).toBe(true);
   });
 
   it("rejects partial-match preview suffix hosts without a dot boundary", () => {
-    expect(isTrustedOrigin("https://evilpreview.closedloop-stage.ai")).toBe(
-      false
-    );
+    expect(isTrustedOrigin("https://evilpreview.stage.example")).toBe(false);
   });
 
   it("rejects origins that include a path or query string", () => {
@@ -54,7 +52,7 @@ describe("isTrustedOrigin", () => {
     // Regression: the previous fallback `hostname.endsWith('.vercel.app')
     // && hostname.startsWith('app-')` accepted Vercel projects published
     // by any third-party team. Legitimate previews live under
-    // *.preview.closedloop-stage.ai, so the vercel.app fallback is gone.
+    // *.preview.stage.example, so the vercel.app fallback is gone.
     expect(isTrustedOrigin("https://app-evil-otherteam.vercel.app")).toBe(
       false
     );

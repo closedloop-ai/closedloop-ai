@@ -47,8 +47,10 @@ export function SearchIntellisenseOverlay({
 }: SearchIntellisenseOverlayProps) {
   const heading = MODE_HEADINGS[view.mode];
 
+  // Chrome only, matching the FTS dropdown it swaps with. The owning
+  // `SearchTypeahead` positions the popup layer around this (ISS-8777).
   return (
-    <div className="absolute inset-x-2 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-popover shadow-md">
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-popover shadow-md">
       {view.isLoading && view.rows.length === 0 ? (
         <div className="flex items-center justify-center py-4">
           <Loader2Icon
@@ -71,7 +73,7 @@ export function SearchIntellisenseOverlay({
       {view.rows.length > 0 ? (
         <ul
           aria-label={heading ?? "Suggestions"}
-          className="max-h-80 overflow-auto py-1"
+          className="max-h-80 min-h-0 overflow-auto py-1"
           id={listboxId}
           // The owning input carries role="combobox" + aria-controls to this id;
           // interactivity stays on that input via aria-activedescendant, so this

@@ -1,10 +1,11 @@
-import { render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import Page, {
   generateMetadata,
 } from "../app/(unauthenticated)/sign-up/[[...sign-up]]/page";
+import { SignUpPageContent } from "../app/(unauthenticated)/sign-up/sign-up-page-content";
 
 vi.mock("next/headers", () => ({
+  cookies: async () => ({ get: () => undefined }),
   headers: () => Promise.resolve(new Headers({ host: "app.closedloop.ai" })),
 }));
 
@@ -12,9 +13,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("Sign Up Page", () => {
-  const { container } = render(<Page />);
-  expect(container).toBeDefined();
+test("Sign Up Page resolves server data before rendering shared content", async () => {
+  const page = await Page();
+  expect(page.type).toBe(SignUpPageContent);
+  expect(page.props.browserRun).toBeNull();
 });
 
 // FEA-632 sends unauthenticated visitors (including link-unfurler bots) to

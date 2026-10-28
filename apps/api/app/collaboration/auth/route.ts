@@ -6,6 +6,7 @@ import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { usersService } from "../../users/service";
 
 /**
@@ -17,7 +18,7 @@ import { usersService } from "../../users/service";
  * payload (`{ token }`), not the BFF `ApiResult` envelope, because the client's
  * `LiveblocksProvider` auth callback consumes it directly.
  */
-export async function POST(request: Request): Promise<Response> {
+async function handlePost(request: Request): Promise<Response> {
   try {
     // Require write scope: a successful auth mints a FULL_ACCESS Liveblocks
     // session (comment + Y.Doc mutations), so a read-only API key must not pass.
@@ -91,3 +92,5 @@ function getUserName(user: User): string {
   }
   return "Anonymous";
 }
+
+export const POST = withRequestCompleted(handlePost);

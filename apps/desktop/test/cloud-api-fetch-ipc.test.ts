@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { BatchMutationRoute } from "@repo/api/src/types/batch-mutation-routes";
+import { GRID_PREFERENCE_ROUTE } from "@repo/api/src/types/grid-preferences";
+import { test } from "vitest";
 import {
   DEFAULT_TIMEOUT_MS,
   resolveRequestTimeoutMs,
@@ -11,15 +13,17 @@ import {
 import {
   API_ORIGIN,
   createHarness,
+  NOT_ALLOWLISTED_ERROR,
   UNTRUSTED_EVENT,
 } from "./cloud-api-fetch-ipc-test-harness.js";
+import { deferred } from "./deferred.js";
 
 const UNTRUSTED_SENDER_ERROR = /untrusted sender/;
 const ORIGIN_UNSET_ERROR = /api origin unset/;
 const SOCKET_HANG_UP_ERROR = /socket hang up/;
 const GET_BODY_ERROR = /request bodies are not supported for GET/;
-const NOT_ALLOWLISTED_ERROR = /is not an allowlisted write endpoint/;
 const BODY_READ_ERROR = /body stream aborted/;
+const PLAIN_ROUTE_PATH = /^[a-z0-9/-]+$/;
 
 // A representative allowlisted write target: creating a root trace comment on a
 // session. The id is a single opaque segment, matching the real
@@ -90,6 +94,105 @@ test("signed-out short-circuits to a 401 ApiResult envelope without fetching", a
   }
 });
 
+test("a response captured by an old account generation is withheld", async () => {
+  let admission = {
+    userId: "user-1",
+    organizationId: "org-1",
+    generation: 1,
+  } as {
+    userId: string;
+    organizationId: string;
+    generation: number;
+  } | null;
+  const fetchStarted = deferred<void>();
+  const fetchResponse = deferred<Response>();
+  const { invoke } = createHarness({
+    getAccountAdmission: () => admission,
+    fetchImpl: () => {
+      fetchStarted.resolve();
+      return fetchResponse.promise;
+    },
+  });
+
+  const pending = invoke({ path: "/agent-sessions" });
+  await fetchStarted.promise;
+  admission = null;
+  fetchResponse.resolve(
+    new Response(JSON.stringify({ success: true, data: ["stale"] }), {
+      status: 200,
+    })
+  );
+
+  const result = await pending;
+  assert.equal(result.kind, "response");
+  if (result.kind === "response") {
+    assert.equal(result.status, 401);
+  }
+});
+
+test("a rejected fetch from an old account generation is withheld", async () => {
+  let admission = {
+    userId: "user-1",
+    organizationId: "org-1",
+    generation: 1,
+  } as { userId: string; organizationId: string; generation: number } | null;
+  const fetchStarted = deferred<void>();
+  const fetchFailure = deferred<never>();
+  const { invoke } = createHarness({
+    getAccountAdmission: () => admission,
+    fetchImpl: () => {
+      fetchStarted.resolve();
+      return fetchFailure.promise;
+    },
+  });
+
+  const pending = invoke({ path: "/agent-sessions" });
+  await fetchStarted.promise;
+  admission = null;
+  fetchFailure.reject(new Error("stale network failure"));
+
+  const result = await pending;
+  assert.equal(result.kind, "response");
+  if (result.kind === "response") {
+    assert.equal(result.status, 401);
+  }
+});
+
+test("a rejected body read from an old account generation is withheld", async () => {
+  let admission = {
+    userId: "user-1",
+    organizationId: "org-1",
+    generation: 1,
+  } as { userId: string; organizationId: string; generation: number } | null;
+  const bodyStarted = deferred<void>();
+  const bodyFailure = deferred<never>();
+  const response = {
+    headers: new Headers(),
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: () => {
+      bodyStarted.resolve();
+      return bodyFailure.promise;
+    },
+  } as unknown as Response;
+  const { invoke } = createHarness({
+    getAccountAdmission: () => admission,
+    fetchImpl: () => Promise.resolve(response),
+  });
+
+  const pending = invoke({ path: "/agent-sessions" });
+  await bodyStarted.promise;
+  admission = null;
+  bodyFailure.reject(new Error("stale body failure"));
+
+  const result = await pending;
+  assert.equal(result.kind, "response");
+  if (result.kind === "response") {
+    assert.equal(result.status, 401);
+  }
+});
+
 test("rejects paths that escape the configured origin", async () => {
   const { invoke, fetchCalls } = createHarness();
 
@@ -121,13 +224,26 @@ test("rejects malformed requests and disallowed methods", async () => {
     assert.equal(result.kind, "network-error");
   }
   // Methods outside the understood set are rejected regardless of path.
-  for (const method of ["TRACE", "PUT", "OPTIONS", "HEAD"]) {
+  for (const method of ["TRACE", "OPTIONS", "HEAD"]) {
     const result = await invoke({ path: TRACE_COMMENTS_PATH, method });
     assert.equal(result.kind, "network-error", `${method} must be rejected`);
   }
+  // PUT is understood but has no trace-comment allowlist entry, so it is
+  // rejected here the same way as any other mutation against this path.
+  {
+    const result = await invoke({
+      path: TRACE_COMMENTS_PATH,
+      method: "PUT",
+      body: "{}",
+    });
+    assert.equal(result.kind, "network-error", "PUT must be rejected");
+    if (result.kind === "network-error") {
+      assert.match(result.message, NOT_ALLOWLISTED_ERROR);
+    }
+  }
   // The mutating methods ARE understood now, but only against an allowlisted
   // path: `/x` is not a trace-comment route, so each is rejected before fetch.
-  for (const method of ["POST", "PATCH", "DELETE"]) {
+  for (const method of ["POST", "PATCH", "PUT", "DELETE"]) {
     const result = await invoke({ path: "/x", method });
     assert.equal(result.kind, "network-error", `${method} /x must be rejected`);
     if (result.kind === "network-error") {
@@ -209,6 +325,149 @@ test("POST reply, PATCH edit, and DELETE reach their allowlisted trace-comment r
     assert.equal(result.kind, "response", `${method} ${path} must fetch`);
     assert.equal(fetchCalls.length, 1);
     assert.equal(fetchCalls[0].init.method, method);
+  }
+});
+
+test("POST and DELETE reach the allowlisted grid preference route", async () => {
+  for (const { method, body } of [
+    { method: "POST", body: "{}" },
+    { method: "DELETE", body: undefined },
+  ]) {
+    const { invoke, fetchCalls } = createHarness();
+    const result = await invoke({
+      path: `${GRID_PREFERENCE_ROUTE}?gridKey=sessions`,
+      method,
+      ...(body === undefined ? {} : { body }),
+    });
+
+    assert.equal(result.kind, "response", `${method} must fetch`);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0].init.method, method);
+    assert.equal(
+      fetchCalls[0].url.toString(),
+      `${API_ORIGIN}${GRID_PREFERENCE_ROUTE}?gridKey=sessions`
+    );
+  }
+});
+
+test("every route interpolated into an allowlist regex is plain path characters", () => {
+  // The allowlist builds its patterns by interpolating these constants unescaped.
+  // A regex metacharacter in one (`.`, `+`, `?`) would silently widen that entry
+  // instead of failing, so a new route must stay inside this charset.
+  for (const route of [
+    GRID_PREFERENCE_ROUTE,
+    ...Object.values(BatchMutationRoute),
+  ]) {
+    assert.match(
+      route,
+      PLAIN_ROUTE_PATH,
+      `${route} must not carry regex metacharacters`
+    );
+  }
+});
+
+test("POST reaches each batch-mutation route at its published versions, body byte-identical", async () => {
+  // AC 1 (ISS-9466): the server sees the intended method, URL, and body.
+  // ISS-12916 adds v2-only routes; earlier families retain their v1/v2 pair.
+  for (const route of Object.values(BatchMutationRoute)) {
+    for (const path of batchMutationPaths(route)) {
+      const { invoke, fetchCalls } = createHarness();
+      const body = JSON.stringify({ documentIds: ["d-1", "d-2"], route: path });
+      const result = await invoke({
+        path,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+
+      assert.equal(result.kind, "response", `POST ${path} must fetch`);
+      assert.equal(fetchCalls.length, 1, `POST ${path} must fetch once`);
+      assert.equal(fetchCalls[0].init.method, "POST");
+      assert.equal(fetchCalls[0].url.toString(), `${API_ORIGIN}${path}`);
+      assert.equal(fetchCalls[0].init.body, body);
+    }
+  }
+});
+
+test("a query on a batch-mutation route is carried, not matched", async () => {
+  // The v1 pathname is what the allowlist sees; the query rides along to the
+  // server unchanged and neither widens nor narrows the match.
+  const path = `${BatchMutationRoute.DocumentsMove}?x=/v2`;
+  const { invoke, fetchCalls } = createHarness();
+  const result = await invoke({ path, method: "POST", body: "{}" });
+  assert.equal(result.kind, "response");
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url.toString(), `${API_ORIGIN}${path}`);
+});
+
+test("a batch-mutation body is passed through opaque: the bridge never rewrites it", async () => {
+  // AC 2 (ISS-9466): version skew is the server's to answer. An older desktop
+  // sending the v1 shape to the v1 route, and a v1-shaped body aimed at the
+  // /v2 route, both reach fetchImpl untouched, and the server's per-item
+  // answer comes back untouched too.
+  const v1Body = JSON.stringify({
+    sessionIds: ["s-1"],
+    assigneeId: "user-2",
+  });
+  const serverAnswer = {
+    success: true,
+    data: { results: [{ id: "s-1", ok: false, reason: "unknown-reason" }] },
+  };
+  for (const path of [
+    BatchMutationRoute.AgentSessionsAssign,
+    `${BatchMutationRoute.AgentSessionsAssign}/v2`,
+  ]) {
+    const { invoke, fetchCalls } = createHarness(
+      {},
+      new Response(JSON.stringify(serverAnswer), {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+      })
+    );
+    const result = await invoke({ path, method: "POST", body: v1Body });
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0].init.body, v1Body);
+    assert.equal(result.kind, "response");
+    if (result.kind === "response") {
+      assert.equal(result.status, 200);
+      assert.deepEqual(JSON.parse(result.bodyText), serverAnswer);
+    }
+  }
+});
+
+test("rejects batch-mutation lookalikes and non-POST methods without fetching", async () => {
+  const cases: { path: string; method: string }[] = [
+    // A version the allowlist does not name.
+    { path: `${BatchMutationRoute.DocumentsUpdateStatus}/v3`, method: "POST" },
+    // Trailing characters past the exact route.
+    { path: `${BatchMutationRoute.DocumentsUpdateStatus}x`, method: "POST" },
+    // An allowlisted route or suffix smuggled in the query must not widen the
+    // entry: only the pathname is matched.
+    {
+      path: `/documents/unknown?x=${BatchMutationRoute.DocumentsMove}`,
+      method: "POST",
+    },
+    { path: `${BatchMutationRoute.DocumentsMove}/v3?x=/v2`, method: "POST" },
+  ];
+  for (const route of Object.values(BatchMutationRoute)) {
+    for (const path of batchMutationPaths(route)) {
+      cases.push({ path, method: "PATCH" }, { path, method: "DELETE" });
+    }
+  }
+  for (const { path, method } of cases) {
+    const { invoke, fetchCalls } = createHarness();
+    const result = await invoke({ path, method, body: "{}" });
+    assert.equal(
+      result.kind,
+      "network-error",
+      `${method} ${path} must be rejected`
+    );
+    if (result.kind === "network-error") {
+      assert.match(result.message, NOT_ALLOWLISTED_ERROR);
+    }
+    assert.equal(fetchCalls.length, 0, `${method} ${path} must not fetch`);
   }
 });
 
@@ -636,4 +895,107 @@ async function captureArmedDeadlines<T>(
   } finally {
     AbortSignal.timeout = original;
   }
+}
+
+test("ISS-9701: a server 401 drops the cached access token", async () => {
+  // The bridge was the one credentialed cloud caller that did not invalidate on
+  // a rejected token — the sync lanes and cloud hydration both do. Without it a
+  // token the server has already refused keeps being re-sent until its LOCAL
+  // expiry passes, so the renderer's refresh-and-retry has nothing fresher to
+  // retry with and a live session renders the session-expired banner.
+  let invalidations = 0;
+  const { invoke, fetchCalls } = createHarness(
+    {
+      onUnauthorized: () => {
+        invalidations += 1;
+      },
+    },
+    new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { "content-type": "application/json" },
+    })
+  );
+
+  const result = await invoke({ path: "/agent-sessions" });
+
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(result.kind, "response");
+  if (result.kind === "response") {
+    assert.equal(result.status, 401);
+  }
+  // Exactly one invalidation, and the bridge does NOT retry here: the single
+  // retry belongs to the renderer's shared API client, and doing it in both
+  // places would turn every rejected request into four upstream calls.
+  assert.equal(invalidations, 1);
+});
+
+test("ISS-9701: the 401 report names the token that was actually sent", async () => {
+  // Which token was refused is the whole content of the report. Without it the
+  // session manager can only clear whatever happens to be cached at the moment
+  // the 401 is processed — and a 401 can land after another request has already
+  // replaced that cache, so the unnamed report evicts a credential the server
+  // never refused and buys a second refresh for an expiry already recovered.
+  const rejectedTokens: string[] = [];
+  const { invoke } = createHarness(
+    {
+      getAccessToken: () => Promise.resolve("access-token-1"),
+      onUnauthorized: (rejectedToken) => {
+        rejectedTokens.push(rejectedToken);
+      },
+    },
+    new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { "content-type": "application/json" },
+    })
+  );
+
+  await invoke({ path: "/agent-sessions" });
+
+  assert.deepEqual(rejectedTokens, ["access-token-1"]);
+});
+
+test("ISS-9701: a successful response never drops the cached access token", async () => {
+  // The control. An invalidation on every response would force a token refresh
+  // per request — the storm this hook exists to avoid, wearing a fix's clothes.
+  let invalidations = 0;
+  const { invoke } = createHarness({
+    onUnauthorized: () => {
+      invalidations += 1;
+    },
+  });
+
+  const result = await invoke({ path: "/agent-sessions" });
+
+  assert.equal(result.kind, "response");
+  assert.equal(invalidations, 0);
+});
+
+test("ISS-9701: a bare 403 never drops the cached access token", async () => {
+  // A forbidden resource says the caller IS known; refreshing the credential
+  // cannot change the answer, and treating 403 as a stale session is the
+  // conflation ISS-5095 removed from the shell.
+  let invalidations = 0;
+  const { invoke } = createHarness(
+    {
+      onUnauthorized: () => {
+        invalidations += 1;
+      },
+    },
+    new Response(JSON.stringify({ success: false, error: "Forbidden" }), {
+      status: 403,
+      statusText: "Forbidden",
+      headers: { "content-type": "application/json" },
+    })
+  );
+
+  const result = await invoke({ path: "/agent-sessions" });
+
+  assert.equal(result.kind, "response");
+  assert.equal(invalidations, 0);
+});
+
+function batchMutationPaths(route: string): string[] {
+  return route.endsWith("/v2") ? [route] : [route, `${route}/v2`];
 }

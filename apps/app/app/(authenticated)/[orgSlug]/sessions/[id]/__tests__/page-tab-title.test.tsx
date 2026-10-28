@@ -51,13 +51,10 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
   Header: headerMock,
 }));
 
-vi.mock(
-  "@/app/(authenticated)/components/session-detail-header-controls",
-  () => ({
-    SessionDetailActions: () => null,
-    SessionDetailOverflowMenu: () => null,
-  })
-);
+vi.mock("@/components/agent-sessions/session-detail-header-controls", () => ({
+  SessionDetailActions: () => null,
+  SessionDetailOverflowMenu: () => null,
+}));
 
 vi.mock("@/hooks/use-org-slug", () => ({
   useOrgSlug: () => "acme",
@@ -93,7 +90,7 @@ describe("ISS-5574: session detail tab title", () => {
     useAgentSessionDetailMock.mockReturnValue({
       data: createAgentSessionDetailFixture({
         id: SESSION_ID,
-        name: "symphony-alpha-iss-5273",
+        name: "closedloop-ai-iss-5273",
       }),
       isError: false,
       isLoading: false,
@@ -101,7 +98,7 @@ describe("ISS-5574: session detail tab title", () => {
 
     render(<SessionDetailPage />);
 
-    expect(document.title).toBe("symphony-alpha-iss-5273 | Closedloop.ai");
+    expect(document.title).toBe("closedloop-ai-iss-5273 | Closedloop.ai");
   });
 
   it("falls back to the external id for a nameless session", () => {
@@ -139,7 +136,7 @@ describe("ISS-5574: session detail tab title", () => {
     useAgentSessionDetailMock.mockReturnValue({
       data: createAgentSessionDetailFixture({
         id: SESSION_ID,
-        name: "symphony-alpha-iss-5273",
+        name: "closedloop-ai-iss-5273",
       }),
       isError: false,
       isLoading: false,

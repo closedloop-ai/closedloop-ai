@@ -246,6 +246,158 @@ describe("selected pull-request check normalizer", () => {
       checks: [{ providerId: "first" }, { providerId: "second" }],
     });
   });
+
+  it.each([
+    ["a non-object context", null],
+    ["a context with no typename", {}],
+    ["a non-string typename", { __typename: 7 }],
+  ])("rejects %s before dispatching on its kind", (_label, input) => {
+    expect(normalizeSelectedPullRequestCheckContext(input, 0)).toEqual({
+      ok: false,
+      reason: SelectedPullRequestChecksPartialReason.MalformedContext,
+    });
+  });
+
+  it.each([
+    ["a blank name", { ...makeCheckRun(), name: "   " }],
+    [
+      "a non-HTTP details url",
+      { ...makeCheckRun(), detailsUrl: "ftp://ci.example/runs/1" },
+    ],
+    ["an unparseable timestamp", { ...makeCheckRun(), createdAt: "yesterday" }],
+  ])("rejects a check run with %s", (_label, input) => {
+    expect(normalizeSelectedPullRequestCheckContext(input, 0)).toEqual({
+      ok: false,
+      reason: SelectedPullRequestChecksPartialReason.MalformedContext,
+    });
+  });
+
+  it.each([
+    ["a blank context name", { ...makeStatusContext(), context: "   " }],
+    [
+      "an unparseable target url",
+      { ...makeStatusContext(), targetUrl: "vercel.example/acme/widgets/1" },
+    ],
+  ])("rejects a status context with %s", (_label, input) => {
+    expect(normalizeSelectedPullRequestCheckContext(input, 0)).toEqual({
+      ok: false,
+      reason: SelectedPullRequestChecksPartialReason.MalformedContext,
+    });
+  });
+
+  it("rejects a completed check run whose conclusion has no category", () => {
+    expect(
+      normalizeSelectedPullRequestCheckContext(
+        makeCheckRun({ conclusion: "MYSTERY" }),
+        0
+      )
+    ).toEqual({
+      ok: false,
+      reason: SelectedPullRequestChecksPartialReason.UnknownOutcome,
+    });
+  });
+
+  it("falls back to the check-run resource url when details url is absent", () => {
+    const result = normalizeSelectedPullRequestCheckContext(
+      { ...makeCheckRun(), detailsUrl: null },
+      0
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      attempt: {
+        check: {
+          targetUrl: "https://api.github.com/repos/acme/widgets/check-runs/1",
+        },
+      },
+    });
+  });
+
+  it("emits a null target url when a check run publishes neither url", () => {
+    const result = normalizeSelectedPullRequestCheckContext(
+      { ...makeCheckRun(), detailsUrl: null, url: null },
+      0
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      attempt: { check: { targetUrl: null } },
+    });
+  });
+
+  it("nulls the optional app fields GitHub omitted", () => {
+    const result = normalizeSelectedPullRequestCheckContext(
+      {
+        ...makeCheckRun(),
+        checkSuite: { app: { id: "app-node", name: "CI" } },
+      },
+      0
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      attempt: {
+        check: {
+          sourceApp: {
+            nodeId: "app-node",
+            databaseId: null,
+            slug: null,
+            name: "CI",
+            url: null,
+          },
+          sourceIdentity: `${SelectedPullRequestCheckSourceKind.CheckRun}:app-node:test`,
+        },
+        sourceIdentityIsAmbiguous: false,
+      },
+    });
+  });
+
+  it("marks an undated status context unknown in its synthetic provider id", () => {
+    const result = normalizeSelectedPullRequestCheckContext(
+      { ...makeStatusContext({ createdAt: null }), targetUrl: null },
+      3
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      attempt: {
+        check: {
+          providerId: `${SelectedPullRequestCheckSourceKind.StatusContext}:deploy:unknown:SUCCESS`,
+          createdAt: null,
+          targetUrl: null,
+        },
+        observedAt: null,
+        observedAtIsAmbiguous: true,
+        position: 3,
+      },
+    });
+  });
+
+  it("prefers the later position when two attempts share an id and a time", () => {
+    const first = normalizeSelectedPullRequestCheckContext(
+      makeCheckRun({ conclusion: "SUCCESS" }),
+      0
+    );
+    const second = normalizeSelectedPullRequestCheckContext(
+      makeCheckRun({ conclusion: "FAILURE" }),
+      1
+    );
+    if (!(first.ok && second.ok)) {
+      throw new Error("Expected valid attempts");
+    }
+
+    expect(
+      selectLatestSelectedPullRequestChecks([first.attempt, second.attempt])
+    ).toMatchObject({
+      hasAmbiguousSource: true,
+      checks: [
+        {
+          providerId: "check-node-1",
+          category: SelectedPullRequestCheckCategory.Failing,
+        },
+      ],
+    });
+  });
 });
 
 function makeCheckRun(

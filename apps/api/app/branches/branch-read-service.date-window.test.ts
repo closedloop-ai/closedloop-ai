@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -71,7 +71,11 @@ import {
 } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
 
-// FEA-4270 (per-event rework, shafty023 P1): a usage/analytics date filter is a
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// FEA-4270 (per-event rework, davetho P1): a usage/analytics date filter is a
 // PER-EVENT SPEND WINDOW. The original fix windowed by session START — a
 // long-running session that began before the range contributed ZERO even for the
 // turns it ran inside it, and a session that began just inside counted its ENTIRE
@@ -224,7 +228,7 @@ describe("branchReadService per-event date-windowed AI spend (FEA-4270)", () => 
     // but at ZERO windowed cost — so the client's filtered re-derivation adds
     // nothing for it under this window.
     expect(response.sessionCostUsd).toEqual({ "s-before-1": 0 });
-    // ISS-4632 (shafty023 review): under an ACTIVE window the two maps must
+    // ISS-4632 (davetho review): under an ACTIVE window the two maps must
     // diverge — `sessionCostUsd` is windowed (0 here, the pre-window event) while
     // `lifetimeSessionCostUsd` carries the session's LIFETIME $4, the Value-per-$
     // denominator basis. A regression that omits this field or accidentally
@@ -392,66 +396,25 @@ describe("branchReadService per-event date-windowed AI spend (FEA-4270)", () => 
     );
   });
 
-  it("windows the analytics AI-spend + value-per-$ KPIs by the same per-event bound", async () => {
+  // ISS-12346: analytics spend is the card's SQL figure, so the route reads no
+  // session-usage links and no per-event aggregate of its own. Windowed spend
+  // correctness is pinned by branch-cost-window-metrics.integration.test.ts.
+  it("reads no session usage for the analytics KPIs", async () => {
     mockBranchCandidateIds(mockDb, [branchId]);
     mockBranchCandidateIds(mockDb, [branchId]);
     seedWindowedCorpus();
 
-    const analytics = await branchReadService.getBranchAnalytics(
-      organizationId,
-      { limit: 50, offset: 0, startDate: windowStart, endDate: windowEnd }
-    );
+    await branchReadService.getBranchAnalytics(organizationId, {
+      limit: 50,
+      offset: 0,
+      startDate: windowStart,
+      endDate: windowEnd,
+    });
 
-    // Same $2 per-event windowed spend as the usage summary — analytics must not
-    // diverge.
-    expect(analytics.totalSpendUsd.value).toBeCloseTo(2, 10);
-    // ISS-4632 (wongk/shafty023 review): the windowed AND lifetime session-usage
-    // maps are folded from ONE artifactLink scan. Before, a windowed analytics
-    // request issued a SECOND unwindowed `getSessionUsageByBranch` purely to build
-    // the lifetime map, re-scanning the identical links. Assert the session-usage
-    // scan runs exactly ONCE (not twice) — so a regression re-introducing the
-    // doubled scan / independent failure domain fails here.
-    //
-    // ISS-4469 adds one bounded global-divisor read (distinguishable by select
-    // shape — it has no `source` relation) so canonical AI spend can evenly
-    // allocate shared Session cost across the full filtered cohort.
-    const linkCalls: { select?: { source?: unknown } }[] =
-      mockDb.artifactLink.findMany.mock.calls.map((call) => call[0]);
-    expect(linkCalls.filter((args) => args?.select?.source)).toHaveLength(1);
-    expect(linkCalls.filter((args) => !args?.select?.source)).toHaveLength(1);
-    expect(evidenceQueryCalls(mockDb)).toHaveLength(1);
-  });
-
-  // ISS-4469: the canonical full-cohort producer needs the global shared-Session
-  // divisor, but its hydration budget is fixed for the whole request. This pins
-  // one bounded divisor query for the small enriched fixture rather than the old
-  // zero-query shortcut that produced mathematically incorrect shared cost.
-  it("issues one bounded global-divisor scan for canonical analytics", async () => {
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({
-        fileChanges: [{ additions: 120, deletions: 30, path: "src/a.ts" }],
-      }),
-    ]);
-    mockDb.artifactLink.findMany.mockResolvedValue(candidateLinks());
-    mockTokenEvents(mockDb, candidateEvents());
-
-    const analytics = await branchReadService.getBranchAnalytics(
-      organizationId,
-      { limit: 50, offset: 0, startDate: windowStart, endDate: windowEnd }
-    );
-
-    // The branch IS enriched, so Value-per-$ is computed (150 churn over the
-    // even-split lifetime spend) rather than short-circuiting to Unavailable —
-    // proving the assertion below is not passing on an unreachable branch.
-    expect(analytics.locPerDollar.value).not.toBeNull();
-    const linkCalls: { select?: { source?: unknown } }[] =
-      mockDb.artifactLink.findMany.mock.calls.map((call) => call[0]);
-    // The heavy session-usage scan still runs exactly once...
-    expect(linkCalls.filter((args) => args?.select?.source)).toHaveLength(1);
-    // ...and canonical shared-cost reconciliation adds exactly one divisor scan.
-    expect(linkCalls.filter((args) => !args?.select?.source)).toHaveLength(1);
+    expect(mockDb.artifactLink.findMany).not.toHaveBeenCalled();
+    expect(aggregateQueryCalls(mockDb)).toHaveLength(0);
+    expect(mockDb.agentSessionTokenEvent.groupBy).not.toHaveBeenCalled();
+    expect(evidenceQueryCalls(mockDb)).toHaveLength(0);
   });
 
   // ISS-4686 — the CLOUD half of the baseline-scope guard (the desktop mirror is
@@ -476,9 +439,7 @@ describe("branchReadService per-event date-windowed AI spend (FEA-4270)", () => 
       { limit: 50, offset: 0 }
     );
 
-    // Value-per-$ IS computed, so this is not passing on an inert KPI...
-    expect(analytics.locPerDollar.value).not.toBeNull();
-    // ...and it still carries no baseline, and claims no scope it doesn't have.
+    // It carries no baseline, and claims no scope it doesn't have.
     expect(analytics.locPerDollar.baseline30d).toBeNull();
     expect(analytics.locPerDollar.deltaPct).toBeNull();
     expect(analytics.locPerDollar.comparisonScope).toBeUndefined();
@@ -490,5 +451,11 @@ describe("branchReadService per-event date-windowed AI spend (FEA-4270)", () => 
 function evidenceQueryCalls(mockDb: ReturnType<typeof createMockDb>) {
   return mockDb.$queryRaw.mock.calls.filter((call) =>
     renderSql(call[0]).includes("WITH evidence_size AS MATERIALIZED")
+  );
+}
+
+function aggregateQueryCalls(mockDb: ReturnType<typeof createMockDb>) {
+  return mockDb.$queryRaw.mock.calls.filter((call) =>
+    renderSql(call[0]).includes("WITH requested_sessions AS MATERIALIZED")
   );
 }

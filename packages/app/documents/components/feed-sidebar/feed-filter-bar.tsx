@@ -59,10 +59,8 @@ export function FeedFilterBar() {
     let allCount = 0;
     const perSource: KindOption[] = [];
     for (const source of sources) {
-      const registered = registry.get(source.id);
-      const items = registered?.result.items ?? [];
-      const state = getSourceState(source.id) ?? source.defaultFilterState;
-      const visible = source.applyFilter(items, state).length;
+      const visible =
+        registry.get(source.id)?.select(getSourceState).length ?? 0;
       allCount += visible;
       perSource.push({
         key: source.kind,
@@ -90,7 +88,6 @@ export function FeedFilterBar() {
     activeKind === ACTIVE_KIND_ALL
       ? undefined
       : sources.find((s) => s.kind === activeKind);
-  const ActiveFilterControl = activeSource?.FilterControl;
 
   return (
     <div className="flex shrink-0 flex-col gap-1 border-b">
@@ -112,21 +109,17 @@ export function FeedFilterBar() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-48">
-            {kindOptions.map((opt) => {
-              const OptIcon = opt.Icon;
-              return (
-                <DropdownMenuItem
-                  key={opt.key}
-                  onSelect={() => setActiveKind(opt.key)}
-                >
-                  <OptIcon className="mr-2 h-3 w-3" />
-                  <span className="flex-1">{opt.label}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {opt.count}
-                  </span>
-                </DropdownMenuItem>
-              );
-            })}
+            {kindOptions.map((opt) => (
+              <DropdownMenuItem
+                key={opt.key}
+                onSelect={() => setActiveKind(opt.key)}
+              >
+                <span className="flex-1">{opt.label}</span>
+                <span className="text-muted-foreground text-xs">
+                  {opt.count}
+                </span>
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
         <Button
@@ -139,14 +132,7 @@ export function FeedFilterBar() {
           <SortIcon className="h-3 w-3" />
         </Button>
       </div>
-      {ActiveFilterControl !== undefined && activeSource !== undefined && (
-        <ActiveFilterControl
-          onChange={(next) => setSourceState(activeSource.id, next)}
-          state={
-            getSourceState(activeSource.id) ?? activeSource.defaultFilterState
-          }
-        />
-      )}
+      {activeSource?.renderFilterControl(getSourceState, setSourceState)}
     </div>
   );
 }

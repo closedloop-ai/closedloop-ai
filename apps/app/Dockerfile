@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
 # apps/app production image for the containerized, Vercel-independent E2E
-# target (FEA-2091).
+# target (FEA-2091), and for the ECS stage service when built with stage
+# build args (ISS-11832).
 #
 # apps/app builds with Next `output: "standalone"` for this image (gated behind
 # E2E_STANDALONE_BUILD in apps/app/next.config.ts, so Vercel deploys are
@@ -79,18 +80,45 @@ RUN --mount=type=cache,id=cl-e2e-pnpm-store,target=/pnpm/store,sharing=locked \
     pnpm config set fetch-retry-maxtimeout 120000 && \
     pnpm config set fetch-timeout 600000 && \
     pnpm install --frozen-lockfile --filter app... --ignore-scripts --prefer-offline
-# Later filtered build commands can trigger pnpm's dependency-status install;
-# keep lifecycle scripts suppressed because this pruned app context intentionally
+# ISS-12198: keep the explicit frozen install authoritative after source COPY.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+# Keep lifecycle scripts suppressed because this pruned app context intentionally
 # omits packages outside the app closure, including packages/database.
 RUN pnpm config set ignore-scripts true
 # Full source closure.
 COPY --from=pruner /repo/out/full/ ./
+# ISS-8775: the build below has no `--only`, so `app#build`'s `^build` runs
+# `@repo/api#build`, whose script shells through these two root files. `scripts/`
+# is not a workspace package, so `turbo prune` leaves it out of out/full/ (same
+# reason pnpm-lock.yaml, pnpm-workspace.yaml and patches/ are copied from /repo
+# above) and the build would die on ERR_MODULE_NOT_FOUND before tsc runs.
+COPY --from=pruner /repo/scripts/run-untraced.mjs /repo/scripts/tracer-preload-tokens.mjs ./scripts/
+COPY --from=pruner /repo/scripts/analytics/ ./scripts/analytics/
 # Build @closedloop-ai/telemetry-contract, the one dist-backed workspace package
 # app resolves via its exports map (tsup → dist). All other @repo/* deps
 # (shared-platform, loops-api, design-system, rich-text, collaboration,
 # navigation, …) resolve from src and are transpiled by Next, so they need no
 # prebuild.
 RUN pnpm --filter @closedloop-ai/telemetry-contract build
+# ISS-11832: the stage image passes every other NEXT_PUBLIC_* key app-stage sets
+# in production, plus the commit SHA as the RUM release version. No defaults: an
+# ARG nobody passes stays unset in the build env, so the E2E image is unchanged.
+ARG NEXT_PUBLIC_APP_ENVIRONMENT
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_CLERK_SIGN_IN_URL
+ARG NEXT_PUBLIC_CLERK_SIGN_UP_URL
+ARG NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID
+ARG NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN
+ARG NEXT_PUBLIC_DATADOG_RUM_SESSION_REPLAY_SAMPLE_RATE
+ARG NEXT_PUBLIC_DATADOG_RUM_SESSION_SAMPLE_RATE
+ARG NEXT_PUBLIC_DATADOG_RUM_SITE
+ARG NEXT_PUBLIC_DATADOG_RUM_VERSION
+ARG NEXT_PUBLIC_GA_MEASUREMENT_ID
+ARG NEXT_PUBLIC_GITHUB_APP_SLUG
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_WEB_URL
 # app build = `node scripts/build.mjs` → `next build` (apps/app/package.json).
 RUN --mount=type=secret,id=turbo_token,required=false \
     if [ -s /run/secrets/turbo_token ]; then export TURBO_TOKEN="$(cat /run/secrets/turbo_token)"; fi && \

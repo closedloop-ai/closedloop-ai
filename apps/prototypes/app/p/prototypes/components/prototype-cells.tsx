@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+  Person,
+  PrototypeRow,
+} from "@repo/app/shell/v2/components/prototypes-preview/mock";
 import {
   Avatar,
   AvatarFallback,
@@ -12,7 +16,6 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import { MessageSquareIcon } from "lucide-react";
 import { PrototypeStatus, prototypeStatusLabel } from "@/lib/registry";
-import type { Person, PrototypeRow } from "../mock";
 
 export function PrototypeStatusChip({
   status,

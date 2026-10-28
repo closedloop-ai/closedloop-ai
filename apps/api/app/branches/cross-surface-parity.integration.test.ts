@@ -16,6 +16,7 @@ import {
 } from "@repo/api/src/types/agent-session";
 import { BranchPushSource, LinkType } from "@repo/api/src/types/artifact";
 import {
+  BranchParticipationKind,
   type BranchSession,
   normalizeRepoFullName,
 } from "@repo/api/src/types/branch";
@@ -42,11 +43,10 @@ import {
   paritySessionUsageSortKey,
 } from "@repo/lib/branches/__tests__/cross-surface-parity-fixture";
 import { rollupBranchActivity } from "@repo/lib/branches/activity-rollup";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { persistedGitHubRepositoryAuthority } from "@/__tests__/fixtures/repository-default-authority";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
+  createCommittedTestOrganizationTracker,
   createTestProject,
   createTestUser,
 } from "@/__tests__/utils/db-helpers";
@@ -56,6 +56,9 @@ import { branchService } from "@/app/branches/branch-service";
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+afterEach(() => committedOrganizations.cleanup());
 
 async function createComputeTarget(
   organizationId: string,
@@ -250,6 +253,7 @@ async function linkSessionToBranch(
         sourceId: sessionArtifactId,
         targetId: branchArtifactId,
         linkType: LinkType.RelatesTo,
+        branchParticipation: BranchParticipationKind.Wrote,
         metadata: {
           linkKind: SessionArtifactLinkKind.SessionPr,
           branchName,
@@ -321,7 +325,7 @@ async function seedCloudScenario(): Promise<{
 
 describeIfDb("cross-surface branch parity — cloud (PRD-522 R6)", () => {
   it("cloud branch read matches the shared surface-invariant expectation", async () => {
-    await autoRollbackTransaction(async () => {
+    await committedOrganizations.run(async () => {
       const expected = computeExpectedBranchRollup();
       const { organizationId, branchArtifactId, primaryProjectId } =
         await seedCloudScenario();
@@ -439,3 +443,7 @@ describeIfDb("cross-surface branch parity — cloud (PRD-522 R6)", () => {
     });
   });
 });
+
+function createTestOrganization(): Promise<string> {
+  return committedOrganizations.create();
+}

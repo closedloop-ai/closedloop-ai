@@ -1,7 +1,4 @@
-import type {
-  ActivityBucket,
-  SyncedActivitySegmentRow,
-} from "@repo/api/src/types/agent-session";
+import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import { withProducerBinBounds } from "@repo/app/agents/components/detail/agent-session-detail-fixtures";
 import type { ActivityMarker } from "@repo/app/agents/components/detail/session-timeline-axis";
 import {
@@ -20,8 +17,6 @@ import {
   buildTimelineStacks,
   TimelineStackGrouping,
 } from "@repo/app/agents/lib/session-timeline-stacks";
-import { UNATTRIBUTED_KEY } from "@repo/lib/branches/activity-rollup";
-import { IDLE_PHASE_KEY } from "@repo/lib/sessions/activity-segment-aggregation";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   costedBins,
@@ -294,7 +289,7 @@ describe("the default scale is the finest that still shows the whole run", () =>
   });
 
   /*
-   * #4753 review (wongk). The default's whole contract is "a session that fits
+   * #4753 review (whitlockk). The default's whole contract is "a session that fits
    * needs no scrubbing", and the duration thresholds could not keep it, because
    * the GEOMETRY floors the origin to a clock boundary while the thresholds
    * measured raw elapsed time. A run that starts mid-column spends part of its
@@ -350,56 +345,9 @@ describe("the default scale is the finest that still shows the whole run", () =>
  * that came off the wire malformed.
  */
 describe("the projection cannot invent, delete, or misplace what it re-bins", () => {
-  it("reconciles overlapping phase segments to the column's own cost", () => {
-    /*
-     * wongk's case verbatim: 40m `implement` and 40m `review` overlapping for
-     * 30m inside one 60m column. `covered` was the UNION (50m) while the weights
-     * summed each phase in FULL (40 + 40), so the emitted segments came to
-     * 40 + 40 + 10 over a 60m denominator — 150% of the column's cost. The bar
-     * overflowed and the tooltip billed spend that never happened.
-     */
-    const startMs = boundaryStartMs(TimelineScale.OneHour);
-    const projected = project({
-      buckets: [oneHourBin()],
-      endMs: startMs + HOUR_MS,
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow("implement", startMs, startMs + 40 * MINUTE_MS),
-        segmentRow(
-          "review",
-          startMs + 10 * MINUTE_MS,
-          startMs + 50 * MINUTE_MS
-        ),
-      ],
-      startMs,
-    });
-
-    const column = projected.buckets[0];
-    const columnCost = column.cIn + column.cOut + column.cCache;
-    expect(columnCost).toBeGreaterThan(0);
-
-    const phases = projected.phaseCosts()[0];
-    const attributed = Object.values(phases).reduce(
-      (sum, value) => sum + value,
-      0
-    );
-    // The reconciliation itself. Pre-fix this was 1.5x the column's cost.
-    expect(attributed).toBeCloseTo(columnCost, 10);
-
-    /*
-     * And the attribution rule, so a "fix" that reconciles by throwing the
-     * overlap away also fails: the shared 30m is split evenly, giving each phase
-     * 10 + 15 = 25 of the 60m column, and the 10m nothing covers stays
-     * unattributed rather than being folded into a neighbour.
-     */
-    expect(phases.implement).toBeCloseTo((columnCost * 25) / 60, 10);
-    expect(phases.review).toBeCloseTo((columnCost * 25) / 60, 10);
-    expect(phases[UNATTRIBUTED_KEY]).toBeCloseTo((columnCost * 10) / 60, 10);
-  });
-
   it("conserves event counts when one event is spread across many columns", () => {
     /*
-     * wongk's case verbatim: ONE event, one source bin an hour wide, projected
+     * whitlockk's case verbatim: ONE event, one source bin an hour wide, projected
      * onto twelve 5m columns. Each column gets 1/12 of an event; rounding each
      * independently rounds every one of them to zero, and the session's only
      * event vanishes from every tooltip on the strip.
@@ -502,47 +450,6 @@ describe("the projection cannot invent, delete, or misplace what it re-bins", ()
     // claims.
     expect(projected.markers[0]?.x).toBeCloseTo((1 / 120) * 100, 10);
   });
-
-  it("refuses a segment row whose bounds came off the wire malformed", () => {
-    /*
-     * `SyncedActivitySegmentRow` crosses the sync wire out of SQLite, so its
-     * bounds are parse-boundary input. A non-finite bound survived the clipping
-     * guard — `NaN <= NaN` is FALSE — and put `NaN` into both the weights and
-     * the denominator, so a column that really cost money rendered every segment
-     * zero-width: a priced Activity bar showing nothing.
-     */
-    const startMs = boundaryStartMs(TimelineScale.OneHour);
-    const projected = project({
-      buckets: [oneHourBin()],
-      endMs: startMs + HOUR_MS,
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow("implement", Number.NaN, startMs + 30 * MINUTE_MS),
-        segmentRow(
-          "review",
-          startMs + 30 * MINUTE_MS,
-          Number.POSITIVE_INFINITY
-        ),
-      ],
-      startMs,
-    });
-
-    const column = projected.buckets[0];
-    const columnCost = column.cIn + column.cOut + column.cCache;
-    const phases = projected.phaseCosts()[0];
-    for (const value of Object.values(phases)) {
-      expect(Number.isFinite(value)).toBe(true);
-    }
-    /*
-     * Both rows are unusable, so the column's whole cost is UNATTRIBUTED — the
-     * honest reading of a classification we cannot use, and the same answer an
-     * absent row gets. The bar still draws its full height; it just does not
-     * claim a phase.
-     */
-    expect(phases[UNATTRIBUTED_KEY]).toBeCloseTo(columnCost, 10);
-    expect(phases.implement).toBeUndefined();
-    expect(phases.review).toBeUndefined();
-  });
 });
 
 describe("each Group by dimension re-cuts the same bar", () => {
@@ -550,7 +457,6 @@ describe("each Group by dimension re-cuts the same bar", () => {
   const projected = project({
     buckets,
     scale: TimelineScale.OneHour,
-    segmentRows: phaseTiling(),
   });
   const modelColors = buildTimelineModelColors(buckets);
   const stacksFor = (grouping: TimelineStackGrouping) =>
@@ -559,10 +465,9 @@ describe("each Group by dimension re-cuts the same bar", () => {
       grouping,
       modelColors,
       ownerLabel: "Ada Lovelace",
-      phaseCosts: projected.phaseCosts,
     });
 
-  it("keeps every column's total identical across all four groupings", () => {
+  it("keeps every column's total identical across all three groupings", () => {
     /*
      * The invariant that makes the control a VIEW control: re-cutting a bar must
      * never change how tall it is. A grouping that dropped or double-counted a
@@ -606,25 +511,6 @@ describe("each Group by dimension re-cuts the same bar", () => {
     expect(new Set(priced.map((segment) => segment.colorVar)).size).toBe(2);
   });
 
-  it("cuts by activity phase using the classifier's own tiling", () => {
-    /*
-     * Across the strip, not within one column: the tiling puts `explore` on the
-     * first hour and `implement` on the next three, so the phase a column
-     * carries depends on WHEN it is — which is the whole point of cutting by
-     * phase, and an assertion pinned to one column would hide it.
-     */
-    const stacks = stacksFor(TimelineStackGrouping.ActivityPhase);
-    const keys = new Set(
-      stacks.flatMap((segments) => segments.map((segment) => segment.key))
-    );
-    expect(keys).toContain("explore");
-    expect(keys).toContain("implement");
-    const labels = new Set(
-      stacks.flatMap((segments) => segments.map((segment) => segment.label))
-    );
-    expect(labels).toContain("Implement");
-  });
-
   it("cuts by owner into one segment carrying the whole column", () => {
     const priced = firstPricedStack(stacksFor(TimelineStackGrouping.Owner));
     expect(priced).toHaveLength(1);
@@ -641,72 +527,6 @@ describe("each Group by dimension re-cuts the same bar", () => {
           .join("|")
     );
     expect(new Set(keysByGrouping).size).toBe(keysByGrouping.length);
-  });
-});
-
-describe("phase attribution stays honest about what it does not know", () => {
-  /*
-   * ISS-6054: deferring the split must not turn one derivation into one PER
-   * ASK. The reader can toggle back to the phase cut as often as they like, and
-   * each toggle re-enters `buildTimelineStacks` — an unmemoized thunk would
-   * rescan every classifier span, per column, every time. Identity is the
-   * assertion because a re-derivation returns an equal-but-new array.
-   */
-  it("derives the split once per projection, however often it is asked for", () => {
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow(
-          "implement",
-          SESSION_START_MS,
-          SESSION_START_MS + 40 * MINUTE_MS
-        ),
-      ],
-    });
-
-    const first = projected.phaseCosts();
-    expect(
-      Object.keys(first.find((costs) => Object.keys(costs).length > 0) ?? {})
-        .length
-    ).toBeGreaterThan(0);
-    expect(projected.phaseCosts()).toBe(first);
-  });
-
-  it("reports an untiled session's cost as unattributed, never as a phase", () => {
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      segmentRows: [],
-    });
-    const priced = projected
-      .phaseCosts()
-      .filter((costs) => Object.keys(costs).length > 0);
-    expect(priced.length).toBeGreaterThan(0);
-    for (const costs of priced) {
-      expect(Object.keys(costs)).toEqual([UNATTRIBUTED_KEY]);
-    }
-  });
-
-  it("keeps the uncovered remainder of a partly-tiled column unattributed", () => {
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      // Covers only the first half hour of the first column.
-      segmentRows: [
-        segmentRow(
-          "implement",
-          SESSION_START_MS,
-          SESSION_START_MS + 30 * MINUTE_MS
-        ),
-      ],
-    });
-    const firstPriced = projected
-      .phaseCosts()
-      .find((costs) => Object.keys(costs).length > 0);
-    expect(firstPriced).toBeDefined();
-    expect(firstPriced?.[UNATTRIBUTED_KEY]).toBeGreaterThan(0);
-    expect(firstPriced?.implement).toBeGreaterThan(0);
   });
 });
 
@@ -779,106 +599,9 @@ describe("degenerate and hostile inputs degrade instead of lying", () => {
     // dot renders at `left: NaN%`.
     expect(projected.markers).toHaveLength(0);
   });
-
-  it("counts overlapping phase spans once, so untiled time stays unattributed", () => {
-    /*
-     * Segment spans genuinely overlap — a subagent span is re-filed alongside
-     * the main agent's. Summing them can exceed the column width and drive the
-     * uncovered remainder to zero, folding untiled time into the phases.
-     */
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow(
-          "implement",
-          SESSION_START_MS,
-          SESSION_START_MS + 40 * MINUTE_MS
-        ),
-        segmentRow(
-          "review",
-          SESSION_START_MS + 10 * MINUTE_MS,
-          SESSION_START_MS + 50 * MINUTE_MS
-        ),
-      ],
-    });
-    const firstPriced = projected
-      .phaseCosts()
-      .find((costs) => Object.keys(costs).length > 0);
-    // 50 of 60 minutes are covered once the two spans are unioned, so a real
-    // tenth of the column is still nobody's.
-    expect(firstPriced?.[UNATTRIBUTED_KEY]).toBeGreaterThan(0);
-  });
-
-  it("never attributes spend to the idle phase", () => {
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow(
-          IDLE_PHASE_KEY,
-          SESSION_START_MS,
-          SESSION_START_MS + 50 * MINUTE_MS
-        ),
-        segmentRow(
-          "implement",
-          SESSION_START_MS + 50 * MINUTE_MS,
-          SESSION_START_MS + 60 * MINUTE_MS
-        ),
-      ],
-    });
-    /*
-     * Asserted across the STRIP, not on one column: the window is anchored to
-     * the local clock, so which column a given span lands in depends on the
-     * viewer's offset. What must hold everywhere is that `idle` never carries a
-     * dollar — "Idle: 90% of the spend" is money assigned to a period defined by
-     * nothing running — while its time shows up as `unattributed`.
-     */
-    const keys = new Set(
-      projected.phaseCosts().flatMap((costs) => Object.keys(costs))
-    );
-    expect(keys).not.toContain(IDLE_PHASE_KEY);
-    expect(keys).toContain(UNATTRIBUTED_KEY);
-    expect(keys).toContain("implement");
-  });
 });
 
 describe("wire-supplied keys cannot poison the projection", () => {
-  it("attributes a phase literally named __proto__ without mutating anything", () => {
-    /*
-     * `SyncedActivitySegmentRow.phase` is documented as a bounded FREE STRING,
-     * not a closed union — the desktop stores it as TEXT and the cloud never
-     * validates it against a list, so a hostile or merely odd classifier version
-     * can put any string here. On a plain `{}` accumulator, `map["__proto__"] ??
-     * 0` resolves to `Object.prototype` rather than `0`, and the write mutates
-     * the prototype for the whole realm.
-     */
-    const projected = project({
-      buckets: multiModelBins(),
-      scale: TimelineScale.OneHour,
-      segmentRows: [
-        segmentRow(
-          "__proto__",
-          SESSION_START_MS,
-          SESSION_START_MS + 4 * HOUR_MS
-        ),
-      ],
-    });
-
-    const priced = projected
-      .phaseCosts()
-      .find((costs) => Object.keys(costs).length > 0);
-    expect(priced).toBeDefined();
-    // Counted as an ordinary phase key, carrying a real number. Read through
-    // `Object.keys`/bracket access rather than `.__proto__`, which is the
-    // deprecated accessor and would read the prototype instead of the entry.
-    expect(Object.keys(priced ?? {})).toContain("__proto__");
-    expect(Object.values(priced ?? {})[0]).toBeGreaterThan(0);
-    // ...and nothing leaked onto the prototype of a plain object.
-    expect(Object.getPrototypeOf({})).toBe(Object.prototype);
-    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-  });
-
   it("keeps a model literally named __proto__ out of the prototype chain", () => {
     /*
      * Built with `JSON.parse`, deliberately: an object LITERAL written
@@ -1009,7 +732,6 @@ function project({
   endMs,
   markers = [],
   scale,
-  segmentRows = [],
   startMs = SESSION_START_MS,
   windowStart = 0,
 }: {
@@ -1017,7 +739,6 @@ function project({
   endMs?: number;
   markers?: ActivityMarker[];
   scale: TimelineScale;
-  segmentRows?: SyncedActivitySegmentRow[];
   startMs?: number;
   windowStart?: number;
 }) {
@@ -1026,10 +747,9 @@ function project({
     limitDotEvents: [],
     markers,
     scale,
-    segmentRows,
     source: {
       /*
-       * ISS-5819 review (wongk): a bin is placed by ITS OWN producer bounds now,
+       * ISS-5819 review (whitlockk): a bin is placed by ITS OWN producer bounds now,
        * not by dividing this window by the bin count, so every fixture here is
        * stamped the way a real producer emits it. Stamped uniformly over
        * `[startMs, sourceEndMs]`, which is the tiling these cases already
@@ -1037,6 +757,16 @@ function project({
        */
       buckets: withProducerBinBounds(buckets, { endMs: sourceEndMs, startMs }),
       endMs: sourceEndMs,
+      /*
+       * ISS-5850: these cases stamp their bins over `[startMs, sourceEndMs]` —
+       * the SAME span they project onto — so the source covers this window
+       * completely and coverage would be uniformly `Measured` either way. That
+       * is exactly the fixture shape the extent bug is invisible in, which is
+       * why `null` (no stated extent) is the honest value here and the coverage
+       * behaviour is pinned on a deliberately narrower fixture in
+       * `session-timeline-source-extent.test.ts`.
+       */
+      extent: null,
       startMs,
     },
     windowStart,
@@ -1061,32 +791,6 @@ function multiModelBins(): ActivityBucket[] {
   }));
 }
 
-function phaseTiling(): SyncedActivitySegmentRow[] {
-  return [
-    segmentRow("explore", SESSION_START_MS, SESSION_START_MS + HOUR_MS),
-    segmentRow(
-      "implement",
-      SESSION_START_MS + HOUR_MS,
-      SESSION_START_MS + 4 * HOUR_MS
-    ),
-  ];
-}
-
-function segmentRow(
-  phase: string,
-  startMs: number,
-  endMs: number
-): SyncedActivitySegmentRow {
-  return {
-    confidence: 1,
-    endMs,
-    evidenceLayers: ["declared"],
-    phase,
-    startMs,
-    version: 1,
-  };
-}
-
 function marker(x: number): ActivityMarker {
   return { kind: "commit", label: "commit", t: "9:00", tl: 0, x };
 }
@@ -1105,21 +809,6 @@ function boundaryStartMs(scale: TimelineScale): number {
     scale,
     startMs: SESSION_START_MS,
   }).originMs;
-}
-
-/** One priced bin, for a fixture that wants exactly one source bucket. */
-function oneHourBin(): ActivityBucket {
-  return {
-    byModel: { "gpt-5.5": { cCache: 1, cIn: 1, cOut: 1 } },
-    cCache: 1,
-    cIn: 1,
-    cOut: 1,
-    key: "hour-0",
-    label: "hour 0",
-    tl0: 0,
-    toolStart: 0,
-    total: 0,
-  };
 }
 
 /** One bin carrying COUNTS and no cost, so the count apportionment is isolated. */

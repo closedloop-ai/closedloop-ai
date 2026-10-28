@@ -1,29 +1,39 @@
+import type { SyncedAgentSession } from "@repo/api/src/types/agent-session";
 import {
-  AGENT_SESSION_SYNC_SCHEMA_VERSION,
-  AgentSessionSyncMode,
-  type SyncedAgentSession,
-} from "@repo/api/src/types/agent-session";
+  AgentSessionListCapability,
+  type AgentSessionListPageInfo,
+} from "@repo/api/src/types/agent-session-list-contract";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import {
-  GitHubFetchCredentialType,
-  GitHubFetchMechanism,
-  GitHubFetchTrigger,
-} from "@repo/api/src/types/github-read-model";
-import {
-  RepositoryDefaultAvailability,
-  RepositoryDefaultCompleteness,
-  RepositoryDefaultSource,
-} from "@repo/api/src/types/repository-default-identity";
-import {
   SessionArtifactLinkKind,
   SessionPrRelationType,
-  type SyncedArtifactRef,
 } from "@repo/api/src/types/session-artifact-link";
+import type { Prisma } from "@repo/database";
+// The generated namespace, NOT the `@repo/database` barrel: every suite that
+// consumes this harness mocks the barrel, and that mock carries no `Decimal`.
+import { Decimal } from "@repo/database/generated/internal/prismaNamespace";
 import type { Mock } from "vitest";
 import { vi } from "vitest";
-import { agentSessionsService } from "@/app/agent-sessions/service";
+import type {
+  AnalyticsProjectAssignmentRecord,
+  AnalyticsProjectSummaryRecord,
+  AnalyticsSessionRecord,
+} from "@/app/agent-sessions/service/records";
 import { mocks } from "./service.test-mocks";
+
+/**
+ * ISS-9555: the page echo a default `findSessions` call now returns — the first
+ * page at `SESSION_LIST_DEFAULT_LIMIT`.
+ *
+ * Shared so the whole-response assertions in this directory state one expected
+ * envelope rather than each restating the same literal.
+ */
+export const DEFAULT_LIST_PAGE_ECHO: AgentSessionListPageInfo = {
+  capability: AgentSessionListCapability.ServerPaginationV1,
+  limit: 25,
+  offset: 0,
+};
 
 export const SESSION_STARTED_AT = new Date("2026-05-20T17:00:00.000Z");
 export const SESSION_UPDATED_AT = new Date("2026-05-20T17:05:00.000Z");
@@ -32,17 +42,20 @@ export function installDb(db: Record<string, unknown>) {
   const {
     artifact: artifactOverride,
     artifactLink: artifactLinkOverride,
+    branchMaterializationRetry: branchMaterializationRetryOverride,
     computeTarget: computeTargetOverride,
     project: projectOverride,
     publicRepository: publicRepositoryOverride,
+    sessionDetail: sessionDetailOverride,
     ...dbWithoutDefaults
   } = db;
   // ISS-5355: getUsageSummary now also reads the Project facet options
-  // (`buildProjectFacetOptions`), which reads the session→document link edge
-  // (`artifactLink.findMany`) and then resolves those project names. Default to
-  // no links so every pre-existing usage-summary test resolves with an empty
-  // Project facet instead of tripping on an unmocked model; a test that
-  // exercises the facet overrides `artifactLink`/`project`.
+  // (`buildProjectFacetOptions`), which reads the session population
+  // (`artifact.findMany`) and then counts it per project in one `$queryRaw`
+  // (ISS-11895). Both default to no rows so every pre-existing usage-summary
+  // test resolves with an empty Project facet instead of tripping on an
+  // unmocked model; a test that exercises the facet overrides
+  // `artifact`/`$queryRaw`.
   const artifactDefaults = {
     groupBy: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),
@@ -52,6 +65,7 @@ export function installDb(db: Record<string, unknown>) {
     findMany: vi.fn().mockResolvedValue([]),
   };
   const artifactLinkDefaults = {
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
     findFirst: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
   };
@@ -85,13 +99,11 @@ export function installDb(db: Record<string, unknown>) {
     pullRequestDetail: {
       findMany: vi.fn().mockResolvedValue([]),
     },
-    // FEA-4276: findSessions/listByArtifactIds reconcile each row's cost against
-    // the per-event token stream via ONE bounded, org-scoped raw aggregate
-    // (getReconciledCostsBySessionId, `$queryRaw`). Default to no per-event rows
-    // so existing list tests fall back to the stored rollup without wiring the
-    // aggregate; a test that exercises reconciliation overrides `$queryRaw`.
-    // NOTE: component-invocations also uses `$queryRaw`; a test wiring the cost
-    // aggregate must scope its mock (e.g. branch on the SQL / call order).
+    // ISS-7176: findSessions/listByArtifactIds read `estimatedCost` straight off
+    // the record now — no per-event reconciliation, no `$queryRaw` call on this
+    // path. This default stays wired at `[]` only because component-invocations
+    // also uses `$queryRaw` for its own purpose; a test exercising THAT must
+    // scope its mock (e.g. branch on the SQL / call order).
     $queryRaw: vi.fn().mockResolvedValue([]),
     // FEA-4022: upsertSessions reads the org's calculateSessionFrustration gate
     // before the transaction (via frustrationSettingService → withDb →
@@ -101,7 +113,31 @@ export function installDb(db: Record<string, unknown>) {
     organization: {
       findUnique: vi.fn().mockResolvedValue({ settings: null }),
     },
+    // FEA-4204: findSessions batches the page's trace-comment thread counts in
+    // ONE `commentThread.groupBy`. Default to no groups so every existing list
+    // test resolves with a computed zero per row rather than tripping on an
+    // unmocked model; a test that exercises the count overrides `commentThread`.
+    commentThread: {
+      groupBy: vi.fn().mockResolvedValue([]),
+    },
+    customFieldValue: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    // PLN-2061 M5: findSessionDetail reads the session's retained
+    // monitored-activity rows; default to none.
+    artifactActivityEvent: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     ...dbWithoutDefaults,
+    // ISS-10629: the fabricated `SessionDetail` `FieldRef` stand-ins this used to
+    // merge in went with `buildStatusFacetPredicate` — no `apps/api` predicate
+    // emits a two-column comparison any more, so nothing reads `.fields` off
+    // the delegate.
+    sessionDetail: {
+      ...withDerivedSessionDetailFindMany(
+        sessionDetailOverride as Record<string, unknown> | undefined
+      ),
+    },
     artifactLink: {
       ...artifactLinkDefaults,
       ...((artifactLinkOverride as Record<string, unknown> | undefined) ?? {}),
@@ -123,6 +159,12 @@ export function installDb(db: Record<string, unknown>) {
       ...((publicRepositoryOverride as Record<string, unknown> | undefined) ??
         {}),
     },
+    branchMaterializationRetry: {
+      findMany: vi.fn().mockResolvedValue([]),
+      ...((branchMaterializationRetryOverride as
+        | Record<string, unknown>
+        | undefined) ?? {}),
+    },
     gitHubInstallationRepository: {
       findMany: vi.fn().mockResolvedValue([]),
       ...(((dbWithoutDefaults as Record<string, unknown>)
@@ -136,6 +178,32 @@ export function installDb(db: Record<string, unknown>) {
   mocks.withDb.tx.mockImplementation((callback: (db: unknown) => unknown) =>
     callback(dbWithDefaults)
   );
+}
+
+/**
+ * ISS-9112: the session-detail read is now a `findMany` over an id SET, so a
+ * suite that stands the stored row up as `sessionDetail.findFirst` — the shape
+ * of the read it replaced — would otherwise hand the detail path an unmocked
+ * delegate. Where a suite supplies `findFirst` and no `findMany` of its own, the
+ * one is served from the other; the record the suite wrote is still the record
+ * the projection sees. A suite that supplies its own `findMany` (the list path)
+ * keeps it untouched.
+ */
+function withDerivedSessionDetailFindMany(
+  override: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const provided = override ?? {};
+  const findFirst = provided.findFirst;
+  if (typeof findFirst !== "function" || provided.findMany) {
+    return provided;
+  }
+  return {
+    ...provided,
+    findMany: vi.fn(async (args: unknown) => {
+      const row = await (findFirst as (args: unknown) => unknown)(args);
+      return row ? [row] : [];
+    }),
+  };
 }
 
 export function buildSyncedSession(
@@ -157,15 +225,69 @@ export function buildSyncedSession(
   };
 }
 
+/**
+ * The session artifact id every harness upsert resolves to. ISS-8604 made this
+ * load-bearing rather than decorative: `upsertSessionSlice` now compares the id
+ * it reads back against `existing.artifactId` to learn which arm the DATABASE
+ * took, so a stored-row stub that OMITS `artifactId` reads as a swept row and
+ * drives the create-arm repair. A stub standing in for an ordinary resync must
+ * carry this id — see `withPersistedSessionArtifactId`.
+ */
+export const PERSISTED_SESSION_ARTIFACT_ID = "persisted-session-1";
+
+/**
+ * ISS-12251: early enough that `lowerSessionCreatedAt` never has anything to
+ * lower.
+ */
+const PERSISTED_SESSION_CREATED_AT = new Date("2015-01-01T00:00:00.000Z");
+
+type PersistedSessionDetailReadBack = {
+  artifactId: string;
+  artifact: { createdAt: Date };
+};
+
+/**
+ * ISS-12251: the row `sessionDetail.upsert` reads back under its `select`, plus
+ * whatever columns a test echoes in `extra`.
+ */
+export function persistedSessionDetail(
+  artifactId?: string
+): PersistedSessionDetailReadBack;
+export function persistedSessionDetail<Extra extends object>(
+  artifactId: string,
+  extra: Extra
+): Extra & PersistedSessionDetailReadBack;
+export function persistedSessionDetail(
+  artifactId: string = PERSISTED_SESSION_ARTIFACT_ID,
+  extra: object = {}
+): PersistedSessionDetailReadBack {
+  return {
+    ...extra,
+    artifactId,
+    artifact: { createdAt: PERSISTED_SESSION_CREATED_AT },
+  };
+}
+
 export function buildDefaultAgentSessionMocks(
   overrides: Record<string, unknown> = {}
 ): Record<string, unknown> & { findUnique: Mock; upsert: Mock; update: Mock } {
   return {
     findUnique: vi.fn().mockResolvedValue(null),
-    upsert: vi.fn().mockResolvedValue({ artifactId: "persisted-session-1" }),
+    upsert: vi.fn().mockResolvedValue(persistedSessionDetail()),
     update: vi.fn().mockResolvedValue({}),
     ...overrides,
   };
+}
+
+/**
+ * A stored-row stub for the ORDINARY update arm: the same artifact id the
+ * upsert resolves to, so the slice reads "the row I found is the row I wrote".
+ * Spread over a suite's own columns rather than replacing them.
+ */
+export function withPersistedSessionArtifactId<T extends object>(
+  storedRow: T
+): T & { artifactId: string } {
+  return { artifactId: PERSISTED_SESSION_ARTIFACT_ID, ...storedRow };
 }
 
 // generateSlug() allocates a SES-* slug via slugCounter.upsert inside the sync
@@ -185,7 +307,45 @@ export function buildAgentSessionDbMock(
   return {
     findUnique: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
-    ...overrides,
+    // ISS-6823: the analytics Repository breakdown is a `groupBy` now, so every
+    // `getAnalytics` mock needs one. Defaulted to no groups (an empty
+    // breakdown) so a suite that is not about repositories need not state it.
+    groupBy: vi.fn().mockResolvedValue([]),
+    // ISS-7705: the usage summary probes LOC/$ coverage with `sessionDetail.count`
+    // once its delivery scope has merged PRs. Defaulted to 0 — an empty numerator
+    // cohort, which folds to `complete` — so a suite that is not about coverage is
+    // unaffected and none of them has to learn a new model. A suite that IS about
+    // coverage overrides it.
+    count: vi.fn().mockResolvedValue(0),
+    ...withDerivedSessionDetailFindMany(overrides),
+  };
+}
+
+/**
+ * One `sessionDetail.groupBy(["repositoryFullName"])` row, in the shape Prisma
+ * returns it — the analytics Repository breakdown's only input (ISS-6823).
+ */
+export function buildRepositoryGroupRow(input: {
+  repositoryFullName: string | null;
+  sessionCount: number;
+  inputTokens: number | bigint;
+  outputTokens: number | bigint;
+  estimatedCost: number;
+  errorCount?: number | null;
+}) {
+  return {
+    repositoryFullName: input.repositoryFullName,
+    _count: { _all: input.sessionCount },
+    _sum: {
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      estimatedCost: input.estimatedCost,
+      // Omission defaults, an explicit `null` PASSES THROUGH: coercing here
+      // would swallow the null before `buildUsageByRepository`'s own
+      // `_sum.errorCount ?? 0` ever saw it, leaving the null case green with
+      // that guard deleted.
+      errorCount: input.errorCount === undefined ? 0 : input.errorCount,
+    },
   };
 }
 
@@ -212,6 +372,68 @@ export function buildAttributionLensRecord(input: {
   };
 }
 
+type AttributionFixtureLink = {
+  metadata: unknown;
+  targetId: string;
+  target: Record<string, unknown>;
+};
+
+/**
+ * Wires the three reads `readSessionAttributionRecords` issues (ISS-7655) from
+ * records built by {@link buildAttributionLensRecord}, so a test still states
+ * its attribution fixture once, in the shape the fold consumes.
+ *
+ * `artifactLink.findMany` is shared with two other readers in this flow: the
+ * branch artifact-usage read (`sourceId`) and the delivery merged-PR read
+ * (`targetId` + `metadata`). Only the attribution read selects `sourceId` AND
+ * `metadata`, so the mock keys on both — `metadata` alone would also match the
+ * delivery read and hand it the wrong rows. Every other caller gets
+ * `otherLinks`, so a param-blind mock cannot make an assertion about one reader
+ * pass on another reader's rows. `artifact.findMany` is likewise shared with
+ * the Project facet's population read (`where.session`, ISS-11895), which gets
+ * no rows rather than the attribution targets.
+ */
+export function attributionReadMocks(
+  records: ReturnType<typeof buildAttributionLensRecord>[],
+  otherLinks: readonly unknown[] = []
+): {
+  artifactLinkFindMany: Mock;
+  artifactFindMany: Mock;
+  sessionDetailFindMany: Mock;
+} {
+  const links: unknown[] = [];
+  const targets = new Map<string, unknown>();
+  for (const record of records) {
+    for (const link of record.artifact
+      .sourceLinks as AttributionFixtureLink[]) {
+      links.push({
+        sourceId: record.artifactId,
+        targetId: link.targetId,
+        metadata: link.metadata,
+      });
+      targets.set(link.targetId, { id: link.targetId, ...link.target });
+    }
+  }
+  return {
+    artifactLinkFindMany: vi.fn((args?: { select?: Record<string, unknown> }) =>
+      Promise.resolve(
+        args?.select?.metadata === true && args?.select?.sourceId === true
+          ? links
+          : [...otherLinks]
+      )
+    ),
+    artifactFindMany: vi.fn((args?: { where?: { session?: unknown } }) =>
+      Promise.resolve(args?.where?.session ? [] : [...targets.values()])
+    ),
+    sessionDetailFindMany: vi.fn().mockResolvedValue(
+      records.map(({ artifact, ...scalars }) => ({
+        ...scalars,
+        artifact: { organizationId: artifact.organizationId },
+      }))
+    ),
+  };
+}
+
 export function trustedBranch(
   targetId: string,
   branchName: string,
@@ -232,13 +454,13 @@ export function trustedBranch(
       organizationId: "org-1",
       branch: {
         branchName,
-        repository: { fullName: "closedloop-ai/symphony-alpha" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: {
           number: prNumber,
           title: `PR ${prNumber}`,
           isCurrent: true,
           lastVerifiedAt: new Date("2026-03-01T12:00:00.000Z"),
-          repository: { fullName: "closedloop-ai/symphony-alpha" },
+          repository: { fullName: "closedloop-ai/closedloop-ai" },
           additions: loc?.additions ?? null,
           deletions: loc?.deletions ?? null,
         },
@@ -307,16 +529,21 @@ export function buildDefaultAgentSessionEventMocks(
   };
 }
 
+/**
+ * ISS-6912: the WIRE agent shape, which is also the persisted one — `agents` is
+ * a genuine JSON column, so unlike {@link buildPersistedEvent} there is no row
+ * type to pin this to. Typed as `Prisma.JsonObject` rather than
+ * `Record<string, unknown>` so it is assignable to the column it stands in for.
+ */
 export function buildPersistedAgent(
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
+  overrides: Prisma.JsonObject = {}
+): Prisma.JsonObject {
   return {
     externalAgentId: "agent-1",
     name: "Existing agent",
     type: "main",
     status: "active",
     subagentType: null,
-    task: null,
     currentTool: null,
     startedAt: SESSION_STARTED_AT.toISOString(),
     updatedAt: SESSION_UPDATED_AT.toISOString(),
@@ -328,17 +555,35 @@ export function buildPersistedAgent(
   };
 }
 
+/**
+ * ISS-6912: one row of `agent_session_events` AS PRISMA RETURNS IT.
+ *
+ * The return type is pinned to the analytics select's own event element rather
+ * than `Record<string, unknown>` on purpose. This builder previously emitted the
+ * DESKTOP WIRE shape — an ISO-string `createdAt`, no `eventCreatedAt`, plus the
+ * `summary`/`data` keys FEA-2718 dropped from both the wire and the DB — which
+ * no longer resembles a persisted row and had not since
+ * `20260526000000_normalize_agent_session_events` normalized the JSON blob into
+ * this relation. Every consumer of the analytics fold was therefore handed a
+ * shape the database cannot produce, so the fold's own bug (a wire-schema parse
+ * that rejected every real row and served an empty breakdown) stayed green.
+ *
+ * Keeping the Prisma-derived annotation is the guard: a column rename or a type
+ * change now fails `tsc` in this file instead of quietly re-widening the gap
+ * between what the tests feed and what production reads.
+ */
 export function buildPersistedEvent(
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
+  overrides: Partial<AnalyticsSessionRecord["events"][number]> = {}
+): AnalyticsSessionRecord["events"][number] {
   return {
+    id: "00000000-0000-7000-8000-000000000001",
+    agentSessionId: "00000000-0000-7000-8000-00000000000a",
     externalEventId: "event-1",
     agentExternalId: "agent-1",
     eventType: "tool_use",
     toolName: "Read",
-    summary: null,
-    data: undefined,
-    createdAt: SESSION_STARTED_AT.toISOString(),
+    eventCreatedAt: SESSION_STARTED_AT,
+    createdAt: SESSION_STARTED_AT,
     ...overrides,
   };
 }
@@ -351,7 +596,7 @@ export function buildSessionListRecord(
     externalSessionId: "external-session-1",
     harness: "claude",
     cwd: "/tmp/worktree",
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     worktreePath: "/tmp/worktree",
     model: "claude-sonnet-4",
     sessionStartedAt: SESSION_STARTED_AT,
@@ -371,13 +616,6 @@ export function buildSessionListRecord(
     baseBranch: "main",
     sourceArtifactId: null,
     sourceLoopId: null,
-    user: {
-      id: "user-1",
-      email: "ada@example.com",
-      firstName: "Ada",
-      lastName: "Lovelace",
-      avatarUrl: null,
-    },
     computeTarget: {
       id: "target-1",
       machineName: "Ada's MacBook Pro",
@@ -459,386 +697,57 @@ export function buildSourceArtifactRecord(
   };
 }
 
-export function buildAnalyticsScalarRecord(
+/**
+ * ISS-9113: one `artifact.findMany` row from the Project breakdown's group-key
+ * read — an ARTIFACT id and the project it parents to, which is all that read
+ * selects now.
+ */
+export function buildAnalyticsProjectAssignmentRecord(
   index: number,
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
+  projectId: string | null = "project-1"
+): AnalyticsProjectAssignmentRecord {
+  return { id: `session-${index}`, projectId };
+}
+
+/** ISS-9113: one `project.findMany` row backing {@link buildAnalyticsProjectAssignmentRecord}. */
+export function buildAnalyticsProjectSummaryRecord(
+  overrides: Partial<AnalyticsProjectSummaryRecord> = {}
+): AnalyticsProjectSummaryRecord {
   return {
-    artifactId: `session-${index}`,
-    repositoryFullName: "closedloop-ai/symphony-alpha",
-    inputTokens: 10,
-    outputTokens: 5,
-    estimatedCost: 0.25,
-    errorCount: 0,
-    artifact: {
-      projectId: "project-1",
-      project: {
-        id: "project-1",
-        name: "Agent Platform",
-        slug: "agent-platform",
-      },
-    },
+    id: "project-1",
+    name: "Agent Platform",
+    slug: "agent-platform",
     ...overrides,
   };
 }
 
-export function buildAnalyticsJsonRecord(
+/**
+ * ISS-6912: typed for the same reason as {@link buildPersistedEvent}.
+ *
+ * ISS-9113: carries the token columns too — analytics reads ONE session
+ * projection now, so there is one builder rather than a JSON-shaped and a
+ * project-shaped pair.
+ */
+export function buildAnalyticsSessionRecord(
   index: number,
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
+  // `estimatedCost` widens to `number` so a suite can state a cost without
+  // reaching for the Decimal constructor; the record still carries the real
+  // Decimal the column produces, so `toNumber` is exercised on its actual input.
+  overrides: Partial<Omit<AnalyticsSessionRecord, "estimatedCost">> & {
+    estimatedCost?: number | Decimal | null;
+  } = {}
+): AnalyticsSessionRecord {
+  const { estimatedCost, ...rest } = overrides;
   return {
     artifactId: `session-${index}`,
     agents: [],
     events: [],
-    ...overrides,
-  };
-}
-
-export type BranchIngestMocks = {
-  artifactLinkUpsert: ReturnType<typeof vi.fn>;
-  artifactLinkFindFirst: ReturnType<typeof vi.fn>;
-  installationFindFirst: ReturnType<typeof vi.fn>;
-  repoFindMany: ReturnType<typeof vi.fn>;
-  publicRepoFindMany: ReturnType<typeof vi.fn>;
-  authorityQueryRaw: ReturnType<typeof vi.fn>;
-  branchFindFirst: ReturnType<typeof vi.fn>;
-  branchFindMany: ReturnType<typeof vi.fn>;
-  branchDetailUpdateMany: ReturnType<typeof vi.fn>;
-  artifactCreate: ReturnType<typeof vi.fn>;
-  sessionDetailUpdate: ReturnType<typeof vi.fn>;
-  commitDetailFindMany: ReturnType<typeof vi.fn>;
-  commitDetailCreate: ReturnType<typeof vi.fn>;
-  commitDetailUpdate: ReturnType<typeof vi.fn>;
-};
-
-export function installBranchIngestDb(overrides: {
-  existingLink?: unknown;
-  repos?: TestRepositoryAuthority[];
-  pullRequestRepositories?: TestRepositoryAuthority[];
-  publicRepositories?: Array<{
-    id: string;
-    githubRepoId: string;
-    fullName: string;
-    defaultBranchName?: string;
-  }>;
-  branches?: Array<{
-    artifactId: string;
-    repositoryId: string;
-    branchName: string;
-    // Optional explicit stored repo full name. When omitted, the row's
-    // composite identity resolves `repositoryId` through the repo mock (below).
-    // Supply this directly to model cross-repo / same-branch-name rows whose
-    // identity the batched commit-lane read must keep distinct.
-    repositoryFullName?: string;
-  }>;
-  installation?: { id: string } | null;
-  // Source artifact → project mapping used to resolve the session's project
-  // (attribution.sourceArtifactId). Present only in the create-path test.
-  artifactProjects?: Array<{ id: string; projectId: string }>;
-  // ISS-4946: the persisted row's freshness watermark. Defaults to a value
-  // strictly OLDER than the synced session's `updatedAt`, so both PR lanes are
-  // ON by default and a test that does not care about freshness exercises the
-  // real write path. Pass `SESSION_UPDATED_AT` to opt into the equal-watermark
-  // tie, or a later date for a stale redelivery.
-  storedSessionUpdatedAt?: Date;
-}): BranchIngestMocks {
-  const artifactLinkUpsert = vi.fn().mockResolvedValue({});
-  const artifactLinkFindFirst = vi
-    .fn()
-    .mockResolvedValue(overrides.existingLink ?? null);
-  const installationFindFirst = vi
-    .fn()
-    .mockResolvedValue(
-      overrides.installation === undefined
-        ? { id: "install-1" }
-        : overrides.installation
-    );
-  const repos = (
-    overrides.repos ?? [{ id: "repo-1", fullName: "acme/web" }]
-  ).map((repo) => repositoryWithAvailableDefault(repo));
-  const repoFindMany = vi.fn().mockResolvedValue(repos);
-  const publicRepositories = (overrides.publicRepositories ?? []).map((repo) =>
-    repositoryWithAvailableDefault(repo)
-  );
-  const publicRepoFindMany = vi.fn().mockResolvedValue(publicRepositories);
-  const pullRequestRepositories = (overrides.pullRequestRepositories ?? []).map(
-    (repository) => repositoryWithAvailableDefault(repository)
-  );
-  const authorityQueryRaw = vi
-    .fn()
-    .mockImplementation((query: { sql?: string }) => {
-      if (query.sql?.includes("github_installation_repositories")) {
-        return Promise.resolve(
-          overrides.installation === null
-            ? []
-            : repos.filter(
-                (repository) => repository.installationStatus !== "INACTIVE"
-              )
-        );
-      }
-      if (query.sql?.includes("public_repositories")) {
-        return Promise.resolve(publicRepositories);
-      }
-      if (query.sql?.includes("pull_request_detail")) {
-        return Promise.resolve(pullRequestRepositories);
-      }
-      return Promise.resolve([]);
-    });
-  const repoFullNameById = new Map(repos.map((r) => [r.id, r.fullName]));
-  // The stored composite identity of a branch row is its (repositoryFullName,
-  // branchName) pair — the real D2 unique key. A row may pin repositoryFullName
-  // directly (to model cross-repo cases) or resolve it from repositoryId via the
-  // repo mock. This is what a batched read genuinely selects; the mock must key
-  // on it (not echo the query) so a cross-repo attach is caught.
-  const storedRepoFullName = (b: {
-    repositoryId: string;
-    repositoryFullName?: string;
-  }): string =>
-    b.repositoryFullName ??
-    repoFullNameById.get(b.repositoryId) ??
-    repos[0]?.fullName ??
-    "";
-  // PLN-1099 Phase 1: the branch lane resolves-or-creates on the D2 key via
-  // findFirst. These unit sessions carry no project attribution, so
-  // resolveProjectId returns null — a findFirst MISS therefore defers (a
-  // project-less branch can't be created), exactly as before. The create path
-  // (project resolved) is covered by the branch integration tests.
-  const branches = overrides.branches ?? [];
-  const branchFindFirst = vi
-    .fn()
-    .mockImplementation((args: { where?: { branchName?: string } }) => {
-      const branchName = args?.where?.branchName;
-      const match = branches.find((b) => b.branchName === branchName);
-      return Promise.resolve(match ? { artifactId: match.artifactId } : null);
-    });
-  // ISS-4440 commit lane: branches are now resolved in one batched findMany over
-  // the distinct (repo, branch) pairs. The mock matches each OR pair against the
-  // row's STORED composite identity (repo full name AND branch name) and returns
-  // the STORED identity — it never echoes the query. That is what lets a
-  // cross-repo attach (right branch name, wrong repo) fail the test instead of
-  // silently resolving. It also asserts the read stays org-scoped and that every
-  // OR pair carries the full composite key, so a regression to an unscoped or
-  // branch-name-only query is caught.
-  const branchFindMany = vi.fn().mockImplementation(
-    (args: {
-      where?: {
-        organizationId?: string;
-        OR?: Array<{ repositoryFullName: string; branchName: string }>;
-      };
-    }) => {
-      const where = args?.where ?? {};
-      // Guard the scoped read shape so a regression to an unscoped or
-      // branch-name-only query fails the test (throwing rejects the mocked
-      // call, surfacing in the awaiting assertion).
-      if (where.organizationId === undefined) {
-        throw new Error("batched branch read must be org-scoped");
-      }
-      const pairs = where.OR ?? [];
-      const rows: Array<{
-        artifactId: string;
-        repositoryFullName: string;
-        branchName: string;
-      }> = [];
-      for (const pair of pairs) {
-        if (
-          typeof pair.repositoryFullName !== "string" ||
-          typeof pair.branchName !== "string"
-        ) {
-          throw new Error(
-            "each batched branch pair must scope both repositoryFullName and branchName"
-          );
-        }
-        const match = branches.find(
-          (b) =>
-            storedRepoFullName(b) === pair.repositoryFullName &&
-            b.branchName === pair.branchName
-        );
-        if (match) {
-          rows.push({
-            artifactId: match.artifactId,
-            repositoryFullName: storedRepoFullName(match),
-            branchName: match.branchName,
-          });
-        }
-      }
-      return Promise.resolve(rows);
-    }
-  );
-  const artifactCreate = vi.fn().mockResolvedValue({ id: "created-branch-1" });
-  // PLN-1099 Phase 2b: the set-once/earliest-wins push-state stamp
-  // (`stampBranchFirstPush`) issues a guarded branchDetail.updateMany.
-  const branchDetailUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
-  const sessionDetailUpdate = vi.fn().mockResolvedValue({});
-
-  // FEA-2731 commit lane: an in-memory CommitDetail delegate exercising the
-  // (org, repo, sha-prefix) findMany + create + update-by-id that
-  // reconcileCommitOnTx uses.
-  const commitRows: Record<string, unknown>[] = [];
-  let commitSeq = 0;
-  const commitDetailFindMany = vi.fn().mockImplementation(
-    (args: {
-      where?: {
-        organizationId?: string;
-        repositoryFullName?: string;
-        sha?: { startsWith?: string };
-      };
-    }) => {
-      const where = args?.where ?? {};
-      const prefix = where.sha?.startsWith;
-      return Promise.resolve(
-        commitRows.filter(
-          (r) =>
-            r.organizationId === where.organizationId &&
-            r.repositoryFullName === where.repositoryFullName &&
-            (prefix === undefined || String(r.sha).startsWith(prefix))
-        )
-      );
-    }
-  );
-  const commitDetailCreate = vi
-    .fn()
-    .mockImplementation((args: { data: Record<string, unknown> }) => {
-      const row = { ...args.data, id: `commit-${++commitSeq}` };
-      commitRows.push(row);
-      return Promise.resolve(row);
-    });
-  const commitDetailUpdate = vi
-    .fn()
-    .mockImplementation(
-      (args: { where: { id: string }; data: Record<string, unknown> }) => {
-        const row = commitRows.find((r) => r.id === args.where.id);
-        if (row) {
-          Object.assign(row, args.data);
-        }
-        return Promise.resolve(row);
-      }
-    );
-
-  installDb({
-    $queryRaw: authorityQueryRaw,
-    computeTarget: {
-      findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-      update: vi.fn().mockResolvedValue({ id: "target-1" }),
-    },
-    slugCounter: buildSlugCounterMock(),
-    sessionDetail: buildDefaultAgentSessionMocks({
-      // ISS-4946: `sessionUpdatedAt` is a non-null column that the upsert reads
-      // as its freshness watermark, so a persisted-row stub must carry it.
-      // The DEFAULT is deliberately older than the synced session's `updatedAt`
-      // (an ordinary in-order resync that advances the row), which puts both PR
-      // lanes ON. Defaulting to the equal watermark instead would silently make
-      // every PR-lane write conditional on the fixture happening to carry PR
-      // evidence — a new test could then assert nothing and still pass.
-      findUnique: vi.fn().mockResolvedValue({
-        metadata: null,
-        sessionStartedAt: SESSION_STARTED_AT,
-        sessionUpdatedAt:
-          overrides.storedSessionUpdatedAt ?? SESSION_STARTED_AT,
-        sessionEndedAt: null,
-      }),
-      update: sessionDetailUpdate,
-    }),
-    artifact: {
-      create: artifactCreate,
-      findMany: vi.fn().mockResolvedValue(overrides.artifactProjects ?? []),
-    },
-    artifactLink: {
-      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      findFirst: artifactLinkFindFirst,
-      findMany: vi.fn().mockResolvedValue([]),
-      upsert: artifactLinkUpsert,
-    },
-    agentSessionEvent: buildDefaultAgentSessionEventMocks(),
-    agentSessionTokenUsage: {
-      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      createMany: vi.fn().mockResolvedValue({ count: 0 }),
-    },
-    gitHubInstallation: { findFirst: installationFindFirst },
-    gitHubInstallationRepository: { findMany: repoFindMany },
-    publicRepository: {
-      findMany: publicRepoFindMany,
-    },
-    branchDetail: {
-      findFirst: branchFindFirst,
-      findMany: branchFindMany,
-      updateMany: branchDetailUpdateMany,
-    },
-    commitDetail: {
-      findMany: commitDetailFindMany,
-      create: commitDetailCreate,
-      update: commitDetailUpdate,
-    },
-  });
-
-  return {
-    artifactLinkUpsert,
-    artifactLinkFindFirst,
-    installationFindFirst,
-    repoFindMany,
-    publicRepoFindMany,
-    authorityQueryRaw,
-    branchFindFirst,
-    branchFindMany,
-    branchDetailUpdateMany,
-    artifactCreate,
-    sessionDetailUpdate,
-    commitDetailFindMany,
-    commitDetailCreate,
-    commitDetailUpdate,
-  };
-}
-
-export function syncBranchRefs(
-  artifactRefs: SyncedArtifactRef[],
-  attribution?: SyncedAgentSession["attribution"]
-) {
-  return agentSessionsService.upsertSessions(
-    {
-      organizationId: "org-1",
-      userId: "user-1",
-      computeTargetId: "target-1",
-    },
-    {
-      schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-      batchId: "branch-batch",
-      syncMode: AgentSessionSyncMode.Incremental,
-      sessionCount: 1,
-      sessions: [
-        buildSyncedSession({
-          artifactRefs,
-          ...(attribution ? { attribution } : {}),
-        }),
-      ],
-    }
-  );
-}
-
-export type TestRepositoryAuthority = {
-  id: string;
-  fullName: string;
-  githubRepoId?: string;
-  defaultBranchName?: string | null;
-  installationStatus?: "ACTIVE" | "INACTIVE";
-  [key: string]: unknown;
-};
-
-export function repositoryWithAvailableDefault<
-  T extends TestRepositoryAuthority,
->(repository: T) {
-  return {
-    defaultBranchName: "main",
-    defaultBranchAvailability: RepositoryDefaultAvailability.Available,
-    defaultBranchCompleteness: RepositoryDefaultCompleteness.Complete,
-    defaultBranchReason: null,
-    defaultBranchSource: RepositoryDefaultSource.RepositoryRest,
-    defaultBranchMechanism: GitHubFetchMechanism.Rest,
-    defaultBranchTrigger: GitHubFetchTrigger.Backfill,
-    defaultBranchCredentialType: GitHubFetchCredentialType.GitHubApp,
-    defaultBranchCredentialOwnerId: null,
-    defaultBranchObservationKey: "test-observation",
-    defaultBranchObservedAt: new Date("2026-08-11T00:00:00.000Z"),
-    defaultBranchEventAt: null,
-    ...repository,
-    githubRepoId: repository.githubRepoId ?? repository.id,
+    inputTokens: 0n,
+    outputTokens: 0n,
+    ...rest,
+    estimatedCost:
+      typeof estimatedCost === "number"
+        ? new Decimal(estimatedCost)
+        : (estimatedCost ?? null),
   };
 }

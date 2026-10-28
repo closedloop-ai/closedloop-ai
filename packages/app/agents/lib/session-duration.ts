@@ -82,7 +82,7 @@ export type SessionDurationWindow =
  * would render a duration that grows forever. This follows the ISS-4979 rule
  * that an uncomputable span is `null` (the em-dash), never a fabricated number.
  *
- * ONLY `Running` reaches `now()` (wongk / #4409 review). An `Indeterminate`
+ * ONLY `Running` reaches `now()` (whitlockk / #4409 review). An `Indeterminate`
  * status — an unrecognized value, or the `stale`/`unknown` the Sessions list
  * projects for a stored-active row silent past the cutoff — takes the SAME
  * evidence-bounded branch as a terminal one. Two reasons, one for each half of
@@ -94,12 +94,18 @@ export type SessionDurationWindow =
  *     Duration confidently claiming "73h" and climbing. One row cannot both
  *     disclaim knowledge of the state and keep timing the run.
  *   - it closes the alias split. `resolveSessionDurationLifecycle` is the one
- *     classifier, so the desktop's `failed` — which `canonicalSharedStatus`
- *     writes before `mapListItem` — classifies exactly as the raw `error` does
- *     in the desktop sort. Hand-listing literals is what put those two
- *     spellings on opposite sides of the branch; that is also why this comment
- *     no longer lists them (ISS-6581 — the list it used to carry said the
- *     retired pair classified as `ended`, which stopped being true).
+ *     classifier, so every surface answers a given spelling identically. The
+ *     split it closed is historical: the desktop's `failed` — which
+ *     `canonicalSharedStatus` wrote before `mapListItem` — then shared a
+ *     lifecycle with the raw `error`, and hand-listing literals put the two on
+ *     opposite sides of the branch. ISS-5592 deleted both the alias and that
+ *     rewrite, so no spelling reaches a lifecycle by any name but its own: a
+ *     retired one is simply unrecognized, which is the `Indeterminate` case
+ *     above and NOT the branch its former canonical twin takes. ONE classifier
+ *     is what keeps a FUTURE alias from reopening the split. That is also why
+ *     this comment no longer lists them (ISS-6581 — the list it used to carry
+ *     said the retired pair classified as `ended`, which stopped being true);
+ *     for what the fold does with a retired spelling, read the classifier.
  */
 export function resolveSessionDurationWindow(
   status: string | null | undefined,
@@ -160,30 +166,32 @@ export function resolveSessionDurationDetail(
 /**
  * ISS-4684: the "end" instant for the Session Timeline AXIS.
  *
- * The timeline axis TOTAL LABEL and the "Activity phases" strip caption on the
- * session-detail page are two derived total-duration claims for the SAME
- * session, and their headline numbers should reconcile. This helper resolves the
- * axis "end" instant; the caller renders it with the SAME `formatDuration` the
- * phases caption uses (`phases span 93h 42m`), so the two read in one unit
- * system instead of "5622m" vs "93h 42m".
+ * This helper resolves the axis "end" instant. ISS-4684 introduced it so the
+ * axis TOTAL LABEL reconciled with the "Activity phases" strip caption, the
+ * other derived total-duration claim for the same session; ISS-7867 retired
+ * that strip. The caller still renders the result through `formatDuration`, so
+ * the total reads as "93h 42m" rather than "5622m" alongside the Duration
+ * metric that remains on the page.
  *
- * SCOPE: this reconciles the axis SCALE/label only. The phases strip does NOT
- * read `span.last`/`lastActivityAt` directly — its window is min/max over the
- * activity-segment rows (`activity-segments-projection.ts`), which can be a
- * truncated start-ordered prefix — and the bucket/marker/dot GEOMETRY on this
- * axis is still bounded by `session.endedAt ?? session.updatedAt` in
- * `getLimitDotPercent` / `alignBucketRowsToTranscript`. Making those windows
- * agree is a separate, broader change tracked in an ISS follow-up.
+ * SCOPE: this resolves the axis SCALE/label only. The bucket/marker/dot
+ * GEOMETRY on this axis is still bounded by
+ * `session.endedAt ?? session.updatedAt` in `getLimitDotPercent` /
+ * `alignBucketRowsToTranscript`, so the label's window and the plotted window
+ * can still name different ends. Making those windows agree is a separate,
+ * broader change tracked in an ISS follow-up.
  *
  * The axis end is the LATER of the two real-activity/lifecycle bounds —
  * `max(endedAt, lastActivityAt)`:
  *   - a still-running session (no `endedAt`) reaches `lastActivityAt`;
  *   - a completed session whose activity continued past `endedAt` reaches that
  *     later `lastActivityAt`, so the label covers the events actually plotted;
- *   - a PRE-BACKFILL row whose `lastActivityAt` fell back to `startedAt`
- *     (projections fill `lastActivityAt ?? startedAt`) reaches `endedAt` rather
- *     than collapsing the axis to a 1-minute scale — the concrete case `max()`
- *     repairs that the plain `lastActivityAt` preference could not;
+ *   - a row whose `lastActivityAt` equals its `startedAt` reaches `endedAt`
+ *     rather than collapsing the axis to a 1-minute scale — the concrete case
+ *     `max()` repairs that the plain `lastActivityAt` preference could not.
+ *     This used to be described as a pre-backfill row the cloud projection
+ *     filled via `lastActivityAt ?? startedAt`; ISS-6463 removed that coalesce
+ *     (the column is NOT NULL), but the case survives on its own — an
+ *     event-less session is floored AT its start, so the two are equal;
  *   - when only `endedAt` is available (an older/version-skewed detail with no
  *     `lastActivityAt`), it degrades gracefully to `endedAt` rather than lying.
  *
@@ -241,12 +249,14 @@ export function resolveSessionTimelineAxisEnd(
  * event ({@link resolveSessionTimelineAxisEnd}) while Duration stops at the
  * session's own end.
  *
- * QUALIFIER FIRST, so it scans as a set with the "Activity phases" caption
- * directly below it (`phases span 4h 54m`,
- * `packages/app/agents/components/activity/session-activity-segments.tsx`). Two
- * total-span captions stacked on one screen with inverted grammar — "4h 54m
- * calendar time" over "phases span 4h 54m" — read as two unrelated facts; the
- * shared `<what> span <duration>` shape reads as two measures of one session.
+ * QUALIFIER FIRST. ISS-4675 chose that order so this scanned as a set with the
+ * "Activity phases" caption directly below it (`phases span 4h 54m`), because
+ * two total-span captions stacked with inverted grammar — "4h 54m calendar
+ * time" over "phases span 4h 54m" — read as two unrelated facts. ISS-7867
+ * retired that caption. The wording is unchanged: leading with the qualifier
+ * still marks this as ONE measure of the session rather than a second Duration,
+ * which is the distinction the axis title exists to draw
+ * ({@link SESSION_TIMELINE_AXIS_SPAN_TITLE}).
  */
 export const SESSION_TIMELINE_AXIS_SPAN_PREFIX = "calendar span";
 

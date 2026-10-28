@@ -1,30 +1,20 @@
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import {
-  acquireLaunchLock,
-  cleanStaleLock,
-  getLockDir,
-  isProcessRunning,
+  assertRepoAllowed,
+  expandHome,
   readLaunchMetadata,
   readLaunchMetadataAsync,
-  readProcessPidSync,
-  releaseLaunchLock,
-  restoreWorktreeState,
-  runLoopsSetupScript,
+  resolveWorktreeDir,
+  resolveWorktreeParentDir,
   sanitizeTicketId,
-  saveWorktreeState,
-  writeLaunchMetadata,
 } from "../src/server/operations/symphony-utils.js";
+import { DirectoryNotAllowedError } from "../src/server/security.js";
+import { restoreEnvVars, saveEnvVars } from "./symphony-test-utils.js";
 
 const tempPaths: string[] = [];
 
@@ -43,117 +33,6 @@ function makeTempDir(): string {
   tempPaths.push(dir);
   return dir;
 }
-
-// --- worktree state save/restore ---
-
-describe("worktree state save/restore", () => {
-  test("preserves .closedloop-ai state across worktree recreation", () => {
-    const dir = makeTempDir();
-    const workDir = path.join(dir, ".closedloop-ai", "work");
-    mkdirSync(workDir, { recursive: true });
-    writeFileSync(path.join(workDir, "state.json"), '{"status":"RUNNING"}');
-
-    const saved = saveWorktreeState(dir);
-    restoreWorktreeState(saved, dir);
-
-    assert.equal(
-      readFileSync(
-        path.join(dir, ".closedloop-ai", "work", "state.json"),
-        "utf-8"
-      ),
-      '{"status":"RUNNING"}'
-    );
-  });
-
-  test("ignores legacy .claude/work state", () => {
-    const dir = makeTempDir();
-    const attachmentsDir = path.join(dir, ".claude", "work", "attachments");
-    mkdirSync(attachmentsDir, { recursive: true });
-    writeFileSync(path.join(attachmentsDir, "image.png"), "binary-data");
-
-    const saved = saveWorktreeState(dir);
-    restoreWorktreeState(saved, dir);
-
-    assert.equal(
-      existsSync(
-        path.join(dir, ".closedloop-ai", "work", "attachments", "image.png")
-      ),
-      false
-    );
-  });
-
-  test("preserves .claude/agents without restoring unrelated .claude state", () => {
-    const dir = makeTempDir();
-    const agentsDir = path.join(dir, ".claude", "agents");
-    mkdirSync(agentsDir, { recursive: true });
-    writeFileSync(path.join(agentsDir, "custom-agent.md"), "# custom agent");
-    writeFileSync(
-      path.join(dir, ".claude", "settings.json"),
-      '{"legacy":true}'
-    );
-
-    const saved = saveWorktreeState(dir);
-
-    mkdirSync(path.join(dir, ".claude"), { recursive: true });
-    writeFileSync(
-      path.join(dir, ".claude", "settings.json"),
-      '{"tracked":true}'
-    );
-
-    restoreWorktreeState(saved, dir);
-
-    assert.equal(
-      readFileSync(
-        path.join(dir, ".claude", "agents", "custom-agent.md"),
-        "utf-8"
-      ),
-      "# custom agent"
-    );
-    assert.equal(
-      readFileSync(path.join(dir, ".claude", "settings.json"), "utf-8"),
-      '{"tracked":true}'
-    );
-  });
-});
-
-// --- readProcessPidSync ---
-
-describe("readProcessPidSync", () => {
-  test("returns null when process.pid file is missing", () => {
-    const dir = makeTempDir();
-    assert.equal(readProcessPidSync(dir), null);
-  });
-
-  test("returns parsed PID from valid file", () => {
-    const dir = makeTempDir();
-    const claudeWorkDir = path.join(dir, ".closedloop-ai", "work");
-    mkdirSync(claudeWorkDir, { recursive: true });
-    writeFileSync(path.join(claudeWorkDir, "process.pid"), "12345");
-
-    assert.equal(readProcessPidSync(dir), 12_345);
-  });
-
-  test("returns null for non-numeric content", () => {
-    const dir = makeTempDir();
-    const claudeWorkDir = path.join(dir, ".closedloop-ai", "work");
-    mkdirSync(claudeWorkDir, { recursive: true });
-    writeFileSync(path.join(claudeWorkDir, "process.pid"), "not-a-pid");
-
-    assert.equal(readProcessPidSync(dir), null);
-  });
-});
-
-// --- isProcessRunning ---
-
-describe("isProcessRunning", () => {
-  test("returns true for own process (self-check)", () => {
-    assert.equal(isProcessRunning(process.pid), true);
-  });
-
-  test("returns false for a non-existent PID", () => {
-    assert.equal(isProcessRunning(999_999_999), false);
-  });
-});
 
 // --- readLaunchMetadata ---
 
@@ -177,7 +56,6 @@ describe("readLaunchMetadata", () => {
       artifactId: undefined,
       baseBranch: "main",
       issueId: undefined,
-      loopId: undefined,
       parentTicketId: "AI-100",
       ticketTitle: undefined,
     });
@@ -221,239 +99,9 @@ describe("readLaunchMetadata", () => {
       artifactId: undefined,
       baseBranch: undefined,
       issueId: undefined,
-      loopId: undefined,
       parentTicketId: undefined,
       ticketTitle: undefined,
     });
-  });
-});
-
-// --- writeLaunchMetadata ---
-
-describe("writeLaunchMetadata", () => {
-  test("writes launch-metadata.json and creates .closedloop-ai/work dir", () => {
-    const dir = makeTempDir();
-    writeLaunchMetadata(dir, { baseBranch: "develop" });
-
-    const metaPath = path.join(
-      dir,
-      ".closedloop-ai",
-      "work",
-      "launch-metadata.json"
-    );
-    assert.ok(existsSync(metaPath));
-    const content = JSON.parse(readFileSync(metaPath, "utf-8"));
-    assert.equal(content.baseBranch, "develop");
-  });
-
-  test("merges with existing metadata (undefined values fall back)", () => {
-    const dir = makeTempDir();
-    writeLaunchMetadata(dir, {
-      baseBranch: "main",
-      parentTicketId: "AI-50",
-    });
-    writeLaunchMetadata(dir, {
-      baseBranch: undefined,
-      parentTicketId: undefined,
-    });
-
-    const meta = readLaunchMetadata(dir);
-    assert.deepEqual(meta, {
-      artifactId: undefined,
-      baseBranch: "main",
-      issueId: undefined,
-      loopId: undefined,
-      parentTicketId: "AI-50",
-      ticketTitle: undefined,
-    });
-  });
-
-  test("overrides existing values when new values are defined", () => {
-    const dir = makeTempDir();
-    writeLaunchMetadata(dir, {
-      baseBranch: "main",
-      parentTicketId: "AI-50",
-    });
-    writeLaunchMetadata(dir, { baseBranch: "develop" });
-
-    const meta = readLaunchMetadata(dir);
-    assert.deepEqual(meta, {
-      artifactId: undefined,
-      baseBranch: "develop",
-      issueId: undefined,
-      loopId: undefined,
-      parentTicketId: "AI-50",
-      ticketTitle: undefined,
-    });
-  });
-});
-
-// --- acquireLaunchLock / releaseLaunchLock ---
-
-describe("acquireLaunchLock", () => {
-  test("returns fd on first call", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    const result = acquireLaunchLock(lockDir);
-    assert.ok(result !== null);
-    assert.equal(typeof result.fd, "number");
-
-    releaseLaunchLock(lockDir, result.fd);
-  });
-
-  test("returns null on contention (EEXIST)", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    const first = acquireLaunchLock(lockDir);
-    assert.ok(first !== null);
-
-    const second = acquireLaunchLock(lockDir);
-    assert.equal(second, null);
-
-    releaseLaunchLock(lockDir, first.fd);
-  });
-
-  test("lock file records pid and timestamp as JSON", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    const result = acquireLaunchLock(lockDir);
-    assert.ok(result !== null);
-
-    const lockContent = JSON.parse(
-      readFileSync(path.join(lockDir, "launch.lock"), "utf-8")
-    );
-    assert.equal(lockContent.pid, process.pid);
-    assert.equal(typeof lockContent.timestamp, "number");
-
-    releaseLaunchLock(lockDir, result.fd);
-  });
-
-  test("creates lock dir automatically if it doesn't exist", () => {
-    const lockDir = path.join(makeTempDir(), "deep", "nested", "locks");
-    const result = acquireLaunchLock(lockDir);
-    assert.ok(result !== null);
-    assert.ok(existsSync(lockDir));
-
-    releaseLaunchLock(lockDir, result.fd);
-  });
-});
-
-describe("releaseLaunchLock", () => {
-  test("removes the lock file", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    const result = acquireLaunchLock(lockDir);
-    assert.ok(result !== null);
-
-    releaseLaunchLock(lockDir, result.fd);
-    assert.ok(!existsSync(path.join(lockDir, "launch.lock")));
-  });
-});
-
-// --- cleanStaleLock ---
-
-describe("cleanStaleLock", () => {
-  test("removes lock when owner PID is dead", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      path.join(lockDir, "launch.lock"),
-      JSON.stringify({ pid: 999_999_999, timestamp: Date.now() })
-    );
-
-    cleanStaleLock(lockDir);
-    assert.ok(!existsSync(path.join(lockDir, "launch.lock")));
-  });
-
-  test("leaves lock alone when owner PID is alive", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      path.join(lockDir, "launch.lock"),
-      JSON.stringify({ pid: process.pid, timestamp: Date.now() })
-    );
-
-    cleanStaleLock(lockDir);
-    assert.ok(existsSync(path.join(lockDir, "launch.lock")));
-  });
-
-  test("leaves recent corrupt lock alone (missing pid, <5s old)", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      path.join(lockDir, "launch.lock"),
-      JSON.stringify({ timestamp: Date.now() })
-    );
-
-    cleanStaleLock(lockDir);
-    assert.ok(existsSync(path.join(lockDir, "launch.lock")));
-  });
-
-  test("removes old corrupt lock (missing pid, >5s old)", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    const lockPath = path.join(lockDir, "launch.lock");
-    writeFileSync(lockPath, JSON.stringify({ timestamp: Date.now() }));
-
-    const oldTime = new Date(Date.now() - 10_000);
-    utimesSync(lockPath, oldTime, oldTime);
-
-    cleanStaleLock(lockDir);
-    assert.ok(!existsSync(lockPath));
-  });
-
-  test("leaves recent malformed JSON lock alone", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(path.join(lockDir, "launch.lock"), "not json");
-
-    cleanStaleLock(lockDir);
-    assert.ok(existsSync(path.join(lockDir, "launch.lock")));
-  });
-
-  test("removes old malformed JSON lock (>5s old)", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    const lockPath = path.join(lockDir, "launch.lock");
-    writeFileSync(lockPath, "not json");
-
-    const oldTime = new Date(Date.now() - 10_000);
-    utimesSync(lockPath, oldTime, oldTime);
-
-    cleanStaleLock(lockDir);
-    assert.ok(!existsSync(lockPath));
-  });
-
-  test("no-ops when lock file does not exist", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-
-    // Should not throw
-    cleanStaleLock(lockDir);
-  });
-
-  test("no absolute timeout — alive PID is authoritative", () => {
-    const lockDir = path.join(makeTempDir(), "locks");
-    mkdirSync(lockDir, { recursive: true });
-    const lockPath = path.join(lockDir, "launch.lock");
-    // Lock with very old timestamp but alive PID
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, timestamp: 0 }));
-
-    // Backdate the file mtime as well
-    const veryOld = new Date(Date.now() - 60_000);
-    utimesSync(lockPath, veryOld, veryOld);
-
-    cleanStaleLock(lockDir);
-    // Lock should still be present because the PID is alive
-    assert.ok(existsSync(lockPath));
-  });
-});
-
-// --- getLockDir ---
-
-describe("getLockDir", () => {
-  test("returns correct path structure", () => {
-    const result = getLockDir("/parent", "my-repo", "AI-100");
-    assert.equal(
-      result,
-      path.join("/parent", ".closedloop-ai", "locks", "my-repo-AI-100")
-    );
   });
 });
 
@@ -469,43 +117,77 @@ describe("sanitizeTicketId", () => {
   });
 });
 
-// --- runLoopsSetupScript ---
+// ─── ISS-9170 — pure/utility exports with no direct coverage elsewhere ─────
+//
+// Moved here from a generic `gateway-*-coverage` bucket so these cases sit
+// with the module they exercise.
+//
+// Structurally unreachable and deliberately not covered: `assertRepoAllowed`'s
+// catch has an else arm that rethrows verbatim, but `assertPathAllowed` only
+// ever throws `DirectoryNotAllowedError`, so that arm is dead.
 
-describe("runLoopsSetupScript", () => {
-  test("runs script that exists and creates a marker file", async () => {
-    const dir = makeTempDir();
-    const scriptDir = path.join(dir, ".closedloop-ai");
-    mkdirSync(scriptDir, { recursive: true });
-    writeFileSync(
-      path.join(scriptDir, "loops-setup.sh"),
-      '#!/bin/bash\necho "ok" > "$PWD/.setup-marker"'
-    );
+describe("ISS-9170 — symphony-utils pure helpers", () => {
+  const ENV_KEYS = ["SYMPHONY_WORKTREE_PARENT_DIR"] as const;
+  let savedEnv: Record<string, string | undefined> = {};
 
-    await runLoopsSetupScript(dir, "test-loop-id");
+  afterEach(() => {
+    restoreEnvVars(savedEnv);
+    savedEnv = {};
+  });
 
-    assert.ok(existsSync(path.join(dir, ".setup-marker")));
+  // ─── expandHome ───────────────────────────────────────────────────────────
+
+  test("expandHome expands a bare ~ and a ~/-prefixed path, and leaves other paths unchanged", () => {
+    assert.equal(expandHome("~"), os.homedir());
     assert.equal(
-      readFileSync(path.join(dir, ".setup-marker"), "utf-8").trim(),
-      "ok"
+      expandHome("~/projects/repo"),
+      path.join(os.homedir(), "projects/repo")
     );
+    assert.equal(expandHome("/tmp/already-absolute"), "/tmp/already-absolute");
   });
 
-  test("no-ops when script does not exist", async () => {
-    const dir = makeTempDir();
-    // Should not throw
-    await runLoopsSetupScript(dir, "test-loop-id");
+  // ─── resolveWorktreeParentDir / resolveWorktreeDir ─────────────────────────
+
+  test("resolveWorktreeParentDir falls back to the repo's dirname when the env var is unset", () => {
+    savedEnv = saveEnvVars(ENV_KEYS);
+    Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
+
+    const repoPath = "/tmp/some/my-repo";
+    assert.equal(resolveWorktreeParentDir(repoPath), path.dirname(repoPath));
   });
 
-  test("does not throw when script exits non-zero", async () => {
-    const dir = makeTempDir();
-    const scriptDir = path.join(dir, ".closedloop-ai");
-    mkdirSync(scriptDir, { recursive: true });
-    writeFileSync(
-      path.join(scriptDir, "loops-setup.sh"),
-      "#!/bin/bash\nexit 1"
-    );
+  test("resolveWorktreeParentDir falls back to dirname when the env var is whitespace-only", () => {
+    savedEnv = saveEnvVars(ENV_KEYS);
+    process.env.SYMPHONY_WORKTREE_PARENT_DIR = "   ";
 
-    // Should not throw — failure is non-fatal
-    await runLoopsSetupScript(dir, "test-loop-id");
+    const repoPath = "/tmp/some/my-repo";
+    assert.equal(resolveWorktreeParentDir(repoPath), path.dirname(repoPath));
+  });
+
+  test("resolveWorktreeParentDir uses the expanded configured dir when the env var is set, and resolveWorktreeDir joins it with the sanitized ticket suffix", () => {
+    savedEnv = saveEnvVars(ENV_KEYS);
+    process.env.SYMPHONY_WORKTREE_PARENT_DIR = "~/custom-worktrees";
+
+    const repoPath = "/tmp/some/my-repo";
+    const expectedParent = path.join(os.homedir(), "custom-worktrees");
+    assert.equal(resolveWorktreeParentDir(repoPath), expectedParent);
+
+    const worktreeDir = resolveWorktreeDir(repoPath, "ISS 123/456");
+    assert.equal(worktreeDir, path.join(expectedParent, "my-repo-ISS_123_456"));
+  });
+
+  // ─── assertRepoAllowed ──────────────────────────────────────────────────────
+
+  test("assertRepoAllowed expands ~ and returns the expanded path when it is allowed", () => {
+    const result = assertRepoAllowed("~", [os.homedir()]);
+    assert.equal(result, os.homedir());
+  });
+
+  test("assertRepoAllowed throws DirectoryNotAllowedError when the path is outside every allowed directory", () => {
+    const allowed = makeTempDir();
+    assert.throws(
+      () => assertRepoAllowed("/definitely/not/allowed", [allowed]),
+      DirectoryNotAllowedError
+    );
   });
 });

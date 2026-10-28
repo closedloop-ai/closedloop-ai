@@ -2,7 +2,7 @@
  * @file token-cost-writes.ts
  * @description The desktop token-cost WRITE primitives + the token-cost
  * CONSERVATION invariant, extracted from write-core.ts (ISS-4936) to shrink that
- * grandfathered file. This is the hot-path pricing/write core: it prices token
+ * file rather than grow it. This is the hot-path pricing/write core: it prices token
  * usage and events via `estimateTokenCost`, reconciles per-event vs per-model
  * cost (`chooseConservedUsageCost` / `tokenCostsConserved` — the long-context
  * per-request tier means one aggregate price over-charges, so a row's cost is
@@ -12,18 +12,20 @@
  *
  * Pure LEAF: imports only leaf modules (never write-core.js / live-hook.js /
  * token-cost-maintenance.js / session-analytics-rollup.js), so those import
- * FROM here one-directionally — no cycle. `webSearchCostSql` lives here because
- * it is the single source both the session cost rollup (here) and
- * session-analytics-rollup's `session_analytics.est_cost` rollup read, so the
- * two can never diverge.
+ * FROM here one-directionally — no cycle. `webSearchCostSql` and
+ * `updateSessionCostRollupBatch` live here because they are what
+ * session-analytics-rollup.js calls to keep `sessions.cost_usd_estimated` and
+ * `session_analytics.est_cost` on one derivation (ISS-7776).
  */
 import { WEB_SEARCH_COST_PER_REQUEST_USD } from "@repo/cost/harness-cost-parity";
+import { SESSION_WEB_SEARCH_REQUESTS_JSON_PATH } from "@repo/cost/session-web-search-cost";
 import {
   type EstimateTokenCostResult,
   estimateTokenCost,
 } from "../../shared/token-cost.js";
 import { reportTokenCostPricingMiss } from "../cost/token-cost-pricing-miss.js";
 import {
+  MODEL_PRICING_SOURCE_WEAKEST_FIRST,
   ModelPricingCurrency,
   ModelPricingSource,
 } from "../model-pricing/model-pricing-fixture.js";
@@ -42,11 +44,20 @@ import { TOKEN_USAGE_EVENT_PARITY_SOURCE_FILTER } from "./token-parity.js";
  * `$.usageExtras.web_search_requests` count in a session's metadata blob. This is
  * the SINGLE source both cost writers read — `updateSessionCostRollup` (the
  * authoritative `sessions.cost_usd_estimated`) and the `session_analytics.est_cost`
- * rollup — so the two surfaces price web search identically and can never diverge.
+ * rollup — so the two surfaces PRICE web search identically. Pricing it the same
+ * way is not the same as agreeing: ISS-7776 measured a $0.03 gap when only the
+ * analytics rollup re-ran, and what closes it is the shared REFRESH below
+ * (`updateSessionCostRollupBatch`), not this fragment.
  * Web search is billed per-request (a server-side tool), never per-token, so this
  * is always additive to and disjoint from any `token_usage` cost. Yields 0 for
  * absent/invalid metadata or a missing/≤0 count (json_valid + max(0, …) guards),
  * so non-web-search sessions are unaffected.
+ *
+ * ISS-7821: the JSON path is `SESSION_WEB_SEARCH_REQUESTS_JSON_PATH`, shared with
+ * the cloud's JS reader (`sessionWebSearchCostUsd`), which prices the same line
+ * item onto `SessionDetail.estimatedCost`. SQL and JS cannot share an
+ * implementation; the PATH is the part they can share, and it is the part that
+ * would silently report "no web search" for the whole fleet if it drifted.
  */
 export function webSearchCostSql(metadataCol: string): string {
   // NOTE: json_extract returns NULL when the path is ABSENT even for valid JSON
@@ -56,9 +67,32 @@ export function webSearchCostSql(metadataCol: string): string {
   // always a concrete non-negative number and never nullifies its sum.
   return `(MAX(0, CAST(COALESCE(
      CASE WHEN json_valid(${metadataCol})
-          THEN json_extract(${metadataCol}, '$.usageExtras.web_search_requests')
+          THEN json_extract(${metadataCol}, '${SESSION_WEB_SEARCH_REQUESTS_JSON_PATH}')
           ELSE 0 END, 0
    ) AS INTEGER)) * ${WEB_SEARCH_COST_PER_REQUEST_USD})`;
+}
+
+/**
+ * ISS-7762: the `CASE` ladder that folds a session's per-model `cost_source`
+ * values into ONE session-level source, weakest provenance first.
+ *
+ * Binds one parameter per `MODEL_PRICING_SOURCE_WEAKEST_FIRST` member, starting
+ * at `firstParamIndex`; the caller must bind that array, in that order, at those
+ * positions. Shared by BOTH session rollups — the per-session
+ * `updateSessionCostRollup` here and the set-based `updateSessionCostRollupBatch`
+ * in token-cost-maintenance.ts — for the same reason `webSearchCostSql` above is
+ * shared: two hand-written copies of one precedence WILL drift, and a drifted
+ * copy makes a session's provenance depend on which writer touched it last.
+ */
+export function costSourcePrecedenceSql(firstParamIndex: number): string {
+  const whens = MODEL_PRICING_SOURCE_WEAKEST_FIRST.map((_, i) => {
+    const param = `$${firstParamIndex + i}`;
+    return `WHEN SUM(CASE WHEN cost_source = ${param} THEN 1 ELSE 0 END) > 0 THEN ${param}`;
+  }).join("\n         ");
+  return `CASE
+         ${whens}
+         ELSE NULL
+       END`;
 }
 
 // FEA-3232: Σ(token_events.cost) must equal token_usage.cost when both stores
@@ -429,7 +463,7 @@ export async function updateTokenUsageCost(
      WHERE session_id = $5 AND model = $6`,
     estimate?.costUsd ?? null,
     estimate ? ModelPricingCurrency.Usd : null,
-    estimate ? ModelPricingSource.GenaiPricesV1 : null,
+    pricingSourceForEstimate(estimate),
     estimate ? observedAt : null,
     sessionId,
     model
@@ -437,7 +471,7 @@ export async function updateTokenUsageCost(
 }
 
 export async function updateTokenEventCost(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Prisma.TransactionClient, "$executeRawUnsafe">,
   sessionId: string,
   event: TokenEventRecord,
   estimate: EstimateTokenCostResult | undefined,
@@ -449,60 +483,43 @@ export async function updateTokenEventCost(
       : serializeTokenEventCostSummary(event, estimate?.costUsd);
   // token_events is @@ignore'd (no PK → no generated delegate), so this stays
   // raw on the prisma tx client.
-  await tx.$executeRawUnsafe(
-    `UPDATE token_events SET
-       cost_usd_estimated = $1,
-       input_cost_usd_estimated = $2,
-       output_cost_usd_estimated = $3,
-       cache_read_cost_usd_estimated = $4,
-       cache_creation_cost_usd_estimated = $5,
-       cost_currency = $6,
-       cost_source = $7,
-       cost_observed_at = $8,
-       cost_summary = CASE
-         WHEN transport_id IS NULL THEN cost_summary
-         ELSE $9
-       END
-     WHERE session_id = $10
-       AND (
-         ($11 IS NOT NULL AND transport_id = $11)
-         OR (
-           $11 IS NULL
-           AND transport_id IS NULL
-           AND model = $12
-           AND created_at = $13
-           AND input_tokens = $14
-           AND output_tokens = $15
-           AND cache_read_tokens = $16
-           AND cache_write_tokens = $17
-           AND cache_write_5m_tokens IS $18
-           AND cache_write_1h_tokens IS $19
-         )
-       )`,
+  const costParams = [
     estimate?.costUsd ?? null,
     estimate?.inputCostUsd ?? null,
     estimate?.outputCostUsd ?? null,
     estimate?.cacheReadCostUsd ?? null,
     estimate?.cacheWriteCostUsd ?? null,
     estimate ? ModelPricingCurrency.Usd : null,
-    estimate ? ModelPricingSource.GenaiPricesV1 : null,
+    pricingSourceForEstimate(estimate),
     estimate ? observedAt : null,
+  ];
+  if (event.transportId === undefined) {
+    await tx.$executeRawUnsafe(
+      TOKEN_EVENT_COST_LEGACY_UPDATE_SQL,
+      ...costParams,
+      sessionId,
+      event.model,
+      event.timestamp,
+      event.input,
+      event.output,
+      event.cacheRead,
+      event.cacheWrite,
+      // FEA-3419: the legacy fallback locator still needs the null-safe TTL pair.
+      // Without it, two pre-transport rows identical in timestamp/model/counts but
+      // differing in split would BOTH match and take the last-priced value,
+      // corrupting the per-event costs conservation reconciles against. SQLite
+      // `IS` matches NULL-to-NULL as equal, so absent-provenance rows locate.
+      event.cacheWriteTtl ? event.cacheWriteTtl.fiveM : null,
+      event.cacheWriteTtl ? event.cacheWriteTtl.oneH : null
+    );
+    return;
+  }
+  await tx.$executeRawUnsafe(
+    TOKEN_EVENT_COST_TRANSPORT_UPDATE_SQL,
+    ...costParams,
     costSummary,
     sessionId,
-    event.transportId ?? null,
-    event.model,
-    event.timestamp,
-    event.input,
-    event.output,
-    event.cacheRead,
-    event.cacheWrite,
-    // FEA-3419: the legacy fallback locator still needs the null-safe TTL pair.
-    // Without it, two pre-transport rows identical in timestamp/model/counts but
-    // differing in split would BOTH match and take the last-priced value,
-    // corrupting the per-event costs conservation reconciles against. SQLite
-    // `IS` matches NULL-to-NULL as equal, so absent-provenance rows locate.
-    event.cacheWriteTtl ? event.cacheWriteTtl.fiveM : null,
-    event.cacheWriteTtl ? event.cacheWriteTtl.oneH : null
+    event.transportId
   );
 }
 
@@ -520,16 +537,11 @@ export async function updateSessionCostRollup(
     `SELECT
        COALESCE(SUM(cost_usd_estimated), 0) AS cost_usd,
        COUNT(cost_usd_estimated) AS priced_rows,
-       CASE
-         WHEN SUM(CASE WHEN cost_source = $2 THEN 1 ELSE 0 END) > 0 THEN $2
-         WHEN SUM(CASE WHEN cost_source = $3 THEN 1 ELSE 0 END) > 0 THEN $3
-         ELSE NULL
-       END AS cost_source
+       ${costSourcePrecedenceSql(2)} AS cost_source
      FROM token_usage
      WHERE session_id = $1`,
     sessionId,
-    ModelPricingSource.GenaiPricesV1,
-    ModelPricingSource.PricingTableV1
+    ...MODEL_PRICING_SOURCE_WEAKEST_FIRST
   );
   const tokenCostUsd = Number(rows[0]?.cost_usd ?? 0);
   const pricedRows = Number(rows[0]?.priced_rows ?? 0);
@@ -541,8 +553,7 @@ export async function updateSessionCostRollup(
   // the total from scratch on every call, re-pricing / re-import can never
   // double-count it (the guard the whole design turns on). The cost is derived
   // via the SHARED `webSearchCostSql` fragment — the identical source the
-  // session_analytics.est_cost rollup uses — so the authoritative total and the
-  // analytics rollup price web search identically and can never diverge.
+  // session_analytics.est_cost rollup uses.
   // FEA-3419: the FEA-3636 session-level 1h TTL premium term is GONE — the
   // premium is baked into per-event / per-model costs by estimateTokenCost
   // (cacheWrite1hTokens), so the token_usage sum already carries it.
@@ -561,6 +572,15 @@ export async function updateSessionCostRollup(
 
   const hasCost = pricedRows > 0 || webSearchCostUsd > 0;
   const totalCostUsd = tokenCostUsd + webSearchCostUsd;
+  // KNOWN OVERSTATEMENT, PRE-EXISTING AND DELIBERATELY NOT WIDENED HERE: when a
+  // session's ONLY cost is the web-search line item, this stamps
+  // `genai_prices_v1` for a price that came from the hardcoded
+  // `WEB_SEARCH_COST_PER_REQUEST_USD` constant — genai-prices is never consulted
+  // for web search at all. That is the same class of defect as ISS-7762, one
+  // field over, and naming it honestly needs a source value that does not exist
+  // yet (`web_search_v1`), which is a vocabulary call for the operator rather
+  // than something to invent mid-fix. Reachable only when every token row is
+  // unpriced AND the session reports web-search requests. Left exactly as found.
   const costSource =
     tokenCostSource ??
     (webSearchCostUsd > 0 ? ModelPricingSource.GenaiPricesV1 : null);
@@ -576,4 +596,287 @@ export async function updateSessionCostRollup(
     hasCost ? costSource : null,
     sessionId
   );
+}
+
+/**
+ * FEA-3488: batched form of {@link updateSessionCostRollup} — recomputes the
+ * per-session `sessions.cost_usd_estimated` / `cost_currency` / `cost_source`
+ * snapshot for a whole set of sessions in ONE `GROUP BY session_id` aggregate
+ * over `token_usage` plus a single batched `UPDATE`, replacing the boot-reprice
+ * N+1 (2 serial queries per session on the transaction client). Behavior is
+ * identical to running `updateSessionCostRollup` per id — same computed cost,
+ * currency, and source, same rows updated — just folded into set-based SQL.
+ * Mirrors the batching idiom of `upsertSessionAnalyticsRollupBatch` (single
+ * IN-list scan, LEFT JOIN over a per-session GROUP BY aggregate). A single
+ * transaction client serializes queries anyway, so no Promise.all.
+ *
+ * ISS-7776 moved it here, out of token-cost-maintenance.js, so the analytics
+ * rollup can call it without the cycle that file's other imports would create.
+ * That makes this the ONE writer of the authoritative total, per id set.
+ */
+export async function updateSessionCostRollupBatch(
+  tx: Prisma.TransactionClient,
+  sessionIds: string[],
+  options: SessionCostRollupBatchOptions = {}
+): Promise<void> {
+  if (sessionIds.length === 0) {
+    return;
+  }
+  // $1 = Usd, $2 = GenaiPricesV1 (the web-search line item's own source), and
+  // $3..$(S+2) are the weakest-first pricing sources bound for the SHARED
+  // `costSourcePrecedenceSql` ladder; the session ids follow. The IN list is
+  // repeated for the token_usage aggregate and the outer sessions scan; reusing
+  // the same numbered params keeps one bound array (SQLite binds `?N` by index,
+  // not textual order — see prisma-client.ts).
+  const precedenceFirstParam = 3;
+  const idFirstParam =
+    precedenceFirstParam + MODEL_PRICING_SOURCE_WEAKEST_FIRST.length;
+  const idPlaceholders = sessionIds
+    .map((_, i) => `$${i + idFirstParam}`)
+    .join(", ");
+  const params: unknown[] = [
+    ModelPricingCurrency.Usd,
+    ModelPricingSource.GenaiPricesV1,
+    ...MODEL_PRICING_SOURCE_WEAKEST_FIRST,
+    ...sessionIds,
+  ];
+  // ISS-7776: the guard DECLINES the write; it does not clear the columns. It
+  // lives in the outer WHERE so a partially- or un-priced session is simply not
+  // among the updated rows — see the option's docstring for why "stale" and not
+  // "NULL" is the contract this repo already landed.
+  const pricedTokenUsageGuard = options.requireFullyPricedTokenUsage
+    ? ` AND ${fullyPricedTokenUsageSql("agg.priced_rows", "agg.token_usage_rows")}`
+    : "";
+  // Faithful set-based translation of updateSessionCostRollup:
+  //  - token_cost_usd / priced_rows / token_cost_source come from the SAME
+  //    per-session aggregate over token_usage. ISS-7762: the source precedence
+  //    is WEAKEST-wins and is built from the SHARED ladder the per-session
+  //    rollup uses, so the two can never disagree about which source wins;
+  //  - web_search_cost_usd is the per-request session-level line item read from
+  //    the persisted metadata via the SHARED `webSearchCostSql` fragment — the
+  //    identical single source the analytics est_cost rollup prices — already
+  //    MAX(0,…)-guarded and non-null, so it is added exactly once and never
+  //    double-counted (web-search cost never lives in a token_usage row);
+  //  - FEA-3419: the FEA-3636 ttl_premium_usd term is GONE — the 1h premium is
+  //    baked into per-event / per-model costs by estimateTokenCost, so the
+  //    token_usage sum already carries it;
+  //  - hasCost = pricedRows > 0 OR webSearch > 0; when false, all three columns
+  //    NULL out — matching the per-session UPDATE exactly. A LEFT JOIN keeps
+  //    sessions with no token_usage rows (tok.* NULL → coalesced) so every id
+  //    in the batch is updated, just as the per-session loop did.
+  await tx.$executeRawUnsafe(
+    `UPDATE sessions
+     SET
+       cost_usd_estimated = CASE
+         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0
+           THEN agg.token_cost_usd + agg.web_search_cost_usd
+         ELSE NULL
+       END,
+       cost_currency = CASE
+         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0 THEN $1
+         ELSE NULL
+       END,
+       cost_source = CASE
+         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0
+           THEN COALESCE(
+                  agg.token_cost_source,
+                  CASE WHEN agg.web_search_cost_usd > 0 THEN $2 ELSE NULL END
+                )
+         ELSE NULL
+       END
+     FROM (
+       SELECT
+         src.id AS session_id,
+         COALESCE(tok.cost_usd, 0) AS token_cost_usd,
+         COALESCE(tok.priced_rows, 0) AS priced_rows,
+         COALESCE(tok.token_usage_rows, 0) AS token_usage_rows,
+         tok.cost_source AS token_cost_source,
+         ${webSearchCostSql("src.metadata")} AS web_search_cost_usd
+       FROM sessions src
+       LEFT JOIN (
+         SELECT
+           session_id,
+           COALESCE(SUM(cost_usd_estimated), 0) AS cost_usd,
+           COUNT(cost_usd_estimated) AS priced_rows,
+           COUNT(*) AS token_usage_rows,
+           ${costSourcePrecedenceSql(precedenceFirstParam)} AS cost_source
+         FROM token_usage
+         WHERE session_id IN (${idPlaceholders})
+         GROUP BY session_id
+       ) tok ON tok.session_id = src.id
+       WHERE src.id IN (${idPlaceholders})
+     ) AS agg
+     WHERE sessions.id = agg.session_id${pricedTokenUsageGuard}`,
+    ...params
+  );
+}
+
+/**
+ * ISS-7776: options for {@link updateSessionCostRollupBatch}.
+ */
+export type SessionCostRollupBatchOptions = {
+  /**
+   * Only write a session whose `token_usage` rows are ALL priced, leaving every
+   * partially- or un-priced session's stored total untouched. Zero rows
+   * satisfies it — that is a real priceable state (a web-search-only session),
+   * not a gap.
+   *
+   * A partial sum is not a total. `SUM` skips NULLs and nothing records that it
+   * did, so `Σ(priced) + web` on a half-priced session is a confident dollar
+   * figure that is simply low — and stamping it here has a second cost: the read
+   * path (`attachEstimatedCosts`) re-prices from `token_usage` ONLY while this
+   * column is NULL, so filling it with an under-report also suppresses the
+   * repair. Leaving it alone keeps "unknown" honest and keeps that repair live.
+   *
+   * DECLINE, NOT CLEAR, and that is the landed contract rather than an oversight
+   * (`write-core-import-phases.test.ts`, ISS-7578/7776): "a stale real number
+   * beats a fresh wrong one". #5825 review (whitlockk) argued for NULLing instead,
+   * because a survivor is served verbatim by `attachEstimatedCosts` and so also
+   * suppresses the read-path repair. That trade is real, but it is the OPPOSITE
+   * of what the import phase already ships — `importPhaseDerivedRollups`
+   * deliberately skips the per-session rollup in exactly these states and
+   * REPORTS the skip (`session_cost_rollup …: skipped, N of M token_usage rows
+   * priced`), so the state is not silent, and flipping the column to NULL here
+   * would make this batch overrule that phase's decision two statements later.
+   * Changing "stale beats wrong" to "unknown beats stale" is a contract change
+   * across both writers and their tests; it belongs to its own ticket, not to
+   * the convergence refactor that merely MOVED this function.
+   *
+   * `updateSessionCostRollup` and the unguarded form of this batch deliberately
+   * DO write in those states: they run immediately after pricing, where an
+   * unpriced row means pricing genuinely failed and their answer is the current
+   * best evidence. This option is for callers that run LATER, over rows they did
+   * not price and cannot distinguish "failed" from "not yet".
+   */
+  requireFullyPricedTokenUsage?: boolean;
+};
+
+/**
+ * ISS-7762: the `cost_source` stamp for a priced row — the SINGLE place that
+ * decides it, so `token_usage` and `token_events` can never disagree about the
+ * provenance of the same estimate.
+ *
+ * `GenaiPricesV1` asserts the price library confirmed the rate. When
+ * `computeHarnessCost` fell back to `UNKNOWN_MODEL_FALLBACK_TIER` it did not —
+ * genai-prices had no entry for the model id — so that row is stamped
+ * `FallbackTierV1` instead. Both are priced and both carry an exact cost; they
+ * differ only in whether the RATE is verified, which is precisely what a reader
+ * asking "can I trust this number" needs to know.
+ *
+ * Scope: the PER-ROW stamp on `token_usage` / `token_events`. The session-level
+ * rollup has one branch this does not cover — a web-search-only session — which
+ * still stamps `genai_prices_v1` for a hardcoded rate; see the note at that
+ * branch in `updateSessionCostRollup`.
+ */
+function pricingSourceForEstimate(
+  estimate: EstimateTokenCostResult | undefined
+): ModelPricingSource | null {
+  if (!estimate) {
+    return null;
+  }
+  return estimate.unknownModelFallbackApplied
+    ? ModelPricingSource.FallbackTierV1
+    : ModelPricingSource.GenaiPricesV1;
+}
+
+const TOKEN_EVENT_COST_SET_SQL = `cost_usd_estimated = $1,
+       input_cost_usd_estimated = $2,
+       output_cost_usd_estimated = $3,
+       cache_read_cost_usd_estimated = $4,
+       cache_creation_cost_usd_estimated = $5,
+       cost_currency = $6,
+       cost_source = $7,
+       cost_observed_at = $8`;
+
+/**
+ * ISS-8060: {@link updateTokenEventCost}'s two locators, one per identity kind.
+ *
+ * They are two statements rather than the one `OR` they replace because the
+ * desktop store is never `ANALYZE`d: with no stats SQLite cannot prove either OR
+ * arm selective, falls back to `idx_token_events_session (session_id=?)`, and
+ * rescans EVERY row of the session for each of the N per-event updates. Measured
+ * on the production import path, the `token_events` group went 1,975ms → 7,317ms
+ * as one session's events went 4,000 → 8,000. The arms are mutually exclusive on
+ * `event.transportId` — the same test `costSummary` already makes — so which row
+ * a call matches is unchanged. `token-event-cost-locator.test.ts` EXPLAINs
+ * whichever of these `updateTokenEventCost` actually issued, captured from the
+ * call — EXPLAINing the constant would still pass if the function stopped using it.
+ */
+const TOKEN_EVENT_COST_TRANSPORT_UPDATE_SQL = `UPDATE token_events SET ${TOKEN_EVENT_COST_SET_SQL},
+       cost_summary = $9
+     WHERE session_id = $10 AND transport_id = $11`;
+
+/**
+ * The pre-transport locator. `cost_summary` is deliberately absent from the SET,
+ * preserving the stored summary exactly as the `CASE WHEN transport_id IS NULL`
+ * arm this replaces did — a legacy record carries no summary to write.
+ */
+const TOKEN_EVENT_COST_LEGACY_UPDATE_SQL = `UPDATE token_events SET ${TOKEN_EVENT_COST_SET_SQL}
+     WHERE session_id = $9
+       AND transport_id IS NULL
+       AND model = $10
+       AND created_at = $11
+       AND input_tokens = $12
+       AND output_tokens = $13
+       AND cache_read_tokens = $14
+       AND cache_write_tokens = $15
+       AND cache_write_5m_tokens IS $16
+       AND cache_write_1h_tokens IS $17`;
+
+/**
+ * ISS-7820: what "this session's `token_usage` window is FULLY priced" means, in
+ * one place, because two writers now branch on it and a drifted copy would make a
+ * session's cost depend on which of them touched it last — the same reason
+ * {@link webSearchCostSql} and {@link costSourcePrecedenceSql} are shared.
+ *
+ * `priced_rows` is `COUNT(cost_usd_estimated)` (non-NULL only) and
+ * `token_usage_rows` is `COUNT(*)`, so equality means every row carries a price.
+ * ZERO ROWS SATISFIES IT, deliberately: a session with no `token_usage` at all is
+ * not half-priced, it simply has no token spend, and a web-search-only session is
+ * a real priceable state. Whether that session has a cost to report is the
+ * SEPARATE `priced_rows > 0 OR web_search > 0` question each caller asks next.
+ *
+ * The two callers do different things with the answer, and that difference is
+ * intentional. {@link updateSessionCostRollupBatch} puts it in the outer WHERE and
+ * DECLINES the write (the landed "a stale real number beats a fresh wrong one"
+ * contract — see {@link SessionCostRollupBatchOptions.requireFullyPricedTokenUsage}).
+ * The `session_analytics.est_cost` rollup has nothing stale to keep — it is
+ * recomputed whole on every pass — so it writes NULL and says "unknown".
+ */
+export function fullyPricedTokenUsageSql(
+  pricedRowsExpr: string,
+  tokenUsageRowsExpr: string
+): string {
+  return `${pricedRowsExpr} = ${tokenUsageRowsExpr}`;
+}
+
+/**
+ * ISS-7820: a session's whole-cost total, or NULL when it is not knowable — the
+ * ONE expression both stored session totals are computed from.
+ *
+ * Three outcomes, and the middle one is the whole point of the ticket:
+ *   · not fully priced  -> NULL. `SUM` skips NULLs and records nothing, so
+ *     `Σ(priced) + web` on a half-priced window is a confident dollar figure
+ *     that is simply low, and on an all-unpriced one it is the web-search line
+ *     item ALONE (measured at $0.03 for a session that cost $0.04753625).
+ *   · fully priced with evidence (a priced row, or a web-search line item)
+ *     -> the total, which is what it always was.
+ *   · fully priced with NO evidence at all (no `token_usage` rows, no web
+ *     search) -> NULL, matching `sessions.cost_usd_estimated` exactly. Nothing
+ *     was measured, so there is nothing to report; a session whose rows ARE all
+ *     priced and sum to $0.00 still reports 0, which is what keeps a real
+ *     zero distinguishable from an absent one.
+ */
+export function sessionEstimatedCostSql(parts: {
+  tokenCostUsdExpr: string;
+  pricedRowsExpr: string;
+  tokenUsageRowsExpr: string;
+  webSearchCostUsdExpr: string;
+}): string {
+  return `CASE
+       WHEN NOT (${fullyPricedTokenUsageSql(parts.pricedRowsExpr, parts.tokenUsageRowsExpr)}) THEN NULL
+       WHEN ${parts.pricedRowsExpr} > 0 OR ${parts.webSearchCostUsdExpr} > 0
+         THEN ${parts.tokenCostUsdExpr} + ${parts.webSearchCostUsdExpr}
+       ELSE NULL
+     END`;
 }

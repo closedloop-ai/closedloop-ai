@@ -2,8 +2,8 @@
  * @file session-analytics-chunking.ts
  * @description Pure chunk packing for the session-analytics rollup.
  *
- * Extracted from `write-core.ts` (ISS-4592), which is on the `biome.jsonc`
- * shrink-only grandfather list. This is pure, exhaustively unit-tested logic
+ * Extracted from `write-core.ts` (ISS-4592) so that file shrinks rather than
+ * grows. This is pure, exhaustively unit-tested logic
  * with no DB dependency, so it does not belong in the importer.
  */
 

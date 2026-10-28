@@ -1,18 +1,13 @@
-import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
+import { AuthOutcome, AuthReason } from "@closedloop-ai/telemetry-contract/app";
 import { io, type Socket } from "socket.io-client";
-import { CloudSocketError } from "../../shared/cloud-socket-error.js";
 import {
-  type DesktopPopHeaders,
-  type DesktopPopSigner,
-  RELAY_API_KEY_VERIFY_PATH,
-} from "../auth/desktop-pop.js";
-import {
-  buildManagedDesktopPopHeaders,
-  type DesktopPopUnavailableReporter,
-} from "../auth/desktop-pop-sign-utils.js";
+  CloudSocketDegradedReason,
+  CloudSocketError,
+} from "../../shared/cloud-socket-error.js";
+import type { DesktopPopHeaders } from "../auth/desktop-pop.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
-import type { ApiKeyProvenance } from "../settings/api-key-store.js";
 import { normalizeAndValidateOrigin } from "../settings/origin-policy.js";
+import { authReasonForHelloNack } from "./auth-failure-telemetry.js";
 import {
   describeDesktopHelloNack,
   HELLO_REJECTED_WITHOUT_REASON_MESSAGE,
@@ -23,16 +18,22 @@ import {
 import type {
   CloudSocketStatus,
   CommandEventRecord,
-  DesktopCancelEvent,
   DesktopCommandAckEvent,
-  DesktopCommandEvent,
-  DesktopCommandStreamAckEvent,
   DesktopCommandStreamEvent,
-  DesktopHelloAckEvent,
   DesktopHelloEvent,
   DesktopPresenceEvent,
   ProtocolEnvelope,
 } from "./cloud-protocol.js";
+import {
+  type DesktopAccountAdmission,
+  isCloudSocketAccountAdmitted,
+} from "./cloud-socket-account-admission.js";
+import {
+  parseDesktopHelloAck,
+  parseServerCapabilities,
+} from "./cloud-socket-hello-ack.js";
+import { HelloGatewayIdTracker } from "./cloud-socket-hello-gateway.js";
+import type { CloudSocketOptions } from "./cloud-socket-options.js";
 import {
   asFiniteInteger,
   asNonEmptyString,
@@ -44,36 +45,21 @@ import {
   looksLikeAuthError,
   parseDesktopCommand,
 } from "./cloud-socket-payloads.js";
+import {
+  buildRelayValidationPopHeaders,
+  refreshRelayValidationPopHeadersForSocket,
+} from "./cloud-socket-pop-headers.js";
 
-export type ApiKeyDiagnostic = "available" | "missing" | "undecryptable";
-
-export type CloudSocketOptions = {
-  getRelayOrigin: () => string;
-  getApiKey: () => string | null;
-  getApiKeyDiagnostic?: () => ApiKeyDiagnostic;
-  getApiKeyProvenance?: () => ApiKeyProvenance | null;
-  signDesktopRequest?: DesktopPopSigner;
-  onDesktopPopUnavailable?: DesktopPopUnavailableReporter;
-  getAllowedDirectories: () => string[];
-  getCapabilities?: () => Record<string, unknown>;
-  getMaxInFlightCommands: () => number;
-  getGatewayId?: () => string | null;
-  machineName: string;
-  pluginVersion: string;
-  desktopClientVersion: string;
-  gatewayProtocolVersion: string;
-  getEnabledOperations: () => string[];
-  onStatusChange?: (status: CloudSocketStatus) => void;
-  onHelloAck?: (event: DesktopHelloAckEvent) => void;
-  onCommand?: (event: DesktopCommandEvent) => void;
-  onCancel?: (event: DesktopCancelEvent) => void;
-  onCommandEventAck?: (event: DesktopCommandStreamAckEvent) => void;
-  onDisconnect?: (reason: string) => void;
-};
+export type {
+  ApiKeyDiagnostic,
+  CloudSocketOptions,
+} from "./cloud-socket-options.js";
 
 export class CloudSocketService {
   private readonly options: CloudSocketOptions;
   private socket: Socket | null = null;
+  private accountAdmission: DesktopAccountAdmission | null = null;
+  private startGeneration = 0;
   private stopped = true;
   private targetId: string | null = null;
   private helloAckTimer: NodeJS.Timeout | null = null;
@@ -105,13 +91,46 @@ export class CloudSocketService {
   // nack → disconnect → reconnect → nack, which spans sockets.
   private lastHelloNackReason: string | null = null;
   private helloNackStreak = 0;
+  // How many `connect_error`s have arrived without a successful connect between
+  // them. Cleared alongside `helloNackStreak`, because `restart()` is not only
+  // the recovery timer's degraded-retry path: replacing or clearing the API key
+  // and switching profile both reach it, and a streak earned by a dead
+  // credential must not pace the first retry on its replacement (ISS-8142).
+  //
+  // The cost is that the recovery timer re-earns the fast cadence once per
+  // two-minute cycle, so this bounds the loop rather than ending it. Bounding is
+  // what the reported defect needs; scoping the streak to a connection identity
+  // so it can survive a recovery restart without outliving a credential is a
+  // separate change.
+  private connectErrorStreak = 0;
+  // ISS-11843: consecutive closes of a hello that was never answered — the
+  // cloud dropping the socket after `desktop.hello` without sending any nack.
+  // Neither streak above covers it: `helloNackStreak` counts frames that
+  // arrived, `connectErrorStreak` connects that never opened. Survives a socket
+  // recycle because the flap being counted (hello → close → reconnect → hello)
+  // spans sockets. At the threshold the refusal is terminal (operator ruling,
+  // ISS-11843): the service stops until something calls `start()` again.
+  private helloRejectedWithoutReasonStreak = 0;
   private pendingReconnectDelayMs: number | null = null;
+  private readonly helloGateway: HelloGatewayIdTracker;
 
   constructor(options: CloudSocketOptions) {
     this.options = options;
+    this.helloGateway = new HelloGatewayIdTracker({
+      getGatewayId: options.getGatewayId,
+      resendHello: () => this.resendHelloForGatewayRefresh(),
+    });
   }
 
   async start(): Promise<void> {
+    const startGeneration = ++this.startGeneration;
+    const accountAdmission = this.options.getAccountAdmission?.() ?? null;
+    if (this.options.getAccountAdmission && !accountAdmission) {
+      this.stop();
+      this.notifyStatus({ state: "idle" });
+      return;
+    }
+    this.accountAdmission = accountAdmission;
     this.stopped = false;
     this.targetId = null;
     this.awaitingHelloAck = false;
@@ -133,6 +152,16 @@ export class CloudSocketService {
         state: "degraded",
         error,
       });
+      // ISS-6334: an UNDECRYPTABLE stored key is a broken install that can
+      // never pair. A merely missing key is not reported — that is the
+      // not-yet-onboarded state, and reporting it would fire on every launch
+      // before the user has done anything wrong.
+      if (diagnostic === "undecryptable") {
+        this.options.reportAuthFailure?.({
+          outcome: AuthOutcome.PairingRejected,
+          reason: AuthReason.CredentialUnreadable,
+        });
+      }
       return;
     }
 
@@ -152,14 +181,16 @@ export class CloudSocketService {
       this.options.signDesktopRequest,
       this.options.onDesktopPopUnavailable
     );
-    if (this.stopped) {
+    if (!this.isStartCurrent(startGeneration, accountAdmission)) {
       return;
     }
     this.connect(apiKey, relayOrigin, relayValidationPopHeaders);
   }
 
   stop(): void {
+    this.startGeneration += 1;
     this.stopped = true;
+    this.accountAdmission = null;
     this.targetId = null;
     this.awaitingHelloAck = false;
     this.helloAckTimeoutCount = 0;
@@ -170,12 +201,18 @@ export class CloudSocketService {
     this.clearHelloAckTimer();
     this.clearReconnectTimer();
     this.clearRecoveryTimer();
+    this.helloGateway.reset();
     this.disconnectSocket();
   }
 
   restart(): void {
     this.stop();
     void this.start();
+  }
+
+  /** The gatewayId the last hello declared, for checks that must agree with it. */
+  getHelloGatewayId(): string | undefined {
+    return this.helloGateway.getDeclared();
   }
 
   sendCommandAck(
@@ -228,8 +265,18 @@ export class CloudSocketService {
     relayOrigin: string,
     relayValidationPopHeaders?: DesktopPopHeaders
   ): void {
+    if (!this.ensureAdmitted()) {
+      return;
+    }
     const socket = io(`${relayOrigin}/desktop-gateway`, {
       transports: ["websocket"],
+      // This socket's PoP `extraHeaders` are transport-level, and
+      // `refreshRelayValidationPopHeadersForSocket` rewrites them in place on
+      // `socket.io.opts` before every manual reconnect — both assume the
+      // gateway owns its Manager outright. Socket.IO's per-origin Manager cache
+      // does not guarantee that, so declare it here instead of depending on
+      // what some other namespace on this origin happens to pass (ISS-6494).
+      forceNew: true,
       reconnection: false,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 30_000,
@@ -250,7 +297,7 @@ export class CloudSocketService {
 
   private registerSocketHandlers(socket: Socket): void {
     socket.on("connect", () => {
-      if (this.stopped) {
+      if (!this.ensureAdmitted()) {
         return;
       }
       this.clearReconnectTimer();
@@ -258,6 +305,7 @@ export class CloudSocketService {
         "cloud-socket",
         "Connected to relay, sending hello handshake"
       );
+      this.connectErrorStreak = 0;
       this.awaitingHelloAck = true;
       this.helloAckTimeoutCount = 0;
       this.helloRejectionMessage = null;
@@ -266,14 +314,33 @@ export class CloudSocketService {
     });
 
     socket.on("connect_error", (error) => {
-      if (this.stopped) {
+      if (!this.ensureAdmitted()) {
         return;
       }
       this.awaitingHelloAck = false;
       this.clearHelloAckTimer();
       const message =
         error instanceof Error ? error.message : "connection failed";
-      if (!this.hadSuccessfulConnection && looksLikeAuthError(error)) {
+      const authShaped = looksLikeAuthError(error);
+      if (authShaped) {
+        // ISS-6334: the relay refused the credential outright, so `desktop.hello`
+        // is never answered and `handleHelloNack` never runs.
+        //
+        // Reported on EVERY auth-shaped connect_error, not only on an install
+        // that has never connected. `hadSuccessfulConnection` latches true for
+        // the process lifetime, so a key revoked after one good hello would
+        // otherwise fall to the generic branch and go unreported — and Pipe 2
+        // is offline in exactly that state too, which is the invisibility this
+        // signal exists to close.
+        this.options.reportAuthFailure?.({
+          outcome: AuthOutcome.PairingRejected,
+          reason: AuthReason.RelayRejectedCredential,
+        });
+      }
+      // The flag still gates the USER-FACING distinction: "check your API key"
+      // is the right advice for an install that never paired, and misleading
+      // for one whose credential worked until a moment ago.
+      if (authShaped && !this.hadSuccessfulConnection) {
         gatewayLog.error("cloud-socket", "Authentication failed on connect");
         this.notifyStatus({
           state: "degraded",
@@ -287,31 +354,70 @@ export class CloudSocketService {
         });
       }
       this.degradedSince ??= Date.now();
-      this.scheduleSocketReconnect(socket);
+      // ISS-8142: Socket.IO's own retry is off, so this arm is the ONLY thing
+      // re-arming a failed connect, and it used to do so at a flat 1s with no
+      // cap — ~86,400 attempts/day against a credential that will never start
+      // working. Cause-blind like the nack back-off: a revoked key and a relay
+      // outage are indistinguishable here and both are answered by retrying
+      // less often. Assigned ONLY on the backing-off branch, so a single
+      // transport blip cannot downgrade a longer pause the nack arm set.
+      this.connectErrorStreak += 1;
+      if (this.connectErrorStreak >= CONNECT_ERROR_BACKOFF_THRESHOLD) {
+        this.pendingReconnectDelayMs = CONNECT_ERROR_BACKOFF_DELAY_MS;
+      }
+      this.scheduleSocketReconnect(socket, this.takeReconnectDelayMs());
     });
 
     socket.on("disconnect", (reason) => {
-      if (this.stopped) {
+      if (!this.ensureAdmitted()) {
         return;
       }
       const disconnect = this.describeDisconnect(reason);
       gatewayLog.warn("cloud-socket", disconnect.logMessage);
+      // ISS-6334: the cloud closed the handshake without a nack — the gateway-id
+      // conflict and unparseable-hello paths. Permanent, and otherwise invisible
+      // from both ends. Reported here rather than in `describeDisconnect`, which
+      // is a pure describer.
+      let refused = false;
+      if (disconnect.error === HELLO_REJECTED_WITHOUT_REASON_MESSAGE) {
+        this.options.reportAuthFailure?.({
+          outcome: AuthOutcome.PairingRejected,
+          reason: AuthReason.NoRejectionReason,
+        });
+        this.helloRejectedWithoutReasonStreak += 1;
+        refused =
+          this.helloRejectedWithoutReasonStreak >=
+          HELLO_REJECTED_WITHOUT_REASON_TERMINAL_THRESHOLD;
+        gatewayLog.warn(
+          "cloud-socket",
+          `Hello closed without a nack: consecutive=${this.helloRejectedWithoutReasonStreak}, terminal=${refused}`
+        );
+      }
       this.awaitingHelloAck = false;
       this.clearHelloAckTimer();
-      this.notifyStatus({
-        state: "degraded",
-        error: disconnect.error,
-      });
+      this.helloGateway.reset();
+      if (refused) {
+        this.options.onDisconnect?.(reason);
+        this.enterHandshakeRefused();
+        return;
+      }
+      this.notifyStatus({ state: "degraded", error: disconnect.error });
       this.degradedSince ??= Date.now();
       this.options.onDisconnect?.(reason);
       this.scheduleSocketReconnect(socket, this.takeReconnectDelayMs());
     });
 
     socket.on("desktop.hello.nack", (payload: unknown) => {
+      if (!this.ensureAdmitted()) {
+        return;
+      }
       this.handleHelloNack(payload);
     });
 
     socket.on("desktop.hello.ack", (payload: unknown) => {
+      if (!this.ensureAdmitted()) {
+        return;
+      }
       const event = asObject(payload);
       const ackEvent = parseDesktopHelloAck(payload);
       if (!ackEvent) {
@@ -333,17 +439,19 @@ export class CloudSocketService {
       const parsedServerCapabilities = parseServerCapabilities(
         event.serverCapabilities
       );
-      const rawComputeTargetSigning =
-        rawServerCapabilities.computeTargetSigning;
       const rawAgentSessionSync = rawServerCapabilities.agentSessionSync;
       gatewayLog.info(
         "cloud-socket",
-        `Hello ack received, targetId=${ackEvent.computeTargetId}, serverCapabilityKeys=${formatObjectKeysForLog(rawServerCapabilities)}, computeTargetSigning=${formatPrimitiveForLog(rawComputeTargetSigning)}, parsedComputeTargetSigning=${parsedServerCapabilities?.computeTargetSigning === true}, agentSessionSync=${formatPrimitiveForLog(rawAgentSessionSync)}, parsedAgentSessionSync=${parsedServerCapabilities?.agentSessionSync === true}`
+        `Hello ack received, targetId=${ackEvent.computeTargetId}, serverCapabilityKeys=${formatObjectKeysForLog(rawServerCapabilities)}, agentSessionSync=${formatPrimitiveForLog(rawAgentSessionSync)}, parsedAgentSessionSync=${parsedServerCapabilities?.agentSessionSync === true}`
       );
+      this.helloGateway.onHelloAck();
       this.options.onHelloAck?.(ackEvent);
       this.notifyStatus({
         state: "online",
         targetId: ackEvent.computeTargetId,
+        ...(ackEvent.mintingApiOrigin
+          ? { mintingApiOrigin: ackEvent.mintingApiOrigin }
+          : {}),
       });
       this.sendPresence({
         state: "online",
@@ -351,6 +459,9 @@ export class CloudSocketService {
     });
 
     socket.on("desktop.command", (payload: unknown) => {
+      if (!this.ensureAdmitted()) {
+        return;
+      }
       const parsed = parseDesktopCommand(payload);
       if (!parsed) {
         const rawPath = asNonEmptyString(asObject(payload).path);
@@ -375,6 +486,9 @@ export class CloudSocketService {
     });
 
     socket.on("desktop.cancel", (payload: unknown) => {
+      if (!this.ensureAdmitted()) {
+        return;
+      }
       const event = asObject(payload);
       const commandId = asNonEmptyString(event.commandId);
       if (!commandId) {
@@ -388,6 +502,9 @@ export class CloudSocketService {
     });
 
     socket.on("desktop.command.event.ack", (payload: unknown) => {
+      if (!this.ensureAdmitted()) {
+        return;
+      }
       const event = asObject(payload);
       const commandId = asNonEmptyString(event.commandId);
       const sequence = asFiniteInteger(event.sequence);
@@ -411,7 +528,7 @@ export class CloudSocketService {
    * and re-asserted by the disconnect that immediately follows it.
    */
   private handleHelloNack(payload: unknown): void {
-    if (this.stopped) {
+    if (!this.ensureAdmitted()) {
       return;
     }
     // A nack is only meaningful for a handshake still in flight. Ignoring a
@@ -457,6 +574,13 @@ export class CloudSocketService {
     );
     this.notifyStatus({ state: "degraded", error: message });
     this.degradedSince ??= Date.now();
+    // ISS-6334: the ONLY cloud-visible trace of this rejection. The reason is
+    // taken from the already-narrowed disposition, never the raw wire string —
+    // an unrecognized one is `null` there and reports as `unknown`.
+    this.options.reportAuthFailure?.({
+      outcome: AuthOutcome.PairingRejected,
+      reason: authReasonForHelloNack(disposition.reason),
+    });
   }
 
   /**
@@ -501,11 +625,34 @@ export class CloudSocketService {
     this.helloRejectionMessage = null;
     this.lastHelloNackReason = null;
     this.helloNackStreak = 0;
+    this.connectErrorStreak = 0;
+    this.helloRejectedWithoutReasonStreak = 0;
     this.pendingReconnectDelayMs = null;
   }
 
+  /**
+   * ISS-11843: stop reconnecting and say so. `stop()` clears every timer, the
+   * recovery restart included, so only a fresh `start()` (an account or
+   * connection-settings change, or a relaunch) dials again.
+   */
+  private enterHandshakeRefused(): void {
+    gatewayLog.error(
+      "cloud-socket",
+      "Handshake refused without a nack; not reconnecting until restarted"
+    );
+    this.stop();
+    this.notifyStatus({
+      state: "degraded",
+      error: CloudSocketError.HandshakeRefused,
+      reason: CloudSocketDegradedReason.HandshakeRefused,
+    });
+  }
+
   private emitHello(): void {
-    const gatewayId = this.options.getGatewayId?.() ?? undefined;
+    if (!this.ensureAdmitted()) {
+      return;
+    }
+    const gatewayId = this.helloGateway.resolveForHello();
     const hello: DesktopHelloEvent = {
       ...createEnvelope(),
       computeTargetId: this.targetId ?? undefined,
@@ -531,7 +678,7 @@ export class CloudSocketService {
   }
 
   private emit(name: string, event: Record<string, unknown>): void {
-    if (!this.socket?.connected) {
+    if (!(this.ensureAdmitted() && this.socket?.connected)) {
       return;
     }
     this.socket.emit(name, {
@@ -557,7 +704,7 @@ export class CloudSocketService {
     socket: Socket,
     delayMs: number = RECONNECT_DELAY_MS
   ): void {
-    if (this.reconnectTimer || this.stopped) {
+    if (this.reconnectTimer || !this.ensureAdmitted()) {
       return;
     }
     this.reconnectTimer = setTimeout(() => {
@@ -567,7 +714,7 @@ export class CloudSocketService {
   }
 
   private async reconnectSocket(socket: Socket): Promise<void> {
-    if (this.stopped || this.socket !== socket) {
+    if (!this.ensureAdmitted() || this.socket !== socket) {
       return;
     }
     await refreshRelayValidationPopHeadersForSocket(
@@ -576,7 +723,7 @@ export class CloudSocketService {
       this.options.signDesktopRequest,
       this.options.onDesktopPopUnavailable
     );
-    if (this.stopped || this.socket !== socket) {
+    if (!this.ensureAdmitted() || this.socket !== socket) {
       return;
     }
     socket.connect();
@@ -585,7 +732,7 @@ export class CloudSocketService {
   private scheduleHelloAckTimeout(): void {
     this.clearHelloAckTimer();
     this.helloAckTimer = setTimeout(() => {
-      if (this.stopped || !this.awaitingHelloAck) {
+      if (!(this.ensureAdmitted() && this.awaitingHelloAck)) {
         return;
       }
       const socket = this.socket;
@@ -653,6 +800,29 @@ export class CloudSocketService {
     }, HELLO_ACK_TIMEOUT_MS);
   }
 
+  private resendHelloForGatewayRefresh(): boolean {
+    if (
+      this.awaitingHelloAck ||
+      !this.isCommandWorkIdle() ||
+      !(this.ensureAdmitted() && this.socket?.connected)
+    ) {
+      return false;
+    }
+    gatewayLog.info(
+      "cloud-socket",
+      "Gateway id resolved after a hello that declared none; re-sending hello"
+    );
+    this.awaitingHelloAck = true;
+    this.emitHello();
+    this.scheduleHelloAckTimeout();
+    return true;
+  }
+
+  private isCommandWorkIdle(): boolean {
+    const stats = this.options.getCommandWorkStats?.();
+    return stats?.activeCommands === 0 && stats.queueDepth === 0;
+  }
+
   private clearHelloAckTimer(): void {
     if (!this.helloAckTimer) {
       return;
@@ -672,7 +842,7 @@ export class CloudSocketService {
   private startRecoveryTimer(): void {
     this.clearRecoveryTimer();
     this.recoveryTimer = setInterval(() => {
-      if (this.stopped || !this.degradedSince) {
+      if (!(this.ensureAdmitted() && this.degradedSince)) {
         return;
       }
       const elapsed = Date.now() - this.degradedSince;
@@ -697,48 +867,33 @@ export class CloudSocketService {
   private notifyStatus(status: CloudSocketStatus): void {
     this.options.onStatusChange?.(status);
   }
-}
 
-/**
- * Builds PoP headers for the relay's API-key verification request only when using a managed key.
- */
-export async function buildRelayValidationPopHeaders(
-  apiKeyProvenance: ApiKeyProvenance,
-  signDesktopRequest?: DesktopPopSigner,
-  onUnavailable?: DesktopPopUnavailableReporter
-): Promise<DesktopPopHeaders | undefined> {
-  return buildManagedDesktopPopHeaders({
-    apiKeyProvenance,
-    signDesktopRequest,
-    request: {
-      method: "POST",
-      pathname: RELAY_API_KEY_VERIFY_PATH,
-    },
-    surface: RELAY_API_KEY_VERIFY_PATH,
-    unavailableMessage:
-      "PoP signing unavailable for relay validation; continuing bearer-only compatibility mode",
-    onUnavailable,
-  });
-}
+  private ensureAdmitted(): boolean {
+    if (this.stopped) {
+      return false;
+    }
+    if (
+      isCloudSocketAccountAdmitted(
+        this.accountAdmission,
+        this.options.getAccountAdmission
+      )
+    ) {
+      return true;
+    }
+    this.stop();
+    this.notifyStatus({ state: "idle" });
+    return false;
+  }
 
-/**
- * Refreshes Socket.IO Engine extraHeaders before a manual reconnect attempt.
- */
-export async function refreshRelayValidationPopHeadersForSocket(
-  socket: Socket,
-  apiKeyProvenance: ApiKeyProvenance,
-  signDesktopRequest?: DesktopPopSigner,
-  onUnavailable?: DesktopPopUnavailableReporter
-): Promise<void> {
-  const headers = await buildRelayValidationPopHeaders(
-    apiKeyProvenance,
-    signDesktopRequest,
-    onUnavailable
-  );
-  if (headers) {
-    socket.io.opts.extraHeaders = headers;
-  } else {
-    socket.io.opts.extraHeaders = undefined;
+  private isStartCurrent(
+    generation: number,
+    admission: DesktopAccountAdmission | null
+  ): boolean {
+    return (
+      generation === this.startGeneration &&
+      admission === this.accountAdmission &&
+      isCloudSocketAccountAdmitted(admission, this.options.getAccountAdmission)
+    );
   }
 }
 
@@ -764,61 +919,18 @@ const HELLO_NACK_BACKOFF_THRESHOLD = 3;
 // once a second, short enough that the desktop still self-heals unattended once
 // the cloud-side failure clears.
 const HELLO_NACK_BACKOFF_DELAY_MS = 60_000;
+// The `connect_error` equivalents (ISS-8142). Deliberately a separate pair from
+// the nack constants above rather than a shared one: the two bound different
+// failures — a refused credential or a dead transport here, a cloud that
+// answered and said no there — and collapsing them would couple two policies
+// that should be free to move apart. The values start matched because the
+// question they answer is the same one: how long is long enough to stop
+// hammering, while still self-healing unattended.
+const CONNECT_ERROR_BACKOFF_THRESHOLD = 3;
+const CONNECT_ERROR_BACKOFF_DELAY_MS = 60_000;
+// ISS-11843: consecutive mute closes after which the refusal is terminal.
+// Matched to the sibling thresholds: two fast attempts let a drain that lands
+// inside the handshake window clear; a third in a row is the refusal loop.
+const HELLO_REJECTED_WITHOUT_REASON_TERMINAL_THRESHOLD = 3;
 const RECOVERY_TIMEOUT_MS = 2 * 60_000;
 const RECOVERY_CHECK_INTERVAL_MS = 30_000;
-
-/**
- * Parses server-advertised Desktop capabilities. Only an explicit boolean true
- * enables command-signing enforcement; missing, false, or malformed values
- * preserve legacy unsigned command compatibility.
- */
-export function parseServerCapabilities(
-  value: unknown
-): ComputeTargetServerCapabilities | undefined {
-  const record = asObject(value);
-  const parsed: ComputeTargetServerCapabilities = {};
-  if (record.computeTargetSigning === true) {
-    parsed.computeTargetSigning = true;
-  }
-  if (record.agentSessionSync === true) {
-    parsed.agentSessionSync = true;
-  }
-  if (record.agentSessionSyncCompression === true) {
-    parsed.agentSessionSyncCompression = true;
-  }
-  // ISS-4541: the server merges a multi-part activity-segment tiling additively.
-  if (record.agentSessionSyncActivityChunking === true) {
-    parsed.agentSessionSyncActivityChunking = true;
-  }
-  if (record.agentSessionSyncMonitoredActivity === true) {
-    parsed.agentSessionSyncMonitoredActivity = true;
-  }
-  return Object.keys(parsed).length > 0 ? parsed : undefined;
-}
-
-export function parseDesktopHelloAck(
-  payload: unknown
-): DesktopHelloAckEvent | null {
-  const event = asObject(payload);
-  const computeTargetId = asNonEmptyString(event.computeTargetId);
-  if (!computeTargetId) {
-    return null;
-  }
-  const parsedServerCapabilities = parseServerCapabilities(
-    event.serverCapabilities
-  );
-
-  return {
-    ...createEnvelope(),
-    computeTargetId,
-    sessionId: asNonEmptyString(event.sessionId) ?? "",
-    serverTime: asNonEmptyString(event.serverTime) ?? new Date().toISOString(),
-    ...(parsedServerCapabilities
-      ? { serverCapabilities: parsedServerCapabilities }
-      : {}),
-    resumeFromSequence:
-      event.resumeFromSequence && typeof event.resumeFromSequence === "object"
-        ? (event.resumeFromSequence as Record<string, number>)
-        : undefined,
-  };
-}

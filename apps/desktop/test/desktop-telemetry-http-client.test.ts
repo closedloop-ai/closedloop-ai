@@ -6,8 +6,8 @@
  * log line).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { DESKTOP_PLUGIN_VERSION_HEADER } from "@repo/api/src/types/desktop-write-lane";
+import { test } from "vitest";
 import {
   createDesktopTelemetryHttpClient,
   type DesktopTelemetryLaneEvent,
@@ -27,9 +27,9 @@ const CLIENT_VERSION = "0.16.71";
 function makeEvent(): DesktopTelemetryLaneEvent {
   return {
     schemaVersion: "1",
-    category: "loop.perf.run",
+    category: "queue.stats_changed",
     severity: "info",
-    message: "loop perf sample",
+    message: "queue stats sample",
     trace: { computeTargetId: TARGET },
   };
 }

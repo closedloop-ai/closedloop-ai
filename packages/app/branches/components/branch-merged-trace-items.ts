@@ -1,4 +1,4 @@
-import type { SessionTraceItem } from "@repo/app/agents/components/detail/session-trace";
+import type { SessionTraceItem } from "@repo/app/agents/components/detail/session-trace-groups";
 
 type CostBearingTraceItem = Extract<
   SessionTraceItem,

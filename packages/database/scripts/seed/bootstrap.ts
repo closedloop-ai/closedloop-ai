@@ -85,16 +85,27 @@ export type ResolvedBootstrapIdentity = {
  * resolve an authenticated user, bound to the configured Sandbox identity when
  * provisioned and the synthetic fallback otherwise. Returns the deterministic
  * IDs.
+ *
+ * `env` is where the Sandbox identity config is read from. It defaults to the
+ * process environment for the CLI; the in-process caller (ISS-6804) passes the
+ * env it composed for one request rather than reaching for the global.
  */
 export async function ensureBootstrapUser(
-  prisma: PrismaClient
+  prisma: PrismaClient,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<BootstrapResult> {
   try {
     // Resolve identity (incl. the sandbox config validation) inside the try so a
     // misconfiguration ZodError is wrapped with the Bootstrap setup-failure
     // marker like every other bootstrap failure.
-    const identity = resolveBootstrapIdentity(process.env);
-    const organizationId = resolveBootstrapOrgId(identity.orgClerkId);
+    const identity = resolveBootstrapIdentity(env);
+    const namespace = bootstrapOrgNamespaceSchema.parse(
+      env.SEED_BOOTSTRAP_ORG_NAMESPACE
+    );
+    const organizationId = resolveBootstrapOrgId(
+      identity.orgClerkId,
+      namespace
+    );
     const userId = resolveBootstrapUserId(identity.userClerkId);
     // Key the upserts on the stable business unique keys (clerkId / (clerkId,
     // organizationId)), not the deterministic id, so reruns converge even if the
@@ -140,7 +151,7 @@ export async function ensureBootstrapUser(
  *
  * Without this, `--bootstrap-user` would create the synthetic org/user but then
  * the legacy oldest-user lookup could seed a *different* pre-existing org in a
- * stale/mis-targeted schema (review: shafty023 on seed.ts).
+ * stale/mis-targeted schema (review: davetho on seed.ts).
  */
 export function applyBootstrapTarget(
   cliTarget: { organizationId?: string; userId?: string },
@@ -161,7 +172,7 @@ export function applyBootstrapTarget(
 // id so they can never re-skin the SYNTHETIC identity (e.g. leaving
 // SEED_SANDBOX_ORG_SLUG=seed-sandbox set during a cut-over rollback would
 // otherwise make the synthetic org grab the sandbox slug and collide on the next
-// sandbox enable — review: thadeusb).
+// sandbox enable — review: tamsinb).
 const sandboxIdentitySchema = z
   .object({
     orgClerkId: z.string().trim().min(1).optional(),
@@ -245,7 +256,14 @@ function blankToUndefined(value: string | undefined): string | undefined {
  * distinct deterministic id derived from its clerkId so the two never collide on
  * the `id` primary key if they ever share a schema.
  */
-function resolveBootstrapOrgId(orgClerkId: string): string {
+function resolveBootstrapOrgId(orgClerkId: string, namespace?: string): string {
+  if (namespace) {
+    // Ephemeral databases share Clerk credentials but must not share the
+    // organization UUID used in remote Liveblocks room identities.
+    return deterministicUuid(
+      `preview-bootstrap-organization-v1:${orgClerkId}:${namespace}`
+    );
+  }
   return orgClerkId === SYNTHETIC_ORG_CLERK_ID
     ? BOOTSTRAP_ORG_ID
     : deterministicUuid(`preview-bootstrap-organization-v1:${orgClerkId}`);
@@ -256,3 +274,5 @@ function resolveBootstrapUserId(userClerkId: string): string {
     ? BOOTSTRAP_USER_ID
     : deterministicUuid(`preview-bootstrap-user-v1:${userClerkId}`);
 }
+
+const bootstrapOrgNamespaceSchema = z.uuid().optional();

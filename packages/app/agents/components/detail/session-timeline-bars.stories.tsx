@@ -1,5 +1,6 @@
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import type { TimelineStackSegment } from "@repo/app/agents/lib/session-timeline-stacks";
+import { SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import { BucketJumpBlock, getBucketCost } from "./activity-bucket-rendering";
@@ -122,9 +123,9 @@ function BarRowStage({
 }
 
 const meta = {
-  title: "App Core/Agents/Session Timeline Bars",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Bars",
   component: SessionTimelineBars,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     accessibleCosts: buildBucketAccessibleCosts({
@@ -132,7 +133,6 @@ const meta = {
       costsSynthesized: false,
     }),
     buckets: STAGE_BUCKETS,
-    columnHitTargetEnabled: false,
     costUnmeasured: false,
     disabled: false,
     hoverIndex: null,
@@ -213,6 +213,33 @@ export const BlockedBuckets: Story = {
 };
 
 /**
+ * ISS-8727: the SAME blocked strip with the reach predicate narrowed to the
+ * resolved jump.
+ *
+ * Worth its own story rather than a note on the one above, because the
+ * difference is exactly the thing that was wrong and is invisible in a static
+ * screenshot: indices 2 and 7 keep an anchor, so under the shipped default they
+ * wear the column-tall `.reach` box while ALSO saying they are unavailable.
+ * Hover the empty space above those two bars in each story — here the outline
+ * stays off, above it lights a whole dead column.
+ */
+export const BlockedBucketsResolvableReach: Story = {
+  args: BlockedBuckets.args,
+  decorators: [
+    (Story) => (
+      <BarRowStage caption="The blocked strip above with `session-timeline-resolvable-reach` on: indices 2, 7 and 8 now keep their own small hit box, so no bar offers a column-tall target for a click it cannot answer. Every jumpable bar still gets the full column.">
+        <Story />
+      </BarRowStage>
+    ),
+  ],
+  parameters: {
+    appCore: {
+      enabledFlags: [SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY],
+    },
+  },
+};
+
+/**
  * ISS-5566: a strip whose per-bucket money was reconstructed rather than
  * measured. The hatch replaces the solid in/out/cache stack, because that stack
  * is the strip's way of saying "here is where the money went" and on a
@@ -244,14 +271,19 @@ export const SynthesizedCosts: Story = {
  * stays the encoding of magnitude; only the hit box grows.
  *
  * Keyed off `tl0`, so the anchorless bucket at index 8 is deliberately LEFT at
- * today's geometry — this flag must never turn inert space into a bigger dead
+ * today's geometry — reach must never turn inert space into a bigger dead
  * target, which is the defect ISS-5479 fixed.
+ *
+ * ISS-8727 narrows that predicate to the RESOLVED jump behind a default-off
+ * flag, so a bucket anchored at a turn the read transcript does not cover loses
+ * the target too. This story does not opt into that flag, so it shows the
+ * SHIPPED DEFAULT — every anchored bar reaches, blocked or not. Its flag-on
+ * counterpart is `BlockedBucketsResolvableReach` below.
  */
 export const ColumnHitTarget: Story = {
-  args: { columnHitTargetEnabled: true },
   decorators: [
     (Story) => (
-      <BarRowStage caption="With the hit-target flag on, every anchored bar reaches the full column height for clicks and hover. Index 8 (anchorless) keeps its small target on purpose.">
+      <BarRowStage caption="Every anchored bar reaches the full column height for clicks and hover. Index 8 (anchorless) keeps its small target on purpose.">
         <Story />
       </BarRowStage>
     ),
@@ -261,14 +293,14 @@ export const ColumnHitTarget: Story = {
 /**
  * FEA-4252 passes `disabled` for the whole strip while the trace has no rendered
  * rows, and that is not merely a first-paint flash — it can sit true
- * indefinitely. A disabled bar keeps exactly today's geometry: this flag changes
+ * indefinitely. A disabled bar keeps exactly today's geometry: reach changes
  * where a live click lands, never what a dead control offers.
  */
 export const DisabledStrip: Story = {
-  args: { columnHitTargetEnabled: true, disabled: true },
+  args: { disabled: true },
   decorators: [
     (Story) => (
-      <BarRowStage caption="Disabled with the hit-target flag ON: no bar takes `.reach`, so the cursor, the hover outline and the hit box all settle on one answer instead of offering a column-tall dead target.">
+      <BarRowStage caption="Disabled with reach enabled: no bar takes `.reach`, so the cursor, the hover outline and the hit box all settle on one answer instead of offering a column-tall dead target.">
         <Story />
       </BarRowStage>
     ),
@@ -306,25 +338,6 @@ export const GroupedByModel: Story = {
 };
 
 /**
- * The same branch on the ACTIVITY PHASE cut, which is the one that carries
- * `Unattributed` — the stretch of a column no classifier span covered.
- *
- * Worth its own story because that segment is the most common one on this cut
- * and the easiest to misread as a rendering gap; seeing it named and coloured
- * beside real phases is what settles that it is a deliberate answer.
- */
-export const GroupedByActivityPhase: Story = {
-  args: { stacks: groupedByPhaseStacks() },
-  decorators: [
-    (Story) => (
-      <BarRowStage caption="Group by activity phase, including the Unattributed slice the projection emits for time no classifier span covered — a stated answer, not a hole in the bar.">
-        <Story />
-      </BarRowStage>
-    ),
-  ],
-};
-
-/**
  * Per-column model segments over {@link STAGE_BUCKETS}, summing to each bucket's
  * own cost so the grouped bar is exactly as tall as the ungrouped one. A fixture
  * that did not conserve would make a real regression in the stack arithmetic
@@ -354,37 +367,6 @@ function groupedByModelStacks(): TimelineStackSegment[][] {
         key: "claude-3-5-haiku",
         label: "claude-3-5-haiku",
         value: cost * 0.1,
-      },
-    ];
-  });
-}
-
-/** The phase cut, conserving each bucket's cost for the same reason. */
-function groupedByPhaseStacks(): TimelineStackSegment[][] {
-  return STAGE_BUCKETS.map((bucket, index) => {
-    const cost = getBucketCost(bucket);
-    if (cost <= 0) {
-      return [];
-    }
-    const explore = index < 4 ? cost * 0.7 : cost * 0.1;
-    return [
-      {
-        colorVar: "var(--chart-1)",
-        key: "explore",
-        label: "Explore",
-        value: explore,
-      },
-      {
-        colorVar: "var(--chart-2)",
-        key: "implement",
-        label: "Implement",
-        value: cost * 0.75 - explore * 0.75,
-      },
-      {
-        colorVar: "var(--chart-4)",
-        key: "unattributed",
-        label: "Unattributed",
-        value: cost - explore - (cost * 0.75 - explore * 0.75),
       },
     ];
   });

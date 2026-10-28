@@ -1,6 +1,6 @@
 import type { ComponentVersion } from "@repo/api/src/types/agent-component";
 import type { TokenTrendResponse } from "@repo/api/src/types/agent-component-analytics";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -22,7 +22,7 @@ const RE_GROUPING = /grouping/i;
 const RE_BY_PROVIDER = /by provider/i;
 const RE_CREATED = /created/i;
 const RE_NO_TOKEN_DATA = /no model token usage attributed/i;
-const RE_NO_SPEND = /no model spend attributed/i;
+const RE_NO_COST = /no model cost attributed/i;
 // ISS-5363: the third state — the producer could not compute the count at all.
 const RE_UNKNOWN_USAGE = /usage for this component isn't available here/i;
 /**
@@ -144,10 +144,47 @@ describe("TokenTrendChart", () => {
       container.querySelector(".recharts-responsive-container")
     ).not.toBeNull();
     // The reused dashboard toggle set: a Metric group and a Grouping group.
-    expect(screen.getByRole("group", { name: RE_METRIC })).toBeInTheDocument();
     expect(
-      screen.getByRole("group", { name: RE_GROUPING })
+      screen.getByRole("radiogroup", { name: RE_METRIC })
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: RE_GROUPING })
+    ).toBeInTheDocument();
+  });
+
+  it("switches the grouping from the keyboard alone", async () => {
+    // ISS-5540 item 7: the switchers announce `radiogroup` now, and that role is
+    // a promise about the keyboard — one tab stop, arrows to traverse, activate
+    // in place. A role attribute over a control a keyboard user cannot operate
+    // is the same defect wearing the right name, so this drives real key events
+    // rather than clicking.
+    //
+    // Selection deliberately does NOT follow focus: activating a grouping
+    // recomputes the series, so arrow-to-check would do that work on every
+    // keypress. ARIA's radio-group pattern allows that variant, which is why
+    // the sequence asserted is arrow-then-activate.
+    mockData(twoModelResponse);
+    const user = userEvent.setup();
+    render(
+      <TokenTrendChart slug="skill::rtk" usageSessions={[]} versions={[]} />
+    );
+
+    const grouping = screen.getByRole("radiogroup", { name: RE_GROUPING });
+    const byProvider = within(grouping).getByRole("radio", {
+      name: RE_BY_PROVIDER,
+    });
+    expect(byProvider).toHaveAttribute("aria-checked", "false");
+
+    within(grouping).getAllByRole("radio")[0].focus();
+    await user.keyboard("{ArrowRight}");
+    expect(byProvider).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    expect(byProvider).toHaveAttribute("aria-checked", "true");
+    // The state the keyboard changed has to reach the chart, not just the pill:
+    // an `aria-checked` that flips over an unchanged series is a lying control.
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.queryByText("claude-opus-4-5")).not.toBeInTheDocument();
   });
 
   it("switches the series to providers when the grouping toggle is pressed", async () => {
@@ -220,7 +257,7 @@ describe("TokenTrendChart empty state honesty (ISS-4802)", () => {
   });
 
   /**
-   * ISS-5363 (wongk review): `sessions ?? usageSessions.length` collapsed an
+   * ISS-5363 (whitlockk review): `sessions ?? usageSessions.length` collapsed an
    * UNMEASURED count into the roster length, so a detail whose Sessions card
    * renders `—` printed a flat denial of usage underneath it. A count the
    * producer could not compute is neither "has sessions" nor "has none".
@@ -269,12 +306,12 @@ describe("TokenTrendChart empty state honesty (ISS-4802)", () => {
   });
 
   /**
-   * wongk / bot (PR #4322): the copy was metric-blind while the chart carries a
+   * whitlockk / bot (PR #4322): the copy was metric-blind while the chart carries a
    * $/# toggle, so a reader on $ was told no TOKEN usage was recorded — naming
    * the wrong missing thing for a component whose tokens are exactly what it
    * does have.
    */
-  it("names spend, not tokens, on the $ toggle", async () => {
+  it("names cost, not tokens, on the $ toggle", async () => {
     const user = userEvent.setup();
     mockData({ slug: "tool::t", models: [], points: [] });
     render(
@@ -288,7 +325,7 @@ describe("TokenTrendChart empty state honesty (ISS-4802)", () => {
 
     await user.click(screen.getByRole("radio", { name: RE_COST_TOGGLE }));
 
-    expect(screen.getByText(RE_NO_SPEND)).toBeInTheDocument();
+    expect(screen.getByText(RE_NO_COST)).toBeInTheDocument();
     expect(screen.queryByText(RE_NO_TOKEN_DATA)).toBeNull();
   });
 

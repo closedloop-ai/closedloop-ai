@@ -6,11 +6,17 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
 import {
+  BRANCH_PRIORITY_COLUMN_ID,
+  branchColumnLabel,
+} from "../../lib/branch-column-view-model";
+import {
+  BRANCH_STATUS_CONFIG,
   type BranchRow,
   BranchRowStatus,
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
 } from "../../lib/branch-row";
+import { BRANCH_UNAVAILABLE_LABEL } from "../branch-unavailable-value";
 import { BranchesTable } from "../branches-table";
 
 const RE_WIP_LOCAL_NAME = /wip\/local/;
@@ -23,6 +29,11 @@ const RE_REORDER_OWNER = /^Reorder Owner column, use arrow keys$/;
 const RE_RESIZE_HANDLE = /^Resize .+ column, use arrow keys$/;
 // FEA-4259: the Linked Sessions count link's accessible name ("N linked session(s)").
 const RE_LINKED_SESSIONS = /linked session/i;
+const OWNER_HEADER = "Owner";
+const REPOSITORY_HEADER = "Repository";
+const STATUS_HEADER = "Status";
+const CHECKS_HEADER = "Checks";
+const EDIT_TAGS_FULL_ROW_NAME = "Edit tags for feature/full";
 
 const fullRow: BranchRow = {
   id: "owner%2Fweb::feature",
@@ -104,7 +115,7 @@ function gridShape(el: Element): { children: number; tracks: number } {
 
 describe("BranchesTable grid alignment", () => {
   it("renders the approved fixed column order without Checks or actions", () => {
-    render(<BranchesTable approved items={[fullRow]} />);
+    render(<BranchesTable approved includePriorityColumn items={[fullRow]} />);
 
     expect(
       screen
@@ -113,6 +124,8 @@ describe("BranchesTable grid alignment", () => {
     ).toEqual([
       "Name",
       "Owner",
+      // ISS-10332: shown by default, beside the identity columns.
+      "Priority",
       "Collaborators",
       "Linked sessions",
       "Changes",
@@ -121,8 +134,20 @@ describe("BranchesTable grid alignment", () => {
       "Last active",
       "Repository",
       "Tags",
+      "Project",
     ]);
-    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+    expect(screen.queryByText(CHECKS_HEADER)).not.toBeInTheDocument();
+  });
+
+  // ISS-10332 (#7762 review): closed by default, for a host whose source
+  // serves no `priority`.
+  it("renders no Priority column unless the host opts in", () => {
+    render(<BranchesTable approved items={[fullRow]} />);
+
+    expect(
+      screen.queryByText(branchColumnLabel(BRANCH_PRIORITY_COLUMN_ID))
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(branchColumnLabel("owner"))).toBeInTheDocument();
   });
 
   it("keeps cached Desktop tags read-only while offline", () => {
@@ -139,12 +164,12 @@ describe("BranchesTable grid alignment", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: "Edit tags for feature/full" })
+      screen.queryByRole("button", { name: EDIT_TAGS_FULL_ROW_NAME })
     ).not.toBeInTheDocument();
 
     view.rerender(<BranchesTable approved items={[taggedRow]} />);
     expect(
-      screen.getByRole("button", { name: "Edit tags for feature/full" })
+      screen.getByRole("button", { name: EDIT_TAGS_FULL_ROW_NAME })
     ).toBeInTheDocument();
   });
 
@@ -164,7 +189,7 @@ describe("BranchesTable grid alignment", () => {
     );
 
     expect(screen.getByText("Unattributed")).toBeInTheDocument();
-    expect(screen.getAllByText("Unavailable")).not.toHaveLength(0);
+    expect(screen.getAllByText(BRANCH_UNAVAILABLE_LABEL)).not.toHaveLength(0);
   });
 
   it("links repository cells and exposes collision-safe full identities", () => {
@@ -207,6 +232,62 @@ describe("BranchesTable grid alignment", () => {
     expect(uniqueRepo).toHaveAttribute("title", "owner/api");
   });
 
+  // ISS-7362 (whitlockk): the PR track (150px then, 200px since ISS-8422) must not
+  // spend itself on an org prefix
+  // that repeats down every row — but eliding it unconditionally would leave two
+  // same-named repos with nothing but a number to tell them apart. The chip reuses the
+  // Repository cell's own `repositoryDisplayLabels`, which drops the org ONLY
+  // while the short name is unique. Repository is hidden here on purpose: that
+  // column is toggleable, so it cannot be the thing that keeps the org reachable.
+  it("names the approved PR chip with the short repo, keeping the org only when it disambiguates", () => {
+    const ownerWeb = {
+      ...fullRow,
+      prNumber: 42,
+      prRepo: "owner/web",
+      prUrl: "https://github.com/owner/web/pull/42",
+    };
+    const otherWeb = {
+      ...fullRow,
+      branchName: "feature/other",
+      id: "other%2Fweb::feature",
+      prNumber: 43,
+      prRepo: "other/web",
+      prUrl: "https://github.com/other/web/pull/43",
+      repo: "other/web",
+    };
+    const ownerApi = {
+      ...fullRow,
+      branchName: "feature/api",
+      id: "owner%2Fapi::feature",
+      prNumber: 44,
+      prRepo: "owner/api",
+      prUrl: "https://github.com/owner/api/pull/44",
+      repo: "owner/api",
+    };
+    render(
+      <BranchesTable
+        allRows={[ownerWeb, otherWeb, ownerApi]}
+        approved
+        items={[ownerWeb, otherWeb, ownerApi]}
+        visibleColumns={new Set(["pr"])}
+      />
+    );
+
+    // `api` is unique across the list, so the org is redundant and goes.
+    expect(screen.getByRole("link", { name: "api#44" })).toBeInTheDocument();
+    expect(screen.queryByText("owner/api")).not.toBeInTheDocument();
+    // `web` is not, so both chips keep the full identity even with the
+    // Repository column unrendered. Asserted through the accessible name
+    // because that is where the guarantee actually lives: the painted prefix
+    // is still subject to `truncate`, which is CSS and which jsdom cannot see.
+    expect(
+      screen.getByRole("link", { name: "owner/web#42" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "other/web#43" })
+    ).toBeInTheDocument();
+  });
+
   it("renders exactly one grid cell per template track (no phantom trailing cell)", () => {
     // Regression: a phantom trailing border cell with no template track wrapped
     // onto an implicit grid row and overlaid the first row's name cell, eating
@@ -227,28 +308,27 @@ describe("BranchesTable grid alignment", () => {
 });
 
 // FEA-4273 sort/alignment coverage moved to the sibling
-// `branches-table-sort-alignment.test.tsx` (shafty023 review): the block was
+// `branches-table-sort-alignment.test.tsx` (davetho review): the block was
 // growing this already-large file past the split signal, and the sort tests were
 // rewritten there to drive real header clicks through a stateful harness instead
 // of pre-sorted props + a no-op `onSort`.
 
 describe("BranchesTable column set + order — prototype reconciliation (FEA-4006, FEA-4066)", () => {
-  // Source of truth: apps/prototypes/app/p/branches/components/branches-table.tsx
-  // `COLUMN_SPECS` — repo, status, owner, lastActivity, sessions, changes, pr,
-  // checks — after the Name lead. The base table keeps the shared column order
+  // The parity oracle is apps/prototypes/app/p/branches/components/
+  // branch-list-surface-model.ts. The base table keeps the shared column order
   // (Owner first per FEA-3968) with the trailing `checks` column restored
   // (FEA-4066); `version` is the agent-detail-only trailing `extra` column
   // (data-gated), so it is not in the base inline set.
   const EXPECTED_HEADERS_IN_ORDER = [
     "Branch", // lead
-    "Owner",
-    "Repository",
-    "Status",
+    OWNER_HEADER,
+    REPOSITORY_HEADER,
+    STATUS_HEADER,
     "Last active",
-    "Linked Sessions",
+    "Linked sessions",
     "Changes",
     "Pull request",
-    "Checks",
+    CHECKS_HEADER,
   ] as const;
 
   it("renders exactly the prototype's columns, in order, and none excluded", () => {
@@ -277,7 +357,7 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
     // Header order (left→right) must match the prototype's column order exactly.
     expect(renderedHeaders).toEqual([...EXPECTED_HEADERS_IN_ORDER]);
     // FEA-4066: the Checks column is restored and must render.
-    expect(screen.getByText("Checks")).toBeInTheDocument();
+    expect(screen.getByText(CHECKS_HEADER)).toBeInTheDocument();
     for (const excluded of [
       "Behind / Ahead",
       "Story points",
@@ -293,8 +373,12 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
   it("renders a fully-enriched row's cells", () => {
     render(<BranchesTable items={[fullRow]} />);
     expect(screen.getByText("feature/full")).toBeInTheDocument();
-    expect(screen.getByText("web")).toBeInTheDocument(); // short repo name
-    expect(screen.getByText("web#42")).toBeInTheDocument(); // PR badge
+    // Two renders of the short repo name: the Repository cell, and the PR
+    // chip's prefix — which ISS-7362 split into its own truncating element so
+    // the tail ellipsis can no longer reach the number.
+    expect(screen.getAllByText("web")).toHaveLength(2);
+    const prNumber = screen.getByText("#42");
+    expect(prNumber.closest('[data-slot="chip"]')).toHaveTextContent("web#42");
     expect(screen.getByText("+10")).toBeInTheDocument(); // changes
     expect(screen.getByText("−5")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument(); // linked sessions count
@@ -304,8 +388,9 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
 
   it("degrades github-live cells to the empty-value affordance when absent", () => {
     render(<BranchesTable items={[missingRow]} />);
-    // repo, PR, changes, sessions, checks → "—"
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(5);
+    // repo, PR, sessions, checks → "—"; changes → "Unavailable"
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText(BRANCH_UNAVAILABLE_LABEL)).toBeInTheDocument();
   });
 
   it("renders the Checks rollup value and degrades to empty when checks are absent (FEA-4066)", () => {
@@ -324,7 +409,7 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
         visibleColumns={new Set(["checks"])}
       />
     );
-    expect(screen.getByText("Checks")).toBeInTheDocument();
+    expect(screen.getByText(CHECKS_HEADER)).toBeInTheDocument();
     // Enriched row → "N/N passing"; null-enrichment row → em-dash empty value.
     expect(screen.getByText("12/12 passing")).toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();
@@ -381,7 +466,7 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
   });
 
   it("collapses the Checks column entirely when every row is empty (FEA-4066)", () => {
-    // No producer emits the passed count today, so an all-empty Checks column
+    // No list producer emits the passed count, so an all-empty Checks column
     // must drop its header + track (FEA-3968 collapse) rather than render a wall
     // of em-dashes. Both rows null-enriched ⇒ the header disappears.
     render(
@@ -393,7 +478,7 @@ describe("BranchesTable column set + order — prototype reconciliation (FEA-400
         visibleColumns={new Set(["checks"])}
       />
     );
-    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+    expect(screen.queryByText(CHECKS_HEADER)).not.toBeInTheDocument();
   });
 });
 
@@ -405,7 +490,7 @@ describe("BranchesTable Owner column (on by default, hideable)", () => {
         visibleColumns={new Set(["repo", "status", "owner"])}
       />
     );
-    expect(screen.getByText("Owner")).toBeInTheDocument();
+    expect(screen.getByText(OWNER_HEADER)).toBeInTheDocument();
     expect(screen.getByText("Alex Rivera")).toBeInTheDocument();
   });
 
@@ -424,7 +509,7 @@ describe("BranchesTable Owner column (on by default, hideable)", () => {
     render(
       <BranchesTable items={[fullRow]} visibleColumns={new Set(["repo"])} />
     );
-    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+    expect(screen.queryByText(OWNER_HEADER)).not.toBeInTheDocument();
   });
 });
 
@@ -624,7 +709,9 @@ describe("BranchesTable low-variance status label + collapse — FEA-3968", () =
   it("renders Status as a plain colored label, not a filled chip", () => {
     // fullRow status is Open; single row ⇒ no collapse, so the label renders.
     render(<BranchesTable items={[fullRow]} />);
-    const label = screen.getByText("Open");
+    const label = screen.getByText(
+      BRANCH_STATUS_CONFIG[BranchRowStatus.Open].label
+    );
     expect(label.className).toContain("truncate");
     expect(label.className).not.toContain("rounded-full");
   });
@@ -633,18 +720,22 @@ describe("BranchesTable low-variance status label + collapse — FEA-3968", () =
     render(<BranchesTable items={[openA, openB]} />);
     // "Open" on every row ⇒ the Status column (header label + cells) is dropped.
     // No `onSort` here, so the header renders as a plain "Status" label.
-    expect(screen.queryByText("Status")).not.toBeInTheDocument();
-    expect(screen.queryByText("Open")).not.toBeInTheDocument();
+    expect(screen.queryByText(STATUS_HEADER)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(BRANCH_STATUS_CONFIG[BranchRowStatus.Open].label)
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the Status column (emphasis) when status varies across rows", () => {
     render(<BranchesTable items={[openA, mergedB]} />);
-    expect(screen.getByText("Status")).toBeInTheDocument();
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText(STATUS_HEADER)).toBeInTheDocument();
+    expect(
+      screen.getByText(BRANCH_STATUS_CONFIG[BranchRowStatus.Open].label)
+    ).toBeInTheDocument();
     expect(screen.getByText("Merged")).toBeInTheDocument();
   });
 
-  it("collapses Repository by the DISPLAYED short name, not the full path (wongk)", () => {
+  it("collapses Repository by the DISPLAYED short name, not the full path (whitlockk)", () => {
     // `acme/web` and `other/web` both render as `web`, so the column conveys
     // nothing on the page and must collapse — keying on the full path would keep
     // it while painting an identical `web` down every row.
@@ -656,11 +747,11 @@ describe("BranchesTable low-variance status label + collapse — FEA-3968", () =
         visibleColumns={new Set(["repo"])}
       />
     );
-    expect(screen.queryByText("Repository")).not.toBeInTheDocument();
+    expect(screen.queryByText(REPOSITORY_HEADER)).not.toBeInTheDocument();
     expect(screen.queryByText("web")).not.toBeInTheDocument();
   });
 
-  it("never collapses the active sort column even when it is constant (wongk)", () => {
+  it("never collapses the active sort column even when it is constant (whitlockk)", () => {
     // Status is constant "Open" AND the active sort column ⇒ kept, so the sort
     // header (which reverses the sort) can never vanish.
     render(
@@ -673,7 +764,7 @@ describe("BranchesTable low-variance status label + collapse — FEA-3968", () =
         sortDir="asc"
       />
     );
-    expect(screen.getByText("Status")).toBeInTheDocument();
+    expect(screen.getByText(STATUS_HEADER)).toBeInTheDocument();
   });
 
   it("keeps the Blocked status as a filled chip for emphasis, not a plain label", () => {
@@ -765,8 +856,9 @@ describe("BranchesTable column reorder — FEA-4021", () => {
     const ownerHandle = screen.getByRole("button", { name: RE_REORDER_OWNER });
     fireEvent.keyDown(ownerHandle, { key: "ArrowRight" });
     expect(emitted).toHaveLength(1);
-    // The full data order is emitted (every COLUMN_SPECS id), with the hidden
-    // "status" still at its canonical index 2, and the visible move applied.
+    // The full data order is emitted (every BRANCHES_TABLE_COLUMN_SPECS id),
+    // with the hidden "status" still at its canonical index 2, and the visible
+    // move applied.
     expect(emitted[0]).toContain("status");
     expect(emitted[0].indexOf("status")).toBe(2);
     expect(emitted[0].indexOf("repo")).toBeLessThan(

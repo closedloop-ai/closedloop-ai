@@ -8,23 +8,33 @@
  * cannot load).
  *
  * #4150: also hosts `buildSharedAgentSessionsListOptions` — the ONE Sessions-list
- * options builder both list channels share — extracted here from the grandfathered
- * `agent-dashboard-design-system-runtime.ts` so adding it does not grow the
- * over-ceiling monolith. It is the same class of pure, electron-free helper this
- * leaf already owns.
+ * options builder both list channels share — extracted here from
+ * `agent-dashboard-design-system-runtime.ts` so adding it does not grow that
+ * runtime. It is the same class of pure, electron-free helper this leaf already
+ * owns.
  */
+import type { ReadSessionDeadLetterState } from "../agent-sync/agent-session-dead-letter-sync-state.js";
 import type { GetSharedAgentSessionsOptions } from "../session/shared-agent-sessions-api.js";
 import type { TranscriptMainBlobState } from "../transcript-sync/transcript-sync-types.js";
 
 /**
  * FEA-3659: resolve the compute-target id the data-revision rebuild enqueue must
- * key its sync-outbox rows under. Prefers the ONLINE-AWARE `getSyncComputeTargetId`
- * (null when offline/unauthenticated); when a caller wired only the legacy
- * `getComputeTargetId` it falls back to that. Critically, when
- * `getSyncComputeTargetId` IS wired, its `null` (offline) result is honored as
- * null — it does NOT fall through to the stale `getComputeTargetId`, so an offline
- * rebuild never enqueues under a stale `lastComputeTargetId` that would strand rows
- * under the wrong source key across an account switch.
+ * key its sync-outbox rows under. Prefers the IDENTITY-SCOPED
+ * `getSyncComputeTargetId` — the id the session lane writes under, null when none
+ * is attributable to the account signed in now; when a caller wired only the
+ * legacy `getComputeTargetId` it falls back to that. Critically, when
+ * `getSyncComputeTargetId` IS wired, its `null` result is honored as null — it
+ * does NOT fall through to the stale `getComputeTargetId`, so a rebuild never
+ * enqueues under a stale `lastComputeTargetId` that would strand rows under the
+ * wrong source key across an account switch.
+ *
+ * ISS-8691: "no target" and "offline" stopped being the same question — the
+ * session lane retains its target across a socket drop, so this resolves to a
+ * real id while offline. That is required, not incidental: the read side below
+ * must consult the outbox under the key the write side is enqueuing under, or a
+ * still-queued row loses the `pending` it has earned — ISS-9004: it reads back
+ * as unknown, publishing no disclosure, rather than as the false `synced` it
+ * used to.
  */
 export function resolveRebuildSyncComputeTargetId(options: {
   getSyncComputeTargetId?: () => string | null;
@@ -56,9 +66,11 @@ type TranscriptBlobStateReader = {
  * set and mislabelled every pending-upload row as `synced` on the real Sessions
  * page while the standalone handler looked correct. One builder, no drift.
  *
- * - `computeTargetId` is the ONLINE-AWARE target, so the outbox lookup is keyed
- *   under the same source key the sync write side enqueues under (null when
- *   offline ⇒ no pending set ⇒ every row `synced`).
+ * - `computeTargetId` is the IDENTITY-SCOPED target, so the outbox lookup is
+ *   keyed under the same source key the sync write side enqueues under. ISS-9004:
+ *   null ⇒ the pending set is UNKNOWN, not proven-empty, and the row publishes no
+ *   cloud-sync disclosure — it was never honest to read it as `synced`, because
+ *   rows enqueued under an earlier target outlive the target we can name.
  * - `loadTranscriptBlobStates` adds the transcript-BLOB lane, so a session whose
  *   metadata was acked while its raw transcript is still queued discloses
  *   `pending` here exactly as it does on the cloud list. Bounded to the page's
@@ -69,10 +81,12 @@ export function buildSharedAgentSessionsListOptions(
   options: {
     getSyncComputeTargetId?: () => string | null;
     getComputeTargetId?: () => string | null;
+    readSessionDeadLetterState?: ReadSessionDeadLetterState;
   }
 ): GetSharedAgentSessionsOptions {
   return {
     computeTargetId: resolveRebuildSyncComputeTargetId(options),
+    readSessionDeadLetterState: options.readSessionDeadLetterState,
     loadTranscriptBlobStates: (externalSessionIds) =>
       agentDatabase.transcriptSync?.listMainBlobStates(externalSessionIds) ??
       Promise.resolve([]),

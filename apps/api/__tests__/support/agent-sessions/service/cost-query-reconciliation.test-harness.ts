@@ -6,6 +6,7 @@
 // / telemetry mocks (module mocks are per-file); this module owns the fixture
 // shape and the `installCostSessions` wiring they share.
 
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { vi } from "vitest";
 import { buildSessionListRecord, installDb } from "../service.test-harness";
 
@@ -55,6 +56,15 @@ export type FakeSession = {
    * composed with a duration sort must carry it through the candidate narrowing.
    */
   wallClock?: string | null;
+  /**
+   * ISS-8335: the DB-native sort columns, so a fixture can exercise a cost rule
+   * composed with a `harness`/`model`/`repo` rule. Omitted, every row shares one
+   * value and the column decides nothing — which is what keeps the existing
+   * cost/duration/owner cases about the column they name.
+   */
+  harness?: string;
+  model?: string | null;
+  repositoryFullName?: string | null;
   user?: {
     firstName: string | null;
     lastName: string | null;
@@ -105,53 +115,70 @@ function eventTokensOf(session: FakeSession): number {
   return session.eventCount > 0 ? DEFAULT_TOKEN_TOTAL : 0;
 }
 
-/** The `$queryRaw` mock the current `installCostSessions` wired, for SQL asserts. */
-let capturedQueryRaw: ReturnType<typeof vi.fn> | null = null;
-
-/** The `$queryRaw` mock the most recent `installCostSessions` wired (or null). */
-export function getCapturedQueryRaw(): ReturnType<typeof vi.fn> | null {
-  return capturedQueryRaw;
-}
-
-/** Reset the captured `$queryRaw` and `findMany` mocks between tests. */
-export function resetCapturedQueryRaw(): void {
-  capturedQueryRaw = null;
-  capturedFindMany = null;
-}
-
-/** The `sessionDetail.findMany` mock the current `installCostSessions` wired. */
-let capturedFindMany: ReturnType<typeof vi.fn> | null = null;
-
-/** The `sessionDetail.findMany` mock the most recent `installCostSessions` wired. */
-export function getCapturedFindMany(): ReturnType<typeof vi.fn> | null {
-  return capturedFindMany;
-}
-
 /**
- * The `orderBy` the candidate scan was invoked with (the narrow-select
- * `findMany` call that DOESN'T ask for the full-list `harness` column). Returns
- * the FIRST such call's `orderBy`, or null if no candidate scan ran. This is the
- * ordering that decides WHICH rows survive the `SESSION_COST_RECONCILE_CANDIDATE_CAP`
- * — the seam wongk flagged for table↔export/summary divergence (FEA-4326).
+ * Wire the DB mocks so `findSessions` reads the cost-filtered candidate
+ * population. `sessionDetail.findMany` serves narrow display-sort candidates
+ * and full list rows for page hydration; `nameOverride` distinguishes the
+ * full select from the candidate select.
  */
-export function getCandidateScanOrderBy(): unknown {
-  const calls = capturedFindMany?.mock.calls ?? [];
-  for (const [args] of calls) {
-    if (!(args as { select?: { harness?: true } }).select?.harness) {
-      return (args as { orderBy?: unknown }).orderBy;
+/**
+ * The `estimated_cost` bounds a `where` carries, if any.
+ *
+ * ISS-7176: a cost bucket is a DATABASE predicate now, so this harness has to
+ * apply it. It did not before — the reconciled path re-derived every candidate's
+ * cost and re-bucketed in memory, so returning the whole population here was
+ * correct and the in-memory pass did the excluding.
+ *
+ * Deliberately narrow: it reads only the numeric `estimatedCost` range clauses,
+ * which is the one predicate these suites vary. Anything else in the `where`
+ * (org scope, quality, date window) is composed by code that has its own tests;
+ * modelling all of Prisma here would be building a database to test a filter.
+ */
+function estimatedCostBounds(
+  where: unknown
+): { gte?: number; lt?: number } | null {
+  let found: { gte?: number; lt?: number } | null = null;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        walk(entry);
+      }
+      return;
     }
-  }
-  return null;
+    if (node === null || typeof node !== "object") {
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "estimatedCost" && value && typeof value === "object") {
+        const bound = value as { gte?: unknown; lt?: unknown };
+        if (typeof bound.gte === "number" || typeof bound.lt === "number") {
+          found = {
+            ...(typeof bound.gte === "number" ? { gte: bound.gte } : {}),
+            ...(typeof bound.lt === "number" ? { lt: bound.lt } : {}),
+          };
+          return;
+        }
+      }
+      walk(value);
+    }
+  };
+  walk(where);
+  return found;
 }
 
-/**
- * Wire the DB mocks so `findSessions` reads `sessions` as its candidate
- * population and reconciles each one from the per-event aggregate. The
- * `sessionDetail.findMany` mock serves narrow candidate rows for the
- * cost-reconciliation scan and full list rows for the page hydrate (branched on
- * whether the select asked for `harness`, a full-list-only column).
- */
 export function installCostSessions(sessions: FakeSession[]): void {
+  /** The fixture rows a `where`'s cost bounds admit — the database's job now. */
+  const admitted = (where: unknown): FakeSession[] => {
+    const bounds = estimatedCostBounds(where);
+    if (bounds === null) {
+      return sessions;
+    }
+    return sessions.filter(
+      (session) =>
+        (bounds.gte === undefined || session.storedRollup >= bounds.gte) &&
+        (bounds.lt === undefined || session.storedRollup < bounds.lt)
+    );
+  };
   const listRowById = new Map(
     sessions.map((s) => [
       s.artifactId,
@@ -191,30 +218,39 @@ export function installCostSessions(sessions: FakeSession[]): void {
         tokenSum: BigInt(eventTokensOf(s)),
       }))
   );
-  capturedQueryRaw = queryRaw;
 
   const findMany = vi
     .fn()
     .mockImplementation(
-      (args: { select?: { harness?: true }; where?: unknown }) => {
-        // Hydrate call: full list select (asks for `harness`). Return the list
-        // rows for the requested page-id set, order-agnostic (the service
-        // re-orders by the reconciled page order).
-        if (args.select?.harness) {
+      (args: { select?: { nameOverride?: true }; where?: unknown }) => {
+        // Hydrate call: the FULL list select. Discriminated on
+        // `nameOverride`, a field only `agentSessionListSelect` carries.
+        //
+        // It used to test `harness`, which ISS-8335 broke by adding the
+        // DB-native sort columns to `displaySortCandidateSelect` so a multi-rule
+        // chain could order them in memory. The candidate scan then also asked
+        // for `harness`, fell into THIS branch, and every cost-composed sort
+        // silently received full list rows in fixture order — the tests read as
+        // an ordering regression when the ordering was never reached. Pick a
+        // discriminator the candidate select has no reason to grow into. D5
+        // added `externalSessionId` to the candidate, so it no longer qualifies.
+        if (args.select?.nameOverride) {
           const idFilter = extractIdInFilter(args.where);
-          const rows = (idFilter ?? sessions.map((s) => s.artifactId))
+          const rows = (
+            idFilter ?? admitted(args.where).map((s) => s.artifactId)
+          )
             .map((id) => listRowById.get(id))
             .filter((row): row is NonNullable<typeof row> => row !== undefined);
           return Promise.resolve(rows);
         }
-        // Candidate scan: narrow select (id + rollup + rollup tokens +
-        // updatedAt + the display-sort columns). The rollup token total feeds
-        // the completeness cross-check; split across input/output (only the
-        // sum matters). The display columns let a cost-bucket filter compose
-        // with an Owner/Duration sort (thread #1/#4).
+        // Candidate scan: narrow select with the display-sort columns. The
+        // display keys let a cost-bucket filter compose with Owner/Duration
+        // ordering (thread #1/#4).
         return Promise.resolve(
-          sessions.map((s) => ({
+          admitted(args.where).map((s) => ({
             artifactId: s.artifactId,
+            computeTargetId: null,
+            externalSessionId: s.artifactId,
             estimatedCost: s.storedRollup,
             inputTokens: s.inputTokens ?? rollupTokensOf(s),
             outputTokens: s.outputTokens ?? 0,
@@ -232,17 +268,38 @@ export function installCostSessions(sessions: FakeSession[]): void {
             sessionEndedAt: s.sessionEndedAt ?? null,
             lastActivityAt: s.lastActivityAt ?? null,
             wallClock: s.wallClock ?? null,
-            user: s.user ?? null,
+            // ISS-12251 D-1: the Owner sort reads the artifact's assignee.
+            artifact: {
+              status: SESSION_STATUS.INACTIVE,
+              assignee: s.user ?? null,
+            },
+            // ISS-8335: the DB-native sort columns the candidate select now
+            // carries, so a cost rule composed with a `repo`/`harness`/`model`
+            // rule has something to order by. Fixed values unless a fixture
+            // opts in — a fixture that varied them by default would let a
+            // column no test named decide an assertion.
+            harness: s.harness ?? "claude",
+            model: s.model ?? null,
+            repositoryFullName: s.repositoryFullName ?? null,
           }))
         );
       }
     );
-  capturedFindMany = findMany;
 
   installDb({
     sessionDetail: {
       findMany,
-      count: vi.fn().mockResolvedValue(sessions.length),
+      // ISS-7176: the TOTAL obeys the cost predicate too. It used to be the raw
+      // population size, which was right when the cost bucket was applied in
+      // memory after the count — the page's `total` came from the reconciled
+      // survivors, not from this call. Now the database counts what it filters,
+      // so a fixture's `total` must move with the bucket or every composition
+      // case reads the unfiltered population as its denominator.
+      count: vi
+        .fn()
+        .mockImplementation((args?: { where?: unknown }) =>
+          Promise.resolve(admitted(args?.where).length)
+        ),
     },
     // FEA-4276: the reconciled-cost reader is ONE bounded, org-scoped raw
     // aggregate (`$queryRaw`) returning { agentSessionId, eventCount, pricedCount,

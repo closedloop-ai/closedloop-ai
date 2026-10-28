@@ -2,19 +2,19 @@
  * FEA-4267: the desktop-local catalog LIST collapses a component FAMILY
  * (multiple version rows sharing one org-level `slug`) into ONE canonical row,
  * so the offline/desktop Agents catalog no longer shows duplicate rows for the
- * same logical component — the parity fix for the cloud collapse (wongk). These
+ * same logical component — the parity fix for the cloud collapse (whitlockk). These
  * are pure unit tests over `collapseLocalFamilies`, kept in a dedicated file so
  * the grandfathered `shared-agent-components-api.test.ts` does not grow.
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   type AgentComponent,
   AgentComponentKind,
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import { describe, it } from "vitest";
 import { collapseLocalFamilies } from "../src/main/dashboard/agent-components-family-collapse.js";
 
 // Build the `identityKeyByRow` + `sessionIdsByIdentityKey` inputs the collapse
@@ -274,7 +274,7 @@ describe("collapseLocalFamilies", () => {
     });
   });
 
-  // FEA-4335 (shafty023): the PRODUCTION case — sibling versions now emit DISTINCT
+  // FEA-4335 (davetho): the PRODUCTION case — sibling versions now emit DISTINCT
   // content-hash `slug`s but map to ONE shared name-level family key. The earlier
   // fixtures set `familyKeyByRow = row.slug`, so rows sharing a slug collapse and a
   // regression that ignored `familyKeyByRow` (grouping by slug directly) would

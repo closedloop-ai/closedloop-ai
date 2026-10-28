@@ -1,139 +1,55 @@
-import {
-  ArtifactType,
-  BranchPushSource,
-  LinkType,
-} from "@repo/api/src/types/artifact";
+import { ArtifactType, BranchPushSource } from "@repo/api/src/types/artifact";
 import {
   BranchLifecycleBoundaryKind,
-  BranchParticipationKind,
-  normalizeBranchParticipationKind,
   normalizeRepoFullName,
 } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import type {
   SyncedArtifactRef,
-  SyncedBranchArtifactRef,
   SyncedBranchLifecycleEvent,
 } from "@repo/api/src/types/session-artifact-link";
-import {
-  ArtifactRefMethod,
-  ArtifactRefRelation,
-  BRANCH_PUSH_METHODS,
-  deriveBranchParticipationFromEvidence,
-  deriveBranchParticipationFromMetadata,
-  PROSE_MENTION_REF_METHODS,
-  parseSessionPrLinkMetadata,
-  SessionArtifactLinkKind,
-  SessionArtifactLinkMetadataSource,
-} from "@repo/api/src/types/session-artifact-link";
 import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
+import { v7 as uuidv7 } from "uuid";
+import { seedBranchOwners } from "@/app/branches/branch-owner-seed/branch-owner-seed";
 import { stampBranchFirstPush } from "@/app/branches/branch-push-state";
 import {
   CloudBranchNonMaterializationKind,
   type CloudBranchNonMaterializationKind as CloudBranchNonMaterializationKindType,
 } from "@/app/branches/branch-write-eligibility";
 import { isCloudBranchEligible } from "@/app/branches/cloud-branch-eligibility";
-import { parseJsonObject } from "@/lib/json-schema";
+import { SessionIngestWorkBudget } from "../ingest-work-budget";
 import type { AgentSessionUpsertTx } from "../records";
+import {
+  enqueueBranchMaterializationRetriesTx,
+  isRetryableBranchMaterializationCause,
+} from "./branch-materialization-retry";
+import { deleteBranchMaterializationRetriesForAggregatesTx } from "./branch-materialization-retry-delete";
+import {
+  type BranchPrioritySeed,
+  branchRefPrioritiesByIdentity,
+  seedBranchPrioritiesIfUnset,
+  withBranchPriorityClaim,
+} from "./branch-priority-seed";
+import {
+  type BranchRefAggregate,
+  branchRefAggregateKey,
+  foldBranchRef,
+  hasPullRequestHeadPushEvidence,
+  isPullRequestHeadAggregateMissingPrIdentity,
+  partitionBranchMaterializationBudget,
+} from "./branch-ref-aggregate";
+import { readExistingBranchRows } from "./existing-branch-rows";
+import { persistSessionBranchLinkBatch } from "./session-branch-link-batch";
+import {
+  SessionBranchLinkEvidenceSource,
+  upsertSessionBranchLink,
+} from "./session-branch-link-writer";
 import type {
   SessionBranchRepositoryAuthority,
   SessionBranchRepositoryAuthorityMap,
 } from "./shared";
-import {
-  collectBranchRefs,
-  mergeBranchLifecycleEvents,
-  readBranchLifecycleEventsFromMetadata,
-  storeUnresolvedRefs,
-} from "./shared";
+import { collectBranchRefs, storeUnresolvedRefs } from "./shared";
 
-/**
- * Extractor version stamped on session_branch link metadata so a future
- * re-derivation can be recognized and re-merged in place.
- */
-const SESSION_BRANCH_LINK_EXTRACTOR_VERSION = 1;
-
-/**
- * Precedence when a session touched one branch via several methods/relations —
- * write evidence (`created`/`output`) outranks read/workspace evidence, so the
- * cloud can distinguish a branch a session wrote to from one it merely started
- * on (FEA-2729 AC).
- */
-const BRANCH_RELATION_PRECEDENCE: Record<ArtifactRefRelation, number> = {
-  [ArtifactRefRelation.Created]: 0,
-  [ArtifactRefRelation.Output]: 1,
-  [ArtifactRefRelation.Input]: 2,
-  [ArtifactRefRelation.Referenced]: 3,
-  // FEA-3585: `reviewed` is a PR-only relation and never applies to a BRANCH
-  // ref — listed only to keep this Record exhaustive over ArtifactRefRelation
-  // (ranked lowest, alongside workspace, as read-only non-write evidence).
-  [ArtifactRefRelation.Reviewed]: 4,
-  [ArtifactRefRelation.Workspace]: 4,
-};
-
-/**
- * ISS-5764: rank a branch ref for the aggregate's relation/method election.
- *
- * Relation alone is not enough. `referenced` (3) deliberately outranks
- * `workspace` (4), which is right when both are COMMAND evidence — a branch the
- * session referenced is a stronger statement than one it merely started on. But
- * the desktop now also mints `referenced` branch refs from PROSE, and those are
- * the weakest evidence in the system: without this, a session that ran
- * `git checkout feat/x` AND wrote "I checked out branch feat/x" had its
- * aggregate re-labelled from `workspace`/`git_checkout` to
- * `referenced`/`branch_mention_in_prose` — a mention overwriting the record of a
- * command the session actually ran. Prose is ranked below every relation so it
- * can only ever establish an aggregate that has no other evidence at all.
- */
-function branchRefEvidenceRank(ref: {
-  relation: ArtifactRefRelation;
-  method: string;
-}): number {
-  if (PROSE_MENTION_REF_METHODS.has(ref.method)) {
-    return 98;
-  }
-  return BRANCH_RELATION_PRECEDENCE[ref.relation] ?? 99;
-}
-
-type BranchRefAggregate = {
-  repositoryFullName: string;
-  branchName: string;
-  method: string;
-  relation: ArtifactRefRelation;
-  observedAt?: string;
-  /**
-   * Earliest observed time across this branch's PUSH-method refs (`git_push` /
-   * `gh_pr_create`), if any — the C1-verified in-session push evidence that
-   * stamps `firstPushedAt`/`pushSource='session'` (PRD-510 FR2, PLN-1099 Phase
-   * 2). Distinct from `observedAt` (which keeps the LATEST across all methods
-   * for link recency); push state is earliest-wins.
-   */
-  pushedAt?: string;
-  branchLifecycleEvents: SyncedBranchLifecycleEvent[];
-  directParticipation?: BranchParticipationKind;
-  directParticipationMethod?: string;
-  directParticipationObservedAt?: string;
-};
-
-/**
- * Resolve or create a BRANCH only after the server-owned repository authority
- * proves it is a non-default branch. An unavailable, mismatched, or default
- * authority is a tolerated non-materialized result, not a transaction failure.
- *
- * - Repository identity and authority come from an active organization-scoped
- *   GitHub installation row or org-scoped PublicRepository row. A
- *   desktop-provided full name is never authority.
- * - Creation is artifact-first (FR13): create the `Artifact(BRANCH)` (org from
- *   the API key, never the payload) with the `BranchDetail` nested, so the org
- *   copy matches the parent by construction. No head/base/PR is written — a
- *   desktop branch ref carries none, so a later webhook still lands cleanly
- *   through `applyHeadTransition` (FR8 head-provenance discipline).
- * - A session with no resolved project yields an UNPARENTED branch artifact
- *   (FEA-1749). Branch identity is `(organizationId, repositoryFullName,
- *   branchName)` per PRD-510 D2 — a project has never been part of it. This
- *   used to return null instead, which deferred the ref forever: the desktop
- *   lane is exactly the producer that has no project, so the branch it waited
- *   for could never arrive. That made FR8/FR12's non-App producer unreachable.
- */
 export async function ensureBranchArtifactRow(
   tx: AgentSessionUpsertTx,
   input: {
@@ -142,33 +58,14 @@ export async function ensureBranchArtifactRow(
     repositoryAuthority: SessionBranchRepositoryAuthority | undefined;
     repositoryFullName: string;
     branchName: string;
+    createWhenAbsent: boolean;
   }
 ): Promise<BranchMaterializationResult> {
+  const rejection = branchMaterializationRejection(input);
+  if (rejection) {
+    return rejection;
+  }
   const authority = input.repositoryAuthority;
-  if (!authority) {
-    return {
-      status: BranchMaterializationStatus.NotMaterialized,
-      cause: CloudBranchNonMaterializationKind.AuthorityUnavailable,
-    };
-  }
-  if (
-    !isCloudBranchEligible({
-      branchName: input.branchName,
-      repository: {
-        provider: VcsProviderKind.GitHub,
-        fullName: input.repositoryFullName,
-        ...(authority.providerRepositoryId
-          ? { providerRepositoryId: authority.providerRepositoryId }
-          : {}),
-      },
-      authorities: authority.authorities,
-    })
-  ) {
-    return {
-      status: BranchMaterializationStatus.NotMaterialized,
-      cause: resolveCanonicalRejectionCause(input.branchName, authority),
-    };
-  }
   // D2 key is unique, so at most one row exists — resolve it regardless of
   // deletedAt (a tombstoned row still owns the key; creating a second would
   // violate the unique index).
@@ -187,15 +84,15 @@ export async function ensureBranchArtifactRow(
       artifactId: existing.artifactId,
     };
   }
-  // A concurrent producer (another request or a racing tick) can insert the
-  // same D2 row between the findFirst above and this create; the unique index
-  // then rejects it with P2002. We deliberately do NOT catch-and-re-read on
-  // `tx` here: this create runs inside the long-lived multi-session sync
-  // transaction, which Postgres marks aborted after any failed statement, so a
-  // recovery query on the same `tx` would itself fail (AGENTS.md: no recovery
-  // inside an aborted interactive transaction). Letting P2002 propagate rolls
-  // the batch back cleanly; the desktop re-sends the full ref set on its next
-  // sync, where the findFirst above resolves the winning row.
+  // ISS-8148: no row yet and no evidence this branch ever reached the remote.
+  // Defer without creating — a local-only branch must not materialize at all.
+  if (!input.createWhenAbsent) {
+    return {
+      status: BranchMaterializationStatus.NotMaterialized,
+      cause: CloudBranchNonMaterializationKind.NotPushed,
+    };
+  }
+  // A uniqueness race aborts the whole transaction; retry only after rollback.
   const created = await tx.artifact.create({
     data: {
       type: ArtifactType.Branch,
@@ -211,7 +108,7 @@ export async function ensureBranchArtifactRow(
       branch: {
         create: {
           organizationId: input.organizationId,
-          repositoryId: authority.repositoryId,
+          repositoryId: authority?.repositoryId ?? null,
           repositoryFullName: input.repositoryFullName,
           branchName: input.branchName,
         },
@@ -225,548 +122,115 @@ export async function ensureBranchArtifactRow(
   };
 }
 
-/** Fold a branch ref into the per-artifact aggregate: strongest relation + latest observedAt win. */
-function foldBranchRef(
-  byArtifact: Map<string, BranchRefAggregate>,
-  branchArtifactId: string,
-  ref: SyncedBranchArtifactRef
-): void {
-  const existing = byArtifact.get(branchArtifactId);
-  const directParticipationEvidence =
-    directBranchParticipationEvidenceFromRef(ref);
-  if (!existing) {
-    byArtifact.set(
-      branchArtifactId,
-      branchRefAggregateFromRef(ref, directParticipationEvidence)
-    );
-    return;
-  }
-  const incomingRank = branchRefEvidenceRank(ref);
-  const existingRank = branchRefEvidenceRank(existing);
-  if (incomingRank < existingRank) {
-    existing.relation = ref.relation;
-    existing.method = ref.method;
-  }
-  if (
-    ref.observedAt &&
-    (!existing.observedAt ||
-      Date.parse(ref.observedAt) > Date.parse(existing.observedAt))
-  ) {
-    existing.observedAt = ref.observedAt;
-  }
-  // Push state is earliest-wins (unlike `observedAt`'s latest-wins recency).
-  if (
-    ref.observedAt &&
-    BRANCH_PUSH_METHODS.has(ref.method) &&
-    (!existing.pushedAt ||
-      Date.parse(ref.observedAt) < Date.parse(existing.pushedAt))
-  ) {
-    existing.pushedAt = ref.observedAt;
-  }
-  existing.branchLifecycleEvents = mergeBranchLifecycleEvents(
-    existing.branchLifecycleEvents,
-    ref.branchLifecycleEvents
-  );
-  mergeDirectBranchParticipationEvidence(existing, directParticipationEvidence);
-}
-
-function branchRefAggregateFromRef(
-  ref: SyncedBranchArtifactRef,
-  directParticipationEvidence: ReturnType<
-    typeof directBranchParticipationEvidenceFromRef
-  >
-): BranchRefAggregate {
-  const aggregate: BranchRefAggregate = {
-    repositoryFullName: ref.repositoryFullName,
-    branchName: ref.branchName,
-    method: ref.method,
-    relation: ref.relation,
-    branchLifecycleEvents: ref.branchLifecycleEvents ?? [],
-    ...(ref.observedAt ? { observedAt: ref.observedAt } : {}),
-    ...(BRANCH_PUSH_METHODS.has(ref.method) && ref.observedAt
-      ? { pushedAt: ref.observedAt }
-      : {}),
-  };
-  mergeDirectBranchParticipationEvidence(
-    aggregate,
-    directParticipationEvidence
-  );
-  return aggregate;
-}
-
 /**
- * Merge-upsert one SESSION→BRANCH link. The row is shared with the session_pr
- * lane (same `(sourceId,targetId,linkType)` unique key), so this preserves any
- * existing metadata and overlays branch evidence — `linkKinds` accumulates
- * every kind present, and `linkKind` keeps `session_pr` precedence so that
- * lane's scalar reader/replacement keeps working (FEA-2729, decision:
- * merge-into-one-edge).
+ * Resolve/create a Branch from persisted full-fidelity evidence and write the
+ * same SESSION→BRANCH link the immediate ingest path writes.
  */
-async function upsertSessionBranchLink(
+export async function materializeSessionBranchAggregate(
   tx: AgentSessionUpsertTx,
-  organizationId: string,
-  sessionArtifactId: string,
-  branchArtifactId: string,
-  aggregate: BranchRefAggregate
+  input: {
+    organizationId: string;
+    projectId: string | null;
+    sessionArtifactId: string;
+    aggregate: BranchRefAggregate;
+    repositoryAuthority: SessionBranchRepositoryAuthority | undefined;
+  }
+): Promise<BranchMaterializationResult> {
+  if (isPullRequestHeadAggregateMissingPrIdentity(input.aggregate)) {
+    return {
+      status: BranchMaterializationStatus.NotMaterialized,
+      cause: CloudBranchNonMaterializationKind.IdentityMismatch,
+    };
+  }
+  const materialization = await ensureBranchArtifactRow(tx, {
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    repositoryAuthority: input.repositoryAuthority,
+    repositoryFullName: input.aggregate.repositoryFullName,
+    branchName: input.aggregate.branchName,
+    // Persisted push evidence can heal a previously deferred identity.
+    createWhenAbsent: hasBranchPushEvidence({
+      pushObserved: input.aggregate.pushObserved === true,
+      branchLifecycleEvents: input.aggregate.branchLifecycleEvents,
+      pullRequestObserved: hasPullRequestHeadPushEvidence(input.aggregate),
+    }),
+  });
+  if (materialization.status === BranchMaterializationStatus.NotMaterialized) {
+    return materialization;
+  }
+  if (materialization.artifactId !== input.sessionArtifactId) {
+    await persistMaterializedSessionBranchAggregate(tx, {
+      organizationId: input.organizationId,
+      sessionArtifactId: input.sessionArtifactId,
+      branchArtifactId: materialization.artifactId,
+      aggregate: input.aggregate,
+    });
+    if (input.aggregate.priority) {
+      await seedBranchPrioritiesIfUnset(tx, input.organizationId, [
+        {
+          artifactId: materialization.artifactId,
+          priority: input.aggregate.priority,
+        },
+      ]);
+    }
+  }
+  return materialization;
+}
+
+async function persistMaterializedSessionBranchAggregate(
+  tx: AgentSessionUpsertTx,
+  input: {
+    organizationId: string;
+    sessionArtifactId: string;
+    branchArtifactId: string;
+    aggregate: BranchRefAggregate;
+  }
 ): Promise<void> {
-  const existing = await tx.artifactLink.findFirst({
-    where: {
-      organizationId,
-      sourceId: sessionArtifactId,
-      targetId: branchArtifactId,
-      linkType: LinkType.RelatesTo,
-    },
-    select: {
-      metadata: true,
-      branchParticipation: true,
-      branchParticipationMethod: true,
-      branchParticipationObservedAt: true,
-    },
+  if (input.aggregate.pushedAt) {
+    await stampBranchFirstPush(
+      tx,
+      input.branchArtifactId,
+      new Date(input.aggregate.pushedAt),
+      BranchPushSource.Session
+    );
+  } else if (
+    hasPullRequestHeadPushEvidence(input.aggregate) &&
+    input.aggregate.observedAt
+  ) {
+    await stampBranchFirstPush(
+      tx,
+      input.branchArtifactId,
+      new Date(input.aggregate.observedAt),
+      BranchPushSource.Session
+    );
+  } else if (input.aggregate.pushObserved) {
+    // ISS-8148 (review): a version-skewed producer can send a recognized
+    // push-method ref with no `observedAt`. The push is real — it just has no
+    // time — so stamp the ingest instant as an UPPER BOUND rather than leave
+    // the row unstamped and silently outside every publication-gated
+    // population (metric denominators included). `stampBranchFirstPush`
+    // overwrites any LATER stored value, so the first timestamped push
+    // evidence corrects this stamp downward.
+    await stampBranchFirstPush(
+      tx,
+      input.branchArtifactId,
+      new Date(),
+      BranchPushSource.Session
+    );
+  }
+  await upsertSessionBranchLink(tx, {
+    organizationId: input.organizationId,
+    sessionArtifactId: input.sessionArtifactId,
+    branchArtifactId: input.branchArtifactId,
+    aggregate: input.aggregate,
+    evidenceSource:
+      input.aggregate.branchRefObserved === false
+        ? SessionBranchLinkEvidenceSource.PullRequestHead
+        : SessionBranchLinkEvidenceSource.IndependentBranch,
   });
-  const base = parseJsonObject(existing?.metadata) ?? {};
-  const parsedBase = parseSessionPrLinkMetadata(base);
-  const branchLifecycleEvents = mergeBranchLifecycleEvents(
-    readBranchLifecycleEventsFromMetadata(existing?.metadata),
-    aggregate.branchLifecycleEvents
-  );
-  const incomingBranchParticipationEvidence =
-    branchParticipationEvidenceFromAggregate(aggregate);
-  const incomingBranchParticipation =
-    incomingBranchParticipationEvidence.branchParticipation;
-  const existingBranchParticipation = normalizeBranchParticipationKind(
-    existing?.branchParticipation
-  );
-  const metadataBranchParticipation =
-    deriveBranchParticipationFromMetadata(parsedBase);
-  const metadataBranchParticipationEvidence =
-    branchParticipationEvidenceFromMetadata(parsedBase);
-  const branchParticipation = chooseBranchParticipation(
-    incomingBranchParticipation,
-    existingBranchParticipation ?? metadataBranchParticipation
-  );
-  const kinds = collectLinkKinds(base);
-  kinds.add(SessionArtifactLinkKind.SessionBranch);
-  const linkKind = kinds.has(SessionArtifactLinkKind.SessionPr)
-    ? SessionArtifactLinkKind.SessionPr
-    : SessionArtifactLinkKind.SessionBranch;
-
-  const metadata = {
-    ...base,
-    linkKind,
-    linkKinds: [...kinds].sort(),
-    branchLinked: true,
-    method: aggregate.method,
-    relation: aggregate.relation,
-    ...(aggregate.observedAt ? { observedAt: aggregate.observedAt } : {}),
-    branchName: aggregate.branchName,
-    branchRepositoryFullName: aggregate.repositoryFullName,
-    branchSource: SessionArtifactLinkMetadataSource.DesktopSync,
-    branchExtractorVersion: SESSION_BRANCH_LINK_EXTRACTOR_VERSION,
-    ...(branchParticipation ? { branchParticipation } : {}),
-    ...(branchLifecycleEvents.length > 0 ? { branchLifecycleEvents } : {}),
-  };
-  const branchParticipationData = branchParticipationWriteData({
-    branchParticipation,
-    method: branchParticipationMethod({
-      branchParticipation,
-      incomingBranchParticipation,
-      incomingMethod: incomingBranchParticipationEvidence.method,
-      existingBranchParticipation,
-      existingMethod: existing?.branchParticipationMethod ?? null,
-      metadataMethodBranchParticipation:
-        metadataBranchParticipationEvidence.methodBranchParticipation,
-      metadataMethod: metadataBranchParticipationEvidence.method,
-    }),
-    observedAt: branchParticipationObservedAt({
-      branchParticipation,
-      incomingBranchParticipation,
-      incomingObservedAt: incomingBranchParticipationEvidence.observedAt,
-      existingBranchParticipation,
-      existingObservedAt: existing?.branchParticipationObservedAt ?? null,
-      metadataBranchParticipation,
-      metadataObservedAt: metadataBranchParticipationEvidence.observedAt,
-    }),
-  });
-
-  await tx.artifactLink.upsert({
-    where: {
-      sourceId_targetId_linkType: {
-        sourceId: sessionArtifactId,
-        targetId: branchArtifactId,
-        linkType: LinkType.RelatesTo,
-      },
-    },
-    create: {
-      organizationId,
-      sourceId: sessionArtifactId,
-      targetId: branchArtifactId,
-      linkType: LinkType.RelatesTo,
-      metadata,
-      ...branchParticipationData,
-    },
-    update: { metadata, ...branchParticipationData },
-  });
+  await seedBranchOwners(tx, input.organizationId, [input.branchArtifactId]);
 }
 
-function branchParticipationWriteData(input: {
-  branchParticipation: BranchParticipationKind | undefined;
-  method: string | null;
-  observedAt: Date | null;
-}) {
-  return {
-    branchParticipation: input.branchParticipation ?? null,
-    branchParticipationMethod: input.branchParticipation ? input.method : null,
-    branchParticipationObservedAt: input.observedAt,
-  };
-}
-
-function collectLinkKinds(metadata: Record<string, unknown>): Set<string> {
-  const kinds = new Set<string>();
-  if (typeof metadata.linkKind === "string") {
-    kinds.add(metadata.linkKind);
-  }
-  if (Array.isArray(metadata.linkKinds)) {
-    for (const kind of metadata.linkKinds) {
-      if (typeof kind === "string") {
-        kinds.add(kind);
-      }
-    }
-  }
-  return kinds;
-}
-
-function chooseBranchParticipation(
-  incoming: BranchParticipationKind | undefined,
-  existing: BranchParticipationKind | undefined
-): BranchParticipationKind | undefined {
-  if (
-    incoming === BranchParticipationKind.Wrote ||
-    existing === BranchParticipationKind.Wrote
-  ) {
-    return BranchParticipationKind.Wrote;
-  }
-  if (
-    incoming === BranchParticipationKind.Reviewed ||
-    existing === BranchParticipationKind.Reviewed
-  ) {
-    return BranchParticipationKind.Reviewed;
-  }
-  return undefined;
-}
-
-function branchParticipationMethod(input: {
-  branchParticipation: BranchParticipationKind | undefined;
-  incomingBranchParticipation: BranchParticipationKind | undefined;
-  incomingMethod: string | null;
-  existingBranchParticipation: BranchParticipationKind | undefined;
-  existingMethod: string | null;
-  metadataMethodBranchParticipation: BranchParticipationKind | undefined;
-  metadataMethod: string | null;
-}): string | null {
-  if (!input.branchParticipation) {
-    return null;
-  }
-  if (
-    input.branchParticipation === input.incomingBranchParticipation &&
-    input.incomingMethod
-  ) {
-    return input.incomingMethod;
-  }
-  if (
-    input.branchParticipation === input.existingBranchParticipation &&
-    input.existingMethod
-  ) {
-    return input.existingMethod;
-  }
-  if (
-    input.branchParticipation === input.metadataMethodBranchParticipation &&
-    input.metadataMethod
-  ) {
-    return input.metadataMethod;
-  }
-  return null;
-}
-
-function branchParticipationObservedAt(input: {
-  branchParticipation: BranchParticipationKind | undefined;
-  incomingBranchParticipation: BranchParticipationKind | undefined;
-  incomingObservedAt: Date | null;
-  existingBranchParticipation: BranchParticipationKind | undefined;
-  existingObservedAt: Date | null;
-  metadataBranchParticipation: BranchParticipationKind | undefined;
-  metadataObservedAt: string | null;
-}): Date | null {
-  if (!input.branchParticipation) {
-    return null;
-  }
-  if (
-    input.branchParticipation === input.incomingBranchParticipation &&
-    input.incomingObservedAt
-  ) {
-    return input.incomingObservedAt;
-  }
-  if (
-    input.branchParticipation === input.existingBranchParticipation &&
-    input.existingObservedAt
-  ) {
-    return input.existingObservedAt;
-  }
-  if (
-    input.branchParticipation === input.metadataBranchParticipation &&
-    input.metadataObservedAt &&
-    Number.isFinite(Date.parse(input.metadataObservedAt))
-  ) {
-    return new Date(input.metadataObservedAt);
-  }
-  return null;
-}
-
-function branchParticipationEvidenceFromAggregate(
-  aggregate: BranchRefAggregate
-): {
-  branchParticipation: BranchParticipationKind | undefined;
-  method: string | null;
-  observedAt: Date | null;
-} {
-  if (aggregate.directParticipation) {
-    return {
-      branchParticipation: aggregate.directParticipation,
-      method: aggregate.directParticipationMethod ?? null,
-      observedAt: parseOptionalDate(aggregate.directParticipationObservedAt),
-    };
-  }
-
-  const directBranchParticipation = deriveBranchParticipationFromEvidence({
-    relation: aggregate.relation,
-    method: aggregate.method,
-    branchLifecycleEvents: [],
-  });
-  if (directBranchParticipation) {
-    return {
-      branchParticipation: directBranchParticipation,
-      method: aggregate.method,
-      observedAt: parseOptionalDate(aggregate.observedAt),
-    };
-  }
-
-  const lifecycleBranchParticipation = deriveBranchParticipationFromEvidence({
-    branchLifecycleEvents: aggregate.branchLifecycleEvents,
-  });
-  if (!lifecycleBranchParticipation) {
-    return {
-      branchParticipation: undefined,
-      method: null,
-      observedAt: null,
-    };
-  }
-  return {
-    branchParticipation: lifecycleBranchParticipation,
-    method: null,
-    observedAt:
-      latestLifecycleEventObservedAt(
-        aggregate.branchLifecycleEvents,
-        BranchLifecycleBoundaryKind.ReviewFeedback
-      ) ?? parseOptionalDate(aggregate.observedAt),
-  };
-}
-
-function latestLifecycleEventObservedAt(
-  events: SyncedBranchLifecycleEvent[],
-  kind: BranchLifecycleBoundaryKind
-): Date | null {
-  let latest: Date | null = null;
-  for (const event of events) {
-    if (event.kind !== kind) {
-      continue;
-    }
-    const observedAt = parseOptionalDate(event.observedAt);
-    if (!observedAt) {
-      continue;
-    }
-    if (!latest || observedAt.getTime() > latest.getTime()) {
-      latest = observedAt;
-    }
-  }
-  return latest;
-}
-
-function parseOptionalDate(value: string | undefined): Date | null {
-  if (!(value && Number.isFinite(Date.parse(value)))) {
-    return null;
-  }
-  return new Date(value);
-}
-
-function branchParticipationEvidenceFromMetadata(
-  metadata: ReturnType<typeof parseSessionPrLinkMetadata>
-): {
-  methodBranchParticipation: BranchParticipationKind | undefined;
-  method: string | null;
-  observedAt: string | null;
-} {
-  const methodBranchParticipation = deriveBranchParticipationFromEvidence({
-    relation: metadata?.relation,
-    method: metadata?.method,
-    branchLifecycleEvents: [],
-  });
-  if (methodBranchParticipation) {
-    return {
-      methodBranchParticipation,
-      method: typeof metadata?.method === "string" ? metadata.method : null,
-      observedAt:
-        typeof metadata?.observedAt === "string" ? metadata.observedAt : null,
-    };
-  }
-  const lifecycleBranchParticipation = deriveBranchParticipationFromEvidence({
-    branchLifecycleEvents: metadata?.branchLifecycleEvents,
-  });
-  if (!lifecycleBranchParticipation) {
-    return {
-      methodBranchParticipation: undefined,
-      method: null,
-      observedAt: null,
-    };
-  }
-  const reviewFeedbackObservedAt = latestLifecycleEventObservedAt(
-    metadata?.branchLifecycleEvents ?? [],
-    BranchLifecycleBoundaryKind.ReviewFeedback
-  );
-  return {
-    methodBranchParticipation: undefined,
-    method: null,
-    observedAt: reviewFeedbackObservedAt?.toISOString() ?? null,
-  };
-}
-
-function directBranchParticipationEvidenceFromRef(
-  ref: SyncedBranchArtifactRef
-): {
-  branchParticipation: BranchParticipationKind;
-  method: string;
-  observedAt?: string;
-} | null {
-  const branchParticipation =
-    normalizeBranchParticipationKind(ref.branchParticipation) ??
-    deriveBranchParticipationFromEvidence({
-      relation: ref.relation,
-      method: ref.method,
-      branchLifecycleEvents: [],
-    });
-  if (!branchParticipation) {
-    return null;
-  }
-  return {
-    branchParticipation,
-    method: ref.method,
-    ...(ref.observedAt ? { observedAt: ref.observedAt } : {}),
-  };
-}
-
-function mergeDirectBranchParticipationEvidence(
-  aggregate: BranchRefAggregate,
-  incoming: ReturnType<typeof directBranchParticipationEvidenceFromRef>
-): void {
-  if (!incoming) {
-    return;
-  }
-  const currentRank = directBranchParticipationRank(
-    aggregate.directParticipation
-  );
-  const incomingRank = directBranchParticipationRank(
-    incoming.branchParticipation
-  );
-  if (incomingRank > currentRank) {
-    return;
-  }
-  if (incomingRank === currentRank && aggregate.directParticipation) {
-    const currentPriority = directBranchParticipationEvidencePriority({
-      branchParticipation: aggregate.directParticipation,
-      method: aggregate.directParticipationMethod ?? "",
-    });
-    const incomingPriority =
-      directBranchParticipationEvidencePriority(incoming);
-    if (incomingPriority > currentPriority) {
-      return;
-    }
-    if (incomingPriority < currentPriority) {
-      replaceDirectBranchParticipationEvidence(aggregate, incoming);
-      return;
-    }
-    if (!incoming.observedAt) {
-      return;
-    }
-    if (
-      aggregate.directParticipationObservedAt &&
-      Date.parse(incoming.observedAt) <=
-        Date.parse(aggregate.directParticipationObservedAt)
-    ) {
-      return;
-    }
-  }
-  replaceDirectBranchParticipationEvidence(aggregate, incoming);
-}
-
-function replaceDirectBranchParticipationEvidence(
-  aggregate: BranchRefAggregate,
-  incoming: NonNullable<
-    ReturnType<typeof directBranchParticipationEvidenceFromRef>
-  >
-): void {
-  aggregate.directParticipation = incoming.branchParticipation;
-  aggregate.directParticipationMethod = incoming.method;
-  if (incoming.observedAt) {
-    aggregate.directParticipationObservedAt = incoming.observedAt;
-    return;
-  }
-  Reflect.deleteProperty(aggregate, "directParticipationObservedAt");
-}
-
-function directBranchParticipationRank(
-  branchParticipation: BranchParticipationKind | undefined
-): number {
-  if (branchParticipation === BranchParticipationKind.Wrote) {
-    return 0;
-  }
-  if (branchParticipation === BranchParticipationKind.Reviewed) {
-    return 1;
-  }
-  return 99;
-}
-
-function directBranchParticipationEvidencePriority(input: {
-  branchParticipation: BranchParticipationKind;
-  method: string;
-}): number {
-  if (
-    input.branchParticipation === BranchParticipationKind.Reviewed &&
-    input.method === ArtifactRefMethod.PrReviewFeedbackCommand
-  ) {
-    return 0;
-  }
-  return 1;
-}
-
-/**
- * Create SESSION→BRANCH `ArtifactLink`s from a session's `branch`-kind refs,
- * carrying `method`/`relation`/`observedAt` in metadata (FEA-2729). Resolves —
- * or artifact-first CREATES — the BRANCH artifact by `(organizationId,
- * repositoryFullName, branchName)` (org from the API key — PRD-510 FR11).
- *
- * FEA-1749: this lane no longer defers anything. It previously wrote refs it
- * could not place into `SessionDetail.metadata._unresolvedBranchRefs` "to be
- * retried on a later tick", but the only thing it ever waited on was a project
- * the desktop lane never has — so those refs were retried forever and the
- * branch never appeared. Branch identity (D2) has never included a project.
- *
- * Additive by design (no replacement deleteMany): a session's touched branches
- * are effectively monotonic, and skipping deletes keeps this lane from
- * clobbering the session_pr link it may share a row with. Idempotent — re-sync
- * and extractor re-derivation update metadata in place on the unique key.
- *
- * `repositoryAuthorityByFullName` is resolved and locked once for this
- * session inside its write transaction, so this lane issues no authority
- * lookup per ref while still preventing a preflight-to-write race.
- */
 export async function persistSessionBranchArtifactLinks(
   tx: AgentSessionUpsertTx,
   organizationId: string,
@@ -785,66 +249,119 @@ export async function persistSessionBranchArtifactLinks(
     return;
   }
 
-  const byArtifact = new Map<string, BranchRefAggregate>();
-  const unresolved: UnresolvedBranchRef[] = [];
+  // ISS-8148: fold on branch IDENTITY first, so the push-evidence decision sees
+  // every ref for a branch before any row can be created. The previous
+  // ensure-then-fold order materialized a row per ref and could only ever judge
+  // one ref at a time.
+  const byIdentity = new Map<string, BranchRefAggregate>();
   for (const ref of branchRefs) {
-    // Resolve or create only when the batched server authority proves this is a
-    // non-default branch. Public repositories retain a null installation repo
-    // id; the normalized full name remains part of the D2 identity.
-    const normalizedFullName = normalizeRepoFullName(ref.repositoryFullName);
-    // An unavailable/default result is intentionally skipped without aborting
-    // the multi-session transaction; a later sync re-evaluates fresh authority.
-    const materialization = await ensureBranchArtifactRow(tx, {
+    // The normalized full name is part of the D2 identity, so it is applied
+    // before the fold rather than after materialization.
+    const normalizedRef = {
+      ...ref,
+      repositoryFullName: normalizeRepoFullName(ref.repositoryFullName),
+    };
+    foldBranchRef(
+      byIdentity,
+      branchRefAggregateKey(normalizedRef),
+      normalizedRef
+    );
+  }
+  // Overflow remains in the durable retry store.
+  const { inline, deferred } = partitionBranchMaterializationBudget(
+    byIdentity,
+    SessionIngestWorkBudget.BranchMaterializationsPerSession
+  );
+
+  const byArtifact = new Map<string, BranchRefAggregate>();
+  const prioritiesByIdentity = branchRefPrioritiesByIdentity(branchRefs);
+  const prioritySeeds: BranchPrioritySeed[] = [];
+  const unresolved: UnresolvedBranchRef[] = [];
+  const retryableByBranch = new Map<string, BranchRefAggregate>(deferred);
+  const { materializations, assignedBranchIds } =
+    await ensureBranchArtifactRows(tx, {
       organizationId,
       projectId,
-      repositoryAuthority:
-        repositoryAuthorityByFullName.get(normalizedFullName),
-      repositoryFullName: normalizedFullName,
-      branchName: ref.branchName,
+      aggregates: inline.map(([, aggregate]) => aggregate),
+      authorities: repositoryAuthorityByFullName,
     });
+  for (const [identityKey, aggregate] of inline) {
+    // Resolve or create only when the batched server authority proves this is a
+    // non-default branch. Public repositories retain a null installation repo
+    // id.
+    const normalizedFullName = aggregate.repositoryFullName;
+    // An unavailable/default result is intentionally skipped without aborting
+    // the multi-session transaction; a later sync re-evaluates fresh authority.
+    const materialization = materializations.get(identityKey);
+    if (!materialization) {
+      throw new Error("branch identity absent from batch materialization");
+    }
     if (
       materialization.status === BranchMaterializationStatus.NotMaterialized
     ) {
-      unresolved.push({
-        repositoryFullName: normalizedFullName,
-        branchName: ref.branchName,
-        cause: materialization.cause,
-      });
+      // `NotPushed` IS retryable (see `isRetryableBranchMaterializationCause`).
+      // Two heal paths: a re-synced push ref re-runs this lane directly (the
+      // producer budget shed-protects push-method refs — see the desktop's
+      // artifact-ref-budget.ts — so that ref survives to re-arrive), and the
+      // durable row drains once ANOTHER producer (push webhook, PR lane,
+      // reconciler) has created the D2 row. Push evidence that reaches neither
+      // path is invisible to the cloud until one does.
+      if (isRetryableBranchMaterializationCause(materialization.cause)) {
+        retryableByBranch.set(identityKey, aggregate);
+      } else {
+        unresolved.push({
+          repositoryFullName: normalizedFullName,
+          branchName: aggregate.branchName,
+          cause: materialization.cause,
+        });
+      }
       continue;
     }
     const branchArtifactId = materialization.artifactId;
     if (branchArtifactId === sessionArtifactId) {
       continue;
     }
-    foldBranchRef(byArtifact, branchArtifactId, ref);
+    byArtifact.set(branchArtifactId, aggregate);
+    const priority = prioritiesByIdentity.get(identityKey);
+    if (priority) {
+      prioritySeeds.push({ artifactId: branchArtifactId, priority });
+    }
+  }
+  await seedBranchPrioritiesIfUnset(tx, organizationId, prioritySeeds);
+
+  // Inline rejections and overflow share the existing durable retry path, and
+  // each keeps its priority claim for the drain to seed.
+  if (retryableByBranch.size > 0) {
+    await enqueueBranchMaterializationRetriesTx(tx, {
+      organizationId,
+      sourceArtifactId: sessionArtifactId,
+      aggregates: [...retryableByBranch].map(([identityKey, aggregate]) =>
+        withBranchPriorityClaim(
+          aggregate,
+          prioritiesByIdentity.get(identityKey)
+        )
+      ),
+    });
   }
 
-  for (const [branchArtifactId, aggregate] of byArtifact) {
-    // PRD-510 FR2 / PLN-1099 Phase 2b: a C1-verified in-session push (a synced
-    // `git_push`/`gh_pr_create` ref — the desktop extractor already dropped
-    // failed pushes) stamps `firstPushedAt`/`pushSource='session'` set-once,
-    // earliest-wins. This is the non-App producer: it flips a branch to pushed
-    // (and thus org-visible under FR12) with no GitHub App/webhook required.
-    //
-    // Stamp before the link upsert so the push evidence and link preserve their
-    // existing write order. Any failed write propagates and rolls back the
-    // transaction; this lane never continues on an aborted transaction.
-    if (aggregate.pushedAt) {
-      await stampBranchFirstPush(
-        tx,
-        branchArtifactId,
-        new Date(aggregate.pushedAt),
-        BranchPushSource.Session
-      );
-    }
-    await upsertSessionBranchLink(
-      tx,
-      organizationId,
-      sessionArtifactId,
-      branchArtifactId,
-      aggregate
-    );
-  }
+  await persistSessionBranchLinkBatch(tx, {
+    organizationId,
+    sessionArtifactId,
+    byArtifact,
+  });
+  // ISS-12463: the seed only stamps a NULL assignee, so a branch the lookup
+  // above already read as assigned cannot be stamped; skipping it drops a no-op
+  // statement, and a batch of only assigned branches (the replay) runs none.
+  await seedBranchOwners(
+    tx,
+    organizationId,
+    [...byArtifact.keys()].filter((id) => !assignedBranchIds.has(id))
+  );
+  await deleteBranchMaterializationRetriesForAggregatesTx(tx, {
+    organizationId,
+    sourceArtifactId: sessionArtifactId,
+    aggregates: [...byArtifact.values()],
+  });
   if (unresolved.length > 0) {
     await storeUnresolvedRefs<UnresolvedBranchRef>(
       tx,
@@ -909,4 +426,165 @@ function resolveCanonicalRejectionCause(
     return CloudBranchNonMaterializationKind.DefaultBranch;
   }
   return CloudBranchNonMaterializationKind.AuthorityUnavailable;
+}
+
+const BRANCH_LIFECYCLE_IMPLIES_REMOTE: Record<
+  BranchLifecycleBoundaryKind,
+  boolean
+> = {
+  [BranchLifecycleBoundaryKind.PrRaised]: true,
+  [BranchLifecycleBoundaryKind.ReviewFeedback]: true,
+  [BranchLifecycleBoundaryKind.SessionStart]: false,
+  [BranchLifecycleBoundaryKind.BranchWrite]: false,
+  [BranchLifecycleBoundaryKind.ReadOnlyReference]: false,
+  [BranchLifecycleBoundaryKind.UnknownEvidence]: false,
+  [BranchLifecycleBoundaryKind.SessionEnd]: false,
+};
+
+export function hasBranchPushEvidence(input: {
+  pushObserved: boolean;
+  branchLifecycleEvents: readonly SyncedBranchLifecycleEvent[];
+  /** A PR ref in the same batch names this branch as its head. */
+  pullRequestObserved: boolean;
+}): boolean {
+  if (input.pushObserved || input.pullRequestObserved) {
+    return true;
+  }
+  return input.branchLifecycleEvents.some(
+    (event) => BRANCH_LIFECYCLE_IMPLIES_REMOTE[event.kind] === true
+  );
+}
+
+function branchMaterializationRejection(input: {
+  repositoryAuthority: SessionBranchRepositoryAuthority | undefined;
+  repositoryFullName: string;
+  branchName: string;
+}): BranchMaterializationResult | undefined {
+  const authority = input.repositoryAuthority;
+  if (!authority) {
+    return {
+      status: BranchMaterializationStatus.NotMaterialized,
+      cause: CloudBranchNonMaterializationKind.AuthorityUnavailable,
+    };
+  }
+  if (
+    !isCloudBranchEligible({
+      branchName: input.branchName,
+      repository: {
+        provider: VcsProviderKind.GitHub,
+        fullName: input.repositoryFullName,
+        ...(authority.providerRepositoryId
+          ? { providerRepositoryId: authority.providerRepositoryId }
+          : {}),
+      },
+      authorities: authority.authorities,
+    })
+  ) {
+    return {
+      status: BranchMaterializationStatus.NotMaterialized,
+      cause: resolveCanonicalRejectionCause(input.branchName, authority),
+    };
+  }
+  return undefined;
+}
+
+/** Set-shaped counterpart of ensureBranchArtifactRow; keeps artifact-first atomicity. */
+async function ensureBranchArtifactRows(
+  tx: AgentSessionUpsertTx,
+  input: {
+    organizationId: string;
+    projectId: string | null;
+    aggregates: BranchRefAggregate[];
+    authorities: SessionBranchRepositoryAuthorityMap;
+  }
+): Promise<{
+  materializations: Map<string, BranchMaterializationResult>;
+  /** Existing branch rows read with a non-NULL assignee. */
+  assignedBranchIds: Set<string>;
+}> {
+  const results = new Map<string, BranchMaterializationResult>();
+  const assignedBranchIds = new Set<string>();
+  const eligible = input.aggregates.filter((aggregate) => {
+    const rejection = branchMaterializationRejection({
+      ...aggregate,
+      repositoryAuthority: input.authorities.get(aggregate.repositoryFullName),
+    });
+    if (rejection) {
+      results.set(branchRefAggregateKey(aggregate), rejection);
+    }
+    return rejection === undefined;
+  });
+  if (eligible.length === 0) {
+    return { materializations: results, assignedBranchIds };
+  }
+  // Bounded by the existing per-session materialization budget, like the
+  // identity-set lookup in internal-branch-target.ts.
+  const existing = await readExistingBranchRows(
+    tx,
+    input.organizationId,
+    eligible
+  );
+  for (const row of existing) {
+    if (row.assigned) {
+      assignedBranchIds.add(row.artifactId);
+    }
+    results.set(branchRefAggregateKey(row), {
+      status: BranchMaterializationStatus.Materialized,
+      artifactId: row.artifactId,
+    });
+  }
+  const missing = eligible
+    .filter((aggregate) => {
+      const key = branchRefAggregateKey(aggregate);
+      if (results.has(key)) {
+        return false;
+      }
+      if (
+        !hasBranchPushEvidence({
+          pushObserved: aggregate.pushObserved === true,
+          branchLifecycleEvents: aggregate.branchLifecycleEvents,
+          pullRequestObserved: aggregate.pullRequestObserved === true,
+        })
+      ) {
+        results.set(key, {
+          status: BranchMaterializationStatus.NotMaterialized,
+          cause: CloudBranchNonMaterializationKind.NotPushed,
+        });
+        return false;
+      }
+      return true;
+    })
+    .map((aggregate) => ({ aggregate, artifactId: uuidv7() }));
+  if (missing.length > 0) {
+    await tx.artifact.createMany({
+      data: missing.map(({ aggregate, artifactId }) => ({
+        id: artifactId,
+        type: ArtifactType.Branch,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        name: aggregate.branchName,
+        status: GitHubPRState.Open,
+        externalUrl: `https://github.com/${aggregate.repositoryFullName}/tree/${encodeURIComponent(aggregate.branchName)}`,
+      })),
+    });
+    // A racing D2 insert still aborts this transaction, as the single-row writer does.
+    await tx.branchDetail.createMany({
+      data: missing.map(({ aggregate, artifactId }) => ({
+        artifactId,
+        organizationId: input.organizationId,
+        repositoryId:
+          input.authorities.get(aggregate.repositoryFullName)?.repositoryId ??
+          null,
+        repositoryFullName: aggregate.repositoryFullName,
+        branchName: aggregate.branchName,
+      })),
+    });
+    for (const { aggregate, artifactId } of missing) {
+      results.set(branchRefAggregateKey(aggregate), {
+        status: BranchMaterializationStatus.Materialized,
+        artifactId,
+      });
+    }
+  }
+  return { materializations: results, assignedBranchIds };
 }

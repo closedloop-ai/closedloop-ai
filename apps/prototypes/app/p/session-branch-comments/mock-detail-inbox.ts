@@ -83,7 +83,7 @@ Testing: pnpm --filter app test`,
     },
     {
       id: "c2",
-      author: "parker-byrd",
+      author: "pascoe-birchall",
       at: "2h ago",
       body: "Confirmed the cleanup return is in place; unread rollup looks right.",
     },

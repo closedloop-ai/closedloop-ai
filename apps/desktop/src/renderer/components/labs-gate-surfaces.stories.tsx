@@ -4,7 +4,7 @@ import { LabsPageHold, LabsPageUnavailable } from "./labs-gate-surfaces";
 import { PageShell } from "./layout/page-shell";
 
 /**
- * ISS-5037 (wongk story review on PR #4341): the two Labs container-gate
+ * ISS-5037 (whitlockk story review on PR #4341): the two Labs container-gate
  * surfaces, on a canvas.
  *
  * `nav-config-labs-gate` and the app-shell suite prove which OUTCOME gets
@@ -20,7 +20,8 @@ import { PageShell } from "./layout/page-shell";
  * not (a bare centered "Loading...").
  */
 const meta = {
-  title: "Desktop/Shell/Labs Gate Surfaces",
+  title: "Composites v1.0/Desktop Shell/Labs Gate Surfaces",
+  tags: ["deprecated"],
   component: LabsPageUnavailable,
   parameters: {
     layout: "fullscreen",
@@ -36,17 +37,15 @@ export default meta;
  * balanced rather than the heading collapsing to two words.
  */
 export const UnavailableShortTitle = {
-  render: () =>
-    frame(<LabsPageUnavailable labsNavOn={false} pageId={NavId.Packs} />),
+  render: () => frame(<LabsPageUnavailable pageId={NavId.Packs} />),
 };
 
 /**
- * The same closed state with the LONGEST Labs title ("Audit Bot"), which is
+ * The same closed state with the LONGEST Labs title ("Documents"), which is
  * where an interpolated `${title} is turned off` heading would wrap first.
  */
 export const UnavailableLongTitle = {
-  render: () =>
-    frame(<LabsPageUnavailable labsNavOn={false} pageId={NavId.Audit} />),
+  render: () => frame(<LabsPageUnavailable pageId={NavId.Documents} />),
 };
 
 /**
@@ -57,8 +56,7 @@ export const UnavailableLongTitle = {
  * the container-off variant above so the two never drift into different shapes.
  */
 export const UnavailablePerItemGate = {
-  render: () =>
-    frame(<LabsPageUnavailable labsNavOn={true} pageId={NavId.Agents} />),
+  render: () => frame(<LabsPageUnavailable pageId={NavId.Agents} />),
 };
 
 /**

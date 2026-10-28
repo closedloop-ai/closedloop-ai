@@ -1,47 +1,32 @@
-import { LoopHarness } from "@closedloop-ai/loops-api/desktop-request";
+import type { BinaryPaths as PersistedBinaryPaths } from "../../shared/cli-binary-tools.js";
+import {
+  type CliBinaryTool,
+  CliBinaryToolKeyStatus,
+  classifyCliBinaryToolKey,
+  stripLegacyCliBinaryPaths,
+} from "../../shared/cli-binary-tools.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { json } from "./response-utils.js";
 
-/** The gateway's binary-path override map. Canonical shape — do not re-declare. */
-export type BinaryPaths = {
-  claude?: string;
-  gh?: string;
-  codex?: string;
-  cursor?: string;
-  opencode?: string;
-  python3?: string;
-  git?: string;
-};
-export type BinaryPathKey =
-  | "claude"
-  | "gh"
-  | "codex"
-  | "cursor"
-  | "opencode"
-  | "python3"
-  | "git";
+/** Current configurable binary-path override keys. */
+export type BinaryPathKey = CliBinaryTool;
 
-const KNOWN_BINARY_KEYS: ReadonlySet<string> = new Set<BinaryPathKey>([
-  "claude",
-  "gh",
-  "codex",
-  "cursor",
-  "opencode",
-  "python3",
-  "git",
-]);
+export type { BinaryPaths } from "../../shared/cli-binary-tools.js";
+
 export function registerBinaryPathsRoutes(
   dispatcher: OperationDispatcher,
-  getBinaryPaths: () => BinaryPaths,
+  getBinaryPaths: () => PersistedBinaryPaths,
   applyPatch: (
     patch: Partial<Record<BinaryPathKey, string | null>>
-  ) => BinaryPaths
+  ) => PersistedBinaryPaths
 ): void {
   dispatcher.register(
     "GET",
     "/api/gateway/settings/binary-paths",
     (context) => {
-      json(context, 200, { binaryPaths: getBinaryPaths() });
+      json(context, 200, {
+        binaryPaths: stripLegacyCliBinaryPaths(getBinaryPaths()),
+      });
     }
   );
 
@@ -49,47 +34,16 @@ export function registerBinaryPathsRoutes(
     "PATCH",
     "/api/gateway/settings/binary-paths",
     (context) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(context.body || "{}");
-      } catch {
-        json(context, 400, { error: "invalid JSON body" });
+      const parsed = parseBinaryPathPatch(context.body || "{}");
+      if (!parsed.ok) {
+        json(context, 400, { error: parsed.error });
         return;
       }
-
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        Array.isArray(parsed)
-      ) {
-        json(context, 400, { error: "body must be a JSON object" });
-        return;
-      }
-
-      const body = parsed as Record<string, unknown>;
-      const patch: Partial<Record<BinaryPathKey, string | null>> = {};
-
-      for (const [key, value] of Object.entries(body)) {
-        if (!KNOWN_BINARY_KEYS.has(key)) {
-          json(context, 400, { error: `unknown key: ${key}` });
-          return;
-        }
-        if (value !== null && typeof value !== "string") {
-          json(context, 400, {
-            error: `value for ${key} must be a string or null`,
-          });
-          return;
-        }
-        if (typeof value === "string" && value.trim() === "") {
-          json(context, 400, { error: `value for ${key} must not be empty` });
-          return;
-        }
-        patch[key as BinaryPathKey] = value;
-      }
-
       try {
-        const updated = applyPatch(patch);
-        json(context, 200, { binaryPaths: updated });
+        const updated = applyPatch(parsed.patch);
+        json(context, 200, {
+          binaryPaths: stripLegacyCliBinaryPaths(updated),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         json(context, 400, { error: message });
@@ -98,10 +52,39 @@ export function registerBinaryPathsRoutes(
   );
 }
 
-/**
- * Test-only convenience lookup for harness binary names.
- * Defaults to "claude" when harness is undefined.
- */
-export function resolveHarnessBinary(harness?: LoopHarness): LoopHarness {
-  return harness ?? LoopHarness.Claude;
+function parseBinaryPathPatch(bodyText: string): BinaryPathPatchParseResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return { ok: false, error: "invalid JSON body" };
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "body must be a JSON object" };
+  }
+
+  const patch: Partial<Record<BinaryPathKey, string | null>> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    const keyStatus = classifyCliBinaryToolKey(key);
+    if (keyStatus === CliBinaryToolKeyStatus.Unknown) {
+      return { ok: false, error: `unknown key: ${key}` };
+    }
+    if (keyStatus === CliBinaryToolKeyStatus.Legacy) {
+      continue;
+    }
+    if (value !== null && typeof value !== "string") {
+      return { ok: false, error: `value for ${key} must be a string or null` };
+    }
+    if (typeof value === "string" && value.trim() === "") {
+      return { ok: false, error: `value for ${key} must not be empty` };
+    }
+    patch[key as BinaryPathKey] = value;
+  }
+
+  return { ok: true, patch };
 }
+
+type BinaryPathPatchParseResult =
+  | { ok: true; patch: Partial<Record<BinaryPathKey, string | null>> }
+  | { ok: false; error: string };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { ArtifactRefRelation } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
 import {
   eventWindowSqlBounds,
   filterEventRowsByEventWindow,

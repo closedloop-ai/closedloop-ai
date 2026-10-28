@@ -63,14 +63,35 @@ type UsePackDashboardSelection = {
    * is selected.
    */
   detailPack: PackView | null;
+  /**
+   * The per-item detail read is in flight for the current selection (ISS-6925).
+   *
+   * Only a routed selection can observe this: a card click always has the list
+   * snapshot in hand, but a direct load of `/packs/{id}` may name a pack the
+   * list does not carry, and the surface must say "loading" rather than "not
+   * found" until this read settles.
+   */
+  detailPending: boolean;
+  /**
+   * The per-item detail read FAILED (ISS-6925 review).
+   *
+   * Distinct from {@link detailPending} and from a pack that is genuinely
+   * absent: `useCatalogItem` is a plain query, so a 5xx, a timeout, or an
+   * offline client settles `isLoading` to false with no data. Collapsing that
+   * into the not-found treatment would tell the reader their org's catalog does
+   * not carry a pack, on the evidence of a transport failure.
+   */
+  detailFailed: boolean;
 };
 
 /**
  * Shared selection/detail/analytics composition for the Packs dashboards.
  *
- * Both the admin catalog dashboard (`admin/catalog/.../catalog-dashboard.tsx`)
- * and the member Plugins dashboard (`agents/.../member-packs-dashboard.tsx`)
- * render the same `PacksWorkspace` and drove an identical
+ * The admin catalog dashboard (`admin/catalog/.../catalog-dashboard.tsx`) is the
+ * consumer, and the member Packs surface (`packs/.../member-packs-view.tsx`)
+ * reaches the same pipeline by embedding that dashboard as its "Available"
+ * region with `isAdmin={false}`. Both therefore render the same
+ * `PacksWorkspace` and drove an identical
  * `selectedId → listItem → packDetail → selectedItem → componentSlug →
  * analytics → detailPack` pipeline. This hook is that single, shared pipeline;
  * the surface-specific bits (admin distribution folding, analytics gating) are
@@ -131,5 +152,11 @@ export function usePackDashboardSelection({
     return { ...withMatrix, teamUsage, performance };
   }, [selectedItem, distribution, analytics.data, memberTargets]);
 
-  return { selectedItem, detailPack };
+  // Guarded on the selection rather than trusting the disabled query's own
+  // flag: with nothing selected the detail query is keyed on "" and must never
+  // report pending.
+  const detailPending = selectedId !== null && packDetail.isLoading;
+  const detailFailed = selectedId !== null && packDetail.isError;
+
+  return { selectedItem, detailPack, detailPending, detailFailed };
 }

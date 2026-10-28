@@ -1,5 +1,5 @@
 /**
- * Cache-retention contract for the shared query client (FEA-4104, wongk review
+ * Cache-retention contract for the shared query client (FEA-4104, whitlockk review
  * on PR #3714). The raised inactive-query retention is scoped to *listing*
  * families only: a list you navigate away from stays resident far past the stock
  * window so back/repeat navigation renders from cache instantly instead of
@@ -249,7 +249,7 @@ describe("makeQueryClient retention (remount behavior)", () => {
   });
 
   it("evicts an inactive DETAIL query on the stock 5-minute window, NOT the listing window", async () => {
-    // The core wongk fix: a large detail query must not inherit the 30-minute
+    // The core whitlockk fix: a large detail query must not inherit the 30-minute
     // listing retention. It is gone shortly after the stock window, long before
     // the listing window would have elapsed.
     const client = makeQueryClient();

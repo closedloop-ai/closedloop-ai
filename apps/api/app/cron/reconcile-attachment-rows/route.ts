@@ -5,7 +5,7 @@ import { scheduleLogFlush, scheduleLogFlushAfter } from "@/lib/route-utils";
 import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
 
 /**
- * Daily cron sweep reconciling the `fileAttachment` table against the
+ * Cron sweep reconciling the `fileAttachment` table against the
  * file-attachments bucket — the reciprocal of `/cron/reconcile-attachments`,
  * which sweeps the object side.
  *
@@ -18,8 +18,9 @@ import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
  *
  * DRY RUN BY DEFAULT. The sweep only reports what it would delete unless the
  * request carries `?apply=1`, so the blast radius is observable in the logs
- * before deletion is ever armed. Arming is a one-line change to the cron path
- * in `apps/api/vercel.json`.
+ * before deletion is ever armed. ISS-12780 (Perrin Upcott, 2026-10-21:
+ * "Unschedule + drop its monitors") took it off the schedule; the route stays
+ * for a manual `?apply=1` run.
  *
  * Protected by CRON_SECRET bearer token — must be set in environment and
  * passed via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).

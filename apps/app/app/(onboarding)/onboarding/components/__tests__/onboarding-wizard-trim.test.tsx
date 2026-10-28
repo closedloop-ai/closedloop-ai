@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { OnboardingStep } from "@repo/api/src/types/onboarding";
+import { WEB_CANONICAL_LANDING_HREF } from "@repo/app/shared/lib/primary-nav-destinations";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,7 +34,7 @@ import { OnboardingWizard } from "../onboarding-wizard";
 const WIZARD_STATE_KEY = "onboarding_wizard_state";
 const TEAM_HEADING = "Create your team";
 const PROJECT_HEADING = "Create your first project";
-const POST_WIZARD_ROUTE = "/my-tasks?from=onboarding";
+const POST_WIZARD_ROUTE = `${WEB_CANONICAL_LANDING_HREF}?from=onboarding`;
 const TEAM_NAME_LABEL = /team name/i;
 const PROJECT_NAME_LABEL = /project name/i;
 const CREATE_TEAM_BUTTON = /create team/i;
@@ -86,7 +87,7 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     expect(screen.getByText("Step 1 of 2")).toBeTruthy();
   });
 
-  it("completes the wizard and leaves for My Tasks once the project lands", () => {
+  it("completes the wizard and leaves for the canonical landing once the project lands", () => {
     render(<OnboardingWizard />);
     completeTeamStep();
 
@@ -109,6 +110,9 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     });
 
     resolveMutation(mocks.completeWizard, undefined);
+    // Pinned literal beside the derived expectation: asserting only through the
+    // constant would still pass if the canonical landing silently moved back.
+    expect(WEB_CANONICAL_LANDING_HREF).toBe("/dashboard");
     expect(mocks.navigate).toHaveBeenCalledWith(POST_WIZARD_ROUTE);
     expect(sessionStorage.getItem(WIZARD_STATE_KEY)).toBeNull();
   });

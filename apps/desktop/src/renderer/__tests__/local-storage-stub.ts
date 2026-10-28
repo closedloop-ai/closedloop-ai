@@ -6,8 +6,8 @@ import { vi } from "vitest";
  *
  * The renderer test environment ships no real `localStorage`, but the first-run
  * flags in `dashboard-storage-keys` gate the whole first-launch flow — the
- * landing takeover, the dashboard reveal and the guided tour all read or write
- * one. Without a backing store `readFlag`/`writeFlag` silently no-op through
+ * guided onboarding run, the dashboard reveal and the guided tour all read or
+ * write one. Without a backing store `readFlag`/`writeFlag` silently no-op through
  * their own null guard, so a suite would exercise the "storage unavailable"
  * branch while appearing to test the flags.
  *

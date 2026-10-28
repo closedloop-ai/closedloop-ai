@@ -43,7 +43,7 @@ import {
   type ConvertedComponentIdentity,
   resolveConversionCapability,
 } from "@repo/api/src/types/harness-conversion.ts";
-import type { HarnessName } from "@repo/crewd/model";
+import type { HarnessName } from "@repo/api/src/types/harness-name.ts";
 import {
   classifyStreamRunRetry,
   type StreamRunResult,
@@ -78,7 +78,7 @@ export type ConvertInstallRunner = (
  * `shared/install-run-contract.ts` (`classifyStreamRunRetry`), where it is
  * pinned exhaustive against `StreamRunErrorCode` — a new code added there
  * without a class fails `tsc` rather than quietly falling through as transient
- * (wongk's concern that "the next permanent code quietly falls through"). The
+ * (whitlockk's concern that "the next permanent code quietly falls through"). The
  * distribution installer derives its log LEVEL from that same source, so the two
  * consumers cannot drift into disagreeing about what counts as a real failure.
  *

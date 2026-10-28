@@ -1,12 +1,11 @@
 /**
  * extended.ts — seeds additional in-scope Prisma models that aren't a natural
- * fit for the existing per-domain modules (core, execution, integrations,
- * evaluation, customization).
+ * fit for the existing per-domain modules (core, integrations, evaluation,
+ * customization).
  *
  * Models seeded here:
  *   - ArtifactRating  : user rating + comment on a document artifact
  *   - FileAttachment  : binary file attached to a document artifact
- *   - LoopEvent       : audit events emitted during loop execution
  *   - Prompt          : prompt registry (AGENT and JUDGE types)
  *
  * Note: `DocumentVersion` is seeded inline in core.ts (next to each document
@@ -110,42 +109,6 @@ export async function seedExtendedEntities(
           },
           update: {
             filename: "design-notes.txt",
-          },
-          select: { id: true },
-        }),
-      counts,
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // LoopEvent — at least one event per existing loop. Production loop code
-  // emits events continuously; the seeded set just needs to demonstrate the
-  // row shape.
-  // ---------------------------------------------------------------------------
-
-  const seededLoops = await prisma.loop.findMany({
-    where: { organizationId },
-    select: { id: true },
-    take: 3,
-  });
-  for (const loop of seededLoops) {
-    const eventId = deterministicUuid(`loop-event:${loop.id}:started`);
-    await upsertRow({
-      model: "LoopEvent",
-      id: eventId,
-      upsert: () =>
-        prisma.loopEvent.upsert({
-          where: { id: eventId },
-          create: {
-            id: eventId,
-            loopId: loop.id,
-            type: "started",
-            data: { note: "Seed event" },
-            eventSource: "system",
-            eventId: `seed-event-${loop.id}-1`,
-          },
-          update: {
-            data: { note: "Seed event" },
           },
           select: { id: true },
         }),

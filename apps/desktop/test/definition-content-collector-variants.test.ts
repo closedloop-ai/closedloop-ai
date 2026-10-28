@@ -1,7 +1,7 @@
 /**
  * @file definition-content-collector-variants.test.ts
  * @description Per-content-hash variant retention for same-name definitions
- * (ISS-4564, shafty023 follow-up on PR #4042). Covers the Claude global-home vs
+ * (ISS-4564, davetho follow-up on PR #4042). Covers the Claude global-home vs
  * project `.claude` case: a same-name sub-agent with DIFFERENT content in each
  * root must retain BOTH content hashes in `agent_component_versions` (the
  * later-scanned variant's bytes are not dropped by precedence), while identical
@@ -17,8 +17,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { Harness } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { getAgentComponentDetailLocal } from "../src/main/dashboard/shared-agent-components-api.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { collectDefinitionContent } from "../src/main/packs/definition-content-collector.js";
@@ -62,7 +62,7 @@ function subagentVersions(
 }
 
 test("collectDefinitionContent retains BOTH content-hash variants for a same-name Claude subagent in global home vs project (ISS-4564)", async () => {
-  // Root cause (shafty023): the fold keyed on `externalId` before content
+  // Root cause (davetho): the fold keyed on `externalId` before content
   // hashing, and `claudeRoots` orders the global home before project `.claude`
   // roots — so a project sub-agent with the SAME name but DIFFERENT content as
   // the global-home one had its bytes DISCARDED at fold time and never reached
@@ -162,7 +162,7 @@ test("collectDefinitionContent keeps ONE version row for a same-name Claude suba
   }
 });
 
-test("getAgentComponentDetailLocal surfaces BOTH retained variants in detail.versions, primary marked current (ISS-4564, shafty023)", async () => {
+test("getAgentComponentDetailLocal surfaces BOTH retained variants in detail.versions, primary marked current (ISS-4564, davetho)", async () => {
   // Querying agent_component_versions directly proves the WRITE, but the Desktop
   // UI consumes the separately normalized/projected detail path
   // (getAgentComponentDetailLocal → readComponentVersions → buildComponentVersions),

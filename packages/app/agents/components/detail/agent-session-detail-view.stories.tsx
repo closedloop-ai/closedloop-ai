@@ -1,8 +1,9 @@
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import { expect } from "storybook/test";
 import {
-  SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY,
+  SESSION_TIMELINE_COVERAGE_DISCLOSURE_FEATURE_FLAG_KEY,
   SESSION_TIMELINE_SYNTHESIZED_COST_FEATURE_FLAG_KEY,
+  SESSION_TRACE_EVIDENCE_DISCLOSURE_FEATURE_FLAG_KEY,
 } from "../../../shared/lib/feature-flags";
 import {
   columnHitTargetAgentSessionDetailFixture,
@@ -11,11 +12,14 @@ import {
   errorChainAgentSessionDetailFixture,
   idleJumpTargetsAgentSessionDetailFixture,
   longContentAgentSessionDetailFixture,
+  metadataOnlyEvidenceAgentSessionDetailFixture,
+  metadataOnlyTruncatedAgentSessionDetailFixture,
   noErrorAgentSessionDetailFixture,
   nullDateAgentSessionDetailFixture,
   populatedAgentSessionDetailFixture,
   truncatedEventsAgentSessionDetailFixture,
   truncatedEventsWithTranscriptAgentSessionDetailFixture,
+  truncatedTilingAgentSessionDetailFixture,
   unknownStateAgentSessionDetailFixture,
 } from "./agent-session-detail-fixtures";
 import { AgentSessionDetailView } from "./agent-session-detail-view";
@@ -33,7 +37,8 @@ const detailViewDecorator: Decorator = (Story) => (
 );
 
 const meta: Meta<typeof AgentSessionDetailView> = {
-  title: "App Core/Agents/Session Detail",
+  title: "Surfaces v1.0/Sessions/Session Detail",
+  tags: ["deprecated"],
   component: AgentSessionDetailView,
   parameters: {
     layout: "fullscreen",
@@ -208,6 +213,20 @@ export const EventsTruncated: Story = {
 };
 
 /**
+ * ISS-9858: the activity TILING was served as a prefix while the event stream
+ * is complete. The strip carries no caption of its own; the legend line under
+ * the pinned box says the timeline may end early. Compare with
+ * {@link EventsTruncated}, where the disclosure sits on the strip instead.
+ */
+export const TilingTruncated: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: truncatedTilingAgentSessionDetailFixture,
+  },
+};
+
+/**
  * ISS-5075: the same flag, but the trace source is an archived transcript read
  * whole. The header qualifier still prints — that count is the capped DB
  * projection whatever the panel painted — while the end-of-trace footer must NOT
@@ -224,9 +243,9 @@ export const TruncatedWithWholeTranscript: Story = {
 };
 
 /**
- * ISS-4654: the session whose `state` this build has no entry for — what an
- * installed client sees once the server emits an `AgentSessionState` member
- * added after that build shipped. Unreachable in the running app by design (it
+ * ISS-4654: the session whose `status` this build has no entry for — what an
+ * installed client sees once the server emits a status value added after that
+ * build shipped. Unreachable in the running app by design (it
  * needs a value newer than the code reading it), which is exactly why it wants
  * a story: this is the only place the treatment can actually be LOOKED at.
  *
@@ -342,8 +361,87 @@ export const TimelineSynthesizedCostTruncated: Story = {
 };
 
 /**
- * ISS-5548 with the column hit target ON — the state design and QA cannot
- * otherwise see.
+ * ISS-7427 with the evidence disclosure ON — the reported screenshot's state.
+ * The main transcript is terminally absent, so the panel reads "Transcript not
+ * archived" and paints nothing, while the metadata lane still serves cost,
+ * tokens and elapsed. What to look at is the trace heading: the count now names
+ * its own population, so "N events" stops reading as a description of the empty
+ * panel directly beneath it.
+ *
+ * The flag-OFF baseline is every other story in this file — the same heading
+ * over the same empty panel with nothing telling the two apart, which is the
+ * defect.
+ */
+export const EvidenceDisclosureMetadataOnly: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: metadataOnlyEvidenceAgentSessionDetailFixture,
+  },
+  parameters: {
+    appCore: {
+      enabledFlags: [SESSION_TRACE_EVIDENCE_DISCLOSURE_FEATURE_FLAG_KEY],
+    },
+  },
+};
+
+/**
+ * ISS-7427: the caption-stacking case, the same reason
+ * `TimelineSynthesizedCostTruncated` above exists. A metadata-only session can
+ * ALSO be a capped read, and then the count carries BOTH qualifiers at once —
+ * whether the count is complete, and which set it counted. That is the longest
+ * string this caption has ever held, and a green assertion on the concatenation
+ * is not the same as someone having seen it sit next to the "Session Trace"
+ * heading in a flex row.
+ */
+export const EvidenceDisclosureTruncated: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: metadataOnlyTruncatedAgentSessionDetailFixture,
+  },
+  parameters: {
+    appCore: {
+      enabledFlags: [SESSION_TRACE_EVIDENCE_DISCLOSURE_FEATURE_FLAG_KEY],
+    },
+  },
+};
+
+/**
+ * ISS-7427 AC5 with ALL THREE disclosures on — the crowded case, which is the
+ * only one worth a story.
+ *
+ * The design review caught that an earlier version of this story enabled the
+ * coverage gate WITHOUT ISS-5566's synthesized-cost gate, so the caption line it
+ * claimed to be about never had a second note in it and the pair described here
+ * was unlookable. Both are on now, and this fixture's strip is synthesized, so
+ * the line under the strip carries BOTH withdrawals middot-joined — the bars'
+ * heights are not measured money AND their extent may not be the whole session —
+ * while the trace heading separately withdraws its count's provenance.
+ *
+ * What to check is the crowding: one joined grey line under the strip against
+ * three stacked ones, and whether the middot reads as a boundary between two
+ * facts at 12px. The flag-OFF baseline is every other story in this file.
+ */
+export const TimelineCoverageDisclosureMetadataOnly: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: metadataOnlyEvidenceAgentSessionDetailFixture,
+  },
+  parameters: {
+    appCore: {
+      enabledFlags: [
+        SESSION_TIMELINE_COVERAGE_DISCLOSURE_FEATURE_FLAG_KEY,
+        SESSION_TIMELINE_SYNTHESIZED_COST_FEATURE_FLAG_KEY,
+        SESSION_TRACE_EVIDENCE_DISCLOSURE_FEATURE_FLAG_KEY,
+      ],
+    },
+  },
+};
+
+/**
+ * ISS-5548's column hit target — the state design and QA cannot otherwise see.
  *
  * The colocated jsdom test can only assert the `.reach` class contract (jsdom
  * implements no layout, every rect is zero) and the e2e spec measures pixels
@@ -358,22 +456,17 @@ export const TimelineSynthesizedCostTruncated: Story = {
  *   the hover stroke rather than equal to it;
  * - the SECOND bar is visibly TALLER and has no transcript anchor, so it gains
  *   no target at all: hovering the blank space above it does nothing. That is
- *   the invariant — this flag never enlarges a dead target, it only rescues a
- *   live one, and the pair proves the fix keys off jumpability and not size.
+ *   the invariant — reach never enlarges a dead target, it only rescues a live
+ *   one, and the pair proves the fix keys off jumpability and not size.
  *
- * The flag-OFF baseline is every other story in this file, where that first bar
- * is a 6px target in a 62px column — the defect ISS-5548 exists to fix.
+ * This fixture is the only one in the file whose first bar is both near-zero and
+ * jumpable, which is what makes the contrast legible here and nowhere else.
  */
 export const TimelineColumnHitTarget: Story = {
   args: {
     backHref: "/sessions",
     isLoading: false,
     session: columnHitTargetAgentSessionDetailFixture,
-  },
-  parameters: {
-    appCore: {
-      enabledFlags: [SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY],
-    },
   },
 };
 
@@ -396,7 +489,6 @@ export const EmptyTimelineLandmark: Story = {
       events: [],
       markers: [],
       name: "Nothing to plot",
-      timeline: [],
       turnItems: [],
     }),
   },

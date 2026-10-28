@@ -109,7 +109,7 @@ export function sessionMatchesRepositoryFilter(
 }
 
 /**
- * ISS-4535 (@wongk): resolve the newest-first ids of sessions matching the
+ * ISS-4535 (@whitlockk): resolve the newest-first ids of sessions matching the
  * Repository facet selection PRE-hydration, via the source's
  * `listRepositoryScopedSessionIds` (which resolves each row's repo identity from
  * `(cwd, repo_full_name)` with the facet's live-first/stored-fallback

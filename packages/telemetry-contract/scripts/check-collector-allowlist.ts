@@ -5,10 +5,10 @@ import {
   type ConsoleErrorLike,
   describeError,
   diffFindings,
+  errorAnnotation,
   isRecord,
   isStringArray,
   readCommittedArtifact,
-  repoRootAnnotationPath,
 } from "./collector-codegen-common";
 import {
   CollectorAllowlistPath,
@@ -193,9 +193,7 @@ export function runCollectorAllowlistCheck(
   });
 
   for (const finding of findings) {
-    stderr.error(
-      `::error file=${repoRootAnnotationPath(finding.file)}::${finding.message}`
-    );
+    stderr.error(errorAnnotation(finding.file, finding.message));
   }
 
   return findings.length === 0 ? 0 : 1;

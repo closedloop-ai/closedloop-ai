@@ -7,12 +7,14 @@
  *
  * Locally, the API runs on port 3002.
  */
+import { localTrustedApiBaseUrl } from "../playwright-projects";
+import { isClerkFreeRun } from "./clerk-free";
 
 const LOCAL_APP_ORIGIN = "http://localhost:3000";
 const LOCAL_API_ORIGIN = "http://localhost:3002";
 const APP_PREVIEW_ALIAS_REGEX = /^app-(stage|prod)-git-/;
-const APP_STAGE_ORIGIN = "https://app.closedloop-stage.ai";
-const API_STAGE_ORIGIN = "https://api.closedloop-stage.ai";
+const APP_STAGE_ORIGIN = "https://app.stage.example";
+const API_STAGE_ORIGIN = "https://api.stage.example";
 const APP_PROD_ORIGIN = "https://app.closedloop.ai";
 const API_PROD_ORIGIN = "https://api.closedloop.ai";
 const APP_PREFIX_REGEX = /^app-/;
@@ -23,6 +25,16 @@ function stripTrailingSlashes(url: string): string {
 }
 
 export function getApiBaseUrl(): string {
+  // ISS-10335: a Clerk-free project reads `api-local`, and it does so BEFORE the
+  // `API_BASE_URL` branch below. That order is the point — the containerized
+  // runner exports `API_BASE_URL=http://localhost:3002` for the whole process,
+  // so an override-first read would send every Clerk-free spec to the
+  // Clerk-gated api, which answers 401 to the inert placeholder bearer. The
+  // per-lane host has its own override, `E2E_LOCAL_TRUSTED_API_BASE_URL`.
+  if (isClerkFreeRun()) {
+    return stripTrailingSlashes(localTrustedApiBaseUrl());
+  }
+
   if (process.env.API_BASE_URL) {
     return stripTrailingSlashes(process.env.API_BASE_URL);
   }

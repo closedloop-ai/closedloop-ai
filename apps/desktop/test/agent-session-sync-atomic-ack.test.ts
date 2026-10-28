@@ -10,8 +10,8 @@
  *    ledger can never say `pending` while the in-memory lane says acked.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import { test } from "vitest";
 import {
   ACK_OMITTED_BACKOFF_MS,
   DEAD_LETTER_RETRY_MAX_MS,
@@ -20,7 +20,8 @@ import {
 } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type { AgentSessionSyncTransportPayload } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
-import type { DesktopSyncBatchEventInput } from "../src/main/telemetry/app-otel-runtime.js";
+import type { OutboxClearResult } from "../src/main/agent-sync/outbox-clear-result.js";
+import type { SessionSyncBatchEvent } from "../src/main/telemetry/app-otel-runtime.js";
 import { DesktopSyncBatchOutcome } from "../src/main/telemetry/app-otel-runtime.js";
 import {
   flushAgentSessionSync,
@@ -140,19 +141,22 @@ test("goal stage 2: a failed durable ack-clear aborts ack processing — the row
   class ClearFailingSyncSource extends FakeSyncSource {
     failClears = true;
     clearAttempts = 0;
-    override clearOutboxEntries(sourceKey: string, ids: string[]): void {
+    override clearOutboxEntries(
+      sourceKey: string,
+      ids: string[]
+    ): OutboxClearResult | undefined | Promise<OutboxClearResult | undefined> {
       this.clearAttempts += 1;
       if (this.failClears) {
         throw new Error("db-host exited");
       }
-      super.clearOutboxEntries(sourceKey, ids);
+      return super.clearOutboxEntries(sourceKey, ids);
     }
   }
   const source = new ClearFailingSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
   const sent: string[][] = [];
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) => {
@@ -230,16 +234,19 @@ test("goal stage 2: a stop() racing the durable clear leaves the committed delet
   const key = buildAgentSessionSyncSourceKey(TARGET);
   class StopDuringClearSource extends FakeSyncSource {
     stopOnClear: (() => void) | null = null;
-    override clearOutboxEntries(sourceKey: string, ids: string[]): void {
+    override clearOutboxEntries(
+      sourceKey: string,
+      ids: string[]
+    ): OutboxClearResult | undefined | Promise<OutboxClearResult | undefined> {
       // Fires INSIDE the awaited clear, i.e. exactly in the race window.
       this.stopOnClear?.();
-      super.clearOutboxEntries(sourceKey, ids);
+      return super.clearOutboxEntries(sourceKey, ids);
     }
   }
   const source = new StopDuringClearSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -278,7 +285,7 @@ test("goal stage 2: a row the echo keeps omitting burns a BOUNDED ack_omitted bu
     makeSyncedSession("s2", "2026-06-08T12:02:00.000Z"),
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const sentBatches: string[][] = [];
 
   await runWithMockedNow(async ({ advance }) => {
@@ -540,7 +547,7 @@ test("ISS-6202: an accepted ack that confirms ZERO rows emits no Success and adv
   const source = new FakeSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     () => Promise.resolve({ accepted: true as const, acceptedSessionIds: [] }),
@@ -551,7 +558,7 @@ test("ISS-6202: an accepted ack that confirms ZERO rows emits no Success and adv
   service.start();
   // The REAL pass-completion signal, not one event-loop turn: ack processing
   // spans several async hops (the awaited durable clear among them), so a
-  // fixed-turn flush leaves these assertions racing the pass (wongk review).
+  // fixed-turn flush leaves these assertions racing the pass (whitlockk review).
   await service.whenSessionSyncSettled();
   service.stop();
 
@@ -573,7 +580,7 @@ test("ISS-6202: an accepted ack that confirms ZERO rows emits no Success and adv
   // ...and it is still measured AS A POST. Gating Success removed the only event
   // that carried this batch's bytes and round-trip time, so a run of zero-row
   // echoes would have burned wire and shown up free — hiding the resend
-  // amplification `ack_omitted` exists to expose (wongk review). The omission
+  // amplification `ack_omitted` exists to expose (whitlockk review). The omission
   // event is now the terminal event for the POST and carries its cost.
   const omittedEvent = telemetry.sync.find(
     (event) => event.reason === SyncReason.AckOmitted
@@ -608,7 +615,7 @@ test("ISS-6202 control: a fully-confirmed ack still reports Success", async () =
   const source = new FakeSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -642,7 +649,7 @@ test("ISS-6202 control: a fully-confirmed ack still reports Success", async () =
   );
 });
 
-test("ISS-6202 (wongk review): a PARTIAL echo carries the POST's bytes and latency EXACTLY once — on the Success, never on the omission too", async () => {
+test("ISS-6202 (whitlockk review): a PARTIAL echo carries the POST's bytes and latency EXACTLY once — on the Success, never on the omission too", async () => {
   // The double-count direction of "exactly once". The acked row's Success is the
   // terminal event for this POST, so it carries the cost and the `ack_omitted`
   // event stays a pure per-row signal (`payloadBytes: 0`, no latency sample).
@@ -658,7 +665,7 @@ test("ISS-6202 (wongk review): a PARTIAL echo carries the POST's bytes and laten
     makeSyncedSession("s2", "2026-06-08T12:02:00.000Z"),
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -712,7 +719,7 @@ test("ISS-6202 (wongk review): a PARTIAL echo carries the POST's bytes and laten
  * BOTH directions — 0 when the fix drops the cost, 2 when a second event
  * re-reports it.
  */
-function batchCostCarrierCounts(events: DesktopSyncBatchEventInput[]): {
+function batchCostCarrierCounts(events: SessionSyncBatchEvent[]): {
   bytes: number;
   latency: number;
 } {

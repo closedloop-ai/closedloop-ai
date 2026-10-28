@@ -159,7 +159,7 @@ export const WorkspaceSidebar = ({
               </AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left leading-tight">
-              <span className="truncate font-medium text-sm">Kaiti</span>
+              <span className="truncate font-medium text-sm">Kaito</span>
               <span className="truncate text-muted-foreground text-xs">
                 {workspaceName}
               </span>

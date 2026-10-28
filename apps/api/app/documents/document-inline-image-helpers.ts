@@ -12,6 +12,7 @@ import {
   type Result as ServiceResult,
 } from "@repo/api/src/types/result";
 import { log } from "@repo/observability/log";
+import { attachmentInlineImageCreateService } from "./attachment-inline-image-create-service";
 import { attachmentsService } from "./attachments-service";
 import type { CreateInlineImageAttachmentError } from "./inline-image-attachment-contract";
 
@@ -115,7 +116,7 @@ export async function createInlineImageAttachmentSafely({
   ServiceResult<CreatedInlineImageSource, CreateInlineImageAttachmentError>
 > {
   try {
-    return await attachmentsService.createInlineImageAttachment(
+    return await attachmentInlineImageCreateService.createInlineImageAttachment(
       documentId,
       organizationId,
       userId,
@@ -308,7 +309,9 @@ type ProjectedInlineImageContentSize = {
 
 type CreatedInlineImageSource =
   Awaited<
-    ReturnType<typeof attachmentsService.createInlineImageAttachment>
+    ReturnType<
+      typeof attachmentInlineImageCreateService.createInlineImageAttachment
+    >
   > extends ServiceResult<infer Value, CreateInlineImageAttachmentError>
     ? Value
     : never;

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
+import { createSessionAttributionResolverCache } from "../src/main/agent-sync/agent-session-attribution.js";
 import { upsertSessionAnalyticsRollup } from "../src/main/database/session-analytics-rollup.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
@@ -10,7 +11,6 @@ import {
   getArtifactSessionUsage,
 } from "../src/main/database/sync-source.js";
 import { repriceUnpricedTokenUsage } from "../src/main/database/token-cost-maintenance.js";
-import { createSessionAttributionResolverCache } from "../src/main/session/shared-agent-sessions-api.js";
 import { estimateTokenCost } from "../src/shared/token-cost.js";
 import { ROLLUP_OPTS } from "./rollup-options-test-utils.js";
 
@@ -180,14 +180,17 @@ test("boot re-pricing prices the effective total (current + baseline) of a compa
       cost: null,
     });
 
-    // Materialize the rollup the way ingest does — est_cost starts at 0 (the
-    // one row is unpriced).
+    // Materialize the rollup the way ingest does. ISS-7820: the one row is
+    // unpriced, so est_cost starts UNKNOWN rather than at a confident $0.00 —
+    // the precondition still says "no cost is known yet", which is all this case
+    // needs from it, and the post-reprice assertions below are what prove the
+    // effective total arrives.
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
         upsertSessionAnalyticsRollup(tx, "sess-compacted", NOW, ROLLUP_OPTS)
       )
     );
-    assert.equal((await analytics(db, "sess-compacted")).estCost, 0);
+    assert.equal((await analytics(db, "sess-compacted")).estCost, null);
 
     await repriceUnpricedTokenUsage(db.prisma, () => undefined);
 

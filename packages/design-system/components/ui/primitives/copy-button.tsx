@@ -5,7 +5,9 @@ import { useCopyToClipboard } from "@closedloop-ai/design-system/hooks/use-copy-
 import { Check, Copy } from "lucide-react";
 
 type CopyButtonProps = {
+  /** Written to the clipboard on click. Never rendered — the button shows `label`. */
   text: string;
+  /** Visible button text. Swaps to "Copied" for 1.5s after a click. */
   label?: string;
 };
 

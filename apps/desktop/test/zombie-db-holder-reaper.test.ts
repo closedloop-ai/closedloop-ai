@@ -11,7 +11,7 @@
  * contract that the reaper never throws even when the OS primitives fail.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type DbHolder,
   isClosedloopDesktopCommand,

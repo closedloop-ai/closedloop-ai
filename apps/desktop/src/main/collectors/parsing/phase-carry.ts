@@ -22,6 +22,11 @@
  * relabels them, never moving an FEA-2269 boundary or inventing time, so
  * complete-tiling and Σ(segment spend) == session-total are preserved.
  */
+
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 import { EvidenceLayer } from "../evidence/evidence-model.js";
 import {
   coalesceAdjacentRuns,
@@ -29,7 +34,6 @@ import {
   sameRunByLabel,
   splitAtCuts,
 } from "./activity-segment-relabel.js";
-import { ACTIVITY_PHASE, type ActivityPhase } from "./activity-taxonomy.js";
 
 /**
  * Confidence a declared review-REQUEST segment carries (0–1). The user explicitly

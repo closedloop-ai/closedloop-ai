@@ -3,11 +3,18 @@
 import { BranchCommentsState } from "@repo/api/src/types/branch";
 import {
   type BranchTraceCommentCollectionQuery,
-  TraceCommentSurface,
+  CommentSurface,
+  CommentTargetType,
   type TraceCommentTarget,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
+// Cross-slice: the scope wording is shared with the canonical comments pane.
+import {
+  COMMENTS_COUNT_UNAVAILABLE_LABEL,
+  commentsScopeAnnouncement,
+  TRACE_COMMENT_SELECTION_GUIDANCE,
+} from "@repo/app/shared/components/comments/comments-pane-model";
 import { CommentComposer } from "@repo/design-system/components/ui/comment-composer";
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { MessageSquareIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useId, useMemo, useRef, useState } from "react";
@@ -17,11 +24,14 @@ import {
   type BranchCommentComposerMode,
 } from "./branch-comment-card";
 import {
+  BRANCH_COMMENTS_READ_FAILED,
   type BranchCommentAnchor,
   BranchCommentSource,
+  BranchCommentsPanelState,
   BranchCommentsTab,
   type BranchCommentsWorkspaceProps,
   type BranchCommentThread,
+  resolveBranchCommentsPanelState,
 } from "./branch-comments-model";
 import { BranchCommentsRail } from "./branch-comments-rail";
 import { BranchProviderAvailability } from "./branch-provider-availability";
@@ -46,10 +56,12 @@ export function BranchCommentsWorkspace({
   onEditRoot,
   onJump,
   onReply,
+  onRetrySync,
   onWidthChange,
   open,
   providerAvailability,
   railId,
+  readFailed = false,
   renderBody,
   renderedSessionIds,
   returnFocusRef,
@@ -113,11 +125,11 @@ export function BranchCommentsWorkspace({
           "root"
         )
       : null;
-  const scopeAnnouncement = makeScopeAnnouncement(
-    activeTab,
-    selectedPullRequestKey,
-    renderedSessionIds.length
-  );
+  const scopeAnnouncement = commentsScopeAnnouncement({
+    renderedSessionIds,
+    selectedPullRequestKey: selectedPullRequestKey ?? null,
+    tab: activeTab,
+  });
   const commentsHeading =
     activeTab === BranchCommentsTab.Details
       ? "PR Comments"
@@ -132,13 +144,17 @@ export function BranchCommentsWorkspace({
           0
         )
       : visibleComments.length;
+  const panelState = resolveBranchCommentsPanelState({
+    hasError,
+    hasVisibleComments: visibleComments.length > 0,
+    isLoading,
+  });
   const commentsCountLabel = makeCommentsCountLabel({
     count: commentsCount,
-    hasError,
     incomplete: Boolean(
       coverageNote || hasIncompleteProviderCoverage(providerAvailability)
     ),
-    isLoading,
+    panelState,
   });
 
   const updateDraft = (key: string, value: string) => {
@@ -177,16 +193,16 @@ export function BranchCommentsWorkspace({
   };
 
   let commentsContent: ReactNode;
-  if (isLoading && visibleComments.length === 0) {
+  if (panelState === BranchCommentsPanelState.Loading) {
     commentsContent = (
       <p className="p-3 text-muted-foreground text-sm" role="status">
         Loading comments…
       </p>
     );
-  } else if (hasError && visibleComments.length === 0) {
+  } else if (panelState === BranchCommentsPanelState.Error) {
     commentsContent = (
       <p className="p-3 text-destructive text-sm" role="alert">
-        Comments are unavailable in this view.
+        {readFailureNotice(readFailed)}
       </p>
     );
   } else if (visibleComments.length === 0) {
@@ -218,6 +234,7 @@ export function BranchCommentsWorkspace({
                   mapWith(current, scopeKey, nextMode)
                 )
               }
+              onRetrySync={onRetrySync}
               onSubmitComposer={(kind, body) => {
                 const key = threadDraftKey(thread, kind);
                 const operation =
@@ -260,17 +277,25 @@ export function BranchCommentsWorkspace({
       width={width}
     >
       <section
+        aria-busy={panelState === BranchCommentsPanelState.Loading}
         aria-label="Branch comments"
         className="flex min-h-0 flex-1 flex-col"
         id={resolvedRailId}
       >
-        <div className="flex h-11 shrink-0 items-center border-b px-3">
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b px-3">
           <h2 className="font-semibold text-sm">
             {commentsHeading}{" "}
             <span className="font-normal text-muted-foreground">
               {commentsCountLabel}
             </span>
           </h2>
+          {panelState === BranchCommentsPanelState.Loading ? (
+            // Sized and placed to read as the missing count, not as a chip: a
+            // one- or two-digit glyph at 14px, sitting where the count lands.
+            // It cannot go INSIDE the h2 — `Skeleton` renders a `div`, which is
+            // not phrasing content.
+            <Skeleton aria-hidden className="h-3.5 w-4 rounded-sm" />
+          ) : null}
         </div>
         <p aria-live="polite" className="sr-only">
           {scopeAnnouncement}
@@ -286,44 +311,41 @@ export function BranchCommentsWorkspace({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {commentsContent}
         </div>
-        <div className="shrink-0 border-t p-3">
-          {composerTarget && rootDraftKey && onCreate ? (
-            <CommentComposer
-              ariaLabel={`Comment on ${composerTarget.anchor.label}`}
-              clearOnSubmit={false}
-              helperText={
-                <p className="truncate text-muted-foreground text-xs">
-                  Commenting on {composerTarget.anchor.label}
-                </p>
-              }
-              isPending={pendingDrafts.has(rootDraftKey)}
-              minHeightClassName="min-h-20"
-              onSubmit={(body) =>
-                clearDraftAfter(
-                  rootDraftKey,
-                  onCreate({
-                    anchor: composerTarget.anchor,
-                    body,
-                    collectionQuery: composerTarget.collectionQuery,
-                    tab: activeTab,
-                    target: composerTarget.target,
-                  })
+        <BranchCommentsCreationFooter
+          readFailed={readFailed}
+          renderComposer={
+            composerTarget && rootDraftKey && onCreate
+              ? () => (
+                  <CommentComposer
+                    ariaLabel={`Comment on ${composerTarget.anchor.label}`}
+                    clearOnSubmit={false}
+                    helperText={
+                      <p className="truncate text-muted-foreground text-xs">
+                        Commenting on {composerTarget.anchor.label}
+                      </p>
+                    }
+                    isPending={pendingDrafts.has(rootDraftKey)}
+                    minHeightClassName="min-h-20"
+                    onSubmit={(body) =>
+                      clearDraftAfter(
+                        rootDraftKey,
+                        onCreate({
+                          anchor: composerTarget.anchor,
+                          body,
+                          collectionQuery: composerTarget.collectionQuery,
+                          tab: activeTab,
+                          target: composerTarget.target,
+                        })
+                      )
+                    }
+                    onValueChange={(value) => updateDraft(rootDraftKey, value)}
+                    placeholder="Add a trace comment..."
+                    value={drafts.get(rootDraftKey) ?? ""}
+                  />
                 )
-              }
-              onValueChange={(value) => updateDraft(rootDraftKey, value)}
-              placeholder="Add a trace comment..."
-              value={drafts.get(rootDraftKey) ?? ""}
-            />
-          ) : (
-            <div className="flex items-start gap-2 text-muted-foreground text-xs">
-              <MessageSquareIcon
-                aria-hidden
-                className="mt-0.5 size-4 shrink-0"
-              />
-              <p>Select an eligible trace row or range to add a comment.</p>
-            </div>
-          )}
-        </div>
+              : null
+          }
+        />
       </section>
     </BranchCommentsRail>
   );
@@ -373,13 +395,13 @@ function isCommentInScope({
       comment.pullRequestKey === selectedPullRequestKey
     );
   }
-  if (comment.target.type === TraceCommentTargetType.Branch) {
+  if (comment.target.type === CommentTargetType.Branch) {
     const surface =
-      comment.collectionQuery?.surface ?? TraceCommentSurface.BranchDetail;
+      comment.collectionQuery?.surface ?? CommentSurface.BranchDetail;
     const expectedSurface =
       activeTab === BranchCommentsTab.Details
-        ? TraceCommentSurface.BranchDetail
-        : TraceCommentSurface.BranchTimeline;
+        ? CommentSurface.BranchDetail
+        : CommentSurface.BranchTimeline;
     return comment.target.id === branchId && surface === expectedSurface;
   }
   return (
@@ -399,7 +421,7 @@ function isDraftTargetInScope({
   composerTarget: NonNullable<BranchCommentsWorkspaceProps["composerTarget"]>;
   renderedSessionIds: ReadonlySet<string>;
 }): boolean {
-  if (composerTarget.target.type === TraceCommentTargetType.Session) {
+  if (composerTarget.target.type === CommentTargetType.Session) {
     return (
       activeTab === BranchCommentsTab.Sessions &&
       renderedSessionIds.has(composerTarget.target.id)
@@ -409,10 +431,10 @@ function isDraftTargetInScope({
     return false;
   }
   const surface =
-    composerTarget.collectionQuery?.surface ?? TraceCommentSurface.BranchDetail;
+    composerTarget.collectionQuery?.surface ?? CommentSurface.BranchDetail;
   return activeTab === BranchCommentsTab.Details
-    ? surface === TraceCommentSurface.BranchDetail
-    : surface === TraceCommentSurface.BranchTimeline;
+    ? surface === CommentSurface.BranchDetail
+    : surface === CommentSurface.BranchTimeline;
 }
 
 function draftKey(
@@ -425,9 +447,9 @@ function draftKey(
   return [
     tab,
     collectionQuery?.surface ??
-      (target.type === TraceCommentTargetType.Session
-        ? TraceCommentSurface.SessionDetail
-        : TraceCommentSurface.BranchDetail),
+      (target.type === CommentTargetType.Session
+        ? CommentSurface.SessionDetail
+        : CommentSurface.BranchDetail),
     target.type,
     target.id,
     anchor?.id ?? "unanchored",
@@ -458,32 +480,26 @@ function threadScopeKey(thread: BranchCommentThread): string {
   );
 }
 
-function makeScopeAnnouncement(
-  tab: BranchCommentsTab,
-  selectedPullRequestKey: string | null | undefined,
-  renderedSessionCount: number
-): string {
-  if (tab === BranchCommentsTab.Details) {
-    return selectedPullRequestKey
-      ? `Comments updated for Branch details and pull request ${selectedPullRequestKey}.`
-      : "Comments updated for Branch details. No pull request is selected.";
-  }
-  return `Comments updated for Sessions and timeline. ${renderedSessionCount} rendered Sessions included.`;
-}
-
+/**
+ * The count slot is empty while the read is in flight — the skeleton beside the
+ * heading and the body's "Loading comments…" carry that state, and a word in a
+ * slot the rest of the app fills with a number changes the heading's shape
+ * between renders. "Unavailable" is reserved for a read that actually failed.
+ */
 function makeCommentsCountLabel({
   count,
-  hasError,
   incomplete,
-  isLoading,
+  panelState,
 }: {
   count: number;
-  hasError: boolean;
   incomplete: boolean;
-  isLoading: boolean;
-}): string | number {
-  if (isLoading || hasError) {
-    return "Unavailable";
+  panelState: BranchCommentsPanelState;
+}): string | number | null {
+  if (panelState === BranchCommentsPanelState.Loading) {
+    return null;
+  }
+  if (panelState === BranchCommentsPanelState.Error) {
+    return COMMENTS_COUNT_UNAVAILABLE_LABEL;
   }
   return incomplete ? `${count} shown` : count;
 }
@@ -533,4 +549,40 @@ function setWithout<T>(current: ReadonlySet<T>, value: T): ReadonlySet<T> {
   const next = new Set(current);
   next.delete(value);
   return next;
+}
+
+// ISS-12597 (operator ruling): no composer or creation guidance while the
+// Branch comment read has failed outright.
+function BranchCommentsCreationFooter({
+  readFailed,
+  renderComposer,
+}: Readonly<{
+  readFailed: boolean;
+  renderComposer: (() => ReactNode) | null;
+}>) {
+  // Independent of the list state: cached comments stay visible after a
+  // failed refetch, and creation is still withheld.
+  if (readFailed) {
+    return null;
+  }
+  return (
+    <div className="shrink-0 border-t p-3">
+      {renderComposer ? (
+        renderComposer()
+      ) : (
+        <div className="flex items-start gap-2 text-muted-foreground text-xs">
+          <MessageSquareIcon aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <p>{TRACE_COMMENT_SELECTION_GUIDANCE}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ISS-12597: only an outright read failure is named as one (operator-chosen
+// string); a partial or GitHub-only failure keeps the existing notice.
+function readFailureNotice(readFailed: boolean): string {
+  return readFailed
+    ? BRANCH_COMMENTS_READ_FAILED
+    : "Comments are unavailable in this view.";
 }

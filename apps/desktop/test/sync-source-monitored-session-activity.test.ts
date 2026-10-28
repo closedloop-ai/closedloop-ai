@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
 import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { downgradeMonitoredSessionActivity } from "../src/main/database/synced-monitored-session-activity.js";
 
@@ -43,7 +43,7 @@ test("ISS-6060: SQLite retains activity while sync projection follows negotiated
       await db.run(
         `INSERT INTO artifacts
            (id, identity_key, kind, repo_full_name, branch_name, created_at, last_seen_at)
-         VALUES ('branch-1','branch:iss6060','branch','closedloop-ai/symphony-alpha','feat/iss-6060','t1','t1')`
+         VALUES ('branch-1','branch:iss6060','branch','closedloop-ai/closedloop-ai','feat/iss-6060','t1','t1')`
       );
       await db.run(
         `INSERT INTO session_artifact_links
@@ -99,7 +99,7 @@ test("ISS-6060: SQLite retains activity while sync projection follows negotiated
 test("ISS-6060: parent ref truncation marks carrier and retained events partial", () => {
   const downgraded = downgradeMonitoredSessionActivity({
     kind: ArtifactRefTargetKind.Branch,
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     branchName: "feat/iss-6060",
     method: "git_push",
     relation: "created",

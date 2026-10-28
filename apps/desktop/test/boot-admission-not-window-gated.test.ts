@@ -32,9 +32,9 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import type { CallExpression, Node, SourceFile } from "typescript6";
 import { forEachChild, isCallExpression } from "typescript6";
+import { describe, test } from "vitest";
 
 import type { RendererReadinessGates } from "../src/main/lifecycle/renderer-readiness-gates.js";
 import type { BoundedSlot } from "./support/app-module-ast.js";

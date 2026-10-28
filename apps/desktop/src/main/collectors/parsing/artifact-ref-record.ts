@@ -20,6 +20,13 @@ export type ArtifactRefRecord = {
   prUrl?: string;
   branchName?: string;
   sha?: string;
+  /**
+   * ISS-8175: the base ref of a PR this session CREATED, as gh named it in its
+   * own create output. Only a create ORIGINATES one — a local clone has no way
+   * to learn a foreign PR's base — but it is stored on the PR's own artifact
+   * row, so a later session that merely references that same PR reads it back.
+   */
+  baseRef?: string;
   /** Commit subject parsed from the `[branch sha] subject` git output. */
   message?: string;
   /** Transcript event time of the commit, never the scan time. */

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
+import { DESKTOP_MANAGED_POP_PROVISIONING_SERVER_FLAG } from "@/lib/feature-flags/server-feature-flags";
 import {
   type DesktopManagedFeatureFlagIdentity,
   isDesktopManagedFeatureFlagEnabled,
@@ -8,7 +9,7 @@ import {
 } from "./auth/desktop-managed-pop";
 
 export const DESKTOP_MANAGED_POP_PROVISIONING_FLAG =
-  "desktop-managed-pop-provisioning";
+  DESKTOP_MANAGED_POP_PROVISIONING_SERVER_FLAG.key;
 export const DESKTOP_MANAGED_POP_SUPPORTED_PLATFORM =
   DesktopProvisioningPlatform.Darwin;
 
@@ -35,7 +36,7 @@ export async function isDesktopManagedPopProvisioningEnabled(
 
   try {
     const provisioningEnabled = await isDesktopManagedFeatureFlagEnabled(
-      DESKTOP_MANAGED_POP_PROVISIONING_FLAG,
+      DESKTOP_MANAGED_POP_PROVISIONING_SERVER_FLAG,
       identity
     );
     return (

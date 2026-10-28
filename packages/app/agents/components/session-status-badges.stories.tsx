@@ -3,10 +3,14 @@ import {
   HarnessBadge,
   SessionStatusBadge,
 } from "@repo/app/agents/components/session-status-badges";
-import { SessionSyncPresentation } from "@repo/app/agents/lib/session-sync-presentation";
+import {
+  SESSION_STATUS_SYNC_BADGE_TEST_ID,
+  SessionSyncPresentation,
+} from "@repo/app/agents/lib/session-sync-presentation";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import { TooltipProvider } from "@repo/design-system/components/ui/tooltip";
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, within } from "storybook/test";
 
 /**
  * ISS-5279: the two renderings of one Active row, by sync state — a pulsing ring
@@ -29,10 +33,9 @@ const SYNC_PRESENTATION_CAPTIONS = [
 const SessionStatusBadgesGallery = () => (
   <TooltipProvider>
     <div className="space-y-6">
-      {/* ISS-4586: canonical vocabulary — Active / Waiting / Inactive / Error. */}
+      {/* ISS-10364: canonical vocabulary — Active / Inactive / Error. */}
       <div className="flex flex-wrap gap-2">
         <SessionStatusBadge status="active" />
-        <SessionStatusBadge status="waiting" />
         <SessionStatusBadge status="inactive" />
         <SessionStatusBadge status="error" />
       </div>
@@ -53,7 +56,8 @@ const SessionStatusBadgesGallery = () => (
           </div>
         ))}
       </div>
-      {/* Legacy values still render (normalized) during the migration window. */}
+      {/* Legacy and retired spellings all fold to Active (ISS-10364 retired the
+        unknown/stale/waiting words a reader used to see here). */}
       <div className="flex flex-wrap gap-2">
         <SessionStatusBadge status="completed" />
         <SessionStatusBadge status="abandoned" />
@@ -64,6 +68,12 @@ const SessionStatusBadgesGallery = () => (
         <AgentStatusBadge status="completed" />
         <AgentStatusBadge status="error" />
         <AgentStatusBadge status="idle" />
+        {/* An unrecognized `agent.status` — `resolveStatusConfig`'s raw-fallback
+          branch, never exercised elsewhere in this gallery. It renders the raw
+          string in a danger pill rather than silently defaulting to a known
+          state, so an unmapped status still reads as a failure rather than as
+          something benign. */}
+        <AgentStatusBadge status="planning" />
       </div>
       <div className="flex flex-wrap gap-2">
         <HarnessBadge harness="claude" />
@@ -80,12 +90,28 @@ const SessionStatusBadgesGallery = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Session Status Badges",
+  title: "Composites v1.0/Agents/General/Session Status Badges",
   component: SessionStatusBadgesGallery,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionStatusBadgesGallery>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // ISS-10364 retired the badge's own Unknown/Stale tooltips. The sync
+    // disclosure is the only tooltip left on this badge, so this hovers that
+    // one instead.
+    await userEvent.hover(
+      canvas.getByTestId(SESSION_STATUS_SYNC_BADGE_TEST_ID)
+    );
+    const tooltip = await within(canvasElement.ownerDocument.body).findByRole(
+      "tooltip"
+    );
+    await expect(tooltip).toHaveTextContent(
+      "This session is in the cloud, but its transcript is still uploading. It syncs automatically."
+    );
+  },
+};

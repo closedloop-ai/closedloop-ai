@@ -1,104 +1,23 @@
 "use client";
 
 import type { CustomFieldWithOptions } from "@repo/api/src/types/custom-field";
-import type { User } from "@repo/api/src/types/user";
 import {
   useCustomFields,
   useDeleteCustomField,
 } from "@repo/app/custom-fields/hooks/use-custom-fields";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
-import { UserLink } from "@repo/app/shared/components/user-link";
-import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
-import {
-  getUserDisplayName,
-  getUserInitials,
-} from "@repo/app/shared/lib/user-utils";
 import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
-import type { Column } from "@repo/design-system/components/ui/data-table";
 import { DataTable } from "@repo/design-system/components/ui/data-table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import {
-  ListPlusIcon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+import { ListPlusIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
-import { ENTITY_TYPE_LABELS, FIELD_TYPE_LABELS } from "./constants";
 import { CreateCustomFieldDialog } from "./create-custom-field-dialog";
-
-function CreatedByCell({
-  createdById,
-  user,
-}: {
-  createdById: string | null;
-  user: User | undefined;
-}) {
-  if (!(createdById && user)) {
-    return <span className="text-muted-foreground text-sm">—</span>;
-  }
-
-  const name = getUserDisplayName(user);
-  const initials = getUserInitials(user.firstName, user.lastName);
-
-  return (
-    <div className="flex items-center gap-2">
-      <Avatar className="size-6">
-        {user.avatarUrl ? (
-          <AvatarImage alt={name} src={user.avatarUrl} />
-        ) : null}
-        <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
-      </Avatar>
-      <UserLink className="text-sm hover:underline" userId={user.id}>
-        {name}
-      </UserLink>
-    </div>
-  );
-}
-
-type ActionsMenuProps = {
-  field: CustomFieldWithOptions;
-  onEdit: (field: CustomFieldWithOptions) => void;
-  onDelete: (field: CustomFieldWithOptions) => void;
-};
-
-function ActionsMenu({ field, onEdit, onDelete }: Readonly<ActionsMenuProps>) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="icon-sm" variant="ghost">
-          <MoreHorizontalIcon className="h-4 w-4" />
-          <span className="sr-only">Open actions menu</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => onEdit(field)}>Edit</DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => onDelete(field)}
-          variant="destructive"
-        >
-          Delete
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
+import {
+  buildCustomFieldColumns,
+  CustomFieldActionsMenu,
+} from "./custom-field-columns";
 
 export function CustomFieldsSettingsTab() {
   const {
@@ -139,57 +58,7 @@ export function CustomFieldsSettingsTab() {
     setDeleteTarget(null);
   };
 
-  const columns: Column<CustomFieldWithOptions>[] = [
-    {
-      key: "name",
-      header: "Name",
-      render: (field) => <span className="font-medium">{field.name}</span>,
-    },
-    {
-      key: "fieldType",
-      header: "Type",
-      render: (field) => (
-        <Badge variant="secondary">{FIELD_TYPE_LABELS[field.fieldType]}</Badge>
-      ),
-    },
-    {
-      key: "entityTypes",
-      header: "Used in",
-      render: (field) => {
-        if (!field.entityTypes || field.entityTypes.length === 0) {
-          return <span className="text-muted-foreground text-sm">—</span>;
-        }
-        return (
-          <div className="flex flex-wrap gap-1">
-            {field.entityTypes.map((t) => (
-              <Badge key={t} variant="outline">
-                {ENTITY_TYPE_LABELS[t]}
-              </Badge>
-            ))}
-          </div>
-        );
-      },
-    },
-    {
-      key: "createdById",
-      header: "Created by",
-      render: (field) => (
-        <CreatedByCell
-          createdById={field.createdById}
-          user={field.createdById ? userMap.get(field.createdById) : undefined}
-        />
-      ),
-    },
-    {
-      key: "createdAt",
-      header: "Created",
-      render: (field) => (
-        <span className="text-muted-foreground text-sm">
-          {formatRelativeTime(field.createdAt)}
-        </span>
-      ),
-    },
-  ];
+  const columns = buildCustomFieldColumns(userMap);
 
   // Only block the whole tab on an initial-load failure. When fields are
   // already cached, a background refetch error keeps the editable rows visible
@@ -271,7 +140,7 @@ export function CustomFieldsSettingsTab() {
         data={fields}
         emptyMessage="No custom fields found."
         renderRowActions={(field) => (
-          <ActionsMenu
+          <CustomFieldActionsMenu
             field={field}
             onDelete={setDeleteTarget}
             onEdit={handleEdit}

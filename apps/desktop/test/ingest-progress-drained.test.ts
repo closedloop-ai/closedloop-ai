@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { createTracker } from "./helpers/ingest-progress-fixture.js";
 
-// ISS-5281 (wongk review). The import splash used to infer "the queue is empty"
+// ISS-5281 (whitlockk review). The import splash used to infer "the queue is empty"
 // from the aggregate counters (`processed >= total && !preparing`). That is not
 // the same claim, and the tracker is the only thing that can answer the real
 // one: it knows which passes are in flight and what each one left behind. These
@@ -67,7 +67,7 @@ test("a re-entrant plateau is never drained, even with preparing off", () => {
   ]);
 });
 
-// wongk: `settlePass` overwrites `processed` with `total`, so a source left
+// whitlockk: `settlePass` overwrites `processed` with `total`, so a source left
 // retryable by `completeSource(..., false)` would be invisible afterwards and the
 // later stall could promote genuinely unfinished work to Ready.
 test("a settled pass that left a source retryable is not drained", () => {

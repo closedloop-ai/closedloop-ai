@@ -1,40 +1,38 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { buildUserColor } from "@repo/api/src/agent-session-user-color";
-import {
-  AgentSessionState,
-  type TurnItem,
-} from "@repo/api/src/types/agent-session";
+import type { TurnItem } from "@repo/api/src/types/agent-session";
 import { TranscriptAvailability } from "@repo/api/src/types/desktop-transcripts";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
+import { describe, test } from "vitest";
 import type { SessionCursorRow } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import {
-  SESSIONS_ANALYTICS_DATE_WINDOW_FIELD,
-  SESSIONS_SURFACE_DATE_WINDOW_FIELD,
-} from "../src/main/agent-sync/session-date-window.js";
-import {
   ensureOrgDirectory,
   resetOrgDirectoryCacheForTest,
 } from "../src/main/session/org-directory-cache.js";
+import { SESSION_HYDRATION_WINDOW } from "../src/main/session/session-hydration-window.js";
 import { getSharedAgentSessionDetail } from "../src/main/session/shared-agent-session-detail-read.js";
 import {
   getSharedAgentSessionAnalytics,
   getSharedAgentSessions,
   getSharedAgentSessionsByIds,
   getSharedAgentSessionUsage,
-  MAX_WORKING_SET_SESSIONS,
 } from "../src/main/session/shared-agent-sessions-api.js";
 import { getSharedAgentSessionsPageData } from "../src/main/session/shared-agent-sessions-page-data.js";
+import {
+  SESSIONS_SURFACE_DATE_WINDOW_FIELD,
+  SessionDateWindowField,
+} from "../src/shared/session-date-window-contract.js";
 import { DESKTOP_LOCAL_SESSION_AUTHOR_LABEL } from "../src/shared/shared-agent-sessions-contract.js";
+import { toolRows, turnRowAttribution } from "./helpers/turn-item-rows.js";
 import {
   createFakeSource,
   cursor,
   defaultSessions,
-  type SourceCall,
+  emptyLocalSessionsPage,
   session,
   usageAggregate,
 } from "./shared-agent-sessions-test-helpers.js";
@@ -64,9 +62,13 @@ describe("shared agent sessions API mapper", () => {
       sortBy: "cost",
     });
 
+    // ISS-6895: the fallback SCANS the matched set (window 1 here) and then
+    // hydrates the page's ids separately, so no hydrated row outlives its
+    // window. Two `loadSyncedSessions` calls, the first the scan and the second
+    // the page.
     assert.deepEqual(
       source.calls.map((call) => call.kind),
-      ["listAllSessionCursorRows", "loadSyncedSessions"]
+      ["listAllSessionCursorRows", "loadSyncedSessions", "loadSyncedSessions"]
     );
     assert.deepEqual(source.calls[1]?.ids, [
       "stale",
@@ -74,6 +76,7 @@ describe("shared agent sessions API mapper", () => {
       "session-a",
       "session-c",
     ]);
+    assert.deepEqual(source.calls[2]?.ids, ["session-c"]);
     assert.ok(source.calls[1]?.cache?.attributionByCwd instanceof Map);
     assert.ok(source.calls[1]?.cache?.launchMetadataRootByCwd instanceof Map);
     assert.ok(source.calls[1]?.cache?.repoFullNameByPath instanceof Map);
@@ -129,7 +132,7 @@ describe("shared agent sessions API mapper", () => {
     );
   });
 
-  test("date and search filtered sorted lists read a filtered cursor page", async () => {
+  test("date and search filtered sorted lists page matching IDs before hydration", async () => {
     const source = createFakeSource({
       cursorRows: [
         cursor("old-match", "2026-06-23T00:00:00.000Z"),
@@ -141,22 +144,25 @@ describe("shared agent sessions API mapper", () => {
           id: "old-match",
           branch: "fea-2161",
           startedAt: "2026-06-17T00:00:00.000Z",
+          lastActivityAt: "2026-06-23T00:00:00.000Z",
         }),
         "recent-mismatch": session({
           id: "recent-mismatch",
           branch: "fea-9999",
           startedAt: "2026-06-20T00:00:00.000Z",
+          lastActivityAt: "2026-06-20T00:00:00.000Z",
         }),
         "recent-match": session({
           id: "recent-match",
           branch: "fea-2161",
           startedAt: "2026-06-21T00:00:00.000Z",
+          lastActivityAt: "2026-06-21T00:00:00.000Z",
         }),
       },
     });
 
     const response = await getSharedAgentSessions(source, {
-      // quality:"all" keeps the SQL cursor-page path under test (see above).
+      // Isolate cursor search from the substantive quality gate.
       quality: "all",
       limit: 25,
       offset: 0,
@@ -170,11 +176,6 @@ describe("shared agent sessions API mapper", () => {
       source.calls.map((call) => call.kind),
       ["listSessionCursorPage", "loadSyncedSessions"]
     );
-    assert.equal(
-      source.calls[0]?.cursorPageRequest?.startDate?.toISOString(),
-      "2026-06-18T00:00:00.000Z"
-    );
-    assert.equal(source.calls[0]?.cursorPageRequest?.search, "fea-2161");
     assert.deepEqual(source.calls[1]?.ids, ["old-match", "recent-match"]);
     assert.equal(response.total, 2);
     assert.deepEqual(
@@ -194,7 +195,7 @@ describe("shared agent sessions API mapper", () => {
     const boundary = "2026-06-15T00:00:00.000Z";
     const sessions: Record<string, SyncedAgentSession> = {
       // Started well before the boundary, completed AFTER it → counted. A
-      // `startedAt`-based filter would have dropped this (the bug Kris flagged).
+      // `startedAt`-based filter would have dropped this (the bug Kerensa flagged).
       "long-running-completed-after": session({
         id: "long-running-completed-after",
         status: "completed",
@@ -236,11 +237,13 @@ describe("shared agent sessions API mapper", () => {
     });
 
     // completedAfter is not SQL-expressible on the cursor page, so the read
-    // falls through to the full-hydration path where `matchesQuery` applies the
-    // endedAt bound in memory (same fold the cloud pushes into SQL).
+    // falls through to the hydrating path where `matchesQuery` applies the
+    // endedAt bound in memory (same fold the cloud pushes into SQL). ISS-6895:
+    // that path scans in windows and hydrates the page separately, so the scan
+    // and the page are two `loadSyncedSessions` calls.
     assert.deepEqual(
       source.calls.map((call) => call.kind),
-      ["listAllSessionCursorRows", "loadSyncedSessions"]
+      ["listAllSessionCursorRows", "loadSyncedSessions", "loadSyncedSessions"]
     );
     assert.equal(response.total, 1);
     assert.deepEqual(
@@ -335,9 +338,11 @@ describe("shared agent sessions API mapper", () => {
       ids: explicitIds,
     });
 
+    // ISS-6895: the scan and the page hydration are separate calls; cursor
+    // enumeration is still skipped entirely for an explicit-id read.
     assert.deepEqual(
       source.calls.map((call) => call.kind),
-      ["loadSyncedSessions"]
+      ["loadSyncedSessions", "loadSyncedSessions"]
     );
     assert.equal(source.calls[0]?.ids?.length, 100);
     assert.deepEqual(source.calls[0]?.ids, [
@@ -357,12 +362,7 @@ describe("shared agent sessions API mapper", () => {
     const stringIdsResponse = await getSharedAgentSessions(stringIdsSource, {
       ids: "abc",
     } as never);
-    assert.deepEqual(stringIdsResponse, {
-      items: [],
-      total: 0,
-      idleCount: 0,
-      viewerScope: "self",
-    });
+    assert.deepEqual(stringIdsResponse, emptyLocalSessionsPage());
     assert.deepEqual(stringIdsSource.calls, []);
   });
 
@@ -404,7 +404,7 @@ describe("shared agent sessions API mapper", () => {
     );
 
     assert.deepEqual(
-      detail?.timeline?.map((event) => [event.title, event.detail]),
+      toolRows(detail?.turnItems).map((tool) => [tool.label, tool.detail]),
       [
         ["exec_command", "pnpm -C apps/desktop test"],
         ["exec_command", "git diff --stat"],
@@ -428,7 +428,7 @@ describe("shared agent sessions API mapper", () => {
           status: "failed",
           updatedAt: "2026-01-02T00:00:00.000Z",
           attribution: {
-            repositoryFullName: "closedloop-ai/symphony-alpha",
+            repositoryFullName: "closedloop-ai/closedloop-ai",
             worktreePath: "repo",
             sourceArtifactId: "FEA-1704",
             sourceLoopId: "loop-1",
@@ -444,7 +444,7 @@ describe("shared agent sessions API mapper", () => {
     assert.equal(item?.slug, null);
     assert.equal(item?.sourceArtifact, null);
     assert.equal(item?.user, null);
-    assert.equal(item?.project, null);
+    assert.equal(Object.hasOwn(item ?? {}, "project"), false);
     assert.equal(item?.computeTarget.id, "local-desktop");
     assert.equal(item?.computeTarget.isOnline, true);
     assert.equal(item?.updatedAt.toISOString(), "2026-01-02T00:00:00.000Z");
@@ -452,7 +452,7 @@ describe("shared agent sessions API mapper", () => {
       item?.computeTarget.lastSeenAt.toISOString(),
       "2026-01-02T00:00:00.000Z"
     );
-    assert.equal(item?.repositoryFullName, "closedloop-ai/symphony-alpha");
+    assert.equal(item?.repositoryFullName, "closedloop-ai/closedloop-ai");
     assert.equal(item?.inputTokens, 10);
     assert.equal(item?.outputTokens, 20);
     assert.equal(item?.cacheReadTokens, 3);
@@ -475,11 +475,9 @@ describe("shared agent sessions API mapper", () => {
       stderr: "secret",
       nested: { visible: "yes", content: "secret" },
     });
-    assert.equal(detail?.timeline?.[0]?.title, "Bash");
-    assert.equal(
-      detail?.timeline?.[0]?.detail,
-      "src/visible.ts · cat secret.txt"
-    );
+    const firstTool = toolRows(detail?.turnItems)[0];
+    assert.equal(firstTool?.label, "Bash");
+    assert.equal(firstTool?.detail, "src/visible.ts · cat secret.txt");
     const subagentTurn = detail?.turnItems?.find(
       (item) => item.type === "subagent"
     );
@@ -538,13 +536,13 @@ describe("shared agent sessions API mapper", () => {
     assert.equal(byId.get("session-c")?.cloudSyncState, "synced");
   });
 
-  test("PRD-536 E6: no compute target → outbox is never read → every row is `synced`", async () => {
+  test("ISS-9004: no compute target → outbox never read → no row claims `synced`", async () => {
     const source = createFakeSource({
       cursorRows: [cursor("session-a"), cursor("session-b")],
       pendingOutboxIds: ["session-b"],
     });
 
-    // Offline/unauthenticated: computeTargetId omitted (defaults to null).
+    // No target for this account: computeTargetId omitted (defaults to null).
     const response = await getSharedAgentSessions(source, { quality: "all" });
 
     assert.equal(
@@ -552,7 +550,7 @@ describe("shared agent sessions API mapper", () => {
       false
     );
     for (const item of response.items) {
-      assert.equal(item.cloudSyncState, "synced");
+      assert.equal(item.cloudSyncState, undefined);
     }
   });
 
@@ -637,7 +635,7 @@ describe("shared agent sessions API mapper", () => {
         awaitingInputSince: "2026-01-01T01:30:00.000Z",
         endedAt: null,
         attribution: {
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           worktreePath: "/worktrees/fea-1943",
           sourceArtifactId: "FEA-1943",
           sourceLoopId: "loop-local",
@@ -692,21 +690,23 @@ describe("shared agent sessions API mapper", () => {
 
     assert.equal(detail?.id, "session-local-detail");
     assert.equal(detail?.name, "Session session-local-detail");
-    assert.equal(detail?.status, "active");
-    assert.equal(detail?.state, AgentSessionState.PendingApproval);
+    // ISS-10364 (operator ruling 2026-09-23): the Waiting projection off
+    // `awaitingInputSince` is retired, so this awaiting-input row now reads
+    // its stored `active` directly.
+    assert.equal(detail?.status, SESSION_STATUS.ACTIVE);
     assert.equal(detail?.user, null);
-    assert.equal(detail?.project, null);
+    assert.equal(Object.hasOwn(detail ?? {}, "project"), false);
     assert.equal(detail?.sourceArtifact, null);
     assert.equal(detail?.userColor, null);
     assert.equal(detail?.harness, "claude");
     assert.equal(detail?.model, "gpt-test");
     assert.equal(detail?.primaryModel, "gpt-test");
-    assert.equal(detail?.repositoryFullName, "closedloop-ai/symphony-alpha");
-    assert.equal(detail?.repo, "closedloop-ai/symphony-alpha");
+    assert.equal(detail?.repositoryFullName, "closedloop-ai/closedloop-ai");
+    assert.equal(detail?.repo, "closedloop-ai/closedloop-ai");
     assert.equal(detail?.worktreePath, "/worktrees/fea-1943");
     assert.equal(detail?.branch, "feat/fea-1943-session-details-local-data");
     assert.equal(detail?.sourceArtifactId, "FEA-1943");
-    assert.equal(detail?.sourceLoopId, "loop-local");
+    assert.equal(detail?.sourceLoopId, null);
     assert.equal(detail?.prs?.length, 2);
     assert.equal(detail?.prsMerged, 1);
     assert.equal(detail?.linesAdded, 120);
@@ -736,11 +736,10 @@ describe("shared agent sessions API mapper", () => {
     }
   });
 
-  // FEA-3551 / FEA-4287 cross-surface parity: an abandoned (orphan-swept) desktop
-  // session that shipped a PR must read as Completed — matching the cloud
-  // projection — and an abandoned session WITHOUT a PR preserves the Abandoned
-  // terminal outcome (previously collapsed to Blocked).
-  test("abandoned session with a merged PR is Completed; without a PR is Abandoned", async () => {
+  // FEA-3551 / FEA-4287 cross-surface parity, history: Completed/Abandoned,
+  // then ISS-4654/ISS-7019 folded both to Unknown. ISS-10364 (operator ruling
+  // 2026-09-23) folds that further to Active — see the trailing comment.
+  test("abandoned session with or without a merged PR now reads Active, not Unknown (ISS-10364)", async () => {
     const withPr = {
       ...session({
         id: "session-abandoned-pr",
@@ -781,21 +780,22 @@ describe("shared agent sessions API mapper", () => {
       source,
       "session-abandoned-pr"
     );
-    assert.equal(shippedDetail?.status, "abandoned");
+    assert.equal(shippedDetail?.status, SESSION_STATUS.ACTIVE);
     assert.equal(shippedDetail?.prsMerged, 1);
-    assert.equal(shippedDetail?.state, AgentSessionState.Completed);
 
     const blockedDetail = await getSharedAgentSessionDetail(
       source,
       "session-abandoned-no-pr"
     );
-    assert.equal(blockedDetail?.status, "abandoned");
+    assert.equal(blockedDetail?.status, SESSION_STATUS.ACTIVE);
     assert.equal(blockedDetail?.prsMerged, 0);
-    // ISS-4654: `abandoned` is retired, so a straggler row falls through the
-    // terminal gate to the ended-run fallback and reads Completed on BOTH
-    // surfaces — the cross-surface parity this assertion exists for is
-    // preserved, at the new value.
-    assert.equal(blockedDetail?.state, AgentSessionState.Completed);
+    /*
+     * ISS-4654 / ISS-7019: `abandoned` is a retired spelling neither surface
+     * recognizes, so the projection folds BOTH rows the same way regardless
+     * of the PR. ISS-10364 (operator ruling 2026-09-23) changed what that
+     * fold IS: `normalizeSessionStatus` fails an unrecognized value open to
+     * Active rather than the retired Unknown, so both rows now read Active.
+     */
   });
 
   // FEA-4287 cross-surface parity: a terminal ERROR desktop session preserves the
@@ -805,7 +805,7 @@ describe("shared agent sessions API mapper", () => {
     const errored = {
       ...session({
         id: "session-errored",
-        status: "error",
+        status: SESSION_STATUS.ERROR,
         awaitingInputSince: null,
         endedAt: "2026-07-20T02:10:11.000Z",
       }),
@@ -823,11 +823,12 @@ describe("shared agent sessions API mapper", () => {
       source,
       "session-errored"
     );
-    // Desktop persists the local `failed` alias for the raw status; the shared
-    // classifier normalizes error/failed and maps both to the Error terminal
-    // state (FEA-4287), so `state` — the field the detail page renders — must be
-    // Error, not Blocked, regardless of the local status spelling.
-    assert.equal(erroredDetail?.state, AgentSessionState.Error);
+    /*
+     * FEA-4287 cross-surface parity: a terminal ERROR desktop session must read
+     * as the failure on the detail page too, regardless of the local status
+     * spelling. ISS-7019 asserts it on `status`, the value the row now renders.
+     */
+    assert.equal(erroredDetail?.status, SESSION_STATUS.ERROR);
   });
 
   test("detail projects locally stored metadata messages into trace turns", async () => {
@@ -866,17 +867,6 @@ describe("shared agent sessions API mapper", () => {
     );
 
     assert.deepEqual(
-      detail?.timeline
-        ?.slice(0, 4)
-        .map((event) => [event.kind, event.title, event.detail]),
-      [
-        ["human", "human", "Please inspect the failing test."],
-        ["say", "gpt-test", "I found the failing assertion."],
-        ["human", "human", undefined],
-        ["tool", "Bash", "src/visible.ts · cat secret.txt"],
-      ]
-    );
-    assert.deepEqual(
       detail?.turnItems
         ?.filter(
           (item) =>
@@ -885,12 +875,24 @@ describe("shared agent sessions API mapper", () => {
             item.type === "tools"
         )
         .slice(0, 4)
-        .map((item) => [item.type, turnItemPreviewText(item)]),
+        .map((item) => [
+          turnItemPreviewText(item),
+          ...turnRowAttribution(item),
+        ]),
       [
-        ["prompt", "Please inspect the failing test."],
-        ["say", "I found the failing assertion."],
-        ["prompt", ""],
-        ["tools", "Ran 1 tool · 1 bash"],
+        [
+          "Please inspect the failing test.",
+          "prompt",
+          DESKTOP_LOCAL_SESSION_AUTHOR_LABEL,
+        ],
+        ["I found the failing assertion.", "say", "gpt-test"],
+        ["", "prompt", DESKTOP_LOCAL_SESSION_AUTHOR_LABEL],
+        [
+          "Ran 1 tool · 1 bash",
+          "tools",
+          "Bash",
+          "src/visible.ts · cat secret.txt",
+        ],
       ]
     );
   });
@@ -958,7 +960,7 @@ describe("shared agent sessions API mapper", () => {
     const source = createFakeSource({
       cursorRows: [
         cursor("alex-1"),
-        cursor("peter-1"),
+        cursor("perrin-1"),
         cursor("alex-2"),
         cursor("legacy-null-owner"),
       ],
@@ -969,7 +971,7 @@ describe("shared agent sessions API mapper", () => {
           userId: "user-alex",
           harness: "codex",
         }),
-        "peter-1": session({ id: "peter-1", userId: "user-peter" }),
+        "perrin-1": session({ id: "perrin-1", userId: "user-perrin" }),
         "legacy-null-owner": session({ id: "legacy-null-owner" }),
       },
     });
@@ -1025,9 +1027,9 @@ describe("shared agent sessions API mapper", () => {
                 avatarUrl: null,
               },
               {
-                id: "user-peter",
-                email: "peter@example.com",
-                firstName: "Peter",
+                id: "user-perrin",
+                email: "perrin@example.com",
+                firstName: "Perrin",
                 lastName: "P",
                 avatarUrl: null,
               },
@@ -1054,14 +1056,14 @@ describe("shared agent sessions API mapper", () => {
 
     const source = createFakeSource({
       cursorRows: [
-        cursor("s-peter"),
+        cursor("s-perrin"),
         cursor("s-null"),
         cursor("s-zara"),
         cursor("s-alex"),
       ],
       sessions: {
         "s-alex": session({ id: "s-alex", userId: "user-alex" }),
-        "s-peter": session({ id: "s-peter", userId: "user-peter" }),
+        "s-perrin": session({ id: "s-perrin", userId: "user-perrin" }),
         "s-zara": session({ id: "s-zara", userId: "user-zara" }),
         // No `userId` → owner unresolved (NULL). FEA-4330: owner-less rows sort
         // LAST in BOTH directions (matching the cloud `compareByOwnerDisplayName`
@@ -1076,7 +1078,7 @@ describe("shared agent sessions API mapper", () => {
     });
     assert.deepEqual(
       asc.items.map((item) => item.id),
-      ["s-alex", "s-peter", "s-zara", "s-null"]
+      ["s-alex", "s-perrin", "s-zara", "s-null"]
     );
 
     const desc = await getSharedAgentSessions(source, {
@@ -1085,7 +1087,7 @@ describe("shared agent sessions API mapper", () => {
     });
     assert.deepEqual(
       desc.items.map((item) => item.id),
-      ["s-zara", "s-peter", "s-alex", "s-null"]
+      ["s-zara", "s-perrin", "s-alex", "s-null"]
     );
 
     resetOrgDirectoryCacheForTest();
@@ -1097,10 +1099,10 @@ describe("shared agent sessions API mapper", () => {
     // throwing or reordering by the opaque user_id.
     resetOrgDirectoryCacheForTest();
     const source = createFakeSource({
-      cursorRows: [cursor("s-peter"), cursor("s-alex"), cursor("s-zara")],
+      cursorRows: [cursor("s-perrin"), cursor("s-alex"), cursor("s-zara")],
       sessions: {
         "s-alex": session({ id: "s-alex", userId: "user-alex" }),
-        "s-peter": session({ id: "s-peter", userId: "user-peter" }),
+        "s-perrin": session({ id: "s-perrin", userId: "user-perrin" }),
         "s-zara": session({ id: "s-zara", userId: "user-zara" }),
       },
     });
@@ -1111,7 +1113,7 @@ describe("shared agent sessions API mapper", () => {
     });
     assert.deepEqual(
       asc.items.map((item) => item.id),
-      ["s-peter", "s-alex", "s-zara"]
+      ["s-perrin", "s-alex", "s-zara"]
     );
   });
 
@@ -1119,29 +1121,29 @@ describe("shared agent sessions API mapper", () => {
     const source = createFakeSource({
       cursorRows: [
         cursor("alex-1"),
-        cursor("peter-1"),
+        cursor("perrin-1"),
         cursor("casey-1"),
         cursor("legacy-null-owner"),
       ],
       sessions: {
         "alex-1": session({ id: "alex-1", userId: "user-alex" }),
-        "peter-1": session({ id: "peter-1", userId: "user-peter" }),
+        "perrin-1": session({ id: "perrin-1", userId: "user-perrin" }),
         "casey-1": session({ id: "casey-1", userId: "user-casey" }),
         "legacy-null-owner": session({ id: "legacy-null-owner" }),
       },
     });
 
     const list = await getSharedAgentSessions(source, {
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(list.total, 2);
     assert.deepEqual(
       list.items.map((item) => item.id),
-      ["alex-1", "peter-1"]
+      ["alex-1", "perrin-1"]
     );
 
     const usage = await getSharedAgentSessionUsage(source, {
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(usage.totalSessions, 2);
   });
@@ -1151,19 +1153,19 @@ describe("shared agent sessions API mapper", () => {
   // widen past it. Parity with the cloud `applyUserScope`.
   test("scoped userId AND-constrains the Owner facet: facet keeping the scoped user pins to it", async () => {
     const source = createFakeSource({
-      cursorRows: [cursor("alex-1"), cursor("peter-1"), cursor("casey-1")],
+      cursorRows: [cursor("alex-1"), cursor("perrin-1"), cursor("casey-1")],
       sessions: {
         "alex-1": session({ id: "alex-1", userId: "user-alex" }),
-        "peter-1": session({ id: "peter-1", userId: "user-peter" }),
+        "perrin-1": session({ id: "perrin-1", userId: "user-perrin" }),
         "casey-1": session({ id: "casey-1", userId: "user-casey" }),
       },
     });
 
     // Facet includes the scoped user → intersection collapses to that one user;
-    // the wider facet member (peter) is NOT surfaced under the alex scope.
+    // the wider facet member (perrin) is NOT surfaced under the alex scope.
     const list = await getSharedAgentSessions(source, {
       userId: "user-alex",
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(list.total, 1);
     assert.deepEqual(
@@ -1173,7 +1175,7 @@ describe("shared agent sessions API mapper", () => {
 
     const usage = await getSharedAgentSessionUsage(source, {
       userId: "user-alex",
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(usage.totalSessions, 1);
   });
@@ -1181,10 +1183,10 @@ describe("shared agent sessions API mapper", () => {
   test("scoped userId AND-constrains the Owner facet: facet excluding the scoped user returns no rows, not the facet's owners", async () => {
     const aggregateCalls: unknown[] = [];
     const source = createFakeSource({
-      cursorRows: [cursor("alex-1"), cursor("peter-1"), cursor("casey-1")],
+      cursorRows: [cursor("alex-1"), cursor("perrin-1"), cursor("casey-1")],
       sessions: {
         "alex-1": session({ id: "alex-1", userId: "user-alex" }),
-        "peter-1": session({ id: "peter-1", userId: "user-peter" }),
+        "perrin-1": session({ id: "perrin-1", userId: "user-perrin" }),
         "casey-1": session({ id: "casey-1", userId: "user-casey" }),
       },
       aggregateUsage: (filters) => {
@@ -1194,18 +1196,18 @@ describe("shared agent sessions API mapper", () => {
     });
 
     // scoped user (casey) is NOT in the Owner facet → empty AND-intersection.
-    // The facet's owners (alex, peter) must NOT leak under the casey scope, and
+    // The facet's owners (alex, perrin) must NOT leak under the casey scope, and
     // the SQL aggregate must never be consulted with the emptied filter set.
     const list = await getSharedAgentSessions(source, {
       userId: "user-casey",
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(list.total, 0);
     assert.deepEqual(list.items, []);
 
     const usage = await getSharedAgentSessionUsage(source, {
       userId: "user-casey",
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(usage.totalSessions, 0);
     assert.deepEqual(aggregateCalls, []);
@@ -1249,7 +1251,7 @@ describe("shared agent sessions API mapper", () => {
     });
 
     const analytics = await getSharedAgentSessionAnalytics(source, {
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.deepEqual(analytics.byTool, [
       {
@@ -1259,11 +1261,9 @@ describe("shared agent sessions API mapper", () => {
         sessionCount: 2,
       },
     ]);
-    // ISS-5443: analytics is a deliberately DIFFERENT cohort from the usage read
-    // above — "started in the period" — so it must not inherit the surface basis.
     assert.deepEqual(source.calls[1]?.aggregateFilters, {
-      dateWindowField: SESSIONS_ANALYTICS_DATE_WINDOW_FIELD,
-      userIds: ["user-alex", "user-peter"],
+      dateWindowField: SessionDateWindowField.LastActivity,
+      userIds: ["user-alex", "user-perrin"],
     });
   });
 
@@ -1314,7 +1314,7 @@ describe("shared agent sessions API mapper", () => {
       },
     ]);
     assert.deepEqual(source.calls[1]?.aggregateFilters, {
-      dateWindowField: SESSIONS_ANALYTICS_DATE_WINDOW_FIELD,
+      dateWindowField: SessionDateWindowField.LastActivity,
       statuses: ["completed", "failed"],
     });
   });
@@ -1325,12 +1325,12 @@ describe("shared agent sessions API mapper", () => {
         "completed-a": session({
           id: "completed-a",
           status: "completed",
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
         }),
         "running-b": session({
           id: "running-b",
           status: SESSION_STATUS.ACTIVE,
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
         }),
         "other-repo": session({
           id: "other-repo",
@@ -1347,7 +1347,7 @@ describe("shared agent sessions API mapper", () => {
     });
 
     const request = {
-      repositories: ["closedloop-ai/symphony-alpha"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     };
     const list = await getSharedAgentSessions(source, request);
     assert.equal(list.total, 2);
@@ -1357,19 +1357,19 @@ describe("shared agent sessions API mapper", () => {
     );
 
     const usage = await getSharedAgentSessionUsage(source, {
-      repositories: ["closedloop-ai/symphony-alpha"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     });
     assert.equal(usage.totalSessions, list.total);
 
     const analytics = await getSharedAgentSessionAnalytics(source, {
-      repositories: ["closedloop-ai/symphony-alpha"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     });
     assert.deepEqual(
       analytics.byRepository.map((entry) => [
         entry.repositoryFullName,
         entry.sessionCount,
       ]),
-      [["closedloop-ai/symphony-alpha", 2]]
+      [["closedloop-ai/closedloop-ai", 2]]
     );
     // ISS-4535: a repo-filtered read resolves its match set pre-hydration via
     // `listRepositoryScopedSessionIds` (not the full `listAllSessionCursorRows`),
@@ -1387,9 +1387,9 @@ describe("shared agent sessions API mapper", () => {
     );
   });
 
-  // ISS-4535 (PR #3996, @wongk): the Repository facet OPTION list comes from the
+  // ISS-4535 (PR #3996, @whitlockk): the Repository facet OPTION list comes from the
   // ALL-TIME SQL aggregate, but the repo predicate used to run on the hydrated
-  // corpus — which `resolveOrderedIds` caps to the MAX_WORKING_SET_SESSIONS
+  // corpus — which `resolveOrderedIds` caps to the SESSION_HYDRATION_WINDOW
   // NEWEST sessions on the full-hydration fallback. A repo represented ONLY by
   // sessions older than that window was therefore offered as a filter option and
   // then returned NO rows. The fix pushes the predicate INTO the pre-hydration id
@@ -1399,11 +1399,11 @@ describe("shared agent sessions API mapper", () => {
   //
   // The repo-scoped source returns matches newest-first (updated_at DESC), so
   // seeding the target repo ONLY in the OLDER tail (beyond index
-  // MAX_WORKING_SET_SESSIONS) proves the older-than-window repo still resolves.
-  test("repository filter selects rows older than the MAX_WORKING_SET_SESSIONS window (ISS-4535)", async () => {
+  // SESSION_HYDRATION_WINDOW) proves the older-than-window repo still resolves.
+  test("repository filter selects rows older than the SESSION_HYDRATION_WINDOW window (ISS-4535)", async () => {
     const targetRepo = "closedloop-ai/older-only";
     const otherRepo = "closedloop-ai/newest";
-    const overCap = MAX_WORKING_SET_SESSIONS + 40;
+    const overCap = SESSION_HYDRATION_WINDOW + 40;
     const sessions: Record<string, SyncedAgentSession> = {};
     const cursorRows: SessionCursorRow[] = [];
     const olderRepoIds: string[] = [];
@@ -1453,14 +1453,14 @@ describe("shared agent sessions API mapper", () => {
     );
 
     // Sanity: the full corpus really did exceed the cap, so the older-only repo
-    // was outside the MAX_WORKING_SET_SESSIONS newest window.
+    // was outside the SESSION_HYDRATION_WINDOW newest window.
     assert.ok(
-      overCap > MAX_WORKING_SET_SESSIONS,
+      overCap > SESSION_HYDRATION_WINDOW,
       "corpus must exceed the cap for this regression to bite"
     );
   });
 
-  // ISS-4535 (@wongk): a repo whose worktree was DELETED renders from the durable
+  // ISS-4535 (@whitlockk): a repo whose worktree was DELETED renders from the durable
   // stored `repo_full_name` (live cwd remote resolution returns null). The facet
   // offers it (its aggregate resolves live-first, stored-fallback), so selecting
   // it MUST return the row. Both sides use the SAME persisted-aware identity: the
@@ -1504,15 +1504,15 @@ describe("shared agent sessions API mapper", () => {
     assert.equal(list.total, 1);
   });
 
-  // ISS-4535 (@wongk, cid 3680603493/3680603497): the repo-filter read must NOT
+  // ISS-4535 (@whitlockk, cid 3680603493/3680603497): the repo-filter read must NOT
   // reopen the uncapped full-corpus hydration FEA-4286 bounded. ISS-4558: it now
   // PAGES the pre-hydration id set, so this pins the EXACT page — a `<= cap`
-  // bound would pass for anything this branch returns (thadeusb, cid
+  // bound would pass for anything this branch returns (tamsinb, cid
   // 3754019307). The fallback's own cap, and the honest `total`, are pinned in
   // shared-agent-sessions-repository-population.test.ts.
   test("repository filter hydrates exactly one page, not the capped working set (ISS-4535)", async () => {
     const targetRepo = "closedloop-ai/over-cap";
-    const overCap = MAX_WORKING_SET_SESSIONS + 50;
+    const overCap = SESSION_HYDRATION_WINDOW + 50;
     const sessions: Record<string, SyncedAgentSession> = {};
     const cursorRows: SessionCursorRow[] = [];
     for (let index = 0; index < overCap; index++) {
@@ -1541,10 +1541,10 @@ describe("shared agent sessions API mapper", () => {
   });
 
   // The unfiltered-fallback cap over an over-cap corpus is already covered by
-  // `search/facet fallback hydrates at most MAX_WORKING_SET_SESSIONS ids over a
+  // `search/facet fallback hydrates at most SESSION_HYDRATION_WINDOW ids over a
   // larger corpus` later in this file (same +25 seed, same free-text usage
   // fallback, same single-hydration-at-cap assertion, plus a summary check), so
-  // no duplicate is kept here (shafty023, cid 3683127332).
+  // no duplicate is kept here (davetho, cid 3683127332).
 
   test("filters the local list by harness, model, autonomy tier, and cost bucket", async () => {
     const withFacets = (
@@ -1684,7 +1684,7 @@ describe("shared agent sessions API mapper", () => {
           filesChanged: 0,
           prRefs: [
             {
-              repositoryFullName: "closedloop-ai/symphony-alpha",
+              repositoryFullName: "closedloop-ai/closedloop-ai",
               prNumber: 9,
               relationType: SessionPrRelationType.Referenced,
             },
@@ -1735,7 +1735,7 @@ describe("shared agent sessions API mapper", () => {
     assert.equal(prRefOnly?.prs?.[0]?.num, 9);
   });
 
-  test("projects local active fallback state by terminal and awaiting precedence", async () => {
+  test("projects local active fallback state (ISS-10364)", async () => {
     const source = createFakeSource({
       cursorRows: [
         cursor("ended-running-session"),
@@ -1766,11 +1766,17 @@ describe("shared agent sessions API mapper", () => {
 
     const list = await getSharedAgentSessions(source);
     assert.deepEqual(
-      list.items.map((item) => [item.id, item.state]),
+      list.items.map((item) => [item.id, item.status]),
+      /*
+       * ISS-10364 (operator ruling 2026-09-23): all three rows display their
+       * stored `active` directly, and each carries a different one of the
+       * signals that used to override it — a recorded end, silence past the
+       * staleness cutoff, and `awaitingInputSince`.
+       */
       [
-        ["ended-running-session", AgentSessionState.Completed],
-        ["active-running-session", AgentSessionState.Running],
-        ["awaiting-running-session", AgentSessionState.PendingApproval],
+        ["ended-running-session", SESSION_STATUS.ACTIVE],
+        ["active-running-session", SESSION_STATUS.ACTIVE],
+        ["awaiting-running-session", SESSION_STATUS.ACTIVE],
       ]
     );
 
@@ -1778,7 +1784,7 @@ describe("shared agent sessions API mapper", () => {
       source,
       "ended-running-session"
     );
-    assert.equal(detail?.state, AgentSessionState.Completed);
+    assert.equal(detail?.status, SESSION_STATUS.ACTIVE);
   });
 
   test("unsupported cloud filters and disabled or stale states fail closed", async () => {
@@ -1906,7 +1912,7 @@ describe("shared agent sessions API mapper", () => {
         entry.sessionCount,
         entry.errorCount,
       ]),
-      [["closedloop-ai/symphony-alpha", 1, 1]]
+      [["closedloop-ai/closedloop-ai", 1, 1]]
     );
   });
 
@@ -1976,13 +1982,16 @@ describe("shared agent sessions API mapper", () => {
     }
   });
 
-  test("autonomy-faceted usage falls back to full-hydrate; cost stays on the fast path (FEA-2504)", async () => {
+  test("autonomy-faceted usage falls back to full-hydrate (FEA-2504)", async () => {
     // The real lightweight `loadUsageSessions` load omits the events/analytics
     // that `session.autonomy` is derived from, so its rows carry a null autonomy.
     // Model this by stripping autonomy (but keeping tokenUsageByModel, which the
     // lightweight rows DO carry). With an autonomy facet active the summary must
-    // fall back to the full-hydrate path so the metric cards filter like the list;
-    // a cost facet, derived from the carried tokenUsageByModel, may stay fast.
+    // fall back to the full-hydrate path so the metric cards filter like the
+    // list. The cost half this test used to carry moved to
+    // `shared-agent-sessions-usage-repository-fast-path.test.ts` when ISS-6416
+    // put Cost on the same footing: once it also falls back, a parity assertion
+    // here would compare the hydrated path with itself and could not fail.
     const sessions = {
       autonomous: {
         ...session({ id: "autonomous" }),
@@ -2042,19 +2051,6 @@ describe("shared agent sessions API mapper", () => {
       1,
       "only the high-autonomy session"
     );
-
-    // Cost facet: derived from the carried tokenUsageByModel, so the fast path is
-    // correct and must still match the full-hydrate reference.
-    const fullCost = await getSharedAgentSessionUsage(
-      createFakeSource({ sessions }),
-      { costBuckets: ["from_50"] }
-    );
-    const fastCost = await getSharedAgentSessionUsage(
-      lightweightMisclassifiesAutonomy(),
-      { costBuckets: ["from_50"] }
-    );
-    assert.deepEqual(fastCost, fullCost);
-    assert.equal(fastCost.totalSessions, 1, "only the expensive session");
   });
 
   test("usage fast path rebuilds from ordered ids, dropping out-of-order and extra rows (FEA-1834)", async () => {
@@ -2110,69 +2106,6 @@ describe("shared agent sessions API mapper", () => {
       {}
     );
     assert.deepEqual(lightweight, full);
-  });
-
-  test("usage `loadUsageSessions` fast path hydrates at most MAX_WORKING_SET_SESSIONS ids on a >5000 corpus (FEA-4286)", async () => {
-    // FEA-4286 reverses the earlier FEA-3207 uncapped-parity decision for this
-    // path. `loadUsageSessions` materializes EVERY resolved session into JS and
-    // folds it (`buildUsageSummary`); "lightweight per row" (metadata +
-    // tokenUsageByModel, no agents/events) is not "bounded in total". Uncapped it
-    // is O(corpus), and it runs on the Sessions page's 2 s background page-data
-    // poll — on a large local corpus that steady-cadence full-corpus hydrate
-    // starved the desktop main process and wedged the renderer (the Vite HMR
-    // "server connection lost" hang). The fast path must now bound its hydration
-    // at the FEA-3132 A5b ceiling, exactly like every other hydration path.
-    const corpusSize = MAX_WORKING_SET_SESSIONS + 137;
-    const cursorRows: SessionCursorRow[] = [];
-    const sessions: Record<string, SyncedAgentSession> = {};
-    for (let i = 0; i < corpusSize; i++) {
-      const id = `bulk-${String(i).padStart(5, "0")}`;
-      cursorRows.push(cursor(id));
-      sessions[id] = session({ id });
-    }
-
-    // Capture exactly which ids the usage fast path hands to `loadUsageSessions`,
-    // so we can assert its aggregation basis is bounded, not the full corpus.
-    let usageLoadIds: string[] = [];
-    const source: AgentSessionSyncSource & { calls: SourceCall[] } = {
-      ...createFakeSource({ cursorRows, sessions }),
-      loadUsageSessions(ids: string[]): SyncedAgentSession[] {
-        usageLoadIds = [...ids];
-        return ids.flatMap((id) => {
-          const loaded = sessions[id];
-          return loaded ? [loaded] : [];
-        });
-      },
-    };
-
-    // No facet filters + no `aggregateUsage`: the usage summary takes the
-    // pushable `loadUsageSessions` fast path (the SQL aggregate is tried first,
-    // but `createFakeSource` omits it here).
-    const usage = await getSharedAgentSessionUsage(source, {});
-
-    // Sanity: the corpus genuinely exceeds the cap, so an uncapped path would
-    // have hydrated every one of `corpusSize` sessions.
-    assert.ok(
-      corpusSize > MAX_WORKING_SET_SESSIONS,
-      "corpus must exceed the working-set ceiling to exercise the bound"
-    );
-    assert.equal(
-      usageLoadIds.length,
-      MAX_WORKING_SET_SESSIONS,
-      "loadUsageSessions must receive at most the MAX_WORKING_SET_SESSIONS most-recent ids"
-    );
-    assert.ok(
-      usageLoadIds.length < corpusSize,
-      "the usage fast path is bounded — it no longer hydrates the full corpus"
-    );
-    // The bounded aggregate covers the capped set (documented FEA-4286 trade-off:
-    // past the ceiling the usage total trails the true corpus size; exact parity
-    // belongs on the never-hydrating SQL `aggregateUsage` aggregate).
-    assert.equal(
-      usage.totalSessions,
-      MAX_WORKING_SET_SESSIONS,
-      "usage summary aggregates over the bounded most-recent working set"
-    );
   });
 
   test("source failures reject instead of returning empty success", async () => {
@@ -2473,53 +2406,6 @@ describe("shared agent sessions API mapper", () => {
     );
   });
 
-  // FEA-3142 (FEA-3132 P0 / A5b): a search or facet filter that can't be pushed
-  // into SQL drops onto the non-paginated full-corpus fallback
-  // (loadWorkingSessions(applyPagination:false) → loadSyncedSessions over
-  // resolveOrderedIds). That path must hydrate at MOST MAX_WORKING_SET_SESSIONS
-  // ids, not the whole corpus — otherwise a searched read over a huge corpus is
-  // the read-side allocator that co-peaks with backfill. A free-text search
-  // forces this fallback (it skips the aggregate + lightweight usage paths), so
-  // a corpus larger than the ceiling must still hydrate no more than the ceiling.
-  test("search/facet fallback hydrates at most MAX_WORKING_SET_SESSIONS ids over a larger corpus", async () => {
-    const overCap = MAX_WORKING_SET_SESSIONS + 25;
-    const sessions: Record<string, SyncedAgentSession> = {};
-    const cursorRows: SessionCursorRow[] = [];
-    for (let index = 0; index < overCap; index++) {
-      // Zero-pad so the id substring "match" needle hits every session and the
-      // fallback's matchesQuery keeps them all (worst case for hydration).
-      const id = `match-${String(index).padStart(6, "0")}`;
-      sessions[id] = session({ id, cwd: `/tmp/match/${id}` });
-      cursorRows.push(cursor(id));
-    }
-    const source = createFakeSource({ cursorRows, sessions });
-
-    // Free-text search flips canUseAggregateSessionFilters false and, absent a
-    // cursor-page-eligible sort, lands on the full-corpus hydration fallback.
-    const summary = await getSharedAgentSessionUsage(source, {
-      search: "match",
-    });
-
-    const loadCalls = source.calls.filter(
-      (call) => call.kind === "loadSyncedSessions"
-    );
-    assert.equal(loadCalls.length, 1, "expected a single hydration call");
-    const hydratedIds = loadCalls[0]?.ids ?? [];
-    assert.ok(
-      hydratedIds.length <= MAX_WORKING_SET_SESSIONS,
-      `fallback hydrated ${hydratedIds.length} ids, expected <= ${MAX_WORKING_SET_SESSIONS}`
-    );
-    assert.equal(
-      hydratedIds.length,
-      MAX_WORKING_SET_SESSIONS,
-      "the ceiling should be filled exactly when the corpus exceeds it"
-    );
-    // The bounded read still produces a real summary (it is not empty), proving
-    // the cap trims the tail rather than dropping the whole working set.
-    assert.equal(summary.totalSessions, MAX_WORKING_SET_SESSIONS);
-    assert.equal(summary.viewerScope, "self");
-  });
-
   // FEA-3284/FEA-3345: hide idle sessions on the desktop read, mirroring the
   // cloud `quality` param + idleCount. An idle row carries no turns, no tokens,
   // and no tool-use events; a substantive row has at least one signal. Hiding is
@@ -2555,10 +2441,11 @@ describe("shared agent sessions API mapper", () => {
       limit: 25,
     });
 
-    // Forces the full-hydration path — not the SQL cursor page.
+    // Forces the hydrating path — not the SQL cursor page. ISS-6895: that path
+    // scans in windows, then hydrates the page's ids separately.
     assert.deepEqual(
       source.calls.map((call) => call.kind),
-      ["listAllSessionCursorRows", "loadSyncedSessions"]
+      ["listAllSessionCursorRows", "loadSyncedSessions", "loadSyncedSessions"]
     );
     assert.deepEqual(response.items.map((item) => item.id).sort(), [
       "live-a",
@@ -2647,10 +2534,11 @@ describe("shared agent sessions API mapper", () => {
       limit: 25,
     });
 
-    // Forces the full-hydration path — not the SQL cursor page.
+    // Forces the hydrating path — not the SQL cursor page. ISS-6895: that path
+    // scans in windows, then hydrates the page's ids separately.
     assert.deepEqual(
       source.calls.map((call) => call.kind),
-      ["listAllSessionCursorRows", "loadSyncedSessions"]
+      ["listAllSessionCursorRows", "loadSyncedSessions", "loadSyncedSessions"]
     );
     assert.deepEqual(response.items.map((item) => item.id).sort(), [
       "idle-a",
@@ -2768,14 +2656,7 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
     assert.equal(pageData.usageError, undefined);
   });
 
-  // FEA-4192: the summary session COUNT must mirror the quality-gated LIST total,
-  // not the all-quality corpus. The list half applies the Substantive|Idle|All
-  // segment (`matchesListQuery`); the usage half stays all-quality so its
-  // token/cost totals match the SQL `aggregateUsage` (which cannot express the
-  // substantive predicate on the column-less desktop `sessions` table). Left
-  // unreconciled, the "Sessions" card counted the all-quality set while the list
-  // showed the gated subset — a visible contradiction under any non-`all` segment.
-  test("mirrors the quality-gated list total into the summary session count under a substantive segment", async () => {
+  test("uses the substantive population for list count and usage totals", async () => {
     const idle = (id: string): SyncedAgentSession => ({
       ...session({ id }),
       turns: null,
@@ -2795,9 +2676,7 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
         "idle-b": idle("idle-b"),
         "live-b": session({ id: "live-b" }),
       },
-      // The usage aggregate is all-quality: it counts every row (idle included),
-      // so its raw totalSessions (4) DIFFERS from the substantive list total (2).
-      // Token totals stay sourced from the all-quality aggregate by design.
+      // A legacy all-quality aggregate would contradict the substantive rows.
       aggregateUsage: () =>
         usageAggregate({
           totalSessions: 4,
@@ -2823,14 +2702,15 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
       limit: 25,
     });
 
-    // The list half hid the two idle rows.
     assert.equal(pageData.list.total, 2);
-    // The "Sessions" card count now mirrors the list total, not the all-quality
-    // aggregate's 4.
     assert.equal(pageData.usage?.totalSessions, 2);
-    // Token/cost cards keep their all-quality basis — only the COUNT is reconciled.
-    assert.equal(pageData.usage?.totalInputTokens, 1000);
-    assert.equal(pageData.usage?.totalOutputTokens, 500);
+    assert.equal(pageData.usage?.totalInputTokens, 20);
+    assert.equal(pageData.usage?.totalOutputTokens, 40);
+    assert.equal(pageData.usage?.totalEstimatedCost, 0.5);
+    assert.equal(
+      source.calls.filter((call) => call.kind === "aggregateUsage").length,
+      0
+    );
   });
 
   // FEA-4177 — independent failure domains. A usage-aggregate failure must NOT
@@ -2856,7 +2736,7 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
     assert.equal(pageData.usageErrorTransient, undefined);
   });
 
-  // ISS-4483 (review cid 3679616168, wongk): when the list wins the race and the
+  // ISS-4483 (review cid 3679616168, whitlockk): when the list wins the race and the
   // usage aggregate rejects with a TRANSIENT db-host lifecycle error (the child
   // restarting mid-backfill), the combined read still resolves (list rendered) but
   // additionally stamps `usageErrorTransient: true` so the renderer routes the
@@ -2883,12 +2763,10 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
   test("serves the usage half from the metadata-only SQL aggregate, not a full-row hydrate", async () => {
     const source = createFakeSource({
       cursorRows: [cursor("session-a"), cursor("session-b")],
-      aggregateUsage: (filters) =>
+      aggregateUsage: () =>
         usageAggregate({
-          totalSessions: filters.statuses?.length ?? 2,
-          harnessSessionCounts: [
-            { harness: "claude", sessionCount: filters.statuses?.length ?? 2 },
-          ],
+          totalSessions: 1,
+          harnessSessionCounts: [{ harness: "claude", sessionCount: 1 }],
         }),
     });
 
@@ -2898,13 +2776,9 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
       offset: 0,
     });
 
-    // FEA-4192: the summary session COUNT now mirrors the quality-gated list
-    // total rather than the raw aggregate count. Every OTHER usage field still
-    // flows straight from the aggregate untouched — the harness breakdown carries
-    // the aggregate's own `filters.statuses.length` (2), proving the facet filters
-    // were threaded into the aggregate SQL and its value reached the summary.
+    // Only session-a matches the status facet; the aggregate models that row.
     assert.equal(pageData.usage?.totalSessions, pageData.list.total);
-    assert.equal(pageData.usage?.byHarness[0]?.sessionCount, 2);
+    assert.equal(pageData.usage?.byHarness[0]?.sessionCount, 1);
     // The usage half took the aggregate SQL path (COUNT/SUM/GROUP BY) with the
     // active facet filters — no pagination leaked into the aggregate, and no
     // second `loadSyncedSessions` hydrate ran to compute the summary.
@@ -2969,8 +2843,8 @@ describe("getSharedAgentSessionsPageData (FEA-4157 combined read)", () => {
 // ONE source (`repositoryFullName`); a session with no resolved remote renders
 // "Unknown" and is intentionally NOT a facet option.
 describe("Repository filter options match the rendered repository (FEA-4299)", () => {
-  const repoAlpha = "closedloop-ai/symphony-alpha";
-  const repoBeta = "closedloop-ai/cl-tofu-aws-live";
+  const repoAlpha = "closedloop-ai/closedloop-ai";
+  const repoBeta = "example-org/infrastructure";
 
   function repoSource() {
     return createFakeSource({
@@ -3075,10 +2949,10 @@ describe("Repository filter options match the rendered repository (FEA-4299)", (
   // FEA-4299/FEA-4330: the repository sort keeps the "Unknown" (null
   // repositoryFullName) row LAST in BOTH directions, matching the cloud's
   // `nulls: "last"` ORDER BY. Coercing null to "" sorted it FIRST ascending —
-  // the shafty023 regression this covers.
+  // the davetho regression this covers.
   test("repository sort keeps the Unknown row last in both directions", async () => {
-    // repoBeta ("closedloop-ai/cl-tofu-aws-live") sorts before repoAlpha
-    // ("closedloop-ai/symphony-alpha") by name; the null-repo row is Unknown.
+    // repoBeta ("example-org/infrastructure") sorts before repoAlpha
+    // ("closedloop-ai/closedloop-ai") by name; the null-repo row is Unknown.
     const ascending = await getSharedAgentSessions(repoSource(), {
       sortBy: "repo",
       sortDir: "asc",

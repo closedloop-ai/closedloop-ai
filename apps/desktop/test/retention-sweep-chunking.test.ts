@@ -10,8 +10,8 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import { EVENT_INSERT_PARAM_CAP } from "../src/main/database/db-constants.js";
 import type {
   Prisma,
@@ -129,7 +129,7 @@ test("ISS-5492: an expired set larger than SWEEP_ID_CHUNK is purged across chunk
     // shape as the ISS-5182 assertion on the stale sweep.
     //
     // Every delete is asserted, not just the raw one: chunking ONLY the raw
-    // `token_events` statement and leaving the 18 typed `deleteMany` calls on the
+    // `token_events` statement and leaving the 26 typed `deleteMany` calls on the
     // whole id list would be the same bug with 18 sites left, and a raw-only
     // assertion would stay green on it.
     assert.ok(
@@ -237,7 +237,7 @@ function withRecordingTransaction(
 
 /**
  * Records the `in`-list length of every typed `deleteMany` the code under test
- * issues, so the 18 typed child deletes are held to the same bound as the one raw
+ * issues, so the 26 typed child deletes are held to the same bound as the one raw
  * statement. Without this, chunking only the raw `token_events` delete would keep
  * the suite green.
  */

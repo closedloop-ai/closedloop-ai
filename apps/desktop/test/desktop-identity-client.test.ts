@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { fetchDesktopIdentity } from "../src/main/auth/desktop-identity-client.js";
 import { sessionFetchStub } from "./session-fetch-test-utils.js";
 
@@ -7,9 +7,9 @@ const API_ORIGIN = "https://api.closedloop.test";
 const IDENTITY = {
   userId: "user-1",
   organizationId: "org-1",
-  email: "kris@closedloop.ai",
-  firstName: "Kris",
-  lastName: "Wong",
+  email: "kerensa@closedloop.ai",
+  firstName: "Kerensa",
+  lastName: "Whitlock",
   organizationName: "Acme Inc",
 };
 
@@ -74,27 +74,6 @@ test("fetchDesktopIdentity returns null on a schema-invalid body", async () => {
   assert.equal(result, null);
 });
 
-// ISS-4623 (shafty023 review) — the ONLY response that reaches the store's
-// `"unsupported"` (degrade-to-allow) arm must be an otherwise well-formed
-// identity that omits ONLY the optional `sessionSyncPolicyEnabled` AND carries no
-// capability marker. A malformed or truncated CURRENT-server response that drops
-// a REQUIRED field must fail the schema and return `null`, so the store keeps its
-// fail-closed last-known state rather than mistaking the truncation for an old
-// server and degrading to allow.
-test("fetchDesktopIdentity: well-formed body omitting ONLY the policy field parses (feeds the 'unsupported' degrade)", async () => {
-  const { fetchImpl } = sessionFetchStub(
-    new Response(JSON.stringify({ success: true, data: IDENTITY }), {
-      status: 200,
-    })
-  );
-
-  const result = await fetchDesktopIdentity(options({ fetch: fetchImpl }));
-
-  // IDENTITY has every required field but no `sessionSyncPolicyEnabled`.
-  assert.notEqual(result, null);
-  assert.equal(result?.sessionSyncPolicyEnabled, undefined);
-});
-
 test("fetchDesktopIdentity: a truncated body missing a REQUIRED field fails closed to null (not degrade)", async () => {
   // `organizationId` dropped: a malformed current-server response, indistinguishable
   // from an old server by field-presence alone if it reached the store — but the
@@ -111,35 +90,23 @@ test("fetchDesktopIdentity: a truncated body missing a REQUIRED field fails clos
   assert.equal(result, null);
 });
 
-test("fetchDesktopIdentity preserves the ISS-4705 capability marker + policy flag", async () => {
-  const capableIdentity = {
+test("ISS-11449: a server still sending the retired policy fields parses, and they are ignored", async () => {
+  // Servers keep sending `sessionSyncPolicyEnabled` and
+  // `sessionSyncPolicySupported` for desktops built before ISS-11449, and this
+  // schema no longer declares either. What
+  // this pins is that an UNDECLARED key does not fail the parse: a rejection
+  // would return `null` and blank the Account tab against a healthy server. It
+  // does NOT pin `.passthrough()` specifically — a bare `z.object` strips unknown
+  // keys and would pass this too; the case guards against someone tightening the
+  // schema to `.strict()`, which is the shape that would reject.
+  const legacyServerIdentity = {
     ...IDENTITY,
     sessionSyncPolicyEnabled: false,
     sessionSyncPolicySupported: true,
   };
   const { fetchImpl } = sessionFetchStub(
-    new Response(JSON.stringify({ success: true, data: capableIdentity }), {
-      status: 200,
-    })
-  );
-
-  const result = await fetchDesktopIdentity(options({ fetch: fetchImpl }));
-
-  assert.deepEqual(result, capableIdentity);
-});
-
-test("fetchDesktopIdentity parses a buggy CURRENT-server body: marker present, policy field dropped", async () => {
-  // ISS-4705 sub-case 2: an otherwise well-formed identity that advertises
-  // policy support but omits ONLY sessionSyncPolicyEnabled is still a VALID
-  // response shape (the field is optional). The schema must not reject it — the
-  // fail-closed decision belongs to the policy store, which reads the marker.
-  const buggyCurrentIdentity = {
-    ...IDENTITY,
-    sessionSyncPolicySupported: true,
-  };
-  const { fetchImpl } = sessionFetchStub(
     new Response(
-      JSON.stringify({ success: true, data: buggyCurrentIdentity }),
+      JSON.stringify({ success: true, data: legacyServerIdentity }),
       {
         status: 200,
       }
@@ -148,12 +115,69 @@ test("fetchDesktopIdentity parses a buggy CURRENT-server body: marker present, p
 
   const result = await fetchDesktopIdentity(options({ fetch: fetchImpl }));
 
-  // The dropped field must be ABSENT, not present-and-undefined. `Object.hasOwn`
-  // says so directly; reading `result.sessionSyncPolicyEnabled` after the
-  // deepEqual below cannot, because that assertion narrows `result` to the
-  // fixture's own type — which has no such key, making the check vacuous.
   assert.ok(result);
-  assert.equal(Object.hasOwn(result, "sessionSyncPolicyEnabled"), false);
-  assert.deepEqual(result, buggyCurrentIdentity);
-  assert.equal(result.sessionSyncPolicySupported, true);
+  // Every declared field survives, which is the half that matters. The retired
+  // keys ride through untyped (that part IS `.passthrough()`), and no consumer
+  // reads them.
+  assert.equal(result.userId, IDENTITY.userId);
+  assert.equal(result.organizationId, IDENTITY.organizationId);
+  assert.equal(result.organizationName, IDENTITY.organizationName);
+});
+
+test("fetchDesktopIdentity refuses a non-string image field instead of passing it through", async () => {
+  // ISS-11465: `.passthrough()` carries an UNDECLARED key through untouched, so
+  // before these two were declared on the schema a number or an object landed
+  // in the renderer typed `string | undefined` and went straight into an
+  // `<img src>`. The well-formed case below is the presence half on the same
+  // field, so this cannot pass by rejecting everything.
+  const { fetchImpl } = sessionFetchStub(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: { ...IDENTITY, organizationImageUrl: 42 },
+      }),
+      { status: 200 }
+    )
+  );
+
+  const result = await fetchDesktopIdentity(options({ fetch: fetchImpl }));
+
+  assert.equal(result, null);
+});
+
+test("fetchDesktopIdentity accepts the images present, null, and absent", async () => {
+  const withImages = sessionFetchStub(
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          ...IDENTITY,
+          organizationImageUrl: "https://img.clerk.com/org",
+          userImageUrl: null,
+        },
+      }),
+      { status: 200 }
+    )
+  );
+
+  const result = await fetchDesktopIdentity(
+    options({ fetch: withImages.fetchImpl })
+  );
+
+  assert.equal(result?.organizationImageUrl, "https://img.clerk.com/org");
+  assert.equal(result?.userImageUrl, null);
+
+  // An OLDER server omits both entirely; that is not a payload rejection.
+  const withoutImages = sessionFetchStub(
+    new Response(JSON.stringify({ success: true, data: IDENTITY }), {
+      status: 200,
+    })
+  );
+
+  const older = await fetchDesktopIdentity(
+    options({ fetch: withoutImages.fetchImpl })
+  );
+
+  assert.equal(older?.organizationImageUrl, undefined);
+  assert.equal(older?.userImageUrl, undefined);
 });

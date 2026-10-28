@@ -51,6 +51,8 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
   breadcrumbParentLink,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
 } from "./helpers/desktop-app";
@@ -153,8 +155,8 @@ test.describe("Sessions Duration is bounded by a terminal end (ISS-5182)", () =>
       try {
         await gotoNav(page, "sessions");
         // Widen to "All time" so the seed is in range regardless of the default
-        // window. `:visible` scopes to the mounted Sessions toolbar.
-        await page.locator('[aria-label="All time"]:visible').click();
+        // window.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // Prove the row rendered before asserting anything negative about it.
         const rowLink = page.getByRole("link", { name: SESSION_NAME });

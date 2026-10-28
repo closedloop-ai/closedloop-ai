@@ -12,9 +12,10 @@
  *    implementation (`src/main/dashboard/agent-component-honest-source.ts`)
  *    resolving over SQLite columns instead of merged cloud rows. A web-only spec
  *    proves nothing about it.
- *  - The FLAG. The packaged renderer has no PostHog wiring, so it resolves the
- *    byte-equal key from its own Labs registry. A split key would land the fix on
- *    web and leave desktop dark forever.
+ *  - The FLAG. The renderer runs no PostHog SDK of its own, so it resolves the
+ *    byte-equal key from the signed-in account's PostHog assignment, delivered
+ *    over the IPC bridge. A split key would land the fix on web and leave
+ *    desktop dark forever.
  *
  * The seeded pair is chosen so the honest and legacy values DIVERGE on the
  * desktop chain specifically: the provenance row carries only `source_url`,
@@ -56,8 +57,7 @@ import { waitForBranchesSchema } from "./helpers/seed-branches-db";
  * imported from `../../src/shared/feature-flags`: that module's extension-less
  * `@repo/api/src/types/...` specifiers do not resolve under Playwright's ESM
  * loader, and a spec-level import failure aborts the WHOLE desktop-e2e suite at
- * load time (see the same note in `agents-loc-per-dollar-display.spec.ts` and
- * `sessions-column-fold.spec.ts`). The copy is pinned by the ISS-5009 case in
+ * load time. The copy is pinned by the ISS-5009 case in
  * `apps/desktop/test/feature-flags-shared-ui.test.ts`, which asserts this exact
  * string against `AGENTS_SOURCE_PROVENANCE_FLAG_KEY`, so a rename fails there
  * rather than silently leaving this spec seeding a key nothing reads.
@@ -231,8 +231,7 @@ function sourceCell(page: Page, componentName: string) {
  * `seedE2eDesktopSettings` rewrites the settings file each time.
  *
  * CLAUDE_HOME / CODEX_HOME are empty temp dirs so the boot collectors ingest
- * nothing and the only inventory rows are the seeded ones (mirrors
- * `agents-loc-per-dollar-display.spec.ts`).
+ * nothing and the only inventory rows are the seeded ones.
  */
 async function withSeededDesktopProfile(
   { flagOn, prefix }: { flagOn: boolean; prefix: string },

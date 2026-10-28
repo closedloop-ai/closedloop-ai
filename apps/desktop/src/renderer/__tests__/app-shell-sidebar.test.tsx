@@ -9,7 +9,10 @@
  */
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { dashboardOnboardedStorageKey } from "../components/dashboard/dashboard-storage-keys";
 import { DESKTOP_LABS_NAV_SECTION_STORAGE_KEY } from "../components/layout/sidebar-persistence";
+import { pageTitleForNav } from "../navigation/nav-config";
+import { NavId } from "../navigation/route-table";
 import {
   DASHBOARD_NAV_LINK_RE,
   DESKTOP_SIDEBAR_OPEN_STORAGE_KEY,
@@ -53,7 +56,9 @@ describe("App shell sidebar persistence", () => {
     const labsToggle = await screen.findByRole("button", { name: "Labs" });
 
     expect(labsToggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("link", { name: "Insights" })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: pageTitleForNav(NavId.Insights) })
+    ).toBeNull();
 
     fireEvent.click(labsToggle);
 
@@ -93,21 +98,51 @@ describe("App shell sidebar persistence", () => {
     wrongKeyRender.unmount();
 
     window.localStorage.clear();
+    // Re-seed what `clear()` just wiped. This case is about the SIDEBAR key, and
+    // an install with no first-run key stored is a first run, so an unqualified
+    // clear here opens the guided onboarding modal over the shell being asserted
+    // on.
+    window.localStorage.setItem(dashboardOnboardedStorageKey, "1");
     window.localStorage.setItem(DESKTOP_SIDEBAR_OPEN_STORAGE_KEY, "collapsed");
     renderDesktopApp("");
     expect(await screen.findByTitle("Collapse sidebar")).toBeDefined();
   });
 
   it("defaults desktop sidebar expanded when localStorage read is unavailable", async () => {
-    const getItemSpy = vi
-      .spyOn(window.localStorage, "getItem")
-      .mockImplementation(() => {
-        throw new Error("localStorage read blocked");
-      });
+    // Scoped to the sidebar key rather than throwing for every read. A blanket
+    // throw also blocks the first-run keys, and the first-launch dashboard reads
+    // an unreadable first-run key as "first launch" — so its reveal and tour
+    // would play over the shell and this case would be measuring the wrong
+    // screen. The narrower
+    // fixture is also the more honest one: it is the sidebar read that is
+    // unavailable.
+    //
+    // A wrapper object rather than `vi.spyOn`, because the installed store's
+    // `getItem` is itself a `vi.fn`: spying on it and delegating back to the
+    // captured reference re-enters the same mock, and the overflow surfaces as
+    // every read failing rather than just the one this case blocks.
+    const realStorage = window.localStorage;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        ...realStorage,
+        getItem: (key: string) => {
+          if (key === DESKTOP_SIDEBAR_OPEN_STORAGE_KEY) {
+            throw new Error("localStorage read blocked");
+          }
+          return realStorage.getItem(key);
+        },
+        setItem: (key: string, value: string) =>
+          realStorage.setItem(key, value),
+      },
+    });
     const fallbackRender = renderDesktopApp("");
     expect(await screen.findByTitle("Collapse sidebar")).toBeDefined();
     fallbackRender.unmount();
-    getItemSpy.mockRestore();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: realStorage,
+    });
 
     window.localStorage.setItem(DESKTOP_SIDEBAR_OPEN_STORAGE_KEY, "false");
     renderDesktopApp("");
@@ -132,7 +167,7 @@ describe("App shell sidebar persistence", () => {
   // the bottom-left account menu (mirroring web's AccountMenu). That menu's own
   // coverage — trigger label, item order, active-check — lives in the dedicated
   // `components/layout/__tests__/sidebar-account-menu.test.tsx` render test,
-  // keeping this grandfathered app-shell suite from accumulating it.
+  // keeping this app-shell suite from accumulating it.
 
   it("keeps desktop sidebar responsive when localStorage write fails", async () => {
     window.localStorage.setItem(DESKTOP_SIDEBAR_OPEN_STORAGE_KEY, "true");

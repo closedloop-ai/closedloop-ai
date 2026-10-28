@@ -1,4 +1,3 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
@@ -6,6 +5,12 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
+import {
+  TableChoiceCell,
+  TableDateCell,
+  TablePersonCell,
+  TableTextCell,
+} from "@repo/design-system/components/ui/table-cell-primitives";
 import {
   type MockProjectRow,
   mockProjectRows,
@@ -32,22 +37,25 @@ const columns: Column<MockProjectRow>[] = [
     key: "name",
     header: "Project",
     sortable: true,
+    render: (item) => <TableTextCell value={item.name} />,
   },
   {
     key: "owner",
     header: "Owner",
     sortable: true,
+    render: (item) => <TablePersonCell person={{ name: item.owner }} />,
   },
   {
     key: "status",
     header: "Status",
     sortable: true,
-    render: (item) => <Badge variant="outline">{item.status}</Badge>,
+    render: (item) => <TableChoiceCell label={item.status} />,
   },
   {
     key: "updatedAt",
     header: "Updated",
     sortable: true,
+    render: (item) => <TableDateCell value={item.updatedAt} />,
   },
 ];
 
@@ -73,9 +81,9 @@ const ProjectDataTable = (props: ProjectDataTableProps) => (
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Table",
+  title: "Composites v1.0/Data Display/Tables/Data Table",
   component: ProjectDataTable,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     data: mockProjectRows,
     columns,
@@ -101,6 +109,16 @@ const meta = {
       </Button>
     ),
     onRowClick: (item: MockProjectRow) => action("row-click")(item),
+  },
+  argTypes: {
+    searchKey: {
+      control: { type: "select" },
+      options: ["id", "name", "status", "owner", "updatedAt"],
+    },
+    filterKey: {
+      control: { type: "select" },
+      options: ["id", "name", "status", "owner", "updatedAt"],
+    },
   },
 } satisfies Meta<typeof ProjectDataTable>;
 

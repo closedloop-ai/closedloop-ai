@@ -2,8 +2,8 @@
  * @file session-limits-ipc.ts
  * @description Registers the desktop IPC handlers for the subscription
  * session-limit surface: serving the snapshot to the renderer (PRD-538) by
- * reconciling the snapshots recorded by the `usage_api` / statusline /
- * rate_limit_event producers (FEA-3493, PRD-538 R5) — and toggling the
+ * reconciling the snapshots recorded by the `usage_api` / statusline
+ * producers (FEA-3493, PRD-538 R5) — and toggling the
  * statusline-capture opt-in that populates one of them (FEA-3492 / PRD-539).
  * Untrusted senders and every fetch failure resolve to null so the renderer
  * simply hides the UI.

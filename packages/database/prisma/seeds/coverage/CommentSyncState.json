@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Per-comment provider sync ledger (ISS-11212) read only inside the comment write pipelines."
+}

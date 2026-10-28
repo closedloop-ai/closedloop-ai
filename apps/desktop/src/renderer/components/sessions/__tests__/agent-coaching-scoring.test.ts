@@ -4,11 +4,14 @@ import {
   candidateImpactScore,
   costImpactScore,
   dedupeGeneratedTipsByLever,
+  feedbackAdjustment,
   harnessRoutingImpactScore,
   rankCandidatePool,
   resilienceImpactScore,
   reuseSkillImpactScore,
+  summarizeFeedback,
   testSequencingImpactScore,
+  tipFollowUp,
   wallTimeImpactScore,
 } from "../agent-coaching-scoring";
 import type {
@@ -154,9 +157,9 @@ describe("dimension scorers rank non-skill vs skill by evidence (FEA-3265)", () 
   });
 });
 
-// wongk review: the scorers must not manufacture impact from volume/aggregate
+// whitlockk review: the scorers must not manufacture impact from volume/aggregate
 // signals that don't actually describe the lever.
-describe("scorer correctness guards (wongk review, FEA-3265)", () => {
+describe("scorer correctness guards (whitlockk review, FEA-3265)", () => {
   it("test-sequencing scores 0 for a test-only history despite high volume", () => {
     // 40 test delegations, 0 explore: negative/zero exploration skew. This
     // history already DOES what the tip advises, so volume alone must not lift
@@ -218,6 +221,106 @@ describe("dedupeGeneratedTipsByLever (FEA-3265, codex P1)", () => {
   });
 });
 
+// ISS-10696: the feedback tallies over what the local store actually holds —
+// rows written by an older build can carry an action or a category this build
+// no longer knows. The category tallies ignore both; the per-tip tally is
+// category-blind and still counts the row under its tip.
+describe("feedback tallies over persisted rows", () => {
+  // Built from LOCAL components: `toDayKey` folds to the local calendar day,
+  // and TODAY is a local day key, so a UTC instant would drift a day west.
+  const TODAY_AT = new Date(2026, 5, 18, 9).toISOString();
+  const YESTERDAY_AT = new Date(2026, 5, 17, 9).toISOString();
+  const generatedAt = new Date(TODAY_AT);
+
+  it("phrases a tip as a follow-up from ITS OWN prior engagement, not its category's", () => {
+    const feedback: AgentCoachingFeedbackEvent[] = [
+      feedbackEvent("skill-a", "details_opened", YESTERDAY_AT),
+      feedbackEvent("skill-b", "action_clicked", YESTERDAY_AT),
+      feedbackEvent("skill-c", "dismissed", YESTERDAY_AT),
+      // A tip engaged today: not yet a prior engagement.
+      feedbackEvent("skill-d", "action_clicked", TODAY_AT),
+    ];
+
+    expect(tipFollowUp("skill-a", feedback, generatedAt).prefix).toBe(
+      "You opened details on this coaching area before, so here's the next step: "
+    );
+    expect(tipFollowUp("skill-b", feedback, generatedAt).prefix).toBe(
+      "Follow-up from yesterday's action: "
+    );
+    expect(tipFollowUp("skill-c", feedback, generatedAt).prefix).toBe(
+      "Reframed after prior dismissal: "
+    );
+    expect(tipFollowUp("skill-d", feedback, generatedAt)).toEqual({
+      prefix: "",
+      why: "",
+    });
+  });
+
+  it("tallies every prior action into its category bucket", () => {
+    const insights = summarizeFeedback(
+      [
+        feedbackEvent("skill-a", "details_opened", YESTERDAY_AT),
+        feedbackEvent("skill-a", "action_clicked", YESTERDAY_AT),
+        feedbackEvent("skill-a", "action_clicked", YESTERDAY_AT),
+        feedbackEvent("skill-b", "dismissed", YESTERDAY_AT),
+        feedbackEvent("skill-b", "dismissed", TODAY_AT),
+      ],
+      TODAY
+    );
+
+    expect(insights.capability_gap).toEqual({
+      acted: 2,
+      dismissed: 1,
+      opened: 1,
+    });
+    expect(insights.cost).toEqual({ acted: 0, dismissed: 0, opened: 0 });
+  });
+
+  it("ignores a persisted row whose action or category this build does not know", () => {
+    const stale = [
+      {
+        ...feedbackEvent("skill-a", "dismissed", YESTERDAY_AT),
+        action: "snoozed",
+      },
+      {
+        ...feedbackEvent("skill-b", "dismissed", YESTERDAY_AT),
+        category: "retired_category",
+      },
+    ] as unknown as AgentCoachingFeedbackEvent[];
+
+    expect(feedbackAdjustment("capability_gap", stale, TODAY)).toBe(0);
+    expect(tipFollowUp("skill-a", stale, generatedAt)).toEqual({
+      prefix: "",
+      why: "",
+    });
+    // The per-tip tally is category-blind: a dismissal under a category this
+    // build no longer knows still reframes the tip it was recorded against.
+    expect(tipFollowUp("skill-b", stale, generatedAt).prefix).toBe(
+      "Reframed after prior dismissal: "
+    );
+    const insights = summarizeFeedback(stale, TODAY);
+    expect(insights.capability_gap).toEqual({
+      acted: 0,
+      dismissed: 0,
+      opened: 0,
+    });
+    expect(Object.hasOwn(insights, "retired_category")).toBe(false);
+  });
+});
+
+describe("scorer inputs the corpus can hand over", () => {
+  it("scores an empty delegation history as 0 rather than dividing by zero", () => {
+    expect(testSequencingImpactScore(0, 0)).toBe(0);
+  });
+
+  // pins current behavior (ISS-10703); looks odd because a NaN operand is folded to a
+  // confident zero-pressure score rather than refused as unmeasured.
+  it("treats a NaN ratio as no pressure at all", () => {
+    expect(wallTimeImpactScore(Number.NaN)).toBe(0);
+    expect(costImpactScore(Number.NaN, Number.NaN)).toBe(0);
+  });
+});
+
 function candidate(
   id: string,
   lever: AgentCoachingCandidate["lever"],
@@ -273,4 +376,12 @@ function makeMetrics(
     sessionCadence: null,
     ...overrides,
   };
+}
+
+function feedbackEvent(
+  tipId: string,
+  action: AgentCoachingFeedbackEvent["action"],
+  createdAt: string
+): AgentCoachingFeedbackEvent {
+  return { action, category: "capability_gap", createdAt, tipId };
 }

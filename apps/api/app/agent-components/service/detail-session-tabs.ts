@@ -7,7 +7,9 @@ import type { BranchRow } from "@repo/api/src/types/branch";
 import { BranchStatus } from "@repo/api/src/types/branch";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import type { withDb } from "@repo/database";
+import { branchPushEvidenceWhere } from "@/app/branches/branch-push-evidence";
 import { agentSessionsService } from "../../agent-sessions/service";
+import type { SessionTabCursor } from "../component-detail-cursor";
 import type { UsageGroupRow } from "../identity";
 
 /**
@@ -20,29 +22,13 @@ import type { UsageGroupRow } from "../identity";
  */
 
 /**
- * Hard cap on the number of session artifact ids fanned into the `IN (...)`
- * clauses of the two branch-attribution `artifactLink.findMany` queries. A
- * popular component can be used in thousands of sessions; an unbounded `IN` list
- * bloats the query plan and can exceed parameter limits. The excess sessions
- * still count toward totals — only their per-session branch attribution rows are
- * bounded.
- *
- * ISS-5762: this doc used to claim "most-recently-seen sessions win, since the
- * map is populated in row order", which the SAME FILE contradicts where the
- * slice is taken (see `resolveDetailSessionTabs`): `invCountBySession` is
- * populated from an UNORDERED `groupBy`, so above this bound the retained ids
- * are an arbitrary subset, not a recency head. Both claims cannot be true, and
- * the reassuring one was the false one — which is the specific way a cap
- * misleads even after it stops being silent. The read DOES report the bound
- * (`sessionsTabTruncated` / `branchesTabTruncated`, ISS-5464, measured against
- * the uncapped `invCountBySession.size`) and the tab's notice (ISS-5520) is
- * worded to avoid claiming recency. Making the retained subset genuinely
- * ordered — so the notice may say "most recent" — needs a recency signal
- * plumbed from `UsageGroupRow._max.lastInvokedAt` and an equivalent added to
- * the orphan and plugin-rollup paths, which have none; that is tracked as
- * follow-up work off ISS-5762 rather than done here.
+ * ISS-9855: the branch-attribution read walks EVERY session that invoked the
+ * component, in chunks of this many ids per `IN (...)` — a bind-parameter
+ * bound, not a truncation (`POSTGRES_MAX_BIND_PARAMETERS` in
+ * `../org-population-reads` is the ceiling; do not restate the number here).
+ * Same shape as `SESSION_LOC_ID_CHUNK_SIZE` over the same id list.
  */
-const MAX_DETAIL_SESSION_IN_IDS = 1000;
+export const SESSION_BRANCH_ATTRIBUTION_ID_CHUNK_SIZE = 1000;
 
 export function buildInvCountBySession(
   usageGroups: UsageGroupRow[]
@@ -56,6 +42,44 @@ export function buildInvCountBySession(
     );
   }
   return invCountBySession;
+}
+
+/**
+ * ISS-9855: the max `lastInvokedAt` per session across all usage groups.
+ * Used by {@link resolveDetailSessionTabs} to sort sessions by recency so the
+ * retained page is the most-recently-invoked head, not an arbitrary subset.
+ */
+export function buildSessionLastInvokedMap(
+  usageGroups: UsageGroupRow[]
+): Map<string, Date | null> {
+  const map = new Map<string, Date | null>();
+  for (const group of usageGroups) {
+    recordSessionLastInvoked(
+      map,
+      group.agentSessionId,
+      group._max.lastInvokedAt
+    );
+  }
+  return map;
+}
+
+/**
+ * ISS-9855: fold one usage row's `lastInvokedAt` into a per-session recency
+ * map, keeping the max. A session can carry rows in several lanes (FK-linked,
+ * orphan, plugin child); every lane records through this one helper.
+ */
+export function recordSessionLastInvoked(
+  map: Map<string, Date | null>,
+  sessionId: string,
+  lastInvokedAt: Date | null
+): void {
+  const prev = map.get(sessionId);
+  if (
+    prev === undefined ||
+    (lastInvokedAt && (!prev || lastInvokedAt > prev))
+  ) {
+    map.set(sessionId, lastInvokedAt);
+  }
 }
 
 /**
@@ -212,10 +236,19 @@ function buildUsageSessions(
   return usageSessions;
 }
 
-type BranchArtifactLinkRow = {
+/**
+ * ISS-9114: the single branch-attribution row — the union projection of what the
+ * two former reads selected, so one read answers both the per-session
+ * branch-name map and the `branchesTab`. `target.type` is carried because the
+ * `branchesTab` half is Branch-targets-only while the branch-name half is not.
+ */
+type BranchAttributionRow = {
+  sourceId: string;
+  metadata: unknown;
   target: {
     id: string;
     slug: string | null;
+    type: string;
     branch: {
       artifactId: string;
       branchName: string;
@@ -226,6 +259,12 @@ type BranchArtifactLinkRow = {
     } | null;
   } | null;
 };
+
+/** The half of {@link BranchAttributionRow} the `branchesTab` fold reads. */
+type BranchArtifactLinkRow = Omit<
+  BranchAttributionRow,
+  "sourceId" | "metadata"
+>;
 
 function buildBranchesTab(
   branchArtifactLinks: BranchArtifactLinkRow[]
@@ -275,52 +314,95 @@ function buildBranchesTab(
 }
 
 /**
- * Fetch the two branch-attribution `artifactLink` result sets for a bounded set
- * of session artifact ids and reduce them to the per-session branch-name map and
- * the deduped `branchesTab`. Extracted so both detail paths share one
- * implementation and each stays under the cognitive-complexity bar.
+ * Fetch the branch-attribution `artifactLink` rows for EVERY session artifact
+ * id and reduce them to the per-session branch-name map and the deduped
+ * `branchesTab`. Extracted so both detail paths share one implementation and
+ * each stays under the cognitive-complexity bar.
+ *
+ * ISS-9855: the id list is the component's whole session set, read in
+ * {@link SESSION_BRANCH_ATTRIBUTION_ID_CHUNK_SIZE} chunks folded into ONE row
+ * list. Chunks run sequentially and the chunk count is unbounded, the same
+ * trade `loadSessionLocCost` makes on this id list: a fan-out would cost one
+ * pooled connection per chunk, and a work budget would be the terminal cap
+ * PRD-666 forbids. The desktop producer (`local-detail-session-tabs.ts`)
+ * attributes every session too, so both surfaces now speak one population.
  */
 async function fetchBranchAttribution(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string,
-  sessionArtifactIds: string[]
+  sessionArtifactIds: string[],
+  requirePushEvidence: boolean
 ): Promise<{
   branchNameBySession: Map<string, string>;
   branchesTab: BranchRow[];
 }> {
-  const branchLinks = await db.artifactLink.findMany({
+  const branchLinks: BranchAttributionRow[] = [];
+  for (
+    let start = 0;
+    start < sessionArtifactIds.length;
+    start += SESSION_BRANCH_ATTRIBUTION_ID_CHUNK_SIZE
+  ) {
+    const idChunk = sessionArtifactIds.slice(
+      start,
+      start + SESSION_BRANCH_ATTRIBUTION_ID_CHUNK_SIZE
+    );
+    const rows = await fetchBranchAttributionChunk(
+      db,
+      organizationId,
+      idChunk,
+      requirePushEvidence
+    );
+    branchLinks.push(...rows);
+  }
+
+  return {
+    branchNameBySession: buildBranchNameBySession(branchLinks),
+    branchesTab: buildBranchesTab(
+      branchLinks.filter((link) => link.target?.type === ArtifactType.Branch)
+    ),
+  };
+}
+
+/** One bind-sized `IN (...)` page of the branch-attribution read. */
+function fetchBranchAttributionChunk(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  organizationId: string,
+  sessionArtifactIds: string[],
+  requirePushEvidence: boolean
+): Promise<BranchAttributionRow[]> {
+  // ISS-8148 (PRD-683 D7), behind the same read-side flag as the insights
+  // donuts: a legacy no-push-evidence branch is excluded from BOTH
+  // attribution reads — the Branches tab below AND the usage-row branch-name
+  // fallback here — so the two panels on one detail page speak one
+  // population. The row keeps its session links and heals into view when
+  // push evidence arrives.
+  //
+  // ISS-9114: ONE read over the wider of the two former predicates. The
+  // branch-name half never constrained `target.type`, so it is the superset;
+  // the `branchesTab` half is that set narrowed to Branch targets, which the
+  // filter below applies to the same rows instead of re-selecting the scope.
+  return db.artifactLink.findMany({
     where: {
       organizationId,
       sourceId: { in: sessionArtifactIds },
       linkType: LinkType.RelatesTo,
+      ...(requirePushEvidence
+        ? {
+            target: {
+              type: ArtifactType.Branch,
+              branch: { is: branchPushEvidenceWhere() },
+            },
+          }
+        : {}),
     },
     select: {
       sourceId: true,
       metadata: true,
       target: {
         select: {
-          branch: {
-            select: {
-              branchName: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  const branchArtifactLinks = await db.artifactLink.findMany({
-    where: {
-      organizationId,
-      sourceId: { in: sessionArtifactIds },
-      linkType: LinkType.RelatesTo,
-      target: { type: ArtifactType.Branch },
-    },
-    select: {
-      target: {
-        select: {
           id: true,
           slug: true,
+          type: true,
           branch: {
             select: {
               artifactId: true,
@@ -335,13 +417,6 @@ async function fetchBranchAttribution(
       },
     },
   });
-
-  return {
-    branchNameBySession: buildBranchNameBySession(branchLinks),
-    branchesTab: buildBranchesTab(
-      branchArtifactLinks as BranchArtifactLinkRow[]
-    ),
-  };
 }
 
 /**
@@ -362,12 +437,10 @@ function fetchSessionsTab(
     // remains the full uncapped count; only the individual session summaries are
     // bounded, to the number the Sessions tab renders.
     //
-    // The bound is applied inside the query on the canonical total ordering, so
-    // the retained rows are the recency head of `sessionArtifactIds`. That is
-    // NOT necessarily the recency head of the component's sessions: the id list
-    // above is `slice`d to `MAX_DETAIL_SESSION_IN_IDS` from an unordered
-    // group-by, so above 1000 sessions it is an arbitrary subset. The tab's
-    // notice is worded to avoid claiming otherwise.
+    // ISS-9855: `sessionArtifactIds` is now the recency-ordered page (the 50
+    // most-recently-invoked sessions), not an arbitrary slice. The bound below
+    // is redundant but preserved defensively — `listSessionsByArtifactIds`
+    // already reorders by `SESSION_DEFAULT_ORDER_BY` inside the query.
     AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS
   );
 }
@@ -384,17 +457,24 @@ type DetailSessionTabs = {
   sessionsTab: AgentComponentDetail["sessionsTab"];
   /**
    * ISS-5464: does `sessionsTab` carry fewer sessions than used this component?
-   * Stated here rather than re-derived in the renderer from
-   * `AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS`, which only THIS producer
-   * honours (desktop caps at nothing, so the renderer's old inference misfired
-   * there). See the field docs on `AgentComponentDetail`.
+   * Stated by the PRODUCER (see field docs on `AgentComponentDetail`).
+   * ISS-9855: now measured against the recency-ordered render page rather than
+   * an arbitrary slice — still true when more sessions exist than the page shows.
    */
   sessionsTabTruncated: boolean;
   /**
-   * ISS-5464: did the `MAX_DETAIL_SESSION_IN_IDS` slice cost this read branches?
-   * See the field docs on `AgentComponentDetail`.
+   * ISS-5464: does `branchesTab` carry fewer branches than the full set?
+   * ISS-9855: always `false` from this producer — the attribution read walks
+   * every session. Kept on the wire because the field is a shared contract
+   * with the desktop producer and the tab reads it.
    */
   branchesTabTruncated: boolean;
+  /**
+   * ISS-9855: keyset cursor encoding the position of the last session on this
+   * page. `null` when all sessions fit on one page. The sessions continuation
+   * endpoint validates and resumes this tuple without requiring its row to exist.
+   */
+  nextCursor: string | null;
 };
 
 /**
@@ -418,12 +498,12 @@ function widenToSingleBranchBucket(
 
 /**
  * Resolve `usageSessions`, `branchesTab`, and `sessionsTab` for a component
- * detail. The session-id fan-out into the branch-attribution `IN (...)` queries
- * (see `MAX_DETAIL_SESSION_IN_IDS`) and the `sessionsTab` read (via the
- * agent-sessions read service, so the list projection is never duplicated) are
- * both driven off `invCountBySession` — the authoritative per-session set that
- * already folds plugin rollup + orphan usage. Returns empty tabs when no
- * sessions invoked the component.
+ * detail. ISS-9855: sessions are sorted by recency (`lastInvokedAt` DESC,
+ * `artifactId` ASC) so the `sessionsTab` render page (via the agent-sessions
+ * read service, so the list projection is never duplicated) is the
+ * most-recently-invoked head rather than an arbitrary subset. The
+ * branch-attribution read is NOT paged: it walks the whole session set, so
+ * `branchesTab` and the `usageSessions` branch names cover every session.
  *
  * FEA-2990: `usageSessions` is built from `perBranchInvBySession` when the caller
  * has per-event git_branch data, splitting a multi-branch session by the branch
@@ -436,11 +516,37 @@ export async function resolveDetailSessionTabs(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string,
   invCountBySession: Map<string, number>,
-  perBranchInvBySession?: Map<string, Map<string, number>>
+  requirePushEvidence: boolean,
+  perBranchInvBySession?: Map<string, Map<string, number>>,
+  sessionLastInvoked?: Map<string, Date | null>,
+  cursor?: SessionTabCursor
 ): Promise<DetailSessionTabs> {
-  const sessionArtifactIds = [...invCountBySession.keys()].slice(
+  // ISS-9855: sort all session IDs by recency (lastInvokedAt DESC, artifactId
+  // ASC) so the render page is the most-recently-invoked head. With no recency
+  // map every time is null, so the order falls through to artifactId ASC.
+  const recency = sessionLastInvoked ?? new Map<string, Date | null>();
+  const sortedSessionIds = [...invCountBySession.keys()].sort((a, b) => {
+    const aTime = recency.get(a)?.getTime() ?? null;
+    const bTime = recency.get(b)?.getTime() ?? null;
+    if (aTime !== null && bTime !== null && aTime !== bTime) {
+      return bTime - aTime;
+    }
+    if (aTime === null && bTime !== null) {
+      return 1;
+    }
+    if (bTime === null && aTime !== null) {
+      return -1;
+    }
+    return a < b ? -1 : 1;
+  });
+  const remainingSessionIds = cursor
+    ? sortedSessionIds.filter((id) =>
+        sessionFollowsCursor(id, recency.get(id) ?? null, cursor)
+      )
+    : sortedSessionIds;
+  const sessionArtifactIds = remainingSessionIds.slice(
     0,
-    MAX_DETAIL_SESSION_IN_IDS
+    AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS
   );
   if (sessionArtifactIds.length === 0) {
     return {
@@ -449,12 +555,18 @@ export async function resolveDetailSessionTabs(
       sessionsTab: [],
       sessionsTabTruncated: false,
       branchesTabTruncated: false,
+      nextCursor: null,
     };
   }
 
   const [{ branchNameBySession, branchesTab }, sessionsTab] = await Promise.all(
     [
-      fetchBranchAttribution(db, organizationId, sessionArtifactIds),
+      fetchBranchAttribution(
+        db,
+        organizationId,
+        sortedSessionIds,
+        requirePushEvidence
+      ),
       fetchSessionsTab(organizationId, sessionArtifactIds),
     ]
   );
@@ -462,18 +574,61 @@ export async function resolveDetailSessionTabs(
   const perBranch =
     perBranchInvBySession ?? widenToSingleBranchBucket(invCountBySession);
 
+  // Continue from the last requested identity even if a session failed hydration.
+  const lastOnPage = sessionArtifactIds.at(-1) ?? null;
+  const hasMoreSessions =
+    remainingSessionIds.length > sessionArtifactIds.length;
+  const nextCursor =
+    hasMoreSessions && lastOnPage
+      ? encodeSessionTabCursor(recency.get(lastOnPage) ?? null, lastOnPage)
+      : null;
+
   return {
     usageSessions: buildUsageSessions(perBranch, branchNameBySession),
     branchesTab,
     sessionsTab,
-    // Compare against the FULL per-session set, not `sessionArtifactIds`: that
-    // array is itself `slice`d to `MAX_DETAIL_SESSION_IN_IDS`, so measuring
-    // against it would report "complete" for a component whose sessions were
-    // already dropped one bound earlier.
+    // ISS-9855: compare against the FULL per-session set. True whenever more
+    // sessions exist than the page shows. The page is recency-ordered, but the
+    // readout still must not say "most recent": the desktop reader drops ids
+    // it cannot hydrate, so the shown rows are not guaranteed to be the head.
     sessionsTabTruncated: sessionsTab.length < invCountBySession.size,
-    // The branch attribution read only ever saw `sessionArtifactIds`. When that
-    // slice dropped sessions, any branch reachable only through a dropped one is
-    // absent, so the delivered array is a floor rather than the set.
-    branchesTabTruncated: sessionArtifactIds.length < invCountBySession.size,
+    // ISS-9855: the branch attribution read walked every session, so the
+    // delivered array is the set, not a floor. Stated as `false` rather than
+    // dropped: the desktop producer emits the same field, and the tab reads it.
+    branchesTabTruncated: false,
+    nextCursor,
   };
+}
+
+/**
+ * ISS-9855: encode a keyset cursor for the component-detail sessions tab.
+ * Opaque to the client — encodes (lastInvokedAt, artifactId) so a future
+ * endpoint can resume the recency walk.
+ */
+function encodeSessionTabCursor(
+  lastInvokedAt: Date | null,
+  artifactId: string
+): string {
+  return Buffer.from(
+    JSON.stringify({
+      t: lastInvokedAt?.toISOString() ?? null,
+      id: artifactId,
+    })
+  ).toString("base64url");
+}
+
+function sessionFollowsCursor(
+  id: string,
+  lastInvokedAt: Date | null,
+  cursor: SessionTabCursor
+): boolean {
+  const cursorTime = cursor.t === null ? null : Date.parse(cursor.t);
+  const time = lastInvokedAt?.getTime() ?? null;
+  if (cursorTime === null) {
+    return time === null && id > cursor.id;
+  }
+  if (time === null) {
+    return true;
+  }
+  return time < cursorTime || (time === cursorTime && id > cursor.id);
 }

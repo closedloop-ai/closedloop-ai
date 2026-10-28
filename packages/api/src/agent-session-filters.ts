@@ -18,11 +18,7 @@
  */
 
 import { isSubscriptionBillingMode } from "./types/billing-mode.ts";
-import {
-  DISPLAYED_SESSION_STATUS,
-  type DisplayedSessionStatus,
-  SESSION_STATUS,
-} from "./types/session-status.ts";
+import { SESSION_STATUS, type SessionStatus } from "./types/session-status.ts";
 
 export type SessionCostBucketId =
   | "under_1"
@@ -34,7 +30,7 @@ export type SessionCostBucketId =
  * A cost threshold bucket (USD), compared on the DISPLAYED (2dp-rounded) value.
  * `maxCost` is the INCLUSIVE upper bound: a session whose displayed cost is
  * exactly `$maxCost.00` falls into THIS bucket, not the next one up (FEA-4293,
- * Mike's decision). `minCost` is the exclusive lower bound for every bucket
+ * Marisol's decision). `minCost` is the exclusive lower bound for every bucket
  * except the first, whose `minCost` of 0 is inclusive so a $0 known cost still
  * buckets. A null `maxCost` means no upper bound. Adjacent buckets therefore
  * partition the displayed 2dp grid with no gap and no overlap: `(minCost,
@@ -129,7 +125,7 @@ const HALF_DISPLAYED_COST_UNIT = 0.5 / 10 ** DISPLAYED_COST_FRACTION_DIGITS;
  * The raw-column bounds a SQL predicate must use so that `estimatedCost >= gte`
  * (and, when finite, `< lt`) selects exactly the rows whose DISPLAYED cost falls
  * in this bucket — `(minCost, maxCost]` displayed, with `[0, maxCost]` for the
- * first bucket (FEA-4293, Mike's `≤ $1` decision). The bucket's upper bound is
+ * first bucket (FEA-4293, Marisol's `≤ $1` decision). The bucket's upper bound is
  * INCLUSIVE of the displayed value, so a raw value that displays exactly
  * `$maxCost.00` must be IN this bucket, and a raw value that displays exactly
  * `$minCost.00` must be OUT of it (it belongs to the bucket below).
@@ -174,7 +170,7 @@ export function costBucketRawBounds(bucket: SessionCostBucket): {
  * on the DISPLAYED (2dp-rounded) value so the filter and the Cost cell agree
  * (FEA-4293). The bucket's upper bound is INCLUSIVE and (except the first
  * bucket) its lower bound is EXCLUSIVE — so a row displayed as exactly `$1.00`
- * is in `under_1` ("≤ $1"), not `from_1_to_10` (Mike's decision). Callers that
+ * is in `under_1` ("≤ $1"), not `from_1_to_10` (Marisol's decision). Callers that
  * hold a raw column value pass it directly; the rounding happens here so every
  * surface reconciles identically.
  *
@@ -218,7 +214,7 @@ export function matchesCostBucket(cost: number, bucketId: string): boolean {
  * "unknown"), never a crash.
  */
 export type SessionCostSignals = SessionSubstantiveCounts & {
-  estimatedCost: number;
+  estimatedCost: number | null;
   billingMode?: string | null;
 };
 
@@ -233,7 +229,7 @@ export type SessionCostSignals = SessionSubstantiveCounts & {
  * filter can never disagree on the empty-session boundary.
  */
 function sessionCostReflectsWork(signals: SessionCostSignals): boolean {
-  if (signals.estimatedCost > 0) {
+  if (hasPositiveCost(signals.estimatedCost)) {
     return true;
   }
   return isSubstantiveSession(signals);
@@ -265,7 +261,7 @@ export function sessionCostIsNumeric(signals: SessionCostSignals): boolean {
   if (isSubscriptionBillingMode(signals.billingMode)) {
     return true;
   }
-  return signals.estimatedCost > 0;
+  return hasPositiveCost(signals.estimatedCost);
 }
 
 /**
@@ -413,6 +409,12 @@ export type SessionSubstantiveCounts = {
   cacheReadTokens?: number | null;
   cacheWriteTokens?: number | null;
   toolUseCount?: number | null;
+  // ISS-5801: derived component invocations (tools, skills, slash commands,
+  // subagents, hooks). The cloud reads the SessionDetail column folded at
+  // invocation-generation activation; the desktop counts its local
+  // agent_component_invocations rows. Optional so a consumer without the signal
+  // degrades to the pre-ISS-5801 rule instead of breaking.
+  componentInvocationCount?: number | null;
 };
 
 /**
@@ -420,8 +422,10 @@ export type SessionSubstantiveCounts = {
  * "idle"/"phantom" row (a 0-turn / 0-token session the desktop live-hook INSERTs
  * on `SessionStart` before any activity — see FEA-3284). A session is
  * **substantive** iff it has at least one turn, OR any token (input + output +
- * cache read + cache write) was consumed, OR at least one tool was used;
- * everything else is **idle**.
+ * cache read + cache write) was consumed, OR at least one tool was used, OR it
+ * produced at least one component invocation (ISS-5801: a slash-command/skill/
+ * subagent/hook-only session did real work — its invocation records exist — so
+ * withholding it minted `session_missing` orphans); everything else is **idle**.
  *
  * This is the ONE canonical rule. The cloud query builder mirrors it as the
  * `SESSION_SUBSTANTIVE_WHERE` Prisma predicate
@@ -451,7 +455,10 @@ export function isSubstantiveSession(
     (counts.cacheReadTokens ?? 0) +
     (counts.cacheWriteTokens ?? 0);
   return (
-    (counts.turns ?? 0) > 0 || totalTokens > 0 || (counts.toolUseCount ?? 0) > 0
+    (counts.turns ?? 0) > 0 ||
+    totalTokens > 0 ||
+    (counts.toolUseCount ?? 0) > 0 ||
+    (counts.componentInvocationCount ?? 0) > 0
   );
 }
 
@@ -608,9 +615,9 @@ export function matchesPrAssociation(
 /**
  * The Status-facet filter-INPUT contract — the only status values a session
  * filter may SEND, in the order every surface offers them. This is deliberately
- * NOT the set a read may RETURN: `stale` and `unknown` are read-time projections,
- * and a spelling this build cannot parse comes back as `unknown`, so a consumer
- * must not assume a returned session's `status` is one of the advertised values.
+ * NOT the set a read may RETURN: a spelling this build cannot parse comes back
+ * as `unknown` on the DISPLAY side, so a consumer must not assume a returned
+ * session's `status` is one of the advertised values.
  *
  * ISS-4586 made `inactive` the terminal-but-not-failed status and retired
  * `completed`/`abandoned`; ISS-4985 then routed a retired REQUEST onto the
@@ -624,6 +631,18 @@ export function matchesPrAssociation(
  * count confirmed the column stores none, so the population it used to reach is
  * empty. The read side is symmetric — such a row would project as `unknown`.
  *
+ * **ISS-9939 / ISS-10629 (2026-09-17): `waiting`, `stale`, and `unknown` are
+ * retired from this contract too.** They were derived DISPLAY projections, not
+ * stored statuses, and the operator ruling collapsed the Sessions status FILTER
+ * (and SORT, ISS-10262) to the three PERSISTED `SESSION_STATUS` values. A
+ * request still carrying one of the retired values (a stale bookmarked filter,
+ * an external agent using an older tool description) falls through to the same
+ * exact-match-on-nothing behavior every other unrecognized status value already
+ * gets — see the ISS-5592 paragraph above, now the general case rather than the
+ * exception. The DISPLAY-side projection (`projectDisplayedSessionStatus`) is
+ * unchanged: a session still BADGES Waiting/Stale/Unknown exactly as before, it
+ * is simply no longer a value this filter-input contract offers.
+ *
  * ISS-4858 hoisted the set here, beside the other facet contracts, so the
  * surfaces that cannot share a module otherwise agree on one vocabulary: the
  * `list-agent-sessions` MCP tool consumes it directly (its `status` input
@@ -631,25 +650,19 @@ export function matchesPrAssociation(
  * (`@repo/app/agents/lib/session-status-filters`) declares the same vocabulary as
  * its `SessionStatusFacetValue` (ISS-4696), pinned equal to this set — same
  * values, same order — by a consistency guard in that module's tests, so the two
- * declarations cannot drift. `waiting` is the awaiting-input sub-state of active
- * — not a stored status, but a facet value the server projects — so it stays part
- * of the vocabulary.
- *
- * ISS-5366 adds `stale` and `unknown` for the same reason `waiting` is here:
- * they are values the SERVER now projects (`projectDisplayedSessionStatus`
- * applies the display staleness cutoff and the unrecognized-status fold) and
- * therefore values the Status column displays to every user. Retiring the
- * `sessions-honest-unknown-states` gate made those badges unconditional, so a
- * vocabulary without them left a status on screen that no filter could gather.
- * Both have real predicates in `buildStatusFacetPredicate` — Active and Stale
- * PARTITION the old Active population against one cutoff — so sending either
- * returns exactly the rows whose badges say so.
+ * declarations cannot drift.
  */
-export const SESSION_STATUS_FILTER_VALUES: readonly DisplayedSessionStatus[] = [
+export const SESSION_STATUS_FILTER_VALUES: readonly SessionStatus[] = [
   SESSION_STATUS.ACTIVE,
-  DISPLAYED_SESSION_STATUS.WAITING,
   SESSION_STATUS.INACTIVE,
   SESSION_STATUS.ERROR,
-  DISPLAYED_SESSION_STATUS.STALE,
-  DISPLAYED_SESSION_STATUS.UNKNOWN,
 ];
+
+/**
+ * ISS-12260: a session read serves `estimatedCost: null` when it was never
+ * priced. Unknown is not positive, so every `> 0` cost test answers it exactly
+ * as it answered the `0` the API used to serve in its place.
+ */
+export function hasPositiveCost(estimatedCost: number | null): boolean {
+  return estimatedCost !== null && estimatedCost > 0;
+}

@@ -3,9 +3,9 @@ import { DocumentTypeBadge } from "@repo/app/documents/components/document-type-
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "App Core/Documents/Document Type Badge",
+  title: "Composites v1.0/Documents/Document Type Badge",
   component: DocumentTypeBadge,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { type: DocumentType.Prd },
 } satisfies Meta<typeof DocumentTypeBadge>;
@@ -14,6 +14,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Compact: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-wrap gap-3">
       <DocumentTypeBadge type={DocumentType.Prd} />
@@ -26,6 +27,7 @@ export const Compact: Story = {
 };
 
 export const Pill: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-wrap gap-3">
       <DocumentTypeBadge appearance="pill" type={DocumentType.Prd} />
@@ -41,6 +43,7 @@ export const Pill: Story = {
 };
 
 export const UnknownTypeFallback: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-wrap gap-3">
       <DocumentTypeBadge type={"research_brief"} />

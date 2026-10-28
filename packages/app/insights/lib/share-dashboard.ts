@@ -1,7 +1,7 @@
 import { fromBase64Url, toBase64Url } from "@repo/api/src/types/base64url";
 import { z } from "zod";
 import {
-  gridPositionSchema,
+  gridLayoutSchema,
   type SharedDashboard,
   tileSettingsSchema,
 } from "./dashboard-schema";
@@ -17,7 +17,7 @@ export const SHARE_DASHBOARD_PARAM = "dash";
 // serialized `?dash=` value stays short even for busy dashboards.
 const sharedDashboardWireSchema = z.object({
   t: z.array(z.string()),
-  l: z.record(z.string(), gridPositionSchema),
+  l: gridLayoutSchema,
   s: z.record(z.string(), tileSettingsSchema).optional(),
 });
 

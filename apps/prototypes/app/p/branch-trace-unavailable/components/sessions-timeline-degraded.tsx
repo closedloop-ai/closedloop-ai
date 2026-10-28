@@ -15,6 +15,10 @@
 //     not load, above the trace built from the sessions that did.
 //  4. The unfixed render, reachable from the scenario switcher for contrast.
 
+import type {
+  BranchDetail,
+  SessionLane,
+} from "@repo/app/branches/components/prototype-preview/mock";
 import {
   Alert,
   AlertDescription,
@@ -25,7 +29,6 @@ import { chartColorPairForTokenIndex } from "@repo/design-system/components/ui/c
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BranchDetail, SessionLane } from "@/app/p/branches/mock";
 import {
   SESSION_UNAVAILABLE_NOTE,
   TraceReadOutcome,

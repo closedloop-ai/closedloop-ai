@@ -16,7 +16,7 @@
  * about admission, not about elapsed time.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { createBoundedOpLane } from "../src/main/database/db-host/heavy-op-gate.js";
 
 type Deferred = { promise: Promise<void>; resolve: () => void };

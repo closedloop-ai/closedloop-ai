@@ -45,7 +45,7 @@ export type MaintenanceIdlePayload = {
 /**
  * A live pass that cannot substantiate a population, so it carries NO counts —
  * the type, not a runtime check, is what makes that pairing unrepresentable
- * (shafty023 review).
+ * (davetho review).
  *
  * `phase: null` while `active` is true is the version-skew degrade, not a
  * contradiction: a NEWER main process can name a phase this build has never

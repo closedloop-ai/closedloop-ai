@@ -2,24 +2,14 @@ import { TooltipProvider } from "@closedloop-ai/design-system/components/ui/tool
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
-import { useBranchList } from "@repo/app/branches/hooks/use-branches";
+import { useBranchesPageData } from "@repo/app/branches/hooks/use-branches";
 import { canonicalBranchListResponseFixture } from "@repo/app/branches/test-fixtures/canonical-branch-projection";
 import { ReadSourceBadge } from "@repo/app/shared/components/read-source-badge";
 import { onlineManager } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CloudReadReadinessSnapshot } from "../../../shared/cloud-read-readiness-contract";
 import { DesktopAuthStatus } from "../../../shared/contracts";
-import {
-  drainedCutover,
-  drainedReadiness,
-  drainingReadiness,
-} from "../../shared-agent-sessions/__tests__/fixtures/cloud-read-cutover-fixtures";
-import { describeCloudReadCutover } from "../../shared-agent-sessions/cloud-read-cutover-copy";
-import {
-  CloudReadCutoverBlocker,
-  DesktopAppCoreMode,
-} from "../../shared-agent-sessions/desktop-app-core-mode";
+import type { SyncConsentRecord } from "../../../shared/sync-consent";
 import { DesktopAppCoreProvider } from "../../shared-agent-sessions/desktop-app-core-provider";
 import type { DesktopAuthState } from "../../types/desktop-api";
 import { DesktopBranchesSource } from "../desktop-branches-source";
@@ -29,11 +19,14 @@ import { DesktopBranchesSource } from "../desktop-branches-source";
  * app, in one session, on one date window — and the Branches page was empty
  * because the cloud had not yet received this machine's history.
  *
- * The two surfaces selected their read store from two DIFFERENT predicates:
- * Sessions from the ISS-5477 cutover gate (`useDesktopAppCoreMode`), Branches
- * from bare identity completeness (`useCanonicalCloudSource`). This suite pins
- * the invariant that closes that class: **on one rendered screen, under one
- * app state, both surfaces' `ReadSourceBadge` must report the same store.**
+ * The two surfaces selected their read store from two DIFFERENT predicates.
+ * Since ISS-6972 there is one, and since 2026-09-25 it is authenticated and
+ * online — consent left it, because consent governs what this Mac SENDS.
+ * This suite pins the invariant that closes that class: **on one rendered
+ * screen, under one app state, both surfaces' data sources must report the same
+ * store.** ISS-6005 removed the badge from the Sessions list toolbar and
+ * ISS-9923 gated it on the Branches pair, so the harness below mounts it itself
+ * rather than depending on either toolbar to render the readout.
  *
  * Asserting each badge against a CONSTANT would not catch the divergence — the
  * two have to be compared against EACH OTHER, on one mount, which is what
@@ -57,7 +50,7 @@ const originalDesktopApi = Object.getOwnPropertyDescriptor(
  */
 function ReadSourceParityScreen() {
   const sessions = useAgentSessions({ limit: 1, offset: 0 });
-  const branches = useBranchList();
+  const branches = useBranchesPageData();
   return (
     <TooltipProvider>
       <div data-testid="sessions-surface">
@@ -68,7 +61,7 @@ function ReadSourceParityScreen() {
       </div>
       <div data-testid="branches-surface">
         <ReadSourceBadge
-          readSource={branches.data?.readSource}
+          readSource={branches.data?.list.readSource}
           surfaceLabel="branches"
         />
       </div>
@@ -76,7 +69,13 @@ function ReadSourceParityScreen() {
   );
 }
 
-function setupDesktopApi(readiness: CloudReadReadinessSnapshot) {
+const CONSENTED: SyncConsentRecord = {
+  tier: "full",
+  organizationId: "org-1",
+  bound: true,
+};
+
+function setupDesktopApi(consent: SyncConsentRecord = CONSENTED) {
   const emptySessionsList = {
     items: [],
     total: 0,
@@ -89,7 +88,7 @@ function setupDesktopApi(readiness: CloudReadReadinessSnapshot) {
       onDesktopAuthStateChanged: vi.fn(() => () => {
         // no auth transitions in this suite
       }),
-      getCloudReadReadiness: vi.fn(() => Promise.resolve(readiness)),
+      getSyncConsentRecord: vi.fn(() => Promise.resolve(consent)),
       cloudApiFetch: vi.fn((...args: unknown[]) =>
         Promise.resolve({
           kind: "response" as const,
@@ -206,50 +205,58 @@ function readSourceOf(surfaceTestId: string): string | null {
 }
 
 describe("Sessions and Branches read-source parity (ISS-5714)", () => {
-  it("reports one store on one screen while the upload backlog is still draining", async () => {
+  it("reports one store on one screen when authenticated and online", async () => {
     restoreOnline = forceOnline(true);
-    setupDesktopApi(drainingReadiness());
+    setupDesktopApi();
 
     renderParityScreen();
 
     const badges = await settledReadSources();
     // The reported defect: Sessions rendered `local` (populated, from SQLite)
-    // beside Branches rendering `cloud` (empty, because the cloud had not yet
-    // received a row). Neither value alone is wrong-looking — their DISAGREEMENT
-    // is the bug, so they are compared to each other and not to a constant...
+    // beside Branches rendering `cloud` (empty). Neither value alone is
+    // wrong-looking — their DISAGREEMENT is the bug, so they are compared to
+    // each other and not to a constant...
     expect(badges.branches).toBe(badges.sessions);
     // ...but equality alone would also pass if BOTH went to the wrong store, so
-    // the store they agree on is pinned too. Mid-drain the cloud holds nothing,
-    // so the only honest answer for either surface is the local database.
-    expect(badges.sessions).toBe(ReadSource.Local);
-  });
-
-  it("reports one store on one screen once the backlog has drained", async () => {
-    restoreOnline = forceOnline(true);
-    setupDesktopApi(drainedReadiness());
-
-    renderParityScreen();
-
-    const badges = await settledReadSources();
-    expect(badges.branches).toBe(badges.sessions);
+    // the store they agree on is pinned too.
     expect(badges.sessions).toBe(ReadSource.Cloud);
   });
 
   /**
-   * A KNOWN, deliberate divergence, pinned so it cannot drift silently.
-   *
-   * Connectivity is the one axis `cloudHoldsHistory` excludes. Offline after a
-   * cutover, Sessions drops to the local database (PRD-461 D3) while Branches
-   * keeps serving the canonical cloud rows already in its cache rather than
-   * pausing on an unreachable read — which is strictly more useful than an empty
-   * local namespace. The badges therefore differ ON PURPOSE here, and the
-   * tooltip has to say so: `describeCloudReadCutover` answers for the store the
-   * surface actually read, so Branches must NOT get the local reader's "this is
-   * your own machine's data" sentence under a `Cloud` badge.
+   * The provider-level half of the 2026-09-25 ruling: consent governs EGRESS,
+   * so a reader who sends nothing — or has not elected a level at all — still
+   * reads their workspace on BOTH surfaces. This mounts the real provider with
+   * a withholding consent record on the bridge, so threading consent back into
+   * `resolveDesktopAppCoreMode` turns these red where a resolver-level case
+   * that cannot even express consent any more would stay green.
    */
-  it("keeps Branches on its cached cloud rows offline, and says so", async () => {
+  it.each([
+    ["a tier that sends nothing", "local"],
+    ["no elected tier at all", null],
+  ] as const)(
+    "reads the workspace on both surfaces for %s",
+    async (_label, tier) => {
+      restoreOnline = forceOnline(true);
+      setupDesktopApi({ ...CONSENTED, tier });
+
+      renderParityScreen();
+
+      const badges = await settledReadSources();
+      expect(badges.branches).toBe(badges.sessions);
+      expect(badges.sessions).toBe(ReadSource.Cloud);
+    }
+  );
+
+  /**
+   * ISS-6972 decision 3 retired the one deliberate divergence this suite used to
+   * pin: Branches kept serving cached cloud rows offline while Sessions dropped
+   * to the local database. That bought offline branch reads at the cost of one
+   * screen naming two stores, which is the defect class this file exists for.
+   * Offline is now Local on both surfaces.
+   */
+  it("drops BOTH surfaces to local data when the machine goes offline", async () => {
     restoreOnline = forceOnline(true);
-    setupDesktopApi(drainedReadiness());
+    setupDesktopApi();
     renderParityScreen();
     await settledReadSources();
 
@@ -260,25 +267,9 @@ describe("Sessions and Branches read-source parity (ISS-5714)", () => {
       window.dispatchEvent(new Event("offline"));
     });
 
-    await waitFor(() =>
-      expect(readSourceOf("sessions-surface")).toBe(ReadSource.Local)
-    );
-    expect(readSourceOf("branches-surface")).toBe(ReadSource.Cloud);
-
-    const offlineCloud = describeCloudReadCutover(
-      { ...drainedCutover(), blocker: CloudReadCutoverBlocker.Offline },
-      ReadSource.Cloud
-    );
-    const offlineLocal = describeCloudReadCutover(
-      {
-        ...drainedCutover(),
-        mode: DesktopAppCoreMode.Local,
-        blocker: CloudReadCutoverBlocker.Offline,
-      },
-      ReadSource.Local
-    );
-    expect(offlineCloud).not.toBe(offlineLocal);
-    expect(offlineLocal).toContain("your own machine's data");
-    expect(offlineCloud).not.toContain("your own machine's data");
+    await waitFor(() => {
+      expect(readSourceOf("sessions-surface")).toBe(ReadSource.Local);
+      expect(readSourceOf("branches-surface")).toBe(ReadSource.Local);
+    });
   });
 });

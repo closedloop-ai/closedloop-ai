@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { JsonObject } from "@repo/api/src/types/common.js";
 import {
   buildScopedDocumentPath,
+  DOCUMENT_ROUTE_PREFIX,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document.js";
 import { resolveFriendlyError } from "@repo/api/src/types/friendly-error.js";
@@ -13,12 +14,13 @@ type ToolResult = CallToolResult;
 
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
+export const MAX_CURSOR_CHARS = 2048;
 export const DOCUMENT_DOC_HELP =
   "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and issues (ISS-*; legacy FEA-* slugs still resolve). Templates exist but are internal and not exposed to end users.";
 export const ARTIFACT_LINK_SLUG_HELP =
   "User-facing slugs are supported for documents (PRD-7, PLN-4, ISS-42; legacy FEA-42 still resolves); other artifacts (pull requests, deployments) require UUIDs.";
 export const ARTIFACT_LINK_TYPE_HELP =
-  "Link types: PRODUCES — directional lineage where the source artifact produces/derives the target (e.g. a PRD PRODUCES a feature; a feature PRODUCES the implementation plan written from it). PRODUCES is the only type that establishes parent→child lineage and drives the project tree and loop roll-ups. BLOCKS — the source blocks the target (the target cannot proceed until the source is done); directional, but not lineage. RELATES_TO — a non-hierarchical association between peers; direction carries no special meaning.";
+  "Link types: PRODUCES — directional lineage where the source artifact produces/derives the target (e.g. a PRD PRODUCES a feature; a feature PRODUCES the implementation plan written from it). PRODUCES is the only type that establishes parent→child lineage and drives the project tree. BLOCKS — the source blocks the target (the target cannot proceed until the source is done); directional, but not lineage. RELATES_TO — a non-hierarchical association between peers; direction carries no special meaning.";
 export const ARTIFACT_LINK_DIRECTION_HELP =
   "Links are directional: source → target. The source is the upstream/producing artifact (the parent for PRODUCES); the target is the downstream/produced artifact (the child for PRODUCES). Example: you fetched issue ISS-42 and authored plan PLN-12 from it → link with sourceId=ISS-42, targetId=PLN-12, linkType=PRODUCES.";
 export const PARENT_ARTIFACT_METADATA_HELP =
@@ -61,8 +63,11 @@ function formatToolError(error: unknown): string {
   );
   const parts = [friendly.title, "", friendly.description];
   if (friendly.remediation.length > 0) {
-    parts.push("", "Remediation:");
-    parts.push(...friendly.remediation.map((step) => `- ${step}`));
+    parts.push(
+      "",
+      "Remediation:",
+      ...friendly.remediation.map((step) => `- ${step}`)
+    );
   }
   const technicalDetails = sanitizeTechnicalDetails(friendly.technicalDetails);
   if (Object.keys(technicalDetails).length > 0) {
@@ -99,10 +104,15 @@ function sanitizeTechnicalDetails(technicalDetails: JsonObject): JsonObject {
 
 /**
  * Encode a user-supplied ID for safe interpolation into a URL path segment.
- * Prevents path traversal attacks (e.g. "../../admin") by URI-encoding
- * slashes and other special characters.
+ * Prevents path traversal (e.g. "../../admin") by URI-encoding slashes and
+ * other special characters, and by rejecting the dot segments that no encoding
+ * can neutralize — see {@link isDotPathSegment}. Callers that must stay total
+ * (a per-row URL builder answering `null`) check that predicate first.
  */
 export function encodePathSegment(id: string): string {
+  if (isDotPathSegment(id)) {
+    throw new Error(`"${id}" is not a valid path segment.`);
+  }
   return encodeURIComponent(id);
 }
 
@@ -224,7 +234,7 @@ export function describeIdOrSlug(
   entityLabel: string,
   example: string | string[]
 ): string {
-  const exampleText = Array.isArray(example) ? example.join(", ") : example;
+  const exampleText = formatIdOrSlugExamples(example);
   return `${entityLabel} UUID or user-facing slug (e.g. ${exampleText}). Pass the user's slug verbatim — the API resolves it server-side.`;
 }
 
@@ -252,6 +262,18 @@ export function buildPaginatedPayload<T>(
     offset?: number;
     mapItem: (item: T) => unknown;
     defaultLimit?: number;
+    /**
+     * Authoritative counts from a server that did the paging itself.
+     *
+     * When supplied, `itemsOrPayload` IS the page the server already sliced, so
+     * this function must NOT slice it again: re-applying `.slice(offset,
+     * offset + limit)` to a 25-row page requested at `offset=25` yields an
+     * empty array, and every page after the first would silently come back
+     * empty. `total` and `hasMore` then describe the whole matching set rather
+     * than the handful of rows in memory, which is the point of asking the
+     * server for them.
+     */
+    page?: { total: number; hasMore: boolean };
   }
 ): {
   total: number;
@@ -266,18 +288,29 @@ export function buildPaginatedPayload<T>(
   const resolvedOffset = options.offset ?? 0;
   const resolvedLimit =
     options.limit ?? options.defaultLimit ?? DEFAULT_PAGE_LIMIT;
-  const page = items
-    .slice(resolvedOffset, resolvedOffset + resolvedLimit)
-    .map(options.mapItem);
-  const hasMore = resolvedOffset + page.length < items.length;
+  const serverPage = options.page;
+  const pageItems = (
+    serverPage
+      ? items
+      : items.slice(resolvedOffset, resolvedOffset + resolvedLimit)
+  ).map(options.mapItem);
+  const hasMore =
+    serverPage?.hasMore ?? resolvedOffset + pageItems.length < items.length;
   return {
-    total: items.length,
+    total: serverPage?.total ?? items.length,
     offset: resolvedOffset,
     limit: resolvedLimit,
-    returned: page.length,
+    returned: pageItems.length,
     hasMore,
-    nextOffset: hasMore ? resolvedOffset + page.length : null,
-    items: page,
+    // Advance by the page SIZE, not by how many rows survived mapping. The
+    // server paged by `limit`, so advancing by a short page would re-read rows
+    // the caller already has — and a fully-dropped page would leave
+    // `nextOffset === offset` while `hasMore` is true, which is a
+    // non-terminating loop for an agent told to page until `hasMore` is false.
+    nextOffset: hasMore
+      ? resolvedOffset + (serverPage ? resolvedLimit : pageItems.length)
+      : null,
+    items: pageItems,
   };
 }
 
@@ -357,8 +390,6 @@ export function extractArrayItems<T>(payload: unknown): T[] {
 export const WEBAPP_URL =
   process.env.WEBAPP_URL?.replace(/\/+$/, "") ?? "https://app.closedloop.ai";
 
-const DOCUMENT_FALLBACK_PREFIX = "documents";
-
 /**
  * Per-session webapp URL builder. The org slug is read through a getter per
  * URL — never from module state, and never frozen for the session's lifetime.
@@ -373,17 +404,15 @@ const DOCUMENT_FALLBACK_PREFIX = "documents";
 export type McpUrlBuilder = {
   withOrgPrefix(path: string): string;
   buildDocumentUrlFromRecord(row: Record<string, unknown>): string | null;
-  buildLoopUrl(loopId: string): string;
 };
 
 export function createUrlBuilder(
   getOrgSlug: () => string | null
 ): McpUrlBuilder {
-  // FEA-4137: Issues route under `/issues/`; legacy `/features/*` links still
-  // resolve via a 302 redirect, and `FEA-42` remains an accepted slug alias.
+  // ISS-12855: documents route at `/documents/<slug>`; legacy per-type URLs
+  // redirect there.
   const buildDocumentUrl = (slug: string, documentType: string): string => {
-    const prefix =
-      getRoutePrefixForType(documentType) ?? DOCUMENT_FALLBACK_PREFIX;
+    const prefix = getRoutePrefixForType(documentType) ?? DOCUMENT_ROUTE_PREFIX;
     return `${WEBAPP_URL}${buildScopedDocumentPath(
       prefix,
       encodePathSegment(slug),
@@ -403,17 +432,63 @@ export function createUrlBuilder(
     buildDocumentUrlFromRecord(row: Record<string, unknown>): string | null {
       const slug = readString(row.slug);
       const docType = readString(row.type);
-      if (!(slug && docType)) {
+      // Stay total: this builder's contract is a null webUrl for a row it
+      // cannot address, not a thrown error that would fail every sibling row
+      // in the same `.map()`.
+      if (!(slug && docType) || isDotPathSegment(slug)) {
         return null;
       }
       return buildDocumentUrl(slug, docType);
     },
-    buildLoopUrl(loopId: string): string {
-      return `${WEBAPP_URL}${buildScopedDocumentPath(
-        "loops",
-        encodePathSegment(loopId),
-        getOrgSlug()
-      )}`;
-    },
   };
+}
+
+/**
+ * A segment `new URL(path, base)` RESOLVES AWAY instead of sending, so it
+ * silently retargets the request: `/agent-sessions/../trace-comments` becomes
+ * `/trace-comments`, the org-wide aggregate. Encoding cannot save it — the URL
+ * parser strips the segment whether it is written `..` or `%2E%2E` — so every
+ * consumer either rejects it or degrades, and neither value is ever a real id.
+ */
+export function isDotPathSegment(id: string): boolean {
+  return id === "." || id === "..";
+}
+
+/**
+ * Schema for a REQUIRED entity id-or-slug tool argument. A bare `z.string()`
+ * rejects a missing or blank value with the SDK's opaque
+ * `-32602 … expected string, received undefined`, which an agent cannot act on
+ * (ISS-7080); this attaches an actionable message that names the entity kind
+ * and how to find a valid value. The schema also rejects blank, whitespace-only,
+ * `.` and `..` values before they can retarget a request path.
+ */
+export function requiredIdOrSlug(
+  entityLabel: string,
+  example: string | string[],
+  discoveryHint?: string
+): z.ZodString {
+  const friendly = idOrSlugRequiredMessage(entityLabel, example, discoveryHint);
+  return z
+    .string({ error: friendly })
+    .trim()
+    .min(1, { error: friendly })
+    .refine((value) => !isDotPathSegment(value), { error: friendly })
+    .describe(describeIdOrSlug(entityLabel, example));
+}
+
+function formatIdOrSlugExamples(example: string | string[]): string {
+  return Array.isArray(example) ? example.join(", ") : example;
+}
+
+/**
+ * The actionable "missing id" message {@link requiredIdOrSlug} attaches, for a
+ * handler that enforces the same requirement conditionally.
+ */
+export function idOrSlugRequiredMessage(
+  entityLabel: string,
+  example: string | string[],
+  discoveryHint?: string
+): string {
+  const base = `A ${entityLabel} UUID or user-facing slug is required (e.g. ${formatIdOrSlugExamples(example)}).`;
+  return discoveryHint ? `${base} ${discoveryHint}` : base;
 }

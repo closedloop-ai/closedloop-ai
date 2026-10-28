@@ -316,11 +316,12 @@ describe("normalizeJudgeName", () => {
     "no-suffix": ["clarity", "clarity"],
   } as const satisfies Record<string, readonly [string, string]>;
 
-  it.each(
-    Object.entries(NORMALIZATION_TEST_CASES)
-  )("%s: normalizeJudgeName(%p) → %p", (_, [input, expected]) => {
-    expect(normalizeJudgeName(input)).toBe(expected);
-  });
+  it.each(Object.entries(NORMALIZATION_TEST_CASES))(
+    "%s: normalizeJudgeName(%p) → %p",
+    (_, [input, expected]) => {
+      expect(normalizeJudgeName(input)).toBe(expected);
+    }
+  );
 });
 
 describe("isCanonicalJudgePromptName", () => {
@@ -334,9 +335,10 @@ describe("isCanonicalJudgePromptName", () => {
     invalid_empty: ["", false],
   } as const satisfies Record<string, readonly [string, boolean]>;
 
-  it.each(
-    Object.entries(CANONICALITY_CASES)
-  )("%s: isCanonicalJudgePromptName(%p) → %p", (_, [input, expected]) => {
-    expect(isCanonicalJudgePromptName(input)).toBe(expected);
-  });
+  it.each(Object.entries(CANONICALITY_CASES))(
+    "%s: isCanonicalJudgePromptName(%p) → %p",
+    (_, [input, expected]) => {
+      expect(isCanonicalJudgePromptName(input)).toBe(expected);
+    }
+  );
 });

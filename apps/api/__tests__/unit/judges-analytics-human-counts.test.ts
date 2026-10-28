@@ -31,7 +31,7 @@ import {
   getCodeHumanRatingsByArtifact,
   getHumanCountsByType,
   getHumanRatingsByArtifact,
-} from "@/app/judges-analytics/service";
+} from "@/app/judges-analytics/service/human-ratings";
 
 // ---------------------------------------------------------------------------
 // Helper types

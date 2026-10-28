@@ -15,16 +15,11 @@
  *    pass merely because nothing rendered;
  *  - the column CONTRACT (`DocumentColumn` + its label map + the default sets),
  *    which is the door a new column has to come through before it can render.
- *
- * Scope note: `loops/usage/components/loop-usage-tables.tsx` still has a
- * `<TableHead>Loops</TableHead>`. That is the Loops **usage report**, where the
- * loop count is the subject of the page, not an artifact table — ISS-5306
- * leaves it alone on purpose and this file does not assert against it.
  */
 
+import { render as renderWithNav } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render as renderWithNav } from "./render-with-nav";
 
 vi.mock(
   "@repo/app/documents/hooks/use-artifact-favorites",
@@ -35,14 +30,12 @@ vi.mock(
 // not flag behavior, so resolve every flag to off rather than mount a provider.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: vi.fn(() => false),
+  useFeatureFlagEnabledOptional: vi.fn(() => false),
   useFeatureFlagGate: vi.fn(() => ({ isEnabled: false, isLoading: false })),
-}));
-
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  useCodeJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port, so this exhaustive module mock owes it an entry
+  // too. Off and resolved, matching this suite's every-flag-off posture.
+  useFeatureFlagGateOptional: vi.fn(() => ({ enabled: false, isReady: true })),
 }));
 
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";

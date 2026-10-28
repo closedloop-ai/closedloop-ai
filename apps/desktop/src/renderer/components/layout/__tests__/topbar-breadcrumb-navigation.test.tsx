@@ -22,15 +22,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Topbar } from "../Topbar";
 
 // ISS-5112: the Topbar now carries a guest-mode "Create account" button, whose
-// state comes from `useGuestOnboarding` (auth + the Labs flag). This suite is
+// state comes from `useGuestOnboarding` (the desktop auth status). This suite is
 // about the breadcrumb, so pin a settled SIGNED-IN device — the button renders
 // null and the header chrome under test is exactly what it was.
 vi.mock("../../onboarding/use-guest-onboarding", () => ({
-  useGuestOnboarding: () => ({
-    enabled: false,
-    authStatus: "authenticated",
-    resolved: true,
-  }),
+  useGuestOnboarding: () => ({ authStatus: "authenticated" }),
   canOfferAccount: () => false,
 }));
 
@@ -171,4 +167,29 @@ describe("Topbar breadcrumb back affordance (FEA-4260)", () => {
     expect(parentCrumb.getAttribute("href")).toBe(SESSIONS_HREF);
     expect(parentCrumb.getAttribute("aria-current")).not.toBe("page");
   });
+
+  // ISS-12300 D4: the sidebar button mirrors the comments button's
+  // PanelRightIcon in both states.
+  it.each([
+    [true, "Collapse sidebar"],
+    [false, "Expand sidebar"],
+  ])("renders PanelLeftIcon with the sidebar open: %s", (open, name) => {
+    const memoryNav = createMemoryNavigation({ initialPath: AGENTS_HREF });
+    render(
+      <FeatureFlagAdapterProvider adapter={flagAdapter}>
+        <NavigationProvider adapter={memoryNav.adapter}>
+          <SidebarProvider defaultOpen={open}>
+            <Topbar breadcrumbs={[{ label: "Agents" }]} />
+          </SidebarProvider>
+        </NavigationProvider>
+      </FeatureFlagAdapterProvider>
+    );
+
+    const icon = screen.getByRole("button", { name }).querySelector("svg");
+    expect(icon?.classList.contains("lucide-panel-left")).toBe(true);
+    expect(icon?.getAttribute("class")).not.toMatch(SIZE_CLASS);
+  });
 });
+
+/** The Button `icon-sm` size only applies to an svg without its own size class. */
+const SIZE_CLASS = /\bsize-/;

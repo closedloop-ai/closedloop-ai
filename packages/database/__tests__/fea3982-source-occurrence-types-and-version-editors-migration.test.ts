@@ -6,7 +6,7 @@ import {
 } from "@repo/api/src/types/agent-component";
 import { describe, expect, it } from "vitest";
 
-// FEA-3982 (PLN-1494 Slice 1 + Mike-approved edit-lineage capture): per-migration
+// FEA-3982 (PLN-1494 Slice 1 + Marisol-approved edit-lineage capture): per-migration
 // DDL contract guard for (a) the four new `source_occurrence_type` enum values
 // and (b) the additive `definition_version_editors` lineage table + role enum.
 // This is a per-migration migration.sql DDL guard (allowed): it asserts THIS

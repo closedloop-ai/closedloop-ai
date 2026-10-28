@@ -4,7 +4,7 @@
 -- The columns are FEA-4303's, unchanged; this migration only makes the build
 -- concurrent. But FEA-4303's own rationale comment overstated the reach, and
 -- repeating it here would carry the error forward, so state it accurately
--- (shafty023 caught this on #4080):
+-- (davetho caught this on #4080):
 --
 --   SERVED. Any query that filters `model` AND windows/sorts on
 --   `session_started_at`: the explicit `sessionStartedAt` table-header sort
@@ -119,7 +119,7 @@
 --   file cannot self-heal that (the `DO`-block guard forces the whole-file
 --   transaction wrap and would make the migration fail unconditionally), so the
 --   check is on the operator. Automating the detection is tracked separately.
---   (shafty023 + the Codex review of #4080.)
+--   (davetho + the Codex review of #4080.)
 --
 -- Purely additive: index-only, no data mutation, no result change (an index alters
 -- plan choice only). The name and columns match the schema.prisma declaration
@@ -144,7 +144,7 @@
 --   build anyway. The registration only starts working once stage `public` has
 --   applied it. Every new CONCURRENTLY migration has this pre-merge window; it is
 --   a property of the ISS-4437 mechanism, not of this migration, and is tracked
---   separately. (shafty023, #4080.)
+--   separately. (davetho, #4080.)
 --
 -- ─────────────────────────────────────────────────────────────────────────────
 -- PER-ENVIRONMENT OPERATOR NOTES (state as of this re-land, 2026-07-30):
@@ -160,7 +160,7 @@
 --   half mechanically: the immutability exception refuses once `production`
 --   carries the deleted migration, so it expires on its own. Assuming a clean
 --   prod, this migration performs the real CONCURRENTLY build there, zero write
---   lock, no pre-step. (shafty023, #4080.)
+--   lock, no pre-step. (davetho, #4080.)
 --
 -- • STAGE (public schema): stage auto-deploys every push to main, and the plain
 --   migration was on main for hours, so stage has almost certainly ALREADY APPLIED

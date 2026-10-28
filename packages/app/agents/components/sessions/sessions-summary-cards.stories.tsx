@@ -1,42 +1,26 @@
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
-import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
+import type { GitHubConnectTarget } from "@repo/app/github/lib/github-connect-target";
 import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
-import type { Decorator, Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
 import { createAgentSessionUsageSummaryFixture } from "./session-list-fixtures";
 import { SessionsSummaryCards } from "./sessions-summary-cards";
 
 /**
- * ISS-4773's gate, ON. Mounted through the real `FeatureFlagAdapterProvider`
- * seam (the `tile-content.stories.tsx` pattern) rather than a stubbed boolean, so
- * the honest-mode stories resolve the flag exactly as the web Sessions page and
- * the desktop `SessionsView` do.
- */
-const withCostHonestyFlag: Decorator = (Story) => (
-  <FeatureFlagAdapterProvider
-    adapter={createStaticFeatureFlagAdapter({
-      enabledFlags: [SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY],
-    })}
-  >
-    <Story />
-  </FeatureFlagAdapterProvider>
-);
-
-/**
  * The reported ISS-4773 shape, sharing its numbers with
- * `__tests__/sessions-summary-cards-cost-honesty.test.tsx` so the story and the
+ * `__tests__/sessions-summary-cards-cost-basis.test.tsx` so the story and the
  * suite pin ONE payload: a subscription-heavy account whose non-subscription
  * bucket ($16,825) is almost entirely usage the collector could not classify.
- * Only $42 of it was ever billed to an API key.
+ * Only $42 of it was ever billed to an API key. Its three lanes reconcile with
+ * `totalEstimatedCost`, so it resolves to the breakdown presentation.
  *
- * EVERY honest-mode override below must keep `metered + unknown` reconciled with
- * `apiEstimatedCost` — `hasReportableCostSplit` (cost-card-presentation.ts)
- * refuses the honest presentation otherwise, and the story would then silently
- * paint the fallback card and pin the wrong thing.
+ * An override that BREAKS that reconciliation drops the card to the shipped
+ * fallback — which is deliberate in `CostVersionSkewFallback` and
+ * `LocalFallbackWithCostDisclosure`, and would silently pin the wrong frame
+ * anywhere else.
  */
-function honestUsageFixture(
+function splitUsageFixture(
   overrides: Partial<AgentSessionUsageSummary> = {}
 ): AgentSessionUsageSummary {
   return createAgentSessionUsageSummaryFixture(
@@ -58,13 +42,13 @@ function honestUsageFixture(
 }
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Cards",
+  title: "Composites v1.0/Sessions/Sessions Summary Cards",
   component: SessionsSummaryCards,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     isLoading: false,
-    usage: honestUsageFixture(),
+    usage: splitUsageFixture(),
     // Both production call sites (the web Sessions page and the desktop
     // `SessionsView`) opt into the wrapping grid, so the stories lay the strip
     // out the way it actually ships rather than as the legacy scrolling row.
@@ -76,78 +60,29 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * The closed-by-default strip: with the cost-honesty flag OFF the Cost card is
- * exactly what ships today — labelled "cost", headlining the
- * whole $16,825 bucket, captioned with FEA-4231's "if billed to API" line.
- * Asserted on the SAME payload every honest story uses, so the flag is the only
- * thing that changes it.
+ * The shipping strip. Since ISS-8791 retired both cost flags, this payload
+ * resolves to the BREAKDOWN presentation with no gate consulted: the headline is
+ * the subscription-inclusive $18,855 total and the three lanes that make it up
+ * sit behind the disclosure. The two stories below reach the older collapsed
+ * frame instead, each by breaking the partition a different way.
  */
 export const Default: Story = {};
 
 /**
- * ISS-4773 honest mode on a healthy split. The headline drops to the $16,000
- * that was genuinely billed to an API key under its own narrower label, and the
- * caption carries BOTH clauses joined by a middot. This is the two-clause
- * caption at its longest in a ~124px card — the wrap and the middot's position
- * are the thing to look at, which is what the string-level tests cannot see.
+ * Version skew: an already-installed Desktop predating ISS-4773 publishes only
+ * the collapsed bucket, so there is no split to stand behind. Treating that
+ * absence as "$0 billed" would be a worse lie than the bucket label, so the card
+ * degrades to the shipped "cost" presentation — the same frame `Default` shows,
+ * reached for a different reason. Since ISS-8791 this is the ONLY route to that
+ * frame: breakdown claims every payload it can substantiate.
  */
-export const CostHonestyOn: Story = {
+export const CostVersionSkewFallback: Story = {
   args: {
-    usage: honestUsageFixture({
-      apiEstimatedCost: 16_825,
-      meteredEstimatedCost: 16_000,
-      unknownEstimatedCost: 825,
-    }),
-  },
-  decorators: [withCostHonestyFlag],
-};
-
-/**
- * The reported account, where the excluded share ($16,783) dwarfs the reported
- * one ($42): the card's dominant fact would otherwise sit in its quietest slot.
- * The caption escalates to the row's existing warning treatment plus its icon —
- * reused from the Sessions card's unreadable-transcript caveat, not invented
- * here. Watch the icon + text staying on one baseline as the caption wraps.
- */
-export const CostHonestyDominantUnknown: Story = {
-  args: { usage: honestUsageFixture() },
-  decorators: [withCostHonestyFlag],
-};
-
-/**
- * Honest mode where only ONE caption clause survives: every session's billing
- * mode resolved, so the unclassified share is zero and its clause is dropped
- * rather than printed as an amount of nothing. `apiEstimatedCost` moves down to
- * match `meteredEstimatedCost` — without that the halves would no longer
- * partition the bucket they claim to and the reconciliation guard would
- * (correctly) refuse honest mode. The visual contract: no orphaned middot, no
- * empty second clause.
- */
-export const CostHonestySingleCaptionClause: Story = {
-  args: {
-    usage: honestUsageFixture({
-      apiEstimatedCost: 42,
-      unknownEstimatedCost: 0,
-    }),
-  },
-  decorators: [withCostHonestyFlag],
-};
-
-/**
- * Version skew with the flag ON: an already-installed Desktop predating ISS-4773
- * publishes only the collapsed bucket, so there is no split to stand behind.
- * Treating that absence as "$0 billed" would be a worse lie than the bucket
- * label, so the card degrades to the shipped "cost"
- * presentation — the same frame `Default` shows, reached for a different reason.
- */
-export const CostHonestyVersionSkewFallback: Story = {
-  args: {
-    usage: honestUsageFixture({
+    usage: splitUsageFixture({
       meteredEstimatedCost: undefined,
       unknownEstimatedCost: undefined,
     }),
   },
-  decorators: [withCostHonestyFlag],
 };
 
 /**
@@ -215,26 +150,25 @@ export const LocalFallback: Story = {
   args: {
     isError: true,
     usage: undefined,
-    localUsage: honestUsageFixture(),
+    localUsage: splitUsageFixture(),
   },
 };
 
 /**
- * The ISS-4773 review fix, and the caption at its absolute longest: the local
- * fallback COMPOSES with the honest disclosure rather than replacing it. Before
- * the fix a cloud failure left an honest-mode card headlining metered-only spend
- * with no mention of the shares it had just excluded — the card hiding exactly
- * the amount it dropped, at the moment the reader is least able to check it.
- * Provenance and disclosure answer different questions, so both are stated, and
- * this is the story that shows what three middot-joined facts do to a 124px card.
+ * The ISS-4773 review fix: the local fallback COMPOSES with the disclosure
+ * caption rather than replacing it. Before the fix a cloud failure left the card
+ * headlining a narrowed figure with no mention of the share it had just
+ * excluded — the card hiding exactly the amount it dropped, at the moment the
+ * reader is least able to check it. Provenance and disclosure answer different
+ * questions, so both are stated, and this is the story that shows what
+ * middot-joined facts do to a 124px card.
  */
-export const LocalFallbackWithCostHonesty: Story = {
+export const LocalFallbackWithCostDisclosure: Story = {
   args: {
     isError: true,
     usage: undefined,
-    localUsage: honestUsageFixture(),
+    localUsage: splitUsageFixture({ unknownEstimatedCost: undefined }),
   },
-  decorators: [withCostHonestyFlag],
 };
 
 /**
@@ -263,6 +197,21 @@ export const LocalFallbackWithCostHonesty: Story = {
 
 /** The reported 1079px desktop track, once `layout: padded` sheds its 32px. */
 const REPORTED_TRACK_VIEWPORT = { viewport: { value: "1111-900" } };
+
+/**
+ * A desktop-shaped connect target (a HANDLER, never an href — an in-app link
+ * there is the FEA-3280 dead click), so the gated stories render the affordance
+ * with its CONTROL rather than the handler-less degrade. Declared above the
+ * stories that read it: a story object evaluates its `args` at module load, so
+ * a bottom-of-file const would be in the temporal dead zone.
+ */
+const STORY_CONNECT_TARGET: GitHubConnectTarget = {
+  action: GitHubConnectAction.Connect,
+  onConnect: () => {
+    // Presentational only: the story renders the affordance, it does not run
+    // the connect handoff.
+  },
+};
 
 /**
  * The track the desktop app ACTUALLY launches into: 1099px, once `layout:
@@ -360,55 +309,53 @@ export const DenseLocalFallback: Story = {
   args: {
     isError: true,
     usage: undefined,
-    localUsage: honestUsageFixture(),
+    localUsage: splitUsageFixture(),
   },
   globals: REPORTED_TRACK_VIEWPORT,
   name: "Dense: local fallback",
 };
 
 /**
- * SIGNED OUT — the priority state, and the one that most breaks the one-band
- * reading (ISS-5070 item 2).
+ * SIGNED OUT — the priority state, and the one ISS-5070 item 2 raised as most
+ * breaking the one-band reading.
  *
- * `DeliveryMetricCard` puts a `GatedMetricIndicator` — an icon, the line "Sign
- * in to light up this metric.", and an `sm` Button — into the CAPTION slot. At
- * the compact floor's ~168px interior that is roughly three wrapped lines plus a
- * 32px button, while its neighbours carry a single 19px caption. The caption
- * reservation is a FLOOR, not a clamp, so those two cards legitimately set the
- * rank's height and the four beside them carry the difference.
+ * ISS-7866 is what makes it worth re-reading. `DeliveryMetricCard` now puts the
+ * shared `ConnectGitHubIndicator` — the `card` variant, a link-styled
+ * "Connect GitHub" and nothing else — into the CAPTION slot, over a withdrawn
+ * value. That slot used to carry an icon, a wrapped sign-in sentence and an `sm`
+ * Button: roughly three lines plus a 32px control at the compact floor's ~168px
+ * interior, while its neighbours carried a single 19px caption. The caption
+ * reservation is a FLOOR, not a clamp, so those two cards set the rank's height
+ * and the four beside them carried the difference. Whether they still do is the
+ * thing to look at here.
  *
  * It is also the DESKTOP DEFAULT before sign-in, so it is the first thing a new
  * desktop user sees — not an edge case.
  */
 export const SignedOut: Story = {
-  args: { authenticated: false },
+  args: { authenticated: false, githubConnect: STORY_CONNECT_TARGET },
   name: "Signed out",
 };
 
 /** The same signed-out strip, dense, at the reported 1079px track. */
 export const DenseSignedOut: Story = {
-  args: { authenticated: false },
+  args: { authenticated: false, githubConnect: STORY_CONNECT_TARGET },
   globals: REPORTED_TRACK_VIEWPORT,
   name: "Dense: signed out (the state that most strains the band)",
 };
 
 /**
- * Signed out with a live sign-in handler, dense: the surface hoists ONE banner
- * above the row and the per-card CTAs drop out, so the two delivery cards fall
- * back to an ordinary short caption. Rendered beside `DenseSignedOut` because
- * the pair is the actual decision — the hoisted banner is what buys the band
- * back, and that trade-off is invisible from either story alone.
+ * Signed out with NO connect target, dense — a host with no connect entry point.
+ * The affordance degrades to the explanation sentence and no control, the one
+ * card layout that still speaks a sentence. Rendered beside `DenseSignedOut`
+ * because the pair is the actual trade: a card that can offer the fix stays the
+ * height of a live card, and a card that cannot pays a wrapped line to say why
+ * it is dark. Neither story shows that on its own.
  */
-export const DenseSignedOutWithHoistedPrompt: Story = {
-  args: {
-    authenticated: false,
-    onSignIn: () => {
-      // Presentational only: the story renders the hoisted banner, it does not
-      // exercise the sign-in flow.
-    },
-  },
+export const DenseSignedOutWithoutConnectTarget: Story = {
+  args: { authenticated: false, githubConnect: undefined },
   globals: REPORTED_TRACK_VIEWPORT,
-  name: "Dense: signed out, prompt hoisted above the row",
+  name: "Dense: signed out, no connect target",
 };
 
 /**
@@ -536,7 +483,7 @@ export const NoPriorPeriod: Story = {
  */
 export const UnpricedCohort: Story = {
   args: {
-    usage: honestUsageFixture({
+    usage: splitUsageFixture({
       totalSessions: 6535,
       totalInputTokens: 620_000_000,
       totalOutputTokens: 640_000_000,
@@ -562,7 +509,7 @@ export const UnpricedCohortWithComparison: Story = {
     deltas: {
       label: "vs. prior 30 days",
       sessions: { delta: 12, deltaPolarity: MetricPolarity.HigherIsBetter },
-      apiCost: { delta: -40, deltaPolarity: MetricPolarity.LowerIsBetter },
+      totalCost: { delta: -40, deltaPolarity: MetricPolarity.LowerIsBetter },
     },
   },
 };

@@ -9,19 +9,25 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test } from "node:test";
 import { OpencodeDefaultModel } from "@repo/lib/harness/synthetic-model-keys";
+import { afterEach, test } from "vitest";
+import {
+  HistoricalParseWorkerResponseType,
+  historicalParseWorkerResponseSchema,
+} from "../src/main/collectors/engine/historical-parse-worker-protocol.js";
 import {
   loadOpencodeSessionsFromDb,
   loadSessionsFromDb,
 } from "../src/main/collectors/opencode/opencode-parser.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { estimateTokenCost } from "../src/shared/token-cost.js";
+import { parsedSessions } from "./historical-parse-worker-response-support.js";
 import {
   cleanupTempDirs,
   makeTempDir,
 } from "./normalized-session-test-utils.js";
 import {
+  TIME_UPDATED,
   UNPARSEABLE_TIMESTAMP,
   writeOpencodeDb as writeOpencodeStore,
 } from "./opencode-store-fixture.js";
@@ -825,7 +831,7 @@ function insertNamedZeroAggregateSession(
  * from a corrupt/version-skewed token count in one message — must NOT suppress
  * every valid session in the store. The bad session is dropped; its healthy
  * sibling still parses. (Reading the nested cache shape now routes more values
- * through the throwing strict reader, widening this surface — wongk review.)
+ * through the throwing strict reader, widening this surface — whitlockk review.)
  */
 test("OpenCode parser isolates a malformed session and preserves its healthy sibling (ISS-4380)", () => {
   const dir = makeTempDir("opencode-batch-isolation-");
@@ -962,4 +968,150 @@ test("ISS-5302: a session whose every timestamp is unreadable yields no session,
   );
   assert.deepEqual(load.droppedSessions, []);
   assert.deepEqual(lines, []);
+});
+
+/**
+ * ISS-8565: a model literally named `__proto__` used to hit the inherited
+ * `__proto__` setter, creating no own key, so the session's whole token
+ * aggregate vanished and its cost derived null. Nothing threw, so asserting
+ * "does not throw" would be the false green here — the mutation this kills is
+ * reverting the container to a plain `{}`, which empties `Object.keys`.
+ */
+test("OpenCode folds a __proto__ model as a visible own key (ISS-8565)", () => {
+  const dir = makeTempDir("opencode-proto-model-");
+  const dbPath = writeOpencodeDb(dir, {
+    model: "__proto__",
+    agent: "build",
+    tokens: {
+      input: 1000,
+      output: 500,
+      reasoning: 0,
+      cacheRead: 40,
+      cacheWrite: 7,
+    },
+  });
+
+  const parsed = loadOne(dbPath);
+
+  const tokensByModel = parsed.tokensByModel;
+  assert.ok(Object.keys(tokensByModel).includes("__proto__"));
+  assert.deepEqual(Object.getOwnPropertyNames(tokensByModel), ["__proto__"]);
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  // biome-ignore lint/complexity/useLiteralKeys: bracket form keeps the hostile key literal and greppable
+  assert.deepEqual(tokensByModel["__proto__"], {
+    input: 1000,
+    output: 500,
+    cacheRead: 40,
+    cacheWrite: 7,
+  });
+  assert.equal(Object.getPrototypeOf(tokensByModel), Object.prototype);
+  assert.equal(
+    JSON.stringify(tokensByModel),
+    '{"__proto__":{"input":1000,"output":500,"cacheRead":40,"cacheWrite":7}}'
+  );
+});
+
+/**
+ * ISS-8565 invariant: a VALID model name must fold byte-identically, including
+ * serialized key order. Without this the suite would only pin the hostile key
+ * and the "no user-visible change" claim would rest on prose alone.
+ */
+test("OpenCode folds an ordinary model byte-identically (ISS-8565)", () => {
+  const dir = makeTempDir("opencode-proto-control-");
+  const dbPath = writeOpencodeDb(dir, {
+    model: "oc-control",
+    agent: "build",
+    tokens: {
+      input: 1000,
+      output: 500,
+      reasoning: 0,
+      cacheRead: 40,
+      cacheWrite: 7,
+    },
+  });
+
+  const parsed = loadOne(dbPath);
+
+  assert.equal(
+    JSON.stringify(parsed.tokensByModel),
+    '{"oc-control":{"input":1000,"output":500,"cacheRead":40,"cacheWrite":7}}'
+  );
+  assert.equal(Object.getPrototypeOf(parsed.tokensByModel), Object.prototype);
+});
+
+/**
+ * ISS-8883: `fileModifiedAt` was `Number(cell || 0) || null`, the one
+ * `Number(cell || 0)` on the session row ISS-5238 left behind. `||` catches
+ * NaN and 0 but neither `Infinity` nor a negative. The damage was not in the
+ * parser — it does not throw — but at the worker wire: `z.number()` rejects
+ * non-finite, the Parsed response is `sessions: z.array(...)`, so ONE Infinity
+ * cell failed the whole store's response and dropped every valid sibling. The
+ * negative half persisted as a confident 1969 mtime, and a finite value past
+ * `Date`'s range as a far-future one. Asserting only "the parser returned five
+ * sessions" would leave the whole-store drop unpinned, so the five are pushed
+ * through the same schema production uses.
+ *
+ * The `null` is also REPORTED. A present-but-unusable cell is corruption in a
+ * foreign store, and coercing it to the same `null` an absent cell produces
+ * would make the two indistinguishable — so the monitored sink carries the
+ * corrupt three and stays silent on the valid two.
+ */
+test("ISS-8883: an Infinity, negative or out-of-Date-range time_updated nulls fileModifiedAt and every sibling survives the worker wire", () => {
+  const dir = makeTempDir("opencode-mtime-guard-");
+  const dbPath = writeOpencodeStore(dir, [
+    { id: "ses_inf", timeUpdated: Number.POSITIVE_INFINITY },
+    { id: "ses_neg", timeUpdated: -3 },
+    // Finite, positive, inside MAX_SAFE_INTEGER, and past `Date`'s range — the
+    // value `toIso` refuses for the session's own timestamps.
+    { id: "ses_far", timeUpdated: UNPARSEABLE_TIMESTAMP },
+    { id: "ses_ok_a" },
+    { id: "ses_ok_b", timeUpdated: TIME_UPDATED + 1 },
+  ]);
+
+  const logs: string[] = [];
+  const load = loadOpencodeSessionsFromDb(dbPath, {
+    log: (message) => logs.push(message),
+  });
+  assert.deepEqual(load.droppedSessions, []);
+  const byId = new Map(load.sessions.map((s) => [s.sessionId, s]));
+  assert.equal(byId.get("opencode-ses_inf")?.fileModifiedAt, null);
+  assert.equal(byId.get("opencode-ses_neg")?.fileModifiedAt, null);
+  assert.equal(byId.get("opencode-ses_far")?.fileModifiedAt, null);
+  assert.equal(byId.get("opencode-ses_ok_a")?.fileModifiedAt, TIME_UPDATED);
+  assert.equal(byId.get("opencode-ses_ok_b")?.fileModifiedAt, TIME_UPDATED + 1);
+
+  const wire = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: load.sessions,
+  });
+  assert.equal(wire.success, true, JSON.stringify(wire.error?.issues));
+  if (wire.success) {
+    assert.deepEqual(
+      parsedSessions(wire)
+        .map((s) => s.sessionId)
+        .sort(),
+      [
+        "opencode-ses_far",
+        "opencode-ses_inf",
+        "opencode-ses_neg",
+        "opencode-ses_ok_a",
+        "opencode-ses_ok_b",
+      ]
+    );
+  }
+
+  for (const sessionId of ["ses_inf", "ses_neg", "ses_far"]) {
+    assert.ok(
+      logs.some(
+        (message) =>
+          message.includes("time_updated") && message.includes(sessionId)
+      ),
+      `${sessionId}'s unusable mtime is reported on the monitored channel, naming the session`
+    );
+  }
+  assert.ok(
+    !logs.some((message) => message.includes("ses_ok_")),
+    "a usable mtime reports nothing"
+  );
 });

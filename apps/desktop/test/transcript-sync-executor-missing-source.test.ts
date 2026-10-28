@@ -7,18 +7,16 @@
  * cursor guard, and the ISS-4695 item-3 regenerable-reason split
  * (`materialized_source_unavailable` vs `source_gone`).
  *
- * #4195: split out of `transcript-sync-executor.test.ts` (a shrink-only
- * grandfathered file) so the source-recovery cluster has one owner and that
+ * #4195: split out of `transcript-sync-executor.test.ts` so the
+ * source-recovery cluster has one owner and that
  * suite finishes below its pinned base instead of growing with the ISS-4695
  * terminal-status cluster. Shares the executor fakes with its siblings via
  * `./helpers/transcript-sync-executor-fixtures.js`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import { createTranscriptSyncExecutor } from "../src/main/transcript-sync/transcript-sync-executor.js";
 import {
   redactedArchiveCursorTargetId,
@@ -94,6 +92,7 @@ test("FEA-3555: a never-uploaded missing source at threshold is terminally skipp
     kind: "skipped",
     reason: "source gone",
     permanent: true,
+    permanentCause: TranscriptSkipReason.SourceGone,
   });
   // Dead-lettered locally, no transient failure recorded.
   assert.equal(store.failures.length, 0);
@@ -102,6 +101,16 @@ test("FEA-3555: a never-uploaded missing source at threshold is terminally skipp
   assert.equal(store.dead[0].id, "sess-1");
   assert.equal(store.dead[0].key, "main");
   assert.ok(store.dead[0].reason.includes("source gone"));
+  // ISS-9884 (re-review): the dead settle persists the reason the CLOUD
+  // recorded, not the one this path requested. `recordingClient` answers a
+  // fixed `too_large` while the request below is `source_gone`, so the two are
+  // distinguishable and reverting the settle to the requested reason turns
+  // this red.
+  assert.equal(
+    store.dead[0].terminalSkipReason,
+    TranscriptSkipReason.TooLarge,
+    "the local column carries the server's answer, so it cannot contradict what the cloud serves"
+  );
   // FEA-3555: the terminal disposition is mirrored to the cloud with the
   // `source_gone` reason so the read path derives `failedPermanent`.
   assert.equal(client.skipRequests.length, 1);
@@ -294,6 +303,7 @@ test("ISS-4647: an unacknowledged source_gone skip is redriven from the PERSISTE
     kind: "skipped",
     reason: "source gone",
     permanent: true,
+    permanentCause: TranscriptSkipReason.SourceGone,
   });
   assert.equal(client.skipRequests.length, 2, "the skip POST was re-attempted");
   assert.equal(store.dead.length, 1, "dead-lettered only after the cloud ack");
@@ -388,6 +398,7 @@ test("ISS-4695 item 3: a batch-materialized (opencode) missing source AT its lon
     kind: "skipped",
     reason: "materialized source unavailable",
     permanent: true,
+    permanentCause: TranscriptSkipReason.MaterializedSourceUnavailable,
   });
   // Dead-lettered locally with the shared source-gone family prefix so the
   // FEA-3932 OpenCode redrive-on-start still picks it up once re-materialized.
@@ -438,6 +449,7 @@ test("ISS-4695 item 3: a raw Claude/Codex (non-materialized) missing source at t
     kind: "skipped",
     reason: "source gone",
     permanent: true,
+    permanentCause: TranscriptSkipReason.SourceGone,
   });
   assert.equal(store.dead.length, 1);
   assert.equal(client.skipRequests.length, 1);
@@ -482,6 +494,7 @@ test("ISS-4647: a batch-materialized (opencode) source that never materializes t
     kind: "skipped",
     reason: "materialized source unavailable",
     permanent: true,
+    permanentCause: TranscriptSkipReason.MaterializedSourceUnavailable,
   });
   assert.equal(store.dead.length, 1);
   assert.ok(
@@ -635,6 +648,7 @@ test("ISS-4647: a missing source whose bytes belong to a PREVIOUS target termina
     kind: "skipped",
     reason: "source gone",
     permanent: true,
+    permanentCause: TranscriptSkipReason.SourceGone,
   });
   assert.deepEqual(store.idled, []);
   assert.equal(store.dead.length, 1);

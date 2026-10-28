@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   getSharedAgentSessions,
@@ -130,7 +130,7 @@ test("FEA-4299: the SQL usage aggregate offers a Repository facet option for eve
   // A cwd that is NOT a git repo — the live `git remote` lookup fails, so the
   // session has no resolved `repositoryFullName`. Its rows render "Unknown" and
   // it must NOT become a folder-named facet option (the FEA-4299 divergence).
-  const folderOnly = path.join(dir, "peter.ulsteen");
+  const folderOnly = path.join(dir, "perrin.upcott");
   try {
     const db = await openSqliteAgentDatabase({
       dataDir,
@@ -173,7 +173,7 @@ test("FEA-4299: the SQL usage aggregate offers a Repository facet option for eve
         "both sessions in the resolved repo fold into its facet count"
       );
       assert.ok(
-        !optionIds.some((id) => id.includes("peter.ulsteen")),
+        !optionIds.some((id) => id.includes("perrin.upcott")),
         "a folder-only cwd never leaks a folder-named facet option"
       );
     } finally {

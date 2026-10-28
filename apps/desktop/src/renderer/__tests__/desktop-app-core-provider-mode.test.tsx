@@ -4,20 +4,26 @@ import type {
   TraceCommentTarget,
 } from "@repo/api/src/types/comment";
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
+import type { DesktopFeatureFlagAssignment } from "@repo/api/src/types/desktop-feature-flags";
+import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import {
   useAgentComponentsDataSource,
   useAgentSessionsDataSource,
 } from "@repo/app/agents/data-source/provider";
 import { useTraceCommentsDataSource } from "@repo/app/agents/data-source/trace-comments-provider";
-import { agentSessionKeys } from "@repo/app/agents/hooks/use-agent-sessions";
+import { agentSessionKeys } from "@repo/app/agents/hooks/agent-session-keys";
+import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import { GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useQueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../../test/deferred.js";
+import type { CloudApiFetchResult } from "../../shared/cloud-api-fetch-contract";
 import { DesktopAuthStatus } from "../../shared/contracts";
 import { DesktopAppCoreProvider } from "../shared-agent-sessions/desktop-app-core-provider";
 import { useDesktopAuth } from "../shared-agent-sessions/desktop-auth-provider";
@@ -28,17 +34,15 @@ import type { DesktopAuthState } from "../types/desktop-api";
  * PLN-1138 Phase 2 — the desktop app-core stack selects its Sessions read source
  * and freshness model by mode (auth × connectivity). Local: the SQLite source
  * (scope "local") under a pure push model (staleTime ∞ + the FEA-2187 poll
- * fallback). Cloud (authenticated + online): the shared HTTP source (scope
- * "http") over the D-G bridge under a refetch model. The QueryClient is rebuilt
- * on a mode change, so the two row sets never share a cache (AC-3.1).
+ * fallback). Cloud (authenticated + online): the HTTP-compatible Sessions source
+ * (scope "http") under a refetch model. The QueryClient is
+ * rebuilt on a mode change, so the two row sets never share a cache (AC-3.1).
  *
- * FEA-3460 / FEA-3522 extend the same selection to trace comments: Cloud mode
- * (authenticated + online) reads AND writes the org cloud API via the shared
- * HTTP source (scope "http") over the D-G bridge — FEA-3522's authenticated
- * write transport is what lets the writes land — while every other state stays
- * fully local (scope "desktop-local"). See the mutation test below, which drives
- * every Cloud-mode mutation through the HTTP source and asserts it reaches the
- * cloud bridge (not the local IPC sink).
+ * Trace comments are the exception to that selection (PLN-2162 M5.2): desktop
+ * keeps no comment data locally, so every mode reads AND writes the org cloud
+ * API through the shared HTTP source (scope "http") over the D-G bridge. See
+ * the mutation test below, which drives every write in each mode through the
+ * HTTP source and asserts it reaches the cloud bridge.
  */
 
 type AuthStateListener = (state: DesktopAuthState) => void;
@@ -48,28 +52,30 @@ const SIGNED_OUT: DesktopAuthState = {
   userId: null,
   organizationId: null,
 };
+const USER_1_ID = "user-1";
+const USER_2_ID = "user-2";
 const AUTHENTICATED: DesktopAuthState = {
   status: DesktopAuthStatus.Authenticated,
-  userId: "user-1",
+  userId: USER_1_ID,
+  organizationId: "org-1",
+};
+const AUTHENTICATED_USER_2: DesktopAuthState = {
+  status: DesktopAuthStatus.Authenticated,
+  userId: USER_2_ID,
   organizationId: "org-1",
 };
 
 const LOCAL_SCOPE = "local";
-/** The desktop IPC trace-comments source identity (FEA-3460). */
-const TRACE_COMMENTS_LOCAL_SCOPE = "desktop-local";
-/**
- * Cloud-mode trace comments now use the plain shared HTTP source (scope
- * `"http"`) for reads AND writes (FEA-3522 authenticated write transport) — the
- * former `"cloud-reads-local-writes"` composite is gone.
- */
-const TRACE_COMMENTS_CLOUD_SCOPE = "http";
-const HTTP_SCOPE = "http";
+/** Trace comments use the shared HTTP source in every mode (PLN-2162 M5.2). */
+const TRACE_COMMENTS_HTTP_SCOPE = "http";
+const SESSIONS_HTTP_SCOPE = "http";
 const COMPONENTS_LOCAL_SCOPE = "agent-components:local";
 const COMPONENTS_HTTP_SCOPE = "agent-components:http";
 const WEB_DEFAULT_STALE_TIME_MS = 60 * 1000;
+const DESKTOP_CLOUD_PRIMARY_SCOPE_PATTERN = /^desktop-cloud-primary:/;
 
 const TRACE_TARGET: TraceCommentTarget = {
-  type: TraceCommentTargetType.Session,
+  type: CommentTargetType.Session,
   id: "session-1",
 };
 
@@ -90,7 +96,7 @@ function makeStoredComment(
     threadId: "thread-1",
     target,
     artifactId: "artifact-1",
-    surface: TraceCommentSurface.SessionDetail,
+    surface: CommentSurface.SessionDetail,
     kind: TraceCommentKind.Comment,
     status: ThreadStatus.Open,
     resolvedAt: null,
@@ -147,44 +153,99 @@ type CloudApiFetchCall = {
   body?: string;
 };
 
-function setupDesktopApi(initial: DesktopAuthState) {
+function setupDesktopApi(
+  initial: DesktopAuthState,
+  options: {
+    failCloudSessionList?: boolean;
+    featureFlagEnabledByUser?: Readonly<Record<string, boolean>>;
+    featureFlagSeed?: Promise<DesktopFeatureFlagAssignment | null>;
+    gridviewAdoptionEnabled?: boolean;
+  } = {}
+) {
   const listeners = new Set<AuthStateListener>();
+  let currentAuth = initial;
+  let failCloudSessionList = options.failCloudSessionList === true;
   // Records what the Cloud-mode HTTP source marshals over the D-G bridge, so a
   // test can prove a write actually reached the cloud transport (FEA-3522)
   // rather than the local IPC sink. Returns a benign success envelope so the
   // shared `useApiClient` resolves each mutation.
   const cloudApiFetchCalls: CloudApiFetchCall[] = [];
+  const localList = vi.fn(async () => ({
+    items: [
+      createAgentSessionListItemFixture({
+        externalSessionId: "local-fallback-session",
+        id: "local-fallback-session",
+      }),
+    ],
+    total: 1,
+    viewerScope: AgentSessionViewerScope.Self,
+  }));
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
     value: {
-      getDesktopAuthState: vi.fn(() => Promise.resolve(initial)),
+      getDesktopAuthState: vi.fn(() => Promise.resolve(currentAuth)),
       onDesktopAuthStateChanged: vi.fn((cb: AuthStateListener) => {
         listeners.add(cb);
         return () => {
           listeners.delete(cb);
         };
       }),
+      getDesktopFeatureFlags: vi.fn(() =>
+        Promise.resolve(featureFlagAssignment(currentAuth, options))
+      ),
+      getE2eSeededFeatureFlags: vi.fn(() => {
+        if (options.featureFlagSeed) {
+          return options.featureFlagSeed;
+        }
+        if (options.gridviewAdoptionEnabled === undefined) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({
+          flags: {
+            [GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY]:
+              options.gridviewAdoptionEnabled,
+          },
+          resolved: true,
+          userId: "e2e-user",
+        });
+      }),
       cloudApiFetch: vi.fn(
         (req: { path: string; method?: string; body?: string }) => {
           const method = (req.method ?? "GET").toUpperCase();
           cloudApiFetchCalls.push({ path: req.path, method, body: req.body });
+          if (
+            failCloudSessionList &&
+            method === "GET" &&
+            req.path.startsWith("/agent-sessions?")
+          ) {
+            return Promise.resolve(
+              cloudApiResponse(
+                503,
+                "Service Unavailable",
+                JSON.stringify({ message: "cloud unavailable" })
+              )
+            );
+          }
           // The shared `useApiClient` unwraps the `{ success, data }` envelope
           // and returns `data`. GET (reads / list) returns an array; a mutation
           // returns the persisted comment (or a delete result).
+          const responseData = isCloudSessionsListRequest(req.path, method)
+            ? {
+                items: [
+                  createAgentSessionListItemFixture({
+                    externalSessionId: "cloud-session",
+                    id: "cloud-session",
+                  }),
+                ],
+                total: 1,
+                viewerScope: AgentSessionViewerScope.Organization,
+              }
+            : cloudResponseData(method);
           const bodyText = JSON.stringify({
             success: true,
-            data: cloudResponseData(method),
+            data: responseData,
           });
-          return Promise.resolve({
-            kind: "response" as const,
-            status: 200,
-            statusText: "OK",
-            headers: [["content-type", "application/json"]] as [
-              string,
-              string,
-            ][],
-            bodyText,
-          });
+          return Promise.resolve(cloudApiResponse(200, "OK", bodyText));
         }
       ),
       agentSessionsApi: {
@@ -196,44 +257,68 @@ function setupDesktopApi(initial: DesktopAuthState) {
           viewerScope: AgentSessionViewerScope.Self,
         })),
         detail: vi.fn(async () => null),
-        list: vi.fn(async () => ({
-          items: [],
-          total: 0,
-          viewerScope: AgentSessionViewerScope.Self,
-        })),
+        list: localList,
         usage: vi.fn(async () => null),
       },
       db: {
         listAgentComponents: vi.fn(async () => ({ items: [], total: 0 })),
         getAgentComponentDetail: vi.fn(async () => null),
       },
-      // The local IPC trace-comments sink — used in local mode (signed out /
-      // offline). In Cloud mode reads AND writes go over the HTTP source /
-      // `cloudApiFetch` bridge above (FEA-3522), NOT through this sink.
-      traceCommentsApi: {
-        list: vi.fn(async () => [] as TraceComment[]),
-        create: vi.fn(async (target: TraceCommentTarget, draft) =>
-          makeStoredComment(target, draft.body)
-        ),
-        reply: vi.fn(async (target: TraceCommentTarget, commentId: string) =>
-          makeStoredComment(target, "reply", commentId)
-        ),
-        update: vi.fn(
-          async (target: TraceCommentTarget, commentId: string, update) =>
-            makeStoredComment(target, update.body, commentId)
-        ),
-        delete: vi.fn(async () => ({ deleted: true as const })),
-      },
     },
   });
   return {
     push: (state: DesktopAuthState) => {
+      currentAuth = state;
       for (const cb of listeners) {
         cb(state);
       }
     },
     cloudApiFetchCalls,
+    localList,
+    setFailCloudSessionList: (fail: boolean) => {
+      failCloudSessionList = fail;
+    },
   };
+}
+
+function featureFlagAssignment(
+  auth: DesktopAuthState,
+  options: {
+    featureFlagEnabledByUser?: Readonly<Record<string, boolean>>;
+  }
+): DesktopFeatureFlagAssignment | null {
+  if (auth.status !== DesktopAuthStatus.Authenticated || !auth.userId) {
+    return null;
+  }
+  return {
+    flags: {
+      [GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY]:
+        options.featureFlagEnabledByUser?.[auth.userId] === true,
+    },
+    resolved: true,
+    userId: auth.userId,
+  };
+}
+
+function cloudApiResponse(
+  status: number,
+  statusText: string,
+  bodyText: string
+): CloudApiFetchResult {
+  return {
+    kind: "response",
+    status,
+    statusText,
+    headers: [["content-type", "application/json"]],
+    bodyText,
+  };
+}
+
+function isCloudSessionsListRequest(path: string, method: string): boolean {
+  return (
+    method === "GET" &&
+    (path === "/agent-sessions" || path.startsWith("/agent-sessions?"))
+  );
 }
 
 /**
@@ -259,6 +344,7 @@ function forceOnline(value: boolean): () => void {
 let restoreOnline: (() => void) | null = null;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   restoreOnline?.();
   restoreOnline = null;
   if (originalDesktopApi) {
@@ -280,6 +366,20 @@ function renderProbe() {
   );
 }
 
+function renderSessionsListProbe() {
+  return renderHook(
+    () => ({
+      client: useQueryClient(),
+      query: useAgentSessions(
+        { limit: 25, offset: 0 },
+        { retry: false, staleTime: Number.POSITIVE_INFINITY }
+      ),
+      source: useAgentSessionsDataSource(),
+    }),
+    { wrapper: DesktopAppCoreProvider }
+  );
+}
+
 describe("DesktopAppCoreProvider mode selection", () => {
   it("signed out runs the local source under the push + poll-fallback model", async () => {
     setupDesktopApi(SIGNED_OUT);
@@ -290,9 +390,8 @@ describe("DesktopAppCoreProvider mode selection", () => {
     );
 
     expect(result.current.source.scope).toBe(LOCAL_SCOPE);
-    // Trace comments follow the same rule: local IPC source when signed out
-    // (FEA-3460), so writes land in the local SQLite store.
-    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_LOCAL_SCOPE);
+    // Trace comments do not follow it: no local comment store (PLN-2162 M5.2).
+    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_HTTP_SCOPE);
     const queries = result.current.client.getDefaultOptions().queries;
     expect(queries?.staleTime).toBe(Number.POSITIVE_INFINITY);
     // ISS-5976 flipped the shared factory's defaults to React Query's stock
@@ -302,20 +401,41 @@ describe("DesktopAppCoreProvider mode selection", () => {
     // and the poll it already has.
     expect(queries?.refetchOnWindowFocus).toBe(false);
     expect(queries?.refetchOnReconnect).toBe(false);
+    // Local reads are SQLite over IPC: stock `"online"` would pause a first
+    // fetch on an empty cache exactly when the machine is offline, which is one
+    // of the states that sends a surface to this client.
+    expect(queries?.networkMode).toBe("always");
+    // And the WRITES, which is the half a paused fetch does not describe: a
+    // paused mutation renders its control, takes the click and does nothing.
+    // Since sync consent stopped gating reads, offline is the only state that
+    // sends a SIGNED-IN reader to this client, so every local write there is
+    // would be paused.
+    expect(
+      result.current.client.getDefaultOptions().mutations?.networkMode
+    ).toBe("always");
     // The list poll is SERVICE-AWARE, so this default is a function rather than
     // a constant: it never schedules the next read sooner than the last one
     // took. With no read observed yet it resolves to the floor, which is the
     // fixed cadence this assertion originally pinned.
-    const listInterval = result.current.client.getQueryDefaults(
-      agentSessionKeys.lists()
-    )?.refetchInterval;
+    const listKey = agentSessionKeys.lists();
+    const listInterval =
+      result.current.client.getQueryDefaults(listKey)?.refetchInterval;
     expect(typeof listInterval).toBe("function");
-    expect((listInterval as (query: unknown) => number)(undefined)).toBe(
+    if (typeof listInterval !== "function") {
+      throw new Error("Expected a service-aware Sessions list interval");
+    }
+    const listQuery = result.current.client
+      .getQueryCache()
+      .build(result.current.client, {
+        queryFn: () => Promise.resolve([]),
+        queryKey: listKey,
+      });
+    expect(listInterval(listQuery)).toBe(
       DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS
     );
   });
 
-  it("authenticated + online runs the HTTP source under the refetch model", async () => {
+  it("authenticated + online runs the cloud-primary source under the refetch model", async () => {
     restoreOnline = forceOnline(true);
     setupDesktopApi(AUTHENTICATED);
     const { result } = renderProbe();
@@ -326,11 +446,8 @@ describe("DesktopAppCoreProvider mode selection", () => {
       )
     );
 
-    expect(result.current.source.scope).toBe(HTTP_SCOPE);
-    // Trace comments read the org cloud API in Cloud mode (FEA-3460, reads-only)
-    // so web comments are visible on desktop; the composite scope marks that its
-    // reads are cloud/org while its writes stay local.
-    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_CLOUD_SCOPE);
+    expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE);
+    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_HTTP_SCOPE);
     const queries = result.current.client.getDefaultOptions().queries;
     // Refetch model, not the local push model: focus-driven, finite staleTime,
     // and no 2 s background poll (that heals a local-bridge gap the cloud path
@@ -341,11 +458,184 @@ describe("DesktopAppCoreProvider mode selection", () => {
     // this client from empty and refetches anyway, so a reconnect refetch would
     // be pure duplication.
     expect(queries?.refetchOnReconnect).toBe(false);
+    // Cloud reads genuinely need the network, so they keep the stock pause /
+    // resume behavior the local client opts out of.
+    expect(queries?.networkMode).toBeUndefined();
+    // The counterfactual for the assertion above: cloud WRITES are HTTP, so
+    // they keep the stock pause/resume the local client opts out of.
+    expect(
+      result.current.client.getDefaultOptions().mutations?.networkMode
+    ).toBeUndefined();
     expect(queries?.staleTime).toBe(WEB_DEFAULT_STALE_TIME_MS);
     expect(
       result.current.client.getQueryDefaults(agentSessionKeys.lists())
         ?.refetchInterval
     ).toBeUndefined();
+  });
+
+  it("keeps the default-off cloud path identical to the HTTP source", async () => {
+    restoreOnline = forceOnline(true);
+    const { localList } = setupDesktopApi(AUTHENTICATED, {
+      failCloudSessionList: true,
+    });
+    const { result } = renderProbe();
+
+    await waitFor(() =>
+      expect(result.current.auth.state.status).toBe(
+        DesktopAuthStatus.Authenticated
+      )
+    );
+
+    await expect(
+      result.current.source.list({ limit: 25, offset: 0 })
+    ).rejects.toThrow();
+    expect(localList).not.toHaveBeenCalled();
+  });
+
+  it("enables cloud-primary fallback only when the PostHog rollout key is on", async () => {
+    restoreOnline = forceOnline(true);
+    const { localList } = setupDesktopApi(AUTHENTICATED, {
+      failCloudSessionList: true,
+      gridviewAdoptionEnabled: true,
+    });
+    const { result } = renderProbe();
+
+    await waitFor(() =>
+      expect(result.current.auth.state.status).toBe(
+        DesktopAuthStatus.Authenticated
+      )
+    );
+    await waitFor(async () => {
+      await expect(
+        result.current.source.list({ limit: 25, offset: 0 })
+      ).resolves.toMatchObject({
+        items: [{ id: "local-fallback-session" }],
+      });
+    });
+    expect(localList).toHaveBeenCalled();
+  });
+
+  it("keeps the unresolved and resolved-off rollout path on one legacy HTTP query identity", async () => {
+    restoreOnline = forceOnline(true);
+    const seed = deferred<DesktopFeatureFlagAssignment | null>();
+    const { localList, cloudApiFetchCalls } = setupDesktopApi(AUTHENTICATED, {
+      featureFlagSeed: seed.promise,
+    });
+    const { result } = renderSessionsListProbe();
+
+    await waitFor(() =>
+      expect(result.current.query.data?.items[0]?.id).toBe("cloud-session")
+    );
+    const unresolvedClient = result.current.client;
+    const unresolvedLocalReadCount = localList.mock.calls.length;
+    expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE);
+
+    await act(async () => {
+      seed.resolve({
+        flags: {
+          [GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY]: false,
+        },
+        resolved: true,
+        userId: "e2e-user",
+      });
+      await seed.promise;
+    });
+
+    await waitFor(() =>
+      expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE)
+    );
+    expect(result.current.client).toBe(unresolvedClient);
+    expect(result.current.query.data?.items[0]?.id).toBe("cloud-session");
+    expect(localList).toHaveBeenCalledTimes(unresolvedLocalReadCount);
+    expect(
+      cloudApiFetchCalls.filter((call) =>
+        isCloudSessionsListRequest(call.path, call.method)
+      )
+    ).toHaveLength(1);
+  });
+
+  it("drops flag-on fallback data immediately when the assignment rolls off", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const consoleWarn = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    restoreOnline = forceOnline(true);
+    const { localList, push, setFailCloudSessionList } = setupDesktopApi(
+      AUTHENTICATED,
+      {
+        failCloudSessionList: true,
+        featureFlagEnabledByUser: {
+          [USER_1_ID]: true,
+          [USER_2_ID]: false,
+        },
+      }
+    );
+    const { result } = renderSessionsListProbe();
+
+    await waitFor(() =>
+      expect(result.current.query.data?.items[0]?.id).toBe(
+        "local-fallback-session"
+      )
+    );
+    expect(result.current.source.scope).toMatch(
+      DESKTOP_CLOUD_PRIMARY_SCOPE_PATTERN
+    );
+    const cloudModeClient = result.current.client;
+    const fallbackLocalReadCount = localList.mock.calls.length;
+    expect(fallbackLocalReadCount).toBeGreaterThan(0);
+
+    setFailCloudSessionList(false);
+    act(() => push(AUTHENTICATED_USER_2));
+
+    await waitFor(() =>
+      expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE)
+    );
+    await waitFor(() =>
+      expect(result.current.query.data?.items[0]?.id).toBe("cloud-session")
+    );
+    expect(result.current.client).toBe(cloudModeClient);
+    expect(localList).toHaveBeenCalledTimes(fallbackLocalReadCount);
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+  });
+
+  it("refetches through a distinct composite identity when the assignment rolls on", async () => {
+    restoreOnline = forceOnline(true);
+    const { localList, push, setFailCloudSessionList } = setupDesktopApi(
+      AUTHENTICATED,
+      {
+        featureFlagEnabledByUser: {
+          [USER_1_ID]: false,
+          [USER_2_ID]: true,
+        },
+      }
+    );
+    const { result } = renderSessionsListProbe();
+
+    await waitFor(() =>
+      expect(result.current.query.data?.items[0]?.id).toBe("cloud-session")
+    );
+    expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE);
+    const cloudModeClient = result.current.client;
+    const legacyLocalReadCount = localList.mock.calls.length;
+
+    setFailCloudSessionList(true);
+    act(() => push(AUTHENTICATED_USER_2));
+
+    await waitFor(() =>
+      expect(result.current.source.scope).toMatch(
+        DESKTOP_CLOUD_PRIMARY_SCOPE_PATTERN
+      )
+    );
+    await waitFor(() =>
+      expect(result.current.query.data?.items[0]?.id).toBe(
+        "local-fallback-session"
+      )
+    );
+    expect(result.current.client).toBe(cloudModeClient);
+    expect(localList).toHaveBeenCalledTimes(legacyLocalReadCount + 1);
   });
 
   it("authenticated but offline degrades to the local source (AC-3.3)", async () => {
@@ -361,9 +651,8 @@ describe("DesktopAppCoreProvider mode selection", () => {
 
     // Own data from the local DB, not stale cloud rows — with the push model.
     expect(result.current.source.scope).toBe(LOCAL_SCOPE);
-    // Authenticated-but-offline keeps trace comments on the local source too, so
-    // the write path never blocks on connectivity (FEA-3460).
-    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_LOCAL_SCOPE);
+    // Offline does not send trace comments to a local store (PLN-2162 M5.2).
+    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_HTTP_SCOPE);
     expect(result.current.client.getDefaultOptions().queries?.staleTime).toBe(
       Number.POSITIVE_INFINITY
     );
@@ -379,7 +668,7 @@ describe("DesktopAppCoreProvider mode selection", () => {
     );
     const localClient = result.current.client;
     expect(result.current.source.scope).toBe(LOCAL_SCOPE);
-    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_LOCAL_SCOPE);
+    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_HTTP_SCOPE);
 
     act(() => push(AUTHENTICATED));
 
@@ -391,10 +680,8 @@ describe("DesktopAppCoreProvider mode selection", () => {
     // A new mode means a new client (cache isolation, AC-3.1) and the cloud
     // source — not the local one carried over.
     expect(result.current.client).not.toBe(localClient);
-    expect(result.current.source.scope).toBe(HTTP_SCOPE);
-    // Trace comments flip to the Cloud reads-local-writes composite in lockstep
-    // (FEA-3460, reads-only).
-    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_CLOUD_SCOPE);
+    expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE);
+    expect(result.current.traceComments.scope).toBe(TRACE_COMMENTS_HTTP_SCOPE);
   });
 
   it("a connectivity loss degrades an authenticated session to local and drops the cloud cache (AC-3.3)", async () => {
@@ -407,7 +694,7 @@ describe("DesktopAppCoreProvider mode selection", () => {
         DesktopAuthStatus.Authenticated
       )
     );
-    expect(result.current.source.scope).toBe(HTTP_SCOPE);
+    expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE);
     const cloudClient = result.current.client;
 
     // Seed a cloud-mode query so the flip's cache handling is observable: after
@@ -459,82 +746,77 @@ describe("DesktopAppCoreProvider mode selection", () => {
       window.dispatchEvent(new Event("online"));
     });
 
-    await waitFor(() => expect(result.current.source.scope).toBe(HTTP_SCOPE));
+    await waitFor(() =>
+      expect(result.current.source.scope).toBe(SESSIONS_HTTP_SCOPE)
+    );
     // A new client for the cloud mode — the local cache doesn't carry over.
     expect(result.current.client).not.toBe(offlineClient);
   });
 
-  // FEA-3522: now that the cloud-api-fetch bridge carries an authenticated write
-  // transport, Cloud-mode writes go over HTTP (create=POST, reply=POST /replies,
-  // update=PATCH, delete=DELETE) to the org — NOT to the local IPC sink. This
-  // drives every Cloud-mode mutation and asserts it reached the cloud bridge on
-  // the expected route/method, and that the local sink was untouched.
-  it("Cloud mode routes every trace-comment WRITE to the org over the HTTP bridge", async () => {
-    restoreOnline = forceOnline(true);
-    const { cloudApiFetchCalls } = setupDesktopApi(AUTHENTICATED);
-    const { result } = renderProbe();
+  // PLN-2162 M5.2: every mode writes trace comments over HTTP (create=POST,
+  // reply=POST /replies, update=PATCH, delete=DELETE) to the org. This drives
+  // every mutation in each mode and asserts it reached the cloud bridge on the
+  // expected route/method.
+  it.each([
+    { mode: "signed out", auth: SIGNED_OUT, online: true },
+    { mode: "authenticated but offline", auth: AUTHENTICATED, online: false },
+    { mode: "authenticated + online", auth: AUTHENTICATED, online: true },
+  ])(
+    "routes every trace-comment WRITE to the org over the HTTP bridge when $mode",
+    async ({ auth, online }) => {
+      restoreOnline = forceOnline(online);
+      const { cloudApiFetchCalls } = setupDesktopApi(auth);
+      const { result } = renderProbe();
 
-    await waitFor(() =>
+      await waitFor(() =>
+        expect(result.current.auth.state.status).toBe(auth.status)
+      );
       expect(result.current.traceComments.scope).toBe(
-        TRACE_COMMENTS_CLOUD_SCOPE
-      )
-    );
+        TRACE_COMMENTS_HTTP_SCOPE
+      );
 
-    const localSink = (
-      window.desktopApi as unknown as {
-        traceCommentsApi: {
-          create: ReturnType<typeof vi.fn>;
-          reply: ReturnType<typeof vi.fn>;
-          update: ReturnType<typeof vi.fn>;
-          delete: ReturnType<typeof vi.fn>;
-        };
-      }
-    ).traceCommentsApi;
-    const source = result.current.traceComments;
-    const base = "/agent-sessions/session-1/trace-comments";
+      const source = result.current.traceComments;
+      const base = "/agent-sessions/session-1/trace-comments";
 
-    // Each mutation must resolve over the HTTP bridge, not reject.
-    await expect(
-      source.create(TRACE_TARGET, {
-        anchor: makeStoredComment(TRACE_TARGET, "x").anchor,
-        body: "hello",
-      })
-    ).resolves.toBeDefined();
-    await expect(
-      source.reply(TRACE_TARGET, "comment-1", { body: "re" })
-    ).resolves.toBeDefined();
-    await expect(
-      source.update(TRACE_TARGET, "comment-1", { body: "edit" })
-    ).resolves.toBeDefined();
-    await expect(
-      source.delete(TRACE_TARGET, "comment-1")
-    ).resolves.toBeDefined();
+      // Each mutation must resolve over the HTTP bridge, not reject.
+      await expect(
+        source.create(TRACE_TARGET, {
+          anchor: makeStoredComment(TRACE_TARGET, "x").anchor,
+          body: "hello",
+        })
+      ).resolves.toBeDefined();
+      await expect(
+        source.reply(TRACE_TARGET, "comment-1", { body: "re" })
+      ).resolves.toBeDefined();
+      await expect(
+        source.update(TRACE_TARGET, "comment-1", { body: "edit" })
+      ).resolves.toBeDefined();
+      await expect(
+        source.delete(TRACE_TARGET, "comment-1")
+      ).resolves.toBeDefined();
 
-    // Provably cloud: each write hit the bridge on the trace-comment route with
-    // the right method, and the local IPC sink handled none of them. (Filter to
-    // the mutating methods so a background list GET can't perturb the sequence.)
-    const writeCalls = cloudApiFetchCalls.filter(
-      (call) => call.method !== "GET"
-    );
-    expect(writeCalls).toEqual([
-      { path: base, method: "POST", body: expect.any(String) },
-      {
-        path: `${base}/comment-1/replies`,
-        method: "POST",
-        body: expect.any(String),
-      },
-      {
-        path: `${base}/comment-1`,
-        method: "PATCH",
-        body: expect.any(String),
-      },
-      { path: `${base}/comment-1`, method: "DELETE", body: undefined },
-    ]);
-    expect(localSink.create).not.toHaveBeenCalled();
-    expect(localSink.reply).not.toHaveBeenCalled();
-    expect(localSink.update).not.toHaveBeenCalled();
-    expect(localSink.delete).not.toHaveBeenCalled();
-  });
+      // Provably cloud: each write hit the bridge on the trace-comment route with
+      // the right method. (Filter to the mutating methods so a background list
+      // GET can't perturb the sequence.)
+      const writeCalls = cloudApiFetchCalls.filter(
+        (call) => call.method !== "GET"
+      );
+      expect(writeCalls).toEqual([
+        { path: base, method: "POST", body: expect.any(String) },
+        {
+          path: `${base}/comment-1/replies`,
+          method: "POST",
+          body: expect.any(String),
+        },
+        {
+          path: `${base}/comment-1`,
+          method: "PATCH",
+          body: expect.any(String),
+        },
+        { path: `${base}/comment-1`, method: "DELETE", body: undefined },
+      ]);
+    }
+  );
 });
 
 /**

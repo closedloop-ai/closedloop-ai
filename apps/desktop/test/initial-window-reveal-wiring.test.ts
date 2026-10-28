@@ -32,34 +32,22 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { WebContents } from "electron";
-import type {
-  MethodDeclaration,
-  Node,
-  ObjectLiteralExpression,
-  SourceFile,
-} from "typescript6";
+import type { MethodDeclaration, Node } from "typescript6";
 import {
   createSourceFile,
   forEachChild,
   isCallExpression,
-  isIdentifier,
   isMethodDeclaration,
-  isNewExpression,
-  isObjectLiteralExpression,
   isPropertyAccessExpression,
-  isPropertyAssignment,
   isSpreadAssignment,
   ScriptKind,
   ScriptTarget,
 } from "typescript6";
+import { afterEach, describe, test } from "vitest";
 
-import {
-  RendererLifecycleIpcChannel,
-  registerRendererLifecycleIpcHandlers,
-} from "../src/main/ipc/renderer-lifecycle-ipc.js";
+import { registerRendererLifecycleIpcHandlers } from "../src/main/ipc/renderer-lifecycle-ipc.js";
 import {
   InitialWindowRevealGate,
   WindowRevealReason,
@@ -71,8 +59,15 @@ import {
   isWindowRevealSuppressed,
   windowRevealSuppressedWebPreferences,
 } from "../src/main/lifecycle/window-reveal-suppression.js";
+import { RendererLifecycleIpcChannel } from "../src/shared/renderer-lifecycle-ipc-channel.js";
 import { RendererReadyPhase } from "../src/shared/renderer-ready-phase.js";
 import { windowRevealLaunchArgs } from "./e2e/helpers/desktop-app.js";
+import { E2E_REVEAL_WINDOW_OPT_IN_ARG } from "./e2e/helpers/electron-launch-preflight.js";
+import {
+  findBrowserWindowOptions,
+  findWebPreferences,
+  parseWindowSource,
+} from "./helpers/window-source-ast.js";
 
 type IpcEvent = { sender: WebContents };
 type IpcListener = (event: IpcEvent, ...args: unknown[]) => void;
@@ -130,6 +125,7 @@ function createRevealPipeline(options: { isTrustedSender?: boolean } = {}) {
         revealGate.requestReveal();
       },
       yieldToMainLoop: () => Promise.resolve(),
+      sendToRenderer: () => true,
       isShuttingDown: () => false,
       isLocalSessionSourceReady: () => false,
       notifyInitialRendererLiveDbIdle: () =>
@@ -374,7 +370,9 @@ describe("ISS-5987 which launches carry the suppression argument", () => {
   test("a spec whose subject is the reveal opts out", () => {
     Reflect.deleteProperty(process.env, "PWDEBUG");
 
-    assert.deepEqual(windowRevealLaunchArgs(true), []);
+    assert.deepEqual(windowRevealLaunchArgs(true), [
+      E2E_REVEAL_WINDOW_OPT_IN_ARG,
+    ]);
   });
 
   test("`playwright test --debug` reveals without editing a launch call", () => {
@@ -385,52 +383,17 @@ describe("ISS-5987 which launches carry the suppression argument", () => {
     // `revealWindow` — could not be watched at all without a source edit.
     process.env.PWDEBUG = "1";
 
-    assert.deepEqual(windowRevealLaunchArgs(false), []);
+    assert.deepEqual(windowRevealLaunchArgs(false), [
+      E2E_REVEAL_WINDOW_OPT_IN_ARG,
+    ]);
   });
 });
 
-const windowModulePath = path.resolve(testDir, "../src/main/window.ts");
-
-/** The `webPreferences` object literal inside `new BrowserWindow({ ... })`. */
-function findWebPreferences(
-  node: Node,
-  sourceFile: SourceFile
-): ObjectLiteralExpression | null {
-  if (
-    isNewExpression(node) &&
-    isIdentifier(node.expression) &&
-    node.expression.text === "BrowserWindow"
-  ) {
-    const [options] = node.arguments ?? [];
-    if (options && isObjectLiteralExpression(options)) {
-      for (const property of options.properties) {
-        if (
-          isPropertyAssignment(property) &&
-          property.name.getText(sourceFile) === "webPreferences" &&
-          isObjectLiteralExpression(property.initializer)
-        ) {
-          return property.initializer;
-        }
-      }
-    }
-  }
-  let found: ObjectLiteralExpression | null = null;
-  forEachChild(node, (child) => {
-    found ??= findWebPreferences(child, sourceFile);
-  });
-  return found;
-}
-
-/** The spread expressions `window.ts` mixes into that `webPreferences`. */
+/** The spread expressions `window.ts` mixes into its `webPreferences`. */
 function readWebPreferencesSpreads(): string[] {
-  const sourceFile = createSourceFile(
-    windowModulePath,
-    readFileSync(windowModulePath, "utf8"),
-    ScriptTarget.Latest,
-    true,
-    ScriptKind.TS
-  );
-  const webPreferences = findWebPreferences(sourceFile, sourceFile);
+  const sourceFile = parseWindowSource();
+  const [options] = findBrowserWindowOptions(sourceFile);
+  const webPreferences = options && findWebPreferences(options);
   if (!webPreferences) {
     throw new Error(
       "new BrowserWindow({ webPreferences }) not found in window.ts"
@@ -468,9 +431,9 @@ describe("ISS-6112 off-screen launches run unthrottled", () => {
     // production construction site.
     assert.ok(
       readWebPreferencesSpreads().includes(
-        "windowRevealSuppressedWebPreferences(this.revealSuppressed)"
+        "windowRevealSuppressedWebPreferences(options.revealSuppressed)"
       ),
-      `expected new BrowserWindow({ webPreferences }) to spread windowRevealSuppressedWebPreferences(this.revealSuppressed); found ${JSON.stringify(readWebPreferencesSpreads())}`
+      `expected new BrowserWindow({ webPreferences }) to spread windowRevealSuppressedWebPreferences(options.revealSuppressed); found ${JSON.stringify(readWebPreferencesSpreads())}`
     );
   });
 });

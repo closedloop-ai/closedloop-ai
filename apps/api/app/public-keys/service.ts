@@ -111,6 +111,7 @@ function deleteOwnedPublicKeyForRevocation(input: {
         organizationId: input.organizationId,
         fingerprint: input.fingerprint,
       },
+      select: USER_PUBLIC_KEY_SELECT,
     });
     if (!row) {
       return null;
@@ -456,3 +457,17 @@ export const publicKeysService = {
     );
   },
 };
+
+/**
+ * Today this names every column `user_public_keys` has, so it is a pin rather
+ * than a reduction: a column added later cannot reach the revocation
+ * notification payload without someone choosing to put it there.
+ */
+const USER_PUBLIC_KEY_SELECT = {
+  id: true,
+  userId: true,
+  organizationId: true,
+  publicKeyBase64: true,
+  fingerprint: true,
+  createdAt: true,
+} as const satisfies Record<keyof UserPublicKeyRecord, true>;

@@ -63,8 +63,10 @@ test("an e2e launch logs into its throwaway profile and leaves the production ma
   const { app, userDataDir, cleanup } = launched;
 
   let productionLogPath: string | null = null;
+  let canonicalUserDataDir = userDataDir;
 
   try {
+    canonicalUserDataDir = fs.realpathSync(userDataDir);
     const { appDataPath, appName } = await app.evaluate(
       ({ app: electronApp }) => ({
         appDataPath: electronApp.getPath("appData"),
@@ -87,13 +89,12 @@ test("an e2e launch logs into its throwaway profile and leaves the production ma
     const bootLine = redirectedLog.match(BOOT_LINE_RE)?.[0] ?? "";
     expect(bootLine, "boot line present in the redirected log").not.toBe("");
 
-    // 2. The app's own resolved log path points inside the throwaway profile —
-    //    this is the value Diagnostics and the crash dialog surface.
+    // Electron resolves macOS /var aliases; compare the same filesystem path.
     const reportedLogPath = bootLine.match(BOOT_LOG_PATH_RE)?.[1] ?? "";
     expect(
-      path.resolve(reportedLogPath).startsWith(path.resolve(userDataDir)),
+      fs.realpathSync(reportedLogPath),
       `the app reports a log path inside its profile, got ${reportedLogPath}`
-    ).toBe(true);
+    ).toBe(fs.realpathSync(redirectedLogPath));
 
     // 3. The line identifies the instance and the build it came from, so a line
     //    that DOES end up beside production lines can still be told apart.
@@ -119,7 +120,8 @@ test("an e2e launch logs into its throwaway profile and leaves the production ma
   //    flake when the operator's real Desktop app is running alongside.
   const productionLog = readFileOrNull(productionLogPath ?? "") ?? "";
   expect(
-    productionLog.includes(userDataDir),
+    productionLog.includes(userDataDir) ||
+      productionLog.includes(canonicalUserDataDir),
     `no line from this e2e run reached ${productionLogPath}`
   ).toBe(false);
 });

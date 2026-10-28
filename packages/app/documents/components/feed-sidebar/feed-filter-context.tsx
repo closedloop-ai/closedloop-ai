@@ -216,13 +216,12 @@ export function FeedFilterProvider({
       return true;
     }
     for (const s of sources) {
-      const state = perSourceState[s.id] ?? defaultPerSourceState[s.id];
-      if (s.isFiltered(state)) {
+      if (s.isFiltered(getSourceState)) {
         return true;
       }
     }
     return false;
-  }, [activeKind, sources, perSourceState, defaultPerSourceState]);
+  }, [activeKind, sources, getSourceState]);
 
   const value = useMemo<FeedFilterContextValue>(
     () => ({

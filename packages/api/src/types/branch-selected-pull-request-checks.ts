@@ -1,5 +1,3 @@
-import type { ChecksStatus } from "./branch-checks.ts";
-import { ChecksStatus as ChecksStatusValue } from "./branch-checks.ts";
 import type { GitHubAccessDenialReason } from "./github.ts";
 import {
   SelectedPullRequestChecksCompleteness,
@@ -38,13 +36,6 @@ export const BranchSelectedPullRequestChecksUnavailableSource = {
 export type BranchSelectedPullRequestChecksUnavailableSource =
   (typeof BranchSelectedPullRequestChecksUnavailableSource)[keyof typeof BranchSelectedPullRequestChecksUnavailableSource];
 
-/** Legacy Branch fields consumed by clients that predate detailed checks evidence. */
-export type BranchSelectedPullRequestChecksLegacyFields = {
-  checksStatus: ChecksStatus | null;
-  checksPassed: number | null;
-  checksTotal: number | null;
-};
-
 export type BranchSelectedPullRequestChecks =
   SelectedPullRequestChecksEvidence & {
     summary: BranchSelectedPullRequestChecksSummary;
@@ -73,65 +64,53 @@ export type BranchSelectedPullRequestChecksResponse =
   | AccessUnavailable
   | EvidenceUnavailable;
 
-/** One response plus the legacy fields derived from the same evidence. */
-export type BranchSelectedPullRequestChecksProjection = {
-  response: BranchSelectedPullRequestChecksResponse;
-  legacy: BranchSelectedPullRequestChecksLegacyFields;
-};
-
-/** Project normalized provider evidence without upgrading partial coverage. */
+/**
+ * Project normalized provider evidence without upgrading partial coverage.
+ *
+ * ISS-8241 Half A: this fold no longer also emits the Branch's
+ * `checksStatus`/`checksPassed`/`checksTotal` scalars. Those are the SELECTED
+ * pull request's own MEASURED rollup and come from the stored projection
+ * (`projectSelectedPullRequestChecks`); a live acquisition overwriting them made
+ * the Branch detail's measured value whatever GitHub happened to answer during
+ * the request, which is a different question than the one those fields ask.
+ */
 export function projectBranchSelectedPullRequestChecks(
   evidence: SelectedPullRequestChecksEvidence
-): BranchSelectedPullRequestChecksProjection {
-  const summary = summaryFor(evidence);
+): BranchSelectedPullRequestChecksResponse {
   return {
-    response: {
-      status: BranchSelectedPullRequestChecksAvailability.Available,
-      value: { ...evidence, summary },
-    },
-    legacy: legacyFieldsFor(evidence, summary),
+    status: BranchSelectedPullRequestChecksAvailability.Available,
+    value: { ...evidence, summary: summaryFor(evidence) },
   };
 }
 
-/** Preserve an access denial while withholding every unsupported legacy count. */
+/** Preserve an access denial as its own typed unavailability. */
 export function branchSelectedPullRequestChecksAccessUnavailable(
   reason: GitHubAccessDenialReason,
   retryAfterSeconds?: number | null
-): BranchSelectedPullRequestChecksProjection {
+): BranchSelectedPullRequestChecksResponse {
   return {
-    response: {
-      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-      source: BranchSelectedPullRequestChecksUnavailableSource.Access,
-      reason,
-      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-    },
-    legacy: unavailableLegacyFields(),
+    status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+    source: BranchSelectedPullRequestChecksUnavailableSource.Access,
+    reason,
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
   };
 }
 
-/** Preserve a landed provider failure while withholding unsupported legacy counts. */
+/** Preserve a landed provider failure as its own typed unavailability. */
 export function branchSelectedPullRequestChecksEvidenceUnavailable(
   result: Extract<
     SelectedPullRequestChecksEvidenceResult,
     { status: typeof SelectedPullRequestEvidenceAvailability.Unavailable }
   >
-): BranchSelectedPullRequestChecksProjection {
+): BranchSelectedPullRequestChecksResponse {
   return {
-    response: {
-      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-      reason: result.reason,
-      ...(result.retryAfterSeconds === undefined
-        ? {}
-        : { retryAfterSeconds: result.retryAfterSeconds }),
-    },
-    legacy: unavailableLegacyFields(),
+    status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+    source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+    reason: result.reason,
+    ...(result.retryAfterSeconds === undefined
+      ? {}
+      : { retryAfterSeconds: result.retryAfterSeconds }),
   };
-}
-
-/** Clear persisted compatibility scalars before optional enrichment runs. */
-export function unavailableBranchSelectedPullRequestChecksLegacyFields(): BranchSelectedPullRequestChecksLegacyFields {
-  return unavailableLegacyFields();
 }
 
 function summaryFor(
@@ -157,55 +136,4 @@ function summaryFor(
   // A complete empty population and a neutral-only population both have no
   // actionable checks result, so DETAIL-004 classifies both as N/A.
   return BranchSelectedPullRequestChecksSummary.NotApplicable;
-}
-
-function legacyFieldsFor(
-  evidence: SelectedPullRequestChecksEvidence,
-  summary: BranchSelectedPullRequestChecksSummary
-): BranchSelectedPullRequestChecksLegacyFields {
-  if (
-    evidence.coverage.completeness !==
-    SelectedPullRequestChecksCompleteness.Complete
-  ) {
-    return unavailableLegacyFields();
-  }
-  const checksStatus = legacyStatusFor(summary);
-  if (checksStatus === null) {
-    return unavailableLegacyFields();
-  }
-  return {
-    checksStatus,
-    checksPassed: evidence.counts.successful,
-    checksTotal: evidence.counts.total,
-  };
-}
-
-function legacyStatusFor(
-  summary: BranchSelectedPullRequestChecksSummary
-): ChecksStatus | null {
-  switch (summary) {
-    case BranchSelectedPullRequestChecksSummary.Failing:
-      return ChecksStatusValue.Failing;
-    case BranchSelectedPullRequestChecksSummary.Pending:
-      return ChecksStatusValue.Pending;
-    case BranchSelectedPullRequestChecksSummary.Successful:
-      return ChecksStatusValue.Passing;
-    case BranchSelectedPullRequestChecksSummary.NotApplicable:
-    case BranchSelectedPullRequestChecksSummary.Partial:
-      return null;
-    default:
-      return assertNever(summary);
-  }
-}
-
-function unavailableLegacyFields(): BranchSelectedPullRequestChecksLegacyFields {
-  return {
-    checksStatus: null,
-    checksPassed: null,
-    checksTotal: null,
-  };
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled selected-PR checks summary: ${value}`);
 }

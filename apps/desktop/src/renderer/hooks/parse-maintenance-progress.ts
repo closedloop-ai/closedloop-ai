@@ -1,5 +1,4 @@
 /**
- * @file parse-maintenance-progress.ts
  * @description ISS-6241: validate the post-boot maintenance phase at the IPC
  * boundary, now that it carries NUMBERS the splash renders as "N of M".
  *
@@ -34,7 +33,7 @@ import {
  * (`main/dashboard/maintenance-progress-state.ts`) publishes under its own
  * alias.
  *
- * ISS-6241 (wongk review): this used to be an independent declaration that
+ * ISS-6241 (whitlockk review): this used to be an independent declaration that
  * merely "mirrored" the producer's, so a field added on the producer side still
  * compiled and the schema below silently stripped it — the exact drift the
  * keys-covered guard claims to prevent. One declaration, both sides derived, and
@@ -65,7 +64,7 @@ const maintenanceShape = {
   // is admitted here the moment it exists, and cannot be forgotten into the
   // `null` fallback.
   //
-  // ISS-6241 (shafty023 review): `.catch(null)` is the VERSION-SKEW degrade.
+  // ISS-6241 (davetho review): `.catch(null)` is the VERSION-SKEW degrade.
   // Unknown FIELDS are forward-compatible above, but the phase VOCABULARY is
   // not: a newer main process reporting a phase this build has never heard of
   // used to fail the union, take the whole payload down with it, and leave the
@@ -110,7 +109,7 @@ export function parseMaintenanceProgress(
     return { active: false, phase: null };
   }
   if (phase !== MaintenancePhase.Rebuild) {
-    // ISS-6241 (shafty023 review): the counts are dropped because this phase
+    // ISS-6241 (davetho review): the counts are dropped because this phase
     // does not OWN them. `rebuild` is the only pass with a progress channel, so
     // a `{processed, total}` arriving beside `artifact-links` — or beside the
     // `null` an unknown, newer phase degraded to — is another population

@@ -1,61 +1,57 @@
-import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
-import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
-import { LOC_PER_DOLLAR_MERGED_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import {
+  TOTAL_ESTIMATED_COST_ALIAS_LABEL,
+  TOTAL_ESTIMATED_COST_COPY,
+} from "@repo/api/src/types/total-estimated-cost-copy";
+import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
+import { GITHUB_CONNECT_COPY } from "@repo/app/github/lib/github-connect-copy";
+import type { GitHubConnectTarget } from "@repo/app/github/lib/github-connect-target";
+import { KPI_NO_VALUE } from "@repo/app/shared/lib/format-utils";
+import { LIST_SUMMARY_LOADING_DETAIL } from "@repo/app/shared/lib/list-summary-loading-detail";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import {
-  SESSIONS_COST_METRIC_CARD_INFO,
-  SESSIONS_COST_METRIC_CARD_LABEL,
-} from "../cost-metric-card";
-import {
-  SESSIONS_SIGN_IN_BANNER_EXPLANATION,
-  SESSIONS_SIGN_IN_EXPLANATION,
-} from "../sessions-sign-in-indicator";
 import { SessionsSummaryCards } from "../sessions-summary-cards";
+import {
+  cloudDeliveryFixture,
+  usageFixture,
+} from "./sessions-summary-cards.test-helpers";
 
 // FEA-4231: the Cost detail line names the API-equivalent cost of subscription-
 // covered usage — what it would have cost if metered ("+$X if billed to API") —
 // not a real seat fee and not the larger inclusive total. No space after the
 // plus — an additive figure, not a period-over-period change chip.
 const COST_DETAIL_PATTERN = /\+\$\d[\d,]* if billed to API/;
-const SIGN_IN_EXPLANATION = SESSIONS_SIGN_IN_EXPLANATION;
-const SIGN_IN_BANNER_EXPLANATION = SESSIONS_SIGN_IN_BANNER_EXPLANATION;
+/**
+ * ISS-7866: the ONE ask a gated delivery card makes, in EVERY gated state —
+ * signed out included. The strip used to run a sign-in affordance of its own
+ * there, so one user at one moment met two verbs for one wall depending on the
+ * screen. Read from the copy map rather than spelled here, so a reworded ask
+ * cannot leave these cases asserting a string the product no longer says.
+ * `SignUp` and `Connect` share these strings deliberately —
+ * `github-connect-action.test.ts` pins that as a contract.
+ */
+const CONNECT_EXPLANATION =
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].gatedMetricExplanation;
+const CONNECT_CTA_LABEL =
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].cardCtaLabel ??
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].ctaLabel;
+/**
+ * The muted glyph a gated delivery card now paints instead of a value. ISS-7866
+ * moved these cards from the `—` sentinel to `value={null}`, matching the other
+ * GitHub-truth surfaces; the `—` still belongs to the Unavailable/failed-read
+ * and signed-in-empty branches, which is why both spellings appear below.
+ */
+const NO_DATA_GLYPH = "No data";
 
-function usageFixture(
-  overrides: Partial<AgentSessionUsageSummary> = {}
-): AgentSessionUsageSummary {
-  return {
-    viewerScope: AgentSessionViewerScope.Organization,
-    totalSessions: 12,
-    earliestSessionAt: null,
-    latestSessionAt: null,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-    totalCacheReadTokens: 0,
-    totalCacheWriteTokens: 0,
-    totalEstimatedCost: 42,
-    subscriptionEstimatedCost: 0,
-    apiEstimatedCost: 42,
-    byUser: [],
-    byModel: [],
-    byHarness: [],
-    byRepository: [],
-    lastSyncTargets: [],
-    ...overrides,
-  };
-}
-
-/** The three cloud-only delivery cards with a full set of merged-PR metrics. */
-function cloudDeliveryFixture(
-  overrides: Partial<AgentSessionUsageSummary> = {}
-): AgentSessionUsageSummary {
-  return usageFixture({
-    mergedPrCount: 7,
-    medianPrSize: 2000,
-    mergedLocPerDollar: 3.5,
-    ...overrides,
-  });
+/**
+ * A desktop-shaped connect target: a HANDLER, never an href. Supplied wherever a
+ * case asserts an ask is or is not offered — with no target the affordance
+ * degrades to informational copy and can render no control at all, which would
+ * make every "no CTA" assertion pass for the wrong reason (ISS-7866).
+ */
+function connectTarget(onConnect: () => void = vi.fn()): GitHubConnectTarget {
+  return { action: GitHubConnectAction.Connect, onConnect };
 }
 
 describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", () => {
@@ -66,11 +62,10 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
 
     expect(screen.getByText("Sessions")).toBeInTheDocument();
     expect(screen.getByText("Total Tokens")).toBeInTheDocument();
-    // ISS-4401: the Sessions Cost card carries the per-surface label
-    // ("cost"), distinguishing its not-subscription-covered
-    // figure from the Dashboard's subscription-inclusive "Cost" total.
+    // Ruling 7's alias: the canonical phrase plus its info trigger does not fit
+    // one line at this strip's card widths (operator ruling 2026-09-20).
     expect(
-      screen.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+      screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
     ).toBeInTheDocument();
     expect(screen.getByText("PRs Shipped")).toBeInTheDocument();
     // ISS-4866 / ISS-5366: the merged-scope label, now unconditional. Read from
@@ -79,7 +74,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
     // map). It names the population the card actually computes — merged PRs
     // only — so the bare unit stops reading as "the efficiency of everything on
     // this row" beside the whole-cohort tiles.
-    expect(screen.getByText(LOC_PER_DOLLAR_MERGED_LABEL)).toBeInTheDocument();
+    expect(screen.getByText(LOC_PER_DOLLAR_LABEL)).toBeInTheDocument();
     // FEA-4126 regression guard: Median PR Size was removed from the Sessions bar
     // (FEA-3937 layout, reversing FEA-3574's re-add) and lives only on Branches.
     // This has regressed once — if the label returns to the Sessions bar, fail.
@@ -91,25 +86,10 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
     );
   });
 
-  it("shows the summed input+output tokens abbreviated on the Total Tokens card", () => {
-    render(
-      <SessionsSummaryCards
-        isLoading={false}
-        usage={usageFixture({
-          totalInputTokens: 1_200_000,
-          totalOutputTokens: 340_000,
-        })}
-      />
-    );
-
-    // 1,200,000 + 340,000 = 1,540,000, abbreviated with `formatTokenCount`
-    // ("1.54M") so the token headline reads the same as every other token
-    // display in the product, not raw `.toLocaleString()` grouping.
-    expect(screen.getByText("1.54M")).toBeInTheDocument();
-    expect(screen.queryByText((1_540_000).toLocaleString())).toBeNull();
-  });
-
-  it("Cost headline is metered apiEstimatedCost; the detail adds the subscription share, never the larger inclusive total (FEA-4231)", () => {
+  // FEA-4231's direction reversed, by the ISS-10597 ruling of 2026-09-17. The
+  // canonical $30-API / $70-subscription / $100-total cohort, so a card
+  // headlining the wrong figure fails rather than matching by luck.
+  it("Cost headline is the inclusive total, with no composed subscription caption", () => {
     render(
       <SessionsSummaryCards
         isLoading={false}
@@ -121,17 +101,11 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       />
     );
 
-    // Headline is the metered, out-of-pocket spend.
-    expect(screen.getByText("$30")).toBeInTheDocument();
-    // The larger inclusive total is NEVER shown — that was the confusing figure
-    // that read as contradicting the "$30" headline (FEA-4231).
-    expect(screen.queryByText("$100")).toBeNull();
-    // The detail line names the canonical `subscriptionEstimatedCost` (70) as the
-    // API-equivalent cost of the covered usage, reading as a composed figure, not
-    // a rival total or a charged seat fee.
-    expect(screen.getByText(COST_DETAIL_PATTERN)).toHaveTextContent(
-      "+$70 if billed to API"
-    );
+    expect(screen.getByText("$100")).toBeInTheDocument();
+    // The narrower bucket backs no headline, and the subscription share may not
+    // be captioned as an ADDITION to a figure that already holds it (ISS-9969).
+    expect(screen.queryByText("$30")).toBeNull();
+    expect(screen.queryByText(COST_DETAIL_PATTERN)).toBeNull();
   });
 
   it("ISS-4481: drops the Cost tile to honest-empty (—) when the Unknown cost facet is active", () => {
@@ -152,10 +126,9 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       />
     );
 
-    // The Cost tile shows the honest-empty sentinel, never "$0". ISS-4401: the
-    // Sessions Cost card carries the per-surface "cost" label.
+    // The honest-empty sentinel, never "$0", under the card's one label.
     expect(
-      screen.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+      screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
     ).toBeInTheDocument();
     expect(screen.queryByText("$0")).toBeNull();
     // The "+$X if billed to API" detail is suppressed (no value to qualify).
@@ -180,10 +153,10 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
   });
 
   it("opens the About cost popover and shows the visible what/how tooltip copy (FEA-3434)", async () => {
-    // wongk: assert the tooltip the user actually reads. Drive the info control
+    // whitlockk: assert the tooltip the user actually reads. Drive the info control
     // through the real composite and open it, so the test fails if the card ever
-    // stops rendering `SESSIONS_COST_METRIC_CARD_INFO` — a copy-only assertion on
-    // the exported constant would pass even if the card dropped the popover.
+    // stops rendering the canonical copy — a copy-only assertion on the exported
+    // constant would pass even if the card dropped the popover.
     const user = userEvent.setup();
     render(
       <SessionsSummaryCards
@@ -196,30 +169,32 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       />
     );
 
-    // ISS-4401: the info control's accessible name follows the per-surface
-    // label, so on Sessions it reads "About cost".
+    // The trigger's name followed the card's label; what it OPENS did not. That
+    // is the condition ruling 7 attaches to the short form.
     await user.click(
       screen.getByRole("button", {
-        name: `About ${SESSIONS_COST_METRIC_CARD_LABEL}`,
+        name: `About ${TOTAL_ESTIMATED_COST_ALIAS_LABEL}`,
       })
     );
 
     const popover = await screen.findByRole("dialog", {
-      name: `About ${SESSIONS_COST_METRIC_CARD_LABEL}`,
+      name: `About ${TOTAL_ESTIMATED_COST_ALIAS_LABEL}`,
     });
-    expect(popover).toHaveTextContent(SESSIONS_COST_METRIC_CARD_INFO.what);
-    expect(popover).toHaveTextContent(SESSIONS_COST_METRIC_CARD_INFO.how);
+    expect(popover).toHaveTextContent(TOTAL_ESTIMATED_COST_COPY.info.what);
+    expect(popover).toHaveTextContent(TOTAL_ESTIMATED_COST_COPY.info.how);
   });
 
-  it("dashes every card value on error WITHOUT the Sample badge or a sign-in CTA", () => {
+  it("dashes every card value on error WITHOUT the Sample badge or a connect CTA", () => {
     render(
       // An error is authenticated-agnostic: even signed out, a load failure must
-      // NOT read as the signed-out state, so no CTA renders.
+      // NOT read as the signed-out state, so no CTA renders. The connect target
+      // is supplied on purpose — without one the affordance could not render a
+      // control in ANY state, and the absences below would prove nothing.
       <SessionsSummaryCards
         authenticated={false}
+        githubConnect={connectTarget()}
         isError
         isLoading={false}
-        onSignIn={vi.fn()}
         usage={undefined}
       />
     );
@@ -237,12 +212,18 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
     // The Cost detail line ("+$X if billed to API") drops on error rather than
     // captioning a dash with a misleading "+$0 if billed to API".
     expect(screen.queryByText(COST_DETAIL_PATTERN)).toBeNull();
-    // An error never routes a delivery card to the signed-out CTA, and never
-    // hoists the single sign-in prompt either (FEA-4037) — a failed read is not
-    // the signed-out state.
-    expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
-    expect(screen.queryByText(SIGN_IN_BANNER_EXPLANATION)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+    // An error never routes a delivery card to a gated ask — a failed read is
+    // not the signed-out state, and connecting GitHub would not fix it. ISS-7866
+    // retired the hoisted-banner assertion that used to sit here alongside
+    // these: the strip renders no banner at all any more, so its copy was a
+    // string this component can no longer produce. Both CTA shapes are pinned
+    // instead (handler → button, href → link), because a surface that regressed
+    // to the href shape would slip past a button-only absence.
+    expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: CONNECT_CTA_LABEL })
+    ).toBeNull();
+    expect(screen.queryByRole("link", { name: CONNECT_CTA_LABEL })).toBeNull();
   });
 
   it("drops the Cost detail line when there is no total to caption", () => {
@@ -278,17 +259,17 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
     it("show real values regardless of sign-in — signed out shows Sessions/Cost/Total Tokens, never a CTA", () => {
       // The local SQLite producer omits every delivery metric (undefined) and the
       // surface is signed out. Sessions / Total Tokens / Cost still compute from
-      // local data and NEVER show a sign-in CTA.
+      // local data and NEVER carry a gated ask.
       render(
         <SessionsSummaryCards
           authenticated={false}
           isLoading={false}
-          onSignIn={vi.fn()}
           usage={usageFixture({
             totalSessions: 9,
             totalInputTokens: 500,
             totalOutputTokens: 500,
             apiEstimatedCost: 15,
+            totalEstimatedCost: 15,
           })}
         />
       );
@@ -319,6 +300,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 1000,
             totalOutputTokens: 1000,
             apiEstimatedCost: 20,
+            totalEstimatedCost: 20,
           })}
         />
       );
@@ -357,8 +339,9 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       // and only each value slot is skeletoned. No fabricated `0`/`$0`.
       expect(screen.getByText("Sessions")).toBeInTheDocument();
       expect(screen.getByText("Total Tokens")).toBeInTheDocument();
+      // One label whatever the mode resolves: an absent payload cannot flicker it.
       expect(
-        screen.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+        screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
       ).toBeInTheDocument();
       expect(screen.queryByText("0")).toBeNull();
       expect(screen.queryByText("$0")).toBeNull();
@@ -391,7 +374,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       expect(screen.getAllByText("Importing your history")).toHaveLength(
         ALWAYS_AVAILABLE_CARD_COUNT
       );
-      expect(screen.queryByText("Loading…")).toBeNull();
+      expect(screen.queryByText(LIST_SUMMARY_LOADING_DETAIL)).toBeNull();
     });
 
     it("captions the settled fallback cards with the source, not the filter claim (ISS-4429 design-bot)", () => {
@@ -409,6 +392,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 100,
             totalOutputTokens: 20,
             apiEstimatedCost: 3,
+            totalEstimatedCost: 3,
           })}
           usage={undefined}
         />
@@ -436,6 +420,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 0,
             totalOutputTokens: 0,
             apiEstimatedCost: 0,
+            totalEstimatedCost: 0,
           })}
           usage={undefined}
         />
@@ -445,7 +430,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       // not a skeleton. `$0` is the Cost card's honest empty.
       expect(screen.getByText("Sessions")).toBeInTheDocument();
       expect(
-        screen.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+        screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
       ).toBeInTheDocument();
       expect(screen.getAllByText("0").length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText("$0")).toBeInTheDocument();
@@ -500,7 +485,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
     });
 
     it("marks the summary row aria-busy while the always-available FALLBACK cards are loading (cloud failed)", () => {
-      // wongk review: an accessible loading status on the region, not just
+      // whitlockk review: an accessible loading status on the region, not just
       // skeleton nodes, so assistive tech announces the cards are updating. ISS-4429
       // scopes it to the fallback path — the same gate the child skeleton uses.
       const { container } = render(
@@ -568,12 +553,14 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 0,
             totalOutputTokens: 0,
             apiEstimatedCost: 0,
+            totalEstimatedCost: 0,
           })}
           usage={cloudDeliveryFixture({
             totalSessions: 42,
             totalInputTokens: 1000,
             totalOutputTokens: 1000,
             apiEstimatedCost: 20,
+            totalEstimatedCost: 20,
           })}
         />
       );
@@ -604,6 +591,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 1000,
             totalOutputTokens: 1000,
             apiEstimatedCost: 20,
+            totalEstimatedCost: 20,
           })}
           usage={undefined}
         />
@@ -635,6 +623,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
             totalInputTokens: 1000,
             totalOutputTokens: 1000,
             apiEstimatedCost: 20,
+            totalEstimatedCost: 20,
           })}
         />
       );
@@ -646,7 +635,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       expect(screen.getByText("$20")).toBeInTheDocument();
       // Delivery cards still real; no always-available card dashes.
       expect(screen.getByText("7")).toBeInTheDocument();
-      expect(screen.queryByText("—")).toBeNull();
+      expect(screen.queryByText(KPI_NO_VALUE)).toBeNull();
     });
   });
 
@@ -668,62 +657,84 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       // (Merged)/$); no "Sample" badge, no CTA.
       expect(screen.getAllByText("Unavailable")).toHaveLength(2);
       expect(screen.queryByText("Sample")).toBeNull();
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
     });
   });
 
-  describe("cloud-only delivery cards — signed out (state 2)", () => {
-    it("hoists ONE sign-in prompt above the row, dashes the cards, and fires the handler (FEA-4037)", () => {
-      const onSignIn = vi.fn();
+  describe("cloud-only delivery cards — signed out", () => {
+    it("puts the CONNECT ask on each delivery card, withdraws the value, and fires the handler", () => {
+      // BEHAVIOR CHANGE (ISS-7866), on top of ISS-7869's move of the ask onto the
+      // card it unlocks: the signed-out card now asks to CONNECT GitHub — the
+      // same words the Dashboard, Branches and the Insights grid use — instead of
+      // running a sign-in affordance of its own. One user at one moment used to
+      // meet two verbs for one wall depending on which screen they were on.
+      //
+      // The honesty half of the state is UNCHANGED and still asserted below: the
+      // cards state no value and none leaks. What moved is the verb, and the
+      // withdrawn value's glyph — `value={null}`'s muted "No data", matching the
+      // other GitHub-truth surfaces, rather than the `—` sentinel.
+      const onConnect = vi.fn();
       render(
         <SessionsSummaryCards
           authenticated={false}
+          githubConnect={connectTarget(onConnect)}
           isLoading={false}
-          onSignIn={onSignIn}
-          // Local producer omits merged-PR metrics; signed out → state 2.
+          // Local producer omits merged-PR metrics; signed out → the gated state.
           usage={usageFixture({ totalSessions: 9 })}
         />
       );
 
-      // FEA-4037: ONE ask per surface — a single banner above the row, NOT the
-      // same sentence + button repeated on the delivery cards.
-      expect(screen.getByText(SIGN_IN_BANNER_EXPLANATION)).toBeInTheDocument();
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
-      const signInButtons = screen.getAllByRole("button", {
-        name: "Sign in",
+      // With a live target the card variant renders the CTA and NOT the
+      // explanation sentence — the sentence made a gated card taller than the
+      // live cards beside it, and the card's own label already names the metric.
+      const connectButtons = screen.getAllByRole("button", {
+        name: CONNECT_CTA_LABEL,
       });
-      expect(signInButtons).toHaveLength(1);
+      // One per delivery card (FEA-4126: Median PR Size removed, so two).
+      expect(connectButtons).toHaveLength(2);
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
+      // A handler target renders a button and NEVER the hard-navigation link
+      // beside it: on desktop that link is the FEA-3280 dead click.
+      expect(
+        screen.queryByRole("link", { name: CONNECT_CTA_LABEL })
+      ).toBeNull();
+      // The retired sign-in verb is gone from the whole strip, not just the
+      // cards — a hoisted sign-in banner would satisfy a card-scoped absence.
+      expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
 
-      // The two delivery cards fall to their neutral dash beneath the prompt
-      // (FEA-4126: Median PR Size removed).
-      expect(screen.getAllByText("—")).toHaveLength(2);
+      // The two delivery cards withdraw their value.
+      expect(screen.getAllByText(NO_DATA_GLYPH)).toHaveLength(2);
 
-      fireEvent.click(signInButtons[0]);
-      expect(onSignIn).toHaveBeenCalledTimes(1);
+      fireEvent.click(connectButtons[0]);
+      expect(onConnect).toHaveBeenCalledTimes(1);
     });
 
-    it("dashes the delivery cards even when signed out with POPULATED usage (wongk) — the signed-out gate wins over hasValue", () => {
-      // The core wongk bug: `showSignInPrompt` did not look at the delivery
+    it("withdraws the delivery values even when signed out with POPULATED usage (whitlockk) — the signed-out gate wins over hasValue", () => {
+      // The core whitlockk bug: the ask decision did not look at the delivery
       // values, while the card gave `hasValue` first priority — so a signed-out
       // surface still holding a populated `usage` (a stale/local read carrying
-      // merged-PR numbers) rendered the REAL delivery values above a "sign in"
-      // banner, breaking the neutral-dash promise of state 2. The signed-out gate
-      // must win: every delivery card dashes, and their real values never render.
+      // merged-PR numbers) rendered the REAL delivery values above the ask,
+      // breaking the withdrawn-value promise of the signed-out state. The
+      // signed-out gate must win: every delivery card states nothing, and their
+      // real values never render.
       render(
         <SessionsSummaryCards
           authenticated={false}
+          githubConnect={connectTarget()}
           isLoading={false}
-          onSignIn={vi.fn()}
           usage={cloudDeliveryFixture()}
         />
       );
 
-      // The ONE hoisted banner is up...
-      expect(screen.getByText(SIGN_IN_BANNER_EXPLANATION)).toBeInTheDocument();
-      // ...and the two delivery cards dash despite populated usage — no real
-      // value (7 / "3.50") and no scope caption leaks through (FEA-4126: Median
-      // PR Size removed, so its value/caption must never render here either).
-      expect(screen.getAllByText("—")).toHaveLength(2);
+      // The ask is up, on the cards rather than hoisted (ISS-7869), and wearing
+      // the one connect verb (ISS-7866)...
+      expect(
+        screen.getAllByRole("button", { name: CONNECT_CTA_LABEL })
+      ).toHaveLength(2);
+      // ...and the two delivery cards state nothing despite populated usage — no
+      // real value (7 / "3.50") and no scope caption leaks through (FEA-4126:
+      // Median PR Size removed, so its value/caption must never render either).
+      expect(screen.getAllByText(NO_DATA_GLYPH)).toHaveLength(2);
       expect(screen.queryByText("7")).toBeNull();
       expect(screen.queryByText("3.50")).toBeNull();
       // The signed-out dash carries NO "merged in range" scope claim (line 212
@@ -735,55 +746,25 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       expect(screen.queryByText("merged lines per dollar")).toBeNull();
     });
 
-    it("suppresses the hoisted banner when the shell owns the ask (RefreshFailed) but still dashes the cards (P2)", () => {
-      // FEA-4037 P2: on RefreshFailed the desktop's app-level
-      // DesktopSessionExpiredBanner already owns the sign-in ask globally, so the
-      // Sessions bar must NOT stack a second banner. With signInPromptSuppressed,
-      // no hoisted banner renders and the delivery cards still fall to the neutral
-      // dash — the honesty decision is independent of the banner-hoist decision.
-      render(
-        <SessionsSummaryCards
-          authenticated={false}
-          isLoading={false}
-          onSignIn={vi.fn()}
-          signInPromptSuppressed
-          usage={cloudDeliveryFixture()}
-        />
-      );
+    // ISS-7866 DELETED two cases that stood here, because the contracts they
+    // encoded were retired rather than reworded:
+    //
+    //  - `signInPromptSuppressed` and its "two asks must not stack" rule. The
+    //    prop is gone. It existed because the desktop's app-level
+    //    DesktopSessionExpiredBanner already asked a RefreshFailed user to sign
+    //    in, and this strip's own sign-in ask would have been the second one.
+    //    This strip no longer asks anyone to sign in, so there is no second ask
+    //    to suppress. Its honesty half — the delivery cards state no value while
+    //    signed out — is asserted by the two cases above, on the same fixture.
+    //  - the retryable sign-in ERROR path (`signInError`). It belonged to a
+    //    sign-in attempt this strip no longer starts.
 
-      // No hoisted banner (the shell owns it) and no per-card copy either.
-      expect(screen.queryByText(SIGN_IN_BANNER_EXPLANATION)).toBeNull();
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
-      expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
-      // ...but the two delivery cards still dash (signed-out honesty stands).
-      expect(screen.getAllByText("—")).toHaveLength(2);
-      expect(screen.queryByText("7")).toBeNull();
-    });
-
-    it("surfaces a retryable sign-in error once on the banner, not per card", () => {
-      render(
-        <SessionsSummaryCards
-          authenticated={false}
-          isLoading={false}
-          onSignIn={vi.fn()}
-          signInError="Couldn't open your browser. Try again."
-          usage={usageFixture({ totalSessions: 9 })}
-        />
-      );
-
-      // The retryable failure copy renders ONCE (on the banner), and the CTA
-      // stands as the retry — not one error line per delivery card.
-      expect(
-        screen.getAllByText("Couldn't open your browser. Try again.")
-      ).toHaveLength(1);
-      expect(screen.getAllByRole("button", { name: "Sign in" })).toHaveLength(
-        1
-      );
-    });
-
-    it("degrades to per-card informational copy when signed out with NO handler (no ask to hoist)", () => {
-      // With no live sign-in action there is nothing to hoist into a single
-      // prompt, so the cards keep their informational per-card copy and no button.
+    it("degrades to informational copy when signed out with NO connect target", () => {
+      // With no connect entry point the cards fall back to the explanation and
+      // render no control — an affordance that cannot act is not offered, and a
+      // card that cannot offer the fix still says why it is dark rather than
+      // leaving an empty slot. This is the one card layout that still speaks the
+      // sentence (ISS-7866).
       render(
         <SessionsSummaryCards
           authenticated={false}
@@ -792,37 +773,51 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
         />
       );
 
-      expect(screen.queryByText(SIGN_IN_BANNER_EXPLANATION)).toBeNull();
       // FEA-4126: two delivery cards keep the informational per-card copy.
-      expect(screen.getAllByText(SIGN_IN_EXPLANATION)).toHaveLength(2);
-      expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+      expect(screen.getAllByText(CONNECT_EXPLANATION)).toHaveLength(2);
+      expect(
+        screen.queryByRole("button", { name: CONNECT_CTA_LABEL })
+      ).toBeNull();
+      expect(
+        screen.queryByRole("link", { name: CONNECT_CTA_LABEL })
+      ).toBeNull();
+      // The value is still withdrawn: the degrade is about the CONTROL, not
+      // about what the card is willing to claim.
+      expect(screen.getAllByText(NO_DATA_GLYPH)).toHaveLength(2);
     });
   });
 
   describe("cloud-only delivery cards — signed in, no data (state 3)", () => {
-    it("render a neutral empty with NO CTA when authenticated but the metric is absent (offline / out of range / GitHub not connected)", () => {
+    it("render a neutral empty with NO CTA when authenticated but the metric is absent (offline / out of range / unread GitHub status)", () => {
       render(
-        // Authenticated but the local (or offline) producer omits merged-PR
-        // metrics: neutral empty, never the signed-out CTA — signing in wouldn't
-        // help (FEA-3159 keeps the GitHub-not-connected case here too).
+        // Authenticated, the producer omits merged-PR metrics, and the GitHub
+        // status is UNREAD (`githubConnected` omitted → undefined): a neutral
+        // empty with no ask, because an unread connection is not a known-absent
+        // one and must never nag a connected user (ISS-5958). The target is
+        // supplied so the absence below is a decision, not a missing prop.
         <SessionsSummaryCards
           authenticated
+          githubConnect={connectTarget()}
           isLoading={false}
-          onSignIn={vi.fn()}
           usage={usageFixture({ totalSessions: 9 })}
         />
       );
 
       // Two delivery cards dash their value (FEA-4126: PRs Shipped + LOC/$)...
       expect(screen.getAllByText("—")).toHaveLength(2);
-      // ...but state 3 is visually distinct from state 2: no CTA, no "Sample".
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
-      expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+      // ...and this state stays visually distinct from the gated one: no ask in
+      // either shape, no "Sample", and the `—` above rather than the withdrawn
+      // value's "No data" glyph.
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: CONNECT_CTA_LABEL })
+      ).toBeNull();
+      expect(screen.queryByText(NO_DATA_GLYPH)).toBeNull();
       expect(screen.queryByText("Sample")).toBeNull();
     });
 
     it("dashes PRs Shipped (no fake 0) on the REAL cloud shape: mergedPrCount is null when no merged PRs match", () => {
-      // Data-honesty regression (FEA-3574 review, wongk): the cloud producer now
+      // Data-honesty regression (FEA-3574 review, whitlockk): the cloud producer now
       // emits `mergedPrCount: null` (NOT `0`) when the matched set has no merged
       // PRs, so an out-of-range / offline authenticated read renders the same
       // neutral no-data dash as its sibling delivery cards instead of a real "0"
@@ -849,7 +844,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       // dash together on the absent (null) cloud shape (FEA-4126: two cards).
       expect(screen.queryByText("0")).toBeNull();
       expect(screen.getAllByText("—")).toHaveLength(2);
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
     });
   });
 
@@ -870,8 +865,8 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       expect(screen.getByText("3.50")).toBeInTheDocument();
       expect(screen.queryByText("2 KLOC")).toBeNull();
       // No dashes, no CTA — every delivery card resolved to a real value.
-      expect(screen.queryByText("—")).toBeNull();
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
+      expect(screen.queryByText(KPI_NO_VALUE)).toBeNull();
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
     });
 
     it("mixes available and neutral-empty per card (partial cloud data)", () => {
@@ -892,7 +887,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
       // FEA-4126: only LOC/$ dashes now — Median PR Size was removed
       // from this bar, so PRs Shipped (real) + one dash is the full delivery set.
       expect(screen.getAllByText("—")).toHaveLength(1);
-      expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
+      expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
     });
   });
 
@@ -909,7 +904,7 @@ describe("SessionsSummaryCards (FEA-4126 — 5-card row, no Median PR Size)", ()
 
     // FEA-4126: two delivery cards (PRs Shipped + LOC/$) dash.
     expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.queryByText(SIGN_IN_EXPLANATION)).toBeNull();
+    expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
   });
 });
 
@@ -969,7 +964,7 @@ describe("SessionsSummaryCards (ISS-4444 — honest 'couldn't be read' caveat on
 });
 
 // ISS-4444: the honest "couldn't import" note copy and the import-in-progress
-// caption that must be GONE once the import settles. ISS-6115 (wongk review):
+// caption that must be GONE once the import settles. ISS-6115 (whitlockk review):
 // the singular/plural and stage-verb contract moved to the desktop adapter that
 // now BUILDS the phrase (`describeQuarantinedSources`), which is where it is
 // asserted; these patterns only prove the phrase reaches the card's detail slot

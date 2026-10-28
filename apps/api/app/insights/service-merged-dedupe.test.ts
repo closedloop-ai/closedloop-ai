@@ -34,7 +34,8 @@ import {
   ORG,
 } from "@/__tests__/support/insights/service.test-db";
 import { MERGED_PR_SCAN_CAP } from "./merged-pr-queries";
-import { buildPrByRepoBuckets, insightsService } from "./service";
+import { insightsService } from "./service";
+import { buildPrByRepoBuckets } from "./service/buckets";
 
 const USER = "user-1";
 const ORG_CTX = { organizationId: ORG, userId: USER, scope: InsightsScope.Org };
@@ -42,29 +43,18 @@ const NOW = new Date("2026-06-09T12:00:00.000Z");
 const HOUR = 3_600_000;
 const MERGED_AT = new Date("2026-06-08T00:00:00.000Z");
 
-/**
- * Route a delivery `where` to the count the scenario wants.
- *
- * Only the CURRENT merged window still reads a `count()` — ISS-5624 moved the
- * prior-window and closed-side counts into a distinct-identity aggregate, so
- * those two scenarios are expressed by their `priorMergedPrs` / `closedPrs`
- * fixture rows instead.
- */
-function deliveryCounts(counts: { mergedRows: number }) {
-  return (where: Record<string, unknown>): number => {
-    const mergedAt = where.mergedAt as { lte?: unknown } | undefined;
-    return where.prState === ApiGitHubPRState.Merged &&
-      mergedAt?.lte !== undefined
-      ? counts.mergedRows
-      : 0;
-  };
+/** The statement of the shared fold, with the window keys it was asked for. */
+function foldStatement(rawQueries: unknown[]) {
+  return rawQueries
+    .map(flattenRawSql)
+    .find(({ text }) => text.includes("WITH counting AS MATERIALIZED"));
 }
 
-/** The prior-window count is the one windowed on the PR's own `merged_at`. */
-function isPriorWindowCount(raw: { text: string }): boolean {
-  return raw.text.includes("p.merged_at");
+function windowKeysAsked(rawQueries: unknown[]): string[] {
+  return (foldStatement(rawQueries)?.values ?? []).flatMap((value) =>
+    Array.isArray(value) ? value.map(String) : []
+  );
 }
-
 /**
  * One full merged-PR scan row (the `fetchMergedPrs` select shape), so the
  * shape lives once. The identity-only populations (closed / prior windows)
@@ -93,7 +83,7 @@ function mergedPrRow(
     additions: null,
     deletions: null,
     repositoryId: null,
-    repositoryFullName: "acme/symphony-alpha",
+    repositoryFullName: "acme/closedloop-ai",
     branchArtifactId: "b1",
     repository: null,
     branchArtifact: { createdAt: new Date(MERGED_AT.getTime() - HOUR) },
@@ -122,7 +112,7 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
       additions: 100,
       deletions: 50,
       repositoryId: "r1",
-      repository: { name: "symphony-alpha" },
+      repository: { name: "closedloop-ai" },
       branchArtifact: { createdAt: new Date(MERGED_AT.getTime() - 2 * HOUR) },
     });
     const otherPr = mergedPrRow({
@@ -144,14 +134,14 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
         id: "closed-1-app",
         number: 11,
         githubId: "gh-c1",
-        repositoryFullName: "acme/symphony-alpha",
+        repositoryFullName: "acme/closedloop-ai",
         repositoryId: "r1",
       },
       {
         id: "closed-1-desktop",
         number: 11,
         githubId: null,
-        repositoryFullName: "acme/symphony-alpha",
+        repositoryFullName: "acme/closedloop-ai",
         repositoryId: null,
       },
       {
@@ -174,7 +164,6 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
       closedPrs: closedIdentityRows,
       // Three merged ROWS in range for two pull requests; four closed rows for
       // three.
-      counts: deliveryCounts({ mergedRows: 3 }),
     });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
@@ -212,10 +201,10 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
         ?.values.merged
     ).toBe(2);
 
-    // Repo split: the twin shares acme/symphony-alpha with the row that
+    // Repo split: the twin shares acme/closedloop-ai with the row that
     // survives, so case-folding the label alone never collapsed it. Was 2.
     expect(
-      result.charts.prByRepo.find((bucket) => bucket.label === "symphony-alpha")
+      result.charts.prByRepo.find((bucket) => bucket.label === "closedloop-ai")
         ?.value
     ).toBe(1);
     expect(
@@ -268,12 +257,11 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
       additions: 100,
       deletions: 50,
       repositoryId: "r1",
-      repository: { name: "symphony-alpha" },
+      repository: { name: "closedloop-ai" },
       branchArtifact: { createdAt: new Date(MERGED_AT.getTime() + HOUR) },
     });
     const { db } = makeFakeDb({
       mergedPrs: [winnerProjectedAfterMerge, twinObservedBeforeMerge],
-      counts: deliveryCounts({ mergedRows: 2 }),
     });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
@@ -308,63 +296,6 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
     ).toBe(1);
   });
 
-  it("does not report zero merged PRs when the count raced behind the scan", async () => {
-    // `fetchMergedPrs` and `countMergedPrsInRange` are separate `withDb`
-    // statements inside getDelivery's Promise.all, so a twin row written
-    // between them leaves the scan holding a duplicate the count never saw:
-    // one row counted, two rows scanned, one pull request.
-    const twinOnSecondBranch = mergedPrRow({
-      id: "pr-1-desktop",
-      branchArtifactId: "b1-desktop",
-      branchArtifact: { createdAt: new Date(MERGED_AT.getTime() - 10 * HOUR) },
-    });
-    const adoptedAppRow = mergedPrRow({
-      id: "pr-1-app",
-      githubId: "gh-1",
-      additions: 100,
-      deletions: 50,
-      repositoryId: "r1",
-      repository: { name: "symphony-alpha" },
-    });
-    const { db } = makeFakeDb({
-      mergedPrs: [adoptedAppRow, twinOnSecondBranch],
-      // The count ran before the twin landed.
-      counts: deliveryCounts({ mergedRows: 1 }),
-    });
-    vi.mocked(withDb).mockImplementation((cb) =>
-      Promise.resolve(cb(db as never))
-    );
-
-    const result = await insightsService.getDelivery(
-      ORG_CTX,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-
-    // Subtracting the unseen duplicate from the stale count reported ZERO, and
-    // the rest of the response — every facet of which is built from the very
-    // scan that is holding the pull request — then contradicted it. The scan's
-    // own distinct count is the floor that cannot lie.
-    expect(result.kpis.find((k) => k.key === "merged")?.value).toBe(1);
-    expect(result.kpis.find((k) => k.key === "mergedCount")?.value).toBe(1);
-    expect(result.kpis.find((k) => k.key === "mergedPrsScanned")?.value).toBe(
-      1
-    );
-    // Was `[]` — an empty state donut beside a daily trend reporting a merge.
-    expect(result.charts.prByState).toEqual([
-      { key: ApiGitHubPRState.Merged, label: "Merged", value: 1 },
-    ]);
-    expect(
-      result.charts.prTrend.points.find((point) => point.date === "2026-06-08")
-        ?.values.merged
-    ).toBe(1);
-    expect(
-      result.charts.prByRepo.reduce((total, bucket) => total + bucket.value, 0)
-    ).toBe(1);
-    // Was 0% — 0/(0+0) with a merged pull request on the screen.
-    expect(result.kpis.find((k) => k.key === "merge-rate")?.value).toBe(100);
-  });
-
   it("dedupes the prior window too, so the delta is not movement that never happened", async () => {
     const currentPr = mergedPrRow({
       id: "pr-9",
@@ -374,7 +305,7 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
       deletions: 10,
       repositoryId: "r1",
       branchArtifactId: "b9",
-      repository: { name: "symphony-alpha" },
+      repository: { name: "closedloop-ai" },
     });
     // The prior window's population: three rows, two pull requests.
     const priorIdentityRows = [
@@ -382,14 +313,14 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
         id: "prior-1-app",
         number: 1,
         githubId: "gh-p1",
-        repositoryFullName: "acme/symphony-alpha",
+        repositoryFullName: "acme/closedloop-ai",
         repositoryId: "r1",
       },
       {
         id: "prior-1-desktop",
         number: 1,
         githubId: null,
-        repositoryFullName: "acme/symphony-alpha",
+        repositoryFullName: "acme/closedloop-ai",
         repositoryId: null,
       },
       {
@@ -403,7 +334,6 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
     const { db, rawQueries } = makeFakeDb({
       mergedPrs: [currentPr],
       priorMergedPrs: priorIdentityRows,
-      counts: deliveryCounts({ mergedRows: 1 }),
     });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
@@ -421,18 +351,17 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
     // prior ROW count of 3 the same window would have read -67%.
     expect(merged?.deltaPct).toBe(-50);
 
-    // ISS-5624: the prior window is deduped by a DB aggregate, so deduping the
-    // delta costs one row on the wire — not a capped, identity-ordered slice of
-    // up to MERGED_PR_SCAN_CAP identities that the endpoint then reduces in JS.
-    const priorCount = rawQueries.map(flattenRawSql).find(isPriorWindowCount);
-    expect(priorCount?.text).toContain("SELECT COUNT(*)::int AS n");
-    expect(priorCount?.values).toContain(ORG);
+    // ISS-12408: the prior window is asked of the same fold as the current one,
+    // in the same statement, so it is deduped by the same twin collapse.
+    expect(windowKeysAsked(rawQueries)).toEqual(
+      expect.arrayContaining(["current", "prior"])
+    );
+    expect(foldStatement(rawQueries)?.values).toContain(ORG);
   });
 
   it("does not count the prior window when there is none (the 'all' period)", async () => {
-    const { db, mergedFindArgs, rawQueries } = makeFakeDb({
+    const { db, rawQueries } = makeFakeDb({
       mergedPrs: [],
-      counts: deliveryCounts({ mergedRows: 0 }),
     });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
@@ -440,14 +369,13 @@ describe("insightsService.getDelivery — merged-PR dedupe (ISS-5411)", () => {
 
     await insightsService.getDelivery(ORG_CTX, InsightsPeriod.All, NOW);
 
-    expect(rawQueries.map(flattenRawSql).filter(isPriorWindowCount)).toEqual(
-      []
-    );
-    // The one PR scan the endpoint does still materialize stays bounded.
-    expect(mergedFindArgs.length).toBeGreaterThan(0);
-    for (const args of mergedFindArgs) {
-      expect(args.take).toBe(MERGED_PR_SCAN_CAP);
-    }
+    expect(windowKeysAsked(rawQueries)).toContain("current");
+    expect(windowKeysAsked(rawQueries)).not.toContain("prior");
+    const mergedScan = rawQueries
+      .map(flattenRawSql)
+      .find(({ text }) => text.includes("SELECT p.id"));
+    expect(mergedScan?.text).toContain("LIMIT ");
+    expect(mergedScan?.values).toContain(MERGED_PR_SCAN_CAP);
   });
 });
 

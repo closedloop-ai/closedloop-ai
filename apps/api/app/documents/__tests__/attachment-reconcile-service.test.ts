@@ -55,6 +55,25 @@ beforeEach(() => {
 });
 
 describe("attachmentReconcileService.runReconcileSweep", () => {
+  it("cleans abandoned bootstrap logos but preserves uploads within the grace window", async () => {
+    const oldKey = `attachments/desktop-bootstrap/${"a".repeat(64)}/logo`;
+    const freshKey = `attachments/desktop-bootstrap/${"b".repeat(64)}/logo`;
+    vi.mocked(listObjects).mockResolvedValueOnce({
+      objects: [
+        { key: oldKey, lastModified: OLD },
+        { key: freshKey, lastModified: new Date(NOW.getTime() - 60_000) },
+      ],
+      nextContinuationToken: undefined,
+    });
+    findMany.mockResolvedValueOnce([]);
+    expect(
+      (await attachmentReconcileService.runReconcileSweep(NOW)).exitCode
+    ).toBe(0);
+    expect(listObjects).toHaveBeenCalledWith(
+      expect.objectContaining({ prefix: "attachments/" })
+    );
+    expect(deleteObjects).toHaveBeenCalledWith([oldKey], "test-bucket");
+  });
   it("deletes orphaned objects and keeps referenced ones", async () => {
     vi.mocked(listObjects).mockResolvedValueOnce({
       objects: [

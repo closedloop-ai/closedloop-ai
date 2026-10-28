@@ -6,8 +6,8 @@
 // id still wins when present. The label is a display name, never a priceable wire
 // id — it must not leak into `tokensByModel`.
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 import { extractModelSwitchLabel } from "./parse-claude-model-switch-label";
 
 // The harness wraps the label in ANSI bold: ESC[1m … ESC[22m. The parser strips
@@ -62,7 +62,7 @@ describe("parseClaudeTranscript /model switch model label (FEA-4376)", () => {
   });
 
   it("keeps a real model id's [1m] 1M-context alias suffix (a lone bare marker is NOT a bold wrapper)", async () => {
-    // PR #3903 review (wongk): the frozen corpus has `Set model to
+    // PR #3903 review (whitlockk): the frozen corpus has `Set model to
     // claude-sonnet-4-6[1m]`, where `[1m]` is the semantic 1M-context alias — a
     // lone bare `[1m` with no paired `[22m`. It must survive verbatim, not be
     // stripped to a corrupt `claude-sonnet-4-6]`.
@@ -77,7 +77,7 @@ describe("parseClaudeTranscript /model switch model label (FEA-4376)", () => {
   });
 
   it("rejects an over-length label so it never poisons the worker boundary", async () => {
-    // PR #3903 review (wongk): the label is unbounded transcript text but the
+    // PR #3903 review (whitlockk): the label is unbounded transcript text but the
     // worker `.strict()` schema caps `model` at 8,192 chars — a longer label
     // would reject the whole source payload. An over-cap label must be dropped
     // (model stays null), not assigned.

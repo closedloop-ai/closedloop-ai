@@ -1,15 +1,13 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
+  DOCUMENT_ROUTE_PREFIX,
   DocumentStatus,
   DocumentType,
   IssueStatus,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { ProjectStatus } from "@repo/api/src/types/project";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import {
   getRowTypeConfig,
   isDocumentRowItem,
@@ -35,7 +33,7 @@ describe("getRowTypeConfig", () => {
   it("derives document config from the subtype (badge, route, capabilities)", () => {
     const prd = getRowTypeConfig({ kind: "document", data: makeArtifact() });
     expect(prd?.badgeLabel).toBe("PRD");
-    expect(prd?.route).toBe("/prds/PRD-1");
+    expect(prd?.route).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PRD-1`);
     expect(prd?.editable).toBe(true);
     expect(prd?.deletable).toBe(true);
 
@@ -44,14 +42,14 @@ describe("getRowTypeConfig", () => {
       data: makePlanArtifact(),
     });
     expect(plan?.badgeLabel).toBe("Plan");
-    expect(plan?.route).toBe("/implementation-plans/PLAN-1");
+    expect(plan?.route).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PLAN-1`);
 
     const feature = getRowTypeConfig({
       kind: "document",
       data: makeFeatureArtifact(),
     });
     expect(feature?.badgeLabel).toBe("Issue");
-    expect(feature?.route).toBe("/issues/FEAT-1");
+    expect(feature?.route).toBe(`/${DOCUMENT_ROUTE_PREFIX}/FEAT-1`);
     // Delete dialog copy comes from the registry (PLN-874 Task 3.5):
     // Features (FEATURE subtype) delete as "Issue", other document subtypes as
     // "Document", both with the dialog's default body.
@@ -73,7 +71,7 @@ describe("getRowTypeConfig", () => {
       kind: "document",
       data: makeArtifact({ type: DocumentType.Doc, slug: "onboarding" }),
     });
-    expect(doc?.route).toBe("/documents/onboarding");
+    expect(doc?.route).toBe(`/${DOCUMENT_ROUTE_PREFIX}/onboarding`);
     expect(doc?.deleteDialogTitle).toBe("Document");
   });
 
@@ -86,7 +84,7 @@ describe("getRowTypeConfig", () => {
       }),
     });
     expect(config?.badgeLabel).toBe("Pull Request");
-    expect(config?.route).toBe("/build/br-1");
+    expect(config?.route).toBeNull();
     expect(config?.editable).toBe(false);
     expect(config?.deletable).toBe(true);
     expect(config?.statusIcon).toBe("complete");
@@ -120,17 +118,24 @@ describe("getRowTypeConfig", () => {
       })?.statusIcon;
 
     // ISS-4586: completed/abandoned collapse into `inactive`, which takes the
-    // "complete" (finished) icon. `error` keeps the wont-do icon; waiting keeps
-    // in-review; active keeps in-progress.
+    // "complete" (finished) icon. ISS-8692 gave `error` the `failed` icon, whose
+    // own accessible name is the "Failed" the row's label already says — it used
+    // to take `wont-do` and announce "Won't do". Active keeps in-progress.
     //
-    // ISS-5592 (2026-08-15) retired the `failed` alias, so it now takes the
-    // in-flight icon like any spelling this build cannot read — asserted below
+    // ISS-10364 (operator ruling, 2026-09-23/24) retired the `waiting` icon
+    // entry (the "in-review" ring) along with the member itself — a stored
+    // `waiting` row is no longer recognized and folds to the same in-progress
+    // icon as `active`, asserted below alongside the other unrecognized value.
+    //
+    // ISS-5592 (2026-08-15) retired the `failed` STATUS SPELLING, which is not
+    // the icon member added by ISS-8692: the string `failed` is still a status
+    // this build cannot read, so it takes the in-flight icon — asserted below
     // alongside the other unrecognized value, not here.
     expect(iconFor(SESSION_STATUS.INACTIVE)).toBe("complete");
-    expect(iconFor("error")).toBe("wont-do");
-    expect(iconFor("waiting")).toBe("in-review");
+    expect(iconFor(SESSION_STATUS.ERROR)).toBe("failed");
+    expect(iconFor("waiting")).toBe("in-progress");
     expect(iconFor("active")).toBe("in-progress");
-    // Unknown → active (in-flight), never a fabricated terminal icon (shafty023 P2).
+    // Unknown → active (in-flight), never a fabricated terminal icon (davetho P2).
     expect(iconFor("some-new-harness-state")).toBe("in-progress");
     expect(iconFor("failed")).toBe("in-progress");
   });
@@ -155,13 +160,16 @@ describe("getRowTypeConfig", () => {
         data: makeRawArtifact(ArtifactType.Session, { status }),
       })?.statusLabel;
 
-    // ISS-4586: completed/abandoned/unknown all read "Inactive"; waiting stays
-    // "Waiting", error reads "Failed" — one label per displayed state.
+    // ISS-4586: completed/abandoned all read "Inactive"; error reads "Failed" —
+    // one label per displayed state.
     expect(labelFor(SESSION_STATUS.INACTIVE)).toBe("Inactive");
-    expect(labelFor(DISPLAYED_SESSION_STATUS.WAITING)).toBe("Waiting");
+    // ISS-10364 (operator ruling, 2026-09-23/24): `waiting` is a retired,
+    // plain-literal legacy spelling now — it folds to "Active" like any other
+    // non-terminal status, rather than keeping its own "Waiting" label.
+    expect(labelFor("waiting")).toBe("Active");
     expect(labelFor(SESSION_STATUS.ACTIVE)).toBe("Active");
     expect(labelFor(SESSION_STATUS.ERROR)).toBe("Failed");
-    // Unknown → active (in-flight), never "Inactive" (shafty023 P2).
+    // Unknown → active (in-flight), never "Inactive" (davetho P2).
     expect(labelFor("some-new-harness-state")).toBe("Active");
   });
 });

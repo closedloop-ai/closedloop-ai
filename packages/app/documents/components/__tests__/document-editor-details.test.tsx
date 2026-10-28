@@ -58,9 +58,6 @@ const ARTIFACT_UPDATED_AT = new Date("2026-01-06T12:00:00Z");
 const VERSION_CREATED_AT = new Date("2026-02-10T12:00:00Z");
 const COMMENTS_BUTTON_NAME = /comments/i;
 const ACTIVITY_BUTTON_NAME = /activity/i;
-const CREATED_LABEL = /created:/i;
-const UPDATED_LABEL = /updated:/i;
-const CREATED_BY_LABEL = /created by:/i;
 
 const artifactCreator: BasicUser = {
   id: "artifact-creator",
@@ -91,42 +88,25 @@ describe("getDocumentActivityMetadata", () => {
 });
 
 describe("DocumentEditorDetails", () => {
-  test("renders child sections, comments, and artifact activity metadata", () => {
+  test("renders child sections and comments without duplicating Sessions or Activity", () => {
     renderWithNav(
-      <DocumentEditorDetails
-        activity={{
-          createdAt: ARTIFACT_CREATED_AT,
-          createdBy: artifactCreator,
-          updatedAt: ARTIFACT_UPDATED_AT,
-        }}
-        documentId="artifact-1"
-      >
+      <DocumentEditorDetails documentId="artifact-1">
         <div>Relationships section</div>
       </DocumentEditorDetails>
     );
-
     expect(screen.getByText("Relationships section")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: COMMENTS_BUTTON_NAME })
     ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: ACTIVITY_BUTTON_NAME }));
-
-    expect(screen.getByText(CREATED_LABEL)).toHaveTextContent("Jan 5, 2026");
-    expect(screen.getByText(UPDATED_LABEL)).toHaveTextContent("Jan 6, 2026");
     expect(
-      screen.getByRole("link", { name: "Artifact Creator" })
-    ).toHaveAttribute("href", "/test-org/users/artifact-creator");
+      screen.queryByRole("button", { name: ACTIVITY_BUTTON_NAME })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Related Sessions")).not.toBeInTheDocument();
   });
 
   test("resets the comment draft when the document changes without unmounting", () => {
-    const activity = {
-      createdAt: ARTIFACT_CREATED_AT,
-      createdBy: artifactCreator,
-      updatedAt: ARTIFACT_UPDATED_AT,
-    };
     const { rerender } = renderWithNav(
-      <DocumentEditorDetails activity={activity} documentId="artifact-1">
+      <DocumentEditorDetails documentId="artifact-1">
         <div>Relationships section</div>
       </DocumentEditorDetails>
     );
@@ -143,7 +123,7 @@ describe("DocumentEditorDetails", () => {
 
     // Navigate to a different document in the same mounted details container.
     rerender(
-      <DocumentEditorDetails activity={activity} documentId="artifact-2">
+      <DocumentEditorDetails documentId="artifact-2">
         <div>Relationships section</div>
       </DocumentEditorDetails>
     );
@@ -153,27 +133,6 @@ describe("DocumentEditorDetails", () => {
     expect(screen.queryByLabelText("Add a comment")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: COMMENTS_BUTTON_NAME }));
     expect(screen.getByLabelText("Add a comment")).toHaveValue("");
-  });
-
-  test("renders unknown-user fallback when artifact creator is unavailable", () => {
-    renderWithNav(
-      <DocumentEditorDetails
-        activity={{
-          createdAt: ARTIFACT_CREATED_AT,
-          createdBy: null,
-          updatedAt: ARTIFACT_UPDATED_AT,
-        }}
-        documentId="artifact-1"
-      >
-        <div>Evaluation section</div>
-      </DocumentEditorDetails>
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: ACTIVITY_BUTTON_NAME }));
-
-    expect(screen.getByText(CREATED_BY_LABEL)).toBeInTheDocument();
-    expect(screen.getByText("Unknown user")).toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 });
 

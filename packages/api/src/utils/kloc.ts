@@ -12,8 +12,12 @@
  *
  * ISS-4667: the cost-EFFICIENCY metric that used to live here no longer does.
  * It is LOC/$ (raw lines per dollar, NO divide-by-1000, higher is better) and
- * its SSOT is `./loc-per-dollar.ts`. KLOC survives only as a volume unit; never
- * derive a per-dollar figure from it.
+ * its SSOT is `./loc-per-dollar.ts`; never derive a per-dollar figure from KLOC.
+ *
+ * ISS-8184 retired KLOC from the rendered vocabulary — a reader sees raw lines
+ * under "Merged LOC" / "Captured LOC". What survives is the WIRE spelling: the
+ * `kloc` keys keep emitting alongside their raw-line twins so a version-skewed
+ * client still resolves them, and the flag-off shape still renders them.
  */
 
 /**

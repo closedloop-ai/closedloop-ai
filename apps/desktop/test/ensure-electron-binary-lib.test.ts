@@ -14,7 +14,7 @@
  * it is ever exercised.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   type ArchHost,
   buildDownloadArgs,

@@ -311,11 +311,11 @@ const AgentsSummaryCards = ({
   const cards = [
     {
       key: "components",
-      label: "Components",
+      label: "Agentic Components",
       value: NUMBER_FORMAT.format(components.length),
       detail: "matched by the current filters",
       info: {
-        what: "Agents, commands, and skills in the current view.",
+        what: "Agentic components in the current view.",
         how: "Count of components in the active filter set.",
       },
     },

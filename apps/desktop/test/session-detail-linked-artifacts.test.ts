@@ -33,7 +33,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { DocumentType } from "@repo/api/src/types/document";
 import {
   ArtifactRefMethod,
@@ -41,10 +40,12 @@ import {
   MIN_SYNCED_DOCUMENT_REFS_PRODUCER,
   SessionArtifactLinkRole,
 } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
+import { createSessionAttributionResolverCache } from "../src/main/agent-sync/agent-session-attribution.js";
+import { SESSION_DOCUMENT_LINK_SCAN_LIMIT } from "../src/main/database/session-detail-link-reads.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { projectLocalLinkedArtifacts } from "../src/main/session/local-linked-artifacts.js";
 import { getSharedAgentSessionDetail } from "../src/main/session/shared-agent-session-detail-read.js";
-import { createSessionAttributionResolverCache } from "../src/main/session/shared-agent-sessions-api.js";
 
 const SESSION_ID = "iss5617-session";
 const AT = "2026-07-10T00:00:00.000Z";
@@ -197,7 +198,7 @@ test("ISS-5617: a session with no document links leaves linkedArtifacts ABSENT s
     // so this must not leak into the Linked-artifacts pill row.
     await db.run(
       `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, branch_name, created_at, last_seen_at)
-       VALUES ('art-branch', 'branch:iss5617', 'branch', 'closedloop-ai/symphony-alpha', 'fix/iss-5617', ?, ?)`,
+       VALUES ('art-branch', 'branch:iss5617', 'branch', 'closedloop-ai/closedloop-ai', 'fix/iss-5617', ?, ?)`,
       AT,
       AT
     );
@@ -370,7 +371,7 @@ test("ISS-5617: the detail serves every local document link and reports a total 
     for (let index = 0; index < branchLinkCount; index += 1) {
       await db.run(
         `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, branch_name, created_at, last_seen_at)
-         VALUES (?, ?, 'branch', 'closedloop-ai/symphony-alpha', ?, ?, ?)`,
+         VALUES (?, ?, 'branch', 'closedloop-ai/closedloop-ai', ?, ?, ?)`,
         `art-cap-branch-${index}`,
         `branch:iss5617-cap-${index}`,
         `fix/iss-5617-cap-${index}`,
@@ -421,6 +422,76 @@ test("ISS-5617: the detail serves every local document link and reports a total 
       detail.linkedArtifactsTotal,
       documentLinkCount,
       "and reports the true total — 50 here is the capped lie this test exists to catch"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** One completed session with `count` distinct `closedloop_artifact` links. */
+async function seedDocumentLinks(db: TestDb, count: number): Promise<void> {
+  await db.run(
+    "INSERT INTO sessions (id, status) VALUES (?, 'completed')",
+    SESSION_ID
+  );
+  for (let index = 0; index < count; index += 1) {
+    await seedDocumentLink(db, {
+      key: `scan-${index}`,
+      slug: `ISS-${20_000 + index}`,
+      method: ArtifactRefMethod.SlugInMessage,
+    });
+  }
+}
+
+/**
+ * ISS-9863 (PRD-666, cap family TC-11): past the read's own scan ceiling the
+ * served refs are a PREFIX, and a total folded from a prefix is the "+44 for
+ * +54" defect one bound up. The read probes one row past the ceiling, so an
+ * overflow is observed rather than inferred, and the projection then takes the
+ * same no-total branch an absent read takes: the list is served up to the
+ * ceiling and `linkedArtifactsTotal` is withheld. Without the probe row this
+ * corpus reads as exactly 500 links and the total is stated as 500 — which is
+ * the assertion below that goes red.
+ */
+test("ISS-9863: one link past the scan ceiling serves the ceiling's worth and WITHHOLDS the total", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss9863-overflow-"));
+  const db = await openDb(dir);
+  try {
+    await seedDocumentLinks(db, SESSION_DOCUMENT_LINK_SCAN_LIMIT + 1);
+    const detail = await getSharedAgentSessionDetail(db.syncSource, SESSION_ID);
+    assert.ok(detail, "the local detail resolves");
+    assert.equal(
+      detail.linkedArtifacts?.length,
+      SESSION_DOCUMENT_LINK_SCAN_LIMIT,
+      "the served list is the scan ceiling's worth, not the probe row too"
+    );
+    assert.equal(
+      Object.hasOwn(detail, "linkedArtifactsTotal"),
+      false,
+      "no total is claimed — a total folded from a prefix is the lie this test exists to catch"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-9863: exactly the scan ceiling's worth of links is complete and states its total", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss9863-at-cap-"));
+  const db = await openDb(dir);
+  try {
+    await seedDocumentLinks(db, SESSION_DOCUMENT_LINK_SCAN_LIMIT);
+    const detail = await getSharedAgentSessionDetail(db.syncSource, SESSION_ID);
+    assert.ok(detail, "the local detail resolves");
+    assert.equal(
+      detail.linkedArtifacts?.length,
+      SESSION_DOCUMENT_LINK_SCAN_LIMIT
+    );
+    assert.equal(
+      detail.linkedArtifactsTotal,
+      SESSION_DOCUMENT_LINK_SCAN_LIMIT,
+      "at the ceiling the read is complete, so the total is stated"
     );
   } finally {
     await db.close();

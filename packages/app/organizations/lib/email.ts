@@ -3,21 +3,17 @@
  * (PRD-532 §5.4). The desktop/web invite dialog (`invite-team-dialog.tsx`)
  * gathers free-form email rows and needs consistent
  * trim/lowercase/dedupe/validate semantics — keep that logic here rather than
- * inlining it in the component.
+ * inlining it in the component. The address check itself is
+ * `shared/lib/email-address.ts`, shared with the download step's "notify me"
+ * capture (ISS-12364).
  */
 
-/**
- * Pragmatic email shape check: a non-space/non-`@` local part, an `@`, a
- * non-space/non-`@` domain with at least one dot. Not RFC-5322-exhaustive by
- * design — Clerk performs the authoritative validation server-side; this only
- * catches obvious typos before we POST a batch.
- */
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { isValidEmailAddress } from "../../shared/lib/email-address";
 
 export type CollectedEmails = {
-  /** Deduped, trimmed, lowercased addresses that pass {@link EMAIL_REGEX}. */
+  /** Deduped, trimmed, lowercased addresses that pass {@link isValidEmailAddress}. */
   valid: string[];
-  /** Deduped, trimmed, lowercased addresses that fail {@link EMAIL_REGEX}. */
+  /** Deduped, trimmed, lowercased addresses that fail {@link isValidEmailAddress}. */
   invalid: string[];
 };
 
@@ -35,7 +31,7 @@ export function collectEmails(rawEmails: Iterable<string>): CollectedEmails {
     if (!email) {
       continue;
     }
-    if (EMAIL_REGEX.test(email)) {
+    if (isValidEmailAddress(email)) {
       valid.add(email);
     } else {
       invalid.add(email);

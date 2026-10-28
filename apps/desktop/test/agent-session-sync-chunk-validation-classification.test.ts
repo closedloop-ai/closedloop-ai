@@ -36,8 +36,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import {
   applyBoundedFailureFold,
   type BoundedFailureFoldConfig,
@@ -104,7 +104,7 @@ function buildOversizedSession(): SyncedAgentSession {
  * retry/dead-letter window is stepped past deterministically instead of slept on.
  */
 async function withPinnedClock(
-  body: (clock: { advance: (ms: number) => void }) => Promise<void>
+  body: (clock: { advance: (ms: number) => void }) => Promise<void> | void
 ): Promise<void> {
   const realNow = Date.now;
   let virtualNow = realNow();
@@ -512,6 +512,73 @@ test("ISS-5090: a session whose envelope shape FLIPS between attempts still reac
   );
 });
 
+test("ISS-8617: row-attributable validation defers persist the permanent budget", async () => {
+  const counter = new Map<string, number>();
+  const outboxRetries: Array<{
+    id: string;
+    attemptCount: number;
+    reason: string;
+    permanentAttemptCount?: number | null;
+  }> = [];
+  await withPinnedClock(() => {
+    applyValidationFailure(
+      {
+        syncMode: AgentSessionSyncMode.Backfill,
+        ids: [WHOLE_ID],
+        payloadBytes: 1024,
+        multiPartEnvelope: false,
+      },
+      {
+        counter,
+        recoverableDeadLetterCountFor: () => 0,
+        markForBisection: () => {
+          throw new Error("single-id rejections must never bisect");
+        },
+        clearBisectionFlag: () => undefined,
+        applyBoundedFold: (config: BoundedFailureFoldConfig) =>
+          applyBoundedFailureFold(config, {
+            nextRetryAfterMs: new Map<string, number>(),
+            clearFailureStateForId: (id) => counter.delete(id),
+            markDeadLettered: () => undefined,
+            dequeue: () => undefined,
+            recordOutboxRetry: (
+              id,
+              attemptCount,
+              _nextAttemptAt,
+              reason,
+              permanentAttemptCount
+            ) =>
+              outboxRetries.push({
+                id,
+                attemptCount,
+                reason,
+                permanentAttemptCount,
+              }),
+            queueSizes: () => ({
+              incremental: 0,
+              backfill: 0,
+              deadLettered: 0,
+            }),
+            logWarn: () => undefined,
+            logInfo: () => undefined,
+            formatBytes: (bytes) => `${bytes}B`,
+          }),
+        logInfo: () => undefined,
+        formatBytes: (bytes: number) => `${bytes}B`,
+      }
+    );
+  });
+
+  assert.deepEqual(outboxRetries, [
+    {
+      id: WHOLE_ID,
+      attemptCount: 1,
+      reason: VALIDATION_FAILED_REASON,
+      permanentAttemptCount: 1,
+    },
+  ]);
+});
+
 /** A `details.reason` value no build of this lane discriminates on. */
 const UNKNOWN_SERVER_DETAIL = "a_reason_this_build_has_never_heard_of";
 
@@ -584,7 +651,7 @@ async function driveWithRejectionDetail(
 }
 
 test("ISS-5090: a schema_version_invalid rejection is lane-wide and budget-neutral through the real service", async () => {
-  // wongk: the discriminator reached this classifier through `details.reason`
+  // whitlockk: the discriminator reached this classifier through `details.reason`
   // but was ignored, so version skew was classified off the batch SHAPE and
   // charged to whichever rows were in flight until they dead-lettered. A schema
   // rejection is a fact about THIS DESKTOP BUILD's envelope — no row can be at
@@ -669,7 +736,7 @@ test("ISS-5090: the schema-skew discriminator is read BEFORE the envelope/row sp
         multiPart,
         ValidationFailureDetail.SchemaVersionInvalid
       ),
-      ValidationFailureClass.SchemaSkew,
+      ValidationFailureClass.LaneWide,
       `schema skew must outrank the batch shape (ids=${idCount}, multiPart=${multiPart})`
     );
   }
@@ -691,6 +758,126 @@ test("ISS-5090: the schema-skew discriminator is read BEFORE the envelope/row sp
     classifyValidationFailure(1, false, undefined),
     ValidationFailureClass.Row,
     "an omitted details.reason is the older-API shape and must not change classification"
+  );
+
+  // A reason the CLOUD once emitted and this build has never known, alongside the
+  // generic placeholder above. ISS-7768 added it — an over-budget
+  // monitored-activity payload answered `validation_failed` with this
+  // `details.reason` — and ISS-8051 removed the budget that produced it, so no
+  // current server sends it. The case is kept and still earns its place: an
+  // already-deployed cloud can send it to a desktop that never heard of it, which
+  // is exactly the skew this asserts. Spelled literally rather than imported from
+  // the API package on purpose — the contract is "a reason this build does NOT
+  // know", and importing the server's constant would describe a build that knows
+  // it. (The constant no longer exists to import, which is the same point.)
+  const OVERSIZE_PAYLOAD_REASON = "monitored_activity_target_budget_exceeded";
+  assert.notEqual(
+    OVERSIZE_PAYLOAD_REASON,
+    ValidationFailureDetail.SchemaVersionInvalid,
+    "guard: if this string ever becomes a discriminator, the case below stops testing skew and must be rewritten"
+  );
+  // An over-budget batch is multi-id by construction, and Bisect is the one
+  // class that resolves an aggregate cap: halving the batch halves its
+  // distinct-target count, so bounded splitting puts every part under budget.
+  assert.equal(
+    classifyValidationFailure(4, false, OVERSIZE_PAYLOAD_REASON),
+    ValidationFailureClass.Bisect,
+    "the new server reason must fall through to the shape-derived class on a build that has never heard of it"
+  );
+});
+
+const LANE_ID = "session-lane-wide";
+
+test("ISS-8734: a compute_target_id_invalid 400 is lane-wide and dead-letters nothing", () => {
+  // The regression this exists for is created by ISS-8734's own guard. Before
+  // it, a malformed `computeTargetId` reached Prisma as a P2023 and answered
+  // 500, which `ackReasonForHttpFailure` maps to `IngestionFailed` — lane-wide,
+  // budget-neutral, self-healing. The guard answers 400 instead, which maps to
+  // `ValidationFailed` and is charged to whichever rows are in flight, so
+  // without a discriminator this input dead-letters them NON-recoverably after
+  // MAX_CONSECUTIVE_VALIDATION_FAILED attempts (`markDeadLettered` with
+  // `recoverable: false` sets a POSITIVE_INFINITY deadline that
+  // `recoverExpiredDeadLetters` never picks back up). The id is read off the
+  // relay hello ack, not minted from any row, so no row can be at fault and no
+  // retry of one can fix it.
+  for (const [idCount, multiPart] of [
+    [1, false],
+    [1, true],
+    [3, false],
+    [3, true],
+  ] as const) {
+    assert.equal(
+      classifyValidationFailure(
+        idCount,
+        multiPart,
+        ValidationFailureDetail.ComputeTargetIdInvalid
+      ),
+      ValidationFailureClass.LaneWide,
+      `a malformed computeTargetId must outrank the batch shape (ids=${idCount}, multiPart=${multiPart})`
+    );
+  }
+
+  // Drive the REAL classifier over the REAL bounded fold PAST the budget that
+  // would dead-letter it, and require that nothing is charged and nothing is
+  // dropped. Counterfactual: remove the lane-wide arm from
+  // `classifyValidationFailure` and this reddens on both assertions — the
+  // single id classifies as `Row`, burns the counter three times, and
+  // dead-letters.
+  const counter = new Map<string, number>();
+  const deadLettered: string[] = [];
+  const deps = {
+    counter,
+    recoverableDeadLetterCountFor: () => 0,
+    markForBisection: () => {
+      throw new Error("a lane-wide rejection must never bisect");
+    },
+    clearBisectionFlag: () => {
+      throw new Error(
+        "a lane-wide rejection proves nothing about which row is poison"
+      );
+    },
+    applyBoundedFold: (config: BoundedFailureFoldConfig) =>
+      applyBoundedFailureFold(config, {
+        nextRetryAfterMs: new Map<string, number>(),
+        clearFailureStateForId: (id) => counter.delete(id),
+        markDeadLettered: (id) => deadLettered.push(id),
+        dequeue: () => undefined,
+        recordOutboxRetry: () => undefined,
+        queueSizes: () => ({ incremental: 0, backfill: 0, deadLettered: 0 }),
+        logWarn: () => undefined,
+        logInfo: () => undefined,
+        formatBytes: (bytes) => `${bytes}B`,
+      }),
+    logInfo: () => undefined,
+    formatBytes: (bytes: number) => `${bytes}B`,
+  };
+
+  for (
+    let attempt = 0;
+    attempt <= MAX_CONSECUTIVE_VALIDATION_FAILED;
+    attempt++
+  ) {
+    applyValidationFailure(
+      {
+        syncMode: AgentSessionSyncMode.Backfill,
+        ids: [LANE_ID],
+        payloadBytes: 1024,
+        multiPartEnvelope: false,
+        detail: ValidationFailureDetail.ComputeTargetIdInvalid,
+      },
+      deps
+    );
+  }
+
+  assert.deepEqual(
+    deadLettered,
+    [],
+    "a lane-wide computeTargetId rejection must never dead-letter a session — the 500 it replaced self-healed"
+  );
+  assert.equal(
+    counter.get(LANE_ID),
+    undefined,
+    "no session's consecutive-rejection budget may be charged for lane state"
   );
 });
 
@@ -755,7 +942,7 @@ function captureRejectionLogs(detail: string | undefined): string[] {
 }
 
 test("ISS-5090: a malformed details.reason cannot inject control characters into the log sink", () => {
-  // wongk: a length cap is not sanitization. `details.reason` is an untrusted
+  // whitlockk: a length cap is not sanitization. `details.reason` is an untrusted
   // string from a version-skewed peer, a proxy error page, or anyone who can
   // answer the sync POST, and it is interpolated straight into the gateway
   // console sink. Drive the real classifier and inspect what reached the sink.

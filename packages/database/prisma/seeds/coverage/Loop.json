@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Retired with Loops (ISS-12435); the data step deletes its rows and the table stays only until the follow-up drop migration."
+}

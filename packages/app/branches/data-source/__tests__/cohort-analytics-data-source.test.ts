@@ -88,17 +88,18 @@ describe("HTTP Branch cohort analytics", () => {
     ).resolves.toBeNull();
   });
 
-  it.each([
-    404, 410, 501,
-  ])("degrades an explicitly unsupported peer returning HTTP %i", async (status) => {
-    const missing = createHttpBranchesDataSource({
-      get: vi.fn(),
-      post: vi.fn(() => Promise.reject(new ApiError("unsupported", status))),
-    });
-    await expect(
-      missing.cohortAnalytics?.({ branchIds: ["branch-1"] })
-    ).resolves.toBeNull();
-  });
+  it.each([404, 410, 501])(
+    "degrades an explicitly unsupported peer returning HTTP %i",
+    async (status) => {
+      const missing = createHttpBranchesDataSource({
+        get: vi.fn(),
+        post: vi.fn(() => Promise.reject(new ApiError("unsupported", status))),
+      });
+      await expect(
+        missing.cohortAnalytics?.({ branchIds: ["branch-1"] })
+      ).resolves.toBeNull();
+    }
+  );
 
   it("does not hide a current producer failure", async () => {
     const failed = new ApiError("failed", 500);

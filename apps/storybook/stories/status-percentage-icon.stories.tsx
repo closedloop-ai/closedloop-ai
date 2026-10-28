@@ -9,9 +9,9 @@ import type { ReactNode } from "react";
  * a "thinking" spinner overlay for AI/agent processing.
  */
 const meta = {
-  title: "Design System/Data Display/Status Percentage Icon",
+  title: "Composites v1.0/Feedback & Status/Status Percentage Icon",
   component: StatusPercentageIcon,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     value: { control: { type: "range", min: 0, max: 100, step: 1 } },
     size: { control: "select", options: [16, 20] },
@@ -82,6 +82,7 @@ export const EmptyVsZeroVsBacklog: Story = {
       </SixteenPxSwatch>
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /**
@@ -128,6 +129,7 @@ export const EmptyVsZeroVsBacklogInRows: Story = {
       </DenseRow>
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 export const Quarter: Story = {
@@ -167,6 +169,7 @@ export const AllIncrements: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /** Fine-grained increments of 10%. */
@@ -190,6 +193,7 @@ export const FineGrained: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /** Thinking spinner at various percentages — inner fill stays visible while outer ring spins. */
@@ -213,6 +217,7 @@ export const Thinking: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /** Side-by-side comparison: normal vs thinking at the same percentage. */
@@ -251,6 +256,7 @@ export const NormalVsThinking: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /**

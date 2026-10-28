@@ -1,11 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { accessSync, constants, statSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { BinaryResolveSource } from "../shared/cli-binary-tools.js";
+import {
+  claudeDesktopBundleRoot,
+  discoverBundledClaudeBinaries,
+} from "./claude-desktop-bundle.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -184,9 +188,9 @@ export function getShellPathSync(): string {
  * launched via pnpm.  pnpm sets `npm_config_prefix` to the project dir when
  * running scripts; nvm refuses to initialize in its presence and skips adding
  * the default node version to PATH.  Always sanitize before spawning shells
- * or Node-based CLIs (claude, codex, gh, etc.).
+ * or Node-based CLIs (claude, codex, git, etc.).
  */
-export function sanitizeSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function sanitizeSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
   delete copy.npm_config_prefix;
   delete copy.NPM_CONFIG_PREFIX;
@@ -210,7 +214,7 @@ export function extractPathFromOutput(stdout: string): string {
 
 /**
  * Build a process env with the resolved shell PATH.
- * Use this for every spawn/exec that invokes CLI tools (claude, gh, codex, etc.)
+ * Use this for every spawn/exec that invokes CLI tools (claude, codex, git, etc.)
  * which may be installed outside Electron's minimal inherited PATH.
  */
 export async function getShellEnv(
@@ -308,7 +312,7 @@ export function withShellPathEnvForTest<T>(
 }
 
 /**
- * Scan every directory in searchPath for an executable named binary.
+ * Scan every directory in searchPath for an executable FILE named binary.
  * Returns all hits (not just the first), in PATH order, deduplicated.
  */
 export async function resolveExecutablesOnPath(
@@ -327,11 +331,8 @@ export async function resolveExecutablesOnPath(
       continue;
     }
     seen.add(candidate);
-    try {
-      await access(candidate, constants.X_OK);
+    if (await isExecutableFile(candidate)) {
       hits.push(candidate);
-    } catch {
-      // not found or not executable
     }
   }
   return hits;
@@ -357,11 +358,8 @@ export function resolveExecutablesOnPathSync(
       continue;
     }
     seen.add(candidate);
-    try {
-      accessSync(candidate, constants.X_OK);
+    if (isExecutableFileSync(candidate)) {
       hits.push(candidate);
-    } catch {
-      // not found or not executable
     }
   }
   return hits;
@@ -369,7 +367,6 @@ export function resolveExecutablesOnPathSync(
 
 export type BinaryName =
   | "claude"
-  | "gh"
   | "codex"
   | "cursor"
   | "opencode"
@@ -403,13 +400,10 @@ export function isResolvedOnHost(source: BinaryResolveSource): boolean {
  * installer drops `claude` at `~/.claude/local/claude`, which many rc files do
  * not export — so we probe these known paths directly.
  *
- * Canonical source of truth: `health-check.ts` re-exports these for its
- * diagnostics sweep so the two never drift.
- *
  * `~` is expanded to the user's home dir (see `expandTildes`). Order is
  * preference order; the first executable hit wins.
  */
-export const KNOWN_BINARY_LOCATIONS: Partial<Record<BinaryName, string[]>> = {
+const KNOWN_BINARY_LOCATIONS: Partial<Record<BinaryName, string[]>> = {
   claude: [
     "~/.claude/local/claude", // Anthropic native installer default
     "/opt/homebrew/bin/claude", // Apple Silicon Homebrew
@@ -420,7 +414,6 @@ export const KNOWN_BINARY_LOCATIONS: Partial<Record<BinaryName, string[]>> = {
     "/snap/bin/claude", // Linux snap
   ],
   git: ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"],
-  gh: ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "~/.local/bin/gh"],
   codex: [
     "~/.volta/bin/codex",
     "/opt/homebrew/bin/codex",
@@ -455,39 +448,85 @@ export function _setKnownBinaryLocationsForResolverTest(
   knownLocationsOverrideForTest = override;
 }
 
-function knownLocationsFor(logicalName: BinaryName): string[] {
-  const source = knownLocationsOverrideForTest ?? KNOWN_BINARY_LOCATIONS;
-  return source[logicalName] ?? [];
+/**
+ * Every install location known for `logicalName` on this host: the static list
+ * first, then anything a dynamic probe discovers, so a user's own install beats
+ * an application-managed copy.
+ */
+function knownInstallLocations(logicalName: BinaryName): string[] {
+  return [
+    ...(KNOWN_BINARY_LOCATIONS[logicalName] ?? []),
+    ...dynamicLocationsFor(logicalName),
+  ];
+}
+
+function dynamicLocationsFor(logicalName: BinaryName): string[] {
+  return DYNAMIC_KNOWN_LOCATION_PROBES[logicalName]?.() ?? [];
+}
+
+function knownLocationsForResolver(logicalName: BinaryName): string[] {
+  if (knownLocationsOverrideForTest !== null) {
+    return [
+      ...(knownLocationsOverrideForTest[logicalName] ?? []),
+      ...dynamicLocationsFor(logicalName),
+    ];
+  }
+  return knownInstallLocations(logicalName);
+}
+
+/**
+ * The `isFile()` half is load-bearing: a macOS `.app` is a bundle DIRECTORY and
+ * the executable bit on a directory means "searchable", so `X_OK` alone passes
+ * on `claude.app` and the resolver would report a directory as a resolved
+ * binary that only fails later at spawn (ISS-7203).
+ */
+async function isExecutableFile(candidate: string): Promise<boolean> {
+  try {
+    const stats = await stat(candidate);
+    if (!stats.isFile()) {
+      return false;
+    }
+    await access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isExecutableFileSync(candidate: string): boolean {
+  try {
+    if (!statSync(candidate).isFile()) {
+      return false;
+    }
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Probe the known install locations for `logicalName` and return the first
- * path that exists and is executable (`X_OK`), or null. Tildes are expanded
- * to the user's home dir.
+ * path that is an executable regular file, or null. Tildes are expanded to the
+ * user's home dir.
  */
 async function resolveFromKnownLocations(
   logicalName: BinaryName
 ): Promise<string | null> {
-  for (const loc of knownLocationsFor(logicalName)) {
+  for (const loc of knownLocationsForResolver(logicalName)) {
     const candidate = expandTildes(loc);
-    try {
-      await access(candidate, constants.X_OK);
+    if (await isExecutableFile(candidate)) {
       return candidate;
-    } catch {
-      // does not exist or not executable — try next
     }
   }
   return null;
 }
 
 function resolveFromKnownLocationsSync(logicalName: BinaryName): string | null {
-  for (const loc of knownLocationsFor(logicalName)) {
+  for (const loc of knownLocationsForResolver(logicalName)) {
     const candidate = expandTildes(loc);
-    try {
-      accessSync(candidate, constants.X_OK);
+    if (isExecutableFileSync(candidate)) {
       return candidate;
-    } catch {
-      // does not exist or not executable — try next
     }
   }
   return null;
@@ -602,3 +641,58 @@ async function resolveIntoShellPathCache(
     }
   }
 }
+
+type ClaudeDesktopHost = { platform: NodeJS.Platform; homeDir: string };
+
+let claudeDesktopHostOverrideForTest: ClaudeDesktopHost | null = null;
+
+/**
+ * @internal Test-only. Substitutes the two HOST INPUTS the probe reads —
+ * platform and home dir — rather than the already-resolved root, so a test
+ * still executes the production `claudeDesktopBundleRoot` call below instead
+ * of bypassing it. Overriding the root directly left that call unexecuted by
+ * every test, which let the entire macOS path be replaced with `null` and the
+ * suite stay green (ISS-7203 review). `null` restores production.
+ *
+ * Separate from `_setKnownBinaryLocationsForResolverTest`: that hook pins the
+ * STATIC list, and this one opts the dynamic probe back in.
+ */
+export function _setClaudeDesktopHostForTest(
+  host: ClaudeDesktopHost | null
+): void {
+  claudeDesktopHostOverrideForTest = host;
+}
+
+function claudeDesktopProbeRoot(): string | null {
+  // Once a test has pinned the location set, the host's own Claude Desktop
+  // install must not leak back in and turn an asserted `fallback` into a
+  // `known_location` on that one machine. Injecting a host is an explicit
+  // request for the probe, so it opts back out of that suppression.
+  if (
+    knownLocationsOverrideForTest !== null &&
+    claudeDesktopHostOverrideForTest === null
+  ) {
+    return null;
+  }
+  const { platform, homeDir } = claudeDesktopHostOverrideForTest ?? {
+    platform: process.platform,
+    homeDir: os.homedir(),
+  };
+  return claudeDesktopBundleRoot(platform, homeDir);
+}
+
+function bundledClaudeLocations(): string[] {
+  const root = claudeDesktopProbeRoot();
+  if (root === null) {
+    return [];
+  }
+  return discoverBundledClaudeBinaries(root);
+}
+
+/** Candidates whose path carries a version segment, so no literal can express
+ * them. Probed after the static `KNOWN_BINARY_LOCATIONS` entries. ISS-7203. */
+const DYNAMIC_KNOWN_LOCATION_PROBES: Partial<
+  Record<BinaryName, () => string[]>
+> = {
+  claude: bundledClaudeLocations,
+};

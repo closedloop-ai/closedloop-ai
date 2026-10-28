@@ -1,7 +1,12 @@
+import { Result, Status } from "@repo/api/src/types/result";
 import { exportDocAsMarkdown, getDocName } from "@repo/google";
 import { log } from "@repo/observability/log";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/documents/[id]/context-attachments/gdrive/route";
+import {
+  ContextDocumentErrorCode,
+  contextDocumentService,
+} from "@/app/documents/context-document-service";
 import { documentService } from "@/app/documents/document-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
@@ -14,7 +19,7 @@ import {
 // ---------------------------------------------------------------------------
 // The gdrive context-attachment route is the sibling of
 // `googleService.importDocs`: same `getDocName` / `exportDocAsMarkdown` /
-// `documentService.create` failure modes, but its per-doc failure text goes
+// context-document create failure modes, but its per-doc failure text goes
 // into the RESPONSE BODY rather than the log drain. googleapis quotes the
 // offending credential bare in its error text, so returning `error.message`
 // verbatim ships a live `ya29.` access token to the browser.
@@ -48,15 +53,14 @@ vi.mock("@repo/google", () => ({
 vi.mock("@/app/documents/document-service", () => ({
   documentService: {
     findById: vi.fn(),
-    create: vi.fn(),
-    delete: vi.fn(),
   },
 }));
 
-vi.mock("@/app/artifact-links/service", () => ({
-  artifactLinksService: {
-    createLink: vi.fn(),
-  },
+vi.mock("@/app/documents/context-document-service", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/app/documents/context-document-service")
+  >()),
+  contextDocumentService: { createWithContent: vi.fn() },
 }));
 
 // Keep the REAL `sanitizeErrorForClient` — it is the unit under test here.
@@ -157,19 +161,12 @@ describe("POST /documents/:id/context-attachments/gdrive — client error saniti
     });
   });
 
-  it("sanitizes a failure thrown by the artifact-link step, not just the Google calls", async () => {
+  it("sanitizes a failure thrown by the create-and-link step, not just the Google calls", async () => {
     vi.mocked(getDocName).mockResolvedValue("Quarterly Plan" as never);
     vi.mocked(exportDocAsMarkdown).mockResolvedValue("# body" as never);
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-new",
-    } as never);
-    const { artifactLinksService } = await import(
-      "@/app/artifact-links/service"
-    );
-    vi.mocked(artifactLinksService.createLink).mockRejectedValue(
+    vi.mocked(contextDocumentService.createWithContent).mockRejectedValue(
       new Error(`link failed: File not found for ${LIVE_ACCESS_TOKEN}`)
     );
-    vi.mocked(documentService.delete).mockResolvedValue(undefined as never);
 
     const { status, json, body } = await postGdriveImport();
 
@@ -178,11 +175,27 @@ describe("POST /documents/:id/context-attachments/gdrive — client error saniti
     expect(json.data).toEqual({
       results: [{ docId: "doc-1", error: "Document not found" }],
     });
-    // The orphaned artifact is still cleaned up on the failure path.
-    expect(documentService.delete).toHaveBeenCalledWith(
-      "artifact-new",
-      mockAuthContext.user.organizationId
+  });
+
+  // ISS-7536 / ISS-12552: a refused link rolls back the document's own
+  // transaction, so nothing is left to clean up; the document still reports
+  // the generic failure.
+  it("reports the generic failure when the link is refused as a Result", async () => {
+    vi.mocked(getDocName).mockResolvedValue("Quarterly Plan" as never);
+    vi.mocked(exportDocAsMarkdown).mockResolvedValue("# body" as never);
+    vi.mocked(contextDocumentService.createWithContent).mockResolvedValue(
+      Result.err({
+        code: ContextDocumentErrorCode.LinkRejected,
+        cause: Status.Conflict,
+      })
     );
+
+    const { status, json } = await postGdriveImport();
+
+    expect(status).toBe(200);
+    expect(json.data).toEqual({
+      results: [{ docId: "doc-1", error: "Failed to import document" }],
+    });
   });
 
   it("logs the raw failure server-side while the response stays sanitized", async () => {
@@ -246,20 +259,15 @@ describe("POST /documents/:id/context-attachments/gdrive — content byte cap", 
   it("truncates stored content on a UTF-8 byte boundary, not a code-unit count", async () => {
     vi.mocked(getDocName).mockResolvedValue("Quarterly Plan" as never);
     vi.mocked(exportDocAsMarkdown).mockResolvedValue(MULTIBYTE_DOC as never);
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-new",
-    } as never);
-    const { artifactLinksService } = await import(
-      "@/app/artifact-links/service"
-    );
-    vi.mocked(artifactLinksService.createLink).mockResolvedValue(
-      undefined as never
+    vi.mocked(contextDocumentService.createWithContent).mockResolvedValue(
+      Result.ok({ artifactId: "artifact-new" })
     );
 
     const { status } = await postGdriveImport();
 
     expect(status).toBe(200);
-    const createArgs = vi.mocked(documentService.create).mock.calls[0]?.[2];
+    const createArgs = vi.mocked(contextDocumentService.createWithContent).mock
+      .calls[0]?.[0];
     const content = createArgs?.content ?? "";
     expect(Buffer.byteLength(content, "utf8")).toBe(EXPECTED_CHARACTERS * 3);
     expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(
@@ -275,14 +283,8 @@ describe("POST /documents/:id/context-attachments/gdrive — content byte cap", 
     });
     vi.mocked(getDocName).mockResolvedValue("Quarterly Plan" as never);
     vi.mocked(exportDocAsMarkdown).mockResolvedValue(MULTIBYTE_DOC as never);
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-new",
-    } as never);
-    const { artifactLinksService } = await import(
-      "@/app/artifact-links/service"
-    );
-    vi.mocked(artifactLinksService.createLink).mockResolvedValue(
-      undefined as never
+    vi.mocked(contextDocumentService.createWithContent).mockResolvedValue(
+      Result.ok({ artifactId: "artifact-new" })
     );
 
     await postGdriveImport();
@@ -322,19 +324,12 @@ describe("POST /documents/:id/context-attachments/gdrive — bounding concurrent
       accessToken: LIVE_ACCESS_TOKEN,
     } as never);
     vi.mocked(getDocName).mockResolvedValue("Quarterly Plan" as never);
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-new",
-    } as never);
+    vi.mocked(contextDocumentService.createWithContent).mockResolvedValue(
+      Result.ok({ artifactId: "artifact-new" })
+    );
   });
 
   it("never lets more document imports run at once than the fan-out bound", async () => {
-    const { artifactLinksService } = await import(
-      "@/app/artifact-links/service"
-    );
-    vi.mocked(artifactLinksService.createLink).mockResolvedValue(
-      undefined as never
-    );
-
     let inFlight = 0;
     let peakInFlight = 0;
     vi.mocked(exportDocAsMarkdown).mockImplementation((async () => {
@@ -364,6 +359,8 @@ describe("POST /documents/:id/context-attachments/gdrive — bounding concurrent
     // at all, so it would stay green against a limiter of 1 — or against a
     // broken harness that serialized the work and proved nothing about it.
     expect(peakInFlight).toBe(DB_FANOUT_MAX_CONCURRENCY);
-    expect(documentService.create).toHaveBeenCalledTimes(MAX_DOC_IDS);
+    expect(contextDocumentService.createWithContent).toHaveBeenCalledTimes(
+      MAX_DOC_IDS
+    );
   });
 });

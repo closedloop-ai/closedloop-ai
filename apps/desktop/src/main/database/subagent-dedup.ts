@@ -10,8 +10,7 @@
  * those fields the fallback row is a byte-identical twin, so the write path
  * retires it using the exact-spawn correlation built here.
  *
- * Extracted from `write-core.ts`, which is on the `biome.jsonc` shrink-only
- * grandfather list.
+ * Extracted from `write-core.ts` so that file shrinks rather than grows.
  */
 import type {
   NormalizedSession,
@@ -84,7 +83,7 @@ export type SubagentDedupIndex = {
  * both for that reason; walking only the session's would leave those spawn tool
  * uses unreachable, which in turn leaves `subagentRowSpan` unable to repair the
  * child's degenerate span and persists it as a 0-second delegation. In the
- * golden corpus that is 16 of 68 subagents, all in dossier f216298d.
+ * golden corpus that is 16 of 68 subagents, all in dossier 3870c244.
  *
  * The two-key registration is COLLISION-AWARE (ISS-5105 review). One id can be
  * tool A's `providerToolUseId` and tool B's transcript `id` — corrupt input, but

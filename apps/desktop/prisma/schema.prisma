@@ -19,7 +19,8 @@ generator client {
   output              = "../src/main/database/generated"
   importFileExtension = "js"
   moduleFormat        = "esm"
-  // Partial indexes shipped in 7.4 but remain preview-gated as of 7.8.
+  // Partial indexes shipped in 7.4 and remain preview-gated as of 7.10.0
+  // (basis: `prisma validate` reports no graduation warning for the flag).
   previewFeatures     = ["partialIndexes"]
 }
 
@@ -31,9 +32,21 @@ datasource db {
 }
 
 model Session {
-  id                 String  @id
-  name               String?
-  status             String  @default("running")
+  id                          String    @id
+  name                        String?
+  // ISS-8717: the owner's chosen session name, carried to the cloud alongside
+  // the collected `name`. The importer rewrites `name` from the transcript on
+  // every re-import (`COALESCE($1, name)`, fresh-wins), so a rename kept there
+  // would not survive; nothing in the import path writes this column, which is
+  // what makes it survive. NULL means "no rename".
+  nameOverride                String?   @map("name_override")
+  // ISS-10332: the user-set priority. Written only by the local-mode priority
+  // write, never by an import path; NULL means "no priority".
+  priority                    Priority?
+  // ISS-10332: 1 while `priority` still has to reach the cloud; set by the
+  // local priority write, reset by the sync ack that confirmed the value.
+  priorityUploadPending       Int       @default(0) @map("priority_upload_pending")
+  status                      String    @default("running")
   // ISS-4586: whether the run ended on an unrecovered error (the parser's
   // `endedOnUnrecoveredError`), persisted at import for every row — live rows
   // included — and refreshed on each re-import. When the session is declared
@@ -42,30 +55,53 @@ model Session {
   // re-parsing the transcript. Nullable Int (SQLite boolean): NULL means a legacy
   // pre-column row not yet re-imported since the migration (the backfill set it
   // for terminal rows; a NULL row is treated as not-error → `inactive`).
-  endsWithError      Int?    @map("ends_with_error")
-  cwd                String?
+  endsWithError               Int?      @map("ends_with_error")
+  cwd                         String?
   // FEA-3555: durable cache of the last successfully live-resolved repo full
   // name (org/repo) for this session's worktree. Written back only from a
   // successful live git remote resolution, read as a fallback when the live
   // lookup fails (worktree deleted) so old sessions keep repo/diff/lines
   // attribution. Never authored from anything but a real live resolution.
-  repoFullName       String? @map("repo_full_name")
-  model              String?
-  startedAt          String? @map("started_at")
-  updatedAt          String? @map("updated_at")
-  endedAt            String? @map("ended_at")
-  awaitingInputSince String? @map("awaiting_input_since")
-  metadata           String?
-  harness            String?
-  billingMode        String? @map("billing_mode")
-  userId             String? @map("user_id")
-  organizationId     String? @map("organization_id")
-  tracePhaseSources  Json?   @map("trace_phase_sources")
-  throttleSources    Json?   @map("throttle_sources")
-  correctionSources  Json?   @map("correction_sources")
-  costUsdEstimated   Float?  @map("cost_usd_estimated")
-  costCurrency       String? @map("cost_currency")
-  costSource         String? @map("cost_source")
+  repoFullName                String?   @map("repo_full_name")
+  model                       String?
+  startedAt                   String?   @map("started_at")
+  // ISS-12251: canonical ISO UTC of the transcript file's birth time, else
+  // `started_at`. Written only by the import (fill-or-min); NULL until then.
+  createdAt                   String?   @map("created_at")
+  updatedAt                   String?   @map("updated_at")
+  endedAt                     String?   @map("ended_at")
+  awaitingInputSince          String?   @map("awaiting_input_since")
+  metadata                    String?
+  harness                     String?
+  billingMode                 String?   @map("billing_mode")
+  userId                      String?   @map("user_id")
+  organizationId              String?   @map("organization_id")
+  costUsdEstimated            Float?    @map("cost_usd_estimated")
+  costCurrency                String?   @map("cost_currency")
+  costSource                  String?   @map("cost_source")
+  // ISS-7229: CLAUDE'S OWN reported cost for this session, rolled up from the
+  // `claude_code_cost_event` rows Claude Code exports over OTel. NOT a second
+  // opinion of `cost_usd_estimated` and never a substitute for it: different
+  // producer, different pricing engine, and the two are the OPERANDS of the
+  // estimator-drift delta, so summing or coalescing them blends two accounting
+  // systems.
+  //
+  // Declared `Decimal` to match the column it sums
+  // (`claude_code_cost_event.cost_usd`) and the `Decimal(14,6)` cloud column it
+  // syncs to. It does NOT make the local arithmetic exact: SQLite gives a
+  // DECIMAL column NUMERIC affinity, so both this and its source land as
+  // 8-byte floats.
+  //
+  // NULLABLE WITH NO DEFAULT, deliberately. `null` means "no cost events were
+  // captured for this session", which is the majority of rows: capture is gated
+  // on the `claudeCodeOtelCapture` Labs setting and only reaches sessions whose
+  // Claude process was pointed at the local receiver. A `0` here is a REPORTED
+  // zero and a real measurement, so no reader may treat null and 0 alike.
+  //
+  // SQL's own `SUM` is what keeps them apart: NULL over an empty set, 0 over
+  // rows that really total zero. The rollup therefore uses a BARE `SUM`, and
+  // `COALESCE(SUM(...), 0)` is the bug rather than the fix.
+  authoritativeCostUsd        Decimal?  @map("authoritative_cost_usd")
   // FEA-4022 (PLN-1481, follow-on to FEA-3928): raw, UNBOUNDED additive
   // frustration signal computed locally by the desktop scorer
   // (src/shared/frustration-score.ts) at sync-source assembly. Stored raw — NOT
@@ -76,9 +112,28 @@ model Session {
   // unscored/legacy row is NULL ("not computed"). Whether the value is persisted
   // to the cloud SessionDetail (and surfaced in Insights) is gated by the org's
   // `calculateSessionFrustration` setting at cloud ingest.
-  frustrationRaw          Int? @map("frustration_raw")
-  frustrationScoreVersion Int? @map("frustration_score_version")
-  dataRevision       Int     @default(1) @map("data_revision")
+  frustrationRaw              Int?      @map("frustration_raw")
+  frustrationScoreVersion     Int?      @map("frustration_score_version")
+  dataRevision                Int       @default(1) @map("data_revision")
+  // ISS-8741: the schema-evolution substrate's two markers. A SEPARATE axis from
+  // `data_revision`, which records which derivation semantics wrote the rows that
+  // are here but cannot say whether the projection they form ever satisfied the
+  // view that consumes it, nor tell a projection that stands because it is good
+  // from one that stands because a replacement was interrupted.
+  //
+  // `projection_known_good_revision` is the formatted source revision (see
+  // src/main/database/derived-projection-revision.ts) of the last projection that
+  // passed its target views' own validators and committed. NULL is a legacy row:
+  // it predates the gate, so nothing has validated it and no reader may credit it
+  // as though something had.
+  //
+  // `projection_candidate_revision` is claimed in its own transaction BEFORE a
+  // replacement is built and cleared when one commits or is abandoned. Non-NULL on
+  // a later read means a replacement was in flight and did not land — the standing
+  // projection is still the known-good one. Both nullable, no default, never
+  // synced: they describe a LOCAL derived copy and cross no wire.
+  projectionKnownGoodRevision String?   @map("projection_known_good_revision")
+  projectionCandidateRevision String?   @map("projection_candidate_revision")
   // Perf: denormalized session "last activity" sort key for the Sessions-list
   // cursor pagination — COALESCE(MAX(events.created_at), started_at floor),
   // maintained at ingest. NOT NULL with the epoch floor default so the read path
@@ -86,23 +141,40 @@ model Session {
   // omit it and rely on a same-transaction recomputeSessionLastActivityAt. See
   // migration 0005_session_last_activity_at and listSqliteSessionCursorPage in
   // sqlite.ts.
-  lastActivityAt     String  @default("1970-01-01T00:00:00.000Z") @map("last_activity_at")
+  lastActivityAt              String    @default("1970-01-01T00:00:00.000Z") @map("last_activity_at")
 
-  agents                  Agent[]
-  artifactLinks           SessionArtifactLink[]
-  artifactLinkBackfillSeen ArtifactLinkBackfillSeen?
+  agents                      Agent[]
+  artifactLinks               SessionArtifactLink[]
+  artifactLinkBackfillSeen    ArtifactLinkBackfillSeen?
+  componentUsageResyncSeen    ComponentUsageResyncSeen?
+  authoritativeCostResyncSeen AuthoritativeCostResyncSeen?
+  activityTilingRepairOwed    ActivityTilingRepairOwed?
   activitySegmentBackfillSeen ActivitySegmentBackfillSeen?
-  codexTraceSpans         CodexTraceSpan[]
-  componentInvocations    AgentComponentInvocation[]
+  viewership                  SessionViewership?
+  listTraceProjection         SessionListTraceProjection?
+  codexTraceSpans             CodexTraceSpan[]
+  componentInvocations        AgentComponentInvocation[]
+  operationClaims             SessionOperationClaim?
 
   @@index([startedAt(sort: Desc)], map: "idx_sessions_started_at")
   @@index([status, startedAt(sort: Desc)], map: "idx_sessions_status_started_at")
-  // FEA-4142: covering index for the Agents sidebar activity badge count
-  // (`SELECT COUNT(*) FROM sessions WHERE status=? AND ended_at >= ?`). Partial
-  // on the non-null completion timestamp — a still-running session can never
-  // match the `ended_at >= completedAfter` bound — keeping it small.
+  // FEA-4142: added for the Agents sidebar activity badge count. Partial on the
+  // non-null completion timestamp — a still-running session can never match the
+  // `ended_at >= completedAfter` bound — keeping it small.
+  //
+  // ISS-6787: it does NOT cover that count. The badge's predicate compares
+  // `lower(s.status)` and `julianday(s.ended_at)`, not the bare columns, so both
+  // indexed columns reach the planner wrapped in a function and neither is
+  // seekable — see `countSqliteSessionsForFilters` in
+  // src/main/database/session-aggregate-filters.ts. Migration 0039 records the
+  // original claim and stays as written (applied migrations are immutable).
   @@index([status, endedAt], map: "idx_sessions_status_ended_at", where: raw("ended_at IS NOT NULL"))
   @@index([userId], map: "idx_sessions_user_id", where: raw("user_id IS NOT NULL"))
+  // ISS-12439: back the Sessions list's Harness, Model and Priority facets. See
+  // migration 20261013014500_iss12439_sessions_list_facet_indexes.
+  @@index([harness], map: "idx_sessions_harness")
+  @@index([model], map: "idx_sessions_model")
+  @@index([priority], map: "idx_sessions_priority")
   // ISS-6168: covering index for the boot-time owner claim's "is there anything
   // left to claim?" probe. Every other user_id index is partial on the OPPOSITE
   // predicate, so the probe and its UPDATE full-scanned `sessions` on every
@@ -120,6 +192,10 @@ model Session {
   @@index([cwd], map: "idx_sessions_cwd", where: raw("cwd IS NOT NULL"))
   // Perf: index backing the Sessions-list last-activity cursor sort + tie-break.
   @@index([lastActivityAt(sort: Desc), id(sort: Desc)], map: "idx_sessions_last_activity")
+  // ISS-9584: backs the last-activity sort's tie narrowing (start time DESC,
+  // then id DESC, as the cloud). See migration
+  // 20260926091934_iss9584_sessions_last_activity_started_index.
+  @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "idx_sessions_last_activity_started")
   // ISS-5336: covering index for the ISS-5103 import-health probe's 5-minute
   // sentinel sample (`listImportPendingSessionIds`). Partial on the
   // DATA_REVISION_IMPORT_PENDING sentinel itself — no real revision is ever
@@ -128,6 +204,16 @@ model Session {
   // `id` alone because `data_revision` is constant across every row it can hold,
   // so it covers the select and the sort. See migration 0051.
   @@index([id], map: "idx_sessions_data_revision_pending", where: raw("data_revision = -1"))
+  // ISS-8741: the seam ISS-8742's resumable reparse worker reads. It has NO
+  // reader today — recovery from an interrupted replacement rides the stale
+  // `data_revision` exactly as it did before, and the marker adds only WHICH
+  // revision was attempted and did not land. Partial on the marker itself, so it
+  // is EMPTY on an install with no replacement in flight and a scan costs
+  // O(interrupted) instead of full-scanning the session row (metadata overflow
+  // pages included) — the same shape, and for the same reason, as
+  // idx_sessions_data_revision_pending above. Keyed on `id` alone because that is
+  // all a sweep needs to re-drive a claim. See migration 0075.
+  @@index([id], map: "idx_sessions_projection_candidate", where: raw("projection_candidate_revision IS NOT NULL"))
   // ISS-6105: covering index for the two sync-cursor reads, which sort on the
   // FEA-1962 `updated_at` watermark and had no index at all — so every sync tick
   // full-scanned `sessions` (metadata overflow pages included) and sorted the
@@ -153,7 +239,7 @@ model Agent {
   parentAgentId      String? @map("parent_agent_id")
   metadata           String?
 
-  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  session                    Session                    @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   componentInvocations       AgentComponentInvocation[] @relation("InvocationAgent")
   parentComponentInvocations AgentComponentInvocation[] @relation("InvocationParentAgent")
 
@@ -182,6 +268,7 @@ model Event {
   gitBranch String? @map("git_branch")
 
   @@index([sessionId], map: "idx_events_session_id")
+  @@index([sessionId, createdAt, id], map: "idx_events_session_created_id")
   @@index([agentId], map: "idx_events_agent_id")
   @@index([createdAt], map: "idx_events_created_at")
   @@index([toolName], map: "idx_events_tool_name", where: raw("tool_name IS NOT NULL"))
@@ -224,7 +311,7 @@ model SessionAnalytics {
   outputTokens     Int     @default(0) @map("output_tokens")
   cacheReadTokens  Int     @default(0) @map("cache_read_tokens")
   cacheWriteTokens Int     @default(0) @map("cache_write_tokens")
-  estCost          Float   @default(0) @map("est_cost")
+  estCost          Float?  @map("est_cost")
   runtimeMs        Int?    @map("runtime_ms")
   updatedAt        String? @map("updated_at")
 
@@ -240,11 +327,15 @@ model SessionAnalytics {
 /// confidence spend distribution are stored per session so per-cohort metrics are
 /// a cheap GROUP BY (the FEA-2038 metadata-only-aggregate invariant), making weak
 /// cohorts visible as the ongoing iteration target. Cohort keys mirror
-/// `session_analytics` (harness/turns/runtime) + `sessions` identity; `version`
-/// is the segments' ACTIVITY_CLASSIFIER_VERSION so a classifier bump re-derives —
-/// inline on a fresh import, or via the version-aware boot backfill for rows the
-/// separate segment re-tile pathway leaves behind. Purged with the session in the
-/// manual-delete + retention-sweep paths (no-FK derived rollup).
+/// `session_analytics` (harness/turns/runtime) + `sessions` identity. TWO
+/// independent version stamps drive re-derivation, because two independent things
+/// can invalidate a row: `version` is the segments' ACTIVITY_CLASSIFIER_VERSION
+/// (a classifier bump re-tiles the inputs) and `metricVersion` is the module's
+/// ATTRIBUTION_METRIC_VERSION (a Coverage-formula bump changes the math over
+/// unchanged inputs — ISS-6759). Either trailing its current value re-derives the
+/// row — inline on a fresh import, or via the version-aware boot backfill for rows
+/// the separate segment re-tile / formula-bump pathways leave behind. Purged with
+/// the session in the manual-delete + retention-sweep paths (no-FK derived rollup).
 model SessionActivityMetrics {
   sessionId           String  @id @map("session_id")
   // Cohort keys (PLN-1196 §6 minimum set), derived from the materialized
@@ -253,6 +344,18 @@ model SessionActivityMetrics {
   autonomyBand        String  @map("autonomy_band")
   closedloopUser      Int     @default(0) @map("closedloop_user")
   lengthBand          String  @map("length_band")
+  // ISS-6760: STORAGE-ONLY, and NOT a cohort/group-by axis — despite sitting
+  // among the cohort keys above. It mirrors `session_analytics.started_day`,
+  // which FEA-2430 declared a stored UTC day with zero DISPLAY readers ("any
+  // future DISPLAY read must re-bucket ... never read this column" —
+  // session-analytics-rollup.ts). Every other desktop Insights day series
+  // buckets in the user's LOCAL calendar (the timezone contract in
+  // local-insights.ts, via `localDay()` in db-helpers.ts), so grouping coverage
+  // by this column would put non-UTC users' activity on the wrong day — the
+  // exact miss FEA-2999 had to correct in optimization-analytics-queries.ts. A
+  // coverage-over-time read therefore joins `sessions` and buckets with
+  // `localDay(s.started_at)`. The matching index was dropped in 0059 precisely
+  // so nothing here reads as an endorsement of a UTC group-by axis.
   startedDay          String? @map("started_day")
   // Coverage (exact micro-cent ratio from the FEA-2266 module) + its re-aggregation
   // inputs, so per-cohort coverage is SUM(covered)/SUM(total) at read time.
@@ -268,37 +371,18 @@ model SessionActivityMetrics {
   segmentCount        Int     @default(0) @map("segment_count")
   coveredSegmentCount Int     @default(0) @map("covered_segment_count")
   version             Int
+  // ISS-6759: the ATTRIBUTION_METRIC_VERSION the Coverage numbers above were
+  // computed under, kept separate from `version` (the segment classifier) because
+  // a formula change moves neither side of the classifier comparison. Every write
+  // path supplies it explicitly; the default mirrors migration 0059's DEFAULT 1
+  // (every row predating that migration was computed under formula version 1) and
+  // errs LOW by construction — an under-stamped row is re-derived, never trusted.
+  metricVersion       Int     @default(1) @map("metric_version")
   updatedAt           String? @map("updated_at")
 
   @@index([harness], map: "idx_session_activity_metrics_harness")
-  @@index([startedDay], map: "idx_session_activity_metrics_started_day")
+  // ISS-6760: no index on `startedDay` — see the contract on the field above.
   @@map("session_activity_metrics")
-}
-
-/// FEA-2038: per-(session, tool) invocation rollup for the byTool / toolsOverTime
-/// insights — computed at ingest so those reads never scan the events corpus.
-///
-/// ISS-5493: that promise is NOT kept — this table has NO production reader.
-/// It is written on every ingest, backfilled, and purged on retention, while
-/// `byTool` (sync-source.ts) and `toolRunsOverTime` (local-insights.ts) both
-/// still scan `events`. Adopting it needs a freshness mechanism FIRST: the
-/// rollup is refreshed only at import, boot-backfill, and the targeted heals,
-/// and the backfill anti-joins sessions MISSING a row rather than refreshing
-/// stale ones — so a hook-ingested session (Claude runs in "hooks" collection
-/// mode, where FEA-1839 starts no live watcher) is invisible here until the
-/// next boot, and a rollup-sourced read would report 0 for it. Until that is
-/// resolved the choice is to make the rollup fresh or to drop the table; do not
-/// point a display read at it in the meantime.
-model SessionToolAnalytics {
-  sessionId   String  @map("session_id")
-  toolName    String  @map("tool_name")
-  invocations Int     @default(0)
-  startedDay  String? @map("started_day")
-
-  @@id([sessionId, toolName])
-  @@index([toolName], map: "idx_session_tool_analytics_tool")
-  @@index([startedDay], map: "idx_session_tool_analytics_day")
-  @@map("session_tool_analytics")
 }
 
 /// FEA-3132: per-(session, message-timestamp, turn_kind) rollup for the Insights
@@ -319,35 +403,35 @@ model SessionTurnBucket {
 }
 
 model TokenUsage {
-  sessionId            String  @map("session_id")
-  model                String
-  inputTokens          BigInt  @default(0) @map("input_tokens")
-  outputTokens         BigInt  @default(0) @map("output_tokens")
-  cacheReadTokens      BigInt  @default(0) @map("cache_read_tokens")
-  cacheWriteTokens     BigInt  @default(0) @map("cache_write_tokens")
+  sessionId          String  @map("session_id")
+  model              String
+  inputTokens        BigInt  @default(0) @map("input_tokens")
+  outputTokens       BigInt  @default(0) @map("output_tokens")
+  cacheReadTokens    BigInt  @default(0) @map("cache_read_tokens")
+  cacheWriteTokens   BigInt  @default(0) @map("cache_write_tokens")
   // FEA-3419: cache-write TTL subdivision. NULL = breakdown never reported
   // (absent provenance); the pair is always set together.
-  cacheWrite5mTokens   BigInt? @map("cache_write_5m_tokens")
-  cacheWrite1hTokens   BigInt? @map("cache_write_1h_tokens")
-  rawInput             BigInt  @default(0) @map("raw_input")
-  rawOutput            BigInt  @default(0) @map("raw_output")
-  rawCacheRead         BigInt  @default(0) @map("raw_cache_read")
-  rawCacheWrite        BigInt  @default(0) @map("raw_cache_write")
-  baselineInput        BigInt  @default(0) @map("baseline_input")
-  baselineOutput       BigInt  @default(0) @map("baseline_output")
-  baselineCacheRead    BigInt  @default(0) @map("baseline_cache_read")
-  baselineCacheWrite   BigInt  @default(0) @map("baseline_cache_write")
-  usageSource          String  @default("jsonl_parser") @map("usage_source")
-  revisionId           Int     @default(4) @map("revision_id")
-  createdAt            String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
-  updatedAt            String? @map("updated_at")
-  costUsdEstimated     Float?  @map("cost_usd_estimated")
-  costCurrency         String? @map("cost_currency")
-  costSource           String? @map("cost_source")
-  costObservedAt       String? @map("cost_observed_at")
+  cacheWrite5mTokens BigInt? @map("cache_write_5m_tokens")
+  cacheWrite1hTokens BigInt? @map("cache_write_1h_tokens")
+  rawInput           BigInt  @default(0) @map("raw_input")
+  rawOutput          BigInt  @default(0) @map("raw_output")
+  rawCacheRead       BigInt  @default(0) @map("raw_cache_read")
+  rawCacheWrite      BigInt  @default(0) @map("raw_cache_write")
+  baselineInput      BigInt  @default(0) @map("baseline_input")
+  baselineOutput     BigInt  @default(0) @map("baseline_output")
+  baselineCacheRead  BigInt  @default(0) @map("baseline_cache_read")
+  baselineCacheWrite BigInt  @default(0) @map("baseline_cache_write")
+  usageSource        String  @default("jsonl_parser") @map("usage_source")
+  revisionId         Int     @default(4) @map("revision_id")
+  createdAt          String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt          String? @map("updated_at")
+  costUsdEstimated   Float?  @map("cost_usd_estimated")
+  costCurrency       String? @map("cost_currency")
+  costSource         String? @map("cost_source")
+  costObservedAt     String? @map("cost_observed_at")
   // FEA-2085: true when `model` is a fallback placeholder (e.g. Codex's
   // gpt-5-codex default) rather than an id extracted from the transcript.
-  inferred             Boolean @default(false)
+  inferred           Boolean @default(false)
 
   // NOTE: token_usage.session_id has no DB foreign key in the legacy DDL (a
   // plain session_id column, like events), so NO Prisma `@relation` is modeled
@@ -394,31 +478,72 @@ model CodexTraceSpan {
 }
 
 model ClaudeCodeCostEvent {
-  id           String  @id
-  sessionId    String  @map("session_id")
-  model        String
-  costUsd      Decimal @map("cost_usd")
-  observedAt   String  @map("observed_at")
-  dataRevision Int     @default(1) @map("data_revision")
-  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
-  updatedAt    String? @map("updated_at")
+  id                String  @id
+  sessionId         String  @map("session_id")
+  model             String
+  costUsd           Decimal @map("cost_usd")
+  observedAt        String  @map("observed_at")
+  // ISS-7352 item E: the component attribution Claude Code stamps on every
+  // cost counter. Each name is its own nullable column so a reader can filter
+  // on one dimension, and `attribution_key` is the canonical join of the whole
+  // tuple, carried as a SEPARATE non-null column because it is part of the
+  // natural key.
+  //
+  // Non-null with a "" default is load-bearing, not cosmetic. SQLite treats
+  // NULLs as DISTINCT in a UNIQUE index, so putting the nullable name columns
+  // in the key directly would make every unattributed row unique against
+  // itself: the upsert's WHERE would never match and each export would insert
+  // a duplicate instead of updating. "" is the one unattributed value, and it
+  // is also what the ALTER TABLE gives every row written before this column.
+  attributionKey    String  @default("") @map("attribution_key")
+  // ISS-7352 step 3: which source produced this row's attribution, recorded
+  // per-row so a later disagreement with transcript-derived attribution is
+  // diagnosable instead of invisible. See ClaudeCodeAttributionSource.
+  attributionSource String  @default("none") @map("attribution_source")
+  agentName         String? @map("agent_name")
+  skillName         String? @map("skill_name")
+  pluginName        String? @map("plugin_name")
+  marketplaceName   String? @map("marketplace_name")
+  mcpServerName     String? @map("mcp_server_name")
+  mcpToolName       String? @map("mcp_tool_name")
+  querySource       String? @map("query_source")
+  speed             String?
+  effort            String?
+  dataRevision      Int     @default(1) @map("data_revision")
+  createdAt         String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt         String? @map("updated_at")
 
-  @@unique([sessionId, model, observedAt], map: "idx_claude_code_cost_event_natural")
+  @@unique([sessionId, model, observedAt, attributionKey], map: "idx_claude_code_cost_event_natural")
   @@index([sessionId], map: "idx_claude_code_cost_event_session")
   @@index([observedAt], map: "idx_claude_code_cost_event_observed")
   @@map("claude_code_cost_event")
 }
 
 model ClaudeCodePermissionEvent {
-  id           String  @id
-  sessionId    String  @map("session_id")
-  toolName     String  @map("tool_name")
-  decision     String
-  source       String
-  observedAt   String  @map("observed_at")
-  dataRevision Int     @default(1) @map("data_revision")
-  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
-  updatedAt    String? @map("updated_at")
+  id            String  @id
+  sessionId     String  @map("session_id")
+  toolName      String  @map("tool_name")
+  decision      String
+  source        String
+  observedAt    String  @map("observed_at")
+  // ISS-7481: the harness's own identifier for the invocation this decision is
+  // about, and the join to its `claude_code_tool_result` row. Deliberately NOT
+  // in the natural key below -- it is nullable, and SQLite treats NULLs as
+  // DISTINCT in a UNIQUE index, so keying on it would make every row without
+  // one unique against itself and turn the upsert into a duplicate insert on
+  // every export. The normalizer compares it instead, which is what makes two
+  // parallel auto-approved `Read`s a COUNTED collision rather than a silent
+  // overwrite. This table stays a LOWER BOUND on decisions.
+  toolUseId     String? @map("tool_use_id")
+  // ISS-7352 item F: the per-event join keys. NULL means the producer did not
+  // stamp one -- `workflow.*` exists only for a workflow-launched session.
+  promptId      String? @map("prompt_id")
+  messageUuid   String? @map("message_uuid")
+  workflowRunId String? @map("workflow_run_id")
+  workflowName  String? @map("workflow_name")
+  dataRevision  Int     @default(1) @map("data_revision")
+  createdAt     String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt     String? @map("updated_at")
 
   @@unique([sessionId, toolName, observedAt], map: "idx_claude_code_permission_event_natural")
   @@index([sessionId], map: "idx_claude_code_permission_event_session")
@@ -435,8 +560,25 @@ model ClaudeCodeApiRequest {
   tokensCacheRead     BigInt  @default(0) @map("tokens_cache_read")
   tokensCacheCreation BigInt  @default(0) @map("tokens_cache_creation")
   costUsd             Decimal @map("cost_usd")
+  // ISS-7352 item D: the producer's own exact-integer spelling of the same
+  // cost, in millionths of a dollar. Nullable because a Claude Code older than
+  // the build that added it stamps only `cost_usd`, and because every row
+  // written before this column exists is genuinely unknown here rather than 0.
+  costUsdMicros       BigInt? @map("cost_usd_micros")
   startedAt           String  @map("started_at")
   durationMs          Int     @map("duration_ms")
+  // ISS-7352 item F: Anthropic's own identifiers for this request. They matter
+  // more here than on the sibling tables because this one's natural key uses a
+  // DERIVED `started_at` (completion less duration, at ms resolution), so they
+  // are the strongest evidence a key collision is two requests rather than one
+  // re-sent export.
+  requestId           String? @map("request_id")
+  clientRequestId     String? @map("client_request_id")
+  // ISS-7352 item F: the per-event join keys.
+  promptId            String? @map("prompt_id")
+  messageUuid         String? @map("message_uuid")
+  workflowRunId       String? @map("workflow_run_id")
+  workflowName        String? @map("workflow_name")
   dataRevision        Int     @default(1) @map("data_revision")
   createdAt           String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
   updatedAt           String? @map("updated_at")
@@ -447,38 +589,425 @@ model ClaudeCodeApiRequest {
   @@map("claude_code_api_request")
 }
 
+// ISS-7352 item A: the error/refusal taxonomy, for which nothing equivalent
+// existed. One table for all three of Claude Code's failure events
+// (`api_error`, `api_refusal`, `internal_error`) because they share a grain —
+// one row per failed attempt in a session — and differ only in which taxonomy
+// columns they populate; `error_kind` is the discriminant.
+//
+// The free-text `error` attribute Claude Code also stamps is deliberately NOT
+// a column here. It is an error MESSAGE, i.e. content, and ISS-7352 open
+// question #4 leaves the content-capture decision unanswered with the redaction
+// gates closed. `error_category` is a closed taxonomy value and carries the
+// signal this table exists for; adding the message needs that decision first.
+model ClaudeCodeErrorEvent {
+  id                String   @id
+  sessionId         String   @map("session_id")
+  errorKind         String   @map("error_kind")
+  observedAt        String   @map("observed_at")
+  // Two failures can share a millisecond, so the instant alone does not
+  // identify a row. This carries whatever the event offers to tell them apart
+  // (the attempt number, the request id, the internal error's name/code).
+  // Non-null with a "" default for the same SQLite NULL-is-distinct reason
+  // documented on ClaudeCodeCostEvent.attributionKey.
+  occurrenceKey     String   @default("") @map("occurrence_key")
+  model             String?
+  statusCode        Int?     @map("status_code")
+  attempt           Int?
+  errorCategory     String?  @map("error_category")
+  durationMs        Int?     @map("duration_ms")
+  requestId         String?  @map("request_id")
+  clientRequestId   String?  @map("client_request_id")
+  refusalCategory   String?  @map("refusal_category")
+  serverFallbackHop Int?     @map("server_fallback_hop")
+  hasCategory       Boolean? @map("has_category")
+  hasExplanation    Boolean? @map("has_explanation")
+  errorName         String?  @map("error_name")
+  errorCode         String?  @map("error_code")
+  // ISS-7352 item F: the per-event join keys. `prompt_id` earns its place here
+  // -- `occurrence_key` is built from the attempt and request identifiers, so
+  // two failures carrying neither reduce to one key and this is the only thing
+  // left saying they came from two different prompts.
+  promptId          String?  @map("prompt_id")
+  messageUuid       String?  @map("message_uuid")
+  workflowRunId     String?  @map("workflow_run_id")
+  workflowName      String?  @map("workflow_name")
+  dataRevision      Int      @default(1) @map("data_revision")
+  createdAt         String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt         String?  @map("updated_at")
+
+  @@unique([sessionId, errorKind, observedAt, occurrenceKey], map: "idx_claude_code_error_event_natural")
+  @@index([sessionId], map: "idx_claude_code_error_event_session")
+  @@index([observedAt], map: "idx_claude_code_error_event_observed")
+  @@index([errorKind, observedAt], map: "idx_claude_code_error_event_kind_observed")
+  @@map("claude_code_error_event")
+}
+
+// ISS-7352 item B, the half that had no home: `permission_mode_changed`. The
+// session row stores only the CURRENT permissionMode, so every transition that
+// produced it was previously unrecoverable. One row per transition.
+model ClaudeCodePermissionModeChange {
+  id            String  @id
+  sessionId     String  @map("session_id")
+  observedAt    String  @map("observed_at")
+  fromMode      String  @map("from_mode")
+  toMode        String  @map("to_mode")
+  trigger       String?
+  // ISS-7352 item F: the per-event join keys.
+  promptId      String? @map("prompt_id")
+  messageUuid   String? @map("message_uuid")
+  workflowRunId String? @map("workflow_run_id")
+  workflowName  String? @map("workflow_name")
+  dataRevision  Int     @default(1) @map("data_revision")
+  createdAt     String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt     String? @map("updated_at")
+
+  @@unique([sessionId, observedAt, fromMode, toMode], map: "idx_claude_code_permission_mode_change_natural")
+  @@index([sessionId], map: "idx_claude_code_permission_mode_change_session")
+  @@index([observedAt], map: "idx_claude_code_permission_mode_change_observed")
+  @@map("claude_code_permission_mode_change")
+}
+
+// ISS-7352 item C: one MCP server connection attempt. Nothing we collect
+// otherwise records which MCP servers a session actually reached, over what
+// transport, or why a connection failed -- a transcript shows only the tool
+// calls that succeeded afterwards.
+//
+// `server_name` and the free-text `error` message are deliberately absent.
+// Claude Code stamps both only under `OTEL_LOG_TOOL_DETAILS=1`, `error` is
+// content (ISS-7352 open question #4, still unanswered with the redaction gates
+// closed), and the capture list claims neither.
+model ClaudeCodeMcpServerConnection {
+  id            String   @id
+  sessionId     String   @map("session_id")
+  observedAt    String   @map("observed_at")
+  status        String
+  // What tells two attempts in one millisecond apart, since the server's own
+  // name is not captured. Non-null with a "" default for the same SQLite
+  // NULL-is-distinct reason documented on ClaudeCodeCostEvent.attributionKey.
+  connectionKey String   @default("") @map("connection_key")
+  transportType String?  @map("transport_type")
+  serverScope   String?  @map("server_scope")
+  durationMs    Int?     @map("duration_ms")
+  errorCode     String?  @map("error_code")
+  isPlugin      Boolean? @map("is_plugin")
+  pluginIdHash  String?  @map("plugin_id_hash")
+  // ISS-7352 item F: the per-event join keys.
+  promptId      String?  @map("prompt_id")
+  messageUuid   String?  @map("message_uuid")
+  workflowRunId String?  @map("workflow_run_id")
+  workflowName  String?  @map("workflow_name")
+  dataRevision  Int      @default(1) @map("data_revision")
+  createdAt     String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt     String?  @map("updated_at")
+
+  @@unique([sessionId, observedAt, status, connectionKey], map: "idx_claude_code_mcp_server_connection_natural")
+  @@index([sessionId], map: "idx_claude_code_mcp_server_connection_session")
+  @@index([observedAt], map: "idx_claude_code_mcp_server_connection_observed")
+  @@map("claude_code_mcp_server_connection")
+}
+
+// ISS-7352 item C: one `login` / `logout`. The producer documents that
+// `error_category` is categorical and the raw error message is NEVER included
+// on this event, so there is no content column to decide about here.
+model ClaudeCodeAuthEvent {
+  id            String   @id
+  sessionId     String   @map("session_id")
+  observedAt    String   @map("observed_at")
+  action        String
+  // Every remaining attribute of the event, flattened -- so a collision on this
+  // key means two records that agree on everything captured. Non-null with a ""
+  // default for the SQLite NULL-is-distinct reason.
+  occurrenceKey String   @default("") @map("occurrence_key")
+  success       Boolean?
+  authMethod    String?  @map("auth_method")
+  errorCategory String?  @map("error_category")
+  statusCode    Int?     @map("status_code")
+  // ISS-7352 item F: the per-event join keys. Every attribute the auth event
+  // itself carries is already in `occurrence_key`, so these four are the only
+  // thing left that can tell two records at one instant apart.
+  promptId      String?  @map("prompt_id")
+  messageUuid   String?  @map("message_uuid")
+  workflowRunId String?  @map("workflow_run_id")
+  workflowName  String?  @map("workflow_name")
+  dataRevision  Int      @default(1) @map("data_revision")
+  createdAt     String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt     String?  @map("updated_at")
+
+  @@unique([sessionId, observedAt, action, occurrenceKey], map: "idx_claude_code_auth_event_natural")
+  @@index([sessionId], map: "idx_claude_code_auth_event_session")
+  @@index([observedAt], map: "idx_claude_code_auth_event_observed")
+  @@map("claude_code_auth_event")
+}
+
+// ISS-7352 item C: one plugin install or load. Both events share a grain (one
+// row per plugin per moment) and one column set, so `lifecycle` discriminates
+// them the way `error_kind` discriminates the three failure events.
+//
+// `plugin_key` is load-bearing rather than incidental: `plugin_loaded` fires
+// once per enabled plugin at session start, so ten plugins emit ten records
+// agreeing on session and instant and differing only here.
+model ClaudeCodePluginEvent {
+  id                    String   @id
+  sessionId             String   @map("session_id")
+  lifecycle             String
+  observedAt            String   @map("observed_at")
+  pluginKey             String   @default("") @map("plugin_key")
+  pluginName            String?  @map("plugin_name")
+  pluginVersion         String?  @map("plugin_version")
+  marketplaceName       String?  @map("marketplace_name")
+  marketplaceIsOfficial Boolean? @map("marketplace_is_official")
+  installTrigger        String?  @map("install_trigger")
+  // ISS-7352 item F: the per-event join keys.
+  promptId              String?  @map("prompt_id")
+  messageUuid           String?  @map("message_uuid")
+  workflowRunId         String?  @map("workflow_run_id")
+  workflowName          String?  @map("workflow_name")
+  dataRevision          Int      @default(1) @map("data_revision")
+  createdAt             String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt             String?  @map("updated_at")
+
+  @@unique([sessionId, lifecycle, observedAt, pluginKey], map: "idx_claude_code_plugin_event_natural")
+  @@index([sessionId], map: "idx_claude_code_plugin_event_session")
+  @@index([observedAt], map: "idx_claude_code_plugin_event_observed")
+  @@map("claude_code_plugin_event")
+}
+
+// ISS-7352 item G: `claude_code.lines_of_code.count`, which splits code churn
+// by direction AND by the model that made the change. Our own `diffStats` is
+// session-level only, so neither split was recoverable.
+model ClaudeCodeLinesOfCode {
+  id           String  @id
+  sessionId    String  @map("session_id")
+  model        String
+  observedAt   String  @map("observed_at")
+  changeType   String  @map("change_type")
+  lineCount    BigInt  @default(0) @map("line_count")
+  dataRevision Int     @default(1) @map("data_revision")
+  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt    String? @map("updated_at")
+
+  @@unique([sessionId, model, observedAt, changeType], map: "idx_claude_code_lines_of_code_natural")
+  @@index([sessionId], map: "idx_claude_code_lines_of_code_session")
+  @@index([observedAt], map: "idx_claude_code_lines_of_code_observed")
+  @@map("claude_code_lines_of_code")
+}
+
+// ISS-7352 item G: `claude_code.session.count`, carried for its `start_type`
+// (fresh / resume / continue / agents_view). Nothing else we collect
+// distinguishes a resumed session from a fresh one.
+//
+// A side table rather than a column on `sessions`: that row is owned by the
+// transcript collectors, and an OTel writer reaching into it would be the same
+// silent source-precedence decision `token_usage` is excluded for.
+model ClaudeCodeSessionStart {
+  id           String  @id
+  sessionId    String  @map("session_id")
+  observedAt   String  @map("observed_at")
+  startType    String  @map("start_type")
+  sessionCount BigInt  @default(0) @map("session_count")
+  dataRevision Int     @default(1) @map("data_revision")
+  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt    String? @map("updated_at")
+
+  @@unique([sessionId, observedAt, startType], map: "idx_claude_code_session_start_natural")
+  @@index([sessionId], map: "idx_claude_code_session_start_session")
+  @@index([observedAt], map: "idx_claude_code_session_start_observed")
+  @@map("claude_code_session_start")
+}
+
+// ISS-7352 item G: the RESULT side of a tool invocation -- payload sizes, the
+// failure category, and the MCP scope. `claude_code_permission_event` records
+// only whether a call was allowed.
+//
+// `success` is stored beside `error_type` deliberately: the producer stamps
+// `error_type` only on a FAILED call, so a NULL there alone cannot tell a
+// successful invocation from one that failed without a category.
+//
+// The free-text `error`, `tool_input` and `tool_parameters` attributes are NOT
+// columns here -- they are content and ISS-7352 open question #4 is unanswered.
+// The two SIZE columns carry the shape of that payload without the payload.
+model ClaudeCodeToolResult {
+  id                  String   @id
+  sessionId           String   @map("session_id")
+  toolName            String   @map("tool_name")
+  observedAt          String   @map("observed_at")
+  // `tool_use_id` when the producer stamped one -- the harness's own identifier
+  // for the invocation, and the same value it passes to hooks. Non-null with a
+  // "" default for the SQLite NULL-is-distinct reason.
+  resultKey           String   @default("") @map("result_key")
+  toolUseId           String?  @map("tool_use_id")
+  success             Boolean?
+  errorType           String?  @map("error_type")
+  toolInputSizeBytes  BigInt?  @map("tool_input_size_bytes")
+  toolResultSizeBytes BigInt?  @map("tool_result_size_bytes")
+  mcpServerScope      String?  @map("mcp_server_scope")
+  // ISS-7352 item F: the per-event join keys.
+  promptId            String?  @map("prompt_id")
+  messageUuid         String?  @map("message_uuid")
+  workflowRunId       String?  @map("workflow_run_id")
+  workflowName        String?  @map("workflow_name")
+  dataRevision        Int      @default(1) @map("data_revision")
+  createdAt           String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt           String?  @map("updated_at")
+
+  @@unique([sessionId, toolName, observedAt, resultKey], map: "idx_claude_code_tool_result_natural")
+  @@index([sessionId], map: "idx_claude_code_tool_result_session")
+  @@index([observedAt], map: "idx_claude_code_tool_result_observed")
+  @@map("claude_code_tool_result")
+}
+
+// ISS-7352 item D: `claude_code.active_time.total`, the time a session spent
+// actually working, split into the human's share and the CLI's. GA despite the
+// rest of item D riding the beta span tier.
+//
+// `activityType` (user / cli) keys the row: an undifferentiated total answers
+// nothing our timestamps do not already answer, so the split IS the
+// measurement. `seconds` is Decimal, not an integer count, because the metric's
+// unit is seconds and sub-second intervals are ordinary here.
+model ClaudeCodeActiveTime {
+  id           String  @id
+  sessionId    String  @map("session_id")
+  observedAt   String  @map("observed_at")
+  activityType String  @map("activity_type")
+  seconds      Decimal @default(0)
+  dataRevision Int     @default(1) @map("data_revision")
+  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt    String? @map("updated_at")
+
+  @@unique([sessionId, observedAt, activityType], map: "idx_claude_code_active_time_natural")
+  @@index([sessionId], map: "idx_claude_code_active_time_session")
+  @@index([observedAt], map: "idx_claude_code_active_time_observed")
+  @@map("claude_code_active_time")
+}
+
+// ISS-7352 item F, identity half. Keyed by session_id alone: a session has one
+// identity, so this is the one claude_code_* table that is not event-sourced.
+// Every identifier is nullable and an unresolved one stays NULL rather than
+// taking a placeholder -- an unattributed session must stay distinguishable
+// from one attributed to an empty account.
+model ClaudeCodeSessionIdentity {
+  sessionId       String  @id @map("session_id")
+  observedAt      String  @map("observed_at")
+  organizationId  String? @map("organization_id")
+  userAccountUuid String? @map("user_account_uuid")
+  userAccountId   String? @map("user_account_id")
+  identitySource  String? @map("identity_source")
+  terminalType    String? @map("terminal_type")
+  appVersion      String? @map("app_version")
+  appEntrypoint   String? @map("app_entrypoint")
+  dataRevision    Int     @default(1) @map("data_revision")
+  createdAt       String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt       String? @map("updated_at")
+
+  @@index([organizationId], map: "idx_claude_code_session_identity_org")
+  @@map("claude_code_session_identity")
+}
+
+// ISS-7352 item D, beta tier: one `claude_code.llm_request` span — the only
+// carrier of `ttft_ms`, `stop_reason`, `gen_ai.response.finish_reasons` and
+// `response.has_tool_call`. Spans only arrive when the user has set
+// `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`; nothing in this lane sets it.
+//
+// Keyed on `(trace_id, span_id)` — the producer's own identity for a request —
+// so a retried OTLP batch upserts instead of doubling the table. Every measured
+// column the span carries as an ATTRIBUTE is nullable because the tier is beta:
+// an attribute it stops stamping costs that column, not the whole request. The
+// four token columns are the exception — they are `BigInt @default(0)`, because
+// the normalizer resolves a token count to a number on every path, so absent
+// there means zero rather than unknown.
+//
+// No column holds the span's `status.message` or its span events. Both are
+// free-text content and neither is read.
+model ClaudeCodeLlmRequest {
+  id                  String   @id
+  sessionId           String   @map("session_id")
+  traceId             String   @map("trace_id")
+  spanId              String   @map("span_id")
+  parentSpanId        String?  @map("parent_span_id")
+  startedAt           String   @map("started_at")
+  model               String?
+  querySource         String?  @map("query_source")
+  speed               String?
+  requestContext      String?  @map("request_context")
+  durationMs          Int?     @map("duration_ms")
+  ttftMs              Int?     @map("ttft_ms")
+  stopReason          String?  @map("stop_reason")
+  finishReasons       String?  @map("finish_reasons")
+  responseHasToolCall Boolean? @map("response_has_tool_call")
+  attempt             Int?
+  success             Boolean?
+  statusCode          Int?     @map("status_code")
+  requestId           String?  @map("request_id")
+  clientRequestId     String?  @map("client_request_id")
+  responseId          String?  @map("response_id")
+  inputTokens         BigInt   @default(0) @map("input_tokens")
+  outputTokens        BigInt   @default(0) @map("output_tokens")
+  cacheReadTokens     BigInt   @default(0) @map("cache_read_tokens")
+  cacheCreationTokens BigInt   @default(0) @map("cache_creation_tokens")
+  agentId             String?  @map("agent_id")
+  parentAgentId       String?  @map("parent_agent_id")
+  workflowRunId       String?  @map("workflow_run_id")
+  workflowName        String?  @map("workflow_name")
+  dataRevision        Int      @default(1) @map("data_revision")
+  createdAt           String?  @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt           String?  @map("updated_at")
+
+  @@unique([traceId, spanId], map: "idx_claude_code_llm_request_natural")
+  @@index([sessionId], map: "idx_claude_code_llm_request_session")
+  @@index([startedAt], map: "idx_claude_code_llm_request_started")
+  @@map("claude_code_llm_request")
+}
+
 // No primary key in the legacy schema, so the table is excluded from the
 // generated client (@@ignore) and stays on raw SQL. Adding a key is a
 // candidate follow-up migration once the runner (Phase 2) lands.
 model TokenEvent {
-  sessionId        String @map("session_id")
-  transportId      String? @map("transport_id")
-  model            String
-  createdAt        String @map("created_at")
-  inputTokens      BigInt @default(0) @map("input_tokens")
-  outputTokens     BigInt @default(0) @map("output_tokens")
-  cacheReadTokens  BigInt @default(0) @map("cache_read_tokens")
-  cacheWriteTokens BigInt @default(0) @map("cache_write_tokens")
+  sessionId                     String  @map("session_id")
+  transportId                   String? @map("transport_id")
+  model                         String
+  createdAt                     String  @map("created_at")
+  inputTokens                   BigInt  @default(0) @map("input_tokens")
+  outputTokens                  BigInt  @default(0) @map("output_tokens")
+  cacheReadTokens               BigInt  @default(0) @map("cache_read_tokens")
+  cacheWriteTokens              BigInt  @default(0) @map("cache_write_tokens")
   // FEA-3419: per-event cache-write TTL subdivision (NULL = never reported).
-  cacheWrite5mTokens BigInt? @map("cache_write_5m_tokens")
-  cacheWrite1hTokens BigInt? @map("cache_write_1h_tokens")
-  costUsdEstimated             Float? @map("cost_usd_estimated")
-  inputCostUsdEstimated        Float? @map("input_cost_usd_estimated")
-  outputCostUsdEstimated       Float? @map("output_cost_usd_estimated")
-  cacheReadCostUsdEstimated    Float? @map("cache_read_cost_usd_estimated")
-  cacheCreationCostUsdEstimated Float? @map("cache_creation_cost_usd_estimated")
-  costCurrency String? @map("cost_currency")
-  costSource String? @map("cost_source")
-  costObservedAt String? @map("cost_observed_at")
-  sourceIdentity String? @map("source_identity")
-  costSummary String? @map("cost_summary")
+  cacheWrite5mTokens            BigInt? @map("cache_write_5m_tokens")
+  cacheWrite1hTokens            BigInt? @map("cache_write_1h_tokens")
+  costUsdEstimated              Float?  @map("cost_usd_estimated")
+  inputCostUsdEstimated         Float?  @map("input_cost_usd_estimated")
+  outputCostUsdEstimated        Float?  @map("output_cost_usd_estimated")
+  cacheReadCostUsdEstimated     Float?  @map("cache_read_cost_usd_estimated")
+  cacheCreationCostUsdEstimated Float?  @map("cache_creation_cost_usd_estimated")
+  costCurrency                  String? @map("cost_currency")
+  costSource                    String? @map("cost_source")
+  costObservedAt                String? @map("cost_observed_at")
+  sourceIdentity                String? @map("source_identity")
+  costSummary                   String? @map("cost_summary")
+  // ISS-12552: the subagent the event belongs to; NULL is the main agent.
+  agentId                       String? @map("agent_id")
 
+  @@unique([sessionId, transportId], map: "idx_token_events_session_transport", where: raw("transport_id IS NOT NULL"))
   @@index([sessionId], map: "idx_token_events_session")
   @@index([createdAt], map: "idx_token_events_created")
   @@index([sessionId, createdAt], map: "idx_token_events_session_created")
-  @@unique([sessionId, transportId], map: "idx_token_events_session_transport", where: raw("transport_id IS NOT NULL"))
+  @@index([sessionId, createdAt, model, transportId], map: "idx_token_events_session_created_model_transport")
   @@map("token_events")
   @@ignore
+}
+
+// ISS-12552: a session's operation claims and coverage, as
+// JSON, replaced whole on every reparse. Read only by the sync source.
+model SessionOperationClaim {
+  sessionId        String  @id @map("session_id")
+  extractorVersion Int     @map("extractor_version")
+  digest           String
+  coverage         String
+  claims           String
+  updatedAt        String  @map("updated_at")
+  session          Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("session_operation_claims")
 }
 
 model PackCatalog {
@@ -495,8 +1024,6 @@ model PackCatalog {
   installNotes      String? @map("install_notes")
   placeholderReason String? @map("placeholder_reason")
   verified          Boolean @default(false)
-  readmeExcerpt     String? @map("readme_excerpt")
-  readmeFetchedAt   String? @map("readme_fetched_at")
   stars             Int?
   forks             Int?
   lastRelease       String? @map("last_release")
@@ -609,6 +1136,11 @@ model Plan {
   versions PlanVersion[]
 
   @@unique([createdFromSessionId, planKey], map: "idx_plans_session_key", where: raw("plan_key IS NOT NULL"))
+  // ISS-6754: the dedup read's file-capture branch matches a plan file by its
+  // basename across sessions, so it leaves `idx_plans_session_key`'s leading
+  // column unconstrained and could only full-scan. See migration
+  // 0063_iss6754_idx_plans_key_harness.
+  @@index([planKey, harness], map: "idx_plans_key_harness", where: raw("plan_key IS NOT NULL"))
   @@index([createdFromSessionId], map: "idx_plans_session")
   @@index([needsConfirmation], map: "idx_plans_needs_confirmation", where: raw("needs_confirmation = TRUE"))
   @@index([updatedAt(sort: Desc)], map: "idx_plans_updated")
@@ -646,11 +1178,8 @@ model PullRequest {
   repoFullName String? @map("repo_full_name")
   branchName   String? @map("branch_name")
   headSha      String? @map("head_sha")
-  state        String?
   closedAt     String? @map("closed_at")
-  mergedAt     String? @map("merged_at")
   openedAt     String? @map("opened_at")
-  title        String?
   harness      String?
   observedAt   String? @map("observed_at")
   createdAt    String? @map("created_at")
@@ -662,122 +1191,31 @@ model PullRequest {
   @@map("pull_requests")
 }
 
-/// Durable cache of cloud-sourced GitHub branch overlays used by Desktop while
-/// offline or when a refresh fails. The JSON payload preserves omitted fields so
-/// old local GitHub enrichment does not become the writer for absent cloud data.
-model CloudGithubBranchOverlay {
-  identityKey  String @map("identity_key")
-  repoFullName String @map("repo_full_name")
-  branchName   String @map("branch_name")
-  overlay      Json
-  lastSyncedAt String @map("last_synced_at")
-
-  @@id([identityKey, repoFullName, branchName])
-  @@index([identityKey, lastSyncedAt], map: "idx_cloud_github_branch_overlays_identity_synced")
-  @@map("cloud_github_branch_overlays")
-}
-
-/// Account- and provider-qualified repository-default authority. This is
-/// deliberately separate from Repo.defaultBranch, which is a local Git overlay.
-model RepositoryDefaultAuthority {
-  identityKey          String  @map("identity_key")
-  provider             String
-  providerRepositoryId String  @map("provider_repository_id")
-  repoFullName         String  @map("repo_full_name")
-  defaultBranch        String? @map("default_branch")
-  availability         String
-  completeness         String
-  reason               String?
-  source               String
-  sourceIdentity       String? @map("source_identity")
-  mechanism            String
-  trigger              String
-  credentialType       String  @map("credential_type")
-  credentialOwnerId    String? @map("credential_owner_id")
-  observationKey       String  @map("observation_key")
-  observedAt           String  @map("observed_at")
-  eventAt              String? @map("event_at")
-  updatedAt            String  @map("updated_at")
-
-  @@id([identityKey, provider, providerRepositoryId])
-  @@index([identityKey, repoFullName], map: "idx_repository_default_authorities_identity_repo")
-  @@map("repository_default_authorities")
-}
-
-model PrBackfillSeen {
-  sessionId   String  @id @map("session_id")
-  filePath    String? @map("file_path")
-  fileMtimeMs BigInt? @map("file_mtime_ms")
-  scannedAt   String? @map("scanned_at")
-
-  @@map("pr_backfill_seen")
-}
-
-/// Desktop-local trace comments. These are the durable source of truth for the
-/// Electron app; cloud comment/thread ids are attached after best-effort sync.
-model TraceComment {
-  id                  String  @id
-  threadId            String  @map("thread_id")
-  targetType          String  @map("target_type")
-  targetId            String  @map("target_id")
-  artifactId          String  @map("artifact_id")
-  surface             String
-  status              String  @default("OPEN")
-  anchor              Json
-  body                String
-  authorId            String  @map("author_id")
-  authorName          String? @map("author_name")
-  authorAvatarUrl     String? @map("author_avatar_url")
-  canEdit             Boolean @default(false) @map("can_edit")
-  canDelete           Boolean @default(false) @map("can_delete")
-  cloudCommentId      String? @map("cloud_comment_id")
-  cloudThreadId       String? @map("cloud_thread_id")
-  profileId           String? @map("profile_id")
-  syncComputeTargetId String? @map("sync_compute_target_id")
-  syncUserId          String? @map("sync_user_id")
-  syncOrganizationId  String? @map("sync_organization_id")
-  mentions            Json    @default("[]")
-  replies             Json    @default("[]")
-  commentKind         String  @default("comment") @map("comment_kind")
-  syncStatus          String  @default("local_pending") @map("sync_status")
-  lastSyncAttemptAt   String? @map("last_sync_attempt_at")
-  syncError           String? @map("sync_error")
-  createdAt           String  @map("created_at")
-  updatedAt           String  @map("updated_at")
-
-  @@unique([cloudCommentId], map: "idx_trace_comments_cloud_comment", where: raw("cloud_comment_id IS NOT NULL"))
-  @@index([targetType, targetId, createdAt, id], map: "idx_trace_comments_target")
-  @@index([profileId, syncComputeTargetId, syncUserId, syncOrganizationId], map: "idx_trace_comments_sync_scope")
-  @@index([syncStatus], map: "idx_trace_comments_sync_status")
-  @@map("trace_comments")
-}
-
 model Artifact {
-  id                 String  @id
-  identityKey        String  @unique(map: "artifacts_identity_key_key") @map("identity_key")
-  kind               String
-  repoFullName       String? @map("repo_full_name")
-  gitDir             String? @map("git_dir")
-  sha                String?
-  branchName         String? @map("branch_name")
-  prNumber           Int?    @map("pr_number")
-  slug               String?
-  url                String?
-  title              String?
-  committedAt        String? @map("committed_at")
-  harness            String?
-  headSha            String? @map("head_sha")
-  linesAdded         Int?    @map("lines_added")
-  linesRemoved       Int?    @map("lines_removed")
-  filesChanged       Int?    @map("files_changed")
-  prState            String? @map("pr_state")
-  mergeCommitSha     String? @map("merge_commit_sha")
-  baseRef            String? @map("base_ref")
-  firstPushedAt      String? @map("first_pushed_at")
-  pushSource         String? @map("push_source")
-  observedAt         String? @map("observed_at")
-  createdAt          String  @map("created_at")
-  lastSeenAt         String  @map("last_seen_at")
+  id                    String    @id
+  identityKey           String    @unique(map: "artifacts_identity_key_key") @map("identity_key")
+  kind                  String
+  repoFullName          String?   @map("repo_full_name")
+  gitDir                String?   @map("git_dir")
+  sha                   String?
+  branchName            String?   @map("branch_name")
+  prNumber              Int?      @map("pr_number")
+  slug                  String?
+  url                   String?
+  title                 String?
+  committedAt           String?   @map("committed_at")
+  harness               String?
+  baseRef               String?   @map("base_ref")
+  firstPushedAt         String?   @map("first_pushed_at")
+  pushSource            String?   @map("push_source")
+  observedAt            String?   @map("observed_at")
+  createdAt             String    @map("created_at")
+  lastSeenAt            String    @map("last_seen_at")
+  // ISS-10332: the user-set priority of a `kind = 'branch'` row. Same contract
+  // as `Session.priority`: written only by the local-mode priority write.
+  priority              Priority?
+  // ISS-10332: same contract as `Session.priorityUploadPending`.
+  priorityUploadPending Int       @default(0) @map("priority_upload_pending")
 
   artifactLinks SessionArtifactLink[]
 
@@ -813,31 +1251,6 @@ model RepoWorktree {
 
   @@index([repoId], map: "idx_repo_worktrees_repo")
   @@map("repo_worktrees")
-}
-
-model PullRequestStatusObservation {
-  id               String   @id
-  repoFullName     String   @map("repo_full_name")
-  prNumber         Int      @map("pr_number")
-  prUrl            String?  @map("pr_url")
-  state            String
-  isDraft          Boolean? @map("is_draft")
-  headRefName      String?  @map("head_ref_name")
-  headSha          String?  @map("head_sha")
-  title            String?
-  authorLogin      String?  @map("author_login")
-  prCreatedAt      String?  @map("pr_created_at")
-  prUpdatedAt      String?  @map("pr_updated_at")
-  source           String
-  observedAt       String   @map("observed_at")
-  lastCheckedAt    String   @map("last_checked_at")
-  nextRefreshAfter String?  @map("next_refresh_after")
-  error            String?
-
-  @@unique([repoFullName, prNumber], map: "idx_pr_status_repo_number")
-  @@index([state], map: "idx_pr_status_state")
-  @@index([nextRefreshAfter], map: "idx_pr_status_next_refresh")
-  @@map("pull_request_status_observations")
 }
 
 model SessionArtifactLink {
@@ -885,6 +1298,39 @@ model SyncState {
   // Nullable for backward compat: a cursor written before migration 0024 has
   // no column value and loads as `[]`.
   deadLetteredIds           Json?   @map("dead_lettered_ids")
+  // ISS-8593: per-id dead-letter bookkeeping for the COMPONENT lane —
+  // `[{ id, attempts, tombstoned }]`, joined to `dead_lettered_ids` on id.
+  // Nullable and additive: `dead_lettered_ids` remains the membership record, so
+  // a cursor written before migration 0080 (or by a build that does not know
+  // this column) loads as `[]` and its ids seed at attempt 0, exactly as before.
+  deadLetterAttempts        Json?   @map("dead_letter_attempts")
+  // ISS-9418: the instant this LANE gave up on the current environmental run
+  // (24h wall-clock ceiling), as an ISO string. NULL is "has not given up" — the
+  // value every pre-migration-0081 row and every older build reads.
+  //
+  // CAVEAT: the component lane's source key embeds the payload revision, so a
+  // revision bump mints a new `sync_state` row and RESETS the give-up clock.
+  // That matches the cursor's existing one-time-replay behaviour on a bump and
+  // is acceptable — a new payload contract makes the old contract's give-up a
+  // statement about bytes this lane no longer sends — but unstated it reads as a
+  // bug, so it is stated here.
+  //
+  // ISS-10053 (PLN-2028 D2): this column and the three below are the lane RUN,
+  // one record per (lane, compute target) — which for the SESSION lane is not
+  // this row's own key. Its key carries the negotiated monitored-activity
+  // revision and flips whenever a hello ack moves it, so the store keeps the four
+  // lane-run columns on the target's short-key row (`buildLaneRunSourceKey`).
+  // The session lane's capability revision therefore never resets the run; the
+  // component lane's build-constant revision still does, per the caveat above.
+  laneGaveUpAt              String? @map("lane_gave_up_at")
+  // ISS-10053: when the lane's current environmental run OPENED (ISO instant).
+  // NULL is "no run open", and every row before migration 0091 reads that way.
+  laneStalledSince          String? @map("lane_stalled_since")
+  // ISS-9963: the `SyncReason` the give-up was for. Free text, validated at read.
+  laneGaveUpReason          String? @map("lane_gave_up_reason")
+  // ISS-10043: the producer that wrote `laneGaveUpAt` — `environmental_gate` or
+  // `row_ceiling`. NULL resolves per lane at read (PLN-2028 D3).
+  laneGaveUpSource          String? @map("lane_gave_up_source")
   dataRevision              Int     @default(1) @map("data_revision")
   // FEA-3781: the autonomy formula this lane last uploaded under. Nullable with
   // no default: a cursor written before migration 0040 loads as NULL, which is
@@ -904,7 +1350,7 @@ model SyncState {
 // acked by the server, keyed by (sourceKey, externalSessionId) — the same
 // target-scoped `sourceKey` space as `SyncState`, so one account never inherits
 // another's outbox. Mirrors `TranscriptSyncState`'s crash-correct discipline
-// (FEA-2714/2715, Kris Wong): a row is advanced/cleared ONLY on a VERIFIED
+// (FEA-2714/2715, Kerensa Whitlock): a row is advanced/cleared ONLY on a VERIFIED
 // server ack, never on send, so a kill mid-backfill resumes per-item — restart
 // re-uploads only the sessions whose rows survive (un-acked), not the whole
 // corpus. `status` is `pending` (queued, not yet acked) or `dead_lettered`
@@ -918,15 +1364,39 @@ model SyncState {
 // Numeric columns are INTEGER counts; timestamps are TEXT ISO strings, matching
 // the SyncState / TranscriptSyncState conventions.
 model AgentSessionSyncOutbox {
-  sourceKey         String  @map("source_key")
-  externalSessionId String  @map("external_session_id")
-  status            String  @default("pending") @map("status")
-  syncClass         String  @default("backfill") @map("sync_class")
-  attemptCount      Int     @default(0) @map("attempt_count")
-  nextAttemptAt     String? @map("next_attempt_at")
-  lastError         String? @map("last_error")
-  createdAt         String  @map("created_at")
-  updatedAt         String  @map("updated_at")
+  sourceKey               String  @map("source_key")
+  externalSessionId       String  @map("external_session_id")
+  status                  String  @default("pending") @map("status")
+  syncClass               String  @default("backfill") @map("sync_class")
+  attemptCount            Int     @default(0) @map("attempt_count")
+  permanentAttemptCount   Int     @default(0) @map("permanent_attempt_count")
+  nextAttemptAt           String? @map("next_attempt_at")
+  lastError               String? @map("last_error")
+  // ISS-7730: when this row's current LANE-WIDE stall began — the first
+  // `ingestion_failed` in an unbroken run of them. `ingestion_failed` is the
+  // sync route's UNCLASSIFIED 500 fallthrough, so per `main/sync/AGENTS.md`
+  // invariant 4 it may not advance `attempt_count` toward the dead-letter; this
+  // timestamp is what keeps that terminal path reachable anyway (invariant 5),
+  // as a wall-clock ceiling instead of an attempt count. Durable rather than
+  // in-memory because a desktop that relaunches inside an outage would
+  // otherwise restart the clock on every launch and never terminate. Cleared by
+  // any row-attributable rejection, because a 4xx proves the lane answered.
+  // NULL on every pre-migration row and on every row not currently stalled.
+  laneStalledSince        String? @map("lane_stalled_since")
+  deadLetterRecoveryCount Int     @default(0) @map("dead_letter_recovery_count")
+  // ISS-9182: ack-omitted dead-letter cycles this row has burned, DURABLY —
+  // what the in-memory `ackOmittedCycleById` could not carry because it resets
+  // every launch. A resume seeds that map from it and the boot re-pend is
+  // bounded on it; `sqliteSelectRedrivableSessionDeadLetters` states which door
+  // it deliberately leaves open. Charged on its own class only —
+  // `deadLetterRecoveryCount` next door is the FEA-3795 backoff position
+  // and counts every recoverable class, so enforcing this bound from it would
+  // terminate rows that never spent an ack-omitted cycle. Cleared only by the
+  // verified-ack delete, like every other durable counter on this row.
+  ackOmittedCycleCount    Int     @default(0) @map("ack_omitted_cycle_count")
+  pendingSince            String? @map("pending_since")
+  createdAt               String  @map("created_at")
+  updatedAt               String  @map("updated_at")
 
   @@id([sourceKey, externalSessionId])
   @@index([sourceKey, status, nextAttemptAt], map: "idx_agent_session_sync_outbox_ready")
@@ -935,6 +1405,17 @@ model AgentSessionSyncOutbox {
   // the ready index above can serve it (both lead with `source_key`).
   @@index([externalSessionId, status], map: "idx_agent_session_sync_outbox_session_status")
   @@map("agent_session_sync_outbox")
+}
+
+// ISS-7096: which environment (normalized apiOrigin) a compute target was
+// registered in. Latest observation wins; timestamps are TEXT ISO strings.
+model ComputeTargetEnvironment {
+  computeTargetId String @id @map("compute_target_id")
+  environmentKey  String @map("environment_key")
+  firstSeenAt     String @map("first_seen_at")
+  lastSeenAt      String @map("last_seen_at")
+
+  @@map("compute_target_environments")
 }
 
 model ArtifactLinkBackfillSeen {
@@ -949,6 +1430,91 @@ model ArtifactLinkBackfillSeen {
   @@map("artifact_link_backfill_seen")
 }
 
+/// ISS-6998: one session this device has ALREADY ASKED the sync lane to
+/// re-deliver after ISS-6884 made component usage a paginated stream.
+///
+/// The durable marker exists because the discovery predicate — "this session
+/// holds more than `MAX_SYNCED_COMPONENT_USAGE` usage rows" — is NOT convergent:
+/// re-queuing a session does not change its local row count, so a pass keyed on
+/// the predicate alone would re-bump the same sessions on every boot and churn
+/// the sync cursor forever. `billing-mode-heal.ts` needs no such table precisely
+/// because its predicate IS convergent; this one is not, so the "already asked"
+/// fact has to be persisted.
+///
+/// A row means "we re-queued this session", NOT "the full set arrived". The
+/// delivery itself is the sync lane's business and has its own outbox state;
+/// nothing here should be read as an acknowledgement.
+model ComponentUsageResyncSeen {
+  sessionId  String @id @map("session_id")
+  /// Local usage rows counted at re-queue time — evidence for why the row was
+  /// selected, never re-read as a delivery total.
+  usageRows  Int    @map("usage_rows")
+  requeuedAt String @map("requeued_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("component_usage_resync_seen")
+}
+
+/// ISS-7229: one session whose 0074-backfilled authoritative cost this device
+/// has already asked the sync lane to re-deliver.
+///
+/// Migration 0074 filled `sessions.authoritative_cost_usd` from local OTel
+/// capture without touching `updated_at`, and cloud delivery selects on that
+/// cursor — so those figures are invisible to sync, and a finished session's
+/// cost never changes again to re-stamp it. The re-queue is what closes that,
+/// and this table is what stops the re-queue repeating.
+///
+/// The durable marker exists because the discovery predicate —
+/// "`authoritative_cost_usd IS NOT NULL`" — is NOT convergent: bumping
+/// `updated_at` does not change it, so a pass keyed on the predicate alone would
+/// re-bump the same sessions on every boot and churn the sync cursor forever.
+/// `billing-mode-heal.ts` needs no such table precisely because its predicate IS
+/// convergent; this one is not, so the "already asked" fact has to be persisted.
+///
+/// A row means "we re-queued this session", NOT "the cloud has this figure".
+/// The delivery itself is the sync lane's business and has its own outbox state;
+/// nothing here should be read as an acknowledgement.
+model AuthoritativeCostResyncSeen {
+  sessionId  String @id @map("session_id")
+  /// The figure observed at re-queue time — evidence for why the row was
+  /// selected, never re-read as proof of what the cloud received.
+  costUsd    Float  @map("cost_usd")
+  requeuedAt String @map("requeued_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("authoritative_cost_resync_seen")
+}
+
+/// ISS-7265 AC3: one session whose activity tiling this device shipped STRIPPED
+/// and therefore still owes the cloud.
+///
+/// The ISS-4578 bounded fallback drops the tiling so the rest of an oversized
+/// session can reach a server that cannot merge a multi-part tiling. That
+/// delivery is acked like any other, so the outbox clears and the session
+/// dequeues — and selection walks `sessions.updated_at`, never "the delivery was
+/// incomplete", so nothing brings the tiling back. This table is what makes the
+/// strip a deferral instead of a discard.
+///
+/// `requeuedAt` NULL means owed and never asked; a timestamp means this device
+/// has already asked the lane to re-deliver. The repair pass selects only the
+/// NULL rows, so a re-delivery that strips again cannot re-open its own request
+/// and bump `updated_at` forever. The debt re-arms only through a confirmed
+/// delivery WITH the tiling, which deletes the row.
+///
+/// A row means "the cloud is owed this tiling". It is never an acknowledgement,
+/// and its absence is not evidence that a tiling arrived.
+model ActivityTilingRepairOwed {
+  sessionId  String  @id @map("session_id")
+  recordedAt String  @map("recorded_at")
+  requeuedAt String? @map("requeued_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("activity_tiling_repair_owed")
+}
+
 // FEA-2267: persisted per-session activity-segment tiling (state-aware spend
 // attribution, PRD-488). The deterministic `id` is a sha256(sessionId|startMs|
 // version) slice. `phase` is a free TEXT column (taxonomy stored as data,
@@ -960,13 +1526,13 @@ model ArtifactLinkBackfillSeen {
 // (`deleteSessionRow`, `sweepExpiredSessions`) purge them via the typed
 // delegate, matching how the other no-cascade child tables are cleaned up.
 model SessionActivitySegment {
-  id             String @id
-  sessionId      String @map("session_id")
+  id             String  @id
+  sessionId      String  @map("session_id")
   phase          String
-  startMs        BigInt @map("start_ms")
-  endMs          BigInt @map("end_ms")
-  confidence     Float  @default(1)
-  evidenceLayers Json   @default("[]") @map("evidence_layers")
+  startMs        BigInt  @map("start_ms")
+  endMs          BigInt  @map("end_ms")
+  confidence     Float   @default(1)
+  evidenceLayers Json    @default("[]") @map("evidence_layers")
   version        Int
   workItemRef    String? @map("work_item_ref")
   // FEA-2271: parser-stable local subagent id when this segment's spend was
@@ -996,6 +1562,37 @@ model ActivitySegmentBackfillSeen {
   @@map("activity_segment_backfill_seen")
 }
 
+// ISS-7830: whether a user ever navigated INTO this thread. A row means viewed;
+// no row means no view is recorded. Its own table rather than a `sessions`
+// column because the importer rewrites that row's `metadata` from the transcript
+// on every re-import and a `DATA_REVISION` rebuild re-imports the whole corpus —
+// and viewership is a product fact that no re-parse can reconstruct. The rules a
+// reader must know (navigation is the act, the signal is monotonic, and it must
+// outlive a rebuild) are stated once in
+// `packages/lib/session-trace/thread-viewership.ts`.
+model SessionViewership {
+  sessionId     String @id @map("session_id")
+  firstViewedAt String @map("first_viewed_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("session_viewership")
+}
+
+/// Compact, revisioned facts consumed by the Desktop Sessions list. The source
+/// event/token streams remain canonical; database triggers delete this cache in
+/// the same transaction whenever one of its inputs changes.
+model SessionListTraceProjection {
+  sessionId  String @id @map("session_id")
+  revision   Int
+  payload    Json
+  updatedAt  String @map("updated_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("session_list_trace_projection")
+}
+
 // FEA-2715 (PRD-512, PLN-1288): per-transcript-file fingerprint + upload-cursor
 // for the raw-transcript archive lane. One row per logical transcript file,
 // keyed by (externalSessionId, fileKey) where fileKey is "main" or
@@ -1015,26 +1612,43 @@ model ActivitySegmentBackfillSeen {
 // compaction/rewrite. Numeric columns are BigInt (byte offsets/sizes, mtime ms)
 // per the schema convention; timestamps are TEXT ISO strings.
 model TranscriptSyncState {
-  externalSessionId     String  @map("external_session_id")
-  fileKey               String  @map("file_key")
-  sourceHarness         String  @map("source_harness")
-  sourcePath            String  @map("source_path")
-  sourcePathHash        String  @map("source_path_hash")
-  lastMtimeMs           BigInt? @map("last_mtime_ms")
-  lastSize              BigInt? @map("last_size")
-  syncedByteOffset      BigInt  @default(0) @map("synced_byte_offset")
-  syncedSha256          String? @map("synced_sha256")
-  storedEtag            String? @map("stored_etag")
-  syncedComputeTargetId String? @map("synced_compute_target_id")
-  status                String  @default("idle") @map("status")
-  syncClass             String  @default("live") @map("sync_class")
-  retryCount            Int     @default(0) @map("retry_count")
+  externalSessionId            String  @map("external_session_id")
+  fileKey                      String  @map("file_key")
+  sourceHarness                String  @map("source_harness")
+  sourcePath                   String  @map("source_path")
+  sourcePathHash               String  @map("source_path_hash")
+  lastMtimeMs                  BigInt? @map("last_mtime_ms")
+  lastSize                     BigInt? @map("last_size")
+  syncedByteOffset             BigInt  @default(0) @map("synced_byte_offset")
+  syncedSha256                 String? @map("synced_sha256")
+  storedEtag                   String? @map("stored_etag")
+  syncedComputeTargetId        String? @map("synced_compute_target_id")
+  status                       String  @default("idle") @map("status")
+  syncClass                    String  @default("live") @map("sync_class")
+  retryCount                   Int     @default(0) @map("retry_count")
   // FEA-3555: consecutive missing-source observations ONLY, isolated from
   // `retryCount` (which also counts transient upload failures) so the terminal
   // `source_gone` threshold cannot be tripped early by an unrelated failure run.
-  missingSourceCount    Int     @default(0) @map("missing_source_count")
-  nextAttemptAt         String? @map("next_attempt_at")
-  lastError             String? @map("last_error")
+  missingSourceCount           Int     @default(0) @map("missing_source_count")
+  nextAttemptAt                String? @map("next_attempt_at")
+  lastError                    String? @map("last_error")
+  // ISS-7097: the durable half of the upload claim. `status = 'uploading'` is
+  // written before the transfer starts and cleared by the settle, but the claim
+  // itself was only an in-memory Set, so ANY lost settle (crash, force-quit, a
+  // rejected settle write) left the row `uploading` — which neither `listReady`
+  // nor `planObservation` selects — until the next app start re-armed it. This
+  // stamps WHEN the claim was taken so a recurring reclaim can tell a live
+  // upload from a stranded one and re-arm only the latter. NULL means either not
+  // uploading, or a pre-migration row whose claim is by definition expired.
+  uploadingSince               String? @map("uploading_since")
+  // ISS-7097: when this row's current LANE-WIDE stall began — the first failure
+  // in an unbroken run of them. A lane-wide failure (the cloud is down, not this
+  // row) deliberately does not advance `retryCount`, so it cannot reach the
+  // consecutive-failure dead-letter; this timestamp is what keeps that path
+  // BOUNDED anyway, via a wall-clock ceiling. Cleared by every successful settle
+  // AND by any row-attributable failure, because a 4xx proves the lane is
+  // reachable and the stall is over.
+  laneStalledSince             String? @map("lane_stalled_since")
   // ISS-4815: the timestamp of an AUTHORITATIVE cloud `uploaded` acknowledgement
   // for a row the local lane could not upload itself (the terminal-skip answer
   // "a verified archive already exists"). It is the DURABLE half of that settle:
@@ -1043,7 +1657,7 @@ model TranscriptSyncState {
   // can leave the row settled instead of re-arming it on every launch. NULL on
   // every pre-migration row and on every non-ack settle, which is exactly the
   // pre-ISS-4815 behavior (the row stays eligible for recovery).
-  cloudUploadedAt       String? @map("cloud_uploaded_at")
+  cloudUploadedAt              String? @map("cloud_uploaded_at")
   // ISS-4815: WHICH compute target's cloud gave that acknowledgement. An `uploaded`
   // ack is only ever a statement about the archive held by the target it came
   // from, so the recovery must scope the exclusion to it — otherwise switching
@@ -1055,8 +1669,35 @@ model TranscriptSyncState {
   // redacted-archive suffix. NULL when unattributable (acknowledged with no known
   // target), which keeps the row eligible for recovery.
   cloudUploadedComputeTargetId String? @map("cloud_uploaded_compute_target_id")
-  createdAt             String  @map("created_at")
-  updatedAt             String  @map("updated_at")
+  // ISS-9884 (migration 0090): WHY this row died, in the wire's own
+  // `TranscriptSkipReason` vocabulary. The settle path nulls
+  // `laneStalledSince` at the moment a row goes terminal and `lastError` holds
+  // an unparseable client message, so before this a `dead` row carried no
+  // durable evidence of its cause and the desktop-local Sessions verdict had
+  // to call every one of them `failedPermanent` — including an environmental
+  // give-up the cloud reports as merely paused. Free text, no CHECK: the enum
+  // is grow-only and the read narrows with `toKnownTranscriptSkipReason`. NULL
+  // means not terminal, or terminal before 0090.
+  terminalSkipReason           String? @map("terminal_skip_reason")
+  // ISS-9884 (migration 0093): WHICH compute target's cloud acknowledged the
+  // terminal skip `terminalSkipReason` records, as the raw target id, written by
+  // the same settle. The lane recovery revives an `environment_unavailable` row
+  // only under this target and KEEPS it on the revived row as its upload scope:
+  // the ready read and the upload claim refuse that row to every other target
+  // until it is caught up or re-terminates. An observation that saw no file
+  // change leaves a paused row dead with this column intact, so a compute-target
+  // switch alone never opens it to another target. A CHANGED file is not covered:
+  // observe re-queues the row with this column cleared, open to whichever target
+  // drains it, and the only guard on that path is the ISS-7096 foreign-ownership
+  // gate, which withholds the file only when the session's recorded owner pair
+  // differs from a known signed-in pair (not when the signed-in identity is
+  // unknown, the session has no full owner pair, or both targets belong to the
+  // same pair). Same per-target discipline as `cloudUploadedComputeTargetId`.
+  // NULL means no terminal and no scope, or a terminal before 0093, and no
+  // revival matches it.
+  terminalSkipComputeTargetId  String? @map("terminal_skip_compute_target_id")
+  createdAt                    String  @map("created_at")
+  updatedAt                    String  @map("updated_at")
 
   @@id([externalSessionId, fileKey])
   @@index([status, nextAttemptAt], map: "idx_transcript_sync_state_status_next")
@@ -1072,23 +1713,26 @@ model TranscriptSyncState {
 // Deterministic id = sha256(componentKind|harness|externalId).
 // Unique dedup on (componentKind, externalId) per §1b design.
 model AgentComponent {
-  id            String  @id                           // sha256(kind|harness|externalId)
-  componentKind String  @map("component_kind")        // skill|command|subagent|mcp|hook|plugin|workflow|config|tool
-  externalId    String  @map("external_id")           // scanner-stable id (skillId, packId+harness+installPath, …)
-  componentKey  String? @map("component_key")         // invocation-join key (skill name, /command name, mcp server, subagent_type)
+  id            String  @id // sha256(kind|harness|externalId)
+  componentKind String  @map("component_kind") // skill|command|subagent|mcp|hook|plugin|workflow|config|tool
+  externalId    String  @map("external_id") // scanner-stable id (skillId, packId+harness+installPath, …)
+  componentKey  String? @map("component_key") // invocation-join key (skill name, /command name, mcp server, subagent_type)
   name          String?
   version       String?
   harness       String?
-  source        String?                               // "user" | "project" | "local" (settings scope)
+  source        String? // "user" | "project" | "local" (settings scope)
   description   String?
   sourceUrl     String? @map("source_url")
   installPath   String? @map("install_path")
-  packId        String? @map("pack_id")              // parent pack when the component ships inside one
-  scope         String?                              // "user" | "project" | "local"
-  projectPath   String? @map("project_path")         // populated for project-scoped components
-  metadata      Json?                                // kind-specific extras (hook event+matcher, mcp transport, config keys)
-  content       String?                              // definition file text (FEA-2923 content pipeline)
-  contentHash   String? @map("content_hash")         // sha256 of `content`; dedup + version key
+  packId        String? @map("pack_id") // parent pack when the component ships inside one
+  scope         String? // "user" | "project" | "local"
+  projectPath   String? @map("project_path") // populated for project-scoped components
+  // ISS-12169: the project root whose `.mcp.json` declared an MCP presence row.
+  // Desktop-local only: the component sync lane never selects it.
+  localProjectPath String? @map("local_project_path")
+  metadata      Json? // kind-specific extras (hook event+matcher, mcp transport, config keys)
+  content       String? // definition file text (FEA-2923 content pipeline)
+  contentHash   String? @map("content_hash") // sha256 of `content`; dedup + version key
   // F1 (FEA-3290 / PRD-527 Slice 4) — honest resolution state (AC-007). One of
   // "resolved" (exact user definition captured), "unresolved" (name/label-only,
   // e.g. event-driven label-minted rows), "inaccessible" (permission-denied at
@@ -1096,10 +1740,10 @@ model AgentComponent {
   // DISTINCT from `missing` (AC-5). Label-minted rows default to "unresolved"
   // (AC-4/AC-7); the content collector promotes to "resolved" when it captures
   // exact definition text.
-  resolvedState String @default("unresolved") @map("resolved_state")
-  firstSeenAt   String? @map("first_seen_at")        // ISO string; set on first upsert (detectedAt equivalent)
+  resolvedState String  @default("unresolved") @map("resolved_state")
+  firstSeenAt   String? @map("first_seen_at") // ISO string; set on first upsert (detectedAt equivalent)
   lastSeenAt    String? @map("last_seen_at")
-  uninstalledAt String? @map("uninstalled_at")       // tombstone, like skills/agent_packs
+  uninstalledAt String? @map("uninstalled_at") // tombstone, like skills/agent_packs
 
   componentInvocations AgentComponentInvocation[] @relation("InvocationLocalComponent")
 
@@ -1117,14 +1761,14 @@ model AgentComponent {
 // current revision is the one whose content_hash matches the live
 // agent_components row.
 model AgentComponentVersion {
-  id            String  @id                          // sha256(kind|key|source|content_hash)
+  id            String  @id // sha256(kind|key|source|content_hash)
   componentKind String  @map("component_kind")
   componentKey  String  @map("component_key")
   source        String  @default("")
   contentHash   String  @map("content_hash")
   content       String
   format        String?
-  firstSeenAt   String? @map("first_seen_at")        // ISO; first time this hash was observed
+  firstSeenAt   String? @map("first_seen_at") // ISO; first time this hash was observed
   lastSeenAt    String? @map("last_seen_at")
 
   componentInvocations AgentComponentInvocation[] @relation("InvocationLocalComponentVersion")
@@ -1140,33 +1784,33 @@ model AgentComponentVersion {
 // the aggregate compatibility projection. Cloud DefinitionVersion and
 // SourceOccurrence IDs deliberately do not exist in the Desktop schema.
 model AgentComponentInvocation {
-  id                        String  @id
-  sessionId                 String  @map("session_id")
-  externalInvocationId      String  @map("external_invocation_id")
-  externalSourceId          String? @map("external_source_id")
-  childSessionId            String? @map("child_session_id")
-  agentId                   String? @map("agent_id")
-  parentAgentId             String? @map("parent_agent_id")
-  componentKind             String  @map("component_kind")
-  componentKey              String  @map("component_key")
-  rawName                   String? @map("raw_name")
-  normalizedName            String? @map("normalized_name")
+  id                        String   @id
+  sessionId                 String   @map("session_id")
+  externalInvocationId      String   @map("external_invocation_id")
+  externalSourceId          String?  @map("external_source_id")
+  childSessionId            String?  @map("child_session_id")
+  agentId                   String?  @map("agent_id")
+  parentAgentId             String?  @map("parent_agent_id")
+  componentKind             String   @map("component_kind")
+  componentKey              String   @map("component_key")
+  rawName                   String?  @map("raw_name")
+  normalizedName            String?  @map("normalized_name")
   relationship              String
-  invokedAt                 String? @map("invoked_at")
+  invokedAt                 String?  @map("invoked_at")
   sequence                  Int
-  anchorKind                String  @map("anchor_kind")
-  anchorValue               String  @map("anchor_value")
-  providerToolUseId         String? @map("provider_tool_use_id")
-  attributionStatus         String  @map("attribution_status")
-  evidenceClass             String  @map("evidence_class")
-  evidencePointer           Json?   @map("evidence_pointer")
-  definitionHash            String? @map("definition_hash")
-  normalizerContractVersion Int?    @map("normalizer_contract_version")
-  definitionContent         String? @map("definition_content")
-  localComponentId          String? @map("local_component_id")
-  localComponentVersionId   String? @map("local_component_version_id")
-  gitBranch                 String? @map("git_branch")
-  repositoryFullName        String? @map("repository_full_name")
+  anchorKind                String   @map("anchor_kind")
+  anchorValue               String   @map("anchor_value")
+  providerToolUseId         String?  @map("provider_tool_use_id")
+  attributionStatus         String   @map("attribution_status")
+  evidenceClass             String   @map("evidence_class")
+  evidencePointer           Json?    @map("evidence_pointer")
+  definitionHash            String?  @map("definition_hash")
+  normalizerContractVersion Int?     @map("normalizer_contract_version")
+  definitionContent         String?  @map("definition_content")
+  localComponentId          String?  @map("local_component_id")
+  localComponentVersionId   String?  @map("local_component_version_id")
+  gitBranch                 String?  @map("git_branch")
+  repositoryFullName        String?  @map("repository_full_name")
   // FEA-4093: whether a firing SUCCEEDED. NULL for kinds whose success/failure
   // is not a first-class transcript fact (every kind but Hook today); a Hook
   // invocation stores 1/0 from the `attachment` type (hook_success vs
@@ -1183,21 +1827,66 @@ model AgentComponentInvocation {
   // representable. The component-level rollup (agent_component_session_usage)
   // DERIVES its totals and its model SET by aggregating these rows.
   //
-  // (a) REAL per-SUBAGENT token/model/cost: a subagent invocation carries the
-  //     model it ran and that turn's usage; other kinds leave them NULL.
-  model                     String? @map("model")
-  inputTokens               BigInt? @map("input_tokens")
-  outputTokens              BigInt? @map("output_tokens")
-  cacheReadTokens           BigInt? @map("cache_read_tokens")
-  cacheWriteTokens          BigInt? @map("cache_write_tokens")
-  estimatedCost             Float?  @map("estimated_cost")
+  // (a) REAL per-invocation token/model/cost. ISS-7795 widened this from
+  //     subagent-only: a SKILL or COMMAND invocation now carries the model that
+  //     served it and the tokens the harness attributed to its own turns, read
+  //     from the per-turn `attributionSkill` stamp. Kinds the producer cannot
+  //     measure (tool, mcp, orchestration, hook) still leave them NULL.
+  //     `usageMeasurement` says which population a row belongs to and is
+  //     mandatory whenever any of these is set — see below.
+  model                     String?  @map("model")
+  inputTokens               BigInt?  @map("input_tokens")
+  outputTokens              BigInt?  @map("output_tokens")
+  cacheReadTokens           BigInt?  @map("cache_read_tokens")
+  cacheWriteTokens          BigInt?  @map("cache_write_tokens")
+  estimatedCost             Float?   @map("estimated_cost")
   // (b) Per-component result-FOOTPRINT tokens — the deterministic "tokens this
   //     component injected into context" metric, computed for ALL kinds:
   //     tool/MCP = tool_result output, skill = SKILL.md body + pulled content,
   //     command = expanded template, hook = stdout.
-  footprintTokens           BigInt? @map("footprint_tokens")
-  createdAt                 String  @map("created_at")
-  updatedAt                 String  @map("updated_at")
+  /// ISS-10713: measured elapsed milliseconds; NULL when no matched result exists.
+  /// The shipped migration (20261020152140) declares INTEGER and DEFAULT 0, and
+  /// installed Desktops have applied it, so the schema follows the migration.
+  durationMs        Int?    @map("duration_ms")
+  durationAmbiguous Boolean @default(dbgenerated("0")) @map("duration_ambiguous")
+  footprintTokens           BigInt?  @map("footprint_tokens")
+  // ISS-7795: which population the values above belong to — `measured` (counted
+  // for this invocation itself) or `estimated` (derived, e.g. a share of a
+  // session average). NULL means no telemetry at all, never "measured zero".
+  // The producer emits only `measured` today; the column exists so an estimated
+  // row can never later be folded into the same total unlabelled.
+  usageMeasurement          String?  @map("usage_measurement")
+  // ISS-10730: the lines THIS invocation changed, from the tool call's own
+  // `diffDelta`. A THIRD population, additive with neither telemetry block
+  // above. Only the kinds built from one transcript tool call (tool / mcp /
+  // orchestration — LINE_BEARING_INVOCATION_KINDS) carry them, and that set is
+  // disjoint from the usage-bearing kinds. NULL means "not computed", never a
+  // measured zero; attribution does not nest, so a subagent's lines are a
+  // read-time SUM over its own tool rows rather than a second stored copy.
+  linesAdded                Int?     @map("lines_added")
+  linesRemoved              Int?     @map("lines_removed")
+  // ISS-7796 / ISS-10725: the findings funnel at this invocation's grain, the
+  // desktop twin of the cloud columns added in the same change. SQLite dialect:
+  // BigInt -> INTEGER. Both nullable with NO default — NULL means "not
+  // measured", never a measured zero.
+  //
+  // EXACTLY TWO COLUMNS: `confirmed` and the rate are derived at read, never
+  // stored. The sync item reads from here; without these columns the desktop
+  // could never emit a v5 part.
+  findingsEmitted           BigInt?  @map("findings_emitted")
+  findingsInvalidated       BigInt?  @map("findings_invalidated")
+  // ISS-11325: WHY those two cells read what they read -- withheld for one of
+  // the ingest's three named reasons, carried forward from an earlier run, or
+  // measured by this one. NULL means this build recorded no disposition (every
+  // row written before this column); the read resolves that to `unrecorded`.
+  findingsDisposition       String?  @map("findings_disposition")
+  // ISS-10720: WHICH SOURCE attributed this invocation to its component --
+  // a second axis beside `evidence_class`, which answers where the DEFINITION
+  // came from. NULL means the transcript attributed it, which is every row
+  // written before this column and every row the OTel join does not reach.
+  attributionSource         String?  @map("attribution_source")
+  createdAt                 String   @map("created_at")
+  updatedAt                 String   @map("updated_at")
 
   // SQLite PSL cannot map FK names; migration 0031 pins the corresponding DDL
   // names while these relations pin the same structural delete/update actions.
@@ -1211,10 +1900,19 @@ model AgentComponentInvocation {
   @@index([sessionId, sequence], map: "idx_aci_session_sequence")
   @@index([externalSourceId], map: "idx_aci_external_source", where: raw("external_source_id IS NOT NULL"))
   @@index([componentKind, componentKey, invokedAt], map: "idx_aci_kind_key_invoked_at")
+  // ISS-6843: partial on the component-detail probe's own predicate, so the
+  // unresolved-key `SELECT DISTINCT component_key` walks the index alone
+  // instead of taking a rowid table lookup per entry in the kind partition to
+  // evaluate `local_component_id IS NULL` as a residual.
+  @@index([componentKind, componentKey], map: "idx_aci_unlinked_kind_key", where: raw("local_component_id IS NULL"))
   @@index([localComponentId, invokedAt], map: "idx_aci_component_invoked_at", where: raw("local_component_id IS NOT NULL"))
   @@index([localComponentId, gitBranch, invokedAt], map: "idx_aci_component_branch_invoked_at", where: raw("local_component_id IS NOT NULL"))
   @@index([localComponentVersionId, invokedAt], map: "idx_aci_component_version_invoked_at", where: raw("local_component_version_id IS NOT NULL"))
   @@index([attributionStatus, invokedAt], map: "idx_aci_status_invoked_at")
+  // ISS-11388: the child side of the two `agents` foreign keys. Without them
+  // every deleted `agents` row full-scans this table once per FK.
+  @@index([agentId], map: "idx_aci_agent_id", where: raw("agent_id IS NOT NULL"))
+  @@index([parentAgentId], map: "idx_aci_parent_agent_id", where: raw("parent_agent_id IS NOT NULL"))
   @@map("agent_component_invocations")
 }
 
@@ -1223,22 +1921,26 @@ model AgentComponentInvocation {
 // the same generation, part index, and hash. No session FK: pending parts must
 // survive local session deletion and remain replayable after restart/API skew.
 model AgentComponentInvocationSyncOutbox {
-  sourceKey            String  @map("source_key")
-  externalSessionId    String  @map("external_session_id")
-  externalGenerationId String  @map("external_generation_id")
-  partIndex            Int     @map("part_index")
-  partCount            Int     @map("part_count")
-  partHash             String  @map("part_hash")
-  sourceUpdatedAt      String  @map("source_updated_at")
-  dataRevision         Int     @map("data_revision")
-  sourceSequence       Int     @map("source_sequence")
-  payload              Json
-  status               String  @default("pending")
-  attemptCount         Int     @default(0) @map("attempt_count")
-  nextAttemptAt        String? @map("next_attempt_at")
-  lastError            String? @map("last_error")
-  createdAt            String  @map("created_at")
-  updatedAt            String  @map("updated_at")
+  sourceKey               String  @map("source_key")
+  externalSessionId       String  @map("external_session_id")
+  externalGenerationId    String  @map("external_generation_id")
+  partIndex               Int     @map("part_index")
+  partCount               Int     @map("part_count")
+  partHash                String  @map("part_hash")
+  sourceUpdatedAt         String  @map("source_updated_at")
+  dataRevision            Int     @map("data_revision")
+  sourceSequence          Int     @map("source_sequence")
+  payload                 Json
+  status                  String  @default("pending")
+  attemptCount            Int     @default(0) @map("attempt_count")
+  permanentAttemptCount   Int?    @map("permanent_attempt_count")
+  laneStalledSince        String? @map("lane_stalled_since")
+  deadLetterRecoveryCount Int?    @map("dead_letter_recovery_count")
+  nextAttemptAt           String? @map("next_attempt_at")
+  lastError               String? @map("last_error")
+  pendingSince            String? @map("pending_since")
+  createdAt               String  @map("created_at")
+  updatedAt               String  @map("updated_at")
 
   @@id([sourceKey, externalSessionId, externalGenerationId, partIndex])
   @@index([sourceKey, status, nextAttemptAt], map: "idx_agent_component_invocation_sync_outbox_ready")
@@ -1259,107 +1961,27 @@ model AgentComponentInvocationSyncCursor {
   @@map("agent_component_invocation_sync_cursors")
 }
 
-// FEA-3813 (PRD-553 M1): desktop-local mirror of the crewd (@repo/crewd)
-// scheduler's Zod `ScheduledTask`. Not a new source of truth — the durable copy
-// of what the in-memory `SqliteTaskStore` (StorePort) holds, so the daemon and
-// the read surface (M2) survive a restart. Enum-ish columns (`kind`, `lastStatus`)
-// are free TEXT: the crewd Zod schema (passKindSchema / runStatusSchema) is the
-// validator, so adding a pass kind or run status is a crewd change, never a
-// desktop migration. `harnessCascade` / `meta` are JSON strings (the crewd model
-// serializes them that way). Timestamps are TEXT ISO-8601, matching every other
-// desktop table. No FK to any harness/session table — a scheduled task is its own
-// top-level entity. Runs cascade-delete with their task.
-model ScheduledTask {
-  id             String  @id
-  name           String
-  cron           String
-  prompt         String  @default("")
-  recurring      Boolean @default(true)
-  durable        Boolean @default(true)
-  crew           String  @default("")
-  // crewd passKindSchema value (review | apply | barry | sentinel | custom).
-  kind           String  @default("custom")
-  // crewd taskRouteSchema value (local-cascade | claude-routine) — the capability
-  // broker's per-task route (FEA-3816). local-cascade runs via the daemon cascade;
-  // claude-routine hands the task to a Claude cloud routine.
-  route          String  @default("local-cascade")
-  pass           String?
-  // JSON-encoded HarnessName[] (e.g. ["codex","opencode","claude"]); empty array
-  // "[]" falls back to the daemon's global default cascade.
-  harnessCascade String  @default("[]") @map("harness_cascade")
-  // IANA tz for cron evaluation; empty string = host local time.
-  timezone       String  @default("")
-  enabled        Boolean @default(true)
-  // Run once on next tick when a scheduled fire was missed (laptop asleep).
-  catchUp        Boolean @default(true) @map("catch_up")
-  // JSON-encoded open extension bag; never load-bearing for scheduling.
-  meta           String  @default("{}")
-  nextRunAt      String? @map("next_run_at")
-  lastRunAt      String? @map("last_run_at")
-  lastRunId      String? @map("last_run_id")
-  // crewd runStatusSchema value of the most recent run, or null before first fire.
-  lastStatus     String? @map("last_status")
-  // ISS-4814: durable fire cursor for a one-time (recurring=false) task — the
-  // instant its single fire was STARTED, written in the same statement as the
-  // launch stamp above. Null = not yet fired, so the daemon refuses to re-fire a
-  // one-time task after a crash without conflating that state with the
-  // operator's `enabled` pause. Migration 0047 backfills it from `last_run_at`
-  // for one-time tasks that already fired under an older build, so an upgrade
-  // does not re-launch a crash survivor.
-  firedAt        String? @map("fired_at")
-  createdAt      String  @map("created_at")
-  updatedAt      String  @map("updated_at")
-
-  runs ScheduledTaskRun[]
-
-  @@index([enabled], map: "idx_scheduled_tasks_enabled")
-  @@map("scheduled_tasks")
-}
-
-// FEA-3813 (PRD-553 M1): one completed (or in-flight) run of a ScheduledTask —
-// the run-history the M2 UI lists. Mirrors the crewd `RunRecord`. `status` is a
-// free-TEXT crewd runStatusSchema value; `attempts` is a JSON-encoded
-// CascadeAttempt[] (the visible cascade trail). Cascade-deletes with its task.
-model ScheduledTaskRun {
-  id          String  @id
-  taskId      String  @map("task_id")
-  taskName    String  @default("") @map("task_name")
-  status      String
-  startedAt   String  @map("started_at")
-  finishedAt  String? @map("finished_at")
-  harnessUsed String? @map("harness_used")
-  attempts    String  @default("[]")
-  summary     String  @default("")
-  logPath     String? @map("log_path")
-  error       String?
-
-  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([taskId, startedAt(sort: Desc)], map: "idx_scheduled_task_runs_task_started")
-  @@map("scheduled_task_runs")
-}
-
 // FEA-2923 (T-8.2): per-(component, session) invocation rows. Materialized at
 // import (no transcript re-parse) in the same transaction that rebuilds
-// session_tool_analytics. Composite PK (sessionId, componentKind, componentKey).
-// No FK on session_id — matches token_usage / session_tool_analytics convention
-// (a FK would drift prisma-migrations-agreement; see schema note at 208-211).
+// session_analytics. Composite PK (sessionId, componentKind, componentKey).
+// No FK on session_id — matches the token_usage convention (a FK would drift
+// prisma-migrations-agreement; see schema note at 208-211).
 // agentComponentId is nullable: null for built-in tools with no inventory row.
-// startedDay mirrors session_tool_analytics for time-series queries.
+// startedDay mirrors session_analytics for time-series queries.
 model AgentComponentSessionUsage {
-  sessionId        String  @map("session_id")
-  componentKind    String  @map("component_kind")
-  componentKey     String  @map("component_key")        // skill/command name, tool_name, mcp server, subagent_type
+  sessionId            String  @map("session_id")
+  componentKind        String  @map("component_kind")
+  componentKey         String  @map("component_key") // skill/command name, tool_name, mcp server, subagent_type
   // FEA-2990: the git branch this usage bucket ran on, derived from per-event
   // `events.git_branch`. Empty string '' is the sentinel for "no branch"
   // (Codex, legacy events, non-tool kinds) so it can sit in the composite PK
   // (SQLite PK columns are NOT NULL). A single session that switches branches
   // mid-run now produces one usage row per (component, branch).
-  gitBranch        String  @default("") @map("git_branch")
-  agentComponentId String? @map("agent_component_id")   // nullable: null for built-in tools
-  harness          String?
-  invocations      Int     @default(0)
-  errorCount       Int     @default(0) @map("error_count")
+  gitBranch            String  @default("") @map("git_branch")
+  agentComponentId     String? @map("agent_component_id") // nullable: null for built-in tools
+  harness              String?
+  invocations          Int     @default(0)
+  errorCount           Int     @default(0) @map("error_count")
   // FEA-2923: the component's content hash when this usage was recorded
   // (hash-at-invocation). Stamped from agent_components.content_hash at import;
   // null when the definition content is unknown (event-only components).
@@ -1372,9 +1994,14 @@ model AgentComponentSessionUsage {
   // model SET) is DERIVED by aggregating the invocation rows (Slice D read), so
   // mixed-model stays representable. See AgentComponentInvocation above for the
   // additive telemetry columns.
-  firstInvokedAt   String? @map("first_invoked_at")
-  lastInvokedAt    String? @map("last_invoked_at")
-  startedDay       String? @map("started_day")          // UTC day bucket, mirrors session_tool_analytics
+  firstInvokedAt       String? @map("first_invoked_at")
+  lastInvokedAt        String? @map("last_invoked_at")
+  // ISS-6760: storage-only UTC day bucket, mirrors session_analytics — NOT
+  // a group-by axis. `idx_acsu_day` below predates that rule and is a known
+  // outstanding index; a day series buckets `localDay(sessions.started_at)`, as
+  // optimization-analytics-queries.ts had to be corrected to do (FEA-2999). Full
+  // contract + the other two copies: session-analytics-rollup.ts's dayExpr note.
+  startedDay           String? @map("started_day")
 
   @@id([sessionId, componentKind, componentKey, gitBranch])
   @@index([componentKind, componentKey], map: "idx_acsu_kind_key")
@@ -1400,31 +2027,31 @@ model OpencodeWithheldSubagentRoot {
   /// RAW opencode session id of the root that could not be parsed. NOT unique on
   /// its own: opencode session ids are only unique WITHIN a store, so two stores
   /// can legitimately carry the same raw id. Identity is the composite below.
-  rootRawId String @map("root_raw_id")
+  rootRawId              String  @map("root_raw_id")
   /// Absolute path of the `opencode.db` the withholding load read.
-  sourcePath String @map("source_path")
+  sourcePath             String  @map("source_path")
   /// How many subagent sessions were withheld under this root. Always >= 1.
-  withheldCount Int @map("withheld_count")
+  withheldCount          Int     @map("withheld_count")
   /// Why the root row was dropped (OpencodeDroppedSession.reason).
-  reason String
+  reason                 String
   /// BILLABLE (input + output) token total across the withheld children, on the
   /// same basis as the dashboard headline total this shortfall is quoted against.
   /// NULL means UNAVAILABLE (the aggregate left the JS-safe integer range), never
   /// zero.
-  withheldTokens Int? @map("withheld_tokens")
+  withheldTokens         Int?    @map("withheld_tokens")
   /// Cache (read + write) token total across the withheld children, kept separate
   /// so neither figure is reconciled against a basis it was not measured on.
   /// NULL means UNAVAILABLE, never zero.
-  withheldCacheTokens Int? @map("withheld_cache_tokens")
+  withheldCacheTokens    Int?    @map("withheld_cache_tokens")
   /// Bounds of the affected window. NULL means the window is UNKNOWN (no child
   /// carried that instant), never a zero-length window.
   earliestChildStartedAt String? @map("earliest_child_started_at")
   latestChildEndedAt     String? @map("latest_child_ended_at")
   /// True when a withheld child carried no instants and was skipped, so the
   /// bounds above are a LOWER BOUND on the affected window, not its exact extent.
-  windowPartial Boolean @map("window_partial")
+  windowPartial          Boolean @map("window_partial")
   /// When the withhold was last observed.
-  observedAt String @map("observed_at")
+  observedAt             String  @map("observed_at")
 
   /// Composite identity. Scoping to `sourcePath` is what lets two stores hold the
   /// same raw root id without one store's upsert stealing the other's row, and it
@@ -1448,4 +2075,162 @@ model OpencodeWithheldScan {
   observedAt String @map("observed_at")
 
   @@map("opencode_withheld_scan")
+}
+
+/// ISS-9838: durable home for the collector ingest stores that used to be
+/// best-effort JSON files under the ingest state dir — the per-collector catchup
+/// cache, the per-collector parse quarantine, and the Codex rollout-linkage
+/// cache.
+///
+/// ONE ROW PER STORE, not per entry, and that is the point. ISS-9837 R3 ruled
+/// the version semantics as WHOLE-STORE DISCARD: `format_version` discriminates
+/// a FORMAT, and a format is a property of the store, never of a row. Keeping the
+/// grain at the store makes selective retention of rows written under a shape the
+/// code no longer understands unrepresentable rather than merely discouraged.
+/// It also matches how these stores actually write: `flush()` rewrites the whole
+/// map on a 10s throttle, so a row-per-entry table would be a delete-all plus
+/// insert-all sweep of thousands of rows every tick.
+///
+/// `payload` is the JSON object of entries, keyed by absolute source path. Its
+/// shape is owned by the reading store (each validates its own entries on
+/// hydrate); nothing here reads inside it, so no SQL depends on that shape.
+model CollectorIngestStore {
+  /// Store identity, e.g. `catchup-cache:claude`, `parse-quarantine:codex`,
+  /// `codex-linkage`. Minted by `dashboard/ingest-store-provider.ts`.
+  storeKey      String @id @map("store_key")
+  /// The writing store's own version constant. A reader whose constant differs
+  /// discards the whole payload.
+  formatVersion Int    @map("format_version")
+  /// JSON object of entries. Opaque here.
+  payload       String
+  /// When this snapshot was last written, for diagnostics only.
+  updatedAt     String @map("updated_at")
+
+  @@map("collector_ingest_stores")
+}
+
+/// ISS-9839 (ISS-9837 R1c/R3/R4): the ISS-5161 BATCH-harness resume cursor,
+/// moved off a JSON file in the ingest state dir into the same database as the
+/// sessions it names. OpenCode is the only batch harness; its `listSources()`
+/// returns one sentinel for the whole store, so there is no per-file catchup
+/// marker and this is the only checkpoint an interrupted backfill can resume
+/// from.
+///
+/// ONE row, always `id = 'batch-resume'` (`INGEST_BATCH_RESUME_CURSOR_ID`). The
+/// cursor is a WHOLE-STORE value carrying a store-wide FORMAT version, so a
+/// payload written under a version the running
+/// build does not know is discarded wholesale. There is deliberately no per-row
+/// version column: per-row versioning is what makes selective retention of rows
+/// a newer build misreads easy, which is the shape that loses data. `cursors`
+/// holds the serialized cursor map, validated with Zod on the way in.
+model IngestBatchResumeCursor {
+  /// Constant singleton key — see `INGEST_BATCH_RESUME_CURSOR_ID`. A `String`
+  /// rather than an `Int` because Prisma emits AUTOINCREMENT for an integer
+  /// SQLite primary key, and nothing here ever allocates a second row.
+  id      String @id
+  version Int    @map("version")
+  cursors String @map("cursors")
+
+  @@map("ingest_batch_resume_cursor")
+}
+
+/// ISS-10717: the dropped-signal counter. Before this table the three places a
+/// Claude Code OTel signal can be lost all logged and discarded the loss, so
+/// nothing downstream could say how complete the corpus was: a session with no
+/// permission events looked identical whether the harness emitted none or the
+/// receiver evicted the export carrying them.
+///
+/// AGGREGATE, not per-signal. Two of the three losses happen before anything
+/// knows which session the signal belonged to — an ACKed export evicted under
+/// backpressure was never decoded past its envelope — so a per-session column
+/// would have to invent an attribution it does not have. The grain here is
+/// exactly what is knowable: (harness, reason), counted, with the window it was
+/// observed over.
+///
+/// `dropped_count` is a monotonically increasing BigInt and the row is upserted
+/// with an atomic increment, so concurrent exports cannot lose a count to a
+/// read-modify-write race.
+model ClaudeCodeSignalDrop {
+  /// `${harness}:${reason}` — derived, so the upsert has a primary key to
+  /// conflict on without a second round trip to look one up.
+  id              String @id
+  harness         String
+  /// A `ClaudeCodeSignalDropReason` member. Stored as text rather than a closed
+  /// SQLite domain so a build that adds a reason can write it into a database a
+  /// previous build created.
+  reason          String
+  droppedCount    BigInt @default(0) @map("dropped_count")
+  /// The `dropped_count` the CLOUD ACKNOWLEDGED, and this counter's whole
+  /// delivery watermark (invariant 1: advanced only on a verified ack). Without
+  /// it the counters could only travel as a passenger on a session delivery, and
+  /// the one case that matters is the one where no session is dirty — an export
+  /// lost before any signal row is persisted moves this column's sibling and
+  /// nothing else, so the loss would never leave the machine and cloud would keep
+  /// reading it as complete. `dropped_count <> synced_count` IS "owed".
+  ///
+  /// Defaults to 0, so a brand-new `(harness, reason)` row is owed from birth,
+  /// and the recorder never writes it: an increment must not mark itself
+  /// delivered.
+  syncedCount     BigInt @default(0) @map("synced_count")
+  firstObservedAt String @map("first_observed_at")
+  lastObservedAt  String @map("last_observed_at")
+
+  @@unique([harness, reason], map: "idx_claude_code_signal_drop_natural")
+  @@map("claude_code_signal_drop")
+}
+
+/// ISS-10717: the Claude Code telemetry lane's delivered watermark.
+///
+/// One row per `(source_key, session_id)`. `source_key` is target-scoped
+/// (`claude_code_telemetry:<computeTargetId>`) per invariant 2 in
+/// `main/sync/AGENTS.md`, so signing into a different compute target does not
+/// inherit the previous target's deliveries.
+///
+/// `synced_observed_to` is the newest `observed_at` the CLOUD ACKNOWLEDGED, and
+/// it is written only on a verified ack (invariant 1). A session whose corpus has
+/// since moved past this watermark is owed another delivery; one that has not is
+/// not re-sent. A cursor rather than an outbox because the payload is DERIVED
+/// state: the `claude_code_*` rows are the durable obligation and the rollup can
+/// always be recomputed from them, so there is nothing a queue row would hold
+/// that the source does not.
+model ClaudeCodeTelemetrySyncCursor {
+  sourceKey        String @map("source_key")
+  sessionId        String @map("session_id")
+  syncedObservedTo String @map("synced_observed_to")
+  /// Consecutive SERVER-ATTRIBUTABLE rejections of this session's rollup. Only a
+  /// 400 charges it; every lane-wide failure leaves it alone, so a cloud outage
+  /// can never walk a healthy session to its ceiling.
+  rejectedAttempts Int    @default(0) @map("rejected_attempts")
+  /// Consecutive `session_not_found` acks. The cloud row is created by the
+  /// SESSION lane, which runs independently, so this race is ordinary and must
+  /// not charge the rejection budget — but it must still be BOUNDED: the
+  /// candidate query is oldest-owed-first, so a session whose cloud row will
+  /// never exist would otherwise sit at the head of every page forever and
+  /// starve the sessions that can actually be delivered.
+  deferredAttempts Int    @default(0) @map("deferred_attempts")
+  /// The DATA_REVISION this watermark was written under (invariant 7). A cursor
+  /// stamped with a stale revision reads as ABSENT, so a change to what the
+  /// rollup computes forces exactly one re-walk instead of hiding the
+  /// correction behind a watermark the corpus will never move past.
+  dataRevision     Int    @default(1) @map("data_revision")
+  /// Why this session was passed, when it was. Set only at the ceiling, together
+  /// with a watermark advance that takes the row out of the owed set — an
+  /// in-memory abandon list would grow with the session corpus and forget itself
+  /// on restart, so a session the cloud will never accept would occupy a slot in
+  /// every page forever. NULL is the steady state.
+  lastError        String? @map("last_error")
+  updatedAt        String @map("updated_at")
+
+  @@id([sourceKey, sessionId])
+  @@map("claude_code_telemetry_sync_cursor")
+}
+
+// ISS-10332: the cloud's `Priority` vocabulary (`@repo/api/src/types/common`).
+// SQLite has no enum type, so the columns are TEXT; the typed client is what
+// keeps a value outside this set from being written.
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
 }

@@ -14,6 +14,7 @@ import {
 import { Label } from "@repo/design-system/components/ui/label";
 import { Switch } from "@repo/design-system/components/ui/switch";
 import { Loader2Icon } from "lucide-react";
+import { ORG_POLICY_SAVE_FAILED_MESSAGE } from "../lib/org-policy-toggle-state";
 
 const TOGGLE_ID = "calculate-session-frustration";
 const TOGGLE_DESCRIPTION_ID = "calculate-session-frustration-description";
@@ -51,7 +52,7 @@ export function SessionFrustrationToggleCard({
       <CardContent className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <Label htmlFor={TOGGLE_ID}>Score sessions for frustration</Label>
+            <Label htmlFor={TOGGLE_ID}>{FRUSTRATION_TOGGLE_LABEL}</Label>
             <p
               className="text-muted-foreground text-sm"
               id={TOGGLE_DESCRIPTION_ID}
@@ -77,7 +78,7 @@ export function SessionFrustrationToggleCard({
         {hasSaveError ? (
           <Alert id={SAVE_ALERT_ID} variant="error">
             <AlertDescription>
-              Couldn't save that change. Try again.
+              {ORG_POLICY_SAVE_FAILED_MESSAGE}
             </AlertDescription>
           </Alert>
         ) : null}
@@ -114,3 +115,5 @@ export function SessionFrustrationErrorState({
     </Card>
   );
 }
+
+export const FRUSTRATION_TOGGLE_LABEL = "Score sessions for frustration";

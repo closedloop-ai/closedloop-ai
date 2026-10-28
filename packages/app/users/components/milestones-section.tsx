@@ -7,12 +7,7 @@ import type {
 import { Alert, AlertTitle } from "@repo/design-system/components/ui/alert";
 import { Card, CardContent } from "@repo/design-system/components/ui/card";
 import { cn } from "@repo/design-system/lib/utils";
-import {
-  FileTextIcon,
-  GitMergeIcon,
-  type LucideIcon,
-  ZapIcon,
-} from "lucide-react";
+import { FileTextIcon, GitMergeIcon, type LucideIcon } from "lucide-react";
 import {
   formatMilestoneEarned,
   MilestoneIcon,
@@ -37,7 +32,6 @@ const MILESTONE_ICON_TONE = "text-primary";
 const MILESTONE_ICON_COMPONENT: Record<MilestoneIcon, LucideIcon> = {
   [MilestoneIcon.GitMerge]: GitMergeIcon,
   [MilestoneIcon.FileText]: FileTextIcon,
-  [MilestoneIcon.Zap]: ZapIcon,
 };
 
 type MilestonesSectionProps = {

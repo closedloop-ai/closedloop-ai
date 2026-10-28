@@ -29,7 +29,7 @@
  * loop (they are durably in the outbox), so a live inject can NEVER preempt the
  * initial full-walk.
  *
- * DEAD-LETTER RECOVERY (ISS-4546, PR #4098 review, shafty023): an injected id can
+ * DEAD-LETTER RECOVERY (ISS-4546, PR #4098 review, davetho): an injected id can
  * be one the sync lane previously set aside as a `dead_lettered` straggler. The
  * durable `enqueueOutboxEntries` preserves that status (it never resurrects a row
  * to `pending`), and the plain dedup skip would refuse the id from the live queue
@@ -75,7 +75,7 @@ export type BackfillQueueFeedContext = BackfillQueueFeedState & {
   /** The source key for the currently-resolved identity (`null` offline/unauthenticated). */
   resolveSyncSourceKey(): string | null;
   /**
-   * ISS-4546 (PR #4098 review, shafty023): durably re-pend the given id's
+   * ISS-4546 (PR #4098 review, davetho): durably re-pend the given id's
    * `dead_lettered` outbox row back to `pending` and clear its in-memory
    * dead-letter/failure state, so an injected id the sync lane had set aside
    * becomes eligible for the live queue again (mirrors `promoteDeadLetterIfIdle`'s
@@ -159,7 +159,7 @@ export function injectIdsIntoLiveQueue(
   ) {
     return;
   }
-  // DEAD-LETTER RECOVERY (shafty023): re-pend any injected id the sync lane had
+  // DEAD-LETTER RECOVERY (davetho): re-pend any injected id the sync lane had
   // set aside as a dead-letter BEFORE the dedup feed, so a genuinely-changed
   // session is no longer refused from the live queue and left parked as a
   // dead-letter. Recovery clears it from `deadLetteredIds` so

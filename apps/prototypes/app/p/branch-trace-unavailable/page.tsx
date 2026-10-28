@@ -7,6 +7,18 @@
 // is that page; only the Sessions & timeline tab body is reimplemented, with
 // the degraded-state rendering the production tab is missing.
 
+import { BranchCommentsPanel } from "@repo/app/branches/components/prototype-preview/components/branch-comments-panel";
+import { BranchDetailTab } from "@repo/app/branches/components/prototype-preview/components/branch-detail";
+import { BranchFilesChangedPanel } from "@repo/app/branches/components/prototype-preview/components/branch-files-changed-panel";
+import {
+  BranchChecksReviewPanel,
+  BranchCostToMerge,
+  BranchDeliveredPanel,
+  BranchHeadlineCards,
+  BranchLeadTimeWaterfall,
+  BranchPropertiesPanel,
+} from "@repo/app/branches/components/prototype-preview/components/detail-panels";
+import type { BranchDetail } from "@repo/app/branches/components/prototype-preview/mock";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   UnderlineTabsList,
@@ -20,18 +32,6 @@ import {
 import { PanelRightIcon } from "lucide-react";
 import { useState } from "react";
 import { AppShell } from "@/app/p/branches/components/app-shell";
-import { BranchCommentsPanel } from "@/app/p/branches/components/branch-comments-panel";
-import { BranchDetailTab } from "@/app/p/branches/components/branch-detail";
-import { BranchFilesChangedPanel } from "@/app/p/branches/components/branch-files-changed-panel";
-import {
-  BranchChecksReviewPanel,
-  BranchCostToMerge,
-  BranchDeliveredPanel,
-  BranchHeadlineCards,
-  BranchLeadTimeWaterfall,
-  BranchPropertiesPanel,
-} from "@/app/p/branches/components/detail-panels";
-import type { BranchDetail } from "@/app/p/branches/mock";
 import { DegradedSessionsTimeline } from "./components/sessions-timeline-degraded";
 import {
   BUG_DETAIL,

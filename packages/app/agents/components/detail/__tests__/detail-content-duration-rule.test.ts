@@ -8,10 +8,8 @@ import {
   SESSION_DURATION_RUNNING_DETAIL,
 } from "../../../lib/session-duration";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
-import {
-  buildSessionDetailContent,
-  DURATION_UNRECORDED_DETAIL,
-} from "../detail-content";
+import { buildSessionDetailContent } from "../detail-content";
+import { DURATION_UNRECORDED_DETAIL } from "../session-detail-captions";
 
 /**
  * ISS-5131: the session-DETAIL half of the Duration rule — `now - start` while
@@ -35,9 +33,12 @@ const ENDED_AT = new Date("2026-06-10T12:30:00.000Z");
  */
 const RUNNING_FIXTURE_NOW = new Date("2026-06-10T12:30:00.000Z");
 /**
- * ISS-5575: comfortably past {@link STALE_SESSION_DISPLAY_THRESHOLD_HOURS} from
- * {@link STARTED_AT}, so a stored-`active` fixture anchored there has folded to
- * "Stale" — the state the Sessions list already renders as the em-dash.
+ * Comfortably past {@link STALE_SESSION_DISPLAY_THRESHOLD_HOURS} from
+ * {@link STARTED_AT} — exactly 30h later (24h threshold + 6h). ISS-5575 used
+ * this instant to prove a stored-`active` fixture anchored there had folded to
+ * "Stale". ISS-10364 (operator ruling, 2026-09-23) retired that fold, so the
+ * same instant now proves the opposite: the fixture keeps timing straight
+ * through the old cutoff.
  */
 const STALE_FIXTURE_NOW = new Date(
   STARTED_AT.getTime() + (STALE_SESSION_DISPLAY_THRESHOLD_HOURS + 6) * 3_600_000
@@ -84,10 +85,11 @@ const endedSession = createAgentSessionDetailFixture({
 });
 
 /**
- * ISS-5575: a stored-`active` run that has gone silent past the display cutoff.
- * The Sessions LIST folds it to "Stale" and its Duration cell to the em-dash;
- * until the fold reached `buildSessionDetailContent`, the detail's Duration card
- * kept a number climbing against `now()` for the same record.
+ * A stored-`active` run that has gone silent past the (now-retired for this
+ * purpose) display cutoff. ISS-5575 folded it to "Stale" and emptied its
+ * Duration cell; ISS-10364 removed that fold, so the name is legacy but the
+ * fixture is still useful — it is the population that most directly exercises
+ * "does staleness still stop the clock" (it no longer does).
  */
 const staleActiveSession = createAgentSessionDetailFixture({
   status: SESSION_STATUS.ACTIVE,
@@ -166,21 +168,22 @@ describe("session detail Duration — ISS-5131 wall-time rule", () => {
     );
   });
 
-  it("stops timing a stored-active run the list has already folded to Stale", () => {
-    // ISS-5575: BOTH detail-content Duration surfaces resolve their window from
-    // the DISPLAYED status now, so neither can keep timing a run the Sessions
-    // list has stopped believing is live. Reverting either call site back to
-    // `resolveSessionDurationWindow(session.status, session.endedAt)` reds this:
-    // the raw `active` reads as running and the card reports "30h 0m".
+  it("keeps timing a stored-active run now that staleness no longer folds it (ISS-10364)", () => {
+    // ISS-10364 (operator ruling, 2026-09-23): `resolveDisplayedSessionStatus`
+    // dropped the staleness fold, so a stored `active` row with no end instant
+    // resolves to a RUNNING window no matter how long it has gone silent — this
+    // is the change landing, not a regression of the ISS-5575 rule above it.
+    // STALE_FIXTURE_NOW is exactly 30h after STARTED_AT (the 24h threshold plus
+    // 6h), so the window measures `now - startedAt` = 30h 0m.
     vi.useFakeTimers();
     vi.setSystemTime(STALE_FIXTURE_NOW);
-    expect(durationMetric(staleActiveSession).value).toBeNull();
+    expect(durationMetric(staleActiveSession).value).toBe("30h 0m");
     expect(durationMetric(staleActiveSession).detail).toBe(
-      DURATION_UNRECORDED_DETAIL
+      SESSION_DURATION_RUNNING_DETAIL
     );
-    expect(overview(staleActiveSession).durationLabel).toBeNull();
+    expect(overview(staleActiveSession).durationLabel).toBe("30h 0m");
     expect(overview(staleActiveSession).durationDetail).toBe(
-      DURATION_UNRECORDED_DETAIL
+      SESSION_DURATION_RUNNING_DETAIL
     );
   });
 
@@ -240,7 +243,7 @@ describe("session detail Duration — ISS-5131 wall-time rule", () => {
 });
 
 /**
- * ISS-5131 (wongk, #4409): the "Ended" metadata row is derived from the SAME
+ * ISS-5131 (whitlockk, #4409): the "Ended" metadata row is derived from the SAME
  * window the Duration cards resolved. Branching on `endedAt` alone put two
  * contradicting facts on one screen in both directions.
  */

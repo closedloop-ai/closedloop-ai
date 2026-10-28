@@ -2,8 +2,6 @@ import { useEffect } from "react";
 
 type DesktopEventMap = {
   "desktop:navigate-tab": CustomEvent<string>;
-  "desktop:navigate-settings-tab": CustomEvent<string>;
-  "desktop:command-keys-changed": CustomEvent;
   "desktop:update-available": CustomEvent<unknown>;
   "desktop:update-status": CustomEvent<unknown>;
   "desktop:onboarding-state-changed": CustomEvent;

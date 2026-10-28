@@ -27,7 +27,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import {
   BatchResumeCursors,
@@ -39,10 +39,10 @@ import {
   MIN_SESSIONS_PER_LIVE_YIELD_QUANTUM,
   MIN_SOURCES_PER_LIVE_YIELD_QUANTUM,
 } from "../src/main/collectors/engine/collector-manager-low-duty-pacing.js";
-import { ingestBatchResumeCursorPath } from "../src/main/collectors/engine/ingest-paths.js";
 import type { HarnessCollector } from "../src/main/collectors/types.js";
 import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { deferred } from "./deferred.js";
+import { batchResumeCursorMedium } from "./helpers/batch-resume-cursor-fixtures.js";
 import {
   fakeFsWatcher,
   noopCooperativeDelay,
@@ -63,7 +63,7 @@ const ADVERSARY_RESUMES = 6;
 // this run took 7 entries and imported exactly ONE source in each of the first
 // six — the starvation signature.
 const MAX_EXPECTED_ENTRIES = 3;
-// thadeusb review: the CollectorManager cases below await a convergence signal
+// tamsinb review: the CollectorManager cases below await a convergence signal
 // (`onBootImportComplete`) that a regression can simply never produce, so they
 // must carry their own `node:test` timeout rather than lean on the runner
 // default — a manager that never converges then fails fast instead of hanging
@@ -129,7 +129,6 @@ test("ISS-5028: a never-draining live-event queue cannot starve the first backfi
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -146,7 +145,7 @@ test("ISS-5028: a never-draining live-event queue cannot starve the first backfi
 
     manager.start();
     await bootComplete.promise;
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       listSourcesCalls <= MAX_EXPECTED_ENTRIES,
@@ -248,7 +247,7 @@ test("ISS-5028: a quiet event queue still never yields, whatever the quantum", (
   assert.equal(gate.shouldYield(), false);
 });
 
-// ISS-5028 (wongk review): the two yield sites are NOT equivalent. A source
+// ISS-5028 (whitlockk review): the two yield sites are NOT equivalent. A source
 // boundary has a checkpoint (the source is marked/committed, so the resume skips
 // it); a mid-source yield has none, so the resumed pass re-lists, re-scans and
 // re-parses the whole source. Letting elapsed time open that site would make a
@@ -369,11 +368,11 @@ test("ISS-5028: an unmatched unpark cannot rewind the quantum clock", () => {
   );
 });
 
-// ISS-5028 (wongk review): the checkpoint a mid-source yield needs. Keyed on
+// ISS-5028 (whitlockk review): the checkpoint a mid-source yield needs. Keyed on
 // SESSION IDENTITY (a snapshot key is invalidated by the very writes that cause
 // the yield) and dropped at the source's terminal outcome, so it can only ever
 // fast-forward between two quanta of one uninterrupted source.
-test("ISS-5028: the batch resume cursor is scoped per source and dropped on completion", () => {
+test("ISS-5028: the batch resume cursor is scoped per source and dropped on completion", async () => {
   const cursors = new BatchResumeCursors();
   // ISS-5161 (review H2): the fingerprint gates EVERY cursor, in memory as well
   // as from disk — see `BatchResumeCursors.validateEntry`. This case is about
@@ -384,35 +383,53 @@ test("ISS-5028: the batch resume cursor is scoped per source and dropped on comp
   // `ingest-batch-resume-cursor-store.test.ts`.
   const fp = "opencode.db:1000:512";
 
-  cursors.noteImported("opencode", "/store.db", "s1", fp);
-  assert.equal(cursors.isImported("opencode", "/store.db", "s1", fp), true);
-  assert.equal(cursors.isImported("opencode", "/store.db", "s2", fp), false);
+  await cursors.noteImported("opencode", "/store.db", "s1", fp);
   assert.equal(
-    cursors.isImported("claude", "/store.db", "s1", fp),
+    await cursors.isImported("opencode", "/store.db", "s1", fp),
+    true
+  );
+  assert.equal(
+    await cursors.isImported("opencode", "/store.db", "s2", fp),
+    false
+  );
+  assert.equal(
+    await cursors.isImported("claude", "/store.db", "s1", fp),
     false,
     "cursors do not leak across harnesses"
   );
   assert.equal(
-    cursors.isImported("opencode", "/other.db", "s1", fp),
+    await cursors.isImported("opencode", "/other.db", "s1", fp),
     false,
     "nor across sources of the same harness"
   );
 
-  cursors.noteImported("opencode", "/store.db", "s2", fp);
-  assert.equal(cursors.isImported("opencode", "/store.db", "s2", fp), true);
+  await cursors.noteImported("opencode", "/store.db", "s2", fp);
+  assert.equal(
+    await cursors.isImported("opencode", "/store.db", "s2", fp),
+    true
+  );
 
   // The source reached a terminal outcome: a later retry must re-read every
   // session, or an append that landed after the first import is skipped forever.
-  cursors.forget("opencode", "/store.db");
-  assert.equal(cursors.isImported("opencode", "/store.db", "s1", fp), false);
-  assert.equal(cursors.isImported("opencode", "/store.db", "s2", fp), false);
+  await cursors.forget("opencode", "/store.db");
+  assert.equal(
+    await cursors.isImported("opencode", "/store.db", "s1", fp),
+    false
+  );
+  assert.equal(
+    await cursors.isImported("opencode", "/store.db", "s2", fp),
+    false
+  );
 
-  cursors.noteImported("opencode", "/store.db", "s3", fp);
+  await cursors.noteImported("opencode", "/store.db", "s3", fp);
   cursors.clear();
-  assert.equal(cursors.isImported("opencode", "/store.db", "s3", fp), false);
+  assert.equal(
+    await cursors.isImported("opencode", "/store.db", "s3", fp),
+    false
+  );
 });
 
-// wongk review (ISS-5028): "cover repeated timed yields through CollectorManager;
+// whitlockk review (ISS-5028): "cover repeated timed yields through CollectorManager;
 // the gate-only test cannot catch this." A BATCH harness is one source holding
 // the whole corpus, so a mid-source yield leaves nothing marked and the resumed
 // pass re-parses the store from session zero. Without a resume cursor the pass
@@ -478,7 +495,6 @@ test("ISS-5028: repeated mid-source yields walk forward through a batch store in
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -495,7 +511,7 @@ test("ISS-5028: repeated mid-source yields walk forward through a batch store in
 
     manager.start();
     await bootComplete.promise;
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       listSourcesCalls <= MAX_EXPECTED_BATCH_ENTRIES,
@@ -520,7 +536,7 @@ test("ISS-5028: repeated mid-source yields walk forward through a batch store in
   }
 });
 
-// wongk review (ISS-5028): an error-only backlog used to `continue` past the
+// whitlockk review (ISS-5028): an error-only backlog used to `continue` past the
 // shared yield check, so it could satisfy both the source floor and the time
 // escape while watcher events sat queued.
 test("ISS-5028: a backlog of failing sources still yields to queued live events", {
@@ -575,7 +591,6 @@ test("ISS-5028: a backlog of failing sources still yields to queued live events"
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -592,7 +607,7 @@ test("ISS-5028: a backlog of failing sources still yields to queued live events"
 
     manager.start();
     await bootComplete.promise;
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       listSourcesCalls >= 2,
@@ -613,7 +628,7 @@ test("ISS-5028: a backlog of failing sources still yields to queued live events"
 });
 
 /**
- * ISS-5161 (wongk review): the mid-source yield is only progress-preserving
+ * ISS-5161 (whitlockk review): the mid-source yield is only progress-preserving
  * while the resume cursor can RECORD what the quantum imported. Past
  * `MAX_SESSION_IDS_PER_SOURCE` it cannot, so a saturated cursor plus a
  * continuously pending live queue replays the same recorded prefix, re-imports
@@ -638,21 +653,19 @@ test("ISS-5161: a saturated resume cursor stops yielding mid-source instead of s
   // A cursor already at the cap for THIS source, under THIS fingerprint (a
   // disk-loaded entry is only honored when its fingerprint proves the store has
   // not moved). None of these ids exist in the store.
-  writeFileSync(
-    ingestBatchResumeCursorPath(dir),
-    JSON.stringify({
-      version: 2,
-      cursors: {
-        [`opencode ${store}`]: {
-          fingerprint,
-          sessionIds: Array.from(
-            { length: MAX_SESSION_IDS_PER_SOURCE },
-            (_unused, index) => `p${index}`
-          ),
-        },
+  const medium = batchResumeCursorMedium();
+  medium.payload = {
+    version: 2,
+    cursors: JSON.stringify({
+      [`opencode ${store}`]: {
+        fingerprint,
+        sessionIds: Array.from(
+          { length: MAX_SESSION_IDS_PER_SOURCE },
+          (_unused, index) => `p${index}`
+        ),
       },
-    })
-  );
+    }),
+  };
 
   const lines: string[] = [];
   const bootComplete = deferred();
@@ -696,8 +709,8 @@ test("ISS-5161: a saturated resume cursor stops yielding mid-source instead of s
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      batchResumeCursorStore: medium.port,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -713,7 +726,7 @@ test("ISS-5161: a saturated resume cursor stops yielding mid-source instead of s
 
     manager.start();
     await bootComplete.promise;
-    manager.stop();
+    await manager.stop();
 
     const historical = importedIds.filter((id) => id.startsWith("batch-"));
     // The regression signature is a replayed prefix: with the mid-source yield

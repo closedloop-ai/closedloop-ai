@@ -110,7 +110,7 @@ function createDenseBuckets(count: number): ActivityBucket[] {
 
 function denseSession(bucketCount: number) {
   return createAgentSessionDetailFixture({
-    // ISS-5819 review (wongk): stamped with the producer bin bounds a real strip
+    // ISS-5819 review (whitlockk): stamped with the producer bin bounds a real strip
     // carries, because the clock projection this case is about refuses to run on
     // bins that cannot say which clock they were measured on.
     activityBuckets: withProducerBinBounds(createDenseBuckets(bucketCount), {
@@ -275,7 +275,7 @@ describe("buildBucketAccessibleCosts (ISS-5761)", () => {
   });
 
   it("names a four-figure bucket EXACTLY, not with the rail's abbreviation", () => {
-    // Code review (wongk): the rail prints `~$1.1k` because four significant
+    // Code review (whitlockk): the rail prints `~$1.1k` because four significant
     // digits do not fit in an 18px bar — a pixel-width constraint that an
     // accessible name does not have. Borrowing `formatBucketBarLabel` here left
     // a screen-reader user with an approximation while a sighted user hovering

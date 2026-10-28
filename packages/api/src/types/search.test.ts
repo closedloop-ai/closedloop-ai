@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ArtifactType } from "./artifact";
+import { DOCUMENT_ROUTE_PREFIX, DocumentType } from "./document.ts";
 import {
+  boundSearchText,
   type SearchHit,
   SearchMode,
+  searchHitDeepLink,
   searchHitRoute,
   searchHitSchema,
   unifiedSearchResponseSchema,
@@ -32,8 +35,7 @@ describe("searchHitRoute", () => {
           slug: "my-prd",
         })
       )
-    ).toBe("/prds/my-prd");
-    // FEA-4137: FEATURE (Issue) documents route under /issues/.
+    ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/my-prd`);
     expect(
       searchHitRoute(
         hit({
@@ -42,7 +44,7 @@ describe("searchHitRoute", () => {
           slug: "f",
         })
       )
-    ).toBe("/issues/f");
+    ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/f`);
   });
 
   it("builds a team-scoped project route and an id-keyed loop route", () => {
@@ -68,18 +70,20 @@ describe("searchHitRoute", () => {
     ).toBe("/sessions/sess-1");
   });
 
-  it("returns null when a document is missing its slug or has a non-routable subtype", () => {
+  it("returns null when a document is missing its slug", () => {
     expect(
       searchHitRoute(
         hit({ entityType: SearchEntityType.Document, entitySubtype: "PRD" })
       )
     ).toBeNull();
-    // Template has no route prefix.
+  });
+
+  it("returns null for a template, which has no detail route", () => {
     expect(
       searchHitRoute(
         hit({
           entityType: SearchEntityType.Document,
-          entitySubtype: "TEMPLATE",
+          entitySubtype: DocumentType.Template,
           slug: "t",
         })
       )
@@ -176,12 +180,31 @@ describe("searchHitRoute", () => {
     ).toBeNull();
   });
 
-  it("returns null for a comment missing its anchor or anchored on a document/unknown type (FEA-3930)", () => {
+  it("routes a document-anchored comment to its document by the document's slug", () => {
+    const documentComment = (slug: string) =>
+      hit({
+        entityType: SearchEntityType.Comment,
+        entityId: "c3",
+        anchorEntityId: "doc-1",
+        entitySubtype: ArtifactType.Document,
+        slug,
+      });
+
+    expect(searchHitRoute(documentComment("PRD-42"))).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/PRD-42`
+    );
+    expect(searchHitRoute(documentComment("FEA-7"))).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/FEA-7`
+    );
+    expect(searchHitRoute(documentComment("not-a-typed-slug"))).toBeNull();
+  });
+
+  it("returns null for a comment missing its anchor, a document-anchored one without the document's slug, or an unknown anchor type (FEA-3930)", () => {
     // No anchor at all.
     expect(
       searchHitRoute(hit({ entityType: SearchEntityType.Comment }))
     ).toBeNull();
-    // Document-anchored comments are not routable off the projection alone.
+    // A document anchor routes by the document's slug, absent here.
     expect(
       searchHitRoute(
         hit({
@@ -191,6 +214,87 @@ describe("searchHitRoute", () => {
         })
       )
     ).toBeNull();
+    expect(
+      searchHitRoute(
+        hit({
+          entityType: SearchEntityType.Comment,
+          anchorEntityId: "x-1",
+          entitySubtype: "NOT_AN_ARTIFACT_TYPE",
+          slug: "PRD-42",
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for a document hit that carries no entitySubtype at all", () => {
+    expect(
+      searchHitRoute(
+        hit({ entityType: SearchEntityType.Document, slug: "has-a-slug" })
+      )
+    ).toBeNull();
+  });
+
+  it("returns the raw entityType value for a version-skewed type outside the corpus", () => {
+    // pins current behavior; looks odd because the exhaustive `never` guard
+    // is compile-time only — at runtime this returns the unmatched value
+    // verbatim instead of falling back to a safe non-link result.
+    const unknownType = "future_entity_kind" as SearchEntityType;
+    expect(searchHitRoute(hit({ entityType: unknownType }))).toBe(
+      "future_entity_kind"
+    );
+  });
+});
+
+describe("searchHitDeepLink", () => {
+  it("builds id-keyed deep links for document, project, loop, agent_session, and branch hits", () => {
+    expect(searchHitDeepLink(SearchEntityType.Document, "d1")).toBe(
+      "/documents/d1"
+    );
+    expect(searchHitDeepLink(SearchEntityType.Project, "p1")).toBe(
+      "/projects/p1"
+    );
+    expect(searchHitDeepLink(SearchEntityType.Loop, "l1")).toBe("/loops/l1");
+    expect(searchHitDeepLink(SearchEntityType.AgentSession, "s1")).toBe(
+      "/sessions/s1"
+    );
+    expect(searchHitDeepLink(SearchEntityType.Branch, "b1")).toBe(
+      "/branches/b1"
+    );
+  });
+
+  it("falls back to the global-search locator for comment, pull_request, and agent_component hits", () => {
+    for (const entityType of [
+      SearchEntityType.Comment,
+      SearchEntityType.PullRequest,
+      SearchEntityType.AgentComponent,
+    ]) {
+      expect(searchHitDeepLink(entityType, "x1")).toBe("/search?entity=x1");
+    }
+  });
+
+  it("returns the raw entityType value for a version-skewed type outside the corpus", () => {
+    // pins current behavior; same never-guard caveat as searchHitRoute's
+    // default arm above — this locator returns the unmatched value verbatim.
+    const unknownType = "future_entity_kind" as SearchEntityType;
+    expect(searchHitDeepLink(unknownType, "x1")).toBe("future_entity_kind");
+  });
+});
+
+describe("boundSearchText", () => {
+  it("returns null for a null source", () => {
+    expect(boundSearchText(null, 10)).toBeNull();
+  });
+
+  it("returns null when the source trims to an empty string", () => {
+    expect(boundSearchText("   ", 10)).toBeNull();
+  });
+
+  it("returns the trimmed value when it fits within max", () => {
+    expect(boundSearchText("  hello  ", 10)).toBe("hello");
+  });
+
+  it("truncates the trimmed value to max when it exceeds the bound", () => {
+    expect(boundSearchText("hello world", 5)).toBe("hello");
   });
 });
 

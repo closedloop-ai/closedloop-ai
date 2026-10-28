@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { MAX_SYNCED_ACTIVITY_SEGMENTS } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 function emptyAttributionCache() {
@@ -271,15 +271,10 @@ test("ISS-4541: emits an over-wire-cap tiling IN FULL (no sync-source truncation
   }
 });
 
-test("ISS-4578 (wongk P1): a tiling past the db-host load ceiling is OMITTED, never shipped as a truncated prefix", async () => {
-  // The per-session load is bounded at the db-host memory-safety ceiling
-  // (ACTIVITY_SEGMENT_SYNC_MAX_ROWS = 50,000) + 1. When the true tiling exceeds
-  // that, the loaded set is a PREFIX. Uploading it would let the cloud store a
-  // partial tiling with no truncation signal and then ack + clear the outbox —
-  // silent tail loss. So the sync-source OMITS `activitySegmentRows` entirely on
-  // overflow (a cloud no-op that never clears the stored tiling), deferring the
-  // tiling rather than shipping a lossy prefix. The rest of the session still
-  // syncs.
+test("ISS-9865: a tiling past the paging threshold is keyset-paged and shipped in full", async () => {
+  // Over-ceiling sessions are now keyset-paged and their complete tiling
+  // passes through to chunkOversizedSession. The absolute ceiling at 500k is
+  // the new hard backstop.
   const dir = await mkdtemp(path.join(os.tmpdir(), "iss4578-ceiling-omit-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   try {
@@ -316,12 +311,15 @@ test("ISS-4578 (wongk P1): a tiling past the db-host load ceiling is OMITTED, ne
         emptyAttributionCache()
       );
       assert.ok(session, "session hydrated");
-      // The tiling is OMITTED (absent), NOT a truncated prefix — an absent field
-      // is the cloud's "leave the stored tiling untouched" no-op.
+      const segmentRows = session.activitySegmentRows;
+      assert.ok(
+        segmentRows,
+        "over-ceiling tiling must be present, not omitted"
+      );
       assert.equal(
-        session.activitySegmentRows,
-        undefined,
-        "an over-ceiling tiling must be omitted, never shipped as a partial prefix"
+        segmentRows.length,
+        rowCount,
+        "the COMPLETE tiling ships via paged reads"
       );
       // Never flagged partial (the partial signal is gone) and the rest of the
       // session still synced (name present).

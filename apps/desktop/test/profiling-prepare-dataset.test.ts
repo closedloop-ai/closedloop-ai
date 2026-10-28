@@ -10,12 +10,13 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   copyTranscripts,
   defaultSourceUserDataDir,
   isGitIgnored,
   prepareDataset,
+  readSessionStats,
   snapshotDatabase,
   toSandboxSettings,
   utcStamp,
@@ -23,11 +24,11 @@ import {
 
 let workDir = "";
 
-before(() => {
+beforeAll(() => {
   workDir = mkdtempSync(path.join(tmpdir(), "profiling-dataset-"));
 });
 
-after(() => {
+afterAll(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
@@ -227,5 +228,64 @@ describe("perf dataset preparation", () => {
       utcStamp(new Date("2026-08-04T15:12:33.456Z")),
       "20260804T151233Z"
     );
+  });
+
+  // ISS-7785: size alone never said whether a snapshot is usable. These pin the
+  // count and the age the operator now sees at prep time.
+  test("session count and newest activity are read off a snapshot", () => {
+    const dbPath = path.join(workDir, "stats-with-activity.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+      "CREATE TABLE sessions (id TEXT PRIMARY KEY, last_activity_at TEXT)"
+    );
+    const insert = db.prepare(
+      "INSERT INTO sessions (id, last_activity_at) VALUES (?, ?)"
+    );
+    insert.run("a", "2026-08-13T14:18:35.474Z");
+    insert.run("b", "2026-05-19T00:00:00.000Z");
+    db.close();
+
+    assert.deepEqual(readSessionStats(dbPath), {
+      sessionCount: 2,
+      newestLastActivityAt: "2026-08-13T14:18:35.474Z",
+    });
+  });
+
+  test("an empty table reports zero sessions, not an unknown count", () => {
+    const dbPath = path.join(workDir, "stats-empty.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+      "CREATE TABLE sessions (id TEXT PRIMARY KEY, last_activity_at TEXT)"
+    );
+    db.close();
+
+    // Zero is a fact about the dataset and the reason a run must be refused;
+    // `null` would say "could not read", which is a different problem.
+    assert.deepEqual(readSessionStats(dbPath), {
+      sessionCount: 0,
+      newestLastActivityAt: null,
+    });
+  });
+
+  test("a snapshot predating the last_activity_at column still reports a count", () => {
+    const dbPath = path.join(workDir, "stats-legacy.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY)");
+    db.prepare("INSERT INTO sessions (id) VALUES (?)").run("a");
+    db.close();
+
+    // The diagnostic degrades to what it could learn rather than failing a prep
+    // that already produced a valid snapshot.
+    assert.deepEqual(readSessionStats(dbPath), {
+      sessionCount: 1,
+      newestLastActivityAt: null,
+    });
+  });
+
+  test("an unreadable path reports unknown rather than throwing", () => {
+    assert.deepEqual(readSessionStats(path.join(workDir, "absent.sqlite")), {
+      sessionCount: null,
+      newestLastActivityAt: null,
+    });
   });
 });

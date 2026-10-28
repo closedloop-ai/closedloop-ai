@@ -80,7 +80,7 @@ describe("SessionsView analytics Repository-fallback read gate (ISS-5273)", () =
   it("issues no analytics read when usage already owns the Repository facet", async () => {
     sessionsViewHooks.useAgentSessionsPageData.mockReturnValue(
       settledPageDataWithRepositories([
-        { repositoryFullName: "closedloop-ai/symphony-alpha" },
+        { repositoryFullName: "closedloop-ai/closedloop-ai" },
       ])
     );
 

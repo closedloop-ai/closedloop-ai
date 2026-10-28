@@ -4,8 +4,8 @@ import type { MergedComponent } from "./identity";
 // FEA-4267: catalog LIST family collapse.
 //
 // `mergeComponentRows` + the usage folds key each org-level entry on
-// `fingerprintIdentityKey(slug, versionFingerprint)` (FEA-3982 Slice 2, a Kris
-// Wong decision), so one logical component observed at several distinct content
+// `fingerprintIdentityKey(slug, versionFingerprint)` (FEA-3982 Slice 2, a Kerensa
+// Whitlock decision), so one logical component observed at several distinct content
 // fingerprints across the org materializes as SEVERAL version buckets that share
 // the same `slug` but differ only in `versionFingerprint`. Those per-version
 // buckets legitimately back per-version analytics and MUST stay intact upstream.
@@ -14,8 +14,8 @@ import type { MergedComponent } from "./identity";
 // version buckets into ONE canonical row per component FAMILY (the org-level
 // `slug` = `${kind}::${normalizedKey}`, the exact key the detail page and the
 // list row's href already resolve by) for the catalog list, without undoing the
-// underlying version keying. It lives in its own module so the grandfathered
-// `service.ts` and `identity.ts` do not grow, and so the grouping contract has
+// underlying version keying. It lives in its own module so `service.ts` and
+// `identity.ts` do not grow, and so the grouping contract has
 // its own focused test target.
 // ---------------------------------------------------------------------------
 
@@ -59,7 +59,7 @@ export function collapseToCanonicalFamilies(
       // all versions, so comparing a candidate against the post-fold aggregate
       // would tie a newly-invoked version against its own just-absorbed date and
       // let it lose the `lastSeenAt` tiebreak — leaving stale id/name/sourceUrl
-      // on a row that reports the fresh aggregate date (wongk). Compare against
+      // on a row that reports the fresh aggregate date (whitlockk). Compare against
       // the representative's OWN recency, tracked separately from the aggregate.
       if (isFresherThanRepresentative(entry, existing)) {
         adoptRepresentativeFields(existing.canonical, entry);
@@ -134,7 +134,7 @@ function cloneMergedComponent(entry: MergedComponent): MergedComponent {
     // (device, version) pair from `mergeComponentRows` — starts deduped, exactly
     // as the fold's `.includes()` guard keeps LATER buckets deduped. Otherwise
     // duplicates present in the very first bucket survive the whole collapse and
-    // over-count devices/users on the family row (wongk).
+    // over-count devices/users on the family row (whitlockk).
     computeTargetIds: [...new Set(entry.computeTargetIds)],
     computeTargetUserIds: [...new Set(entry.computeTargetUserIds)],
     packIds: new Set(entry.packIds),
@@ -285,7 +285,7 @@ function adoptRepresentativeFields(
  * representative version — tracked separately from the canonical's folded
  * `lastInvokedAt`/`lastSeenAt` (which widen to the max across all versions) so
  * the representative pick compares like-for-like against a single version's
- * dates rather than the growing aggregate (wongk).
+ * dates rather than the growing aggregate (whitlockk).
  */
 type FamilyAccumulator = {
   canonical: MergedComponent;

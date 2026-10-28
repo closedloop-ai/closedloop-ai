@@ -1,3 +1,5 @@
+import { batchItemApplied } from "@repo/api/src/types/batch-mutation-result";
+import { BatchMutationRoute } from "@repo/api/src/types/batch-mutation-routes";
 import { DocumentStatus } from "@repo/api/src/types/document";
 import {
   useBatchDeleteDocuments,
@@ -23,9 +25,10 @@ describe("useBatchUpdateStatus", () => {
     vi.clearAllMocks();
   });
 
-  test("posts to /documents/batch-update-status with document IDs and status", async () => {
+  test("posts to the v2 status route with document IDs and status", async () => {
     const updatedIds = ["doc-1", "doc-2"];
-    mockApiClient.post.mockResolvedValueOnce(updatedIds);
+    const response = { results: updatedIds.map(batchItemApplied) };
+    mockApiClient.post.mockResolvedValueOnce(response);
 
     const { result } = renderHook(() => useBatchUpdateStatus(), {
       wrapper: createWrapper(),
@@ -39,13 +42,13 @@ describe("useBatchUpdateStatus", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/documents/batch-update-status",
+      `${BatchMutationRoute.DocumentsUpdateStatus}/v2`,
       {
         documentIds: ["doc-1", "doc-2"],
         status: DocumentStatus.Draft,
       }
     );
-    expect(result.current.data).toEqual(updatedIds);
+    expect(result.current.data).toEqual(response);
   });
 
   test("transitions to error state when the API call fails", async () => {

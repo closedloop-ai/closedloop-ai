@@ -7,12 +7,14 @@
  * it lifts whole and leaves the api suite smaller than it found it.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/main/agent-sync/session-date-window.js";
+import { ListQueryExecution } from "@repo/api/src/types/list-query-observability";
+import { describe, test } from "vitest";
 import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
+import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/shared/session-date-window-contract.js";
 import {
   createFakeSource,
   cursor,
+  session,
 } from "./shared-agent-sessions-test-helpers.js";
 
 // FEA-4142: the count-only badge read answers `total` from a single SQL
@@ -25,12 +27,17 @@ describe("getSharedAgentSessions count-only reads (FEA-4142)", () => {
       countSessions: () => 7,
     });
 
-    const response = await getSharedAgentSessions(source, {
-      statuses: ["completed"],
-      completedAfter: "2026-03-12T00:00:00.000Z",
-      limit: 1,
-      countOnly: true,
-    });
+    const executions: string[] = [];
+    const response = await getSharedAgentSessions(
+      source,
+      {
+        statuses: ["completed"],
+        completedAfter: "2026-03-12T00:00:00.000Z",
+        limit: 1,
+        countOnly: true,
+      },
+      { onQueryExecution: (execution) => executions.push(execution) }
+    );
 
     assert.equal(response.total, 7);
     assert.deepEqual(response.items, []);
@@ -47,31 +54,49 @@ describe("getSharedAgentSessions count-only reads (FEA-4142)", () => {
       statuses: ["completed"],
       completedAfter: "2026-03-12T00:00:00.000Z",
     });
+    assert.deepEqual(executions, [ListQueryExecution.Count]);
   });
 
   test("does not take the COUNT fast path when a search makes the query non-count-expressible", async () => {
+    const matching = session({ id: "session-a" });
     const source = createFakeSource({
-      cursorRows: [cursor("session-a")],
+      cursorRows: [cursor("session-a"), cursor("session-b")],
+      sessions: {
+        "session-a": {
+          ...matching,
+          attribution: { ...matching.attribution, baseBranch: "needle" },
+        },
+        "session-b": session({ id: "session-b" }),
+      },
       countSessions: () => {
         throw new Error("countSessions should be bypassed");
       },
     });
 
-    const response = await getSharedAgentSessions(source, {
-      statuses: ["completed"],
-      search: "needle",
-      countOnly: true,
-    });
+    const executions: string[] = [];
+    const response = await getSharedAgentSessions(
+      source,
+      {
+        statuses: ["completed"],
+        search: "needle",
+        countOnly: true,
+      },
+      { onQueryExecution: (execution) => executions.push(execution) }
+    );
 
-    // The contract: the COUNT fast path is refused, because it cannot express a
-    // free-text search. Where the read goes INSTEAD is a separate decision —
-    // goal stage 1b moved this sortless shape from the whole-corpus enumeration
-    // to the SQL cursor page, whose own SQL does implement the search.
+    // Search is not count-only SQL, but its grouped attribution is cursor-page expressible.
     assert.ok(!source.calls.some((call) => call.kind === "countSessions"));
     assert.deepEqual(
       source.calls.map((call) => call.kind),
       ["listSessionCursorPage", "loadSyncedSessions"]
     );
+    assert.deepEqual(source.calls[1]?.ids, ["session-a"]);
+    assert.equal(response.total, 1);
+    assert.deepEqual(
+      response.items.map((item) => item.id),
+      ["session-a"]
+    );
+    assert.deepEqual(executions, [ListQueryExecution.CursorPage]);
     assert.equal(response.viewerScope, "self");
   });
 

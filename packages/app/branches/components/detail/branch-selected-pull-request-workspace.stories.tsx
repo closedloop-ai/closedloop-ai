@@ -87,9 +87,9 @@ const workspaceSource: BranchesDataSource = {
 };
 
 const meta = {
-  title: "App Core/Branches/Branch Selected Pull Request Workspace",
+  title: "Composites v1.0/Branches/Branch Selected Pull Request Workspace",
   component: BranchSelectedPullRequestWorkspace,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (

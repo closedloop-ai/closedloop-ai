@@ -36,8 +36,11 @@ type OutcomeSpendRow = { outcome: string; value: number };
  * decided by `ended_at`, so a running session's spend never receives an "ended"
  * verdict it has not reached.
  *
- * @param scopeSql the shared `FROM token_usage … WHERE started_at BETWEEN $1 AND $2`
- *   fragment, so this read cannot drift from the sibling spend queries' scope.
+ * @param scopeSql the shared `FROM token_usage … WHERE <session date column>
+ *   BETWEEN $1 AND $2` fragment, so this read cannot drift from the sibling
+ *   spend queries' scope. ISS-10604 made the COLUMN the caller's choice
+ *   (`currentWindowSpendScopeSql(range.dateWindowField)`), which is exactly why
+ *   the fragment is passed in rather than rebuilt here.
  * @param allocate the shared largest-remainder USD allocator, injected so the
  *   buckets conserve the period total using the same routine as every other
  *   local money breakdown.

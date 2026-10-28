@@ -1,4 +1,6 @@
 import { InsightsScope } from "@closedloop-ai/loops-api/insights";
+import { DASHBOARD_SCOPE_LABEL } from "@repo/app/insights/components/overview/dashboard-scope-copy";
+import { DATE_RANGE_FILTER_ARIA_LABEL } from "@repo/app/shared/components/date-range-filter-labels";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
@@ -6,7 +8,6 @@ import { NavigationProvider } from "@repo/navigation/provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { drainedCutover } from "../../../shared-agent-sessions/__tests__/fixtures/cloud-read-cutover-fixtures";
 import { DesktopAppCoreMode } from "../../../shared-agent-sessions/desktop-app-core-mode";
 import { DashboardPage } from "../DashboardPage";
 
@@ -15,6 +16,12 @@ import { DashboardPage } from "../DashboardPage";
 // renders the REAL DesktopInsightsProvider so availableScopes is derived from
 // the mocked app-core mode; only the leaf insights/session hooks are stubbed so
 // the dashboard reaches a ready state without a live backend.
+//
+// Restored with the toggle (operator instruction, 2026-09-30). The read-source
+// pill and the Tour control this spec also used to assert stay retired by
+// ISS-10929, so those two assertions are gone rather than relocated: the pill's
+// contract went with the pill, and the range filter is what the Local case now
+// waits on for the actions row to have mounted.
 const hooks = vi.hoisted(() => ({
   useAgentSessions: vi.fn(),
   useDeliveryInsights: vi.fn(),
@@ -23,7 +30,7 @@ const hooks = vi.hoisted(() => ({
   useDesktopAuth: vi.fn(),
   useApiClient: vi.fn(),
   useDesktopAppCoreMode: vi.fn(),
-  useDesktopCloudReadCutover: vi.fn(),
+  useDesktopLocalReadReason: vi.fn(),
 }));
 
 // Partial: ISS-5112's harness read keys its query off the real
@@ -40,7 +47,11 @@ vi.mock("@repo/app/agents/hooks/use-agent-sessions", async (importOriginal) => {
 // that hook; the real dashboard state machine still runs.
 vi.mock("../dashboard-state", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../dashboard-state")>()),
-  useDashboardSessionSource: () => ({ ready: true, unavailable: false }),
+  useDashboardSessionSource: () => ({
+    ready: true,
+    importInProgress: false,
+    unavailable: false,
+  }),
   // ISS-6002 (review): a zero only counts once a read has landed WITH the
   // store up. This suite drives a single static query fixture, so stub the
   // freshness verdict too — it is subject-tested in dashboard-state.test.ts.
@@ -78,7 +89,7 @@ vi.mock("../../../shared-agent-sessions/desktop-app-core-provider", () => ({
   // ISS-5477: the read-source badge under this tree also asks WHY the active
   // source is in play. Neither suite exercises that, so it gets the drained
   // decision (no explanatory detail rendered).
-  useDesktopCloudReadCutover: hooks.useDesktopCloudReadCutover,
+  useDesktopLocalReadReason: hooks.useDesktopLocalReadReason,
 }));
 
 const originalDesktopApi = Object.getOwnPropertyDescriptor(
@@ -93,7 +104,7 @@ function scopeArgsFor(mock: ReturnType<typeof vi.fn>): InsightsScope[] {
 describe("desktop Dashboard scope toggle (PLN-1138 Phase 3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    hooks.useDesktopCloudReadCutover.mockReturnValue(drainedCutover());
+    hooks.useDesktopLocalReadReason.mockReturnValue(undefined);
     vi.stubGlobal(
       "matchMedia",
       vi.fn().mockReturnValue({
@@ -145,11 +156,6 @@ describe("desktop Dashboard scope toggle (PLN-1138 Phase 3)", () => {
       InsightsScope.Org
     );
     expect(scopeArgsFor(hooks.useAgentsInsights)).toContain(InsightsScope.Org);
-    // Cloud mode reads the org cloud API — the unified read-source badge shows
-    // "Cloud".
-    expect(screen.getByTestId("read-source-badge").textContent).toContain(
-      "Cloud"
-    );
   });
 
   it("Local mode shows no scope toggle and reads only personal insights", async () => {
@@ -157,21 +163,19 @@ describe("desktop Dashboard scope toggle (PLN-1138 Phase 3)", () => {
 
     renderDashboard();
 
-    // Wait for the actions bar (always-present Tour button) before asserting the
-    // toggle's absence.
-    await screen.findByText("Tour");
-    expect(screen.queryByText("Organization")).toBeNull();
+    // Wait for the actions row (the always-present range filter) before
+    // asserting the toggle's absence, so the absence is the row's and not a
+    // row that has not mounted yet.
+    await screen.findByRole("radiogroup", {
+      name: DATE_RANGE_FILTER_ARIA_LABEL,
+    });
+    expect(
+      screen.queryByRole("radiogroup", { name: DASHBOARD_SCOPE_LABEL })
+    ).toBeNull();
     expect(scopeArgsFor(hooks.useDeliveryInsights)).not.toContain(
       InsightsScope.Org
     );
     expect(scopeArgsFor(hooks.useDeliveryInsights)).toContain(InsightsScope.Me);
-    // Wiring guard: Local mode reads this machine's SQLite own-data, so the
-    // dashboard must render the unified read-source badge showing "Local" in
-    // PageShell.actions — proves it is actually mounted, not just unit-tested in
-    // isolation. (Authenticated in Local mode is the AC-3.3 offline degradation.)
-    expect(screen.getByTestId("read-source-badge").textContent).toContain(
-      "Local"
-    );
   });
 });
 

@@ -1,0 +1,39 @@
+-- ISS-10170: the unique key that a tenant-denormalizing child row can be tied
+-- back to. Referenced by `pull_request_detail_branch_artifact_tenant_fkey` in
+-- the next migration; useless on its own and deliberately split from it,
+-- because `CREATE INDEX CONCURRENTLY` cannot share a migration with the
+-- `ALTER TABLE` that consumes it (Prisma wraps a multi-statement file, and
+-- CONCURRENTLY cannot run inside a transaction block).
+--
+-- WHY IT CANNOT FAIL ON EXISTING ROWS. `id` is already `artifacts_pkey`, so
+-- (organization_id, id) is unique by construction for ANY set of rows: a
+-- duplicate would require two artifacts sharing a primary key. The build is
+-- permissive by definition — no preflight, dedupe, or cleanup pass is possible
+-- or required, and the statement cannot reject a row that exists today.
+--
+-- WHY NOT REUSE `artifacts_org_id_idx` (ISS-9627, same columns). Postgres will
+-- only accept a UNIQUE constraint or index as a foreign-key target. That index
+-- is not unique, so it cannot be referenced. It is deliberately NOT dropped:
+-- it still serves the ISS-6892 keyset walk, dropping a live index is a
+-- destructive change, and a unique index can serve the same seeks anyway — so
+-- removing it is a separate decision, not a ride-along here.
+--
+-- OPERATIONAL IMPACT. `artifacts` is the largest table in the schema and sits
+-- on the desktop sync write path. CONCURRENTLY keeps writes flowing: the build
+-- takes SHARE UPDATE EXCLUSIVE rather than the SHARE lock a plain CREATE INDEX
+-- would hold for its whole duration, at the cost of two table passes and of
+-- waiting for concurrent transactions to drain. Expect the build to take
+-- minutes on a production-sized table and to consume an extra index's worth of
+-- storage on (uuid, uuid).
+--
+-- ROLLBACK. `DROP INDEX CONCURRENTLY "artifacts_org_id_key";` — but only AFTER
+-- dropping `pull_request_detail_branch_artifact_tenant_fkey` (the next
+-- migration's rollback line), since Postgres refuses to drop an index a
+-- foreign key depends on. Nothing reads this index by name.
+--
+-- `IF NOT EXISTS` is deliberately absent: with CONCURRENTLY a failed build
+-- leaves a same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+CREATE UNIQUE INDEX CONCURRENTLY "artifacts_org_id_key"
+  ON "artifacts" ("organization_id", "id");

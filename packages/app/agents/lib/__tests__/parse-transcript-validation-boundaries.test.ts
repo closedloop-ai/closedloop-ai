@@ -1,4 +1,4 @@
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
 import {
   createNormalizedSession,
   Harness,
@@ -12,10 +12,10 @@ import {
   TranscriptParseError,
 } from "../parse-transcript";
 
-vi.mock("@repo/lib/harness/claude/parse-claude-core", async (importActual) => {
+vi.mock("@repo/lib/harness/claude/parse-claude", async (importActual) => {
   const actual =
     await importActual<
-      typeof import("@repo/lib/harness/claude/parse-claude-core")
+      typeof import("@repo/lib/harness/claude/parse-claude")
     >();
   return {
     ...actual,

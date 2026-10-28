@@ -24,7 +24,8 @@ import {
 const meta: Meta<typeof SessionTimelineControls> = {
   component: SessionTimelineControls,
   parameters: { layout: "padded" },
-  title: "App Core/Agents/Session Timeline Controls",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Controls",
+  tags: ["deprecated"],
 };
 
 export default meta;
@@ -53,7 +54,7 @@ export const GroupedByModel: Story = {
 };
 
 /**
- * ISS-5819 review (wongk): the note the row carries when the chosen scale is
+ * ISS-5819 review (whitlockk): the note the row carries when the chosen scale is
  * finer than the bins the strip was measured in. Its own story because it is the
  * only thing that can push this row onto a second line at a normal width, and
  * because a caveat nobody has looked at is a caveat nobody wrote well.
@@ -97,12 +98,10 @@ export const Narrow: Story = {
 const LONG_SESSION_COLUMNS = TIMELINE_VISIBLE_COLUMNS + 16;
 
 function LiveControls({
-  activityPhasesEnabled = true,
   initialGrouping = TimelineStackGrouping.TokenType,
   initialScale = TimelineScale.FiveMinutes,
   subColumnSource = false,
 }: {
-  activityPhasesEnabled?: boolean;
   initialGrouping?: TimelineStackGrouping;
   initialScale?: TimelineScale;
   subColumnSource?: boolean;
@@ -112,7 +111,6 @@ function LiveControls({
     useState<TimelineStackGrouping>(initialGrouping);
   return (
     <SessionTimelineControls
-      activityPhasesEnabled={activityPhasesEnabled}
       grouping={grouping}
       onGroupingChange={setGrouping}
       onScaleChange={setScale}
@@ -132,12 +130,3 @@ function LiveScrubber({ initialPosition = 0 }: { initialPosition?: number }) {
     />
   );
 }
-
-/**
- * ISS-5841: with activity phases gated off, the Group-by control offers three
- * cuts instead of four. Open the select to see that "Activity phase" is absent
- * rather than present-and-disabled.
- */
-export const GroupByWithoutActivityPhase: Story = {
-  render: () => <LiveControls activityPhasesEnabled={false} />,
-};

@@ -103,6 +103,9 @@ function makeDetailRequest(slug: string) {
   );
 }
 
+const SYNC_TARGET_ID = "11111111-1111-7111-8111-111111111111";
+const OTHER_ORG_TARGET_ID = "99999999-9999-7999-8999-999999999999";
+
 function makeSyncRequest(computeTargetId: string, body: unknown) {
   return new NextRequest(
     `http://localhost/desktop/components/sync?computeTargetId=${computeTargetId}`,
@@ -261,7 +264,7 @@ describe("GET /agent-components", () => {
     expect(response.status).toBe(400);
   });
 
-  // ISS-4942 (wongk): a version-skewed deploy can leave an old MCP image
+  // ISS-4942 (whitlockk): a version-skewed deploy can leave an old MCP image
   // sending the pre-FEA-4098 `?owner=` filter at an already-advanced API. The
   // query schema is not `.strict()`, so before the alias that param was
   // stripped and the route answered with the UNFILTERED org inventory.
@@ -341,9 +344,12 @@ describe("GET /agent-components/[slug]", () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.data.id).toBe("ac-uuid-1");
+    // ISS-8148: the route supplies the requester's flag identity so the
+    // read-side push-evidence gate can evaluate per user.
     expect(mocks.mockGetDetailForOrg).toHaveBeenCalledWith(
       "org-1",
-      "skill::my-skill"
+      "skill::my-skill",
+      { userId: "user-1" }
     );
   });
 
@@ -359,19 +365,55 @@ describe("GET /agent-components/[slug]", () => {
     expect(response.status).toBe(404);
   });
 
-  it("URL-decodes the slug before passing to the service", async () => {
+  /**
+   * ISS-6908 deleted the case that used to sit here, "URL-decodes the slug
+   * before passing to the service". It seeded an ENCODED slug into
+   * `context.params` — a state Next cannot produce, since its route matcher
+   * `decodeURIComponent`s every captured segment first — and asserted the
+   * handler decoded it, pinning the second decode this change removes. Its
+   * plain-slug forwarding assertion survives verbatim in "returns 200 with the
+   * component detail when found" above; the two cases below carry the
+   * regression, and a percent-free slug cannot tell the two behaviours apart.
+   *
+   * A second decode read the `%20` in an already-decoded slug as an
+   * escape and looked up `skill::a b` — a silent miss, or a neighbouring row's
+   * detail, with nothing in the 404/200 saying the lookup key was rewritten.
+   */
+  it("looks up a slug containing a literal percent escape verbatim", async () => {
     mocks.mockGetDetailForOrg.mockResolvedValue(null);
 
-    // The slug contains :: which gets encoded as %3A%3A in the URL
-    const encodedSlug = "command%3A%3Acode-review";
+    const literalPercentSlug = "skill::a%20b";
     await detailRoute(
-      makeDetailRequest(encodedSlug),
-      detailRouteContext(encodedSlug)
+      makeDetailRequest(literalPercentSlug),
+      detailRouteContext(literalPercentSlug)
     );
 
     expect(mocks.mockGetDetailForOrg).toHaveBeenCalledWith(
       "org-1",
-      "command::code-review"
+      literalPercentSlug,
+      { userId: "user-1" }
+    );
+  });
+
+  /**
+   * ISS-6908. `decodeURIComponent("skill::100%-done")` throws
+   * `URIError: URI malformed`. Here the decode was inside the try/catch, so it
+   * degraded to a generic 500 for a slug the org may legitimately own.
+   */
+  it("answers a slug with an undecodable percent instead of a 500", async () => {
+    const undecodableSlug = "skill::100%-done";
+    mocks.mockGetDetailForOrg.mockResolvedValue(null);
+
+    const response = await detailRoute(
+      makeDetailRequest(undecodableSlug),
+      detailRouteContext(undecodableSlug)
+    );
+
+    expect(response.status).toBe(404);
+    expect(mocks.mockGetDetailForOrg).toHaveBeenCalledWith(
+      "org-1",
+      undecodableSlug,
+      { userId: "user-1" }
     );
   });
 });
@@ -392,7 +434,7 @@ describe("POST /desktop/components/sync", () => {
     mocks.mockSync.mockResolvedValue(Result.ok({ synced: true }));
 
     const response = await syncRoute(
-      makeSyncRequest("target-owned-by-org1", buildSyncPayload()),
+      makeSyncRequest(SYNC_TARGET_ID, buildSyncPayload()),
       listRouteContext()
     );
     const body = await response.json();
@@ -406,14 +448,14 @@ describe("POST /desktop/components/sync", () => {
     mocks.mockSync.mockResolvedValue(Result.ok({ synced: true }));
 
     await syncRoute(
-      makeSyncRequest("target-1", buildSyncPayload()),
+      makeSyncRequest(SYNC_TARGET_ID, buildSyncPayload()),
       listRouteContext()
     );
 
     expect(mocks.mockSync).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: "org-1",
-        computeTargetId: "target-1",
+        computeTargetId: SYNC_TARGET_ID,
         userId: "user-1",
       })
     );
@@ -427,7 +469,7 @@ describe("POST /desktop/components/sync", () => {
     mocks.mockSync.mockResolvedValue(Result.err(Status.Forbidden));
 
     const response = await syncRoute(
-      makeSyncRequest("target-owned-by-other-org", buildSyncPayload()),
+      makeSyncRequest(OTHER_ORG_TARGET_ID, buildSyncPayload()),
       listRouteContext()
     );
 
@@ -451,11 +493,14 @@ describe("POST /desktop/components/sync", () => {
     mocks.mockSync.mockResolvedValue(Result.ok({ synced: true }));
     const payload = buildSyncPayload();
 
-    await syncRoute(makeSyncRequest("target-abc", payload), listRouteContext());
+    await syncRoute(
+      makeSyncRequest(SYNC_TARGET_ID, payload),
+      listRouteContext()
+    );
 
     expect(mocks.mockSync).toHaveBeenCalledWith(
       expect.objectContaining({
-        computeTargetId: "target-abc",
+        computeTargetId: SYNC_TARGET_ID,
       })
     );
   });
@@ -473,7 +518,7 @@ describe("POST /desktop/components/sync", () => {
     };
 
     const response = await syncRoute(
-      makeSyncRequest("target-1", oversized),
+      makeSyncRequest(SYNC_TARGET_ID, oversized),
       listRouteContext()
     );
 
@@ -485,7 +530,7 @@ describe("POST /desktop/components/sync", () => {
     // Send a malformed JSON string (not routed through JSON.stringify) so the
     // route's JSON.parse throws and it returns a 400 before schema validation.
     const request = new NextRequest(
-      "http://localhost/desktop/components/sync?computeTargetId=target-1",
+      `http://localhost/desktop/components/sync?computeTargetId=${SYNC_TARGET_ID}`,
       { method: "POST", body: "{not valid json" }
     );
 

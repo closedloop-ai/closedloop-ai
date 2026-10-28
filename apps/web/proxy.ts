@@ -67,9 +67,26 @@ export default middleware;
 
 export const config = {
   // matcher tells Next.js which routes to run the middleware on. This runs the
-  // middleware on all routes except for static assets and Posthog ingest
+  // middleware on all routes except for static assets and Posthog ingest.
+  // The root-segment metadata files must be excluded too: i18n rewrites
+  // unmatched paths into `[locale]`, where those routes do not exist, so every
+  // one of them 404s. `robots.txt` and `sitemap.xml` are the same case —
+  // `app/robots.ts` and `app/sitemap.ts` are root routes with no `[locale]`
+  // counterpart — so they belong here beside the icons rather than waiting to
+  // be noticed separately. `manifest.webmanifest` (`app/manifest.ts`) is the
+  // same again, and it drags its two `public/` icons with it: a manifest that
+  // resolves while its `src` entries rewrite into `[locale]` installs an app
+  // with no icon, which fails quieter than a 404 on the manifest itself.
+  //
+  // The two groups are NOT interchangeable. The first are path PREFIXES with
+  // real subtrees. The second are exact files, so each carries `$` and escapes
+  // its dot: unanchored, `opengraph-image.png` also excludes
+  // `/opengraph-image.png/docs`, which then reaches the dynamic `[locale]`
+  // route with the security headers and Clerk context this middleware adds
+  // skipped; unescaped, the dot is a wildcard and `/opengraph-imageXpng` is
+  // excluded too.
   matcher: [
-    "/((?!_next/static|_next/image|ingest|favicon.ico|illustrations/|ib-claude-training).*)",
+    "/((?!_next/static|_next/image|ingest|illustrations/|ib-claude-training|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|opengraph-image\\.png$|manifest\\.webmanifest$|web-app-manifest-192x192\\.png$|web-app-manifest-512x512\\.png$|robots\\.txt$|sitemap\\.xml$).*)",
   ],
 };
 

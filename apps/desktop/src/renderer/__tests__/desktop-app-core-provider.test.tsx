@@ -4,6 +4,8 @@ import type {
   AgentSessionListResponse,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import { ReadInitiator } from "@repo/api/src/types/read-initiator";
+import { useAgentComponentsDataSource } from "@repo/app/agents/data-source/provider";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,12 +47,25 @@ describe("DesktopAppCoreProvider", () => {
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
 
     expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith({
+      readInitiator: ReadInitiator.User,
       limit: 1,
       offset: 0,
     });
     expect(hook.result.current.data?.items[0]?.name).toBe(
       "Provider-wired session"
     );
+  });
+
+  it("hands the local Agents source through with its date-window declaration INTACT (ISS-6888)", () => {
+    // This provider must NOT gate the capability, and that is a real contract
+    // rather than an omission. The rollout gate lives in
+    // `DesktopAgentsDateWindowGate` and is tested there in both directions.
+    const source = renderHook(() => useAgentComponentsDataSource(), {
+      wrapper: DesktopAppCoreProvider,
+    });
+
+    expect(source.result.current.scope).toBe("agent-components:local");
+    expect(source.result.current.honorsDateWindow).toBe(true);
   });
 
   it("preserves Date fields end-to-end (IPC structured clone, no transport revival)", async () => {

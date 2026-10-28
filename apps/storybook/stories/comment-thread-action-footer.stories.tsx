@@ -3,9 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { CheckCheck } from "lucide-react";
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Thread Action Footer",
+  title: "Composites v1.0/Documents/Comment Thread Action Footer",
   component: CommentThreadActionFooter,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     icon: <CheckCheck className="mr-1.5 h-3.5 w-3.5" />,

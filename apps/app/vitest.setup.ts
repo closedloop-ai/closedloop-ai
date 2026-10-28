@@ -1,8 +1,15 @@
+// Import jest-dom matchers for toBeInTheDocument, toHaveAttribute, etc.
+import "@testing-library/jest-dom/vitest";
+
+// Ensure DOM is cleaned up between tests so renders don't bleed into each other.
+import { cleanup } from "@testing-library/react";
+import { afterEach, vi } from "vitest";
+
 // Tell t3-env we're in a test environment to allow server-side env vars
 process.env.SKIP_ENV_VALIDATION = "true";
 
 // Set required environment variables for tests
-// This must run before any imports that depend on env vars
+// This runs before any test module loads code that reads them
 process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
 process.env.NEXT_PUBLIC_WEB_URL = "http://localhost:3001";
 process.env.NEXT_PUBLIC_DOCS_URL = "http://localhost:3001/docs";
@@ -12,13 +19,6 @@ process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up";
 process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = "/";
 process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = "/";
 process.env.API_URL = "http://localhost:3002";
-
-// Import jest-dom matchers for toBeInTheDocument, toHaveAttribute, etc.
-import "@testing-library/jest-dom/vitest";
-
-// Ensure DOM is cleaned up between tests so renders don't bleed into each other.
-import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
 
 const localStorageStore = new Map<string, string>();
 const stableLocalStorage = createStableLocalStorage(localStorageStore);
@@ -95,7 +95,6 @@ function createStableLocalStorage(
   };
 }
 
-// --- Navigation port shims (PLN-806 / FEA-1509) ---
 // Components consume @repo/navigation instead of next/navigation directly.
 // Delegate the port hooks back to next/navigation so existing per-test
 // vi.mock("next/navigation") factories keep driving navigation assertions
@@ -135,6 +134,7 @@ vi.mock("@repo/navigation/use-navigation", async () => {
             router.replace(href, options);
           },
           back: () => router.back(),
+          forward: () => router.forward(),
           refresh: () => router.refresh(),
         }),
         [router]
@@ -156,7 +156,9 @@ vi.mock("@repo/navigation/use-path", async () => {
 vi.mock("@repo/navigation/use-route-params", async () => {
   const nav = await import("next/navigation");
   return {
-    useRouteParams: () => nav.useParams(),
+    // The port promises a `RouteParams` object; `useParams()` is null outside
+    // a route context, which is every suite that never mocks next/navigation.
+    useRouteParams: () => nav.useParams() ?? {},
   };
 });
 
@@ -174,7 +176,9 @@ vi.mock("@repo/navigation/use-org-path", async () => {
     // per-test vi.mock("next/navigation") factories) and never emit a
     // protocol-relative "//…" when the slug is absent.
     useOrgPath: () => {
-      const params = nav.useParams();
+      // `useParams()` is null outside a route context, which is every suite
+      // that renders an org-path consumer without mocking next/navigation.
+      const params = nav.useParams() ?? {};
       const slug = typeof params.orgSlug === "string" ? params.orgSlug : "";
       return (path: string) => (slug ? `/${slug}${path}` : path);
     },

@@ -158,8 +158,9 @@ function makeProjection(): CanonicalBranchProjectionV1 {
       identity: {
         artifactId: "branch-artifact-1",
         projectId: null,
+        projectName: null,
         branchName: "feat/canonical-branch",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       },
       membership: {
         sessionIds: [],
@@ -211,9 +212,9 @@ function lazyEvidence(): BranchProjectionEvidenceSummary {
 function pullRequestIdentity() {
   return {
     githubId: "PR_kwDOExample",
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     number: 7,
-    url: "https://github.com/closedloop-ai/symphony-alpha/pull/7",
+    url: "https://github.com/closedloop-ai/closedloop-ai/pull/7",
   };
 }
 

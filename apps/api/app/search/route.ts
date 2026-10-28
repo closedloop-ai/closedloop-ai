@@ -135,11 +135,11 @@ async function handleUnified(
   const mode: SearchMode =
     rawMode === SearchMode.Prefix ? SearchMode.Prefix : SearchMode.Fulltext;
 
-  // Repeated `types=document&types=loop` per AGENTS (not comma-joined). Any value
+  // Repeated `types=document&types=project` per AGENTS (not comma-joined). Any value
   // outside the Phase-1 corpus is rejected, never silently dropped. The `types[]`
   // query param is kept as a backward-compatible ALIAS for the inline `type:`
   // filter (FEA-4134): a skewed client that still sends `types[]` keeps working,
-  // and a query mixing both (`?types=loop&q=type:document`) unions the two into
+  // and a query mixing both (`?types=project&q=type:document`) unions the two into
   // one corpus predicate (deduped, first-seen order). The parser already
   // validated the inline `type:` kinds; the `types[]` param is validated here.
   const types: SearchEntityType[] = [...(parsed.filters.type?.kinds ?? [])];

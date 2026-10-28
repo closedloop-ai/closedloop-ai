@@ -25,7 +25,7 @@
  *   fingerprint stays put, and the tick is retried.
  * - {@link OpencodeParseFailureKind.StoreCorrupt} — SQLite declared the DATABASE
  *   malformed (`SQLITE_CORRUPT`, `SQLITE_NOTADB`). Not retryable, but not a
- *   per-row verdict either (wongk review): dropping the "bad row" and importing
+ *   per-row verdict either (whitlockk review): dropping the "bad row" and importing
  *   its siblings would advance the fingerprint over a store SQLite says is
  *   malformed, presenting a partial corpus as a complete one. This PROPAGATES
  *   like a store failure; the no-progress case is the store retry/quarantine
@@ -78,7 +78,7 @@ const RETRYABLE_SQLITE_PRIMARY_CODES: ReadonlySet<number> = new Set([
 
 /**
  * The SQLite primary result codes that are a verdict on the whole DATABASE, not
- * on one row (wongk review). These are NOT retryable, but they must not be
+ * on one row (whitlockk review). These are NOT retryable, but they must not be
  * demoted to {@link OpencodeParseFailureKind.MalformedRow} either: dropping the
  * "bad row" and importing its siblings would checkpoint a partial corpus over a
  * store SQLite has declared malformed, presenting missing sessions as absent
@@ -197,7 +197,7 @@ export function describeOpencodeCell(value: unknown): string {
 }
 
 /**
- * Decide what a FAILED optional-column schema probe means. ISS-5238 (wongk
+ * Decide what a FAILED optional-column schema probe means. ISS-5238 (whitlockk
  * review): the probe used to swallow every throw and answer `false`, rendering a
  * failed read as a confident "this store has a legacy schema". A transient
  * `SQLITE_BUSY`/`SQLITE_IOERR` that clears before the following SELECT would

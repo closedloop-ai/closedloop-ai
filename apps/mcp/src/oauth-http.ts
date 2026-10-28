@@ -37,6 +37,26 @@ export function sendJson(
   res.end(JSON.stringify(body));
 }
 
+/**
+ * The refusal for "this will work, just not now": OAuth's
+ * `temporarily_unavailable` code at 503, with an optional `Retry-After` so a
+ * client is told when to come back rather than left to guess or give up.
+ */
+export function sendTemporarilyUnavailable(
+  res: ServerResponse,
+  description: string,
+  retryAfterSeconds?: number
+): void {
+  sendJson(
+    res,
+    503,
+    { error: "temporarily_unavailable", error_description: description },
+    retryAfterSeconds === undefined
+      ? undefined
+      : { "Retry-After": String(retryAfterSeconds) }
+  );
+}
+
 /** `sendJson` with the OAuth no-store caching headers always applied. */
 export function sendOAuthJson(
   res: ServerResponse,

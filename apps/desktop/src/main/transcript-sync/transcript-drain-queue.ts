@@ -11,19 +11,27 @@
  * possible to add a third caller that forgets to claim, which is exactly the
  * race (a concurrent drain grabbing a freshly-revived row at offset 0 and
  * re-dead-lettering it) the claim exists to prevent.
+ *
+ * ISS-9884: the lane's give-up is held HERE too, because this is where attempts
+ * are made — see `transcript-lane-give-up.ts`.
  */
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+
 import { isRecoverableDbHostExitError } from "../../shared/db-host-exit-error.js";
 import type { TranscriptForceArchiveResult } from "../../shared/transcript-read-contract.js";
 import { TranscriptSyncStatus } from "../../shared/transcript-sync-status-contract.js";
+import {
+  permanentSkipSyncReason,
+  type SyncLaneBatchEmit,
+  transcriptArchiveBatchEvent,
+} from "../agent-sync/sync-lane-cloud-health.js";
 import type { TranscriptSettle } from "../database/transcript-sync-settle.js";
-import type {
-  TranscriptRowIdentity,
-  TranscriptSyncStore,
-} from "../database/transcript-sync-store.js";
+import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
+import { TranscriptSyncClientError } from "../transcript/desktop-transcripts-client.js";
+import {
+  isLaneWideTranscriptFailure,
+  laneWideFailureLog,
+} from "./transcript-failure-classification.js";
+import { TranscriptLaneGiveUp } from "./transcript-lane-give-up.js";
 import {
   type TranscriptSyncExecutor,
   type TranscriptSyncResult,
@@ -31,12 +39,22 @@ import {
 } from "./transcript-sync-executor.js";
 import {
   isoAfter,
+  TRANSCRIPT_LANE_STALL_CEILING_MS,
   TRANSCRIPT_OVERSIZED_DEAD_LETTER_PREFIX,
   TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES,
   type TranscriptFingerprint,
+  transcriptLaneStallDelayMs,
   transcriptQueueKey,
   transcriptRetryDelayMs,
 } from "./transcript-sync-types.js";
+import {
+  attemptFailureSyncReason,
+  classifyTerminalSkip,
+  deadLetterLogSuffix,
+  type TerminalSkipOutcome,
+  terminalSkipReasonForBound,
+} from "./transcript-terminal-skip.js";
+import { TranscriptUploadingRecovery } from "./transcript-uploading-recovery.js";
 
 const READY_BATCH_LIMIT = 32;
 
@@ -52,31 +70,6 @@ const READY_BATCH_LIMIT = 32;
  */
 const FORCE_SYNC_MAX_WINDOWS = 8;
 
-/**
- * ISS-4849: how many CONSECUTIVE failed batch flushes the drain will recover
- * in-process before it stops trying and leaves the rows to boot recovery.
- *
- * The recovery re-queues the batch so the next 5s tick retries it in the running
- * process instead of stranding it `uploading` until the next app launch. The cap
- * is what keeps that from becoming a spin: if the flush keeps failing while the
- * READS still succeed (so the drain keeps picking work), we stop re-arming and
- * let `requeueStale` own it at the next boot. The counter resets on the first
- * flush that lands, so a transient blip never consumes the budget permanently.
- */
-const MAX_FLUSH_RECOVERY_ATTEMPTS = 3;
-
-/**
- * ISS-5808: cap on the identities held for host-exit re-arm.
- *
- * Only rows THIS process claimed can land in the set, and each drain claims at
- * most `concurrency`, so it grows a batch at a time — but a host that stays down
- * across many drains would still accumulate. Past the cap we stop remembering
- * and say so; those rows fall back to `requeueStale` at the next boot, which is
- * the pre-ISS-5808 behaviour and loses nothing. An unbounded Set fed by external
- * input is exactly what the repo's memory-leak rule forbids.
- */
-const MAX_HOST_EXIT_ABANDONED_ROWS = 256;
-
 /** The store + executor pair the pump is currently bound to. */
 export type TranscriptSyncRuntime = {
   store: TranscriptSyncStore;
@@ -90,43 +83,47 @@ export type TranscriptDrainQueueDeps = {
   resolveRuntime: () => TranscriptSyncRuntime | null;
   /**
    * ISS-4621: snapshotted BEFORE each upload attempt so the ack-gated
-   * `retries_exhausted` skip records under the target the attempt (and its
+   * terminal skip records under the target the attempt (and its
    * cloud rows) belong to, not one a mid-attempt reconnect switched to.
    */
   getComputeTargetId: () => string | null;
   now: () => string;
   log: (message: string) => void;
   concurrency: number;
+  /**
+   * ISS-6338: this lane's cloud batch health. Optional — a context with no
+   * telemetry runtime (tests, dev) drains uninstrumented rather than being
+   * forced to stub an emitter.
+   */
+  emitSyncBatch?: SyncLaneBatchEmit;
 };
 
 export class TranscriptDrainQueue {
   private readonly inFlight = new Set<string>();
   private readonly deps: TranscriptDrainQueueDeps;
   /**
-   * ISS-4849: consecutive `recordBatchSettled` rejections. Reset to 0 by the
-   * first flush that lands, so this bounds a PERSISTENT flush failure without
-   * ever consuming the budget for a transient one.
+   * ISS-4849 / ISS-5808: the in-process re-arms for rows this process left
+   * `uploading` — see `transcript-uploading-recovery.ts`.
    */
-  private flushRecoveryAttempts = 0;
+  private readonly uploadingRecovery: TranscriptUploadingRecovery;
+
   /**
-   * ISS-5808 (wongk review) — rows this process left `uploading` because the
-   * db-host child died mid-upload, keyed by {@link transcriptQueueKey}.
-   *
-   * `uploading` is invisible to `listReady`, so nothing re-picks them. The FIRST
-   * shape of this fix re-armed them by re-running the sweeper's boot recovery,
-   * `requeueStale` — but that resets EVERY `uploading` row, and its own contract
-   * says that is safe only at boot "because no upload is in flight in a fresh
-   * process". Here the service is live with overlapping drains, so it could
-   * reset a sibling's legitimately-active claim and have that row re-uploaded
-   * after its settle landed. This set is the identity-scoped replacement:
-   * `requeueUnsettledBatch` touches exactly these identities, and only while
-   * they are still `uploading`, so a row that settled in the meantime is left
-   * alone. Bounded by {@link MAX_HOST_EXIT_ABANDONED_ROWS}.
+   * ISS-9884 (PLN-1986 §4/§5): the lane give-up and its recovery door. Owned by
+   * the drain because attempts are made here — a hold placed on the discovery
+   * sweep alone would leave the timer-driven drain attempting.
    */
-  private readonly hostExitAbandoned = new Map<string, TranscriptRowIdentity>();
+  private readonly laneGiveUp: TranscriptLaneGiveUp;
 
   constructor(deps: TranscriptDrainQueueDeps) {
     this.deps = deps;
+    this.uploadingRecovery = new TranscriptUploadingRecovery({
+      now: () => this.deps.now(),
+      log: (message) => this.deps.log(message),
+    });
+    this.laneGiveUp = new TranscriptLaneGiveUp({
+      getStore: () => this.deps.resolveRuntime()?.store ?? null,
+      log: (message) => this.deps.log(message),
+    });
   }
 
   /**
@@ -155,14 +152,38 @@ export class TranscriptDrainQueue {
     // busy-slot short-circuit below — those rows are invisible to `listReady`,
     // so starving this behind a full batch would leave them stranded exactly
     // while the lane is busiest.
-    await this.recoverHostExitAbandoned(runtime.store);
+    await this.uploadingRecovery.recoverHostExitAbandoned(runtime.store);
+    // ISS-9884: ONE compute target for the pass. The revival and the ready read
+    // are both scoped to it, so a pass whose live target moved after the revival
+    // is abandoned rather than listed; the next pass hydrates, revives and lists
+    // under whichever target is live then.
+    const passComputeTargetId = this.deps.getComputeTargetId();
+    // ISS-9884: a given-up lane attempts nothing until a recovery door opens, and
+    // an opened door revives the rows the give-up paused BEFORE the ready read
+    // below, so this pass has them to attempt.
+    if (
+      await this.laneGiveUp.holdDrain(
+        runtime.store,
+        passComputeTargetId,
+        this.deps.now()
+      )
+    ) {
+      return;
+    }
+    if (this.deps.getComputeTargetId() !== passComputeTargetId) {
+      this.deps.log(
+        "transcript drain pass abandoned: the compute target changed after its revival"
+      );
+      return;
+    }
     // Cheap short-circuit: skip the listReady round-trip when every slot is busy.
     if (this.inFlight.size >= this.deps.concurrency) {
       return;
     }
     const ready = await runtime.store.listReady(
       this.deps.now(),
-      READY_BATCH_LIMIT
+      READY_BATCH_LIMIT,
+      passComputeTargetId
     );
     const toRun: TranscriptFingerprint[] = [];
     for (const fp of ready) {
@@ -183,8 +204,8 @@ export class TranscriptDrainQueue {
     // backfill, each a checkpoint-eligible write). `markUploading` still lands
     // per-file inside `syncFile` (the FEA-2827 growth-signal guard), so only the
     // settle is deferred. A settle that never lands (crash before flush) is
-    // harmless — the row is still `uploading` and `requeueStale` revives it on
-    // boot, then the server-authoritative cursor re-plans it. The drain-queue's
+    // harmless — the row is still `uploading` and the sweep's lease reclaim
+    // revives it, then the server-authoritative cursor re-plans it. The drain-queue's
     // OWN exception settles (`recordFailure` / `requeueRevoked`) stay immediate
     // writes: they are the rarer error paths and carry their own ack-gated
     // dead-letter logic.
@@ -208,22 +229,22 @@ export class TranscriptDrainQueue {
     );
     // ISS-4849: a REJECTED flush leaves every file in this batch `uploading` —
     // a status `listReady` excludes — so without in-process recovery the whole
-    // batch is stranded until the next boot's `requeueStale`. Re-arm it here,
+    // batch is stranded until the sweep's lease reclaim. Re-arm it here,
     // bounded, then still surface the failure to the caller.
     try {
       await runtime.store.recordBatchSettled(settles);
       // Only a flush that actually WROTE something proves the settle path is
-      // healthy again (wongk review). An overlapping tick that collected no
+      // healthy again (whitlockk review). An overlapping tick that collected no
       // settles — e.g. while a just-recovered row is back in flight — reaches
       // `recordBatchSettled([])`, which is a no-op success; resetting on that
       // would put the next real flush back at attempt 1 and let a persistent
       // settle failure re-queue forever instead of handing off to boot recovery
       // after MAX_FLUSH_RECOVERY_ATTEMPTS.
       if (settles.length > 0) {
-        this.flushRecoveryAttempts = 0;
+        this.uploadingRecovery.noteFlushLanded();
       }
     } catch (flushError) {
-      await this.recoverFailedFlush(runtime.store, toRun);
+      await this.uploadingRecovery.recoverFailedFlush(runtime.store, toRun);
       throw flushError;
     }
     const firstRejection = outcomes.find(
@@ -250,6 +271,8 @@ export class TranscriptDrainQueue {
       const result = await executor.syncFile(fp, {
         settleCollector: collectSettle,
       });
+      this.emitAttemptHealth(result);
+      this.noteAttemptAnswered(result, attemptComputeTargetId);
       // A successful upload that isn't caught up leaves the row queued; the next
       // drain tick continues it (bounded progress, no recursion).
       if (result.kind === "uploaded" && !result.caughtUp) {
@@ -274,19 +297,19 @@ export class TranscriptDrainQueue {
         this.deps.log(`transcript ${fp.fileKey} upload aborted: sync revoked`);
         return;
       }
-      // ISS-5808 (wongk review): the db-host child died under this upload and a
+      // ISS-5808 (whitlockk review): the db-host child died under this upload and a
       // replacement is already coming. That is not THIS FILE's failure, so it
       // must not touch the retry ladder: `recordFailure` increments
       // `retryCount`, and a run of host exits would climb a healthy transcript
       // to TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES and dead-letter it with a
-      // `retries_exhausted` skip the cloud then believes. Swallowing it was also
+      // terminal skip the cloud then believes. Swallowing it was also
       // hiding the exit from the lane's own recovery — this catch never
       // rethrew, so the service's detached-task handler never saw the one error
       // class it exists to react to. Remember the identity for the re-arm, log
       // it as an abandonment (matching the collector's wording for the same
       // event), and rethrow.
       if (isRecoverableDbHostExitError(error)) {
-        this.rememberHostExitAbandoned(fp);
+        this.uploadingRecovery.rememberHostExitAbandoned(fp);
         this.deps.log(
           `transcript ${fp.fileKey} upload abandoned: db-host exited mid-upload; retry budget untouched`
         );
@@ -454,10 +477,12 @@ export class TranscriptDrainQueue {
           attemptComputeTargetId
         );
       }
+      this.noteAttemptAnswered(result, attemptComputeTargetId);
       if (result.kind === "noop") {
         return { kind: "noop" };
       }
       if (result.kind === "skipped") {
+        this.emitAttemptHealth(result);
         // A terminal skip (source gone, redacted line too long) is NOT fixable by
         // the bypass — surface it as `permanent` (no retry invitation). Transient
         // skips (no complete line yet, materialized source not ready) are
@@ -467,10 +492,12 @@ export class TranscriptDrainQueue {
           : { kind: "failed", reason: result.reason };
       }
       if (result.caughtUp) {
+        this.emitAttemptHealth(result);
         return { kind: "uploaded", caughtUp: true };
       }
       // Not caught up: the cursor advanced. Re-read and continue the next window;
       // bail to the durable lane if the row vanished (concurrent prune).
+      this.emitAttemptHealth(result);
       const next = await store.get(externalSessionId, fileKey);
       if (!next) {
         return { kind: "uploaded", caughtUp: false };
@@ -490,7 +517,8 @@ export class TranscriptDrainQueue {
    *
    * The row is left `queued`/`failed` (dead-lettered only once the consecutive-
    * failure threshold is hit — and, per ISS-4621, only once the cloud
-   * acknowledged the `retries_exhausted` skip); because any committed bytes
+   * acknowledged the terminal skip, whose reason ISS-9884 picks from the bound
+   * that fired); because any committed bytes
    * advanced `syncedByteOffset`, even a later automatic drain resumes past the
    * cap rather than re-dead-lettering.
    */
@@ -503,11 +531,37 @@ export class TranscriptDrainQueue {
     attemptComputeTargetId: string | null
   ): Promise<TranscriptForceArchiveResult> {
     const message = error instanceof Error ? error.message : String(error);
-    const retryCount = fp.retryCount + 1;
-    const deadEligible = retryCount >= TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES;
+    const nowIso = this.deps.now();
+    const laneWide = isLaneWideTranscriptFailure(error);
+    // The run this outcome belongs to: an existing one continues, a new one
+    // starts now. Computed unconditionally so the ceiling below has a non-null
+    // instant to measure from; only PERSISTED when the failure is lane-wide.
+    const stalledSince = fp.laneStalledSince ?? nowIso;
+    const laneStalledSince = laneWide ? stalledSince : null;
+    const retryCount = laneWide ? fp.retryCount : fp.retryCount + 1;
+    // Freezing `retryCount` removes the only bound a lane-wide failure had, and
+    // invariant 5 requires every terminal path stay reachable — so the bound
+    // becomes wall-clock. A row stalled longer than the ceiling dead-letters on
+    // the same ack-gated path as an exhausted ladder.
+    const deadEligible = laneWide
+      ? Date.parse(nowIso) - Date.parse(stalledSince) >=
+        TRANSCRIPT_LANE_STALL_CEILING_MS
+      : retryCount >= TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES;
+    // ISS-9884: the lane give-up folds the same outcome — a lane-wide failure may
+    // cross this row's ceiling or spend a re-arm's one attempt, and a server
+    // answer ends a give-up.
+    this.laneGiveUp.noteFailure({
+      error,
+      laneWide,
+      stalledSince,
+      now: nowIso,
+      computeTargetId: attemptComputeTargetId,
+    });
     // ISS-4621: the consecutive-failure dead-letter is ack-gated like every
     // other terminal path — the row goes `dead` only once the cloud
-    // acknowledged a `retries_exhausted` skip. Before this, the generic
+    // acknowledged the terminal skip for the bound that fired (ISS-9884:
+    // `retries_exhausted` for the ladder, `environment_unavailable` for the
+    // lane-wide wall clock). Before ISS-4621, the generic
     // dead-letter NEVER told the cloud, so the transcript read `syncing`
     // forever with no failure reason (the row is invisible to re-observation
     // unless the file changes). On a failed ack the row stays `failed` on the
@@ -534,11 +588,18 @@ export class TranscriptDrainQueue {
     //  - `unacknowledged` (`{ acked: false }` offline/transport, or a
     //    version-skewed non-terminal status): ambiguous, so stay on the capped
     //    backoff ladder and retry the upload itself next drain.
-    const terminalSkip = deadEligible
-      ? await classifyTerminalSkip(executor, fp, attemptComputeTargetId)
-      : "unacknowledged";
-    const nowIso = this.deps.now();
-    if (terminalSkip === "uploaded") {
+    const terminalSkip: TerminalSkipOutcome = deadEligible
+      ? await classifyTerminalSkip(
+          executor,
+          fp,
+          attemptComputeTargetId,
+          // ISS-9884: the bound that fired picks the reason — the same
+          // `laneWide` fact `deadEligible` was selected by, so the two can
+          // never disagree about which terminal this is.
+          terminalSkipReasonForBound(laneWide)
+        )
+      : { kind: "unacknowledged" };
+    if (terminalSkip.kind === "uploaded") {
       // ISS-4815: settled DURABLY (`cloudUploadedAt`), so a row whose local
       // cursor never advanced is not re-armed by the stranded-blob recovery on
       // the next launch and made to replay this terminal skip. Scoped to
@@ -551,6 +612,9 @@ export class TranscriptDrainQueue {
         nowIso,
         attemptComputeTargetId
       );
+      // ISS-9884: the cloud ANSWERED — it holds the bytes, exactly what a `noop`
+      // says — so a give-up the failure above stamped is over.
+      this.laneGiveUp.noteLaneAnswered(attemptComputeTargetId);
       this.deps.log(
         label === "force-sync"
           ? `transcript ${fp.fileKey} force-sync settled uploaded (cloud holds a verified archive)`
@@ -558,7 +622,29 @@ export class TranscriptDrainQueue {
       );
       return { kind: "uploaded", caughtUp: true };
     }
-    const dead = terminalSkip === "skipped";
+    const dead = terminalSkip.kind === "skipped";
+    // ISS-6338: the lane's cloud batch health, emitted where `dead` is actually
+    // decided. Deliberately not emitted on the `uploaded` settle above — that
+    // path performed no upload, it reconciled one the cloud already held, and
+    // counting it as a successful batch would inflate the success rate with
+    // work this lane never did.
+    this.deps.emitSyncBatch?.(
+      transcriptArchiveBatchEvent({
+        failed: true,
+        dead,
+        // ISS-9884: a dead letter reports the terminal reason the cloud
+        // acknowledged, through the same fold the per-attempt permanent skip
+        // uses, so a 24h `environment_unavailable` give-up reads `lane_gave_up`
+        // instead of blaming the file with its last transport error. Any other
+        // failure keeps the status the server answered with: collapsing a 401,
+        // a 413 and a 5xx into `transport_error` would send an on-call after a
+        // network fault for an auth or quota outage.
+        reason:
+          terminalSkip.kind === "skipped"
+            ? permanentSkipSyncReason(terminalSkip.reason ?? undefined)
+            : attemptFailureSyncReason(error),
+      })
+    );
     await store.recordFailure({
       externalSessionId: fp.externalSessionId,
       fileKey: fp.fileKey,
@@ -568,183 +654,103 @@ export class TranscriptDrainQueue {
       // run — it must not feed the terminal `source_gone` threshold.
       missingSourceCount: 0,
       dead,
+      // ISS-8689 (PRD-699 F8): a lane-wide stall gets a STAGED delay keyed off
+      // the stall clock — never off `retryCount`, which this class deliberately
+      // did not advance, so a ladder read from it would not move. It honors the
+      // server's `Retry-After` as a minimum, which is the only thing that tells
+      // a bucket-unset 503 (an hour) apart from a transient one (a minute).
       nextAttemptAt: dead
         ? null
-        : isoAfter(nowIso, transcriptRetryDelayMs(retryCount)),
+        : isoAfter(
+            nowIso,
+            laneWide
+              ? transcriptLaneStallDelayMs({
+                  stalledSinceMs: Date.parse(stalledSince),
+                  nowMs: Date.parse(nowIso),
+                  retryAfterMs:
+                    error instanceof TranscriptSyncClientError
+                      ? error.retryAfterMs
+                      : undefined,
+                })
+              : transcriptRetryDelayMs(retryCount)
+          ),
       lastError: message,
+      laneStalledSince,
+      // ISS-9884: the reason the cloud RECORDED for this dead-letter, so the
+      // desktop-local verdict reads the same terminal the cloud will serve.
+      // Null on every non-dead arm — a row still on the ladder has no
+      // terminal to name.
+      terminalSkipReason:
+        terminalSkip.kind === "skipped" ? terminalSkip.reason : null,
+      // And the target whose cloud recorded it: the only identity the lane
+      // recovery may later revive this row under. `notifyPermanentSkip` sends
+      // the skip under exactly this snapshot or not at all, so a `skipped`
+      // answer was given under it and it is never null here.
+      terminalSkipComputeTargetId:
+        terminalSkip.kind === "skipped" ? attemptComputeTargetId : null,
       now: nowIso,
     });
     this.deps.log(
-      label === "force-sync"
-        ? `transcript ${fp.fileKey} force-sync failed: ${message}`
-        : `transcript ${fp.fileKey} failed (attempt ${retryCount}${deadLetterLogSuffix(deadEligible, dead)}): ${message}`
+      laneWideFailureLog(
+        label,
+        fp.fileKey,
+        message,
+        laneWide,
+        retryCount,
+        deadLetterLogSuffix(deadEligible, dead)
+      )
     );
     return { kind: "failed", reason: message };
   }
 
   /**
-   * ISS-4849: re-arm a batch whose coalesced settle flush REJECTED.
+   * ISS-6338: report one completed `syncFile` attempt to the cloud.
    *
-   * Without this, `recordBatchSettled` failing left every claimed row
-   * `uploading` — invisible to `listReady`, and re-armed only by the boot-only
-   * `requeueStale`. A single transient db-host blip therefore stranded a whole
-   * batch of already-uploaded transcripts until the operator restarted the app.
-   *
-   * Bounded on both axes:
-   *  - `MAX_FLUSH_RECOVERY_ATTEMPTS` consecutive failures, then we stop re-arming
-   *    and let boot recovery own it — so a persistently failing flush cannot
-   *    become a re-queue/re-drain spin;
-   *  - the store call is scoped to rows still `uploading`, so a settle that DID
-   *    land in the partially-applied batch is never resurrected.
-   *
-   * Never throws: the caller is already about to rethrow the flush error, and a
-   * failed recovery must not replace that (more actionable) error with its own.
-   * The row stays `uploading` in that case — exactly the state boot recovery
-   * expects.
+   * Only an `uploaded` result is a success. A `noop` transferred nothing — the
+   * server's plan said it already holds the bytes — so counting it would let a
+   * desktop whose upload path is broken, but whose plan endpoint keeps
+   * answering, report a 100% healthy archive lane. A NON-permanent skip is
+   * likewise silent: the lane looked at the file and correctly declined to send
+   * it (no complete line yet, source not materialized), which is neither a
+   * success nor a failure.
    */
-  private async recoverFailedFlush(
-    store: TranscriptSyncStore,
-    batch: readonly TranscriptFingerprint[]
-  ): Promise<void> {
-    this.flushRecoveryAttempts += 1;
-    if (this.flushRecoveryAttempts > MAX_FLUSH_RECOVERY_ATTEMPTS) {
-      this.deps.log(
-        `transcript batch settle flush failed ${this.flushRecoveryAttempts} time(s) in a row; leaving ${batch.length} row(s) uploading for boot recovery`
-      );
+  private emitAttemptHealth(result: TranscriptSyncResult): void {
+    if (result.kind === "uploaded") {
+      this.deps.emitSyncBatch?.(transcriptArchiveBatchEvent({ failed: false }));
       return;
     }
-    try {
-      const revived = await store.requeueUnsettledBatch(batch, this.deps.now());
-      this.deps.log(
-        `transcript batch settle flush failed; re-queued ${revived} unsettled row(s) in-process (attempt ${this.flushRecoveryAttempts}/${MAX_FLUSH_RECOVERY_ATTEMPTS})`
-      );
-    } catch (recoveryError) {
-      const message =
-        recoveryError instanceof Error
-          ? recoveryError.message
-          : String(recoveryError);
-      this.deps.log(
-        `transcript batch settle recovery failed: ${message}; ${batch.length} row(s) left uploading for boot recovery`
+    if (result.kind === "skipped" && result.permanent) {
+      this.deps.emitSyncBatch?.(
+        transcriptArchiveBatchEvent({
+          failed: true,
+          dead: true,
+          reason: permanentSkipSyncReason(result.permanentCause),
+        })
       );
     }
   }
 
   /**
-   * ISS-5808: record one identity a db-host exit stranded `uploading`.
-   *
-   * Keyed, so the same file abandoned by two successive exits is remembered
-   * once. Past the cap we stop remembering and say so once per overflow —
-   * silently dropping would make the boot-recovery fallback invisible.
+   * ISS-9884 (PLN-1986 §5): the event door — a precondition this lane may have
+   * given up on changed. Re-arms the give-up and owes the paused rows a revival,
+   * both of which the next drain pass acts on.
    */
-  private rememberHostExitAbandoned(fp: TranscriptFingerprint): void {
-    if (this.hostExitAbandoned.size >= MAX_HOST_EXIT_ABANDONED_ROWS) {
-      this.deps.log(
-        `transcript host-exit recovery set is full (${MAX_HOST_EXIT_ABANDONED_ROWS}); ${fp.fileKey} left uploading for boot recovery`
-      );
-      return;
-    }
-    this.hostExitAbandoned.set(
-      transcriptQueueKey(fp.externalSessionId, fp.fileKey),
-      { externalSessionId: fp.externalSessionId, fileKey: fp.fileKey }
-    );
+  noteLaneRecoverySignal(): void {
+    this.laneGiveUp.noteLaneRecoverySignal();
   }
 
   /**
-   * ISS-5808: move the rows a db-host exit stranded back to `queued`, by
-   * IDENTITY.
-   *
-   * `requeueUnsettledBatch` is scoped to `status = uploading` AND these
-   * identities and leaves the retry ladder alone, so it can never disturb a
-   * sibling's live claim (the reason `requeueStale` is wrong here) and never
-   * resurrects a row that legitimately settled while the host was away.
-   *
-   * A failure means the replacement child is not serving yet: keep the
-   * identities and let the next drain retry. Only the identities SUBMITTED in
-   * this call are cleared, so a row abandoned concurrently is not dropped on the
-   * floor.
-   *
-   * There is deliberately NO kick, and therefore no kick budget to bound. An
-   * earlier shape of this fix had the service schedule an extra recovery pass on
-   * each host exit; because that pass could itself die on the same host it was a
-   * self-referential chain, and every attempt to bound it had the same failure
-   * mode — a signal meant as "recovery succeeded" also fired mid-storm and
-   * re-armed the bound (codex review), which is the ISS-5789 defect. Running the
-   * re-arm at the top of the ORDINARY 5-second drain removes the chain entirely:
-   * it is a fixed-rate retry that cannot recurse, and it costs at most one tick
-   * of latency versus kicking immediately.
+   * ISS-9884: an `uploaded` or `noop` result is the SERVER answering (the plan,
+   * and for an upload the complete), which ends a lane give-up. A skip is not:
+   * a transient one is decided locally, and a permanent one is acked by the skip
+   * route, which can answer while the upload path is exactly what is broken.
    */
-  private async recoverHostExitAbandoned(
-    store: TranscriptSyncStore
-  ): Promise<void> {
-    if (this.hostExitAbandoned.size === 0) {
-      return;
-    }
-    const submitted = [...this.hostExitAbandoned.entries()];
-    try {
-      const revived = await store.requeueUnsettledBatch(
-        submitted.map(([, identity]) => identity),
-        this.deps.now()
-      );
-      for (const [key] of submitted) {
-        this.hostExitAbandoned.delete(key);
-      }
-      this.deps.log(
-        `transcript host-exit recovery re-queued ${revived} of ${submitted.length} stranded row(s)`
-      );
-    } catch (error) {
-      this.deps.log(
-        `transcript host-exit recovery failed: ${error instanceof Error ? error.message : String(error)}; retrying ${submitted.length} row(s) on the next drain`
-      );
+  private noteAttemptAnswered(
+    result: TranscriptSyncResult,
+    computeTargetId: string | null
+  ): void {
+    if (result.kind === "uploaded" || result.kind === "noop") {
+      this.laneGiveUp.noteLaneAnswered(computeTargetId);
     }
   }
-}
-
-/**
- * ISS-4621: log suffix for the consecutive-failure ladder. Distinguishes a
- * completed dead-letter (cloud acknowledged the terminal skip) from one held
- * back because the ack failed — the row stays `failed` and the transition
- * re-runs next drain, which the operator should be able to see in the logs.
- */
-function deadLetterLogSuffix(deadEligible: boolean, dead: boolean): string {
-  if (!deadEligible) {
-    return "";
-  }
-  return dead ? ", dead-lettered" : ", dead-letter pending cloud ack";
-}
-
-/**
- * ISS-4695 (Item 1): emit the `retries_exhausted` terminal skip and classify
- * the server's authoritative answer into the same three outcomes the executor's
- * `settleTerminalSkip` uses, so the retries-exhausted terminal path and the
- * per-attempt terminal path cannot drift:
- *  - `skipped`: the cloud RECORDED the terminal skip (`acked`, status
- *    `skipped`) → the caller may dead-letter the local row.
- *  - `uploaded`: a verified archive already exists — the server refused to mask
- *    readable bytes with a late skip. NOT a failure: the caller settles the row
- *    readable rather than keeping it on the retry ladder (dead-lettering would
- *    project `failedPermanent` for a synced transcript, the ISS-4695 lie).
- *  - `unacknowledged`: `{ acked: false }` (offline / transport error) OR any
- *    other version-skewed non-terminal status — ambiguous, so the caller keeps
- *    the row on the retry ladder.
- */
-async function classifyTerminalSkip(
-  executor: TranscriptSyncExecutor,
-  fp: TranscriptFingerprint,
-  attemptComputeTargetId: string | null
-): Promise<"skipped" | "uploaded" | "unacknowledged"> {
-  const emit = await executor.notifyPermanentSkip(
-    fp,
-    TranscriptSkipReason.RetriesExhausted,
-    attemptComputeTargetId
-  );
-  if (!emit.acked) {
-    return "unacknowledged";
-  }
-  if (emit.status === TranscriptUploadStatus.Skipped) {
-    return "skipped";
-  }
-  if (emit.status === TranscriptUploadStatus.Uploaded) {
-    return "uploaded";
-  }
-  return "unacknowledged";
 }

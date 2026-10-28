@@ -166,7 +166,8 @@ describe("public-repositories route feature gating", () => {
       expect(addPublicRepositoryMock).toHaveBeenCalledWith(
         "org-1",
         "user-1",
-        "https://example.com/repo"
+        "https://example.com/repo",
+        undefined
       );
     });
 
@@ -212,7 +213,8 @@ describe("public-repositories route feature gating", () => {
       expect(response.status).toBe(200);
       expect(removePublicRepositoryMock).toHaveBeenCalledWith(
         "org-1",
-        "public-repo-1"
+        "public-repo-1",
+        undefined
       );
     });
   });

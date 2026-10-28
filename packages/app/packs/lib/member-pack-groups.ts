@@ -10,7 +10,7 @@
  * string.
  *
  * The mapping is pure so it is unit-testable without a render, and it follows
- * the FEA-4088 Parker principle the sibling admin treatment set: the UI must not
+ * the FEA-4088 Pascoe principle the sibling admin treatment set: the UI must not
  * lie. In particular a *required* pack whose push failed on this member's
  * machine is surfaced as an honest strand row inside the Required group
  * ("Required, install failed"), not silently dropped — a missing required pack

@@ -11,7 +11,7 @@
  * persisted (SessionDetail.frustration_raw). Normalization to a 0–100 score
  * happens downstream at Insights aggregation time, against the org population's
  * observed max raw value — which drifts as more sessions land, so freezing a
- * pre-normalized score on the row would go stale (Mike's operator decision on
+ * pre-normalized score on the row would go stale (Marisol's operator decision on
  * PLN-1481). `FRUSTRATION_SCORE_VERSION` stamps the scorer that produced the
  * value so a later scorer bump can re-derive stale rows.
  *

@@ -36,7 +36,7 @@ This documentation is organized so both humans and AI agents can use it as groun
 
 | Surface | What it does |
 | --- | --- |
-| **Web app (control plane)** | Defines work, stores artifacts, coordinates teams, launches loops, surfaces approvals, renders activity. |
+| **Web app (control plane)** | Defines work, stores artifacts, coordinates teams, surfaces approvals, renders activity. |
 | **Desktop client** | Electron app that exposes a signed localhost HTTP gateway and a cloud relay so the control plane can safely drive local git, filesystem, code review, and AI coding sessions. |
 | **Claude Code plugins** | Six installable plugins — `bootstrap`, `code`, `code-review`, `judges`, `platform`, `self-learning` — that ship the multi-agent orchestration used by loops. |
 | **Runtime** | The execution layer (your machine plus cloud-assisted orchestration) that runs loops inside a sandbox and returns reviewable output. |

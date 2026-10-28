@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { discardPartialLaunch } from "../e2e/helpers/desktop-app";
 import { type MockCloudServer, readBackFromCloud } from "./mock-cloud-server";
 import {
   establishSoakPageReadPopulation,
@@ -20,6 +21,7 @@ import {
   waitForAuthenticated,
   waitForHello,
 } from "./soak-app";
+import type { ReadBackResponse } from "./soak-cloud-content";
 import { buildCycleRecord } from "./soak-cycle-record";
 import {
   baselineOutboxIds,
@@ -63,12 +65,13 @@ export async function runCycle(
   options: SoakOptions,
   mock: MockCloudServer,
   auth: AuthBlobs,
-  homes: Record<string, string>
+  homes: Record<string, string>,
+  phases: CyclePhases = REAL_CYCLE_PHASES
 ): Promise<CycleRecord> {
-  const loadAvgStart = await loadGate(options.loadGateMax);
+  const loadAvgStart = await phases.loadGate(options.loadGateMax);
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
-  const workspace = await prepareCycleWorkspace(
+  const workspace = await phases.prepareWorkspace(
     cycleIndex,
     options,
     mock,
@@ -86,24 +89,34 @@ export async function runCycle(
     workspace,
     startMs,
   };
-  const state = newCycleState(
-    await launchSoakApp(
-      workspace.userDataDir,
-      mock,
-      homes,
-      workspace.stdioLogPath
-    ),
-    workspace.startDepths.pending
-  );
+  let launched: LaunchedSoakApp;
+  try {
+    launched = await phases.launch(workspace, mock, homes);
+  } catch (failure) {
+    // Initial launch aborts the cycle before its normal evidence/cleanup tail.
+    // A failed relaunch stays in the drain phase and must retain this profile.
+    await discardPartialLaunch(async () => {
+      try {
+        preserveCycleArtifacts(context);
+      } finally {
+        await fs.promises.rm(workspace.userDataDir, {
+          recursive: true,
+          force: true,
+        });
+      }
+    });
+    throw failure;
+  }
+  const state = newCycleState(launched, workspace.startDepths.pending);
 
-  await runDrainPhase(context, state);
+  await phases.drain(context, state);
 
   // Let in-flight acks land, then read final state.
-  await sleep(FINAL_ACK_SETTLE_MS);
-  const endDepths = await readFinalDepths(workspace.dbPath, state.notes);
+  await phases.settle(FINAL_ACK_SETTLE_MS);
+  const endDepths = await phases.readFinalDepths(workspace.dbPath, state.notes);
   const readBack = await quiesceThenReadBack(
-    () => shutdownSoakApp(state.launched),
-    () => readBackFromCloud(mock, state.notes)
+    () => phases.shutdown(state.launched),
+    () => phases.readBack(mock, state.notes)
   );
 
   const record = buildCycleRecord(context, state, {
@@ -514,3 +527,55 @@ function preserveCycleArtifacts(context: CycleContext): void {
     );
   }
 }
+
+/**
+ * The out-of-process steps {@link runCycle} sequences.
+ *
+ * ISS-6203: `runCycle` is the CALL SITE that has to quiesce the sender before it
+ * reads the cloud back, and until this existed nothing could observe it. The
+ * ordering was pinned by calling {@link quiesceThenReadBack} directly, which
+ * proves the helper's own two lines and nothing about the caller — so bypassing
+ * the helper, or swapping its two callbacks, restored the ISS-6099 race with the
+ * suite still green. Injecting the phases lets a test drive the REAL sequencer
+ * without a 2.1 GB profile clone or a built Electron app.
+ *
+ * Every field defaults to the real implementation in {@link REAL_CYCLE_PHASES},
+ * so `soak-runner.ts` — the only caller that runs a real battery — passes
+ * nothing and executes exactly what it executed before.
+ */
+export type CyclePhases = {
+  loadGate: (maxLoad: number) => Promise<number>;
+  prepareWorkspace: (
+    cycleIndex: number,
+    options: SoakOptions,
+    mock: MockCloudServer,
+    auth: AuthBlobs
+  ) => Promise<CycleWorkspace>;
+  launch: (
+    workspace: CycleWorkspace,
+    mock: MockCloudServer,
+    homes: Record<string, string>
+  ) => Promise<LaunchedSoakApp>;
+  drain: (context: CycleContext, state: CycleState) => Promise<void>;
+  /** The ack-settle wait between the drain loop and the final reads. */
+  settle: (ms: number) => Promise<void>;
+  readFinalDepths: (dbPath: string, notes: string[]) => Promise<OutboxDepths>;
+  /** Quiesces the SENDER. Must resolve before `readBack` is called. */
+  shutdown: (launched: LaunchedSoakApp) => Promise<void>;
+  readBack: (
+    mock: MockCloudServer,
+    notes: string[]
+  ) => Promise<ReadBackResponse | null>;
+};
+
+export const REAL_CYCLE_PHASES: CyclePhases = {
+  loadGate,
+  prepareWorkspace: prepareCycleWorkspace,
+  launch: (workspace, mock, homes) =>
+    launchSoakApp(workspace.userDataDir, mock, homes, workspace.stdioLogPath),
+  drain: runDrainPhase,
+  settle: sleep,
+  readFinalDepths,
+  shutdown: shutdownSoakApp,
+  readBack: readBackFromCloud,
+};

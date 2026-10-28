@@ -20,11 +20,11 @@ import { TimeSeriesAreaChart } from "@repo/design-system/components/ui/time-seri
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
 import { useChartMaxSeries } from "../../shared/lib/use-chart-max-series";
-import { chartTileTitle } from "../lib/chart-tile-title";
+import { categoryPopulation } from "../lib/category-population";
 import { metricAllowsFractions, metricValueFormatter } from "../lib/format";
 import {
-  type ChartTileDescriptor,
   type TileDescriptor,
+  TileGrouping,
   TileKind,
 } from "../lib/tile-catalog";
 import {
@@ -49,7 +49,28 @@ const LOCAL_DATA_UNAVAILABLE = "No data yet";
 const GENERIC_OTHER_SERIES_LABEL = "Other series";
 
 /**
- * ISS-5523 (thadeusb review) — the noun the tile's aggregate band is named with.
+ * ISS-9842: the aggregate-slice noun for the two donut-only dimensions. These
+ * have no usage-graph twin and no toggle, so they are NOT added to
+ * `UsageGrouping` — that enum is the "By model / By provider" toggle, and a
+ * value the toggle cannot select does not belong in it. Keyed on the tile's
+ * `groupBy.key`, the stable machine identifier, not its display label.
+ *
+ * Exhaustive over `TileGrouping` on purpose (marisolashgrove review): a
+ * `ReadonlyMap<string, string>` is a side inventory, so a third grouping would
+ * compile and silently fall through to {@link GENERIC_OTHER_SERIES_LABEL}.
+ * Here the missing key fails `tsc`.
+ */
+const DONUT_OTHER_SERIES_LABEL: Record<TileGrouping, string> = {
+  [TileGrouping.Tool]: "Other tools",
+  [TileGrouping.EventType]: "Other event types",
+};
+
+/** Derived from the exhaustive record above; the string lookup for a raw key. */
+const DONUT_OTHER_SERIES_LABEL_BY_GROUPING: ReadonlyMap<string, string> =
+  new Map(Object.entries(DONUT_OTHER_SERIES_LABEL));
+
+/**
+ * ISS-5523 (tamsinb review) — the noun the tile's aggregate band is named with.
  *
  * The tile path DOES know its grouping, which was the open question on the
  * review: every chart tile descriptor already carries `groupBy`, and the
@@ -66,17 +87,27 @@ const GENERIC_OTHER_SERIES_LABEL = "Other series";
  * copy and is free to change ("Model" → "Model name") without meaning a different
  * dimension.
  *
- * Anything else keeps {@link GENERIC_OTHER_SERIES_LABEL}. A date-grouped tile is
- * single-series and cannot reach the cap at all, so that branch is a floor rather
- * than a live inconsistency — but it stays correct if such a tile ever gains
- * categorical series.
+ * ISS-9842: the two donut dimensions (`tool`, `event-type`) resolve through
+ * {@link DONUT_OTHER_SERIES_LABEL_BY_GROUPING}; they name the ring's "Other"
+ * slice and nothing else, so they have no dashboard-row twin to stay in step
+ * with. Anything else keeps {@link GENERIC_OTHER_SERIES_LABEL}. A date-grouped
+ * tile is single-series and cannot reach the cap at all, so that branch is a
+ * floor rather than a live inconsistency — but it stays correct if such a tile
+ * ever gains categorical series.
  */
 function tileOtherSeriesLabel(tile: TileDescriptor): string {
-  if (tile.groupBy?.key === UsageGrouping.Model) {
+  const groupByKey = tile.groupBy?.key;
+  if (groupByKey === UsageGrouping.Model) {
     return usageOtherSeriesLabel(UsageGrouping.Model);
   }
-  if (tile.groupBy?.key === UsageGrouping.Provider) {
+  if (groupByKey === UsageGrouping.Provider) {
     return usageOtherSeriesLabel(UsageGrouping.Provider);
+  }
+  if (groupByKey !== undefined) {
+    const donutLabel = DONUT_OTHER_SERIES_LABEL_BY_GROUPING.get(groupByKey);
+    if (donutLabel !== undefined) {
+      return donutLabel;
+    }
   }
   return GENERIC_OTHER_SERIES_LABEL;
 }
@@ -87,40 +118,6 @@ export function selectKpi(
 ): KpiStat | undefined {
   const response = sections[tile.section];
   return response?.kpis.find((entry) => entry.key === tile.dataKey);
-}
-
-/**
- * The card heading for a chart tile, per {@link chartTileTitle} (ISS-5507) —
- * this is the section-dispatch half, resolving the tile's own series and KPI
- * stat out of whichever section response it reads.
- */
-export function selectChartTitle(
-  tile: ChartTileDescriptor,
-  sections: InsightsSectionData
-): string {
-  return chartTileTitle(
-    tile,
-    selectTimeSeries(tile, sections),
-    sections[tile.section]?.kpis
-  );
-}
-
-function selectTimeSeries(
-  tile: TileDescriptor,
-  sections: InsightsSectionData
-): TimeSeries | undefined {
-  if (tile.section === InsightsSection.Delivery) {
-    const response = sections[InsightsSection.Delivery];
-    return response ? getDeliveryTimeSeries(tile.dataKey, response) : undefined;
-  }
-  if (tile.section === InsightsSection.Utilization) {
-    const response = sections[InsightsSection.Utilization];
-    return response
-      ? getUtilizationTimeSeries(tile.dataKey, response)
-      : undefined;
-  }
-  const response = sections[InsightsSection.Agents];
-  return response ? getAgentsTimeSeries(tile.dataKey, response) : undefined;
 }
 
 export function InsightsChartContent({
@@ -202,11 +199,7 @@ function renderDelivery(
     return renderHeatmap(
       chart,
       metricValueFormatter(tile.metricKey),
-      // The heatmap's sr-only grid name, resolved through the SAME helper and
-      // the SAME two sources as the visible card heading (ISS-5507) — a second
-      // resolution here is how a screen reader ends up hearing a different
-      // population than the one printed above the chart.
-      chartTileTitle(tile, chart, response.kpis)
+      tile.title
     );
   }
 
@@ -252,7 +245,7 @@ function renderUtilization(
     return renderHeatmap(
       chart,
       metricValueFormatter(tile.metricKey),
-      chartTileTitle(tile, chart, response.kpis)
+      tile.title
     );
   }
   if (tile.kind === TileKind.ReviewerTable) {
@@ -298,7 +291,7 @@ function renderAgents(
     return renderHeatmap(
       chart,
       metricValueFormatter(tile.metricKey),
-      chartTileTitle(tile, chart, response.kpis)
+      tile.title
     );
   }
 
@@ -491,7 +484,7 @@ function renderCategory(
   data: CategoryBucket[] | undefined
 ): ReactNode {
   if (!data?.some((bucket) => bucket.value > 0)) {
-    // wongk (#4282): a producer that emits every bucket for an empty period is
+    // whitlockk (#4282): a producer that emits every bucket for an empty period is
     // reporting a MEASURED zero — it ran the query and the answer was nothing.
     // That is a different fact from an absent field (a peer that never computed
     // this chart), and a tile that declares its own zero-state copy says so
@@ -511,13 +504,22 @@ function renderCategory(
     );
   }
   const valueFormatter = metricValueFormatter(tile.metricKey);
+  // ISS-9842: a capped producer (desktop Local mode) carries the population on
+  // every bucket; the cloud producers do not cap and carry nothing, so the ring
+  // divides by its own sum there — which IS the population on that path.
+  const population = categoryPopulation(data);
   return tile.kind === TileKind.Donut ? (
     <DonutChart
       colorByKey={tile.colorByKey}
       data={data}
+      omittedCount={
+        population ? population.categories - data.length : undefined
+      }
+      otherSeriesLabel={tileOtherSeriesLabel(tile)}
       showSharePercent={tile.showSharePercent}
       textureByKey={tile.textureByKey}
       textureMarkColorByKey={tile.textureMarkColorByKey}
+      total={population?.total}
       valueFormatter={valueFormatter}
     />
   ) : (
@@ -663,6 +665,11 @@ function getDeliveryTimeSeries(
       return response.charts.prTrend;
     case "klocTrend":
       return response.charts.klocTrend;
+    // ISS-8184: the raw-line twin the volume tiles read under the LOC
+    // terminology flag. Without a case here the flagged chart resolves to
+    // `undefined` and renders its empty state under a correct heading.
+    case "locTrend":
+      return response.charts.locTrend;
     default:
       return undefined;
   }

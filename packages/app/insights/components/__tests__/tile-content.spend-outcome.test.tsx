@@ -5,7 +5,7 @@
  *  - a MEASURED zero (the producer emitted every bucket for a period with no
  *    spend) must not render the same "no data" state as an ABSENT chart field,
  *    because "you spent nothing" and "we have nothing to show you" are different
- *    facts (wongk);
+ *    facts (whitlockk);
  *  - outcome is a SEMANTIC dimension, so the charts must be handed a fixed
  *    key→colour map and the share tile must print the share, rather than leaning
  *    on the generic index palette and an undenominated ring.

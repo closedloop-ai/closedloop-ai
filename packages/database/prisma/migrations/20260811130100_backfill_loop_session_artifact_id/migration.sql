@@ -19,7 +19,7 @@
 -- applies first (lexicographic directory order), so the grouping below drives
 -- from that index instead of sorting the whole of `session_detail`.
 --
--- WHICH SESSION WINS, AND WHY THE LIVE PATH MUST AGREE (wongk, review). A loop
+-- WHICH SESSION WINS, AND WHY THE LIVE PATH MUST AGREE (whitlockk, review). A loop
 -- can legitimately have more than one session claiming it (a resumed or
 -- re-launched run), but `session_artifact_id` is UNIQUE — at most one Session
 -- per Loop. So the pick is explicit and deterministic rather than left to the
@@ -44,7 +44,7 @@
 -- session further down the list still wins the loop. Filtering after the pick
 -- would have let one bogus row suppress the real link.
 --
--- SESSION-ONLY, AND THAT IS A SEPARATE INVARIANT FROM ORG OWNERSHIP (wongk,
+-- SESSION-ONLY, AND THAT IS A SEPARATE INVARIANT FROM ORG OWNERSHIP (whitlockk,
 -- review). `Loop.sessionArtifactId` is documented to hold a SESSION-typed
 -- Artifact, but `session_detail.artifact_id` is only an FK into the polymorphic
 -- `artifacts` table — nothing in the schema stops a malformed persisted detail
@@ -74,7 +74,7 @@
 -- ADDITIVE: writes two previously-defaulted/NULL columns. No DROP, no ALTER, no
 -- row deleted, and no existing back-link overwritten.
 --
--- STATEMENT 1 (origin) EXISTS FOR RETENTION, NOT COSMETICS (wongk, review).
+-- STATEMENT 1 (origin) EXISTS FOR RETENTION, NOT COSMETICS (whitlockk, review).
 -- `session_detail.origin` is what the stale reaper and BOTH retention sweeps
 -- filter on, and all three already document that LOOP-materialized sessions are
 -- governed by their source Loop's lifecycle and are never swept. Historical

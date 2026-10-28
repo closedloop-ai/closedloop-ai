@@ -109,10 +109,10 @@ describe.skipIf(!DATABASE_URL_SET)(
     });
 
     // -------------------------------------------------------------------------
-    // TS-I.9: CustomField for all 6 CustomFieldType values with enum options (AC-011)
+    // TS-I.9: CustomField for every CustomFieldType value, with enum options (AC-011)
     // -------------------------------------------------------------------------
 
-    describe("TS-I.9 — CustomField for all 6 CustomFieldType values with enum options (AC-011)", () => {
+    describe("TS-I.9 — CustomField for every CustomFieldType value, with enum options (AC-011)", () => {
       it("seeds a CustomField for each CustomFieldType value", async () => {
         const fields = await ctx.prisma.customField.findMany({
           where: { organizationId: BASELINE_ORG_ID },

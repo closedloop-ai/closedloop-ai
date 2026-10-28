@@ -1,17 +1,10 @@
 "use client";
 
-import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { AtSignIcon } from "lucide-react";
-import type { CSSProperties, KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   applyMentionSelection,
   filterMentionCandidates,
@@ -19,9 +12,10 @@ import {
   type MentionUser,
   mentionDisplayName,
 } from "../lib/mentions";
-
-/** Max member rows shown in the suggestion popover to keep it scannable. */
-const MAX_MENTION_SUGGESTIONS = 6;
+import {
+  MAX_MENTION_SUGGESTIONS,
+  MentionSuggestionList,
+} from "./mention-suggestion-list";
 
 /** Matches trailing whitespace; used to decide whether button-inserted "@" needs a leading space. */
 const TRAILING_WHITESPACE_PATTERN = /\s$/;
@@ -38,11 +32,34 @@ type MentionComposerProps = Readonly<{
   /** Seed the textarea (edit surfaces); defaults to empty for a fresh compose. */
   defaultValue?: string;
   /**
+   * Controlled text, for a host that owns the draft (the comments pane does,
+   * PLN-2162 decision 4). The host clears it after a submit lands, so a failed
+   * write keeps the typing; the composer never resets a controlled value.
+   */
+  value?: string;
+  /**
+   * Every text change, with the ids picked so far, so a host that keeps the
+   * draft can keep its picks and hand them back as `initialMentions`.
+   */
+  onValueChange?: (value: string, mentions: string[]) => void;
+  /** The field's accessible name when no visible label names it; defaults to the placeholder. */
+  ariaLabel?: string;
+  /** Shown above the field. */
+  helperText?: ReactNode;
+  /** Shown beside the mention control. */
+  leadingActions?: ReactNode;
+  /**
    * Members already @-mentioned on the comment being edited. Seeds the picked
    * set so an edit that leaves the existing "@Name" tokens intact re-submits
    * those mentions instead of silently clearing them.
    */
   initialMentions?: readonly MentionUser[];
+  /**
+   * Org members the @-picker offers. The host supplies them (the users slice's
+   * `OrgMentionComposer` does), because `shared/` must not import a feature
+   * slice. Omitted or loading: the picker has no candidates.
+   */
+  members?: readonly MentionUser[];
   /** Focus the textarea on mount (reply/edit surfaces that open on demand). */
   autoFocus?: boolean;
   /**
@@ -78,7 +95,7 @@ type MentionComposerProps = Readonly<{
  * the shared, SDK-free mention matching without a TipTap/ProseMirror rewrite.
  *
  * Typing "@" (at input start or after whitespace) or clicking the "@" button
- * opens a filtered list of active org members (`useOrganizationUsers`). Choosing
+ * opens a filtered list of the active `members` the host passes in. Choosing
  * one inserts "@Display Name " into the text and records the stable user ID as a
  * mention. Only mentions whose inserted "@Display Name" token still appears in
  * the final body are submitted, so deleting the token drops the mention.
@@ -94,7 +111,13 @@ export function MentionComposer({
   minHeightClassName = "min-h-[72px]",
   containerClassName = "flex flex-col gap-2",
   defaultValue = "",
+  value: controlledValue,
+  onValueChange,
+  ariaLabel,
+  helperText,
+  leadingActions,
   initialMentions,
+  members,
   autoFocus = false,
   disabled = false,
   isPending = false,
@@ -103,19 +126,32 @@ export function MentionComposer({
   onSubmit,
 }: MentionComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [value, setValue] = useState(defaultValue);
+  const pendingCaretRef = useRef<number | null>(null);
+  const [uncontrolledValue, setUncontrolledValue] = useState(defaultValue);
+  const controlled = controlledValue !== undefined;
+  const value = controlled ? controlledValue : uncontrolledValue;
   const [mentionQuery, setMentionQuery] = useState<{
     start: number;
     query: string;
   } | null>(null);
   // Tracks user IDs the author has picked (seeded from any existing mentions on
-  // an edit); a mention only counts when its "@Display Name" label still appears
-  // in the final body (delete-to-remove).
+  // an edit, or a kept draft's picks); a mention only counts when its
+  // "@Display Name" label still appears in the final body (delete-to-remove).
   const [pickedById, setPickedById] = useState<Map<string, MentionUser>>(
     () => new Map((initialMentions ?? []).map((user) => [user.id, user]))
   );
-
-  const { data: users } = useOrganizationUsers();
+  function setValue(next: string, picked = pickedById) {
+    if (!controlled) {
+      setUncontrolledValue(next);
+    }
+    onValueChange?.(next, [...picked.keys()]);
+  }
+  // A controlled draft its owner emptied, as it does once a submit lands,
+  // carries no picks into the next comment. A failed submit keeps the text,
+  // and with it the picks.
+  if (controlled && controlledValue === "" && pickedById.size > 0) {
+    setPickedById(new Map());
+  }
 
   useEffect(() => {
     if (!autoFocus) {
@@ -129,11 +165,25 @@ export function MentionComposer({
     }
   }, [autoFocus]);
 
+  useLayoutEffect(() => {
+    const pendingCaret = pendingCaretRef.current;
+    if (pendingCaret === null) {
+      return;
+    }
+    pendingCaretRef.current = null;
+    const el = textareaRef.current;
+    if (!el) {
+      return;
+    }
+    el.focus();
+    el.setSelectionRange(pendingCaret, pendingCaret);
+  });
+
   const suggestions = useMemo(() => {
-    if (!(mentionQuery && users)) {
+    if (!(mentionQuery && members)) {
       return [] as MentionUser[];
     }
-    const candidates: MentionUser[] = users.map((user) => ({
+    const candidates: MentionUser[] = members.map((user) => ({
       id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -145,17 +195,13 @@ export function MentionComposer({
       0,
       MAX_MENTION_SUGGESTIONS
     );
-  }, [mentionQuery, users]);
+  }, [mentionQuery, members]);
 
   const showSuggestions = Boolean(mentionQuery) && suggestions.length > 0;
 
-  // FEA-3490: the suggestion menu renders in a portal at `position: fixed`
-  // anchored to the textarea. Every comment surface mounts this composer inside
-  // a scroll container with `overflow` clipping (the session-trace `.sd3-scroll`
-  // / rail), which would clip an in-flow absolutely-positioned dropdown out of
-  // view — the popover was in the DOM but painted outside the clip box. A
-  // portaled fixed menu escapes every ancestor's overflow. Re-measured on open,
-  // ancestor scroll (capture phase), and resize so it tracks the textarea.
+  // The portaled, fixed suggestion menu (FEA-3490) is anchored to the
+  // textarea: re-measured on open, ancestor scroll (capture phase), and resize
+  // so it tracks the field.
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   useLayoutEffect(() => {
     if (!showSuggestions) {
@@ -211,16 +257,9 @@ export function MentionComposer({
     const insertion = `${needsSpace ? " " : ""}@`;
     const nextValue = `${before}${insertion}${value.slice(caret)}`;
     const nextCaret = before.length + insertion.length;
+    pendingCaretRef.current = nextCaret;
     setValue(nextValue);
     syncMentionQuery(nextValue, nextCaret);
-    // Restore focus + caret after the controlled update.
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(nextCaret, nextCaret);
-      }
-    });
   }
 
   function selectMention(user: MentionUser) {
@@ -235,20 +274,12 @@ export function MentionComposer({
       start: mentionQuery.start,
       label,
     });
-    setValue(nextValue);
+    const picked = new Map(pickedById);
+    picked.set(user.id, user);
+    pendingCaretRef.current = nextCaret;
+    setPickedById(picked);
+    setValue(nextValue, picked);
     setMentionQuery(null);
-    setPickedById((prev) => {
-      const next = new Map(prev);
-      next.set(user.id, user);
-      return next;
-    });
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(nextCaret, nextCaret);
-      }
-    });
   }
 
   function resolveMentions(body: string): string[] {
@@ -308,8 +339,11 @@ export function MentionComposer({
   }
 
   function resetDraft() {
-    setValue("");
     setMentionQuery(null);
+    if (controlled) {
+      return;
+    }
+    setValue("");
     setPickedById(new Map());
   }
 
@@ -337,9 +371,10 @@ export function MentionComposer({
 
   return (
     <div className={containerClassName} data-comment-control="true">
+      {helperText}
       <div className="relative">
         <Textarea
-          aria-label={labelledBy ? undefined : placeholder}
+          aria-label={labelledBy ? undefined : (ariaLabel ?? placeholder)}
           aria-labelledby={labelledBy}
           className={`${minHeightClassName} resize-y text-sm`}
           data-comment-control="true"
@@ -362,47 +397,13 @@ export function MentionComposer({
           ref={textareaRef}
           value={value}
         />
-        {showSuggestions && anchorRect
-          ? createPortal(
-              <div
-                className="z-50 flex max-h-56 flex-col overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-                data-comment-control="true"
-                data-testid="mention-suggestions"
-                style={mentionMenuStyle(anchorRect)}
-              >
-                {suggestions.map((user) => (
-                  <button
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    data-comment-control="true"
-                    key={user.id}
-                    // Keep the textarea's caret; select on mousedown before blur.
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      selectMention(user);
-                    }}
-                    type="button"
-                  >
-                    <Avatar className="size-5">
-                      {user.avatarUrl ? (
-                        <AvatarImage
-                          alt={mentionDisplayName(user)}
-                          src={user.avatarUrl}
-                        />
-                      ) : null}
-                      <AvatarFallback className="bg-primary/10 text-[9px] text-primary">
-                        {mentionDisplayName(user).slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="truncate">{mentionDisplayName(user)}</span>
-                    <span className="truncate text-muted-foreground text-xs">
-                      {user.email}
-                    </span>
-                  </button>
-                ))}
-              </div>,
-              globalThis.document.body
-            )
-          : null}
+        {showSuggestions && anchorRect ? (
+          <MentionSuggestionList
+            anchorRect={anchorRect}
+            onSelect={selectMention}
+            suggestions={suggestions}
+          />
+        ) : null}
       </div>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">
@@ -417,6 +418,7 @@ export function MentionComposer({
           >
             <AtSignIcon aria-hidden className="h-3.5 w-3.5" />
           </Button>
+          {leadingActions}
         </div>
         <div className="flex items-center justify-end gap-2">
           {onCancel ? (
@@ -446,43 +448,6 @@ export function MentionComposer({
       </div>
     </div>
   );
-}
-
-/** Popover height cap (matches the `max-h-56` = 14rem = 224px class). */
-const MENTION_MENU_MAX_HEIGHT = 224;
-
-/** Gap between the textarea edge and the popover. */
-const MENTION_MENU_GAP = 4;
-
-/**
- * Fixed-position style for the portaled suggestion menu, anchored to the
- * textarea's viewport rect. Opens below the textarea by default; flips above
- * when there is not enough room below and there is more room above, and caps
- * `maxHeight` to the available space so the menu is never clipped off-screen.
- * The menu is portaled to `document.body` precisely so no ancestor `overflow`
- * (the session-trace scroller / comment rail) can clip it (FEA-3490).
- */
-function mentionMenuStyle(rect: DOMRect): CSSProperties {
-  const spaceBelow = globalThis.innerHeight - rect.bottom;
-  const spaceAbove = rect.top;
-  const openUp =
-    spaceBelow < MENTION_MENU_MAX_HEIGHT && spaceAbove > spaceBelow;
-  const available = Math.max(
-    0,
-    (openUp ? spaceAbove : spaceBelow) - MENTION_MENU_GAP
-  );
-  const style: CSSProperties = {
-    position: "fixed",
-    left: rect.left,
-    width: rect.width,
-    maxHeight: Math.min(MENTION_MENU_MAX_HEIGHT, available),
-  };
-  if (openUp) {
-    style.bottom = globalThis.innerHeight - rect.top + MENTION_MENU_GAP;
-  } else {
-    style.top = rect.bottom + MENTION_MENU_GAP;
-  }
-  return style;
 }
 
 /**

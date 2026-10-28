@@ -4,7 +4,7 @@
  * signal, the truncated input/output fields, the honest detail STATE, and the
  * call duration.
  *
- * Split out of `agent-session-detail-projection.ts` (ISS-5592 review, wongk
+ * Split out of `agent-session-detail-projection.ts` (ISS-5592 review, whitlockk
  * #5120), which sat above the 1,000-line hard ceiling in the root `AGENTS.md`
  * and grew again in that change — the rule is that a grandfathered file leaves
  * a substantive change SMALLER, so the concern its edit touched is the one that

@@ -1,54 +1,49 @@
+import {
+  OnboardingEvent,
+  OnboardingStep,
+} from "@closedloop-ai/telemetry-contract/app";
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import { app, ipcMain, safeStorage, shell, type WebContents } from "electron";
 import pkg from "electron-updater";
 import type { DesktopGatewayServer } from "../../server/server.js";
 import type { AgentMonitorRuntimeStatus } from "../../shared/agent-monitor-status.js";
-import {
-  AuditIpcChannel,
-  type AuditProgressPayload,
-} from "../../shared/audit-contract.js";
 import type { CoachingPackInfo } from "../../shared/coaching-pack-contract.js";
 import type { ConnectionSecurityStatus } from "../../shared/connection-security.js";
 import {
-  type DataSyncLevel,
   DEFAULT_DESKTOP_SETTINGS,
   type SavedConfig,
 } from "../../shared/contracts.js";
-import { DESKTOP_AUDIT_BOT_FEATURE_FLAG_KEY } from "../../shared/feature-flags.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import { GATEWAY_DISPATCH_CHANNEL } from "../../shared/gateway-dispatch-channel.js";
 import type { LocalSessionSourceStatus } from "../../shared/local-session-source-status.js";
 import { RENDERER_OTEL_EXPORT_CHANNEL } from "../../shared/renderer-otel-bridge-constants.js";
-import {
-  emptyTranscriptStatusCounts,
-  TranscriptEgressGate,
-} from "../../shared/transcript-sync-status-contract.js";
 import {
   isAgentMonitorHooksEnabled,
   setAgentMonitorHooksEnabled,
 } from "../agent-monitor/agent-monitor-hooks.js";
 import type { AgentSessionSyncService } from "../agent-sync/agent-session-sync-service.js";
-import { refreshApplicationMenu } from "../app-menu.js";
+import type { ComputeTargetLinkBlockState } from "../agent-sync/compute-target-link-block.js";
 import { pruneExpiredAlwaysAllowRules } from "../approvals/always-allow-rules.js";
 import type { ApprovalEvaluator } from "../approvals/approval-evaluator.js";
 import type { ApprovalStore } from "../approvals/approval-store.js";
-import type { AuditService } from "../audit/audit-service.js";
+import {
+  readDesktopMainCheckedFeatureFlags,
+  setDesktopMainFeatureFlagOverrides,
+} from "../auth/desktop-feature-flag-dev-mode.js";
 import type { LocalSessionStore } from "../auth/local-session-store.js";
-import type { CloudSocketStatus } from "../cloud/cloud-protocol.js";
+import {
+  type CloudSocketStatus,
+  resolveOnlineComputeTargetId,
+} from "../cloud/cloud-protocol.js";
 import type { CloudSocketService } from "../cloud/cloud-socket.js";
 import type { CloudSocketStartupCoordinator } from "../cloud/cloud-socket-startup.js";
-import type { AuthorizedCommandKeyStore } from "../command-signing/authorized-command-key-store.js";
-import {
-  type BrowserCommandKeyAppLifecycle,
-  resetBrowserCommandKeyProfileState,
-} from "../command-signing/command-key-app-lifecycle.js";
-import type { CommandKeyReconciler } from "../command-signing/command-key-reconciler.js";
-import type { CommandSigningController } from "../command-signing/command-signing-controller.js";
 import type { GatewaySigningKeyStore } from "../command-signing/gateway-signing-key-store.js";
 import type { ClaudeCodeAnalyticsService } from "../cost/claude-code-analytics-service.js";
 import type { CostReconciliationService } from "../cost/cost-reconciliation-service.js";
 import type { AgentDashboardDesignSystemRuntime } from "../dashboard/agent-dashboard-design-system-runtime.js";
 import type { ActivityLogStore } from "../diagnostics/activity-log-store.js";
 import type { DocsHelpService } from "../docs-help/docs-bundle.js";
-import type { JobStore } from "../jobs/job-store.js";
+import { createGitHubConnectReturnWatch } from "../github/github-connect-return-watch.js";
 import type { GatewayRecoveryManager } from "../lifecycle/gateway-recovery.js";
 import type { RendererReadinessGates } from "../lifecycle/renderer-readiness-gates.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
@@ -56,7 +51,9 @@ import {
   getMainLogFilePath,
   openMainLogFile,
 } from "../logging/persistent-log.js";
+import { resolveDesktopMachineName } from "../machine-name.js";
 import type { ManagedOnboardingController } from "../onboarding/managed-onboarding-controller.js";
+import { createOnboardingLocalStateSource } from "../onboarding/onboarding-local-state-source.js";
 import { registerPackAnalyticsIpc } from "../packs/pack-analytics-ipc.js";
 import type { RequiredPluginInstaller } from "../packs/required-plugin-installer.js";
 import { withIpcProfiling } from "../profiling/ipc-profiling.js";
@@ -64,6 +61,7 @@ import {
   getIpcProfilingSink,
   getRenderCommitProfilingSink,
 } from "../profiling/main-profiling-session.js";
+import type { DesktopRealtimeHost } from "../realtime/desktop-realtime-host.js";
 import type { DesktopSessionManager } from "../session/desktop-session-manager.js";
 import { registerSessionLimitsIpcHandlers } from "../session-limits-ipc.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
@@ -72,6 +70,8 @@ import { seedReposConfig } from "../settings/seed-repos-config.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import type { SyncBurndownReporter } from "../sync/sync-burndown-reporter.js";
 import type { DesktopOtelRuntime } from "../telemetry/app-otel-runtime.js";
+import { createDeadEndTelemetryRecorder } from "../telemetry/dead-end-telemetry-recorder.js";
+import { Observability } from "../telemetry/observability.js";
 import type { TelemetryOrgProvider } from "../telemetry/telemetry-org-identity.js";
 import { resolveTranscriptCacheDir } from "../transcript/transcript-read-cache.js";
 import {
@@ -79,17 +79,25 @@ import {
   resolveLocalTranscriptPath,
 } from "../transcript-sync/local-transcript-path-resolver.js";
 import { kickTranscriptSweepAfterTierChange } from "../transcript-sync/transcript-sweep-kick.js";
+import { transcriptSyncLaneAbsentStatus } from "../transcript-sync/transcript-sync-lane-absent-status.js";
 import type { TranscriptSyncService } from "../transcript-sync/transcript-sync-service.js";
 import { resolveTrustedClaudeTranscriptPath } from "../transcript-sync/trusted-transcript-path.js";
+import { checkForStampedUpdates } from "../update/auto-update-wiring.js";
 import type {
   PackagedUpdateState,
   PackagedUpdateStatusPayload,
 } from "../update/packaged-update-state.js";
+import type { DesktopUpdateLifecycleReporter } from "../update/update-lifecycle-telemetry.js";
+import { desktopInstallationId } from "../util/desktop-client-attribution-provider.js";
 import type { DesktopWindow } from "../window.js";
+import {
+  buildAgentDashboardRuntimeProgressGetters,
+  buildOnboardingParseProgressReader,
+  buildTranscriptForceSyncOversized,
+} from "./agent-dashboard-runtime-degradations.js";
 import { registerAgentMonitorIpcHandlers } from "./agent-monitor-ipc.js";
 import { registerApiKeyIpcHandlers } from "./api-key-ipc.js";
 import { registerApprovalsIpcHandlers } from "./approvals-ipc.js";
-import { registerAuditIpcHandlers } from "./audit-ipc.js";
 import {
   type BinaryPathPatch,
   type CliBinaryTool,
@@ -102,26 +110,37 @@ import {
   createCloudReadReadinessProjector,
 } from "./cloud-read-readiness-projection.js";
 import { registerCoachingIpcHandlers } from "./coaching-ipc.js";
-import { registerCommandSigningKeysIpcHandlers } from "./command-signing-keys-ipc.js";
 import { registerCostReconciliationIpcHandlers } from "./cost-reconciliation-ipc.js";
+import { registerDeadEndTelemetryIpcHandlers } from "./dead-end-telemetry-ipc.js";
 import { registerDebugIpcHandlers } from "./debug-ipc.js";
 import { registerDesktopAuthIpcHandlers } from "./desktop-auth-ipc.js";
+import { registerDesktopDevModeIpcHandlers } from "./desktop-dev-mode-ipc.js";
 import { registerDesktopExistingUserIpcHandlers } from "./desktop-existing-user-ipc.js";
-import { registerDesktopIdentityIpcHandlers } from "./desktop-identity-ipc.js";
+import {
+  accountGitHubConnectionReads,
+  type DesktopIdentityIpcDeps,
+  registerDesktopIdentityIpcHandlers,
+} from "./desktop-identity-ipc.js";
+import { registerDesktopRealtimeIpcHandlers } from "./desktop-realtime-ipc.js";
+import { registerDirectoryScopeIpcHandlers } from "./directory-scope-ipc.js";
 import { registerDocsHelpIpcHandlers } from "./docs-help-ipc.js";
+import { registerE2eFeatureFlagSeedIpcHandler } from "./e2e-feature-flag-seed-ipc.js";
 import { createGatewayDispatchHandler } from "./gateway-dispatch-ipc.js";
 import { registerGitHubConnectOpenerIpcHandlers } from "./github-connect-opener-ipc.js";
-import { registerJobsIpcHandlers } from "./jobs-ipc.js";
 import { registerLogsActivityIpcHandlers } from "./logs-activity-ipc.js";
 import { registerManagedKeyHintIpcHandlers } from "./managed-key-hint-ipc.js";
 import { registerMoveToApplicationsIpcHandler } from "./move-to-applications-ipc.js";
 import { registerOnboardingIpcHandlers } from "./onboarding-ipc.js";
+import { registerOnboardingLocalStateIpcHandlers } from "./onboarding-local-state-ipc.js";
 import { registerProfileConfigIpcHandlers } from "./profile-config-ipc.js";
+import { sendToRendererWindow } from "./renderer-ipc.js";
 import { registerRendererLifecycleIpcHandlers } from "./renderer-lifecycle-ipc.js";
 import { createRendererOtelExportHandler } from "./renderer-otel-ipc.js";
 import { registerRuntimeInfoIpcHandlers } from "./runtime-info-ipc.js";
 import { registerSandboxIpcHandlers } from "./sandbox-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc.js";
+import { registerSettingsLocalDeviceIpcHandlers } from "./settings-local-device-ipc.js";
+import { registerSurfaceAnalyticsIpcHandlers } from "./surface-analytics-ipc.js";
 import { registerTranscriptForceArchiveIpcHandler } from "./transcript-force-archive-ipc.js";
 import { registerTranscriptReadIpcHandler } from "./transcript-read-ipc.js";
 import { registerUpdateIpcHandlers } from "./update-ipc.js";
@@ -144,22 +163,20 @@ export type DesktopIpcRegistrationDeps = {
   approvalEvaluator: ApprovalEvaluator;
   approvalStore: ApprovalStore;
   appOtelRuntime: DesktopOtelRuntime;
-  authorizedCommandKeys: AuthorizedCommandKeyStore;
   claudeCodeAnalytics: ClaudeCodeAnalyticsService;
   cloudSocket: CloudSocketService;
   cloudSocketStartup: CloudSocketStartupCoordinator;
-  commandKeyLifecycle: BrowserCommandKeyAppLifecycle;
-  commandKeyReconciler: CommandKeyReconciler;
-  commandSigningController: CommandSigningController;
   costReconciliation: CostReconciliationService;
   desktopSessionManager: DesktopSessionManager;
+  signOutDesktop: () => Promise<void>;
   desktopWindow: DesktopWindow;
   docsHelp: DocsHelpService;
   gatewaySigningKeyStore: GatewaySigningKeyStore;
-  jobStore: JobStore;
-  legacyGatewayId: string;
+  /** Read per call: sign-out rotates it (ISS-11843). */
+  getLegacyGatewayId: () => string;
   managedOnboarding: ManagedOnboardingController;
   recovery: GatewayRecoveryManager;
+  realtimeHost: DesktopRealtimeHost;
   /**
    * The boot readiness gates. Read for `isInitialCollectorImportComplete()` —
    * "has the initial parse/import backlog finished?" — which drives both the
@@ -177,6 +194,8 @@ export type DesktopIpcRegistrationDeps = {
    * stops, and when the compute target has changed since it was taken.
    */
   syncBurndownReporter: SyncBurndownReporter;
+  /** ISS-11426: the compute-target link block, or null when nothing is blocked. */
+  getComputeTargetLinkBlock: () => ComputeTargetLinkBlockState | null;
   telemetryOrgProvider: TelemetryOrgProvider;
 
   applyBinaryPathPatch: (
@@ -196,7 +215,6 @@ export type DesktopIpcRegistrationDeps = {
   getAgentDashboardRuntime: () => AgentDashboardDesignSystemRuntime | null;
   getAgentMonitorRuntimeStatus: () => AgentMonitorRuntimeStatus;
   getAgentMonitorUrl: () => string | null;
-  getAuditService: () => AuditService;
   getCloudCommandsPaused: () => boolean;
   getCloudConnectionEnabled: () => boolean;
   getCloudStatus: () => CloudSocketStatus;
@@ -206,9 +224,23 @@ export type DesktopIpcRegistrationDeps = {
   getLocalSessionSourceStatus: () => LocalSessionSourceStatus;
   getPackagedUpdateState: () => PackagedUpdateState;
   getPackagedUpdateStatusPayload: () => PackagedUpdateStatusPayload;
-  getServerCommandSigningSupported: () => boolean;
-  getTraceCommentComputeTargetId: () => string | null;
+  getCloudReadComputeTargetId: () => string | null;
+  /**
+   * ISS-7516: this machine's cloud identity for transcript purposes, read
+   * independently of whether a transcript-sync lane exists. Deliberately the
+   * same accessor the live lane's `getComputeTargetId` is wired with, so the
+   * `computeTargetId` a renderer compares against is one value with one rule
+   * rather than two that can disagree by tier.
+   */
+  getTranscriptComputeTargetId: () => string | null;
   getTranscriptSync: () => TranscriptSyncService | null;
+  /**
+   * ISS-9164: the ring identity the renderer's "Check for updates" stamps. Its
+   * own accessor rather than a reuse of the transcript one above: the updater
+   * feed is unauthenticated, so it takes the auth-gated target the scheduled
+   * poll uses, not the strict-online one (marisolashgrove, #6867).
+   */
+  getUpdaterComputeTargetId: () => string | null;
   guardUpdateDownload: (
     result: Awaited<ReturnType<typeof autoUpdater.checkForUpdates>>
   ) => void;
@@ -230,12 +262,22 @@ export type DesktopIpcRegistrationDeps = {
   ) => void;
   refreshTrayState: (explicitDetails?: string) => void;
   restartCloudSocket: () => void;
+  /** ISS-10890: the Welcome Start agreement was recorded; release the gate. */
+  onSessionAnalysisAgreed: () => void;
+  /**
+   * ISS-10950: a live collector restart, refused while the onboarding analysis
+   * gate is still held. `undefined` when nothing ran — no runtime yet, or the
+   * gate refused it.
+   */
+  restartCollectors: () => Promise<void> | undefined;
   setApplyingDownloadedUpdate: (value: boolean) => void;
   setCloudCommandsPaused: (paused: boolean) => void;
   setCloudConnectionEnabled: (enabled: boolean) => void;
   setDangerousAutoApprove: (enabled: boolean) => void;
   setPackagedUpdateState: (patch: Partial<PackagedUpdateState>) => void;
   transcriptStateDir: () => string;
+  /** ISS-7247 release-health reporter; see `DesktopUpdateWiringDeps`. */
+  updateTelemetry: DesktopUpdateLifecycleReporter;
   yieldToMainLoop: () => Promise<void>;
 };
 
@@ -256,12 +298,48 @@ export type DesktopIpcRegistrationDeps = {
 function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
   const isTrustedSender = (sender: WebContents) =>
     deps.desktopWindow.isTrustedSender(sender);
+  // ISS-7249: one recorder per registration so the per-process emission cap is
+  // shared by every dead-end record rather than reset per call.
+  const deadEndTelemetryRecorder = createDeadEndTelemetryRecorder({
+    emit: (input) => deps.appOtelRuntime.emitDeadEndEvent(input),
+  });
+  // ISS-8376: ONE source per registration, because it owns the at-most-once
+  // sweep. A source per call would re-sweep on every read — the 638 ms / 4 s
+  // cost this design exists to pay exactly once.
+  const onboardingLocalStateSource = createOnboardingLocalStateSource({
+    transcriptStateDir: () => deps.transcriptStateDir(),
+    getComputeTargetId: () => deps.getTranscriptComputeTargetId(),
+    // Routed to the onboarding lifecycle record rather than a new one: this is
+    // the setup step failing to measure, and it rides the same pre-auth relay.
+    // Uncapped because the sweep is one-shot per source and its runner reports
+    // only the reply that settles it, so this fires at most once per
+    // registration.
+    onMalformedSweepReply: () =>
+      deps.appOtelRuntime.emitOnboardingEvent({
+        step: OnboardingStep.Setup,
+        event: OnboardingEvent.Failed,
+      }),
+    // ISS-8346: the boot import IS the parse lane the estimate measures. Keep
+    // this a `(deps.getAgentDashboardRuntime)` call — the binding, including the
+    // per-call re-read that lets it follow a runtime built AFTER registration,
+    // lives where a node test can execute it.
+    readParseProgress: buildOnboardingParseProgressReader(
+      deps.getAgentDashboardRuntime
+    ),
+  });
+  registerDeadEndTelemetryIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    recordDeadEndTelemetry: (payload) =>
+      deadEndTelemetryRecorder.record(payload),
+  });
 
   registerRendererLifecycleIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => deps.desktopWindow.isTrustedSender(sender),
     handleRendererReady: (sender, phase) =>
       deps.desktopWindow.handleRendererReady(sender, phase),
     yieldToMainLoop: () => deps.yieldToMainLoop(),
+    sendToRenderer: (channel, ...args) =>
+      sendToRendererWindow(deps.desktopWindow.getWindow(), channel, ...args),
     isShuttingDown: () => deps.isShuttingDown(),
     isLocalSessionSourceReady: () => deps.isLocalSessionSourceReady(),
     notifyInitialRendererLiveDbIdle: () =>
@@ -308,47 +386,36 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
   });
   registerRuntimeInfoIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    // ISS-8776: reports WHY a refusal happened; never whether one happens.
+    isRendererWindowGone: () => deps.desktopWindow.isRendererWindowGone(),
     getAppVersion: () => app.getVersion(),
     getIsPackaged: () => app.isPackaged,
     settingsStore: deps.settingsStore,
-    authorizedCommandKeys: deps.authorizedCommandKeys,
+    // ISS-7516: a machine with no lane is an ordinary state, not an edge — any
+    // data-sync level below Full persists `transcriptSyncEnabled` false, so
+    // `getTranscriptSync()` is null for every such machine. ISS-10554 moved the
+    // new-install default UP to Full, so this is now the state of a user who
+    // picked a lower level rather than of the shipped default. The no-lane
+    // snapshot lives in its own module so that branch is executable by a node test.
     getTranscriptSyncStatus: async () =>
-      (await deps.getTranscriptSync()?.getStatusSnapshot()) ?? {
-        // No transcript-sync service at all (the toggle was off at boot, or
-        // golden mode). Nothing can egress, so every gate reads closed —
-        // `enabled: false` is what a consumer keys the "you turned it off"
-        // state on, and the other two stay closed rather than implying a
-        // healthy lane behind a missing service (ISS-4716). The gate is a
-        // settled `Denied`, not `Unresolved`: there is no service and no
-        // pending policy read here, so nothing is going to arrive later and a
-        // consumer must not sit on a skeleton waiting for it (ISS-5348).
-        enabled: false,
-        online: false,
-        tierGate: TranscriptEgressGate.Denied,
-        storeReady: false,
-        statusCounts: emptyTranscriptStatusCounts(),
-      },
+      (await deps.getTranscriptSync()?.getStatusSnapshot()) ??
+      transcriptSyncLaneAbsentStatus(deps.getTranscriptComputeTargetId()),
     getActivePort: () => deps.server.getActivePort(),
     getCloudStatus: () => deps.getCloudStatus(),
     getCloudCommandsPaused: () => deps.getCloudCommandsPaused(),
     getCloudConnectionEnabled: () => deps.getCloudConnectionEnabled(),
     getConnectionSecurityStatus: () => deps.getConnectionSecurityStatus(),
-    getServerCommandSigningSupported: () =>
-      deps.getServerCommandSigningSupported(),
     isServerAlive: () => deps.server.isAlive(),
     getGatewayHealthy: () => deps.recovery.gatewayHealthy,
-    getIngestProgress: () =>
-      deps.getAgentDashboardRuntime()?.getIngestProgress() ?? null,
-    // FEA-3639: empty when the runtime isn't up yet — no blocks to report
-    // before the collectors exist, so degrade to none.
-    getFileAccessBlocks: () =>
-      deps.getAgentDashboardRuntime()?.getFileAccessBlocks() ?? [],
-    getMaintenanceProgress: () =>
-      deps.getAgentDashboardRuntime()?.getMaintenanceProgress() ?? null,
+    // ISS-8143: keep this a call, not three closures — see the builder's own
+    // file for why a literal here puts the binding out of every test's reach.
+    ...buildAgentDashboardRuntimeProgressGetters(deps.getAgentDashboardRuntime),
     getCloudSyncProgress: () => deps.agentSessionSync.getSyncProgress(),
+    getComputeTargetLinkBlock: () => deps.getComputeTargetLinkBlock(),
     getDashboardReady: () =>
       deps.rendererGates.isInitialCollectorImportComplete(),
     getAgentMonitorStatus: () => deps.getAgentMonitorRuntimeStatus(),
+    getNodeUuid: desktopInstallationId,
     // ISS-5477: project the ISS-5387 burn-down's latest sample into the
     // read-source payload. Both the projection's rules AND the binding of its
     // getters to these stores live in `cloud-read-readiness-projection.ts`, so
@@ -359,13 +426,26 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
       buildCloudReadReadinessProjectorDeps(deps)
     ),
   });
+  // ISS-8379 (PRD-691): the Settings local-device read. Facts main already
+  // holds — no local operation, no cloud record. The cloud `ComputeTarget` row
+  // this id names is still read through the authorized cloud API.
+  registerSettingsLocalDeviceIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    getMachineName: () => resolveDesktopMachineName(),
+    getPlatform: () => process.platform,
+    getAppVersion: () => app.getVersion(),
+    getActivePort: () => deps.server.getActivePort(),
+    isServerAlive: () => deps.server.isAlive(),
+    getComputeTargetId: () =>
+      resolveOnlineComputeTargetId(deps.getCloudStatus()),
+  });
   registerCoachingIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
     isAgentCoachingTipsEnabled: () => deps.isAgentCoachingTipsEnabled(),
     isCoachingPacksEnabled: () => deps.isCoachingPacksEnabled(),
     getActiveCoachingPackSeeded: () => deps.getActiveCoachingPackSeeded(),
     coachingPacksDir: () => deps.coachingPacksDir(),
-    getTraceCommentComputeTargetId: () => deps.getTraceCommentComputeTargetId(),
+    getCloudReadComputeTargetId: () => deps.getCloudReadComputeTargetId(),
     installCoachingDistributionById: (computeTargetId, distributionId) =>
       deps.requiredPluginInstaller.installCoachingDistributionById(
         computeTargetId,
@@ -395,19 +475,11 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
         computeTargetId,
         distributionId
       ),
-  });
-  // FEA-3847 (PRD-556 M1): on-demand Audit Bot. Runs a crewd review character
-  // (Docs Darwin) against the open repo via the harness cascade, streaming
-  // progress to the renderer. Fail-closed: the handler asserts sender trust and
-  // gates on the `auditBot` Labs flag before AuditService spawns anything; the
-  // repo path is sandbox-validated inside the service. SECURITY-CRITICAL.
-  registerAuditIpcHandlers(ipcMain, {
-    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
-    isAuditBotEnabled: () =>
-      deps.settingsStore.getFlag(DESKTOP_AUDIT_BOT_FEATURE_FLAG_KEY),
-    auditService: deps.getAuditService(),
-    sendProgress: (payload: AuditProgressPayload) =>
-      deps.desktopWindow.sendToRenderer(AuditIpcChannel.Progress, payload),
+    acknowledgeOptInHandled: (computeTargetId, distributionId) =>
+      deps.requiredPluginInstaller.acknowledgeOptInHandled(
+        computeTargetId,
+        distributionId
+      ),
   });
   // Desktop-team overlay: the renderer fetches a pack's org-wide analytics
   // through main (renderers have no cloud REST access), signed with the
@@ -427,9 +499,9 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
       deps.getAgentDashboardRuntime()?.setImportPaused(paused),
     // Return the restart promise so the ReimportAgentSessions handler resolves
     // only once the restart has run (the Reload button awaits it). Undefined
-    // when the runtime isn't up yet — nothing to restart, resolve immediately.
-    restartCollectors: () =>
-      deps.getAgentDashboardRuntime()?.restartCollectors(),
+    // when the runtime isn't up yet, or when the analysis consent gate refused
+    // the restart — nothing ran, resolve immediately.
+    restartCollectors: () => deps.restartCollectors(),
     openClaudeDashboard: () => deps.openClaudeDashboard(),
     isHooksEnabled: () => isAgentMonitorHooksEnabled(),
     setHooksEnabled: (enabled) => setAgentMonitorHooksEnabled(enabled),
@@ -457,43 +529,28 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
     setCloudConnectionEnabled: (enabled) =>
       deps.setCloudConnectionEnabled(enabled),
     sendFlagsChanged: () => {
-      // ISS-5037: a flag write from ANY path (settings IPC, env override
-      // reconciliation) must be reflected by the "Enable Labs" application-menu
-      // checkbox, or it would keep claiming a state the store disagrees with.
-      refreshApplicationMenu();
-      deps.desktopWindow.sendToRenderer("desktop:flags-changed");
+      deps.desktopWindow.sendToRenderer(
+        DesktopRendererEventChannel.FlagsChanged
+      );
     },
     restartCloudSocket: () => deps.restartCloudSocket(),
     // FEA-3741 (slice 1): a per-tool collector toggle change restarts the
     // collectors so the new enable snapshot takes effect immediately (a
     // toggled-off harness stops its watcher + tool-home walk; a re-enabled one
     // resumes). Mirrors the hooks-toggle collector restart.
-    // The restart promise is deliberately not awaited here — the settings write
+    // The restart promise is deliberately not awaited here: the settings write
     // must not block on a collector restart (same fire-and-forget shape as the
-    // hooks-toggle path); the runtime logs its own restart failures.
+    // hooks-toggle path). The runtime does NOT log its own restart failures, and
+    // before this catch a rejection reached the unhandledRejection handler and
+    // the crash dialog, so the failure is recorded here rather than dropped.
     restartCollectors: () => {
-      deps.getAgentDashboardRuntime()?.restartCollectors();
+      deps.restartCollectors()?.catch((error: unknown) => {
+        gatewayLog.warn(
+          "collectors",
+          `restart after a collector toggle failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
     },
-  });
-  registerCommandSigningKeysIpcHandlers(ipcMain, {
-    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
-    authorizedCommandKeys: deps.authorizedCommandKeys,
-    listCommandSigningKeys: () =>
-      deps.commandSigningController.listCommandSigningKeys(),
-    notifyCommandKeysChanged: () =>
-      deps.commandSigningController.notifyCommandKeysChanged(),
-    approveOrganizationCommandPublicKey: (fingerprint) =>
-      deps.commandSigningController.approveOrganizationCommandPublicKey(
-        fingerprint
-      ),
-    rejectOrganizationCommandPublicKey: (fingerprint) =>
-      deps.commandSigningController.rejectOrganizationCommandPublicKey(
-        fingerprint
-      ),
-  });
-  registerJobsIpcHandlers(ipcMain, {
-    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
-    jobStore: deps.jobStore,
   });
   registerApprovalsIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
@@ -522,6 +579,8 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
     // ever configuring a relay key.
     isManualApiKeyEntryDisabled: () =>
       deps.apiKeyStore.getApiKeyProvenance() === "DESKTOP_MANAGED",
+    isCredentialMutationAllowed: () =>
+      !deps.settingsStore.getSignOutCleanupState().isPending(),
   });
   registerCostReconciliationIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
@@ -554,7 +613,23 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
       deps.managedOnboarding.startDesktopFirstDeviceOnboarding(webAppOrigin),
     onSyncObservabilityTierChanged: () =>
       kickTranscriptSweepAfterTierChange(deps.getTranscriptSync()),
+    // ISS-5489: the renderer's consent snapshot is shared across the read-source
+    // decision, the takeover gate and the arrival nudge, so a write has to reach
+    // all of them and not only the surface that made it. `sendToRenderer` is the
+    // crash-safe path (it already guards every window/frame teardown state).
+    sendToRenderer: (channel, ...args) => {
+      deps.desktopWindow.sendToRenderer(channel, ...args);
+    },
     applyDataSyncLevel: (level) => deps.applyDataSyncLevel(level),
+    onSessionAnalysisAgreed: () => deps.onSessionAnalysisAgreed(),
+  });
+  // ISS-8376: the desktop-local onboarding facts. The source owns the one-shot
+  // off-thread sweep, so this registration hands it seams rather than data —
+  // `read()` is synchronous and never waits on the sweep.
+  registerOnboardingLocalStateIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    isRendererWindowGone: () => deps.desktopWindow.isRendererWindowGone(),
+    source: onboardingLocalStateSource,
   });
   registerBinaryPathsIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
@@ -562,6 +637,9 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
     applyBinaryPathPatch: (patch) => deps.applyBinaryPathPatch(patch),
   });
   registerSandboxIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+  });
+  registerDirectoryScopeIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
   });
   registerDebugIpcHandlers(ipcMain, {
@@ -578,6 +656,8 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
     getPackagedUpdateState: () => deps.getPackagedUpdateState(),
     setPackagedUpdateState: (patch) => deps.setPackagedUpdateState(patch),
     getPackagedUpdateStatusPayload: () => deps.getPackagedUpdateStatusPayload(),
+    checkForUpdates: () =>
+      checkForStampedUpdates(() => deps.getUpdaterComputeTargetId()),
     guardUpdateDownload: (result) => deps.guardUpdateDownload(result),
     checkForUpdate: () => deps.checkForUpdate(),
     notifyPackagedUpdateStatus: () => deps.notifyPackagedUpdateStatus(),
@@ -585,20 +665,17 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
       deps.setApplyingDownloadedUpdate(value);
     },
     applyUpdate: () => deps.applyUpdate(),
+    updateTelemetry: deps.updateTelemetry,
   });
 
   registerProfileConfigIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
     settingsStore: deps.settingsStore,
     apiKeyStore: deps.apiKeyStore,
-    getGatewaySnapshot: () => {
-      const cloudStatus = deps.getCloudStatus();
-      return {
-        gatewayPort: deps.server.getActivePort() ?? null,
-        computeTarget:
-          cloudStatus.state === "online" ? cloudStatus.targetId : null,
-      };
-    },
+    getGatewaySnapshot: () => ({
+      gatewayPort: deps.server.getActivePort() ?? null,
+      computeTarget: resolveOnlineComputeTargetId(deps.getCloudStatus()),
+    }),
     cancelManagedOnboardingForUserChange: (reason) =>
       deps.managedOnboarding.cancelManagedOnboardingForUserChange(reason),
     onActiveConfigDeleted: () => onActiveConfigDeleted(deps),
@@ -609,9 +686,21 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
       seedReposConfig(sandboxBaseDirectory),
   });
 
+  registerSurfaceAnalyticsIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    captureAnalytics: (event, properties) =>
+      Observability.rendererSurfaceAnalytics(event, properties),
+  });
+
   registerDesktopAuthIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
     manager: deps.desktopSessionManager,
+    isSignInAllowed: () =>
+      !deps.settingsStore.getSignOutCleanupState().isPending(),
+    signOut: deps.signOutDesktop,
+    // ISS-10412: the sign-in journey finishes in the browser, so the desktop
+    // has to put itself back in front of the person who started it.
+    bringWindowToFront: () => deps.desktopWindow.returnFromBrowserSignIn(),
   });
   // Existing-user resolution (PRD-532 §8 / M6): read the derived one-time
   // prompt state + record dismissal. Only non-secret advisory UI state crosses
@@ -626,24 +715,62 @@ function registerAllDesktopIpcHandlers(deps: DesktopIpcRegistrationDeps): void {
   registerCloudApiFetchIpcHandler(ipcMain, {
     isTrustedSender: (sender) => deps.desktopWindow.isTrustedSender(sender),
     getAccessToken: () => deps.desktopSessionManager.getAccessToken(),
+    getAccountAdmission: () =>
+      deps.settingsStore.getSignOutCleanupState().isPending()
+        ? null
+        : deps.desktopSessionManager.getAccountAdmission(),
     getIdentity: () => deps.desktopSessionManager.getIdentity(),
     resolveApiOrigin: () =>
       normalizeAndValidateOrigin(deps.settingsStore.getApiOrigin()),
+    // ISS-9701: match the sync lanes — a server 401 drops
+    // the cached access token so the renderer's retry mints a fresh one. Scoped
+    // to the rejected token, so a 401 that arrives after another request already
+    // refreshed cannot evict the newer credential and start a second refresh.
+    onUnauthorized: (rejectedToken) =>
+      deps.desktopSessionManager.invalidateAccessToken(rejectedToken),
+  });
+  registerDesktopRealtimeIpcHandlers(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    host: deps.realtimeHost,
   });
   registerDesktopTranscriptIpcHandlers(deps);
+  const accountReadDeps: DesktopIdentityIpcDeps = {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    getAccessToken: () => deps.desktopSessionManager.getAccessToken(),
+    getApiOrigin: () => deps.settingsStore.getApiOrigin(),
+    getAccountAdmission: () =>
+      deps.settingsStore.getSignOutCleanupState().isPending()
+        ? null
+        : deps.desktopSessionManager.getAccountAdmission(),
+  };
   registerGitHubConnectOpenerIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
     getWebAppOrigin: () => deps.settingsStore.getWebAppOrigin(),
     openExternal: (url) => shell.openExternal(url),
+    returnWatch: createGitHubConnectReturnWatch({
+      ...accountGitHubConnectionReads(accountReadDeps),
+      bringWindowToFront: () => deps.desktopWindow.returnFromBrowserSignIn(),
+    }),
   });
   registerSessionLimitsIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
     isGoldenMode: () => deps.isGoldenMode(),
   });
-  registerDesktopIdentityIpcHandlers(ipcMain, {
+  registerDesktopDevModeIpcHandlers(ipcMain, {
     isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
-    getAccessToken: () => deps.desktopSessionManager.getAccessToken(),
-    getApiOrigin: () => deps.settingsStore.getApiOrigin(),
+    setOverrides: setDesktopMainFeatureFlagOverrides,
+    readCheckedKeys: readDesktopMainCheckedFeatureFlags,
+  });
+  registerDesktopIdentityIpcHandlers(ipcMain, accountReadDeps);
+
+  // ISS-8753: the Electron E2E flag-assignment seam. A constant `null` on every
+  // shipped launch — see `lifecycle/e2e-feature-flag-assignment.ts` for the two
+  // gates that make that true.
+  registerE2eFeatureFlagSeedIpcHandler(ipcMain, {
+    isTrustedSender: (sender) => isTrustedSender(sender as WebContents),
+    isPackaged: () => app.isPackaged,
+    getArgv: () => process.argv,
+    getUserDataPath: () => app.getPath("userData"),
   });
 
   registerManagedKeyHintIpcHandlers(ipcMain, {
@@ -662,7 +789,7 @@ function registerDesktopTranscriptIpcHandlers(
   // The renderer asks main to prepare a transcript by (sessionId, fileKey);
   // main mints the signed S3 URL itself, streams the bytes into the userData
   // cache, and returns an `app://` URL. The (multi-MB) bytes never cross IPC and
-  // `connect-src` stays 'self' app:.
+  // no transcript origin joins `connect-src`.
   registerTranscriptReadIpcHandler(ipcMain, {
     isTrustedSender: (sender) => deps.desktopWindow.isTrustedSender(sender),
     getAccessToken: () => deps.desktopSessionManager.getAccessToken(),
@@ -709,18 +836,17 @@ function registerDesktopTranscriptIpcHandlers(
   registerTranscriptForceArchiveIpcHandler(ipcMain, {
     isTrustedSender: (sender) =>
       deps.desktopWindow.isTrustedSender(sender as WebContents),
-    forceSyncOversized: (externalSessionId, fileKey) =>
-      deps
-        .getTranscriptSync()
-        ?.forceSyncOversized(externalSessionId, fileKey) ??
-      Promise.resolve({ kind: "unavailable" as const }),
+    // ISS-8143: same reason as the progress getters above.
+    forceSyncOversized: buildTranscriptForceSyncOversized(
+      deps.getTranscriptSync
+    ),
   });
 }
 
 /**
  * The active saved profile was deleted: cancel any managed onboarding, reset the
- * origins to their defaults, drop the browser command-key profile state, tear
- * down the cloud link, clear the key, and re-derive the dependent state.
+ * origins to their defaults, tear down the cloud link, clear the key, and
+ * re-derive the dependent state.
  */
 function onActiveConfigDeleted(deps: DesktopIpcRegistrationDeps): void {
   deps.managedOnboarding.cancelManagedOnboardingForUserChange(
@@ -729,11 +855,6 @@ function onActiveConfigDeleted(deps: DesktopIpcRegistrationDeps): void {
   deps.settingsStore.setRelayOrigin(DEFAULT_DESKTOP_SETTINGS.relayOrigin);
   deps.settingsStore.setApiOrigin(DEFAULT_DESKTOP_SETTINGS.apiOrigin);
   deps.settingsStore.setWebAppOrigin(DEFAULT_DESKTOP_SETTINGS.webAppOrigin);
-  resetBrowserCommandKeyProfileState({
-    lifecycle: deps.commandKeyLifecycle,
-    stopReconciliation: () => deps.commandKeyReconciler.stop(),
-    reason: "active_config_deleted",
-  });
   deps.cloudSocketStartup.invalidate();
   deps.cloudSocket.stop();
   deps.apiKeyStore.clearApiKey();
@@ -755,7 +876,7 @@ function onConfigDeleted(
   }
   const activeRuntimeGatewayId = deps.settingsStore.getActiveConfigId()
     ? null
-    : deps.legacyGatewayId;
+    : deps.getLegacyGatewayId();
   if (
     !deps.settingsStore.isGatewayIdReferenced(config.gatewayId, {
       activeRuntimeGatewayId,

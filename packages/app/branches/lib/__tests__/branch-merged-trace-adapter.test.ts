@@ -1,9 +1,7 @@
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
 import { describe, expect, it } from "vitest";
-import {
-  BranchActorTurnSide,
-  buildActorColorDomain,
-} from "../branch-actor-domain";
+import { buildActorColorDomain } from "../branch-actor-domain";
 import { mergedTraceToSessionTraceItems } from "../branch-merged-trace-adapter";
 
 const items: MergedTraceItem[] = [
@@ -75,10 +73,10 @@ describe("mergedTraceToSessionTraceItems", () => {
     const prompt = result[1];
     const say = result[2];
     expect(prompt?.type === "prompt" && prompt.actor.color).toBe(
-      domain.colorForTurn("alice", BranchActorTurnSide.Human)
+      domain.colorForTurn("alice", ActorTurnSide.Human)
     );
     expect(say?.type === "say" && say.actor.color).toBe(
-      domain.colorForTurn("alice", BranchActorTurnSide.Agent)
+      domain.colorForTurn("alice", ActorTurnSide.Agent)
     );
   });
 
@@ -187,7 +185,7 @@ describe("mergedTraceToSessionTraceItems", () => {
   });
 
   it("renders a sub-cent sub-agent cost precisely and omits only a genuinely absent one (FEA-4178)", () => {
-    // wongk review: a real sub-cent cost must render precisely (not floored to
+    // whitlockk review: a real sub-cent cost must render precisely (not floored to
     // "$0.00" or hidden) so it stays a DISTINCT state from "no data" (null cost).
     // Only a genuinely absent cost (`costUsd: null`, no attribution) yields null.
     const [subCent, absent] = mergedTraceToSessionTraceItems([

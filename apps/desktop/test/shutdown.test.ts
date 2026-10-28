@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   runShutdownSequence,
   type ShutdownDeps,
@@ -277,7 +277,7 @@ describe("runShutdownSequence", () => {
       // A mid-sequence REQUIRED phase (agentMonitor.stop) wedges; the phases
       // after it must still run once the per-phase deadline fires, BUT the run
       // must be classified timed_out — a hung required cleanup step must not
-      // masquerade as a clean exit(0) (wongk, ISS-4585).
+      // masquerade as a clean exit(0) (whitlockk, ISS-4585).
       agentMonitor: {
         stop: () => new Promise<void>(() => {}),
       },
@@ -358,14 +358,14 @@ describe("runShutdownSequence", () => {
     }
   });
 
-  test("hung REQUIRED server.stop times out at the PHASE deadline (before the overall) and still reports timed_out (wongk)", async () => {
+  test("hung REQUIRED server.stop times out at the PHASE deadline (before the overall) and still reports timed_out (whitlockk)", async () => {
     const scheduler = makeFakeScheduler();
     const failures: ShutdownFailure[] = [];
     const logs: string[] = [];
     const { deps, calls } = makeStubDeps({
       // server.stop is required cleanup and wedges. Here the per-phase deadline
       // (3000ms) sits BELOW the overall deadline (5000ms), so the phase timer
-      // wins the race — the exact case wongk flagged: cleanup returns and quit
+      // wins the race — the exact case whitlockk flagged: cleanup returns and quit
       // proceeds, but this must NOT be reported as a clean exit(0).
       server: {
         stop: () => new Promise<void>(() => {}),

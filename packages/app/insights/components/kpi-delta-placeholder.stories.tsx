@@ -82,9 +82,9 @@ const PillNoComparisonCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Insights/KPI Delta Placeholder",
+  title: "Composites v1.0/Insights/KPI Delta Placeholder",
   component: PillNoComparisonCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -94,7 +94,11 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+// Three cards compared side by side to show the pill against a real numeric
+// delta, not one concept per story — kept out of the AI manifest for that
+// reason.
 export const PillNoComparisonReasons: Story = {
+  tags: ["!manifest"],
   play: async ({ canvasElement }) => {
     // Real Tab presses, not `.focus()`. The chip's ring is `focus-visible:`, and
     // Chromium applies that only when the last input was a keyboard, so a

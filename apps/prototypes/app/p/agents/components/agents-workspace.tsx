@@ -26,10 +26,10 @@ export const AgentsWorkspace = () => {
 
   const breadcrumbs: readonly Crumb[] = selected
     ? [
-        { label: "Agents", onClick: clearSelection },
+        { label: "Agentic Components", onClick: clearSelection },
         { label: selected.name, isCurrent: true },
       ]
-    : [{ label: "Agents", isCurrent: true }];
+    : [{ label: "Agentic Components", isCurrent: true }];
 
   return (
     <AppShell breadcrumbs={breadcrumbs} onNavigateAgents={clearSelection}>

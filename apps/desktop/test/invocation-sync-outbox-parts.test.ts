@@ -1,5 +1,5 @@
 /**
- * ISS-4976 (@thadeusb review): regression cover for the invocation-outbox
+ * ISS-4976 (@tamsinb review): regression cover for the invocation-outbox
  * READY-PARTS read and its quarantine.
  *
  * The module had no test at all, which is how it kept a single-scalar version
@@ -16,12 +16,12 @@
  * be quarantined.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
   AGENT_COMPONENT_INVOCATION_SYNC_SUPPORTED_PROTOCOL_VERSIONS,
   AGENT_COMPONENT_INVOCATION_SYNC_TELEMETRY_PROTOCOL_VERSION,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, it } from "vitest";
 import { AgentComponentInvocationSyncLocalError } from "../src/main/agent-sync/agent-component-invocation-sync-constants.js";
 import {
   loadReadyInvocationSyncOutboxParts,
@@ -42,6 +42,9 @@ type OutboxRow = {
   partIndex: number;
   payload: unknown;
   attemptCount: number;
+  permanentAttemptCount?: number | null;
+  laneStalledSince?: string | null;
+  deadLetterRecoveryCount?: number | null;
   /** ISS-5973: the ordering key the fairness reservation is measured against. */
   createdAt?: string;
 };
@@ -104,6 +107,52 @@ describe("invocation sync outbox ready-parts read", () => {
       ]
     );
     assert.deepEqual(harness.deadLetters, []);
+  });
+
+  it("defaults legacy null durability counters without changing the payload", async () => {
+    const harness = outboxHarness([
+      {
+        ...outboxRow(0, part(AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION)),
+        permanentAttemptCount: null,
+        deadLetterRecoveryCount: null,
+      },
+    ]);
+
+    const entries = await loadReadyInvocationSyncOutboxParts(
+      harness.prisma,
+      SOURCE_KEY,
+      NOW,
+      10
+    );
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].attemptCount, 0);
+    assert.equal(entries[0].permanentAttemptCount, 0);
+    assert.equal(entries[0].deadLetterRecoveryCount, 0);
+    assert.equal(entries[0].laneStalledSince, null);
+    assert.deepEqual(harness.deadLetters, []);
+  });
+
+  it("dead-letters a row with malformed durability counters", async () => {
+    const harness = outboxHarness([
+      {
+        ...outboxRow(0, part(AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION)),
+        permanentAttemptCount: -1,
+      },
+    ]);
+
+    const entries = await loadReadyInvocationSyncOutboxParts(
+      harness.prisma,
+      SOURCE_KEY,
+      NOW,
+      10
+    );
+
+    assert.deepEqual(entries, []);
+    assert.equal(
+      harness.deadLetters[0].lastError,
+      AgentComponentInvocationSyncLocalError.InvalidPersistedDurabilityState
+    );
   });
 
   it("still quarantines a version this build cannot interpret", async () => {
@@ -241,6 +290,11 @@ function outboxHarness(rows: OutboxRow[]): {
 } {
   const deadLetters: DeadLetterUpdate[] = [];
   const client = {
+    // Live-parent eligibility is exercised against SQLite in the orphan suite.
+    $queryRawUnsafe: () =>
+      Promise.resolve(
+        rows.map(({ externalSessionId }) => ({ externalSessionId }))
+      ),
     agentComponentInvocationSyncOutbox: {
       findMany: () => Promise.resolve(rows),
       updateMany: (args: {
@@ -434,17 +488,24 @@ function queryingOutboxHarness(rows: OutboxRow[]): {
 } {
   const deadLetters: DeadLetterUpdate[] = [];
   const client = {
+    $queryRawUnsafe: () =>
+      Promise.resolve(
+        rows.map(({ externalSessionId }) => ({ externalSessionId }))
+      ),
     agentComponentInvocationSyncOutbox: {
       findMany: (args: {
-        where?: { attemptCount?: number };
+        where?: { attemptCount?: number; AND?: unknown[] };
         take?: number;
       }) => {
-        const wanted =
-          args.where?.attemptCount === undefined
-            ? rows
-            : rows.filter(
-                (row) => row.attemptCount === args.where?.attemptCount
-              );
+        const wanted = requiresNeverAttemptedAndRecovered(args.where)
+          ? rows.filter(
+              (row) =>
+                row.attemptCount === 0 &&
+                (row.deadLetterRecoveryCount === null ||
+                  row.deadLetterRecoveryCount === undefined ||
+                  row.deadLetterRecoveryCount === 0)
+            )
+          : rows;
         const ordered = [...wanted].sort((left, right) => {
           const byCreatedAt = String(left.createdAt).localeCompare(
             String(right.createdAt)
@@ -476,4 +537,19 @@ function queryingOutboxHarness(rows: OutboxRow[]): {
       fn(client as never),
   };
   return { prisma, deadLetters };
+}
+
+function requiresNeverAttemptedAndRecovered(
+  input: { attemptCount?: number; AND?: unknown[] } = {}
+): boolean {
+  return (
+    input.attemptCount === 0 ||
+    input.AND?.some(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "attemptCount" in entry &&
+        entry.attemptCount === 0
+    ) === true
+  );
 }

@@ -1,10 +1,10 @@
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import type { AgentSessionQueryFilters } from "@repo/app/agents/data-source/agent-sessions-data-source";
-import { agentSessionKeys } from "@repo/app/agents/hooks/use-agent-sessions";
+import { agentSessionKeys } from "@repo/app/agents/hooks/agent-session-keys";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 
 /**
- * FEA-3574 review (wongk): read the LOCAL SQLite usage totals directly over IPC,
+ * FEA-3574 review (whitlockk): read the LOCAL SQLite usage totals directly over IPC,
  * independent of the mode-swapped Sessions data source.
  *
  * In Cloud mode the shared `useAgentSessionUsage` resolves to the cloud HTTP
@@ -20,7 +20,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
  * HTTP usage entry for the same filters. Extracted from `SessionsView` so the
  * view's tests can mock this read without standing up a `QueryClientProvider`.
  *
- * ISS-4429 (wongk review): this is a FALLBACK-only read, so it deliberately does
+ * ISS-4429 (whitlockk review): this is a FALLBACK-only read, so it deliberately does
  * NOT `keepPreviousData`. Retaining the previous filter key's totals means a
  * search/date/facet change followed by a cloud failure could pin OLD-scope local
  * numbers beside the NEW list — the cards would silently describe a different
@@ -31,7 +31,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
  */
 export function useLocalAgentSessionUsage(
   filters: AgentSessionQueryFilters,
-  options: { enabled: boolean }
+  options: { enabled: boolean; refetchInterval?: number | false }
 ): UseQueryResult<AgentSessionUsageSummary> {
   return useQuery({
     queryKey: agentSessionKeys.usage("local", filters),
@@ -43,5 +43,14 @@ export function useLocalAgentSessionUsage(
       return usage(filters);
     },
     enabled: options.enabled,
+    // ISS-10584: a caller watching a RUNNING boot import needs this read to be
+    // re-taken, because the store gains session rows throughout it. Omitted, the
+    // query keeps react-query's default of no polling, which is what every
+    // existing caller expects.
+    refetchInterval: options.refetchInterval ?? false,
+    // Without this a backgrounded or unfocused window stops polling and the
+    // caller's count freezes mid-import — the same freeze this option exists to
+    // end, arriving by a different route.
+    refetchIntervalInBackground: options.refetchInterval !== undefined,
   });
 }

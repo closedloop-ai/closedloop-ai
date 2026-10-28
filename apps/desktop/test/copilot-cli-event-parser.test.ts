@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseCliEventFile } from "../src/main/collectors/copilot/copilot-parser.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { makeTempDir, writeJsonl } from "./normalized-session-test-utils.js";
@@ -100,6 +100,18 @@ test("the CLI reader skips blanks, bad JSON, non-object records and unknown type
   // still widens startedAt/endedAt even though it emits nothing else.
   assert.equal(parsed.startedAt, T0);
   assert.equal(parsed.endedAt, T2);
+  // ISS-6885: the two drop channels stay separate. Only `{ not json` is
+  // MALFORMED; blank lines are not lines at all. `5`, `null`, and the two
+  // `mystery_event` records decoded fine and were dropped for carrying nothing
+  // this parser can route — conflating those with corruption would make a
+  // healthy file look damaged, but leaving them in NO bucket is what let a
+  // lossy parse certify itself clean.
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 6,
+    malformedLines: 1,
+    truncatedFinalLine: false,
+    unknownRecords: 4,
+  });
 });
 
 test("the CLI event-alias table routes every alias to its handler", async () => {
@@ -317,4 +329,212 @@ test("CLI messages carry the per-event model and flag the synthetic fallback", a
   );
   assert.equal(parsed.name, "Copilot CLI abcdefgh", "id-derived name, no cwd");
   assert.equal(parsed.sessionId, "copilot-cli-abcdefghijkl");
+});
+
+/**
+ * ISS-6885. Every count `parseCliEventFile` reports is a SURVIVORS-ONLY tally:
+ * a line that fails `JSON.parse` is skipped, and nothing else in the returned
+ * session moves. So a corrupt `events.jsonl` renders with complete-looking
+ * message, token, tool, and error totals and no trace of what it lost —
+ * unknown facts presenting as true zeroes. `parseQuality` is that trace, and it
+ * must separate mid-file corruption from the benign torn tail of a session
+ * still being written.
+ */
+const CLEAN_TAIL = JSON.stringify({
+  type: "assistant_message",
+  timestamp: T2,
+  payload: { text: "a1" },
+});
+
+/** Write pre-rendered JSONL lines verbatim, so a malformed line stays malformed. */
+function writeRawCliLines(lines: readonly string[]): string {
+  const filePath = path.join(
+    makeTempDir("copilot-cli-quality-"),
+    "events.jsonl"
+  );
+  writeFileSync(filePath, `${lines.join("\n")}\n`, "utf8");
+  return filePath;
+}
+
+test("a malformed MIDDLE CLI line is counted in parseQuality, not silently dropped", async () => {
+  // The ticket's reproduction: valid, malformed, valid. The malformed line
+  // carried a user message, a tool call, an API error, and the turn's real
+  // token usage — every one of which vanishes from the totals below.
+  const filePath = writeRawCliLines([
+    JSON.stringify({
+      type: "user_message",
+      timestamp: T0,
+      payload: { text: "u1" },
+    }),
+    JSON.stringify({
+      type: "usage",
+      timestamp: T0,
+      payload: { usage: { input_tokens: 7, output_tokens: 9 } },
+    }),
+    '{"type":"user_message","timestamp":"2026-03-09T16:00:30.000Z","payload":{"text":"lost',
+    CLEAN_TAIL,
+  ]);
+  const parsed = requireSession(
+    await parseCliEventFile(filePath, "malformed-middle"),
+    "CLI malformed-middle"
+  );
+
+  // The surviving facts still parse — a corrupt line is skipped, never fatal.
+  assert.equal(parsed.userMessages, 1);
+  assert.equal(parsed.assistantMessages, 1);
+  assert.deepEqual(
+    parsed.messages.map((m) => m.text),
+    ["u1", "a1"]
+  );
+
+  // ...and the evidence of the discarded record survives with them.
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 4,
+    malformedLines: 1,
+    truncatedFinalLine: false,
+  });
+  // The final line parsed, so every malformed line is mid-file corruption.
+  assert.equal(
+    (parsed.parseQuality?.malformedLines ?? 0) -
+      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0),
+    1,
+    "one genuinely corrupt line, not a benign torn tail"
+  );
+});
+
+test("a malformed FINAL CLI line reads as a truncated tail, not corruption", async () => {
+  // The same one dropped line, in the position that makes it benign: a session
+  // still being written. Consumers must be able to tell these two files apart,
+  // and `malformedLines` alone cannot.
+  const filePath = writeRawCliLines([
+    JSON.stringify({
+      type: "user_message",
+      timestamp: T0,
+      payload: { text: "u1" },
+    }),
+    CLEAN_TAIL,
+    '{"type":"usage","timestamp":"2026-03-09T16:01:30.000Z","payload":{"usage":{"input_to',
+  ]);
+  const parsed = requireSession(
+    await parseCliEventFile(filePath, "truncated-tail"),
+    "CLI truncated-tail"
+  );
+
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 3,
+    malformedLines: 1,
+    truncatedFinalLine: true,
+  });
+  assert.equal(
+    (parsed.parseQuality?.malformedLines ?? 0) -
+      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0),
+    0,
+    "an in-progress write is not corruption"
+  );
+});
+
+test("a clean CLI file reports a clean parse — a true zero, distinguishable from an absent signal", async () => {
+  // The counterpart the two cases above need: `malformedLines: 0` must mean
+  // "nothing was dropped", so a positive count is never ambiguous. Blank lines
+  // are skipped without inflating totalLines.
+  const filePath = writeRawCliLines([
+    JSON.stringify({
+      type: "user_message",
+      timestamp: T0,
+      payload: { text: "u1" },
+    }),
+    "",
+    "   ",
+    CLEAN_TAIL,
+  ]);
+  const parsed = requireSession(
+    await parseCliEventFile(filePath, "clean"),
+    "CLI clean"
+  );
+
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 2,
+    malformedLines: 0,
+    truncatedFinalLine: false,
+  });
+});
+
+test("an events.jsonl whose every line is malformed still parses to null — the signal has nowhere to land", async () => {
+  // Pins a LIMIT of this change rather than a feature. `parseCliEventFile`
+  // returns null when no event supplied a timestamp, and a wholly-corrupt file
+  // supplies none — so total corruption is reported as "no session", the same
+  // as an empty file, and the scan's counts are discarded with it. Partial
+  // corruption (the cases above) is what now carries evidence.
+  //
+  // Whether a wholly-corrupt file should instead import as a minimal session
+  // carrying only `parseQuality` — the way `parseChatSessionFile` falls back to
+  // file mtime — changes what a user sees in their session list, so it is a
+  // product call and is deliberately NOT decided here.
+  const filePath = writeRawCliLines([
+    '{"type":"user_message","timestamp":"2026-03-09T16:00:00.000Z","payload":{"text":"lo',
+    '{"type":"assistant_message","timestamp":"2026-03-09T16:00:3',
+  ]);
+  assert.equal(await parseCliEventFile(filePath, "all-malformed"), null);
+});
+
+test("an unrecognized CLI event type is counted, not silently dropped into a clean parse", async () => {
+  // The channel `malformedLines` cannot see. Every line here is valid JSON, so
+  // a malformed-only signal reports a perfect parse — while the two records the
+  // alias table does not know have already widened the session window and then
+  // had their content discarded. A newer Copilot CLI emitting a type this build
+  // predates is exactly this shape.
+  const parsed = await parseCliOk([
+    { type: "user_message", timestamp: T0, payload: { text: "u1" } },
+    { type: "quota_warning", timestamp: T1, payload: { remaining: 3 } },
+    { type: "checkpoint_saved", timestamp: T2, payload: { id: "c1" } },
+  ]);
+
+  assert.equal(parsed.userMessages, 1);
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 3,
+    malformedLines: 0,
+    truncatedFinalLine: false,
+    unknownRecords: 2,
+  });
+});
+
+test("a fully-recognized CLI file OMITS unknownRecords rather than reporting zero", async () => {
+  // Absent, not `0`: the key is additive and only appears when something was
+  // actually dropped, so a clean session's metadata blob is byte-identical to a
+  // pre-ISS-6885 one and no golden snapshot or re-sync is provoked by it.
+  const parsed = await parseCliOk([
+    { type: "user_message", timestamp: T0, payload: { text: "u1" } },
+    { type: "assistant_message", timestamp: T1, payload: { text: "a1" } },
+  ]);
+
+  assert.deepEqual(parsed.parseQuality, {
+    totalLines: 2,
+    malformedLines: 0,
+    truncatedFinalLine: false,
+  });
+  assert.equal(
+    Object.hasOwn(parsed.parseQuality ?? {}, "unknownRecords"),
+    false
+  );
+});
+
+/**
+ * ISS-8565: the CLI assembler folded `acc.model` onto a plain `{}`, so a CLI
+ * stream whose session model was literally `__proto__` lost its entire token
+ * aggregate. Same defect as the chat assembler, a separate sink.
+ */
+test("CLI tokensByModel keeps a __proto__ session model (ISS-8565)", async () => {
+  const parsed = await parseCliOk([
+    { type: "session_start", timestamp: T0, payload: { model: "__proto__" } },
+    {
+      type: "usage",
+      timestamp: T1,
+      payload: { usage: { input_tokens: 1000, output_tokens: 500 } },
+    },
+  ]);
+
+  assert.deepEqual(Object.keys(parsed.tokensByModel), ["__proto__"]);
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  assert.equal(parsed.tokensByModel.__proto__?.input, 1000);
+  assert.equal(Object.getPrototypeOf(parsed.tokensByModel), Object.prototype);
 });

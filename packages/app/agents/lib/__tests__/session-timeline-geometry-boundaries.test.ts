@@ -25,18 +25,18 @@ const END_MS = Date.parse(END_AT);
 const WINDOW: SessionTimelineWindow = { endMs: END_MS, startMs: START_MS };
 
 describe("session timeline row boundaries", () => {
-  it.each([
-    undefined,
-    null,
-  ])("uses lifecycle bounds when transcript rows are %s", (turnItems) => {
-    expect(
-      resolveSessionTimelineWindow({
-        endedAt: END_AT,
-        startedAt: START_AT,
-        turnItems,
-      })
-    ).toEqual(WINDOW);
-  });
+  it.each([undefined, null])(
+    "uses lifecycle bounds when transcript rows are %s",
+    (turnItems) => {
+      expect(
+        resolveSessionTimelineWindow({
+          endedAt: END_AT,
+          startedAt: START_AT,
+          turnItems,
+        })
+      ).toEqual(WINDOW);
+    }
+  );
 
   it("ignores rowless and invalid-time items when resolving plotted bounds", () => {
     expect(

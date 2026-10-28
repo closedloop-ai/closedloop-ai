@@ -5,6 +5,7 @@
  * browser-safe so every parser can normalize timestamps and extract error text
  * identically on desktop and in the cloud renderer.
  */
+import { parsePullRequestNumber } from "@repo/api/src/types/session-artifact-link";
 import type {
   NormalizedArtifacts,
   NormalizedPrRef,
@@ -47,10 +48,12 @@ export const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Tool names whose input IS a shell command line, across harnesses (Claude
- * `Bash`, Codex `shell` / `exec_command`). Shared so the recognizers that must
- * treat a tool input as a COMMAND — and the ones that must NOT treat it as
- * prose (ISS-5764) — cannot drift apart on the spelling.
+ * BUILTIN tool names whose input IS a shell command line, across harnesses
+ * (Claude `Bash`, Codex `shell` / `exec_command`). The recognizer boundary is
+ * {@link isShellCommandToolUse}, which adds structural recognition of
+ * shell-through-MCP tools (ISS-8268) — recognizers consult the predicate, not
+ * this set, so the ones that treat a tool input as a COMMAND and the ones that
+ * must NOT treat it as prose (ISS-5764) cannot drift apart.
  */
 export const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Bash",
@@ -74,18 +77,59 @@ export function classifyToolKind(name: string): NormalizedToolKind {
  * Normalize a timestamp to an ISO 8601 string. Handles numeric epoch (seconds or
  * milliseconds), strings, and nulls.
  */
+/** An ISO string carrying its own zone: trailing `Z`, or a `+hh:mm` offset. */
+const HAS_EXPLICIT_ZONE = /(Z|[+-]\d{2}:?\d{2})$/;
+
 export function toIso(ts: unknown): string | null {
   if (ts == null) {
     return null;
   }
   if (typeof ts === "number") {
-    const ms = ts < 1e12 ? ts * 1000 : ts;
-    const d = new Date(ms);
-    return isNaN(d.getTime()) ? null : d.toISOString();
+    // A POSITIVE sub-1e12 value is SECONDS. 1e12 ms is 2001-09-09, so any real
+    // epoch in milliseconds is above it, and reading a 10-digit value as
+    // milliseconds yields 1970 — never the right answer for a transcript.
+    //
+    // ISS-6738: the positivity test matters. `ts < 1e12` alone is true for
+    // every NEGATIVE number, so a pre-1970 millisecond epoch was silently
+    // multiplied by 1000 — `-1` ms (1969-12-31T23:59:59.999Z) became `-1000`
+    // ms (…59.000Z). Seconds-vs-milliseconds is a magnitude heuristic and only
+    // magnitudes above zero carry that signal.
+    const ms = ts > 0 && ts < 1e12 ? ts * 1000 : ts;
+    const date = new Date(ms);
+    // Tests the CONSTRUCTED date, not `Number.isFinite`: `Date` tops out at
+    // ±8.64e15, and a larger-but-finite epoch round-trips out of SQLite intact
+    // while still being unrepresentable (ISS-6417).
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
   if (typeof ts === "string") {
-    const d = new Date(ts);
-    return isNaN(d.getTime()) ? ts : d.toISOString();
+    // ISS-6738: a value that cannot be read as a datetime is NULL, never echoed
+    // back. Both normalizers used to return unparseable text verbatim, so
+    // `"not-a-date"` reached `startedAt`/`endedAt` and then sorted lexically
+    // against real ISO stamps. `null` is the one answer for "no timestamp".
+    //
+    // A zone-less string is read as UTC, explicitly. `new Date("July 9, 2026")`
+    // is LOCAL midnight, which made parser output depend on the machine that
+    // ran it — the same transcript yielding different timestamps in different
+    // timezones. Naming the zone keeps the value AND makes it deterministic.
+    const zoned = HAS_EXPLICIT_ZONE.test(ts) ? ts : `${ts}Z`;
+    const date = new Date(zoned);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+    // A bare date or an unusual-but-real format may not survive the appended
+    // `Z`; retry as written before giving up, so only genuinely unreadable text
+    // becomes null.
+    //
+    // NOTE the retry is TIMEZONE-DEPENDENT, unlike the branch above it: it hands
+    // interpretation back to the engine, so a format V8 cannot read with a
+    // trailing `Z` is resolved in the machine's local zone. `"July 9, 2026
+    // 12:00 PM"` becomes 17:00Z on a Chicago box and 03:00Z on a Tokyo one. The
+    // UTC guarantee the docstring above makes therefore covers the primary
+    // branch, not this fallback. Narrow in practice — transcript stamps are ISO
+    // or epochs, both of which take the branch above — but a reader must not
+    // assume the whole string path is zone-stable.
+    const asWritten = new Date(ts);
+    return Number.isNaN(asWritten.getTime()) ? null : asWritten.toISOString();
   }
   return null;
 }
@@ -295,7 +339,7 @@ export const PR_TOOL_PATTERNS = new Set([
 ]);
 
 export const GITHUB_PR_URL_RE =
-  /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(?!new\b)(\d+)/g;
+  /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(?!new\b)(\d+)(?=$|[/?#\s)\]}"'<>]|[.,;:!?](?:\s|$)|\.(?:diff|patch)(?=$|[?#\s)\]}"'<>]))/g;
 
 export const FIXTURE_OWNER_RE =
   /^(?:owner|acme|org|example|test-org|sample|fixtures?|placeholder|repo)$/i;
@@ -330,24 +374,32 @@ function extractPrUrlsFromText(
     const owner = match[1];
     const repo = match[2];
     const number = match[3];
-    if (!(owner && repo && number) || FIXTURE_OWNER_RE.test(owner)) {
+    const prNumber = number ? parsePullRequestNumber(number) : null;
+    if (!(owner && repo && prNumber) || FIXTURE_OWNER_RE.test(owner)) {
       continue;
     }
-    const url = `https://github.com/${owner}/${repo}/pull/${number}`;
+    const canonicalNumber = String(prNumber);
+    const url = `https://github.com/${owner}/${repo}/pull/${canonicalNumber}`;
     if (seen.has(url)) {
       continue;
     }
     seen.add(url);
-    refs.push({ number, repo: `${owner}/${repo}`, url });
+    refs.push({ number: canonicalNumber, repo: `${owner}/${repo}`, url });
   }
   return refs;
 }
 
-/** CR-13: Extract PR references from tool calls. */
+/**
+ * CR-13: Extract PR references from tool calls. `mcp` carries the Codex MCP
+ * metadata (PR #6160 review): without it a Codex-form MCP shell — no `mcp__`
+ * name prefix, `mcpServer`/`mcpMethod` fields instead — cannot be recognized
+ * by the shell predicate below.
+ */
 export function extractPrReferences(
   toolName: string,
   input: unknown,
-  output?: unknown
+  output?: unknown,
+  mcp?: Pick<NormalizedToolUse, "mcpServer" | "mcpMethod">
 ): NormalizedPrRef[] {
   const refs: NormalizedPrRef[] = [];
   const seen = new Set<string>();
@@ -383,9 +435,19 @@ export function extractPrReferences(
     return refs;
   }
 
-  if (toolName === "Bash") {
-    const cmd = typeof obj.command === "string" ? obj.command : "";
-    const match = cmd.match(/gh\s+pr\s+create/);
+  // ISS-8268: gate on the shared shell predicate, not the literal "Bash", so
+  // a shell-through-MCP or argv-shaped `gh pr create` mints the same pending
+  // hint.
+  const toolUse: NormalizedToolUse = {
+    name: toolName,
+    timestamp: null,
+    input,
+    mcpServer: mcp?.mcpServer,
+    mcpMethod: mcp?.mcpMethod,
+  };
+  if (isShellCommandToolUse(toolUse)) {
+    const cmd = shellCommand(toolUse);
+    const match = cmd.match(GH_PR_CREATE_HINT_RE);
     if (match && refs.length === 0) {
       const key = ":pending";
       if (!seen.has(key)) {
@@ -473,7 +535,10 @@ export function isSyntheticModelKey(model: string): boolean {
 
 /** CR-13: Accumulate artifact references from tool uses into an artifacts object. */
 export function collectArtifacts(
-  toolUses: Array<{ name: string; input?: unknown; output?: unknown }>,
+  toolUses: Pick<
+    NormalizedToolUse,
+    "name" | "input" | "output" | "mcpServer" | "mcpMethod"
+  >[],
   cwd: string | null | undefined
 ): NormalizedArtifacts {
   const prs: NormalizedPrRef[] = [];
@@ -482,7 +547,7 @@ export function collectArtifacts(
   const seenIssue = new Set<string>();
 
   for (const tu of toolUses) {
-    for (const pr of extractPrReferences(tu.name, tu.input, tu.output)) {
+    for (const pr of extractPrReferences(tu.name, tu.input, tu.output, tu)) {
       const k = pr.url ?? `${pr.repo ?? ""}:${pr.number}`;
       if (!seenPr.has(k)) {
         seenPr.add(k);
@@ -518,9 +583,10 @@ type TimestampBounds = {
  *
  * The min/max are plain string comparisons because ISO 8601 timestamps order
  * lexically; centralizing them here keeps that invariant in one place rather
- * than re-derived in every parser. Parsers whose timestamp normalization
- * intentionally differs from `toIso` (e.g. the Claude parser's string-passthrough
- * `isoTs`) keep their own bounds tracking — do not route them through here.
+ * than re-derived in every parser. ISS-6738 left exactly one `toIso`, so the
+ * old carve-out for the Claude parser's separate string-passthrough normalizer
+ * is gone; a parser that still keeps its own bounds tracking does so for its own
+ * reasons — do not route it through here without checking why.
  */
 export function noteTimestamp(
   bounds: TimestampBounds,
@@ -550,7 +616,7 @@ export function pushTurnDuration(
   }
   const durationMs =
     new Date(endedAtIso).getTime() - new Date(startedAtIso).getTime();
-  if (!Number.isFinite(durationMs) || durationMs < 0) {
+  if (!isValidTurnDurationMs(durationMs)) {
     return;
   }
   turnDurations.push({ durationMs, timestamp: endedAtIso });
@@ -634,20 +700,35 @@ export function shellCommandArgv(
 /**
  * The visible text of a `tool_result` block, whose `content` is either a plain
  * string or an array of `{type,text}` parts. Extracted from `parse-claude.ts`
- * (ISS-4592), which is on the `biome.jsonc` shrink-only grandfather list.
+ * (ISS-4592) so that file shrinks rather than grows.
  */
-export function toolResultText(block: Record<string, unknown>): string {
+export function toolResultText(
+  block: Record<string, unknown>,
+  maxChars = Number.POSITIVE_INFINITY
+): string {
   if (typeof block.content === "string") {
-    return block.content;
+    return block.content.slice(0, maxChars);
   }
-  const parts: string[] = [];
+  let text = "";
+  let remaining = Math.max(0, maxChars);
   for (const entry of Array.isArray(block.content) ? block.content : []) {
+    if (remaining === 0) {
+      break;
+    }
     const part = entry as Record<string, unknown> | null;
     if (part && typeof part.text === "string") {
-      parts.push(part.text);
+      if (text.length > 0) {
+        text += "\n";
+        remaining -= 1;
+      }
+      if (remaining > 0) {
+        const kept = part.text.slice(0, remaining);
+        text += kept;
+        remaining -= kept.length;
+      }
     }
   }
-  return parts.join("\n");
+  return text;
 }
 
 /**
@@ -669,4 +750,130 @@ export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * An epoch-MILLISECONDS value as ISO, or null when no `Date` can represent it.
+ *
+ * Distinct from {@link toIso}, which reads a bare number below 1e12 as SECONDS — a lenient
+ * reading that suits vendor transcript records, where a seconds stamp is a real shape. A caller
+ * that ALREADY KNOWS its value is milliseconds must not go through that heuristic: every stamp
+ * before 2001-09-09 is under 1e12 (negatives included), so it would be multiplied by 1000 and
+ * land ~31,000 years out, losing the lexical ordering callers rely on (whitlockk, ISS-6738 review).
+ *
+ * Guards on the CONSTRUCTED `Date` rather than `Number.isFinite`, because an epoch past ±8.64e15
+ * passes a finite check and still makes `toISOString` throw — the ISS-6417 case.
+ */
+export function msToIso(ms: number): string | null {
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// ISS-8268 (cr-27784): the `gh pr create` pending-PR hint in
+// extractPrReferences, hoisted per useTopLevelRegex. Deliberately loose — it
+// mints only a `pending` marker that a real PR URL in the output supersedes.
+const GH_PR_CREATE_HINT_RE = /gh\s+pr\s+create/;
+
+/**
+ * ISS-8268: does this tool use's input carry a shell COMMAND LINE? True for
+ * the builtin shell-tool set ({@link SHELL_TOOL_NAMES}) and, structurally, for
+ * an MCP tool — the `mcp__` name prefix, or Codex's separate `mcpServer` /
+ * `mcpMethod` fields (either may be absent; same both-fields rule as
+ * `isMcpSynthesizedTool`) — whose input object carries an explicit
+ * `command`/`cmd` string-or-argv field, read through {@link shellCommand} so
+ * exactly one place knows that shape. Shell-through-MCP servers are recognized
+ * by shape, never by server or method name (collector-generality doctrine: no
+ * org literals, no name vocabulary to drift). Bare-string and bare-argv MCP
+ * inputs deliberately do NOT qualify: an MCP search tool's raw string input is
+ * not a command line. This predicate is the single recognizer boundary shared
+ * by command extraction and ISS-5764 prose suppression, so a tool input is
+ * scanned as a command or as prose, never both. Scope: it governs the
+ * artifact-ref lane (and the normalized-artifacts PR hint above); the
+ * structural-evidence taxonomy (the desktop evidence adapters'
+ * RunCommand categorization) deliberately stays name-keyed — a different axis.
+ */
+export function isShellCommandToolUse(tu: NormalizedToolUse): boolean {
+  if (SHELL_TOOL_NAMES.has(tu.name)) {
+    return true;
+  }
+  if (
+    classifyToolKind(tu.name) !== "mcp" &&
+    tu.mcpServer == null &&
+    tu.mcpMethod == null
+  ) {
+    return false;
+  }
+  // Bare-string and bare-argv inputs never qualify for MCP tools (see
+  // docstring) — shellCommand() would read either one AS the command line.
+  if (typeof tu.input === "string" || Array.isArray(tu.input)) {
+    return false;
+  }
+  return shellCommand(tu) !== "";
+}
+
+/**
+ * A count the harness reported, or `null` when the value cannot be one.
+ *
+ * Rejects the WHOLE impossible set for a count, not the two that get
+ * remembered. Negative and non-finite are the ones everyone guards; what
+ * actually reaches a column is the rest — a fractional count (`1.5` tokens), a
+ * magnitude past `Number.MAX_SAFE_INTEGER`, a blank string that `Number("")`
+ * turns into a measured `0`, and a boolean that `+value` turns into `1`. Each of
+ * those renders as a confident real measurement, which is strictly worse than an
+ * absent one, so callers omit the field on `null` rather than storing a number
+ * that cannot be true.
+ *
+ * Deliberately does NOT parse strings. Its callers read numeric JSON fields the
+ * harness emits as numbers; accepting `"12"` here would also accept `""` and
+ * `" "` through any lenient coercion, which is the failure mode above.
+ */
+/**
+ * The widest short string a harness value may carry into a normalized session.
+ *
+ * ISS-7258 (PR #6418 review, davetho). The worker boundary is `.strict()` and
+ * caps these strings, and a `.strict()` schema rejects the WHOLE response when
+ * one string is over its cap — so an over-long value does not cost a field, it
+ * costs the entire source, and costs it again on every retry. Admitting a value
+ * here that the boundary will refuse is therefore the worst of the two
+ * arrangements available. Bounding at the source instead is the same call
+ * `collectSessionAttributes` already makes for `attributionSkill`.
+ *
+ * MUST stay <= `HistoricalParseWorkerLimits.maxShortTextLength`. Nothing in this
+ * package can import that constant (it lives in `apps/desktop`, which depends on
+ * this one, not the reverse), so the relationship is asserted from the desktop
+ * side by `historical-parse-worker-short-text-parity.test.ts` — raise this above
+ * the boundary cap and that test fails rather than production.
+ */
+export const MAX_HARNESS_SHORT_TEXT_CHARS = 8192;
+
+/**
+ * `stringValue`, but OMITTING a value too long to cross the worker boundary.
+ *
+ * Returns null for an over-cap string so the caller's existing absent-value path
+ * runs, rather than admitting a value that would later reject its whole source.
+ */
+export function boundedStringValue(value: unknown): string | null {
+  const text = stringValue(value);
+  if (text === null || text.length > MAX_HARNESS_SHORT_TEXT_CHARS) {
+    return null;
+  }
+  return text;
+}
+
+export function countValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+/**
+ * The admission rule for a turn duration, shared by `pushTurnDuration` (a
+ * timestamp-pair derivation) and the Claude parser (a stated number read off
+ * the transcript). Finite and non-negative; a fractional millisecond is legal,
+ * so this deliberately stops short of `Number.isSafeInteger` (ISS-8886). The
+ * OpenCode stated-duration path still reads through an unguarded `z.number()`
+ * and is the named sibling, not a caller.
+ */
+export function isValidTurnDurationMs(durationMs: number): boolean {
+  return Number.isFinite(durationMs) && durationMs >= 0;
 }

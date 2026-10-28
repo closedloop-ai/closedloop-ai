@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { SessionLimitsSnapshotStore } from "../src/main/session-limits/snapshot-store.js";
+import { afterAll, test } from "vitest";
+import {
+  SessionLimitSnapshotSource,
+  SessionLimitsSnapshotStore,
+} from "../src/main/session-limits/snapshot-store.js";
 import { createStatuslineReader } from "../src/main/session-limits/statusline-reader.js";
 import { deferred } from "./deferred.js";
 
@@ -76,7 +79,7 @@ test("reader: a stale file's fetchedAt ages it out of the store (fail-closed on 
   assert.equal(store.resolve(NOW), null);
 });
 
-test("reader: an all-null statusline file is skipped (never suppresses a coarse bar)", async () => {
+test("reader: an all-null statusline file is skipped (never replaces the last valid sample)", async () => {
   // Valid JSON but no usable rate_limits (an older payload / malformed stdin the
   // capture script still turns into fiveHour:null/sevenDay:null).
   const file = makeSnapshotFile(
@@ -88,9 +91,9 @@ test("reader: an all-null statusline file is skipped (never suppresses a coarse 
     })
   );
   const store = new SessionLimitsSnapshotStore();
-  // A valid COARSE rejected-event bar is already in the store.
+  // A valid statusline sample is already in the store.
   store.record({
-    source: "rate_limit_event",
+    source: SessionLimitSnapshotSource.Statusline,
     fetchedAtMs: NOW - 2000,
     limits: {
       fiveHour: { utilization: 100, resetsAt: "2026-07-21T15:00:00.000Z" },
@@ -111,9 +114,9 @@ test("reader: an all-null statusline file is skipped (never suppresses a coarse 
   await reader.readOnce();
 
   // The empty statusline snapshot was NOT recorded, so the resolver still
-  // surfaces the coarse bar instead of an all-null (hidden) statusline sample.
+  // surfaces the earlier valid sample instead of an all-null (hidden) one.
   const resolved = store.resolve(NOW);
-  assert.ok(resolved, "expected the coarse bar to remain visible");
+  assert.ok(resolved, "expected the earlier sample to remain visible");
   assert.equal(resolved.fiveHour?.utilization, 100);
 });
 
@@ -208,7 +211,7 @@ test("reader: start()/stop() are idempotent and read once immediately", async ()
   assert.equal(store.resolve(NOW)?.fiveHour?.utilization, 33);
 });
 
-test.after(() => {
+afterAll(() => {
   for (const dir of tempDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

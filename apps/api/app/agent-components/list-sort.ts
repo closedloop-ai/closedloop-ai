@@ -21,7 +21,7 @@ import { locPerDollarForKind, type SessionLocCost } from "./loc-per-dollar";
 type ComponentComparator = (a: MergedComponent, b: MergedComponent) => number;
 
 /**
- * ISS-4944 (wongk): the LOC/$ the row will DISPLAY, memoized per entry id so a
+ * ISS-4944 (whitlockk): the LOC/$ the row will DISPLAY, memoized per entry id so a
  * `sortBy=metric` sort computes each entry's metric once instead of once per
  * comparison. Same `locPerDollarForKind` the response mapping emits, so the sort
  * order and the rendered column can never disagree.
@@ -67,7 +67,7 @@ function compareMetric(a: number | null, b: number | null): number {
 }
 
 /**
- * ISS-4944 (wongk): every `AgentComponentSortKey` the MCP tool, the docs, and
+ * ISS-4944 (whitlockk): every `AgentComponentSortKey` the MCP tool, the docs, and
  * the Agents table advertise needs a real comparator here. `metric` and `source`
  * previously had none and fell through to the invocation default, so a caller
  * sorting by either silently got invocation order back. The exhaustive `Record`

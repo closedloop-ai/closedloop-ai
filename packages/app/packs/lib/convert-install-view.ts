@@ -263,7 +263,7 @@ export function convertInstallPhaseForOutcome(
  * compatibility rule). A PERMANENT failure (invalid request, missing catalog
  * command, invalid/missing working directory — including the `NotApplicable`
  * unsupported subtype) can never succeed on retry, so the Sheet must not offer an
- * enabled retry that would immediately fail again (wongk review). A rejected
+ * enabled retry that would immediately fail again (whitlockk review). A rejected
  * engine call (no outcome, hence no class) is treated as transient/unclassified.
  */
 export function isRetryableFailure(
@@ -284,7 +284,7 @@ export function isRetryableFailure(
  * NEW target. Keying by every axis the engine converts on (`packId`,
  * `currentHarness`, `targetHarness`, and the `sourceHarness` provenance) forces a
  * fresh state machine the moment any axis changes, so a stale completion can
- * never land on a different conversion (wongk review). Field order is fixed and
+ * never land on a different conversion (whitlockk review). Field order is fixed and
  * the axes are `HarnessName` enum values (no separators collide).
  */
 export function conversionIdentityKey(target: {

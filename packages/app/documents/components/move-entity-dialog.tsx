@@ -1,6 +1,13 @@
 "use client";
 
-import { useBatchMoveArtifacts } from "@repo/app/documents/hooks/use-artifact-links";
+import { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
+import {
+  ProjectArtifactPlacementPosition,
+  ProjectArtifactPlacementSource,
+} from "@repo/api/src/types/project-artifact-placement";
+import { useBatchMoveArtifacts } from "@repo/app/documents/hooks/use-batch-move-artifacts";
+import { useArtifactPlacement } from "@repo/app/projects/hooks/use-artifact-placement";
+import { useProjectTree } from "@repo/app/projects/hooks/use-project-tree";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -33,6 +40,8 @@ type MoveEntityDialogProps = {
   entities?: MovableEntity[];
   teamId?: string | null;
   currentProjectId?: string | null;
+  /** Use one atomic hierarchy-placement request for a selection-toolbar move. */
+  placementSourceProjectId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
@@ -43,6 +52,7 @@ export function MoveEntityDialog({
   entities,
   teamId,
   currentProjectId,
+  placementSourceProjectId,
   open,
   onOpenChange,
   onSuccess,
@@ -61,13 +71,34 @@ export function MoveEntityDialog({
 
   const { data: projects = [] } = useProjects(teamId ?? undefined);
   const batchMove = useBatchMoveArtifacts();
+  const placement = useArtifactPlacement(
+    placementSourceProjectId ?? "",
+    placementSourceProjectId !== undefined
+  );
+  const destinationTree = useProjectTree(selectedProjectId, {
+    enabled: Boolean(placementSourceProjectId && selectedProjectId),
+  });
+  const sourceTree = useProjectTree(placementSourceProjectId ?? "", {
+    enabled: Boolean(placementSourceProjectId),
+  });
 
   const entityProjectId = primaryEntity?.projectId ?? currentProjectId;
   const availableProjects = projects.filter((p) => p.id !== entityProjectId);
-  const isMovePending = batchMove.isPending || isBulkMoving;
+  const isMovePending =
+    batchMove.isPending ||
+    placement.isPending ||
+    isBulkMoving ||
+    (Boolean(placementSourceProjectId && selectedProjectId) &&
+      !(
+        destinationTree.data?.projectVersion && sourceTree.data?.projectVersion
+      ));
 
   const handleMoveClick = () => {
     if (!primaryEntity) {
+      return;
+    }
+    if (placementSourceProjectId) {
+      executePlacementMove().catch(() => undefined);
       return;
     }
     if (isBulkMove) {
@@ -75,6 +106,21 @@ export function MoveEntityDialog({
       return;
     }
     executeSingleMove();
+  };
+
+  const executePlacementMove = async () => {
+    if (!(selectedProjectId && entitiesToMove.length > 0)) {
+      return;
+    }
+    await placement.mutateAsync({
+      sourceArtifactIds: entitiesToMove.map((item) => item.id),
+      destinationProjectId: selectedProjectId,
+      position: ProjectArtifactPlacementPosition.Root,
+      source: ProjectArtifactPlacementSource.Api,
+    });
+    setSelectedProjectId("");
+    onOpenChange(false);
+    onSuccess?.();
   };
 
   const executeSingleMove = () => {
@@ -86,6 +132,7 @@ export function MoveEntityDialog({
         artifactId: primaryEntity.id,
         targetProjectId: selectedProjectId,
         includeDownstream: true,
+        surface: ArtifactStatusEditSurface.RowAction,
       },
       {
         onSuccess: () => {
@@ -111,6 +158,7 @@ export function MoveEntityDialog({
               artifactId: item.id,
               targetProjectId: selectedProjectId,
               includeDownstream: true,
+              surface: ArtifactStatusEditSurface.Bulk,
             },
             {
               // Suppress the per-item default error toast so a batch failure

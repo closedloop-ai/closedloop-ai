@@ -1,0 +1,70 @@
+-- ISS-7476 (PLN-1775 M3 ride-along): index the bootstrap cron's CROSS-ORG
+-- due-row read on `github_observed_repository`.
+--
+-- WHAT THIS INDEX IS FOR. `selectOrgIdsWithDueObservedRepositories`
+-- (apps/api/lib/github/observed-repository-discovery.ts) picks the next orgs to
+-- verify, and its predicate has NO org equality. The due test itself is
+-- `dueObservedRepositoryWhere` (apps/api/lib/github/observed-repository-verifier.ts),
+-- a TWO-ARM or: a pending row is due when `next_verification_at` is null or has
+-- passed, while a denied row is due only when it has passed — a denied row with a
+-- null horizon (the malformed-name denial) is deliberately never due. Read that
+-- function rather than trusting a transcription here; what this index cares about
+-- is only the shape:
+--
+--   WHERE verification_state IN ('pending','denied') AND <per-state due test>
+--   ORDER BY last_verification_attempt_at ASC NULLS FIRST, id
+--
+-- The M0 index (organization_id, verification_state, next_verification_at) is
+-- org-leading, so it cannot serve a read that never names an organization, and
+-- the hourly cron scanned the whole observation table instead.
+--
+-- SHAPE: PARTIAL on the non-terminal states. `verified` is the state rows END
+-- in, so it is the value that accrues without bound; excluding it keeps the
+-- index proportional to the live backlog rather than to the table. A row that
+-- verifies leaves the index, which is also what keeps the observation write
+-- path (one upsert per sync batch) cheap.
+--
+-- WHAT IT DOES NOT DO. PSL has no `nulls` argument on `@@index`, so the index
+-- is built with btree's default NULLS LAST while the query orders NULLS FIRST.
+-- It bounds the scan to the non-terminal rows; a sort over that bounded subset
+-- remains. That is deliberate: the win being bought here is the scan, not the
+-- sort.
+--
+-- DECLARED IN schema.prisma, unlike every partial index before it. ISS-7476
+-- enabled the `partialIndexes` preview feature and declared the 25 that were
+-- hand-carried until then, so this statement was GENERATED from the model's
+-- `@@index(..., where: raw(...))` rather than hand-written. Two manual edits
+-- sit on top of that output: the CONCURRENTLY clause below, and the predicate
+-- kept in its readable `IN (...)` spelling. The declaration in schema.prisma now
+-- carries the NORMALIZED `= ANY (ARRAY[...])` form instead, because `raw(...)`
+-- is compared as text against what Postgres stored and the readable spelling
+-- diffs as a drop-and-recreate. Both spellings build the SAME index — Postgres
+-- normalizes this statement on apply — so re-generating from today's schema
+-- would emit the `= ANY` text and nothing else would change.
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE. The table is written
+-- by every desktop session-sync batch (`recordObservedRepositories`), so a plain
+-- `CREATE INDEX` would hold ACCESS EXCLUSIVE for the whole build and stall that
+-- ingest. `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block
+-- (SQLSTATE 25001), and `prisma migrate deploy` falls back to wrapping the whole
+-- file in one transaction when a statement carries dollar-quoting, embedded
+-- semicolons, or a `DROP INDEX CONCURRENTLY`. So this file is ONE bare
+-- statement: do not add BEGIN/COMMIT, a DO block, or any other DDL here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a
+-- cancelled or crashed build fails closed on SQLSTATE 42P07 against the
+-- same-named INVALID remnant instead of recording the migration APPLIED over a
+-- permanently-unusable index. Recovery is operator-driven: `DROP INDEX
+-- CONCURRENTLY` the remnant in psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*`
+-- schemas. CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "github_observed_repository_due_rotation_idx" ON "github_observed_repository"("last_verification_attempt_at", "id") WHERE (verification_state IN ('pending', 'denied'));

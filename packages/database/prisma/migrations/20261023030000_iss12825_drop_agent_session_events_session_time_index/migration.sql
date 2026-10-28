@@ -1,0 +1,32 @@
+-- ISS-12825: drops `agent_session_events_agent_session_id_event_created_at_idx`
+-- (agent_session_id, event_created_at), a strict prefix of the ISS-12776
+-- covering index `agent_session_events_session_time_cover_idx`
+-- (agent_session_id, event_created_at, event_type, tool_name). Every event
+-- insert maintained both.
+--
+-- Production `pg_stat_user_indexes`, statistics never reset:
+--   2026-10-23 02:26:25 UTC  idx_scan 1,156,124,692  last_idx_scan 2026-10-22 22:58:35 UTC
+--   2026-10-23 04:56:18 UTC  idx_scan 1,156,124,692  last_idx_scan 2026-10-22 22:58:35 UTC
+-- No scan since 22:58:35, before ISS-12776 (#9030) reached production at
+-- 23:07. Over the 2 h 30 min between the readings the covering index took
+-- 660,715 scans (707,212 to 1,367,927).
+--
+-- Without this index, every reader that filters on agent_session_id plans on
+-- the covering index or, for the session detail read, on the
+-- (agent_session_id, external_event_id) unique key, at the largest
+-- organization's 90-day volume (20,348 sessions, 3,664,779 events). Pinned by
+-- apps/api/__tests__/integration/iss12825-agent-session-events-reader-plans.integration.test.ts.
+--
+-- The ISS-7513 (event_created_at, agent_session_id) index stays: production
+-- scanned it 114 times between the same two readings (220,528 to 220,642,
+-- last_idx_scan 2026-10-23 04:27:37 UTC), after the covering index shipped.
+--
+-- CONCURRENTLY, and the only statement in the file: `prisma migrate deploy`
+-- (7.10, Postgres 16) applies a one-statement file outside a transaction
+-- block, while a DROP INDEX CONCURRENTLY after a SET, beside a second
+-- concurrent drop, or after a CREATE INDEX CONCURRENTLY fails with SQLSTATE
+-- 25001. IF EXISTS, so a retry after a cancelled drop, which leaves the index
+-- INVALID, finishes the job.
+
+-- DropIndex
+DROP INDEX CONCURRENTLY IF EXISTS "agent_session_events_agent_session_id_event_created_at_idx";

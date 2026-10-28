@@ -112,7 +112,7 @@ export const connectSteps: readonly ConnectStepEntry[] = [
  */
 export const deviceConsent = {
   grant: "A signed-in Closedloop session, held on this machine",
-  device: "Kris' MacBook Pro",
+  device: "Kerensa' MacBook Pro",
   platform: "macOS",
   workspace: "closedloop-ai",
 } as const;

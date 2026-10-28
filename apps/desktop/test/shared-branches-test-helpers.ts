@@ -4,6 +4,7 @@ import { BranchStatus } from "@repo/api/src/types/branch";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
 import { branchCostEvidenceFixedRowBytes } from "@repo/api/src/types/branch-usage";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
@@ -17,6 +18,7 @@ import type {
   BranchCanonicalActivityRow,
 } from "../src/main/database/branch-activity-read.js";
 import { createBranchMetricEventEvidenceMethods } from "../src/main/database/branch-metric-event-provenance.js";
+import type { BranchPrRow } from "../src/main/database/branch-reads.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 
 /**
@@ -94,26 +96,11 @@ export function makeSource(
       distinct?: string[];
       where?: {
         artifact?: {
-          kind?: string;
           branchName?: unknown;
           repoFullName?: string | null;
         };
       };
     }) => {
-      // PLN-1148 branch-scoped commit read: session_artifact_links joined to a
-      // kind='commit' artifact, selecting the commit columns off `artifact`.
-      if (args?.where?.artifact?.kind === "commit") {
-        onQuery?.("commits");
-        return Promise.resolve(
-          (rows.commits ?? []).map((c) => ({
-            artifact: {
-              sha: c.sha,
-              committedAt: c.committed_at,
-              title: c.message,
-            },
-          }))
-        );
-      }
       onQuery?.("links");
       let mapped = (rows.links ?? []).map((r) => ({
         sessionId: r.session_id,
@@ -127,11 +114,9 @@ export function makeSource(
               ? null
               : (r.first_pushed_at ?? r.observed_at),
           artifactLinks: [],
-          linesAdded: r.lines_added ?? null,
-          linesRemoved: r.lines_removed ?? null,
-          filesChanged: r.files_changed ?? null,
         },
         session: {
+          lastActivityAt: r.last_activity_at ?? null,
           endedAt: r.activity_at ?? null,
           name: r.session_name ?? null,
           startedAt: null,
@@ -168,36 +153,11 @@ export function makeSource(
       return Promise.resolve(mapped);
     },
   };
-  // Typed distinct-key read: branch artifacts deduped by (repo, branch) — the
-  // mock collapses the canned link rows the way the engine's `distinct` would.
+  // ISS-10324: both the list link read and the distinct-key read are RAW now,
+  // so they arrive through `$queryRawUnsafe` and are dispatched there. This
+  // delegate double stays only for the typed reads that still use it.
   const artifact = {
-    findMany: () => {
-      onQuery?.("distinctKeys");
-      const seen = new Set<string>();
-      const keys: Array<{
-        repoFullName: unknown;
-        branchName: unknown;
-        firstPushedAt: unknown;
-        artifactLinks: unknown[];
-      }> = [];
-      for (const r of rows.links ?? []) {
-        const dedupeKey = JSON.stringify([r.repo_full_name, r.branch_name]);
-        if (seen.has(dedupeKey)) {
-          continue;
-        }
-        seen.add(dedupeKey);
-        keys.push({
-          repoFullName: r.repo_full_name,
-          branchName: r.branch_name,
-          firstPushedAt:
-            r.has_local_publication === false
-              ? null
-              : (r.first_pushed_at ?? r.observed_at),
-          artifactLinks: [],
-        });
-      }
-      return Promise.resolve(keys);
-    },
+    findMany: () => Promise.resolve([]),
   };
   // PLN-1148 branch-scoped PR read: pull_requests keyed by (repo, branch). The
   // canned PR rows are snake_case (DB shape); translate to the Prisma camelCase
@@ -212,9 +172,6 @@ export function makeSource(
           prNumber: r.pr_number ?? null,
           prUrl: r.pr_url,
           title: r.title ?? null,
-          state: r.state ?? null,
-          isDraft: r.is_draft ?? null,
-          mergedAt: r.merged_at ?? null,
           closedAt: r.closed_at ?? null,
           openedAt: r.opened_at ?? null,
           observedAt: r.observed_at ?? null,
@@ -282,17 +239,27 @@ export function makeSource(
       }));
   };
   // Ordered SQL-fragment → canned-rows-key dispatch for the passthrough reads.
-  // Order is significant: lifecycle reads (`WITH pr_branch`) mention commits, so
-  // they must match before the generic `kind = 'commit'` commit rail.
-  const passthroughReads: [string, keyof CannedRows][] = [
-    ["FROM session_activity_segments", "activitySegments"],
-    ["WITH pr_branch", "lifecycleEvents"],
-    ["branch_session_counts AS (", "sessionTokens"],
-    ["kind = 'commit'", "commits"],
-    ["FROM pull_requests", "prs"],
-    ["GROUP BY l.repo_full_name", "tokenAgg"],
+  // Order is significant: lifecycle reads (`pr_branch AS (`) mention commits, so
+  // they must match before the generic `kind = 'commit'` commit rail. The
+  // fragment is not anchored to `WITH` because a cohort-scoped read opens with
+  // the `requested_branches` CTE first (ISS-9862).
+  const passthroughReads: [
+    string,
+    (canned: CannedRows) => Record<string, unknown>[],
+  ][] = [
+    ["FROM session_activity_segments", (c) => c.activitySegments ?? []],
+    ["pr_branch AS (", (c) => c.lifecycleEvents ?? []],
+    ["branch_session_counts AS (", (c) => c.sessionTokens ?? []],
+    ["kind = 'commit'", (c) => c.commits ?? []],
+    ["FROM pull_requests", (c) => c.prs ?? []],
+    ["GROUP BY l.repo_full_name", (c) => c.tokenAgg ?? []],
     // FEA-2276: the per-session even-split divisor read (GROUP BY session_id).
-    ["GROUP BY session_id", "branchCounts"],
+    ["GROUP BY session_id", (c) => c.branchCounts ?? []],
+    // ISS-10324: the list link read and the distinct-key read are RAW now, so
+    // they arrive here rather than through a typed delegate. Both project the
+    // canned link rows under the column names their statements select.
+    ["latest_push_observed_at", (c) => cannedBranchLinkRawRows(c.links ?? [])],
+    ["has_push_link", (c) => cannedBranchKeyRawRows(c.links ?? [])],
   ];
   const queryRaw = (sql: string, ...parameters: unknown[]) => {
     onQuery?.(sql, parameters);
@@ -353,9 +320,9 @@ export function makeSource(
       }
       return Promise.resolve(eventRows);
     }
-    for (const [fragment, rowsKey] of passthroughReads) {
+    for (const [fragment, build] of passthroughReads) {
       if (sql.includes(fragment)) {
-        return Promise.resolve(rows[rowsKey] ?? []);
+        return Promise.resolve(build(rows));
       }
     }
     if (sql.includes("FROM token_usage tu")) {
@@ -448,7 +415,7 @@ export const throwingSource = {
   },
 } as unknown as BranchSyncSource;
 
-// ISS-4483 (review cid 3679616167, wongk): every read rejects with a db-host
+// ISS-4483 (review cid 3679616167, whitlockk): every read rejects with a db-host
 // PROCESS-LIFECYCLE message (the child crash-looping / restarting mid-backfill),
 // so a serving op proves the boundary rethrows the TRANSIENT code — not the fatal
 // source-error code — for a db-host lifecycle blip.
@@ -550,10 +517,7 @@ export function openPullRequestRow(prUrl = "https://gh/acme/web/pull/42") {
     pr_number: 42,
     pr_url: prUrl,
     title: "Feature X",
-    state: "open",
-    is_draft: false,
     opened_at: "2026-06-10T10:20:00.000Z",
-    merged_at: null,
     closed_at: null,
     observed_at: "2026-06-10T10:20:00.000Z",
   };
@@ -659,12 +623,6 @@ export function sumStackCost(
   return stacks.reduce((sum, stack) => sum + stack.estimatedCostUsd, 0);
 }
 
-export function sumStackInputTokens(
-  stacks: readonly { inputTokens: number }[]
-): number {
-  return stacks.reduce((sum, stack) => sum + stack.inputTokens, 0);
-}
-
 function phaseActivitySegment(
   phase: string,
   start: string,
@@ -752,4 +710,85 @@ export type RawQueryClient = {
 export function rawQueryClientOf(source: BranchSyncSource): RawQueryClient {
   return (source as unknown as { prisma: { client: RawQueryClient } }).prisma
     .client;
+}
+
+/**
+ * One merged pull request on `feature/merged-branch`, sized so the median-PR-size
+ * and merge-rate projections have a decided identity to work from. Shared by the
+ * canonical-metric projection suite and its per-window PR-coverage sibling.
+ */
+export function makeBranchPrRowFixture(): BranchPrRow {
+  return {
+    repoFullName: "acme/web",
+    branchName: "feature/merged-branch",
+    prNumber: 1,
+    prUrl: null,
+    title: null,
+    state: GitHubPRState.Merged,
+    isDraft: false,
+    mergedAt: "2026-08-01T00:00:00.000Z",
+    closedAt: "2026-08-01T00:00:00.000Z",
+    openedAt: "2026-07-30T00:00:00.000Z",
+    observedAt: "2026-08-01T01:00:00.000Z",
+    linesAdded: 10,
+    linesRemoved: 2,
+    filesChanged: 1,
+  };
+}
+
+/**
+ * ISS-10324: flatten canned link rows into the column names
+ * `readLocalBranchLinkRows` now projects. `first_pushed_at` keeps the typed
+ * double's `has_local_publication` semantics, and `latest_push_observed_at`
+ * stays null because these fixtures carry no push link — the same signal the
+ * retired nested `artifactLinks: []` select carried.
+ */
+function cannedBranchLinkRawRows(
+  links: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  return links.map((row) => ({
+    session_id: row.session_id,
+    is_primary: row.is_primary,
+    observed_at: row.observed_at,
+    repo_full_name: row.repo_full_name,
+    branch_name: row.branch_name,
+    first_pushed_at:
+      row.has_local_publication === false
+        ? null
+        : (row.first_pushed_at ?? row.observed_at),
+    last_activity_at: row.last_activity_at ?? null,
+    ended_at: row.activity_at ?? null,
+    session_name: row.session_name ?? null,
+    started_at: null,
+    user_id: row.user_id ?? null,
+    latest_push_observed_at: null,
+  }));
+}
+
+/**
+ * ISS-10324: the distinct-key read's raw projection, deduped by
+ * `(repo_full_name, branch_name)` the way the statement's own `DISTINCT` would.
+ */
+function cannedBranchKeyRawRows(
+  links: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const keys: Record<string, unknown>[] = [];
+  for (const row of links) {
+    const dedupeKey = JSON.stringify([row.repo_full_name, row.branch_name]);
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    keys.push({
+      repo_full_name: row.repo_full_name,
+      branch_name: row.branch_name,
+      first_pushed_at:
+        row.has_local_publication === false
+          ? null
+          : (row.first_pushed_at ?? row.observed_at),
+      has_push_link: 0,
+    });
+  }
+  return keys;
 }

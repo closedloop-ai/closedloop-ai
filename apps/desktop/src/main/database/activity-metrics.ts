@@ -18,6 +18,34 @@
  *     row (INSERT OR REPLACE — idempotent);
  *  3. a set-based boot backfill for sessions that have segments but no metrics row.
  *
+ * The CONSUMER of what this file persists is `activity-coverage-read.ts`
+ * (ISS-6758): the per-cohort GROUP BY that turns these rows into the FR-12
+ * self-measurement, surfaced on the desktop Diagnostics → Coverage tab. It is
+ * deliberately a separate file — this one owns the WRITE and must not grow a
+ * read that could quietly diverge from the module's aggregation rules. Anything
+ * added here that changes what a row computes to is a formula change and must
+ * bump `ATTRIBUTION_METRIC_VERSION`, exactly as today.
+ *
+ * ISS-6760: the persisted `startedDay` is STORAGE-ONLY and is NOT a cohort axis,
+ * despite sitting among the cohort keys. It copies `session_analytics.started_day`
+ * forward, and that is a stored UTC day FEA-2430 declared storage-only — "any
+ * future DISPLAY read must re-bucket ... never read this column"
+ * (session-analytics-rollup.ts) — while every other desktop Insights day series
+ * buckets in the user's LOCAL calendar. Grouping coverage by it would put
+ * non-UTC users' activity on the wrong day, the same miss FEA-2999 had to
+ * correct in optimization-analytics-queries.ts. A coverage-over-time read joins
+ * `sessions` and buckets with `localDay(s.started_at)` (db-helpers.ts). Its
+ * index was dropped (0060) so nothing here reads as an endorsement of a UTC
+ * group-by axis; the column itself stays because dropping it would make the
+ * migration runner's bare-name `no such column` heal ambiguous against the three
+ * surviving `started_day` columns (see that migration's note). This is one of
+ * THREE copies of the rollup's UTC day under the same terms — the others are
+ * `agent_component_session_usage.started_day` and, in the cloud,
+ * `AgentSessionUsageRollup.startedDay`; `storedUtcDaySql`'s contract comment
+ * (session-timestamp-form.ts) enumerates all three (ISS-7579 moved that ledger
+ * there from session-analytics-rollup.ts, which now keeps only the FEA-2430
+ * storage-only half beside the columns it governs).
+ *
  * Coverage is computed by the module in exact micro-cents; the confidence
  * distribution bins each segment's attributed spend with the module's
  * `confidenceBucketFor`. Live ground-truth calibration is impossible (no hand
@@ -25,13 +53,16 @@
  * the reported-confidence distribution (the FR-12 production half) and leaves
  * truth-calibration to FEA-2266 offline.
  */
+
+import { autonomyBandFor } from "@repo/api/src/types/session-activity-metrics";
+import { msToIso } from "@repo/lib/harness/parser-utils";
 import type { Harness } from "../collectors/types.js";
 import { microCentsToUsd, usdToMicroCents } from "../cost/cost-math.js";
 import {
   ACTIVITY_STATE_VALUES,
   ActivityState,
+  ATTRIBUTION_METRIC_VERSION,
   attributeSegmentSpendUsd,
-  autonomyBandFor,
   type ClassifiedSegment,
   COVERAGE_EXCLUDED_STATES,
   ConfidenceBucket,
@@ -47,6 +78,10 @@ import {
 } from "../telemetry/attribution-metrics.js";
 import type { Prisma } from "./generated/client.js";
 import type { DesktopPrisma } from "./prisma-client.js";
+import {
+  advanceSessionSyncWatermark,
+  chunkWatermark,
+} from "./session-sync-watermark.js";
 
 /** The `session_analytics` fields the cohort derivation reads (already rolled up). */
 export type CohortAnalyticsInput = {
@@ -128,13 +163,19 @@ type SegmentRow = {
  * both here makes lexical order match numeric order. An unparseable value falls
  * back to the raw string (it simply won't match any span → counts as gap spend,
  * still in the denominator), so this never throws mid-import.
+ *
+ * ISS-6417: that last claim used to be false. The guard was `Number.isFinite`,
+ * which an unrepresentable epoch PASSES while still being unrepresentable —
+ * `Date` tops out at ±8.64e15 — so `toISOString` threw the very RangeError the
+ * fallback exists to avoid, aborting the whole rollup over one bad span. The
+ * reachable window is narrow and real: a `start_ms` above 8.64e15 but within
+ * `Number.MAX_SAFE_INTEGER` (~9.007e15) round-trips out of SQLite intact and
+ * still cannot become a `Date`. `msToIso` tests the constructed `Date` instead,
+ * which is the only check that actually covers the range.
  */
 function toNormalizedIso(value: string | number): string {
   const ms = typeof value === "number" ? value : Date.parse(value);
-  if (!Number.isFinite(ms)) {
-    return typeof value === "string" ? value : "";
-  }
-  return new Date(ms).toISOString();
+  return msToIso(ms) ?? (typeof value === "string" ? value : "");
 }
 
 /** All the per-session metric fields (sans the session id) the row persists. */
@@ -143,6 +184,7 @@ type ActivityMetricsRow = {
   autonomyBand: string;
   closedloopUser: number;
   lengthBand: string;
+  /** ISS-6760: storage-only UTC day, NEVER a group-by axis. See the file doc. */
   startedDay: string | null;
   coverage: number;
   coveredSpendUsd: number;
@@ -153,6 +195,7 @@ type ActivityMetricsRow = {
   segmentCount: number;
   coveredSegmentCount: number;
   version: number;
+  metricVersion: number;
   updatedAt: string;
 };
 
@@ -285,7 +328,10 @@ async function computeActivityMetricsRow(
   };
   // Coverage overall for THIS session — the module owns the covered predicate and
   // the exact micro-cent ratio; per-cohort aggregation happens at read time via a
-  // GROUP BY over the persisted rows (harness/autonomy/etc. columns below).
+  // GROUP BY over the persisted rows (harness/autonomy/etc. columns below). That
+  // read is `activity-coverage-read.ts` (ISS-6758) — before it existed this
+  // sentence named a consumer nothing implemented, so the whole rollup was
+  // write-only and the two cohort indexes served no query.
   const { overall } = computeCoverage([session]);
 
   return {
@@ -293,6 +339,8 @@ async function computeActivityMetricsRow(
     autonomyBand: cohort.autonomyBand,
     closedloopUser: cohort.closedloopUser ? 1 : 0,
     lengthBand: cohort.lengthBand,
+    // ISS-6760: storage-only copy of the UTC rollup day — not an aggregation
+    // axis. A day-bucketed read uses localDay(sessions.started_at) instead.
     startedDay: analytics.startedDay ?? null,
     coverage: overall.coverage,
     coveredSpendUsd: overall.coveredSpendUsd,
@@ -305,6 +353,15 @@ async function computeActivityMetricsRow(
     // The segments all share one classifier version (a re-tile replaces them
     // together); MAX is a defensive tie-break if a partial re-derive ever mixed them.
     version: segments.reduce((max, s) => Math.max(max, s.version), 0),
+    // ISS-6759: the SECOND, independent staleness axis. `version` above tracks the
+    // segment CLASSIFIER; this tracks the Coverage FORMULA the numbers just above
+    // were produced by — this module's math AND the local derivations in this
+    // file (gap spend, the micro-cent tier split, `coveredSegmentCount`, the
+    // `created_at` filter), which is why changing any of those obliges a bump of
+    // the constant. A metric bump changes those numbers over byte-identical
+    // segments, so it moves neither side of the classifier comparison; without
+    // this stamp the boot backfill could never see it.
+    metricVersion: ATTRIBUTION_METRIC_VERSION,
     updatedAt: now,
   };
 }
@@ -362,18 +419,32 @@ export const ACTIVITY_METRICS_BACKFILL_CHUNK = 50;
  * FEA-2273: idempotent boot pass that (re)derives the metrics rollup for any
  * session that has activity segments + an analytics rollup and either no metrics
  * row (installs upgrading past this migration, or sessions imported before the
- * emission wiring existed) OR a STALE one whose stamped version trails the
- * session's current segment version. The version-aware predicate is what keeps
- * the "a classifier bump re-derives" invariant true for the separate re-tile
- * pathway (`backfillActivitySegmentsFromTranscripts`), which re-tiles segments at
- * the new ACTIVITY_CLASSIFIER_VERSION but does not itself refresh metrics: the
- * next boot re-selects those now-behind rows here. Anti-join + JOIN on the two
- * prerequisites, chunked, background — mirrors `backfillSessionAnalytics`. A
- * failed chunk is logged and skipped so one bad session never aborts the sweep;
- * never blocks db open. The JOIN on `session_analytics` keeps a rollup-less
- * session from being re-selected on every boot (it can't produce a row until it
- * has a rollup); once a stale row is refreshed its version matches and it is no
- * longer re-selected (convergent).
+ * emission wiring existed) OR a STALE one, on EITHER of the two independent
+ * staleness axes:
+ *
+ *  - `sam.version < seg.version` — the segment CLASSIFIER moved. Since ISS-11088
+ *    the separate re-tile pathway (`backfillActivitySegmentsFromTranscripts`)
+ *    refreshes this rollup ITSELF, in the same transaction that advertises the
+ *    re-tile, so its sessions arrive here already current and this axis no longer
+ *    re-selects them. It stays because it still covers every OTHER way a session
+ *    can fall behind the classifier: the harnesses that re-tile through the
+ *    DATA_REVISION rebuild instead (Copilot, OpenCode — see that file's SCOPE
+ *    note), and a re-tile whose publish transaction was rolled back or could not
+ *    advance the watermark.
+ *  - `sam.metric_version < ATTRIBUTION_METRIC_VERSION` — the Coverage FORMULA
+ *    moved (ISS-6759). The classifier comparison cannot see this: a formula bump
+ *    changes the numbers over byte-identical segments, so BOTH sides of it stay
+ *    equal and a pre-bump row is never re-selected, leaving the table holding two
+ *    formulas at once for any aggregate to blend. Bounding on the constant the
+ *    metric module actually declares is what makes bumping it sufficient.
+ *
+ * Anti-join + JOIN on the two prerequisites, chunked, background — mirrors
+ * `backfillSessionAnalytics`. A failed chunk is logged and skipped so one bad
+ * session never aborts the sweep; never blocks db open. The JOIN on
+ * `session_analytics` keeps a rollup-less session from being re-selected on every
+ * boot (it can't produce a row until it has a rollup); once a stale row is
+ * refreshed BOTH stamps match their current values and it is no longer re-selected
+ * (convergent on either axis).
  */
 export async function backfillActivityMetrics(
   prisma: DesktopPrisma,
@@ -389,7 +460,10 @@ export async function backfillActivityMetrics(
      ) seg
      JOIN session_analytics sa ON sa.session_id = seg.session_id
      LEFT JOIN session_activity_metrics sam ON sam.session_id = seg.session_id
-     WHERE sam.session_id IS NULL OR sam.version < seg.version`
+     WHERE sam.session_id IS NULL
+        OR sam.version < seg.version
+        OR sam.metric_version < $1`,
+    ATTRIBUTION_METRIC_VERSION
   );
   if (missing.length === 0) {
     return;
@@ -400,11 +474,33 @@ export async function backfillActivityMetrics(
   let done = 0;
   for (let i = 0; i < ids.length; i += size) {
     const chunk = ids.slice(i, i + size);
+    // ISS-10721: the rollup now rides the cloud sync payload, and the sync
+    // cursor selects sessions by `sessions.updated_at` alone. Every disjunct of
+    // this pass's predicate is a VERSION comparison, so a formula-only
+    // correction rewrites the rollup while nothing else about the session
+    // changes — without this bump the corrected value is computed, stored, and
+    // never re-selected, which is a silent permanent divergence rather than a
+    // delayed one. Per-chunk-distinct (`chunkWatermark`) because a single
+    // shared `now` would fold the whole stale corpus into the cursor's top
+    // `updated_at` group.
+    const watermark = chunkWatermark(now, Math.floor(i / size));
     try {
       await prisma.write((client) =>
-        client.$transaction((tx) =>
-          upsertActivityMetricsRollupBatch(tx, chunk, now)
-        )
+        client.$transaction(async (tx) => {
+          await upsertActivityMetricsRollupBatch(tx, chunk, watermark);
+          // STRICTLY FORWARD, per session, not a blind `SET updated_at = $1`
+          // over the chunk (ISS-10721 review, whitlockk; the rule is ISS-8758's).
+          // The stale-id query above ran BEFORE this transaction opened, so an
+          // import may have moved one of these rows to a LATER `updated_at` in
+          // between — and this pass's `now` is the boot wall-clock, which would
+          // then move that row BACKWARDS, behind a cursor that has already read
+          // it. The corrected rollup would never be selected again. Reading the
+          // target per row inside the same transaction that writes the rollup is
+          // what makes the pair all-or-nothing and the advance real.
+          for (const sessionId of chunk) {
+            await advanceSessionSyncWatermark(tx, sessionId, watermark);
+          }
+        })
       );
       done += chunk.length;
     } catch (error) {

@@ -2,6 +2,7 @@ import { ChecksStatus } from "@repo/api/src/types/branch-checks";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it } from "vitest";
+import { branchColumnLabel } from "../../lib/branch-column-view-model";
 import {
   BRANCH_STATUS_CONFIG,
   type BranchRow,
@@ -15,7 +16,7 @@ import {
 } from "../../lib/branch-sort-group";
 import { BranchesTable } from "../branches-table";
 
-// FEA-4273 (shafty023 review): sorting a Branches saved view must never shift a
+// FEA-4273 (davetho review): sorting a Branches saved view must never shift a
 // cell out from under its declared header (the production report showed Status
 // values — "Open"/"Merged"/"Draft" — rendering under the visible "Repository"
 // header). The earlier version of this suite pre-sorted the props and wired
@@ -231,16 +232,21 @@ describe("BranchesTable sort behavior (FEA-4273)", () => {
       rowHighLoc.branchName, // api
     ]);
 
-    // Status (string label, desc): "Open" > "Merged" > "Draft".
+    // Status (semantic rank, desc). ISS-9666 moved this off the display label:
+    // the rank is BranchStatus declaration order (Open 0, Review 1, Merged 2,
+    // Draft 3, Blocked 4, Closed 5), the same order the Status facet menu
+    // already lists, so descending runs Draft > Merged > Open. It used to be
+    // `localeCompare` over "Open"/"Merged"/"Draft", which is why renaming a
+    // label reordered the table.
     clickSortHeader("Status");
     expect(renderedBranchOrder()).toEqual([
-      rowLowLoc.branchName, // Open
-      rowHighLoc.branchName, // Merged
       rowMidLoc.branchName, // Draft
+      rowHighLoc.branchName, // Merged
+      rowLowLoc.branchName, // Open
     ]);
 
-    // Linked Sessions (numeric, desc): 9 > 5 > 1.
-    clickSortHeader("Linked Sessions");
+    // Linked sessions (numeric, desc): 9 > 5 > 1.
+    clickSortHeader("Linked sessions");
     expect(renderedBranchOrder()).toEqual([
       rowLowLoc.branchName, // 9
       rowMidLoc.branchName, // 5
@@ -282,7 +288,7 @@ describe("BranchesTable sort behavior (FEA-4273)", () => {
     const header = screen.getByText("Branch").closest("div.grid");
     expect(header).not.toBeNull();
     const headerText = header?.textContent ?? "";
-    expect(headerText).not.toContain("Owner");
+    expect(headerText).not.toContain(branchColumnLabel("owner"));
     for (const row of UNSORTED_ROWS) {
       expect(cellTextInRow(row.branchName, "owner")).toBeNull();
       expect(cellTextInRow(row.branchName, "repo")).toBe(repoLabel(row));

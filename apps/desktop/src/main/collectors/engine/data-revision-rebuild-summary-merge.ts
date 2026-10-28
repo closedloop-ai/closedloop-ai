@@ -27,7 +27,8 @@
  * the next. `changedSessionIds` is de-duplicated anyway, because the ONE case
  * that could repeat an id is a write that committed without stamping.
  *
- * OBSERVATION counters (`staleTotal`, `skippedActive`, `raceSkipped`,
+ * OBSERVATION counters (`staleTotal`, `skippedActive`, `wedgedActiveAdmitted`,
+ * `raceSkipped`,
  * `missingSource`, `unmatchedSource`, `parseErrors`, `errors`) describe a
  * population the next attempt re-observes, so summing them would double-count.
  * They are taken from the LAST attempt — the final view of what is still stale —
@@ -37,7 +38,7 @@
 import {
   createEmptyDataRevisionRebuildSummary,
   type DataRevisionRebuildSummary,
-} from "./data-revision-rebuild.js";
+} from "./data-revision-rebuild-summary.js";
 
 /**
  * Fold every attempt of one re-driven rebuild into a single summary.
@@ -73,6 +74,7 @@ function applyLatestObservationCounters(
 ): void {
   merged.staleTotal = attempt.staleTotal;
   merged.skippedActive = attempt.skippedActive;
+  merged.wedgedActiveAdmitted = attempt.wedgedActiveAdmitted;
   merged.raceSkipped = attempt.raceSkipped;
   merged.missingSource = attempt.missingSource;
   merged.unmatchedSource = attempt.unmatchedSource;

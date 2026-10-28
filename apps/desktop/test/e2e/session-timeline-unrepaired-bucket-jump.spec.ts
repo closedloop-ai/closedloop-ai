@@ -1,106 +1,10 @@
 /**
- * Session Timeline jump HONESTY on the launched desktop renderer: a control on
- * this strip never claims something the transcript did not do. Two regressions,
- * one launched app.
+ * The local SQLite event index must resolve to a timed transcript row before a timeline bar promises a jump. Timed rows provide the positive control.
  *
- * - **ISS-5124** — a bar never ANNOUNCES a jump it cannot make.
- * - **ISS-5843** — the selection line never MOVES to a place the transcript did
- *   not go.
- *
- * They share this file rather than owning one each because
- * `apps/desktop/test/AGENTS.md` ("Add the regression to the existing harness
- * spec rather than a new one where possible") is a cost rule with teeth here:
- * `apps/desktop/playwright.config.ts` runs a handful of workers, not one per
- * spec, so a sibling spec is two more Electron launches plus another schema
- * migration on every required `desktop-e2e` run. And the seed ISS-5843
- * needs already existed: {@link REPAIRED_SESSION_ID} is forty timed rows over
- * the same window with the same prose, which is precisely its precondition.
- *
- * The web twin is `e2e/session-timeline-unrepaired-bucket-jump.spec.ts`. Both
- * drive the SAME shared `AgentSessionDetailView` out of `@repo/app` — the markup
- * and CSS are byte-identical across surfaces — but the DATA behind it comes from
- * entirely different producers: the cloud detail projection on web, the local
- * SQLite read here. Per `packages/app/AGENTS.md` ("UI bug fix ⇒ regression e2e",
- * "cover every adapter that mounts the surface") that makes this a required
- * second regression, not a duplicate of the first.
- *
- * ## The bug is BORN on this adapter
- *
- * It is the desktop producer that mints the number the bar lies about.
- * `buildTraceActivityFields` (`main/database/session-trace.ts`) folds the
- * sync-time TIMELINE-EVENT array and writes `bucket.tl0 ??= index` — an index
- * into THAT array, in a different numbering space from `turnItems._row`.
- * `alignBucketRowsToTranscript` is the only thing that ever converts one into
- * the other, and it bails when the transcript carries no timed row; the raw
- * index then survived into `tl0`, which is the entire basis on which
- * `getBucketButtonLabel` promises `Jump to activity bucket …`.
- *
- * The two folds disagree about the SAME rows, and that is what this fixture
- * exploits rather than fabricates: `bucketIndex` FLOORS an unparseable instant
- * into bucket 0, so an untimed event still sets `tl0`, while `hasTimedTraceRow`
- * REJECTS that same row, so the repair has nothing to work from. One fold keeps
- * the row, the other drops it. `events.created_at` is a genuinely nullable
- * column with no default and no filter on the read path (see
- * `helpers/seed-session-timeline-events.ts` for the schema citations), so this
- * is a real population, not a contrived one.
- *
- * ## Every assertion here is paired
- *
- * The claims are absences — no bar named `Jump to activity bucket`, no scroll —
- * and an absence passes just as well when nothing rendered. So the spec seeds
- * TWO sessions that differ in EXACTLY one respect: whether their event rows
- * carry a parseable `created_at`. Same count, same summaries, same session
- * window, same seeding path. {@link REPAIRED_SESSION_ID} is the positive control
- * for the label absence, and the scroll case asserts against a scroller this
- * spec first proves can move.
- *
- * ISS-6006 moved the `.no-jump` demotion here. It used to be left to the web
- * twin because the ISS-5479 gate was a Labs toggle that defaulted OFF, so this
- * adapter never painted it and the web surface was the only one that could be
- * asserted. Retiring that gate as ENABLED makes packaged Desktop the surface the
- * change actually lands on, so the announced state and the withdrawn affordance
- * are pinned on BOTH fixtures below — present on every unrepaired bar, absent on
- * every repaired one — rather than deferred. The `.reach` composition stays with
- * the web twin; nothing about the retirement changed where it renders.
- *
- * ## ISS-5843, and why it runs on the repaired session FIRST
- *
- * Since ISS-5819 the strip holds ONE position model: the active row resolves to
- * an absolute column that both the `.tl-here` marker and the scrubber thumb
- * read. `useTraceJump` committed that row BEFORE it knew whether the scroll
- * could land, so a click resolving to `EmptyTranscript` still moved the marker
- * onto a bucket the transcript never went to — the UI stating a location the
- * reader was never taken to.
- *
- * That scenario needs jumpABLE bars (an unjumpable one returns before
- * `scrollToTraceRow` and would satisfy the absence for ISS-5124's reason
- * instead), so it runs against {@link REPAIRED_SESSION_ID} — on the SAME visit
- * that already serves as ISS-5124's positive control. It goes first because its
- * own control asserts a pristine `.tl-here` (nothing clicked yet), which only a
- * freshly launched app can guarantee; and because it ends by stripping that
- * page's `[data-row]` anchors, a mutation the later navigation to
- * {@link UNREPAIRABLE_SESSION_ID} discards with the remount.
- *
- * Anchors are stripped rather than seeded away because this adapter is where
- * the reachable production shape lives. `session-transcript-panel.tsx` opens the
- * strip's `hasRenderedRows` gate off the RESOLVED items, while
- * `renderTranscriptContent`'s oversized branch pre-empts the projection and
- * paints "Large transcript / Load full transcript" with no `SessionTrace` at
- * all. The gate reads what the panel resolved; `planTraceScroll` reads what it
- * PAINTED. Removing the attributes reproduces exactly the fact
- * `findTraceScrollTarget` observes, without seeding a transcript over the
- * oversized branch's byte threshold.
- *
- * Its load-bearing claim is that the marker does not MOVE — not that it
- * disappears. After a landing click the reader is legitimately parked
- * somewhere, and `activeRow` is never written back to `null`. A "did not move"
- * claim is vacuous if the two bars it uses resolve to the same place, so the
- * spec first drives both bars with the anchors INTACT and asserts they land on
- * different positions.
- *
- * Prerequisites:
- *   - Build first: `pnpm -C apps/desktop prebuild && pnpm -C apps/desktop build`
- *   - Run via: CODEX_HOME="$(mktemp -d)" pnpm -C apps/desktop test:e2e
+ * ISS-12276: the windowed trace's Electron twin of the web off-window jump in
+ * `e2e/session-timeline-jump-position.spec.ts`, folded in here to reuse this
+ * launch. A bar whose row is outside the mounted window must land that row in
+ * the real scroller, below the sticky header.
  */
 
 import fs from "node:fs";
@@ -121,13 +25,18 @@ const UNREPAIRABLE_SESSION_ID = "iss-5124-untimed-transcript-session";
 const UNREPAIRABLE_SESSION_NAME = "ISS-5124 untimed transcript session";
 const REPAIRED_SESSION_ID = "iss-5124-timed-transcript-session";
 const REPAIRED_SESSION_NAME = "ISS-5124 timed transcript session";
+const LONG_SESSION_ID = "iss-12276-long-transcript-session";
+const LONG_SESSION_NAME = "ISS-12276 long transcript session";
 
 const SESSION_TITLE_SELECTOR = ".sd3-head h1";
 const BAR_SELECTOR = ".sd3-bars2 .sd3-bar2";
 const SCROLLER_SELECTOR = ".sd3-scroll";
-const HERE_SELECTOR = ".sd3-bars2-wrap .tl-here";
 /** The transcript's landable anchors — `TRACE_ROW_SELECTOR` in the renderer. */
 const TRACE_ANCHOR_SELECTOR = ".st [data-row]";
+/** `TRACE_FLASH_CLASS` in the renderer: the anchor a jump landed on. */
+const TRACE_FLASH_SELECTOR = ".st [data-row].st-flash";
+const STICKY_HEAD_SELECTOR = ".sd3-stickyhead";
+const HERE_SELECTOR = ".sd3-bars2-wrap .tl-here";
 const JUMP_NAME = /^Jump to activity bucket/;
 const INERT_NAME = /^Activity bucket/;
 
@@ -137,6 +46,15 @@ const SESSION_START = "2026-06-10T12:00:00.000Z";
 const SESSION_END = "2026-06-10T14:00:00.000Z";
 const START_MS = Date.parse(SESSION_START);
 const EVENT_INTERVAL_MS = 3 * 60_000;
+
+/**
+ * Enough turns that the windowed trace mounts only a slice of them. A
+ * non-prompt event between two prompts is its own group, so every prompt stays
+ * its own anchor instead of coalescing into one bubble.
+ */
+const LONG_EVENT_COUNT = 600;
+const LONG_EVENT_INTERVAL_MS = 10_000;
+const LONG_INTERLEAVED_EVENT_TYPE = "Notification";
 
 /**
  * Enough rows, with enough prose, that the transcript genuinely OVERFLOWS its
@@ -190,6 +108,18 @@ function eventSeeds(timed: boolean): SessionEventSeed[] {
   }));
 }
 
+function longSessionSeeds(): SessionEventSeed[] {
+  return Array.from({ length: LONG_EVENT_COUNT }, (_, index) => ({
+    createdAt: new Date(
+      START_MS + index * LONG_EVENT_INTERVAL_MS
+    ).toISOString(),
+    eventType:
+      index % 2 === 0 ? PROMPT_EVENT_TYPE : LONG_INTERLEAVED_EVENT_TYPE,
+    summary: `ISS-12276 transcript row ${index}`,
+    toolName: null,
+  }));
+}
+
 /**
  * `idle: true` is load-bearing, not cosmetic. A default `seedSessionsList` row
  * also writes its own `PreToolUse` event at a VALID instant, and that single
@@ -213,6 +143,13 @@ async function seedBothSessions(userDataDir: string): Promise<void> {
       name: REPAIRED_SESSION_NAME,
       sessionId: REPAIRED_SESSION_ID,
     },
+    {
+      at: SESSION_START,
+      endedAt: SESSION_END,
+      idle: true,
+      name: LONG_SESSION_NAME,
+      sessionId: LONG_SESSION_ID,
+    },
   ]);
   await seedSessionEvents(
     userDataDir,
@@ -220,10 +157,11 @@ async function seedBothSessions(userDataDir: string): Promise<void> {
     eventSeeds(false)
   );
   await seedSessionEvents(userDataDir, REPAIRED_SESSION_ID, eventSeeds(true));
+  await seedSessionEvents(userDataDir, LONG_SESSION_ID, longSessionSeeds());
 }
 
 test.describe("session timeline jump honesty on the desktop adapter", () => {
-  test("announces no jump it cannot make, and moves the selection line only where the transcript went", async () => {
+  test("announces jumps only for locally resolved transcript rows", async () => {
     test.setTimeout(300_000);
 
     const claudeHome = fs.mkdtempSync(
@@ -292,9 +230,6 @@ test.describe("session timeline jump honesty on the desktop adapter", () => {
         }
         await expect(page.locator(`${BAR_SELECTOR}.no-jump`)).toHaveCount(0);
 
-        // ── ISS-5843, on this same repaired page. ──────────────────────────
-        await assertSelectionLineMovesOnlyWhereTranscriptWent(page);
-
         // ── The regression. ────────────────────────────────────────────────
         await openSessionDetail(
           page,
@@ -353,12 +288,7 @@ test.describe("session timeline jump honesty on the desktop adapter", () => {
         });
         await assertScrollerOverflows(page);
 
-        // This transcript really does carry landable anchors. Load-bearing
-        // because the ISS-5843 scenario above ends by STRIPPING them from the
-        // repaired session's DOM: if the navigation here did not remount the
-        // panel, `planTraceScroll` would return null, the click below would not
-        // move the scroller for a reason that has nothing to do with ISS-5124,
-        // and the "did not move" claim would pass vacuously.
+        // Prove a missing rendered anchor cannot explain the refused jump.
         await expect(page.locator(TRACE_ANCHOR_SELECTOR).first()).toBeVisible({
           timeout: MOUNT_TIMEOUT_MS,
         });
@@ -402,6 +332,36 @@ test.describe("session timeline jump honesty on the desktop adapter", () => {
         expect(
           Math.abs((await settleScrollTop(page)) - parked)
         ).toBeLessThanOrEqual(SCROLL_DRIFT_TOLERANCE_PX);
+
+        // ── ISS-12276: a jump to a row outside the mounted window. ─────────
+        await openSessionDetail(page, LONG_SESSION_ID, LONG_SESSION_NAME);
+        const longJumps = page.getByRole("button", { name: JUMP_NAME });
+        await expect(longJumps.first()).toBeVisible({
+          timeout: MOUNT_TIMEOUT_MS,
+        });
+        await expect(page.locator(TRACE_ANCHOR_SELECTOR).first()).toBeVisible({
+          timeout: MOUNT_TIMEOUT_MS,
+        });
+        const mountedBefore = await maxMountedRow(page);
+
+        // `dispatchEvent` for the reason given above: the strip sits inside
+        // the scroller under test.
+        await longJumps.last().dispatchEvent("click");
+
+        // The landed anchor was not in the DOM before the click, sits in the
+        // scroller's viewport below the sticky header, and the selection line
+        // followed it.
+        await expect
+          .poll(async () => await landedPlacement(page, mountedBefore ?? 0), {
+            timeout: MOUNT_TIMEOUT_MS,
+          })
+          .toEqual({
+            aboveScrollerBottom: true,
+            belowStickyHead: true,
+            wasOffWindow: true,
+          });
+        expect(mountedBefore).not.toBeNull();
+        await expect(page.locator(HERE_SELECTOR)).toHaveCount(1);
 
         expect(pageErrors).toEqual([]);
       } finally {
@@ -482,121 +442,41 @@ async function openSessionDetail(
   });
 }
 
-/** The marker's left offset, or `null` when the strip states no position. */
-async function hereLeft(page: Page): Promise<string | null> {
-  const marker = page.locator(HERE_SELECTOR);
-  if ((await marker.count()) === 0) {
-    return null;
-  }
-  return await marker.evaluate((node) => (node as HTMLElement).style.left);
+/** The highest `data-row` among the anchors the windowed trace has mounted. */
+async function maxMountedRow(page: Page): Promise<number | null> {
+  return await page
+    .locator(SCROLLER_SELECTOR)
+    .evaluate((scroller, selector) => {
+      const rows = Array.from(
+        scroller.querySelectorAll<HTMLElement>(selector),
+        (node) => Number(node.dataset.row)
+      ).filter(Number.isFinite);
+      return rows.length > 0 ? Math.max(...rows) : null;
+    }, TRACE_ANCHOR_SELECTOR);
 }
 
-/**
- * Press a bar that ANNOUNCES a jump. A bucket with no anchor returns before
- * `scrollToTraceRow` and would satisfy "nothing moved" for ISS-5124's reason
- * rather than ISS-5843's.
- *
- * `dispatchEvent` rather than `click()`, and this is load-bearing for the same
- * reason it is in ISS-5124's own click below: `.sd3-bars2` lives INSIDE
- * `.sd3-scroll`, so Playwright's built-in `scrollIntoViewIfNeeded` moves the
- * transcript on its way to pressing the bar — the harness perturbing the one
- * quantity being measured. Dispatching drives the same React `onClick` with no
- * viewport management.
- */
-async function clickJumpableBar(
-  page: Page,
-  which: "first" | "last"
-): Promise<void> {
-  const jumpable = page.getByRole("button", { name: JUMP_NAME });
-  const target = which === "first" ? jumpable.first() : jumpable.last();
-  await target.dispatchEvent("click");
-}
-
-/**
- * Reproduce the resolved-but-unpainted transcript: the panel still reports
- * rendered rows, so the bars stay live, but nothing carries the anchor attribute
- * `findTraceScrollTarget` looks for.
- */
-async function unpaintTranscriptAnchors(page: Page): Promise<void> {
-  // The selector is passed IN rather than closed over: `evaluate` serializes
-  // its callback into the page, where a Node-side module constant is not in
-  // scope.
-  await page.locator(SCROLLER_SELECTOR).evaluate((node, selector) => {
-    for (const row of node.querySelectorAll(selector)) {
-      row.removeAttribute("data-row");
+/** Where the anchor the jump flashed sits, measured with the real layout. */
+async function landedPlacement(page: Page, mountedBefore: number) {
+  return await page.locator(SCROLLER_SELECTOR).evaluate(
+    (scroller, { flashSelector, mountedMax, stickySelector }) => {
+      const landed = scroller.querySelector<HTMLElement>(flashSelector);
+      if (!landed) {
+        return null;
+      }
+      const top = landed.getBoundingClientRect().top;
+      const stickyBottom =
+        scroller.querySelector(stickySelector)?.getBoundingClientRect()
+          .bottom ?? scroller.getBoundingClientRect().top;
+      return {
+        aboveScrollerBottom: top < scroller.getBoundingClientRect().bottom,
+        belowStickyHead: top >= stickyBottom - 1,
+        wasOffWindow: Number(landed.dataset.row) > mountedMax,
+      };
+    },
+    {
+      flashSelector: TRACE_FLASH_SELECTOR,
+      mountedMax: mountedBefore,
+      stickySelector: STICKY_HEAD_SELECTOR,
     }
-  }, TRACE_ANCHOR_SELECTOR);
-}
-
-/**
- * ISS-5843 on the repaired session: the selection line moves only where the
- * transcript actually went. See this file's header for why it runs here, on
- * this visit, before the navigation to the unrepairable session.
- */
-async function assertSelectionLineMovesOnlyWhereTranscriptWent(
-  page: Page
-): Promise<void> {
-  // Wait for the WHOLE transcript: the detail hydrates its rows after first
-  // paint, and until it settles the scroller's extent is still growing under
-  // any offset parked against it.
-  await expect(page.getByText(LAST_ROW_TEXT).first()).toBeVisible({
-    timeout: MOUNT_TIMEOUT_MS,
-  });
-  await assertScrollerOverflows(page);
-
-  // Two distinct jumpable bars are required below; one cannot land in two
-  // places.
-  expect(
-    await page.getByRole("button", { name: JUMP_NAME }).count()
-  ).toBeGreaterThan(1);
-
-  // ── The positive control, FIRST. ──────────────────────────────────────────
-  // Before any interaction the strip states no position rather than guessing
-  // one. This is why the scenario runs on a freshly launched app.
-  await expect(page.locator(HERE_SELECTOR)).toHaveCount(0);
-
-  await clickJumpableBar(page, "first");
-
-  // The marker appears because the transcript really went somewhere. The scroll
-  // is settled BEFORE the marker is read: a late scroll event can drive
-  // `activeRow` itself, so reading first would capture a value the final
-  // comparison is no longer entitled to.
-  await expect(page.locator(HERE_SELECTOR)).toHaveCount(1);
-  expect(await settleScrollTop(page)).toBeGreaterThan(0);
-  const firstLeft = await hereLeft(page);
-  expect(firstLeft).not.toBeNull();
-
-  // The two bars must resolve to DIFFERENT positions, and that is asserted
-  // rather than assumed: the regression below turns entirely on the marker NOT
-  // arriving at the last bar's position, which is vacuous if both bars land on
-  // the same one. Two distinct bars can still share a column, so the count
-  // above is not this claim.
-  await clickJumpableBar(page, "last");
-  const lastLeft = await hereLeft(page);
-  expect(lastLeft).not.toBe(firstLeft);
-
-  // Back to the first bar, so the position under test is a known one.
-  await clickJumpableBar(page, "first");
-  expect(await hereLeft(page)).toBe(firstLeft);
-
-  // ── The regression. ───────────────────────────────────────────────────────
-  // Only the transcript's painted anchors change, which is the one fact
-  // `planTraceScroll` reads.
-  //
-  // The claim is that the marker does not MOVE, not that it disappears: the
-  // reader is legitimately still parked where the last landing put them, and
-  // `activeRow` is never written back to null. Pre-fix the position was
-  // committed before the scroll was attempted, so this click slid the marker to
-  // `lastLeft` while the transcript stayed put.
-  await unpaintTranscriptAnchors(page);
-  await parkScrollerMidway(page);
-  const parked = await settleScrollTop(page);
-  expect(parked).toBeGreaterThan(0);
-
-  await clickJumpableBar(page, "last");
-
-  expect(Math.abs((await settleScrollTop(page)) - parked)).toBeLessThanOrEqual(
-    SCROLL_DRIFT_TOLERANCE_PX
   );
-  expect(await hereLeft(page)).toBe(firstLeft);
 }

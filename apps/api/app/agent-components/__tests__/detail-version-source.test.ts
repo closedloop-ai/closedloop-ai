@@ -42,7 +42,7 @@ import { agentComponentsService } from "../service";
 const ORGANIZATION_ID = "org-1";
 const COMPONENT_KEY = "my-skill";
 const SLUG = encodeComponentSlug(AgentComponentKind.Skill, COMPONENT_KEY, null);
-const REPO_URL = "https://github.com/closedloop-ai/symphony-alpha";
+const REPO_URL = "https://github.com/closedloop-ai/closedloop-ai";
 
 function inventoryRow(overrides: Record<string, unknown> = {}) {
   return {

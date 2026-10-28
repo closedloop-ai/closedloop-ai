@@ -1,21 +1,28 @@
 "use client";
 
-import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
 import { Priority } from "@closedloop-ai/loops-api/common";
 import { DocumentStatus, IssueStatus } from "@closedloop-ai/loops-api/document";
+import type { ArtifactStatusVocabulary as ArtifactStatusVocabularyType } from "@repo/api/src/types/artifact-status-contract";
+import { ArtifactStatusVocabulary } from "@repo/api/src/types/artifact-status-contract";
 import {
-  LoopErrorCode,
-  LoopErrorCodeSchema,
-} from "@closedloop-ai/loops-api/error-codes";
+  type ArtifactStatusDisplay,
+  resolveStatusLabel,
+} from "@repo/api/src/types/artifact-status-display";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { ArtifactPriority } from "@repo/app/shared/components/artifact-priority/artifact-priority";
+import { ArtifactStatus as UniversalArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useArtifactStatusDisplay } from "@repo/app/shared/hooks/use-artifact-status-display";
+import { ArtifactPriorityVariant } from "@repo/app/shared/lib/artifact-priority-ownership";
+import { artifactStatusView } from "@repo/app/shared/lib/artifact-status-adapter";
 import {
-  LoopEventType,
-  type LoopEventType as LoopEventTypeType,
-} from "@closedloop-ai/loops-api/events";
-import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
-import { ISSUE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+  DOCUMENT_STATUS_LABELS,
+  ISSUE_STATUS_LABELS,
+} from "@repo/app/shared/lib/artifact-status-labels";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
+import { ARTIFACT_PRIORITY_SURFACES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { PRIORITY_LABELS } from "@repo/app/shared/lib/priority-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
-import type { ToneLabelVariant } from "@repo/design-system/components/ui/tone-label";
-import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeProps = {
@@ -52,6 +59,12 @@ const COLOR_PROGRESS = "bg-info/10 text-info-foreground border-info/30";
 const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
 const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
 const COLOR_AI = "bg-ai/10 text-ai-foreground border-ai/30";
+// Unfilled and dashed, so it parts from the four SOLID muted chips this file
+// already paints (Draft, Backlog, Obsolete, Canceled all resolve to the same
+// muted token). `border-dashed` is the repo's existing mark for a state nobody
+// has committed to — `member-row.tsx` stages a pending member with it.
+const COLOR_UNKNOWN =
+  "bg-transparent text-muted-foreground border-dashed border-muted-foreground/40";
 
 export const previewDeploymentStateColors: Record<string, string> = {
   READY: COLOR_SUCCESS,
@@ -75,30 +88,26 @@ export const artifactStatusColors: Record<DocumentStatus, string> = {
   [DocumentStatus.Obsolete]: COLOR_INACTIVE,
 };
 
-export const artifactStatusLabels: Record<DocumentStatus, string> = {
-  [DocumentStatus.Draft]: "Draft",
-  [DocumentStatus.InReview]: "In Review",
-  [DocumentStatus.ChangesRequested]: "Changes Requested",
-  [DocumentStatus.Approved]: "Approved",
-  [DocumentStatus.Executed]: "Executed",
-  [DocumentStatus.Obsolete]: "Obsolete",
-};
+// ISS-9560: the Document half of the consolidation `issueStatusLabels` below
+// already made. This was a verbatim second copy of DOCUMENT_STATUS_LABELS, so
+// one vocabulary had two label declarations that could drift apart. Colors stay
+// here — they are badge-specific tokens, deliberately distinct from the
+// icon/text colors in project-constants.
+export const artifactStatusLabels = DOCUMENT_STATUS_LABELS;
 
 export function DocumentStatusBadge({
+  artifactId,
   status,
-}: Readonly<{ status: DocumentStatus }>) {
-  const displayStatus = artifactStatusLabels[status] ?? status;
+}: Readonly<{ artifactId?: string; status: DocumentStatus }>) {
   return (
-    <Badge
-      className={cn(
-        "font-medium",
-        artifactStatusColors[status] ??
-          artifactStatusColors[DocumentStatus.Draft]
-      )}
-      variant="outline"
-    >
-      {displayStatus}
-    </Badge>
+    <DomainStatusBadge
+      artifactId={artifactId}
+      colorMap={artifactStatusColors}
+      defaultColor={artifactStatusColors[DocumentStatus.Draft]}
+      labelMap={artifactStatusLabels}
+      status={status}
+      vocabulary={ArtifactStatusVocabulary.Document}
+    />
   );
 }
 
@@ -118,29 +127,74 @@ export const issueStatusColors: Record<IssueStatus, string> = {
   [IssueStatus.Canceled]: COLOR_INACTIVE,
 };
 
-// Labels are owned by project-constants (single source of truth); re-exported
+// Labels are owned by shared/lib/artifact-status-labels (single source of truth); re-exported
 // here so the badge and its consumers keep one import surface. Colors above are
 // badge-specific tokens and intentionally distinct from the icon/text colors in
 // project-constants. (PRD-495 review: dedupe the duplicated label strings.)
 export const issueStatusLabels = ISSUE_STATUS_LABELS;
 
 export function IssueStatusBadge({
+  artifactId,
   status,
-}: Readonly<{ status: IssueStatus }>) {
-  const displayStatus = issueStatusLabels[status] ?? status;
+}: Readonly<{ artifactId?: string; status: IssueStatus }>) {
+  return (
+    <DomainStatusBadge
+      artifactId={artifactId}
+      colorMap={issueStatusColors}
+      defaultColor={issueStatusColors[IssueStatus.Backlog]}
+      labelMap={issueStatusLabels}
+      status={status}
+      vocabulary={ArtifactStatusVocabulary.Issue}
+    />
+  );
+}
+
+function DomainStatusBadge({
+  artifactId,
+  colorMap,
+  defaultColor,
+  labelMap,
+  status,
+  vocabulary,
+}: Readonly<{
+  artifactId?: string;
+  colorMap: Readonly<Record<string, string>>;
+  defaultColor: string;
+  labelMap: Readonly<Record<string, string>>;
+  status: string;
+  vocabulary: ArtifactStatusVocabularyType;
+}>) {
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
+  const unknownStatus = useArtifactStatusDisplay();
+  if (champion && artifactId) {
+    return (
+      <UniversalArtifactStatus
+        variant={ArtifactStatusVariant.Badge}
+        view={artifactStatusView(artifactId, vocabulary, status)}
+      />
+    );
+  }
   return (
     <Badge
       className={cn(
         "font-medium",
-        issueStatusColors[status] ?? issueStatusColors[IssueStatus.Backlog]
+        resolveStatusBadgeColors(colorMap, status, unknownStatus, defaultColor)
       )}
       variant="outline"
     >
-      {displayStatus}
+      {resolveStatusLabel(labelMap, status, unknownStatus)}
     </Badge>
   );
 }
 
+/**
+ * The pre-ISS-9307 tone map. High and Urgent both take `COLOR_FAILURE`, so the
+ * two loudest values are indistinguishable by tone — which is the presentation
+ * fork `ARTIFACT_PRIORITY_OWNERSHIP` names and the champion collapses. Kept
+ * reachable as the flag-OFF rendering, per the closed-by-default UI policy.
+ */
 export const issuePriorityColors: Record<Priority, string> = {
   [Priority.Low]: COLOR_PROGRESS,
   [Priority.Medium]: COLOR_PENDING,
@@ -148,280 +202,78 @@ export const issuePriorityColors: Record<Priority, string> = {
   [Priority.Urgent]: COLOR_FAILURE,
 };
 
-export const issuePriorityLabels: Record<Priority, string> = {
-  [Priority.Low]: "Low",
-  [Priority.Medium]: "Medium",
-  [Priority.High]: "High",
-  [Priority.Urgent]: "Urgent",
-};
-
+/**
+ * ISS-9307: one read of `artifact-priority-surfaces`, swapping between two whole
+ * shapes rather than threading the boolean on.
+ *
+ * ON, the badge is the champion's `badge` variant, which renders the design
+ * system's `PriorityBadge` and so tells High and Urgent apart. OFF it is exactly
+ * the badge that shipped, tone collision included.
+ *
+ * The name stays for the two search-result call sites, whose migration is a
+ * later phase of PRD-706; what changed is that only one implementation of the
+ * mark is left underneath.
+ */
 export function IssuePriorityBadge({
   priority,
 }: Readonly<{ priority: Priority }>) {
-  const displayPriority = issuePriorityLabels[priority] ?? priority;
+  const champion = useFeatureFlagEnabledOptional(
+    ARTIFACT_PRIORITY_SURFACES_FEATURE_FLAG_KEY
+  );
+  if (champion) {
+    return (
+      <ArtifactPriority
+        priority={priority}
+        variant={ArtifactPriorityVariant.Badge}
+      />
+    );
+  }
   return (
     <Badge
+      // Both fallbacks are load-bearing and neither is dead: `priority` is a wire
+      // value from `/search`, so a member only a newer peer knows indexes both
+      // maps to `undefined` and this arm would render an empty, untoned pill —
+      // which a reader takes as "no priority". This IS the shipped path, because
+      // the gate above is closed by default.
       className={cn(
         "font-medium",
         issuePriorityColors[priority] ?? issuePriorityColors[Priority.Low]
       )}
       variant="outline"
     >
-      {displayPriority}
-    </Badge>
-  );
-}
-
-export const loopStatusColors: Record<LoopStatus, string> = {
-  [LoopStatus.Pending]: COLOR_PENDING,
-  [LoopStatus.Claimed]: COLOR_PENDING,
-  [LoopStatus.Running]: COLOR_PROGRESS,
-  [LoopStatus.Completed]: COLOR_SUCCESS,
-  [LoopStatus.Failed]: COLOR_FAILURE,
-  [LoopStatus.Cancelled]: COLOR_INACTIVE,
-  [LoopStatus.TimedOut]: COLOR_FAILURE,
-  [LoopStatus.Blocked]: COLOR_PENDING,
-};
-
-const loopStatusLabels: Record<LoopStatus, string> = {
-  [LoopStatus.Pending]: "Pending",
-  [LoopStatus.Claimed]: "Claimed",
-  [LoopStatus.Running]: "Running",
-  [LoopStatus.Completed]: "Completed",
-  [LoopStatus.Failed]: "Failed",
-  [LoopStatus.Cancelled]: "Cancelled",
-  [LoopStatus.TimedOut]: "Timed Out",
-  [LoopStatus.Blocked]: "Blocked",
-};
-
-export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
-  [LoopErrorCode.NoWorkProduced]: COLOR_PENDING,
-  [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
-  [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
-  [LoopErrorCode.StaleDispatch]: COLOR_FAILURE,
-  [LoopErrorCode.RunnerError]: COLOR_FAILURE,
-};
-
-export function LoopStatusBadge({
-  status,
-  errorCode,
-  ghostLoopUx = false,
-}: Readonly<{
-  status: LoopStatus;
-  // `string`, not `LoopErrorCode`: the producer side (`LoopError.code`, and the
-  // `error` JSON column behind it) is an open string, so a newer runner can
-  // persist a code this client has never heard of. Binding the prop to the
-  // closed union would only have forced a cast at the call site and hidden that
-  // -- the unknown code is narrowed below instead.
-  errorCode?: string;
-  ghostLoopUx?: boolean;
-}>) {
-  const showErrorCode =
-    ghostLoopUx && status === LoopStatus.Failed && errorCode !== undefined;
-  const friendlyErrorCode = showErrorCode ? errorCode : undefined;
-
-  // `resolveFriendlyError` already tolerates an unknown code (it falls back to a
-  // generic failure template), but the color map is keyed by the closed union,
-  // so narrow through the schema rather than index it with an arbitrary string.
-  const knownErrorCode = friendlyErrorCode
-    ? LoopErrorCodeSchema.safeParse(friendlyErrorCode)
-    : undefined;
-
-  const displayStatus = friendlyErrorCode
-    ? resolveFriendlyError({ code: friendlyErrorCode }).title
-    : (loopStatusLabels[status] ?? status);
-
-  const colorClass = friendlyErrorCode
-    ? ((knownErrorCode?.success
-        ? loopErrorCodeColors[knownErrorCode.data]
-        : undefined) ?? loopStatusColors[LoopStatus.Failed])
-    : (loopStatusColors[status] ?? loopStatusColors[LoopStatus.Pending]);
-
-  return (
-    <Badge className={cn("font-medium", colorClass)} variant="outline">
-      {displayStatus}
-    </Badge>
-  );
-}
-
-// Loop display status derived from stream + polled events (see
-// loop-progress-panel.tsx). Kept here next to its color/label maps so both
-// stay exhaustive against this union; consumers import the type from here.
-export type DisplayStatus =
-  | "PENDING"
-  | "RUNNING"
-  | "COMPLETED"
-  | "FAILED"
-  | "CANCELLED"
-  | "DISCONNECTED";
-
-export const displayStatusColors: Record<DisplayStatus, string> = {
-  PENDING: COLOR_PENDING,
-  RUNNING: COLOR_PROGRESS,
-  COMPLETED: COLOR_SUCCESS,
-  FAILED: COLOR_FAILURE,
-  CANCELLED: COLOR_INACTIVE,
-  DISCONNECTED: COLOR_INACTIVE,
-};
-
-export const displayStatusLabels: Record<DisplayStatus, string> = {
-  PENDING: "Pending",
-  RUNNING: "Running",
-  COMPLETED: "Completed",
-  FAILED: "Failed",
-  CANCELLED: "Cancelled",
-  DISCONNECTED: "Disconnected",
-};
-
-export const loopEventTypeColors: Record<LoopEventTypeType, string> = {
-  [LoopEventType.Started]: COLOR_PROGRESS,
-  [LoopEventType.Output]: COLOR_INACTIVE,
-  [LoopEventType.Progress]: COLOR_PROGRESS,
-  [LoopEventType.ToolCall]: COLOR_AI,
-  [LoopEventType.ArtifactCreated]: COLOR_SUCCESS,
-  [LoopEventType.SupportBundleUploaded]: COLOR_PROGRESS,
-  [LoopEventType.Completed]: COLOR_SUCCESS,
-  [LoopEventType.Error]: COLOR_FAILURE,
-  [LoopEventType.Cancelled]: COLOR_PENDING,
-  [LoopEventType.TokenRefreshed]: COLOR_INACTIVE,
-  [LoopEventType.TokensCleared]: COLOR_INACTIVE,
-  [LoopEventType.ReapReversed]: COLOR_PENDING,
-};
-
-export const loopEventTypeLabels: Record<LoopEventTypeType, string> = {
-  [LoopEventType.Started]: "Started",
-  [LoopEventType.Output]: "Output",
-  [LoopEventType.Progress]: "Progress",
-  [LoopEventType.ToolCall]: "Tool Call",
-  [LoopEventType.ArtifactCreated]: "Artifact Created",
-  [LoopEventType.SupportBundleUploaded]: "Support Uploaded",
-  [LoopEventType.Completed]: "Completed",
-  [LoopEventType.Error]: "Error",
-  [LoopEventType.Cancelled]: "Cancelled",
-  [LoopEventType.TokenRefreshed]: "Token Refreshed",
-  [LoopEventType.TokensCleared]: "Tokens Cleared",
-  [LoopEventType.ReapReversed]: "Reap Reversed",
-};
-
-export function LoopEventTypeBadge({
-  eventType,
-}: Readonly<{ eventType: LoopEventTypeType }>) {
-  return (
-    <Badge
-      className={cn(
-        "font-medium",
-        loopEventTypeColors[eventType] ??
-          loopEventTypeColors[LoopEventType.Started]
-      )}
-      variant="outline"
-    >
-      {loopEventTypeLabels[eventType] ?? eventType}
-    </Badge>
-  );
-}
-
-// FEA-3968: one command→tone SSOT. Each tone carries BOTH the filled-badge
-// className and its text-only sibling, so the two can never drift — there is no
-// second hand-maintained 14-entry map. `LoopCommandBadge` reads `.badge` and
-// `LoopCommandLabel` reads `.labelVariant` off the SAME entry.
-//
-// FEA-4035: the text half is no longer a `text-*` literal, it is a variant name
-// from the shared `Badge`/`ToneLabel` vocabulary, so `LoopCommandLabel` renders
-// through the `ToneLabel` primitive instead of a bespoke span with its own color
-// map. `ToneLabel` resolves each of these to the SAME `text-*` utility this map
-// used to spell out (`ai` → `text-ai-foreground`, `info` →
-// `text-info-foreground`, `warning` → `text-warning-foreground`), asserted in
-// `__tests__/loop-command-label.test.tsx`, so no label's color moves.
-//
-// The BADGE half deliberately stays a `COLOR_*` className rather than the
-// matching `badgeVariants` variant: the two are NOT the same treatment. This
-// surface's `COLOR_PROGRESS` is `bg-info/10 … border-info/30` against
-// `badgeVariants.info`'s `bg-info/12 … border-info/25`, and its text reads the
-// `-foreground` token where the badge variant reads the fill token. Repointing
-// it would visibly restyle every loop badge in the product — a perceivable
-// change needing its own gate, not a consolidation. Only the label, whose
-// utilities already match exactly, moves onto the shared primitive here.
-type LoopCommandTone = { badge: string; labelVariant: ToneLabelVariant };
-
-const LOOP_COMMAND_TONE_AI: LoopCommandTone = {
-  badge: COLOR_AI,
-  labelVariant: "ai",
-};
-const LOOP_COMMAND_TONE_PROGRESS: LoopCommandTone = {
-  badge: COLOR_PROGRESS,
-  labelVariant: "info",
-};
-const LOOP_COMMAND_TONE_PENDING: LoopCommandTone = {
-  badge: COLOR_PENDING,
-  labelVariant: "warning",
-};
-
-const loopCommandTones: Record<LoopCommand, LoopCommandTone> = {
-  [LoopCommand.Plan]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.Execute]: LOOP_COMMAND_TONE_PROGRESS,
-  [LoopCommand.Chat]: LOOP_COMMAND_TONE_PENDING,
-  [LoopCommand.Explore]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.RequestChanges]: LOOP_COMMAND_TONE_PENDING,
-  [LoopCommand.RequestPrdChanges]: LOOP_COMMAND_TONE_PENDING,
-  [LoopCommand.Decompose]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.EvaluatePrd]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.GeneratePrd]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.EvaluatePlan]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.EvaluateCode]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.EvaluateFeature]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.Bootstrap]: LOOP_COMMAND_TONE_AI,
-  [LoopCommand.Manual]: LOOP_COMMAND_TONE_PENDING,
-};
-
-function loopCommandTone(command: LoopCommand): LoopCommandTone {
-  return loopCommandTones[command] ?? loopCommandTones[LoopCommand.Execute];
-}
-
-export const loopCommandLabels: Record<LoopCommand, string> = {
-  [LoopCommand.Plan]: "Plan",
-  [LoopCommand.Execute]: "Execute",
-  [LoopCommand.Chat]: "Chat",
-  [LoopCommand.Explore]: "Explore",
-  [LoopCommand.RequestChanges]: "Request Changes",
-  [LoopCommand.RequestPrdChanges]: "Request PRD Changes",
-  [LoopCommand.Decompose]: "Decompose",
-  [LoopCommand.EvaluatePrd]: "Evaluate PRD",
-  [LoopCommand.GeneratePrd]: "Generate PRD",
-  [LoopCommand.EvaluatePlan]: "Evaluate Plan",
-  [LoopCommand.EvaluateCode]: "Evaluate PR",
-  [LoopCommand.EvaluateFeature]: "Evaluate Issue",
-  [LoopCommand.Bootstrap]: "Bootstrap",
-  [LoopCommand.Manual]: "Manual",
-};
-
-export function LoopCommandBadge({
-  command,
-}: Readonly<{ command: LoopCommand }>) {
-  const displayCommand = loopCommandLabels[command] ?? command;
-  return (
-    <Badge
-      className={cn("font-medium", loopCommandTone(command).badge)}
-      variant="outline"
-    >
-      {displayCommand}
+      {PRIORITY_LABELS[priority] ?? priority}
     </Badge>
   );
 }
 
 /**
- * Plain colored text label for a loop Command — the low-emphasis sibling of
- * {@link LoopCommandBadge} (FEA-3968). Command is low-variance categorical
- * metadata (often "Manual" on every row), so the table renders it as a plain
- * colored string; the color is the text half of the SAME per-command tone the
- * badge uses (`loopCommandTone`), so the label and badge can never drift.
+ * The badge tokens for `status`: its own, else the uncommitted treatment once
+ * `unknownStatus` is non-null, else `fallback`.
+ *
+ * The color half of `resolveStatusLabel`, and it exists because keeping the two
+ * halves apart is what shipped the defect ISS-9560 opened to fix: the label
+ * resolved to "Unknown" while the class list still fell through to Draft's, so
+ * an unrecognized status wore a recognized one's chip (PR #6973 review). The
+ * icons part unknown from every real state with the `blank-ring` this
+ * vocabulary never claims; this is the badge's half of that same statement.
+ *
+ * Flag-off is byte-identical to the pre-ISS-9560 render: `fallback` IS the
+ * `?? artifactStatusColors[Draft]` this replaced, so the closed default keeps
+ * whatever answer the badge already gave.
+ *
+ * `Object.hasOwn` for the reason `lookupStatusLabel` documents: `status` is
+ * typed to a closed union at this boundary but originates in a freeform
+ * column, so `"constructor"` would otherwise index into `Object.prototype` and
+ * hand a function to `cn`.
  */
-export function LoopCommandLabel({
-  command,
-}: Readonly<{ command: LoopCommand }>) {
-  const displayCommand = loopCommandLabels[command] ?? command;
-  return (
-    <ToneLabel variant={loopCommandTone(command).labelVariant}>
-      {displayCommand}
-    </ToneLabel>
-  );
+function resolveStatusBadgeColors(
+  colors: Readonly<Record<string, string>>,
+  status: string,
+  unknownStatus: ArtifactStatusDisplay | null,
+  fallback: string
+): string {
+  if (Object.hasOwn(colors, status)) {
+    return colors[status];
+  }
+  return unknownStatus ? COLOR_UNKNOWN : fallback;
 }

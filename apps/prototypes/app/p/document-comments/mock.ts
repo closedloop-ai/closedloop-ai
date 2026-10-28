@@ -60,9 +60,9 @@ export type CommentThread = {
 // author or any participant (see canResolveThread), with reopen kept to the
 // raiser.
 export const currentUser: CommentAuthor = {
-  id: "u-parker",
-  name: "Parker Reid",
-  email: "parker@closedloop.ai",
+  id: "u-pascoe",
+  name: "Pascoe Reid",
+  email: "pascoe@closedloop.ai",
   avatarUrl: null,
   kind: CommentAuthorKind.Human,
 };
@@ -175,9 +175,9 @@ export const threads: readonly CommentThread[] = [
       {
         id: "rp-artifact-1a",
         author: marcus,
-        body: "On it. Confirmed the wording. @Parker Reid you're clear.",
+        body: "On it. Confirmed the wording. @Pascoe Reid you're clear.",
         createdAt: "2026-07-23T18:44:00Z",
-        mentions: [{ userId: currentUser.id, label: "Parker Reid" }],
+        mentions: [{ userId: currentUser.id, label: "Pascoe Reid" }],
       },
     ],
   },

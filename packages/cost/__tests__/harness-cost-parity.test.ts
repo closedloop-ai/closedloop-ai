@@ -235,10 +235,12 @@ describe("unknown-model fallback (FEA-3546)", () => {
   const FALLBACK = CC_RATES.opusStandard;
 
   it("prices a newer-than-the-table model at the Opus-standard tier (never $0)", () => {
-    // gpt-5.6-sol is the model from SES-57401: genai-prices resolves the openai
-    // provider but has no price entry (no_match) → previously collapsed to $0.
+    // The SES-57401 model (gpt-5.6-sol) has a price entry since genai-prices
+    // 0.1.6 (ISS-7361), so the fixture is a version-suffixed id the table will
+    // not learn: the openai provider resolves but there is no price entry
+    // (no_match), which previously collapsed to $0.
     const input = {
-      model: "gpt-5.6-sol",
+      model: "gpt-5.9-zzz-unknown",
       inputTokens: 346_789,
       outputTokens: 12_366,
       cacheReadTokens: 2_560_256,

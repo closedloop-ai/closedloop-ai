@@ -3,6 +3,8 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { DocumentTableSkeleton } from "../document-table-skeleton";
 
+const DEFAULT_LOADING_LABEL = "Loading…";
+
 describe("DocumentTableSkeleton (FEA-3938)", () => {
   it("renders a loading treatment (busy region + skeleton placeholders), not an empty state", () => {
     const { container } = render(
@@ -15,7 +17,7 @@ describe("DocumentTableSkeleton (FEA-3938)", () => {
     // Announces loading to assistive tech instead of flashing an empty state.
     // Defaults to the caller-agnostic label so the shared component does not
     // assert one caller's noun.
-    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.getByText(DEFAULT_LOADING_LABEL)).toBeTruthy();
     expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
 
     // Renders animated skeleton placeholders for the requested rows.
@@ -33,7 +35,7 @@ describe("DocumentTableSkeleton (FEA-3938)", () => {
     );
 
     expect(screen.getByText("Loading tasks…")).toBeTruthy();
-    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.queryByText(DEFAULT_LOADING_LABEL)).toBeNull();
   });
 
   it("scales the number of skeleton rows with rowCount", () => {

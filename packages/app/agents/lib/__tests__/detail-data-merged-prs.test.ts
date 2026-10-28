@@ -84,7 +84,7 @@ describe("componentMetrics Merged PRs (ISS-4798)", () => {
   });
 
   /**
-   * wongk (PR #4322): an older API OMITS `mergedPrs` rather than sending null.
+   * whitlockk (PR #4322): an older API OMITS `mergedPrs` rather than sending null.
    * The card's formatter must not hand `undefined` to `Intl.NumberFormat`, which
    * renders the literal "NaN".
    */

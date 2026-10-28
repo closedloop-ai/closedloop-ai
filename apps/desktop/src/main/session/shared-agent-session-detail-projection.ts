@@ -11,21 +11,23 @@
  * at by ISS-5075 — and `boundDetailEvents` turns that probe row into the served
  * prefix plus the `eventsTruncated` signal.
  */
+import { deriveBilledModels } from "@repo/api/src/agent-session-billed-models";
+import { DEFAULT_HUMAN_ACTOR_COLOR_TOKEN } from "@repo/api/src/agent-session-user-color";
 import type {
+  SessionLinkedArtifact,
   SyncedAgentSessionEvent,
   TokenEventCostPoint,
 } from "@repo/api/src/types/agent-session";
 import { SESSION_DETAIL_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-detail-limits";
 import type { TranscriptAvailabilitySummary } from "@repo/api/src/types/desktop-transcripts";
 import type { SyncedArtifactRef } from "@repo/api/src/types/session-artifact-link";
+import { isHeadlessEntrypoint } from "@repo/lib/session-trace/headless";
+import { sessionHasParsedTranscript } from "@repo/lib/session-trace/transcript";
 import {
   buildActivitySegments,
   toActivitySegmentTokenEvents,
 } from "@repo/lib/sessions/activity-segment-aggregation";
-import {
-  projectAgentSessionTimelineEvents,
-  projectAgentSessionTurnItems,
-} from "@repo/lib/sessions/agent-session-detail-projection";
+import { projectAgentSessionTurnItemsFromEvents } from "@repo/lib/sessions/agent-session-detail-projection";
 import {
   DESKTOP_LOCAL_SESSION_AUTHOR_LABEL,
   type SharedAgentSessionDetail,
@@ -52,16 +54,21 @@ import { projectLocalLinkedArtifacts } from "./local-linked-artifacts.js";
  * of "complete".
  *
  * Once this fires, the event-DERIVED trace SHAPE the detail projects —
- * `timeline`, `turnItems`, and the span/phase/throttle/marker fields the loader
+ * `turnItems` and the span/phase/throttle/marker fields the loader
  * folds from these same rows — describes the prefix, which is what the flag
  * announces (see `AgentSessionDetail.eventsTruncated`, whose scope names the
  * desktop producer's wider set). The event COUNTS and `lastActivityAt` are
  * deliberately outside that set: they are re-read on a whole-run basis so they
  * cannot disagree with the same session's Sessions-list row or with web.
+ *
+ * ISS-5636: what this function can honestly report STOPS at the read. The
+ * summary SCALARS a renderer wants qualified (`autonomy`, `steeringEpisodes`)
+ * do not all share this provenance — see {@link projectTraceScalarTruncation},
+ * which decides each of them against the derivation that produced it.
  */
 export function boundDetailEvents(rows: readonly SyncedAgentSessionEvent[]): {
   events: SyncedAgentSessionEvent[];
-  truncation: { eventsTruncated?: true };
+  truncation: DetailEventTruncation;
 } {
   return {
     // `slice` on an under-cap array is just a copy, so the bounded path needs no
@@ -88,7 +95,7 @@ export function mapDetail(input: {
   session: SyncedAgentSession;
   listItem: SharedAgentSessionListItem;
   events: SyncedAgentSessionEvent[];
-  truncation: { eventsTruncated?: true };
+  truncation: DetailEventTruncation;
   wholeRunEventCounts?: SessionEventCounts;
   tokenEvents?: TokenEventCostPoint[];
   transcripts?: TranscriptAvailabilitySummary[];
@@ -101,11 +108,18 @@ export function mapDetail(input: {
   /**
    * ISS-5617: the session's `closedloop_artifact` refs read UNBOUNDED by the
    * sync producer's ref budget ({@link AgentSessionSyncSource.loadSessionDocumentArtifactRefs}).
-   * Present, these are the refs the "Linked artifacts" row is folded from and the
-   * row can state a total. Omitted (a source that cannot answer), the fold falls
-   * back to the sync-capped `session.artifactRefs` and no total is claimed.
+   * Present, these are the refs the "Linked artifacts" row is folded from and,
+   * unless `documentArtifactRefsTruncated`, the row can state a total. Omitted
+   * (a source that cannot answer), the fold falls back to the sync-capped
+   * `session.artifactRefs` and no total is claimed.
    */
   documentArtifactRefs?: readonly SyncedArtifactRef[];
+  /**
+   * ISS-9863: true when the read behind `documentArtifactRefs` hit its scan
+   * ceiling, so the refs are a PREFIX of the session's links. The served list is
+   * still folded, but no total is claimed — the same branch an absent read takes.
+   */
+  documentArtifactRefsTruncated?: boolean;
 }): SharedAgentSessionDetail {
   const {
     session,
@@ -117,10 +131,8 @@ export function mapDetail(input: {
     transcripts,
     branchArtifactId,
     documentArtifactRefs,
+    documentArtifactRefsTruncated,
   } = input;
-  const timeline = projectAgentSessionTimelineEvents(events, {
-    metadata: session.metadata,
-  });
   // FEA-2275: derive the per-phase activity breakdown from the local raw tiling
   // (`session.activitySegmentRows`, replicated by FEA-3568) + the session's
   // token events, using the SAME shared @repo/lib aggregator the cloud detail
@@ -146,10 +158,11 @@ export function mapDetail(input: {
   // truth was "+54" — ten artifacts unreachable, with nothing on screen admitting
   // it (codex review). `refsAreComplete` is what decides whether a total may be
   // claimed at all; see the `linkedArtifactsTotal` spread below.
-  const refsAreComplete = documentArtifactRefs !== undefined;
-  const linkedArtifacts = projectLocalLinkedArtifacts(
-    documentArtifactRefs ?? session.artifactRefs
-  );
+  const { linkedArtifacts, refsAreComplete } = foldLinkedArtifacts({
+    session,
+    documentArtifactRefs,
+    documentArtifactRefsTruncated,
+  });
   return {
     ...listItem,
     // ISS-5407 (stage review): the three event-COUNT fields, put back on a
@@ -178,13 +191,25 @@ export function mapDetail(input: {
     ...(branchArtifactId ? { branchArtifactId } : {}),
     metadata: session.metadata ?? null,
     sourceArtifactId: session.attribution?.sourceArtifactId ?? null,
-    sourceLoopId: session.attribution?.sourceLoopId ?? null,
+    // ISS-12435: Loops is gone; the field stays null so the shared contract keeps its shape.
+    sourceLoopId: null,
+    models: deriveBilledModels(session.tokenUsageByModel),
     tokenUsageByModel: session.tokenUsageByModel,
     attribution: session.attribution ?? null,
     agents: session.agents,
     events,
     ...truncation,
-    timeline,
+    ...projectTokenEventCostPoints(truncation, tokenEvents),
+    // ISS-5636: the summary scalars the shared pane renders as bare whole-run
+    // stats, qualified per DERIVATION rather than off the read that produced
+    // `truncation`. Read from `listItem`, which is what the pane actually
+    // renders, so the flags describe the numbers on screen.
+    ...projectTraceScalarTruncation({
+      eventsTruncated: truncation.eventsTruncated === true,
+      metadata: session.metadata,
+      autonomy: listItem.autonomy,
+      steeringEpisodes: listItem.steeringEpisodes,
+    }),
     // FEA-3461: the local synced session already carries the Session Trace
     // source arrays (buildSessionTraceSyncFields), but the detail DTO dropped
     // them — so `throttleSources` never reached the renderer and the
@@ -215,7 +240,8 @@ export function mapDetail(input: {
     // lets `SessionLinkedArtifactsRow` apply the display cap client-side.
     //
     // Withheld when the refs came from the sync-capped `session.artifactRefs`
-    // (a source with no `loadSessionDocumentArtifactRefs`): that set may be a
+    // (a source with no `loadSessionDocumentArtifactRefs`), and equally when the
+    // unbounded read reported `truncated` (ISS-9863): either set may be a
     // truncation of the real one, and a total measured off it would be the exact
     // lie this field exists to prevent. Omitted, the shared pane falls back to
     // `linkedArtifacts.length` — still not the pre-cap truth, but a documented
@@ -227,19 +253,145 @@ export function mapDetail(input: {
     ...(refsAreComplete && linkedArtifacts.length > 0
       ? { linkedArtifactsTotal: linkedArtifacts.length }
       : {}),
-    turnItems: projectAgentSessionTurnItems({
+    turnItems: projectAgentSessionTurnItemsFromEvents({
       sessionId: session.externalSessionId,
       harness: session.harness ?? "unknown",
       primaryModel: session.model ?? null,
       humanActor: {
         name: DESKTOP_LOCAL_SESSION_AUTHOR_LABEL,
-        color: "#64748B",
+        color: DEFAULT_HUMAN_ACTOR_COLOR_TOKEN,
       },
       agents: session.agents,
       events,
-      timeline,
+      metadata: session.metadata,
       tokenUsageByModel: session.tokenUsageByModel,
       tokenEvents,
     }),
   };
+}
+
+/**
+ * The READ-scoped truncation flag, SPREAD-SHAPED (`{}` when the stream is
+ * complete) so absence stays the contract's only encoding of "complete".
+ */
+type DetailEventTruncation = Pick<SharedAgentSessionDetail, "eventsTruncated">;
+
+/**
+ * The per-DERIVATION truncation flags, same spread shape and same reason.
+ */
+type TraceScalarTruncation = Pick<
+  SharedAgentSessionDetail,
+  "autonomyTruncated" | "steeringEpisodesTruncated"
+>;
+
+/**
+ * ISS-5636: decide, PER SCALAR, whether the bounded read actually cut the inputs
+ * that scalar was folded from.
+ *
+ * A single flag stamped off the raw-event read mislabels reachable sessions,
+ * because these two scalars do not share one provenance. `deriveAutonomyAndSteering`
+ * is fed a merged agent-activity stream (transcript messages and token events,
+ * neither of which the detail read bounds, plus the raw event rows, which it
+ * does) and a human-turn stream whose SOURCE switches on the session:
+ *
+ * - Headless, by `isHeadlessEntrypoint` over the harness entrypoint: steering is
+ *   returned as a fixed `0`, a whole-run fact the row cap cannot move.
+ * - Transcript-backed, by {@link sessionHasParsedTranscript}: human turns are the
+ *   `role:"human"` rows of `metadata.messages`, read whole regardless of the cap.
+ * - Hook-only: human turns are matched out of the raw event rows — the bounded
+ *   read — so the count IS a prefix.
+ *
+ * Both predicates are the SSOT ones `buildSessionAutonomyInput` itself branches
+ * on, imported rather than restated, so this cannot come to a different
+ * conclusion than the derivation it describes about the same session.
+ *
+ * Autonomy stays flagged whenever the read was bounded: its agent-activity
+ * stream always includes those raw rows, and cutting the tail moves the span the
+ * score is attributed across. The headless no-episode constant (`100`) is the
+ * one over-hedge, and it is left as one deliberately — see
+ * `AgentSessionDetail.autonomyTruncated`.
+ */
+export function projectTraceScalarTruncation(input: {
+  eventsTruncated: boolean;
+  metadata: SyncedAgentSession["metadata"];
+  autonomy: number | null | undefined;
+  steeringEpisodes: number | null | undefined;
+}): TraceScalarTruncation {
+  if (!input.eventsTruncated) {
+    return {};
+  }
+  const metadata = asMetadataRecord(input.metadata);
+  const humanTurnsAreEventDerived = !(
+    isHeadlessEntrypoint(entrypointFromMetadata(metadata)) ||
+    sessionHasParsedTranscript(metadata)
+  );
+  return {
+    // A scalar the producer never resolved has no basis to be qualified: there
+    // is no rendered number for a prefix note to describe.
+    ...(input.autonomy == null ? {} : { autonomyTruncated: true as const }),
+    ...(input.steeringEpisodes != null && humanTurnsAreEventDerived
+      ? { steeringEpisodesTruncated: true as const }
+      : {}),
+  };
+}
+
+function asMetadataRecord(
+  metadata: SyncedAgentSession["metadata"]
+): Record<string, unknown> | null {
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)
+    : null;
+}
+
+function entrypointFromMetadata(
+  metadata: Record<string, unknown> | null
+): string | null {
+  const entrypoint = metadata?.entrypoint;
+  return typeof entrypoint === "string" ? entrypoint : null;
+}
+
+/**
+ * The "Linked artifacts" fold and whether its result may be counted.
+ *
+ * `refsAreComplete` is false for an absent unbounded read (the fold ran over the
+ * sync-capped `session.artifactRefs`) and, ISS-9863, for an unbounded read that
+ * hit its own scan ceiling: both serve a set that may be a prefix of the
+ * session's links, and a total measured off a prefix is the lie
+ * `linkedArtifactsTotal` exists to prevent.
+ */
+function foldLinkedArtifacts(input: {
+  session: SyncedAgentSession;
+  documentArtifactRefs?: readonly SyncedArtifactRef[];
+  documentArtifactRefsTruncated?: boolean;
+}): {
+  linkedArtifacts: SessionLinkedArtifact[];
+  refsAreComplete: boolean;
+} {
+  const { session, documentArtifactRefs, documentArtifactRefsTruncated } =
+    input;
+  if (documentArtifactRefs === undefined) {
+    return {
+      linkedArtifacts: projectLocalLinkedArtifacts(session.artifactRefs),
+      refsAreComplete: false,
+    };
+  }
+  return {
+    linkedArtifacts: projectLocalLinkedArtifacts(documentArtifactRefs),
+    refsAreComplete: documentArtifactRefsTruncated !== true,
+  };
+}
+
+/**
+ * ISS-9857: the producer's cost points, SPREAD-SHAPED and present only under
+ * truncation — the one case a client re-projects the prefix + paged rows
+ * through the same projector `turnItems` came from; see the field's JSDoc on
+ * `AgentSessionDetail`. A complete stream omits the key entirely.
+ */
+function projectTokenEventCostPoints(
+  truncation: DetailEventTruncation,
+  tokenEvents: TokenEventCostPoint[] | undefined
+): Pick<SharedAgentSessionDetail, "tokenEventCostPoints"> {
+  return truncation.eventsTruncated && tokenEvents
+    ? { tokenEventCostPoints: tokenEvents }
+    : {};
 }

@@ -14,7 +14,7 @@ const PR_COMMENTS_BY_BRANCH: Record<string, PrComment[]> = {
     },
     {
       id: "repo-overrides-2",
-      author: "parker-byrd",
+      author: "pascoe-birchall",
       at: "1h ago",
       body: "Added the fallback and a mixed-state fixture. Existing workspaces now resolve the old value until the backfill marks them migrated.",
     },
@@ -119,7 +119,7 @@ export function buildSessionComments(
   if (firstSession && firstAnchor) {
     comments.push({
       id: `session-${firstSession.id}-1`,
-      author: "parker-byrd",
+      author: "pascoe-birchall",
       at: "34m ago",
       anchorPreview: turnExcerpt(firstAnchor),
       anchorTurnId: firstAnchor.id,

@@ -12,6 +12,7 @@
  */
 
 import type { PushEvent } from "@octokit/webhooks-types";
+import { BranchPushSource } from "@repo/api/src/types/artifact";
 import {
   IssueStatus,
   RepositoryRole,
@@ -23,8 +24,11 @@ import {
   GitHubInstallationStatus,
   withDb,
 } from "@repo/database";
+import { GitHubAppInstallationLookupStatus } from "@repo/github/app-installation";
+import { stampBranchFirstPush } from "@/app/branches/branch-push-state";
 import { persistedGitHubRepositoryAuthority } from "../fixtures/repository-default-authority";
 import {
+  createCommittedTestOrganizationTracker,
   createTestOrganization,
   createTestProject,
   createTestUser,
@@ -41,6 +45,10 @@ export type TestContext = {
   installationRecordId: string;
   installationId: string;
 };
+
+type CommittedBranchTest = (
+  run: (context: TestContext) => Promise<void>
+) => Promise<void>;
 
 const NON_DIGITS = /\D/g;
 
@@ -176,6 +184,41 @@ export async function seedBranchTestContext(
   return context;
 }
 
+/** Run a Branch fixture outside an ambient transaction and clean its graph. */
+export function createCommittedBranchTestRunner(
+  setup: () => Promise<TestContext>,
+  settle: () => Promise<void>
+): CommittedBranchTest {
+  const organizations = createCommittedTestOrganizationTracker();
+  return async (run) => {
+    const context = await setup();
+    organizations.track(context.organizationId);
+    try {
+      await run(context);
+    } finally {
+      await settle();
+      await organizations.cleanup();
+    }
+  };
+}
+
+/** Seed same-time verified Session-push evidence for Branch fixtures. */
+export async function stampBranchSessionPushes(
+  branchArtifactIds: readonly string[],
+  pushedAt: Date
+): Promise<void> {
+  await withDb(async (db) => {
+    for (const branchArtifactId of branchArtifactIds) {
+      await stampBranchFirstPush(
+        db,
+        branchArtifactId,
+        pushedAt,
+        BranchPushSource.Session
+      );
+    }
+  });
+}
+
 export function pushEvent(
   ctx: TestContext,
   input: {
@@ -238,4 +281,42 @@ export async function findBranchArtifact(
     throw new Error(`Branch artifact not found for ${branchName}`);
   }
   return branch;
+}
+
+/**
+ * Claim deps faking a found installation plus the cr-66737 access proof: a
+ * Clerk-linked caller holding an active membership in the installation's
+ * org, so an integration case can drive `githubService.claimGitHubInstallation`
+ * without Clerk or GitHub network calls.
+ */
+export function makeGrantedClaimDeps(installationId: string | number) {
+  return {
+    getInstallation: () =>
+      Promise.resolve({
+        status: GitHubAppInstallationLookupStatus.Found,
+        installation: {
+          id: Number(installationId),
+          account: { id: 1, login: "owner", type: "Organization" },
+          permissions: {},
+          events: [],
+          repositorySelection: "all",
+        },
+      }),
+    resolveClerkCredential: () =>
+      Promise.resolve({
+        ok: true as const,
+        credential: {
+          token: "clerk-token",
+          scopes: ["repo"],
+          externalAccountId: "ea-1",
+        },
+      }),
+    fetchAuthenticatedGitHubUser: () => Promise.resolve({ id: 1 }),
+    fetchOrgMembershipState: () =>
+      Promise.resolve({
+        status: "confirmed" as const,
+        state: "active",
+        role: "admin",
+      }),
+  };
 }

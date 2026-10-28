@@ -15,7 +15,8 @@ type ResourcesPageProps = {
 export const generateMetadata = async () =>
   createPageMetadata(
     "Resources",
-    "Comparison pages, templates, and workflow references for high-intent readers."
+    "Comparison pages, templates, and workflow references for high-intent readers.",
+    "/resources"
   );
 
 const ResourcesPage = async ({ params }: ResourcesPageProps) => {

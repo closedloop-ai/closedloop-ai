@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
+import { afterAll, test } from "vitest";
 import {
   listClaudeSubagentTranscriptFiles,
   relIdFromSubagentPath,
@@ -45,7 +45,7 @@ function makeTempRoot(): string {
   return root;
 }
 
-after(() => {
+afterAll(() => {
   for (const root of tempRoots) {
     rmSync(root, { recursive: true, force: true });
   }

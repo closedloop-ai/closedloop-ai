@@ -1,6 +1,6 @@
 import type { TraceComment } from "@repo/api/src/types/comment";
 import { parseTimestampMs, sortByCreatedAtThenId } from "./comment-sort";
-import { TRACE_COMMENTS_REFETCH_INTERVAL_MS } from "./trace-comments-poll-cadence";
+import { TRACE_COMMENTS_READ_TIMEOUT_MS } from "./trace-comments-poll-cadence";
 
 /**
  * Merge algebra for the trace-comments live read.
@@ -25,15 +25,12 @@ import { TRACE_COMMENTS_REFETCH_INTERVAL_MS } from "./trace-comments-poll-cadenc
  * tombstone can never leak permanently if the server never returns the id again
  * (e.g. the row falls out of the visible page).
  *
- * The window is sized to outlast one in-flight request, NOT N poll cycles: since
- * ISS-5022 the poll cadence is adaptive (it backs off to 30s once a thread has
- * been idle), so "three poll cycles" is no longer a fixed duration. The value is
- * unchanged. A local mutation both zeroes the idle streak and re-aims the pending
- * timer, so the cadence is genuinely back at the base interval afterwards and
- * this window still covers three confirming reads exactly as it did before.
+ * The window is sized to outlast one in-flight request, NOT N poll cycles: it
+ * is derived from the read deadline (`TRACE_COMMENTS_READ_TIMEOUT_MS`), so any
+ * read that raced the delete has settled or failed before the tombstone expires.
  */
 export const TRACE_COMMENT_DELETE_TOMBSTONE_TTL_MS =
-  TRACE_COMMENTS_REFETCH_INTERVAL_MS * 3;
+  TRACE_COMMENTS_READ_TIMEOUT_MS * 1.5;
 
 /**
  * How long a client-side create marker survives before it is force-expired.
@@ -46,7 +43,7 @@ export const TRACE_COMMENT_DELETE_TOMBSTONE_TTL_MS =
  * note above on why this is an in-flight-request budget, not a poll-cycle count.
  */
 export const TRACE_COMMENT_CREATE_MARKER_TTL_MS =
-  TRACE_COMMENTS_REFETCH_INTERVAL_MS * 3;
+  TRACE_COMMENTS_READ_TIMEOUT_MS * 1.5;
 
 export function mergeTraceComments(
   current: readonly TraceComment[],

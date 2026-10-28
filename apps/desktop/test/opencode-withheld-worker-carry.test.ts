@@ -1,6 +1,6 @@
 /**
  * @file opencode-withheld-worker-carry.test.ts
- * @description ISS-5266 (wongk review on #4540): the two defects that made the
+ * @description ISS-5266 (whitlockk review on #4540): the two defects that made the
  * withheld-subagent record real only on the path production almost never takes.
  *
  * The record works in-process, where the collector's injected sink reaches the
@@ -26,7 +26,7 @@
  */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { applyParseSideReport } from "../src/main/collectors/engine/collector-manager-pass-resources.js";
 import {
   parseHistoricalSource,
@@ -223,6 +223,63 @@ test("ISS-5266: a FAILED replayed record REFUSES the seal, so the store is re-re
     collector.markSourceImported?.(dbPath),
     false,
     "sealing over a record that never landed would freeze the false zero forever — unchanged bytes are never re-read"
+  );
+});
+
+test("ISS-5854: a BUDGET-TRUNCATED load refuses the seal, so the dropped tail is re-read", async () => {
+  // The same freeze as the withheld case one layer out, and the one this repo
+  // has already fixed once (`opencode-parse-failure.ts`: "the parse resolved
+  // with a SHORT list, `markSourceImported` advanced the DB fingerprint, and the
+  // missing session froze out"). The worker's response budget can drop whole
+  // sessions; every session that DID arrive imports fine, so nothing else in the
+  // import path can tell the load was short. Sealing here would advance the
+  // fingerprint over unchanged bytes and the dropped tail would never be read.
+  const dir = makeTempDir("opencode-budget-truncated-");
+  const dbPath = writeWithholdingStore(dir);
+
+  const collector = createOpencodeCollector({
+    dataDir: dir,
+    fingerprintPath: path.join(dir, "fingerprint.txt"),
+    recordWithheld: () => Promise.resolve(),
+  });
+
+  await applyParseSideReport(collector, {
+    sessions: [],
+    droppedSessions: 7,
+  });
+
+  assert.equal(
+    collector.markSourceImported?.(dbPath),
+    false,
+    "sealing over a short load freezes the dropped sessions out until the store's bytes move for an unrelated reason"
+  );
+});
+
+test("ISS-5854: a COMPLETE load clears the truncation latch and seals normally", async () => {
+  // The positive sibling, and the reason the side-report is replayed for every
+  // parse rather than only for one that reported something: the latch describes
+  // the LAST load, so a clean load must be able to clear it. Without this a
+  // source that truncated once would refuse its seal forever and re-parse on
+  // every pass.
+  const dir = makeTempDir("opencode-budget-complete-");
+  const dbPath = writeWithholdingStore(dir);
+
+  const collector = createOpencodeCollector({
+    dataDir: dir,
+    fingerprintPath: path.join(dir, "fingerprint.txt"),
+    recordWithheld: () => Promise.resolve(),
+  });
+
+  await applyParseSideReport(collector, { sessions: [], droppedSessions: 7 });
+  assert.equal(collector.markSourceImported?.(dbPath), false);
+
+  // The next pass comes back whole.
+  await applyParseSideReport(collector, { sessions: [] });
+
+  assert.equal(
+    collector.markSourceImported?.(dbPath),
+    true,
+    "a complete load must be able to seal, or the source re-parses forever"
   );
 });
 

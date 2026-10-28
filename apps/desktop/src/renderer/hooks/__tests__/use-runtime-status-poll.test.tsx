@@ -1,15 +1,23 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudSyncBacklogState } from "../../../shared/cloud-read-readiness-contract";
+import {
+  CloudReadDeadLetteredBasis,
+  CloudSyncBacklogState,
+} from "../../../shared/cloud-read-readiness-contract";
 import {
   SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
 } from "../../../shared/sync-burndown-contract";
+import { describeUndeliverableItems } from "../../components/import-progress-display";
 import {
   type CloudSyncProgress,
+  describeCloudSyncStatus,
   useCloudSyncBacklog,
   useCloudSyncProgress,
+} from "../use-cloud-sync-progress";
+import {
   useIngestProgress,
   useMaintenanceProgress,
 } from "../use-ingest-progress";
@@ -86,6 +94,59 @@ describe("shared runtime-status poll", () => {
     });
     expect(getRuntimeStatus).toHaveBeenCalledTimes(1);
     unmount();
+  });
+
+  // ISS-7603: the two tests above co-mount hooks that both live in
+  // `use-ingest-progress.ts`, so after the six-way split they can no longer tell
+  // one shared poll from one poll PER MODULE. These two cross the module
+  // boundary — `useIngestProgress` from `use-ingest-progress.ts`,
+  // `useCloudSyncProgress` from `use-cloud-sync-progress.ts` — so a second
+  // `runtimeStatusListeners` set anywhere fails them on the first assertion.
+  it("polls once per interval when the active hooks live in different modules", async () => {
+    const { unmount } = renderHook(() => {
+      useIngestProgress(true);
+      useCloudSyncProgress(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // Two modules, one poll: a duplicated singleton would make this 2.
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(3);
+    unmount();
+  });
+
+  it("keeps polling until the last subscriber leaves, across modules", async () => {
+    const ingest = renderHook(() => useIngestProgress(true));
+    const cloudSync = renderHook(() => useCloudSyncProgress(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(1);
+
+    ingest.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    // The cloud-sync module still holds the poll, so the interval survives the
+    // ingest module's teardown.
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(2);
+
+    cloudSync.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    // Last subscriber gone: the shared interval is torn down.
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -175,8 +236,8 @@ describe("useCloudSyncProgress live updates", () => {
  */
 /**
  * A settled row for every lane the burn-down reports, with the named lanes
- * overridden. The reporter emits all five lanes on every sample, and ISS-6206's
- * boundary check requires exactly that set — so a fixture carrying one lane is
+ * overridden. The reporter emits every lane on every sample, and ISS-6206's
+ * boundary check requires every one of them — so a fixture carrying one lane is
  * not a smaller real payload, it is a malformed one.
  */
 function fullLaneSet(
@@ -254,7 +315,7 @@ describe("useCloudSyncBacklog", () => {
 });
 
 /**
- * ISS-5768 (wongk review on #4809) — a malformed `cloudReadReadiness` must not
+ * ISS-5768 (whitlockk review on #4809) — a malformed `cloudReadReadiness` must not
  * take the whole shared poll down with it.
  *
  * `getRuntimeStatus()` is typed `Promise<unknown>`, and one payload is fanned out
@@ -364,7 +425,59 @@ describe("useCloudSyncBacklog — malformed readiness payloads", () => {
     unmount();
   });
 
-  // ISS-6206 (wongk review on #5050): every all-lanes predicate downstream is an
+  // ISS-9744 (codex review on #6874): the per-lane dead-letter basis is
+  // additive, so a main process older than it sends none — `DRAINED_PAYLOAD`
+  // above is literally that payload. Two things have to hold at once, and they
+  // pull in opposite directions.
+  it("degrades an unlabelled dead-letter count to unmeasured without blocking the drain", async () => {
+    installPayloads([{ cloudReadReadiness: DRAINED_PAYLOAD }]);
+    const { result, unmount } = renderHook(() => useCloudSyncBacklog(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // Under-claim the MEASUREMENT: nothing on the wire said what was counted,
+    // so the total may not be presented as an exact one.
+    expect(result.current.deadLetteredBasis).toBe(
+      CloudReadDeadLetteredBasis.Unmeasured
+    );
+    // …but never under-claim the VERDICT. Gating "up to date" on a label an old
+    // build cannot send would leave it permanently unable to settle — a
+    // liveness regression bought with a precision fix.
+    expect(result.current.state).toBe(CloudSyncBacklogState.Drained);
+    unmount();
+  });
+
+  it("labels the total measured once the payload says what each lane counted", async () => {
+    // The counterfactual for the degrade above: identical payload plus the
+    // basis. Without it, a parser that hardcoded `unmeasured` would pass.
+    installPayloads([
+      {
+        cloudReadReadiness: {
+          ...DRAINED_PAYLOAD,
+          lanes: fullLaneSet(
+            Object.fromEntries(
+              SYNC_LANE_IDS.map((lane) => [
+                lane,
+                {
+                  deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
+                },
+              ])
+            )
+          ),
+        },
+      },
+    ]);
+    const { result, unmount } = renderHook(() => useCloudSyncBacklog(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.deadLetteredBasis).toBe(
+      CloudReadDeadLetteredBasis.Measured
+    );
+    unmount();
+  });
+
+  // ISS-6206 (whitlockk review on #5050): every all-lanes predicate downstream is an
   // `every`/`some` over `snapshot.lanes`, so a payload missing four of the five
   // lanes satisfied "all drained" and a duplicated lane was summed twice. The
   // types cannot prevent either — this arrives from a `Promise<unknown>` across
@@ -410,6 +523,80 @@ describe("useCloudSyncBacklog — malformed readiness payloads", () => {
     expect(result.current.state).toBe(CloudSyncBacklogState.Unknown);
     // The duplicate never reached the cross-lane arithmetic (it would have read 14).
     expect(result.current.itemsRemaining).toBeNull();
+    unmount();
+  });
+});
+
+/**
+ * ISS-9182 / PLN-2061 M4 (#7758 review): the History Sync cell's
+ * undeliverable-items sentence goes away on the next shared-poll sample once the
+ * withheld acknowledgement clears the row — no remount, no restart. The mapper
+ * half is pinned in `use-cloud-sync-progress.test.ts`; this drives the hooks.
+ */
+describe("the undeliverable-items sentence across one poll", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function statusWithSessionDeadLetters(count: number) {
+    return {
+      cloudSync: {
+        identified: true,
+        pendingBackfillSessions: 0,
+        pendingIncrementalSessions: 0,
+        backfilling: false,
+        caughtUp: true,
+        deadLetteredSessions: count,
+      },
+      cloudReadReadiness: {
+        sampledAtIso: "2026-08-10T12:00:00.000Z",
+        importComplete: true,
+        lanes: fullLaneSet(
+          count > 0
+            ? {
+                [SyncLaneId.SessionMetadata]: {
+                  state: SyncLaneDrainState.DrainedWithDeadLetters,
+                  deadLetteredCount: count,
+                },
+              }
+            : {}
+        ),
+      },
+    };
+  }
+
+  it("repaints the cell on the next sample once the row clears", async () => {
+    vi.useFakeTimers();
+    const getRuntimeStatus = vi
+      .fn()
+      .mockResolvedValueOnce(statusWithSessionDeadLetters(1))
+      .mockResolvedValue(statusWithSessionDeadLetters(0));
+    Object.defineProperty(window, "desktopApi", {
+      configurable: true,
+      value: { getRuntimeStatus },
+      writable: true,
+    });
+    const { result, unmount } = renderHook(() =>
+      describeCloudSyncStatus(
+        useCloudSyncProgress(true),
+        useCloudSyncBacklog(true)
+      )
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.detail).toBe(describeUndeliverableItems(1));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.detail).not.toContain(describeUndeliverableItems(1));
+    expect(result.current).toMatchObject({
+      label: "Up to date",
+      tone: "success",
+    });
     unmount();
   });
 });

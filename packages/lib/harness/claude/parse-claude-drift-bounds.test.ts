@@ -15,8 +15,8 @@
  *     permits a newline inside a key and an unescaped one forges a second entry.
  */
 import { describe, expect, it } from "vitest";
+import { scanTranscriptLines } from "./parse-claude";
 import { createSessionAccumulator } from "./parse-claude-accumulator";
-import { scanTranscriptLines } from "./parse-claude-core";
 import { reportUnknownRecords } from "./parse-claude-drift";
 
 const USER_LINE = JSON.stringify({
@@ -104,7 +104,9 @@ describe("retention is capped and the report admits it", () => {
   it("says nothing about a cap when nothing was refused", async () => {
     const { messages } = await reportFor([unknownRecord("just-one")], true);
     const line = messages.find((m) => m.startsWith("Unknown record types:"));
-    expect(line).toBe("Unknown record types: just-one (1)");
+    // ISS-6576: names are quoted so a delimiter inside one cannot read as
+    // structure. Was `Unknown record types: just-one (1)`.
+    expect(line).toBe('Unknown record types: "just-one" (1)');
   });
 
   it("does not count a repeat of an already-retained attribute as refused", async () => {
@@ -185,5 +187,124 @@ describe("transcript-controlled names cannot forge a log entry", () => {
     await scanTranscriptLines([USER_LINE, unknownRecord("novel")], accumulator);
 
     expect(() => reportUnknownRecords(accumulator)).not.toThrow();
+  });
+});
+
+describe("retention is bounded in BYTES, not only in entry count (ISS-6576)", () => {
+  // The caps above bound how MANY names are retained. Each one was stored raw
+  // and only bounded when the report rendered it, so 50 distinct multi-megabyte
+  // `type` values stayed pinned for the whole scan — in the desktop main
+  // process, where a logger is always attached.
+  const HUGE = "t".repeat(50_000);
+
+  it("stores a record type already bounded, not the raw megabyte", async () => {
+    const accumulator = createSessionAccumulator({ collectDiagnostics: true });
+    await scanTranscriptLines([USER_LINE, unknownRecord(HUGE)], accumulator);
+
+    const retained = [...accumulator.unknownRecordTypes.keys()];
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.length).toBeLessThan(200);
+    expect(retained[0]).not.toContain(HUGE);
+  });
+
+  it("stores an attribute name already bounded too", async () => {
+    const accumulator = createSessionAccumulator({ collectDiagnostics: true });
+    await scanTranscriptLines(
+      [USER_LINE, unknownRecord("ai-title", { aiTitle: "t", [HUGE]: 1 })],
+      accumulator
+    );
+
+    const retained = [...accumulator.unknownAttributes.values()].flatMap(
+      (set) => [...set]
+    );
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.length).toBeLessThan(200);
+    expect(retained[0]).not.toContain(HUGE);
+  });
+
+  it("still reports the dropped length, so bounding early loses no signal", async () => {
+    const { messages } = await reportFor([unknownRecord(HUGE)], true);
+
+    expect(messages.join("\n")).toContain(`(+${50_000 - 120} chars)`);
+  });
+});
+
+describe("the attribute-overflow suffix is per type (ISS-6576)", () => {
+  // `droppedUnknownAttributes` was one session-wide counter, and the suffix was
+  // computed once outside the loop, so a type that dropped nothing still
+  // reported as truncated. Both pre-existing cap tests used a single record
+  // type and could not catch it.
+  // `ai-title` overflows its 50-attribute cap; `last-prompt` carries one extra
+  // field and overflows nothing. Both are KNOWN record types, which is what
+  // routes their unconsumed keys through the attribute collector at all.
+  const overflowingLines = Array.from({ length: 60 }, (_, i) =>
+    unknownRecord("ai-title", { aiTitle: "t", [`novelField${i}`]: 1 })
+  );
+  const modestLine = unknownRecord("last-prompt", {
+    lastPrompt: "p",
+    extra: 1,
+  });
+
+  it("marks only the type that actually overflowed", async () => {
+    const { messages } = await reportFor(
+      [...overflowingLines, modestLine],
+      true
+    );
+
+    const bigLine = messages.find((m) => m.includes('record type "ai-title"'));
+    const smallLine = messages.find((m) =>
+      m.includes('record type "last-prompt"')
+    );
+    expect(bigLine).toContain("-attribute cap)");
+    expect(smallLine).toBeDefined();
+    expect(smallLine).not.toContain("-attribute cap)");
+  });
+
+  it("counts each type's overflow separately", async () => {
+    const accumulator = createSessionAccumulator({ collectDiagnostics: true });
+    await scanTranscriptLines(
+      [USER_LINE, ...overflowingLines, modestLine],
+      accumulator
+    );
+
+    expect(accumulator.droppedUnknownAttributes.get("ai-title")).toBe(10);
+    expect(
+      accumulator.droppedUnknownAttributes.get("last-prompt")
+    ).toBeUndefined();
+  });
+});
+
+describe("the report's own list grammar cannot be forged (ISS-6576)", () => {
+  it("quotes a name that impersonates a second list member", async () => {
+    // No newline needed: the list is `name (count), name (count)`, so a name
+    // carrying that delimiter used to read as another entry entirely.
+    const forged = "x (1), aws_secret_access_key";
+
+    const { messages } = await reportFor([unknownRecord(forged)], true);
+
+    const line = messages.find((m) => m.startsWith("Unknown record types:"));
+    expect(line).toBe(
+      'Unknown record types: "x (1), aws_secret_access_key" (1)'
+    );
+  });
+
+  it("escapes a line separator, which terminates a line for many viewers", async () => {
+    const { messages } = await reportFor(
+      [unknownRecord("evil\u2028fabricated")],
+      true
+    );
+
+    expect(messages[0]).toContain("evil\\u2028fabricated");
+    expect(messages[0]).not.toContain("\u2028");
+  });
+
+  it("escapes a bidi override, which can reorder a name on screen", async () => {
+    const { messages } = await reportFor(
+      [unknownRecord("safe\u202Ereversed")],
+      true
+    );
+
+    expect(messages[0]).toContain("safe\\u202ereversed");
+    expect(messages[0]).not.toContain("\u202E");
   });
 });

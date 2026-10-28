@@ -17,6 +17,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { useApiClient } from "../../shared/api/use-api-client";
+import { toastMutationError } from "../../shared/query/query-client";
 import { projectKeys } from "./project-keys";
 
 export type ProjectListFilters = {
@@ -103,8 +104,14 @@ export function useUpdateProject() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (input: UpdateProjectInput) => {
-      const { id, targetDate, lastIndexedAt, ...data } = input;
+    mutationFn: (input: UpdateProjectMutationInput) => {
+      const {
+        id,
+        targetDate,
+        lastIndexedAt,
+        recoverableErrorOwner: _recoverableErrorOwner,
+        ...data
+      } = input;
       return apiClient.put<ProjectWithDetails>(`/projects/${id}`, {
         ...data,
         ...(targetDate !== undefined && {
@@ -115,17 +122,28 @@ export function useUpdateProject() {
         }),
       });
     },
-    onSuccess: (result) => {
+    // A hook-level `onError` replaces the shared QueryClient default, so this
+    // toasts exactly as that default does, unless the field that sent this
+    // attempt still renders its own adjacent feedback for it (PRD-722).
+    onError: (error, input) => {
+      if (input.recoverableErrorOwner?.() !== true) {
+        toastMutationError(error);
+      }
+    },
+    // `onSettled`, as `useUpdateDocument` does (ISS-9667): a refused write
+    // (ISS-11198's stale guard) re-reads, so the field is handed the value
+    // that beat it.
+    onSettled: (result, _error, input) => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.invalidateQueries({
-        queryKey: projectKeys.detail(result.id),
+        queryKey: projectKeys.detail(input.id),
       });
-      if (result.slug) {
+      if (result?.slug) {
         queryClient.invalidateQueries({
           queryKey: projectKeys.bySlug(result.slug),
         });
       }
-      if (result.teams.length) {
+      if (result?.teams.length) {
         queryClient.invalidateQueries({
           queryKey: projectKeys.recent(result.teams[0].id),
         });
@@ -165,13 +183,19 @@ export function useUpdateProjectTargetDate() {
   const updateProject = useUpdateProject();
 
   return useMutation({
+    // The inner update owns the one toast-or-field decision for a refusal, so
+    // this wrapper never toasts the same rejection a second time.
+    meta: { suppressDefaultErrorToast: true },
     mutationFn: ({
       projectId,
+      recoverableErrorOwner,
       targetDate,
-    }: {
-      projectId: string;
-      targetDate: Date | null;
-    }) => updateProject.mutateAsync({ id: projectId, targetDate }),
+    }: UpdateProjectTargetDateInput) =>
+      updateProject.mutateAsync({
+        id: projectId,
+        targetDate,
+        ...(recoverableErrorOwner ? { recoverableErrorOwner } : {}),
+      }),
   });
 }
 
@@ -179,12 +203,13 @@ export function useUpdateProjectPriority() {
   const updateProject = useUpdateProject();
 
   return useMutation({
+    /** `null` clears the priority; PUT /projects/[id] reads it as the clear (ISS-9441). */
     mutationFn: ({
       projectId,
       priority,
     }: {
       projectId: string;
-      priority: Priority;
+      priority: Priority | null;
     }) => updateProject.mutateAsync({ id: projectId, priority }),
   });
 }
@@ -371,3 +396,15 @@ function buildProjectListQuery(teamId?: string, filters?: ProjectListFilters) {
   const query = searchParams.toString();
   return query ? `?${query}` : "";
 }
+
+type UpdateProjectTargetDateInput = {
+  projectId: string;
+  targetDate: Date | null;
+  /** Whether the adjacent cell error can still render for this attempt. */
+  recoverableErrorOwner?: () => boolean;
+};
+
+type UpdateProjectMutationInput = UpdateProjectInput & {
+  /** Whether the adjacent inline error can still render for this attempt. */
+  recoverableErrorOwner?: () => boolean;
+};

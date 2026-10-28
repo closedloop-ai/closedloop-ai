@@ -11,7 +11,7 @@ import {
 
 // The collapsed disclosure: one plain row per harness with its install rollup.
 // This is what the eye lands on before expanding into the full target × harness
-// grid. Plain rows, not boxed cards (Parker: don't box everything). The needs-
+// grid. Plain rows, not boxed cards (Pascoe: don't box everything). The needs-
 // action count is the only emphatic figure; it is the thing to act on.
 type MatrixSummaryProps = {
   component: PackComponent;

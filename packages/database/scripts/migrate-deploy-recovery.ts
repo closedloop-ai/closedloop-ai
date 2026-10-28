@@ -77,7 +77,7 @@ const POSTGRES_ENV_CONNECTION_ASSIGNMENT_PATTERN =
 // at ...", P1000 "Authentication failed against database server at `host`" (no
 // port at all), and libpq's own `connection to server at "host" port 5432
 // failed` nested inside a P0001 Database error. ISS-6558 routed that text into
-// the ensure route's 500 body and a GitHub Actions log (review: wongk).
+// the ensure route's 500 body and a GitHub Actions log (review: whitlockk).
 //
 // Anchored on the `server at` phrase all five share, and KEEPS it: a blanket
 // host:port sweep would also eat `at or near "SELCT"` and `schema.prisma:12`,
@@ -131,6 +131,8 @@ type RecoverMigrateDeployFailureDeps = {
    * A plain string union keeps this module decoupled from `migrate-telemetry.ts`.
    */
   onResetKind?: (kind: "p3005" | "p3009" | "p3018") => void;
+  /** Absent → `Remigrate`, the behavior every caller had before ISS-11785. */
+  previewReset?: PreviewResetMode;
 };
 
 type MigrateDeployFailureClassificationBase = {
@@ -387,20 +389,19 @@ export async function recoverMigrateDeployFailure(
   }
 
   if (classification.decision === MigrateDeployRecoveryDecision.PreviewReset) {
-    // Telemetry (ISS-4392): mirror prismaErrorLabel's precedence (P3009 → P3018 →
-    // P3005) so the reported reset kind matches the logged label. Isolated so a
-    // throwing callback can never abort the preview reset recovery below.
-    try {
-      if (classification.isP3009) {
-        deps.onResetKind?.("p3009");
-      } else if (classification.isP3018) {
-        deps.onResetKind?.("p3018");
-      } else {
-        deps.onResetKind?.("p3005");
+    if (deps.previewReset === PreviewResetMode.Never) {
+      // A recorded failed migration can be retried without deleting retained
+      // preview rows. Partial DDL still fails closed on the retry diagnostic.
+      if (classification.isP3009 && classification.migrationName) {
+        return recoverRolledBackMigration(
+          input,
+          deps,
+          classification.migrationName
+        );
       }
-    } catch {
-      // Best-effort; telemetry must never change recovery behavior.
+      throw input.error;
     }
+    reportResetKind(deps.onResetKind, classification);
     console.log(
       `↪ Preview schema ${input.schema} hit ${prismaErrorLabel(
         classification.isP3009,
@@ -408,12 +409,14 @@ export async function recoverMigrateDeployFailure(
       )}, resetting...`
     );
     await deps.resetSchema(input.databaseUrl, input.schema);
-    // Skip the CONCURRENTLY perf-index build on the freshly-reset preview schema
-    // (same rationale as the primary pipeline: empty ephemeral schema, no perf
-    // index needed, CONCURRENTLY's instance-wide wait is what drives the P1002
-    // storm). Best-effort/fail-open — provided by migrate.ts, no-op if absent.
-    await deps.prestampSkippableMigrations?.(input.databaseUrl, input.schema);
-    await deps.runMigrateDeploy(input.databaseUrl);
+    if (deps.previewReset !== PreviewResetMode.ResetOnly) {
+      // Skip the CONCURRENTLY perf-index build on the freshly-reset preview schema
+      // (same rationale as the primary pipeline: empty ephemeral schema, no perf
+      // index needed, CONCURRENTLY's instance-wide wait is what drives the P1002
+      // storm). Best-effort/fail-open — provided by migrate.ts, no-op if absent.
+      await deps.prestampSkippableMigrations?.(input.databaseUrl, input.schema);
+      await deps.runMigrateDeploy(input.databaseUrl);
+    }
     // Recovery-path registration: re-register schema after reset so FEA-1082 reaper can track it. Same transient-retry protection as the primary path.
     await withRetry(
       () =>
@@ -434,38 +437,11 @@ export async function recoverMigrateDeployFailure(
   if (
     classification.decision === MigrateDeployRecoveryDecision.ResolveRolledBack
   ) {
-    const migrationName = classification.migrationName;
-
-    console.log(
-      `↪ Failed migration detected: ${migrationName}, resolving as rolled-back...`
+    return recoverRolledBackMigration(
+      input,
+      deps,
+      classification.migrationName
     );
-    await deps.resolveFailedMigration(input.databaseUrl, migrationName);
-    console.log("↪ Retrying migrate deploy...");
-    try {
-      await deps.runMigrateDeploy(input.databaseUrl);
-    } catch (retryError) {
-      const retryClassification = classifyRollbackRetryFailure({
-        retryError,
-        migrationName,
-      });
-
-      if (retryClassification) {
-        // Do not attach retryError as `cause`: its raw stdout/stderr can carry
-        // credential-bearing Prisma output that the formatter deliberately
-        // sanitizes out. The sanitized fragment is already in the message, and
-        // migrate.ts has already emitted the raw output to the deploy log.
-        throw new Error(
-          formatPartialCommittedDdlArtifactErrorMessage({
-            migrationName,
-            sqlstate: retryClassification.sqlstate,
-            databaseErrorFragment: retryClassification.databaseErrorFragment,
-          })
-        );
-      }
-
-      throw retryError;
-    }
-    return false;
   }
 
   throw input.error;
@@ -488,7 +464,7 @@ export async function recoverMigrateDeployFailure(
  *
  * Bounded with `truncateOperatorErrorFragment` rather than a second scheme, and
  * the DIAGNOSIS is extracted before that bound rather than left to survive it
- * (review: wongk). The window is a front slice of `stderr` then `stdout` joined,
+ * (review: whitlockk). The window is a front slice of `stderr` then `stdout` joined,
  * so 500 characters of stderr drop stdout entirely — and the two streams split
  * the diagnosis between them: `migration-pipeline-prisma-cli.test.ts` pins a
  * real run writing `Error: P3009` to stderr while the migration name arrives on
@@ -523,4 +499,103 @@ export function sanitizeOperatorCliOutput(error: unknown): string | null {
     return bounded;
   }
   return `${bounded}\n${truncateOperatorErrorFragment(dropped.join("\n"))}`;
+}
+
+/** The migration a rolled-back recovery resolved, and the failure that made it. */
+export type RolledBackRetryFailure = {
+  migrationName: string;
+  originalError: unknown;
+};
+
+/**
+ * ISS-11781 (review: whitlockk): the rolled-back retry's error is rethrown
+ * unchanged, which drops the failure that started the recovery. A caller that
+ * reports the error — the ensure route, which would otherwise read a P1002 from
+ * the retry as "nothing was applied" — reads that context back here.
+ */
+const rolledBackRetryFailures = new WeakMap<object, RolledBackRetryFailure>();
+
+export function rolledBackRetryFailureOf(
+  error: unknown
+): RolledBackRetryFailure | null {
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+  return rolledBackRetryFailures.get(error) ?? null;
+}
+
+/**
+ * What the `PreviewReset` decision does (ISS-11785). Re-migrating a reset preview
+ * runs every migration against an EMPTY schema, so a migration that fails on real
+ * rows passes on the retry and the failure is gone from view.
+ */
+export const PreviewResetMode = {
+  /** Drop, recreate and re-migrate the empty schema. */
+  Remigrate: "remigrate",
+  /** Drop and recreate only; the caller rebuilds the schema on a clone of `public`. */
+  ResetOnly: "reset_only",
+  /** No destructive reset; P3009 may use Prisma's rolled-back retry. */
+  Never: "never",
+} as const;
+
+export type PreviewResetMode =
+  (typeof PreviewResetMode)[keyof typeof PreviewResetMode];
+
+/**
+ * Telemetry (ISS-4392): mirror prismaErrorLabel's precedence (P3009 → P3018 →
+ * P3005) so the reported reset kind matches the logged label. Isolated so a
+ * throwing callback can never abort the preview reset recovery.
+ */
+function reportResetKind(
+  onResetKind: RecoverMigrateDeployFailureDeps["onResetKind"],
+  classification: MigrateDeployFailureClassificationBase
+): void {
+  try {
+    if (classification.isP3009) {
+      onResetKind?.("p3009");
+    } else if (classification.isP3018) {
+      onResetKind?.("p3018");
+    } else {
+      onResetKind?.("p3005");
+    }
+  } catch {
+    // Best-effort; telemetry must never change recovery behavior.
+  }
+}
+
+async function recoverRolledBackMigration(
+  input: RecoverMigrateDeployFailureInput,
+  deps: RecoverMigrateDeployFailureDeps,
+  migrationName: string
+): Promise<boolean> {
+  console.log(
+    `↪ Failed migration detected: ${migrationName}, resolving as rolled-back...`
+  );
+  await deps.resolveFailedMigration(input.databaseUrl, migrationName);
+  console.log("↪ Retrying migrate deploy...");
+  try {
+    await deps.runMigrateDeploy(input.databaseUrl);
+  } catch (retryError) {
+    const retryClassification = classifyRollbackRetryFailure({
+      retryError,
+      migrationName,
+    });
+    if (retryClassification) {
+      throw new Error(
+        formatPartialCommittedDdlArtifactErrorMessage({
+          migrationName,
+          sqlstate: retryClassification.sqlstate,
+          databaseErrorFragment: retryClassification.databaseErrorFragment,
+        })
+      );
+    }
+    if (typeof retryError === "object" && retryError !== null) {
+      rolledBackRetryFailures.set(retryError, {
+        migrationName,
+        originalError: input.error,
+      });
+    }
+    throw retryError;
+  }
+  return false;
 }

@@ -15,7 +15,7 @@
  * transition when the identity is merely SEEN makes one transient rejection
  * permanent — main re-posts the same cached identity on its own schedule, every
  * later post matches the suppression key, and the corpus stays unattributed
- * until the next restart (PR #4947 review, wongk). So the key is the last
+ * until the next restart (PR #4947 review, whitlockk). So the key is the last
  * SETTLED user, marked in the promise's `then`, and a failure is reported rather
  * than swallowed. A settled-but-skipped claim (nobody signed in, or a foreign
  * owner present) still counts as settled: neither outcome can change without a

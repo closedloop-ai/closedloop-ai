@@ -83,35 +83,35 @@ describe("useAgentComponentsViewState", () => {
   // ISS-4667: the KLOC-unit and inverted $/KLOC modes are gone. A view persisted
   // under either legacy value must MIGRATE to LOC/$ — not fail validation, which
   // would discard the rest of the saved view (sort, hidden columns, order) too.
-  it.each([
-    ["kloc-per-dollar"],
-    ["dollar-per-kloc"],
-  ])("migrates a persisted %s metricMode to LOC/$ and keeps the rest of the view", (legacyMode) => {
-    localStorage.setItem(
-      "agents:saved-view:agents:legacy",
-      JSON.stringify({
-        sortKey: AgentComponentSortKey.Source,
-        sortDir: AgentComponentSortDir.Desc,
-        groupBy: AgentComponentGroupBy.Harness,
-        metricMode: legacyMode,
-        hiddenColumns: ["harness"],
-        columnOrder: ["metric", "type"],
-      })
-    );
+  it.each([["kloc-per-dollar"], ["dollar-per-kloc"]])(
+    "migrates a persisted %s metricMode to LOC/$ and keeps the rest of the view",
+    (legacyMode) => {
+      localStorage.setItem(
+        "agents:saved-view:agents:legacy",
+        JSON.stringify({
+          sortKey: AgentComponentSortKey.Source,
+          sortDir: AgentComponentSortDir.Desc,
+          groupBy: AgentComponentGroupBy.Harness,
+          metricMode: legacyMode,
+          hiddenColumns: ["harness"],
+          columnOrder: ["metric", "type"],
+        })
+      );
 
-    const { result } = renderHook(() =>
-      useAgentComponentsViewState("agents:legacy")
-    );
+      const { result } = renderHook(() =>
+        useAgentComponentsViewState("agents:legacy")
+      );
 
-    expect(result.current.metricMode).toBe(AgentMetricMode.LocPerDollar);
-    // The rest of the saved view survives the migration — a failed parse would
-    // have reset every one of these to its default.
-    expect(result.current.sortKey).toBe(AgentComponentSortKey.Source);
-    expect(result.current.sortDir).toBe(AgentComponentSortDir.Desc);
-    expect(result.current.groupBy).toBe(AgentComponentGroupBy.Harness);
-    expect(result.current.visibleColumns.has("harness")).toBe(false);
-    expect(result.current.columnOrder).toEqual(["metric", "type"]);
-  });
+      expect(result.current.metricMode).toBe(AgentMetricMode.LocPerDollar);
+      // The rest of the saved view survives the migration — a failed parse would
+      // have reset every one of these to its default.
+      expect(result.current.sortKey).toBe(AgentComponentSortKey.Source);
+      expect(result.current.sortDir).toBe(AgentComponentSortDir.Desc);
+      expect(result.current.groupBy).toBe(AgentComponentGroupBy.Harness);
+      expect(result.current.visibleColumns.has("harness")).toBe(false);
+      expect(result.current.columnOrder).toEqual(["metric", "type"]);
+    }
+  );
 
   it("persists and restores view state via localStorage persistKey", () => {
     const persistKey = "agents:web";
@@ -220,5 +220,73 @@ describe("useAgentComponentsViewState", () => {
     const { result } = renderHook(() => useAgentComponentsViewState());
     expect(result.current.visibleColumns.has("name" as never)).toBe(false);
     expect(result.current.visibleColumns.has("actions" as never)).toBe(false);
+  });
+});
+
+/**
+ * ISS-9447 M2 — the per-axis version envelope on the catalog.
+ *
+ * The reason the envelope exists in this file as well as in the Sessions one:
+ * both surfaces store a marker named `savedViewVersion`, and it means a
+ * different axis on each. A single legacy-name table in the shared module would
+ * map one name to two axes and silently stamp the wrong one.
+ */
+describe("ISS-9447 M2: the Agent Components view-state version envelope", () => {
+  function roundTrip(persistKey: string): Record<string, unknown> {
+    const { unmount } = renderHook(() =>
+      useAgentComponentsViewState(persistKey)
+    );
+    unmount();
+    return JSON.parse(
+      localStorage.getItem(`agents:saved-view:${persistKey}`) ?? "{}"
+    );
+  }
+
+  it("maps the legacy marker to the SORT axis, not the column-order axis", () => {
+    localStorage.setItem(
+      "agents:saved-view:agents:envelope",
+      JSON.stringify({
+        hiddenColumns: ["source"],
+        savedViewVersion: 1,
+        sortDir: AgentComponentSortDir.Desc,
+        sortKey: AgentComponentSortKey.Invocations,
+      })
+    );
+
+    const persisted = roundTrip("agents:envelope");
+
+    // `sort`, and nothing else. On Sessions the identically-named field stamps
+    // `columnOrder`; a shared name table would have to answer both, and could
+    // only be wrong about one of them.
+    expect(persisted.viewStateVersions).toEqual({ sort: 1 });
+    // The legacy mirror is still written, so a build without the envelope keeps
+    // reading the marker it always read.
+    expect(persisted.savedViewVersion).toBe(1);
+    // Not vacuous: the reader's own view really did round-trip.
+    expect(persisted.hiddenColumns).toEqual(["source"]);
+    expect(persisted.sortKey).toBe(AgentComponentSortKey.Invocations);
+  });
+
+  it("round-trips a stored columnWidths map instead of overwriting it with {}", () => {
+    // The same inherited finding the Sessions schema carried: an undeclared
+    // field is stripped on read and written back as `{}` by the shared hook's
+    // restore write, destroying a newer build's width state on mount alone.
+    localStorage.setItem(
+      "agents:saved-view:agents:widths",
+      JSON.stringify({
+        columnWidths: { "future-column": 180, type: 200 },
+        hiddenColumns: [],
+        savedViewVersion: 1,
+        sortDir: AgentComponentSortDir.Asc,
+        sortKey: AgentComponentSortKey.Name,
+      })
+    );
+
+    const persisted = roundTrip("agents:widths");
+
+    expect(persisted.columnWidths).toEqual({
+      "future-column": 180,
+      type: 200,
+    });
   });
 });

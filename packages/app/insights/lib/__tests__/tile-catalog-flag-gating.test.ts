@@ -139,19 +139,20 @@ describe("spend-by-outcome slice colours", () => {
   // floor. A donut slice is the datum, not a decoration beside it: its arc
   // length is what encodes the value, so a slice the reader cannot resolve
   // against the card is a number they cannot get, whatever the legend says.
-  it.each(
-    A11Y_THEMES
-  )("clears the non-text contrast floor against the card in %s", (theme) => {
-    const card = themeToken(theme, "--card");
-    for (const [outcome, color] of Object.entries(SPEND_OUTCOME_COLORS)) {
-      assertContrastPair({
-        background: card,
-        foreground: resolveThemeColor(theme, color),
-        label: `spend-outcome "${outcome}" slice on --card in ${theme}`,
-        threshold: ContrastThreshold.NonText,
-      });
+  it.each(A11Y_THEMES)(
+    "clears the non-text contrast floor against the card in %s",
+    (theme) => {
+      const card = themeToken(theme, "--card");
+      for (const [outcome, color] of Object.entries(SPEND_OUTCOME_COLORS)) {
+        assertContrastPair({
+          background: card,
+          foreground: resolveThemeColor(theme, color),
+          label: `spend-outcome "${outcome}" slice on --card in ${theme}`,
+          threshold: ContrastThreshold.NonText,
+        });
+      }
     }
-  });
+  );
 
   // Proves the floor above is not vacuous. Every entry is a value this exact
   // map has really carried, each of which the denylist test passed; the floor
@@ -177,18 +178,19 @@ describe("spend-by-outcome slice colours", () => {
     { color: "var(--chart-3)", theme: A11yTheme.Light },
   ];
 
-  it.each(
-    FAILED_FLOOR_HISTORICALLY
-  )("rejects $color as a slice colour in $theme", ({ color, theme }) => {
-    expect(() =>
-      assertContrastPair({
-        background: themeToken(theme, "--card"),
-        foreground: resolveThemeColor(theme, color),
-        label: `${color} in ${theme}`,
-        threshold: ContrastThreshold.NonText,
-      })
-    ).toThrow(BELOW_CONTRAST_FLOOR_MESSAGE);
-  });
+  it.each(FAILED_FLOOR_HISTORICALLY)(
+    "rejects $color as a slice colour in $theme",
+    ({ color, theme }) => {
+      expect(() =>
+        assertContrastPair({
+          background: themeToken(theme, "--card"),
+          foreground: resolveThemeColor(theme, color),
+          label: `${color} in ${theme}`,
+          threshold: ContrastThreshold.NonText,
+        })
+      ).toThrow(BELOW_CONTRAST_FLOOR_MESSAGE);
+    }
+  );
 
   // The cross-card collision: on one dashboard `--muted` is the heatmap's "no
   // activity" cell, so reusing it for a spend bucket makes one grey mean both
@@ -263,23 +265,27 @@ describe("spend-by-outcome slice adjacency", () => {
     return parseCssColor(resolveThemeColor(theme, color));
   }
 
-  it.each(
-    A11Y_THEMES
-  )("cannot separate any slice pair by colour alone in %s", (theme) => {
-    const colors = Object.values(SPEND_OUTCOME_COLORS);
-    const pairRatios: number[] = [];
-    for (let i = 0; i < colors.length; i++) {
-      for (let j = i + 1; j < colors.length; j++) {
-        pairRatios.push(
-          contrastRatio(sliceRgb(theme, colors[i]), sliceRgb(theme, colors[j]))
-        );
+  it.each(A11Y_THEMES)(
+    "cannot separate any slice pair by colour alone in %s",
+    (theme) => {
+      const colors = Object.values(SPEND_OUTCOME_COLORS);
+      const pairRatios: number[] = [];
+      for (let i = 0; i < colors.length; i++) {
+        for (let j = i + 1; j < colors.length; j++) {
+          pairRatios.push(
+            contrastRatio(
+              sliceRgb(theme, colors[i]),
+              sliceRgb(theme, colors[j])
+            )
+          );
+        }
       }
-    }
 
-    // Six pairs for four buckets — the whole adjacency space, not a sample.
-    expect(pairRatios).toHaveLength(6);
-    expect(Math.max(...pairRatios)).toBeLessThan(ContrastThreshold.NonText);
-  });
+      // Six pairs for four buckets — the whole adjacency space, not a sample.
+      expect(pairRatios).toHaveLength(6);
+      expect(Math.max(...pairRatios)).toBeLessThan(ContrastThreshold.NonText);
+    }
+  );
 
   // ...which is why the donut draws a separator, and why THIS token: the ring is
   // painted on the card, so the separator is the one colour every slice is

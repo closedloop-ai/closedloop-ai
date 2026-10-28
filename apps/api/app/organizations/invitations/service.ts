@@ -1,10 +1,12 @@
 import {
   type InviteMemberResult,
+  InviteMemberStatus,
   type InviteMembersResponse,
   OrgInviteRole,
 } from "@repo/api/src/types/onboarding";
 import { log } from "@repo/observability/log";
 import { clerkService } from "@/lib/auth/clerk-service";
+import { onboardingService } from "../../onboarding/service";
 
 /**
  * Clerk returns HTTP 400 with this error code when the email already belongs to
@@ -40,8 +42,15 @@ export const invitationsService = {
    * De-duplication is handled upstream by the Zod validator.
    */
   async inviteMembers(params: {
+    organizationId: string;
     clerkOrgId: string;
     inviterClerkUserId: string;
+    /**
+     * The APP user doing the inviting (ISS-11670), for the per-user
+     * invites-sent marker. Distinct from `inviterClerkUserId`, which is the
+     * Clerk principal Clerk's own invitation is attributed to.
+     */
+    inviterUserId: string;
     emailAddresses: string[];
     role?: OrgInviteRole;
   }): Promise<InviteMembersResponse> {
@@ -59,19 +68,23 @@ export const invitationsService = {
         results.push({
           email,
           invitationId: invitation.id,
-          status: "invited",
+          status: InviteMemberStatus.Invited,
         });
       } catch (error) {
         const code = extractClerkErrorCode(error);
         if (code && CLERK_DUPLICATE_INVITE_CODES.has(code)) {
           results.push({
             email,
-            status: "already_member",
+            status: InviteMemberStatus.AlreadyMember,
             reason: "Email is already a member or has a pending invitation",
           });
           continue;
         }
         log.error("Failed to create Clerk organization invitation", {
+          // ISS-8866: the APP org, not the Clerk one. `clerkOrgId` stays
+          // because it is what the failing Clerk call was scoped to, but it is
+          // the id an operator cannot pivot a tenant on without a join.
+          organizationId: params.organizationId,
           clerkOrgId: params.clerkOrgId,
           email,
           code,
@@ -79,14 +92,66 @@ export const invitationsService = {
         });
         results.push({
           email,
-          status: "failed",
+          status: InviteMemberStatus.Failed,
           reason:
             extractClerkErrorMessage(error) ?? "Failed to send invitation",
         });
       }
     }
 
-    const invited = results.filter((r) => r.status === "invited").length;
+    const invited = results.filter(
+      (r) => r.status === InviteMemberStatus.Invited
+    ).length;
+    if (invited > 0) {
+      await recordInvitesSent(params.organizationId);
+      await recordUserInvitesSent(params.organizationId, params.inviterUserId);
+    }
     return { invited, results };
   },
 };
+
+/**
+ * Mark the org as having invited someone, which is what completes the
+ * onboarding checklist's invite row.
+ *
+ * Best-effort by design: the invitations are already minted by the time this
+ * runs, so a failed marker write must not fail the caller's request. The cost
+ * is an unticked checklist row until the next invite lands.
+ */
+async function recordInvitesSent(organizationId: string): Promise<void> {
+  try {
+    await onboardingService.recordInvitesSent(organizationId);
+  } catch (error) {
+    log.error("Failed to record onboarding invites-sent marker", {
+      organizationId,
+      error,
+    });
+  }
+}
+
+/**
+ * Mark this USER as having invited someone, which is what completes the guided
+ * run's invite step (ISS-11670).
+ *
+ * Gated on `invited > 0` by its caller, the same as the org marker above, so
+ * `already_member` — a 200 that invites nobody — stamps nothing and leaves the
+ * step outstanding for a reader who sent no invitation.
+ *
+ * Best-effort for the same reason the org marker is: the invitations are
+ * already minted by the time this runs, so a failed marker write must not fail
+ * the caller's request. The cost is an invite step that asks again.
+ */
+async function recordUserInvitesSent(
+  organizationId: string,
+  userId: string
+): Promise<void> {
+  try {
+    await onboardingService.recordUserInvitesSent(organizationId, userId);
+  } catch (error) {
+    log.error("Failed to record per-user onboarding invites-sent marker", {
+      organizationId,
+      userId,
+      error,
+    });
+  }
+}

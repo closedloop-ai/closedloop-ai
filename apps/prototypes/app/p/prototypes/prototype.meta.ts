@@ -1,4 +1,5 @@
 import {
+  PrototypeDeliveryMode,
   type PrototypeMeta,
   PrototypeStatus,
   PrototypeTag,
@@ -9,10 +10,11 @@ export const meta = {
   title: "Prototypes as artifacts",
   summary:
     "A first-class Prototypes artifact list and detail workspace with versioned hosted previews, provenance, collaborator presence, and DOM-anchored review comments.",
-  author: "Parker",
+  author: "Pascoe",
   status: PrototypeStatus.ReadyForReview,
   tags: [PrototypeTag.Feature],
   createdAt: "2026-07-28",
   linearIssue: null,
   closedloopDoc: "PRD-568",
+  deliveryMode: PrototypeDeliveryMode.DisposableSketch,
 } satisfies PrototypeMeta;

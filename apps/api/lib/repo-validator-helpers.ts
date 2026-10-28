@@ -4,10 +4,9 @@ import { z } from "zod";
 
 /**
  * Shared Zod building blocks for validators that accept repository selections
- * (Loop dispatch, document creation, etc.). Centralizing avoids drift between
- * the various repo-input surfaces — e.g. document creation's
- * `repositorySelection` and Loop dispatch's `repo` / `additionalRepos` must
- * apply the same constraints so values are interoperable round-trip.
+ * (document creation, etc.). Centralizing avoids drift between the various
+ * repo-input surfaces, which must apply the same constraints so values are
+ * interoperable round-trip.
  */
 
 export const REPO_FULL_NAME_MAX_LENGTH = 256;

@@ -1,5 +1,5 @@
 import { clampStorageTokenCount } from "../cost/token-counts.js";
-import { writePersistentLog } from "../logging/persistent-log.js";
+import { writePersistentLog } from "../logging/durable-log-sink.js";
 
 type StoredUsageTokenCounts = {
   input_tokens: unknown;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
 import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
@@ -51,7 +51,7 @@ test("list item branch is null for a read-only session even when attribution.bas
       externalSessionId: "read-only",
       branch: null,
       attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         baseBranch: "main",
       },
     })
@@ -68,7 +68,7 @@ test("list item branch reflects the write-derived branch when present", async ()
       externalSessionId: "wrote-branch",
       branch: "feat/x",
       attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         baseBranch: "main",
       },
     })
@@ -93,7 +93,7 @@ test("CREATED PR write is suppressed when the session has no resolved branch", a
       // No write-derived branch resolved for this session.
       branch: null,
       attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         baseBranch: "main",
       },
       prs: [
@@ -105,7 +105,7 @@ test("CREATED PR write is suppressed when the session has no resolved branch", a
       ],
       prRefs: [
         {
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           prNumber: 4188,
           relationType: SessionPrRelationType.Created,
         },
@@ -127,12 +127,12 @@ test("CREATED PR write renders when the session's branch is present", async () =
       externalSessionId: "pr-write-with-branch",
       branch: "feat/fea-4188",
       attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         baseBranch: "main",
       },
       prRefs: [
         {
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           prNumber: 4188,
           relationType: SessionPrRelationType.Created,
         },
@@ -154,12 +154,12 @@ test("REFERENCED PR ref still renders without a resolved branch (not a write)", 
       externalSessionId: "referenced-pr",
       branch: null,
       attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         baseBranch: "main",
       },
       prRefs: [
         {
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           prNumber: 999,
           relationType: SessionPrRelationType.Referenced,
         },

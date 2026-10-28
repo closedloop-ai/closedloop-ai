@@ -1,0 +1,67 @@
+-- ISS-6757, step 2 of 3: backfill `component_key_normalized` for the rows that
+-- predate the trigger added in 20260820140000.
+--
+-- HAND-WRITTEN ON PURPOSE (packages/database/AGENTS.md): a pure DATA migration.
+-- There is no schema change here, so `prisma migrate dev` has nothing to
+-- generate and reports no drift after it is applied.
+--
+-- A SEPARATE FILE, DELIBERATELY. `prisma migrate deploy` wraps each migration
+-- file in its own transaction, and step 1 opens with `ALTER TABLE … ADD COLUMN`,
+-- which takes ACCESS EXCLUSIVE for the life of that transaction. Putting this
+-- UPDATE in the same file would hold that lock for the whole rewrite and stall
+-- every desktop invocation-sync writer for the duration. On its own the UPDATE
+-- takes only ROW EXCLUSIVE, which does not block inserts.
+--
+-- NO GAP BETWEEN THE TWO STEPS. The trigger from step 1 is already live when
+-- this runs, so any row written in between is folded on the way in and this
+-- statement simply does not select it. Ordering is guaranteed by the directory
+-- timestamps (…220000 then …220100), which is also what the append-only
+-- migration-order gate in scripts/lint/check-destructive-migrations.ts enforces.
+--
+-- HOW LONG IT HOLDS, AND WHAT THAT BLOCKS. This is a single set-based UPDATE
+-- over the whole table, and a Prisma migration file IS one transaction, so the
+-- statement cannot be chunked into shorter holds without splitting it across
+-- migration directories. Measured on the seeded 420,000-row slice: 16.0 s, i.e.
+-- ~26,000 rows/s on a laptop-class instance.
+--
+-- This statement NAMES `component_key_normalized`, so step 1's trigger fires for
+-- every row it rewrites, and the value below is the one the trigger writes —
+-- the same `lower(component_key)`, so the result is identical either way.
+-- Measured marginal cost, same statement over a 420,000-row table with the
+-- trigger disabled and then enabled: 0.13-0.92 s over the run (0.3-2.2 us/row),
+-- under 6% of the 16.0 s above, which is dominated by the wide-row rewrite and
+-- its WAL rather than by the per-row fold. The rate and the threshold below
+-- therefore stand as written. `prisma migrate deploy` runs under
+-- `withMigrationSerializeLock` (packages/database/scripts/migration-lock.ts),
+-- whose peer budget is MIGRATION_SERIALIZE_LOCK_BUDGET_MS = 300 s — so a table
+-- past roughly 8M rows can make a CONCURRENT deploy exhaust that budget. That
+-- gate FAILS OPEN by design: a peer that times out runs its migrate ungated and
+-- falls back to Prisma's own advisory lock plus the FEA-3062 P1002 retry, so
+-- this cannot fail a deploy — it can only slow a simultaneous one.
+--
+-- OPERATOR ESCAPE, if this table has outgrown that: run the statement below by
+-- hand against production ahead of the deploy (it takes only ROW EXCLUSIVE, so
+-- it does not block ingest), then `prisma migrate resolve --applied
+-- 20260820140100_iss6757_backfill_invocation_component_key_normalized` so the
+-- deploy skips it. The statement is idempotent, so doing this and then letting
+-- the migration run anyway is also safe.
+--
+-- UNCONDITIONAL ON PURPOSE — NOT narrowed to `agent_component_id IS NULL`, even
+-- though that is the only population the read's fallback arm and the index in
+-- step 3 ever touch. `fk_aci_component` is `ON DELETE SET NULL`, so deleting an
+-- inventory component moves its invocations INTO the unattributed population
+-- without touching `component_key` — and the trigger, which fires only on a
+-- statement naming `component_key` or `component_key_normalized`, would not fold
+-- them. A narrowed backfill would leave those rows NULL and silently invisible
+-- to the read forever.
+--
+-- IDEMPOTENT / RE-RUNNABLE: `WHERE component_key_normalized IS NULL` means a
+-- second application selects nothing. It cannot overwrite a value the trigger
+-- wrote, and `component_key` is NOT NULL so `lower()` yields no NULL of its own.
+--
+-- ADDITIVE: writes one previously-NULL column. No DROP, no ALTER, no row
+-- deleted.
+
+UPDATE "agent_component_invocations"
+SET "component_key_normalized" = lower("component_key")
+WHERE "component_key_normalized" IS NULL;

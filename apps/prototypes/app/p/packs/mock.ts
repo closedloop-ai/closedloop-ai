@@ -22,7 +22,6 @@ export type NavIconName =
   | "agents"
   | "packs"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -56,7 +55,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches" },
-  { label: "Agents", icon: "agents" },
+  { label: "Agentic Components", icon: "agents" },
   { label: "Packs", icon: "packs", isActive: true },
 ];
 
@@ -67,7 +66,7 @@ export const teams: readonly TeamItem[] = [
     name: "ClosedLoop",
     favorites: [
       { id: "fav-night-crew", name: "Night Crew" },
-      { id: "fav-parker-triage", name: "Parker Triage" },
+      { id: "fav-pascoe-triage", name: "Pascoe Triage" },
       { id: "fav-sprint", name: "6/29-7/2" },
     ],
   },
@@ -77,7 +76,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -93,7 +91,7 @@ export const TEAM_MEMBERS: readonly string[] = [
   "Imani Reid",
   "Kenji Tan",
   "Ada Nunez",
-  "Parker Byrd",
+  "Pascoe Birchall",
   "Tomas Vidal",
 ];
 
@@ -105,7 +103,7 @@ export const USER_COLORS: Record<string, string> = {
   "Imani Reid": "#f59e0b",
   "Kenji Tan": "#8b5cf6",
   "Ada Nunez": "#0891b2",
-  "Parker Byrd": "#db2777",
+  "Pascoe Birchall": "#db2777",
   "Tomas Vidal": "#2563eb",
 };
 
@@ -113,7 +111,7 @@ export const TEAM_SIZE = TEAM_MEMBERS.length;
 
 // The signed-in member. Packs this member installed render as "Installed";
 // everyone else's installs drive the team-usage numbers.
-export const CURRENT_USER = "Parker Byrd";
+export const CURRENT_USER = "Pascoe Birchall";
 
 // ---------------------------------------------------------------------------
 // Pack catalog model
@@ -209,7 +207,7 @@ export type PackPerformance = {
   tokenEfficiencyDelta: number;
   /** 8-point efficiency trend for a sparkline (oldest to newest). */
   efficiencyTrend: readonly number[];
-  /** Average reviewer/judge score, 0-10. */
+  /** Average quality score, 0-10. */
   qualityScore: number;
   /** % higher quality vs. baseline. */
   qualityDelta: number;
@@ -355,7 +353,7 @@ export const mockPacks: readonly Pack[] = [
       "Imani Reid",
       "Kenji Tan",
       "Ada Nunez",
-      "Parker Byrd",
+      "Pascoe Birchall",
       "Tomas Vidal",
     ],
     installedByMe: true,
@@ -425,7 +423,7 @@ export const mockPacks: readonly Pack[] = [
       "Imani Reid",
       "Kenji Tan",
       "Ada Nunez",
-      "Parker Byrd",
+      "Pascoe Birchall",
     ],
     installedByMe: true,
     installTrend: [2, 3, 3, 4, 4, 5, 6, 6],
@@ -515,7 +513,7 @@ export const mockPacks: readonly Pack[] = [
     stars: 960,
     verified: true,
     harnesses: [Harness.Claude],
-    installers: ["Maya Chen", "Kenji Tan", "Parker Byrd"],
+    installers: ["Maya Chen", "Kenji Tan", "Pascoe Birchall"],
     installedByMe: true,
     installTrend: [1, 1, 2, 2, 2, 3, 3, 3],
     contents: [
@@ -658,7 +656,7 @@ export const mockPacks: readonly Pack[] = [
     stars: 1290,
     verified: false,
     harnesses: [Harness.Claude],
-    installers: ["Parker Byrd", "Devon Park"],
+    installers: ["Pascoe Birchall", "Devon Park"],
     installedByMe: true,
     installTrend: [0, 0, 1, 1, 1, 2, 2, 2],
     contents: [

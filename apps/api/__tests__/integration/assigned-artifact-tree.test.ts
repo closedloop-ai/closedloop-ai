@@ -8,6 +8,7 @@ import {
   createTestOrganization,
   createTestProject,
   createTestUser,
+  linkValidSessionToBranch,
 } from "../utils/db-helpers";
 
 const env = keys();
@@ -35,7 +36,8 @@ describe.skipIf(!hasDatabase)(
         const result =
           await assignedArtifactTreeService.getAssignedArtifactTree(
             user.id,
-            orgId
+            orgId,
+            user.id
           );
 
         expect(result).toEqual({ nodes: [], externalParents: [] });
@@ -62,7 +64,8 @@ describe.skipIf(!hasDatabase)(
         const result =
           await assignedArtifactTreeService.getAssignedArtifactTree(
             user.id,
-            orgId
+            orgId,
+            user.id
           );
 
         expect(result.nodes.map((node) => node.root.id)).toEqual([root.id]);
@@ -108,7 +111,8 @@ describe.skipIf(!hasDatabase)(
         const result =
           await assignedArtifactTreeService.getAssignedArtifactTree(
             user.id,
-            orgId
+            orgId,
+            user.id
           );
 
         const returnedIds = [
@@ -142,7 +146,8 @@ describe.skipIf(!hasDatabase)(
         const result =
           await assignedArtifactTreeService.getAssignedArtifactTree(
             user.id,
-            orgId
+            orgId,
+            user.id
           );
 
         const returnedIds = result.nodes.flatMap((node) => [
@@ -179,7 +184,8 @@ describe.skipIf(!hasDatabase)(
         const result =
           await assignedArtifactTreeService.getAssignedArtifactTree(
             user.id,
-            orgId
+            orgId,
+            user.id
           );
 
         expect(result.nodes.map((node) => node.root.id)).toEqual([assigned.id]);
@@ -191,6 +197,84 @@ describe.skipIf(!hasDatabase)(
         ).toEqual([[assigned.id, parent.id]]);
       });
     });
+
+    // ISS-12251 D-5: an assigned session stays off My Tasks, against the real
+    // predicate.
+    it("keeps an assigned session out", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const user = await createTestUser(orgId);
+        const projectId = await createTestProject(orgId, user.id);
+        const document = await createArtifact(
+          orgId,
+          projectId,
+          "Assigned Feature",
+          user.id
+        );
+        const session = await createArtifact(
+          orgId,
+          projectId,
+          "Assigned Session",
+          user.id,
+          ArtifactType.Session
+        );
+
+        const result =
+          await assignedArtifactTreeService.getAssignedArtifactTree(
+            user.id,
+            orgId,
+            user.id
+          );
+
+        const rootIds = result.nodes.map((node) => node.root.id);
+        expect(rootIds).toContain(document.id);
+        expect(rootIds).not.toContain(session.id);
+      });
+    });
+
+    // ISS-12463: branches are not tasks. The branch is reachable both ways an
+    // anchor query once admitted one — assigned to the user and written by
+    // them — and is still not an anchor.
+    it("keeps a branch the user is assigned to and wrote out", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const user = await createTestUser(orgId);
+        const projectId = await createTestProject(orgId, user.id);
+        const document = await createArtifact(
+          orgId,
+          projectId,
+          "Assigned Feature",
+          user.id
+        );
+        const branch = await createArtifact(
+          orgId,
+          projectId,
+          "feature/assigned-and-written",
+          user.id,
+          ArtifactType.Branch
+        );
+        await linkValidSessionToBranch({
+          organizationId: orgId,
+          userId: user.id,
+          branchArtifactId: branch.id,
+          label: "assigned-and-written",
+        });
+
+        const result =
+          await assignedArtifactTreeService.getAssignedArtifactTree(
+            user.id,
+            orgId,
+            user.id
+          );
+
+        const returnedIds = result.nodes.flatMap((node) => [
+          node.root.id,
+          ...node.children.map((child) => child.id),
+        ]);
+        expect(returnedIds).toContain(document.id);
+        expect(returnedIds).not.toContain(branch.id);
+      });
+    });
   }
 );
 
@@ -198,7 +282,8 @@ function createArtifact(
   organizationId: string,
   projectId: string,
   name: string,
-  assigneeId?: string
+  assigneeId?: string,
+  type: ArtifactType = ArtifactType.Document
 ) {
   return withDb((db) =>
     db.artifact.create({
@@ -206,7 +291,7 @@ function createArtifact(
         organizationId,
         projectId,
         assigneeId,
-        type: ArtifactType.Document,
+        type,
         name,
         // `Artifact.status` is a freeform column carrying several disjoint
         // vocabularies (PRD-495); the assigned tree never reads it.

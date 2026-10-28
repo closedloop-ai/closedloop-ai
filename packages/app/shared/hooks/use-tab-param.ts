@@ -1,5 +1,7 @@
 "use client";
 
+import { useLinkedSearchWriter } from "@repo/app/shared/hooks/use-linked-search-writer";
+import { DEFAULT_TAB_PARAM } from "@repo/app/shared/lib/detail-route-params";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -7,6 +9,7 @@ import { useCallback } from "react";
 
 type UseTabParamConfig<T extends string> = {
   defaultTab: T;
+  historyMode?: TabHistoryMode;
   paramName?: string;
   validTabs: readonly T[];
   /**
@@ -40,6 +43,8 @@ type UseTabParamResult<T extends string> = {
  * - Goes through `packages/navigation`, so it works on web (App Router) AND the
  *   desktop renderer (IPC nav) — never call `useRouter`/`useSearchParams`
  *   directly in shared tab code.
+ * - Uses replace by default; an explicit push mode gives independent artifact
+ *   tabs a back/forward entry without changing existing consumers.
  *
  * Conventions for adopters:
  * - Give nested sub-tabs a DISTINCT `paramName` (e.g. `view`, `kind`) so a
@@ -54,25 +59,56 @@ export function useTabParam<T extends string>(
   const navigation = useNavigation();
   const pathname = usePath();
   const searchParams = useSearchParamsValue();
+  const { readLatest, replaceSearch } = useLinkedSearchWriter(
+    pathname,
+    searchParams,
+    navigation.replace
+  );
 
-  const key = config.paramName ?? "tab";
+  const key = config.paramName ?? DEFAULT_TAB_PARAM;
   const raw = searchParams.get(key);
   const activeTab = resolveActiveTab(raw, config);
+  const historyMode = config.historyMode ?? TabHistoryMode.Replace;
 
   const setActiveTab = useCallback(
     (tab: string) => {
-      const params = new URLSearchParams(searchParams.toString());
-      if (tab === config.defaultTab) {
+      if (!config.validTabs.includes(tab as T)) {
+        return;
+      }
+      const params = readLatest();
+      const canonicalValue = tab === config.defaultTab ? null : tab;
+      if (canonicalValue === null) {
         params.delete(key);
       } else {
-        params.set(key, tab);
+        params.set(key, canonicalValue);
       }
-      const qs = params.toString();
-      navigation.replace(qs ? `${pathname}?${qs}` : pathname, {
-        scroll: false,
-      });
+      if (historyMode === TabHistoryMode.Push) {
+        if (tab === activeTab) {
+          if (raw !== canonicalValue) {
+            replaceSearch(params);
+          }
+          return;
+        }
+        const qs = params.toString();
+        navigation.navigate(qs ? `${pathname}?${qs}` : pathname, {
+          scroll: false,
+        });
+        return;
+      }
+      replaceSearch(params);
     },
-    [navigation, pathname, searchParams, key, config.defaultTab]
+    [
+      navigation,
+      pathname,
+      readLatest,
+      replaceSearch,
+      key,
+      config.defaultTab,
+      config.validTabs,
+      historyMode,
+      activeTab,
+      raw,
+    ]
   );
 
   return { activeTab, setActiveTab };
@@ -99,3 +135,11 @@ function resolveActiveTab<T extends string>(
   }
   return config.defaultTab;
 }
+
+/** Whether a tab selection replaces the current URL or adds a history entry. */
+export const TabHistoryMode = {
+  Replace: "replace",
+  Push: "push",
+} as const;
+export type TabHistoryMode =
+  (typeof TabHistoryMode)[keyof typeof TabHistoryMode];

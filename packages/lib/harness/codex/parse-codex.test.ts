@@ -1282,7 +1282,7 @@ describe("parseCodexRollout", () => {
 });
 
 // FEA-3524: capture the in-band `rate_limits` block Codex stamps on
-// `token_count` events. Real golden shape (session 019ea892 line 20):
+// `token_count` events. Real golden shape (session cc6c71e9 line 20):
 //   "rate_limits":{"limit_id":"codex","limit_name":null,
 //     "primary":{"used_percent":3.0,"window_minutes":300,"resets_at":1780960632},
 //     "secondary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1781547432}}
@@ -1663,7 +1663,7 @@ describe("parseCodexRollout rate_limits last-good preservation (FEA-3702)", () =
     // The real Codex "no active window" shape (limit_id `premium`, both windows
     // explicitly null) is a legitimate no-op, NOT corruption. It must keep
     // last-good silently and emit no parse-quality signal — matching the frozen
-    // golden oracle for session 019e8ee8 (codexRateLimits:null, no
+    // golden oracle for session 7da87bc7 (codexRateLimits:null, no
     // malformedRateLimits). Only a slot present with a non-null-but-invalid
     // value (e.g. `{primary:{}}`) is malformed.
     const session = await parseCodexRollout(
@@ -1931,7 +1931,7 @@ describe("FEA-3708 codexForkedFromId lineage", () => {
   });
 
   it("captures session_meta.forked_from_id as the parent-rollout lineage pointer", async () => {
-    const parentRolloutId = "019ea892-0957-71e2-8052-1f4e717dd2cc";
+    const parentRolloutId = "cc6c71e9-9fab-7224-a59c-ea11c5b76b33";
     const session = await parseCodexRollout(
       rolloutLines({ forked_from_id: parentRolloutId }),
       { sessionId: "fork-child" }
@@ -1959,7 +1959,7 @@ describe("FEA-3708 codexForkedFromId lineage", () => {
     // parent_thread_id — the spawn link, not a fork. Mirror the collector's rule
     // (buildCodexChildMeta records codexForkedFromId only when there is no parent
     // thread) so a subagent's parsed session does not mislabel its parent as a fork.
-    const parentThread = "019ea892-0957-71e2-8052-1f4e717dd2cc";
+    const parentThread = "cc6c71e9-9fab-7224-a59c-ea11c5b76b33";
     const session = await parseCodexRollout(
       rolloutLines({
         forked_from_id: parentThread,

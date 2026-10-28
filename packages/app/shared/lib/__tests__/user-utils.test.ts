@@ -61,9 +61,10 @@ describe("getUserNamePart", () => {
   });
 });
 
-// FEA-3606 — desktop renderer (`desktop-account-tab.tsx` IdentityDetails) parity.
-// The account tab previously inlined the name-part collapse, then applied its
-// own divergent fallback chain (`|| email || userId || "—"`) plus a secondary
+// FEA-3606 — desktop renderer `IdentityDetails`
+// (`settings/desktop-account-identity-details.tsx`) parity. That component
+// previously inlined the name-part collapse, then applied its own divergent
+// fallback chain (`|| email || userId || "—"`) plus a secondary
 // email line. The consolidation only replaces the name-part collapse with the
 // shared `getUserNamePart`; the surrounding derivation is unchanged. These pin
 // the exact renderer outputs so the extraction stays byte-for-byte identical.
@@ -136,22 +137,26 @@ describe("desktop renderer identity derivation (FEA-3606 parity)", () => {
 });
 
 describe("getUserInitials", () => {
-  it("uppercases the first character of each name", () => {
-    expect(getUserInitials("ada", "lovelace")).toBe("AL");
+  // One initial on every avatar (Nerys, 2026-10-22).
+  it("uppercases the first name's first character, else the last name's", () => {
+    expect(getUserInitials("ada", "lovelace")).toBe("A");
+    expect(getUserInitials(null, "lovelace")).toBe("L");
     expect(getUserInitials("Ada", null)).toBe("A");
     expect(getUserInitials(null, null)).toBe("");
   });
 });
 
 describe("getInitials", () => {
-  it("takes the first letter of up to two words", () => {
-    expect(getInitials("John Doe")).toBe("JD");
+  // One initial on every avatar (Nerys, 2026-10-22).
+  it("takes the name's first letter, uppercased", () => {
+    expect(getInitials("John Doe")).toBe("J");
     expect(getInitials("Alice")).toBe("A");
-    expect(getInitials("mary jane watson")).toBe("MJ");
+    expect(getInitials("mary jane watson")).toBe("M");
   });
 
-  it("ignores extra whitespace", () => {
-    expect(getInitials("John  Doe")).toBe("JD");
+  it("ignores surrounding whitespace", () => {
+    expect(getInitials("  John  Doe")).toBe("J");
+    expect(getInitials("   ")).toBe("");
   });
 });
 
@@ -191,7 +196,7 @@ describe("transformApiUserToSelectUser", () => {
       name: "Ada Lovelace",
       email: "ada@example.com",
       avatarUrl: undefined,
-      initials: "AL",
+      initials: "A",
     });
   });
 });

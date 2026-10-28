@@ -454,7 +454,7 @@ describe("InvocationEvidenceList truncation caption (ISS-5520)", () => {
   });
 
   it("does not call a count exact when the delivered rows already exceed it", () => {
-    // ISS-5520 (wongk review, #4716): the credibility test must weigh the count
+    // ISS-5520 (whitlockk review, #4716): the credibility test must weigh the count
     // against the rows the producer DELIVERED, not the 50 this list renders.
     // `items` carries up to 500, so a count of 55 beside 60 delivered rows
     // clears a `>= rows.length` test and is accepted as exact — while the
@@ -552,7 +552,7 @@ describe("InvocationEvidenceList truncation caption (ISS-5520)", () => {
       screen.getByText("Showing 10 of 10+ invocations")
     ).toBeInTheDocument();
     expect(screen.queryByText(RE_TOTAL_BELOW_RENDERED)).toBeNull();
-    // ISS-5520 (wongk + codex review, #4716): the fixture that proves the
+    // ISS-5520 (whitlockk + codex review, #4716): the fixture that proves the
     // fallback used to render "4 recorded" directly above "Showing 10 of 10+
     // invocations" — the panel contradicting itself in the exact race this test
     // was added for, demonstrated rather than caught. The strip is now driven by
@@ -561,5 +561,19 @@ describe("InvocationEvidenceList truncation caption (ISS-5520)", () => {
     const claims = renderedPopulationClaims();
     expect(claims.strip).toBe("10+");
     expect(claims.caption).toBe(claims.strip);
+  });
+  it("labels an OTel-attributed row with the wording the sandbox trace inspector already ships", () => {
+    // ISS-10720 (codex on #7731): this string is REUSED, not written here —
+    // `PREVIEW_EVIDENCE_LABEL` renders the same evidence class as "OTel counter"
+    // in this package. Pinned because nothing else in the repo did: reverting
+    // the label to an unsourced invention left all 15,539 `@repo/app` tests
+    // green, which is how an unapproved user-visible word ships unnoticed.
+    const page = invocationPage();
+    page.items[0].evidenceClass =
+      AgentComponentInvocationEvidenceClass.OtelCounter;
+
+    renderWithNavigation(<InvocationEvidenceList page={page} />);
+
+    expect(screen.getByText("OTel counter")).toBeInTheDocument();
   });
 });

@@ -21,8 +21,9 @@ const projectRoutes: FixtureRoute[] = [
 ];
 
 const meta: Meta<typeof EditableProjectDescription> = {
-  title: "App Core/Projects/Editable Project Description",
+  title: "Composites v1.0/Projects/Editable Project Description",
   component: EditableProjectDescription,
+  tags: ["deprecated", "autodocs"],
   parameters: { appCore: { apiRoutes: projectRoutes } },
   args: {
     projectId: PROJECT_ID,

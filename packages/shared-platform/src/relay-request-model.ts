@@ -1,9 +1,9 @@
 /**
  * Surface-neutral relay HTTP request model + pure transforms.
  *
- * Shared so the web `gateway-relay` route, the server-side `RelayClient`, and
- * the desktop adapter all construct identical relay payloads and parse relay
- * envelopes the same way. Framework-agnostic by contract: no Next.js, no
+ * Shared so the desktop renderer adapter and the desktop main-process IPC
+ * handler construct identical relay payloads and parse relay envelopes the same
+ * way. Framework-agnostic by contract: no Next.js, no
  * browser globals, and -- critically -- no `@repo/api`. This package is
  * published cross-repo (desktop consumes it) and therefore must not depend on
  * the workspace-only `@repo/api`. The handful of types that mirror `@repo/api`

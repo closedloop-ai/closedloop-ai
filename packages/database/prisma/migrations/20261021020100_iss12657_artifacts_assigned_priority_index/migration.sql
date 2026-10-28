@@ -1,0 +1,28 @@
+-- ISS-12657: the same shape for the PRIORITY facet (`anchorPrioritySql`).
+--
+-- This index was USELESS until the predicate changed in the same PR. The anchor
+-- query sent `a.priority::text IN ($1, …)`, a cast on the COLUMN, which no index
+-- on `priority` can serve — and an expression index on `(priority::text)` cannot
+-- be created at all, because the enum-to-text cast is STABLE rather than
+-- IMMUTABLE (enum labels are renameable):
+--   ERROR: functions in index expression must be marked IMMUTABLE
+-- The predicate now inlines the enum literal from the canonical vocabulary, the
+-- way the ArtifactType exclusions already do, so this index is reachable.
+--
+-- MEASURED on the same fixture, `priority = 'URGENT'` matching 1%. Before, with
+-- the column cast: Parallel Seq Scan over the whole table, 170,783 rows removed
+-- by Filter, 10,339 buffers, 49.9 ms — the planner abandons the ordered index
+-- entirely. After, with the literal inlined and this index: Index Scan, 456
+-- buffers, 0.96 ms.
+--
+-- WHAT THIS DOES NOT FIX, measured rather than assumed: a MULTI-VALUE selection
+-- (`IN ('URGENT','HIGH')`) cannot hold the index's order through `ORDER BY
+-- created_at DESC`, so it falls back to the ordered scan — 10,547 buffers at two
+-- values. A selection including the UNSET arm needs nothing: `priority IS NULL`
+-- matches half the rows in the fixture, so 501 matches arrive almost
+-- immediately (224 buffers).
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "artifacts_org_assignee_priority_created_id_idx" ON "artifacts"("organization_id", "assignee_id", "priority", "created_at" DESC, "id" DESC) WHERE (type <> 'SESSION'::"ArtifactType");

@@ -17,13 +17,14 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * Importing one constant on both sides means a future rename touches a single
- * definition — it cannot silently split PostHog and Desktop the way two parallel
- * string literals could (wongk, PR #4202).
+ * definition — it cannot silently split the two surfaces' reads of it the way
+ * two parallel string literals could (whitlockk, PR #4202).
  */
 export const AGENTS_SOURCE_PROVENANCE_FLAG_KEY =
   "agents-source-provenance-honesty" as const;

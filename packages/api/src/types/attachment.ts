@@ -1,10 +1,16 @@
 import {
+  ALLOWED_ATTACHMENT_MIME_TYPES as SHARED_ALLOWED_ATTACHMENT_MIME_TYPES,
+  ALLOWED_EXTENSIONS as SHARED_ALLOWED_EXTENSIONS,
   IMAGE_MIME_TYPES as SHARED_IMAGE_MIME_TYPES,
   INLINE_ATTACHMENT_REF_PREFIX as SHARED_INLINE_ATTACHMENT_REF_PREFIX,
   MAX_ATTACHMENT_FILE_SIZE_BYTES as SHARED_MAX_ATTACHMENT_FILE_SIZE_BYTES,
   MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS as SHARED_MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS,
   MAX_INLINE_IMAGE_ATTACHMENT_BYTES as SHARED_MAX_INLINE_IMAGE_ATTACHMENT_BYTES,
   MAX_INLINE_IMAGE_ATTACHMENT_REQUEST_BODY_BYTES as SHARED_MAX_INLINE_IMAGE_ATTACHMENT_REQUEST_BODY_BYTES,
+  MAX_INLINE_IMAGE_RESOLVE_BATCH_SIZE as SHARED_MAX_INLINE_IMAGE_RESOLVE_BATCH_SIZE,
+  MAX_MEDIA_FILE_SIZE_BYTES as SHARED_MAX_MEDIA_FILE_SIZE_BYTES,
+  MEDIA_MIME_TYPES as SHARED_MEDIA_MIME_TYPES,
+  type AllowedAttachmentMimeType as SharedAllowedAttachmentMimeType,
   AttachmentPurpose as SharedAttachmentPurpose,
   AttachmentPurposeSelector as SharedAttachmentPurposeSelector,
   AttachmentUploadError as SharedAttachmentUploadError,
@@ -15,8 +21,13 @@ import {
   type CreateInlineImageAttachmentErrorCode as SharedCreateInlineImageAttachmentErrorCodeType,
   buildInlineAttachmentMarkdownImage as sharedBuildInlineAttachmentMarkdownImage,
   buildInlineAttachmentRef as sharedBuildInlineAttachmentRef,
+  chunkInlineImageAttachmentIds as sharedChunkInlineImageAttachmentIds,
+  extractInlineImageAttachmentIds as sharedExtractInlineImageAttachmentIds,
   isDocumentMimeType as sharedIsDocumentMimeType,
   isImageMimeType as sharedIsImageMimeType,
+  isMediaMimeType as sharedIsMediaMimeType,
+  maxAttachmentSizeBytesForMimeType as sharedMaxAttachmentSizeBytesForMimeType,
+  replaceInlineImageAttachmentRefs as sharedReplaceInlineImageAttachmentRefs,
 } from "@closedloop-ai/loops-api/attachment";
 
 // Attachment types for API contract
@@ -40,6 +51,15 @@ export type CreateInlineImageAttachmentErrorCode =
   SharedCreateInlineImageAttachmentErrorCodeType;
 export const IMAGE_MIME_TYPES = SHARED_IMAGE_MIME_TYPES;
 export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
+export const MEDIA_MIME_TYPES = SHARED_MEDIA_MIME_TYPES;
+export type MediaMimeType = (typeof MEDIA_MIME_TYPES)[number];
+export const isMediaMimeType = sharedIsMediaMimeType;
+export const MAX_MEDIA_FILE_SIZE_BYTES = SHARED_MAX_MEDIA_FILE_SIZE_BYTES;
+export const ALLOWED_ATTACHMENT_MIME_TYPES =
+  SHARED_ALLOWED_ATTACHMENT_MIME_TYPES;
+export type AllowedAttachmentMimeType = SharedAllowedAttachmentMimeType;
+export const maxAttachmentSizeBytesForMimeType =
+  sharedMaxAttachmentSizeBytesForMimeType;
 export const MAX_ATTACHMENT_FILE_SIZE_BYTES =
   SHARED_MAX_ATTACHMENT_FILE_SIZE_BYTES;
 export const MAX_INLINE_IMAGE_ATTACHMENT_BYTES =
@@ -48,12 +68,20 @@ export const MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS =
   SHARED_MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS;
 export const MAX_INLINE_IMAGE_ATTACHMENT_REQUEST_BODY_BYTES =
   SHARED_MAX_INLINE_IMAGE_ATTACHMENT_REQUEST_BODY_BYTES;
+export const MAX_INLINE_IMAGE_RESOLVE_BATCH_SIZE =
+  SHARED_MAX_INLINE_IMAGE_RESOLVE_BATCH_SIZE;
 export const INLINE_ATTACHMENT_REF_PREFIX = SHARED_INLINE_ATTACHMENT_REF_PREFIX;
 export const isDocumentMimeType = sharedIsDocumentMimeType;
 export const isImageMimeType = sharedIsImageMimeType;
 export const buildInlineAttachmentRef = sharedBuildInlineAttachmentRef;
 export const buildInlineAttachmentMarkdownImage =
   sharedBuildInlineAttachmentMarkdownImage;
+export const chunkInlineImageAttachmentIds =
+  sharedChunkInlineImageAttachmentIds;
+export const extractInlineImageAttachmentIds =
+  sharedExtractInlineImageAttachmentIds;
+export const replaceInlineImageAttachmentRefs =
+  sharedReplaceInlineImageAttachmentRefs;
 
 export type FileAttachment = {
   id: string;
@@ -126,7 +154,7 @@ export type ResolveInlineImagesResponse = {
 
 /**
  * Comma-separated list of allowed file extensions for use in HTML <input accept=""> attributes.
- * Runtime MIME type validation and file size limits live in apps/api validators, not here.
+ * Derived from the allow-list itself (ISS-10415) rather than hand-listed here, so a MIME added
+ * without an extension fails `tsc` instead of silently leaving the picker unable to offer it.
  */
-export const ALLOWED_EXTENSIONS =
-  ".pdf,.jpg,.jpeg,.png,.gif,.webp,.csv,.json,.txt,.md,.doc,.docx,.xls,.xlsx";
+export const ALLOWED_EXTENSIONS = SHARED_ALLOWED_EXTENSIONS;

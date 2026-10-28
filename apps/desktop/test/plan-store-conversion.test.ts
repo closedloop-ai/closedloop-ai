@@ -10,7 +10,7 @@
  * null-safe (`IS NOT DISTINCT FROM`) dedup matching, and version numbering.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   confirmPlan,
   getPlan,

@@ -135,9 +135,9 @@ export const aiImpactMetrics: readonly AiImpactMetricRow[] = [
   },
   {
     key: "tokens-per-kloc",
-    label: "Tokens per KLOC",
-    value: "57K",
-    detail: "Tokens ÷ thousands of lines merged",
+    label: "Tokens per LOC",
+    value: "57",
+    detail: "Tokens ÷ lines merged",
     requiresGitHub: true,
   },
   {
@@ -350,9 +350,9 @@ export const meMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "3.1",
+      value: "3,100",
       delta: 9,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -384,9 +384,9 @@ export const meMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "13.8",
+      value: "13,800",
       delta: 4,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -418,9 +418,9 @@ export const meMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "42.1",
+      value: "42,100",
       delta: 6,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -452,9 +452,9 @@ export const meMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "101.4",
+      value: "101,400",
       delta: 15,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -490,9 +490,9 @@ export const orgMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "15.7",
+      value: "15,700",
       delta: 6,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -524,9 +524,9 @@ export const orgMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "64.2",
+      value: "64,200",
       delta: 8,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -558,9 +558,9 @@ export const orgMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "201.2",
+      value: "201,200",
       delta: 7,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -592,9 +592,9 @@ export const orgMetricsByRange: Record<RangeKey, MetricRow[]> = {
       deltaPolarity: MetricPolarity.Neutral,
     },
     {
-      label: "KLOC merged",
+      label: "Merged LOC",
       requiresGitHub: true,
-      value: "493.6",
+      value: "493,600",
       delta: 11,
       deltaPolarity: MetricPolarity.Neutral,
     },
@@ -644,9 +644,9 @@ export const orgAiImpactMetrics: readonly AiImpactMetricRow[] = [
   },
   {
     key: "tokens-per-kloc",
-    label: "Tokens per KLOC",
-    value: "52K",
-    detail: "Tokens ÷ thousands of lines merged",
+    label: "Tokens per LOC",
+    value: "52",
+    detail: "Tokens ÷ lines merged",
     requiresGitHub: true,
   },
   {
@@ -758,16 +758,15 @@ export type OrgMember = {
 export const orgMembers: readonly OrgMember[] = [
   {
     id: "member-you",
-    name: "Kaiti",
-    email: "kaiti@acme.dev",
+    name: "Kaito",
+    email: "kaito@acme.dev",
     role: "Owner",
     initials: "KC",
   },
 ];
 
 // The "Complete Your Setup" checklist shown on My Tasks in prod. Google Drive
-// is behind a flag (off by default), so it is not listed here. The Set-up-AI-
-// agents card (AgentOnboardingCard) is intentionally omitted per the brief.
+// is behind a flag (off by default), so it is not listed here.
 export const ChecklistItemId = {
   CreateTeam: "create-team",
   CreateProject: "create-project",

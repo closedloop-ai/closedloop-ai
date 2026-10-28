@@ -65,9 +65,72 @@ describe("POST /artifact-links/branches", () => {
     mocks.loadProjectRepoDefaults.mockResolvedValue({
       primary: {
         installationRepositoryId: "repo-1",
-        fullName: "closedloop-ai/symphony-alpha",
+        fullName: "closedloop-ai/closedloop-ai",
       },
     });
+  });
+
+  /**
+   * ISS-10995: `projectId` here is REQUIRED and the caller's own choice
+   * (`z.uuid()`, validated against the org above), so it files the branch
+   * unconditionally — the fill-only rule the 2026-10-12 ruling set is the
+   * SYNC's. A `projectFillOnly` on this producer would make the route answer
+   * 200 for a re-file it discarded, which `pull-requests/route.ts`'s own
+   * ISS-10169 contract note forbids.
+   */
+  it("asks for an unconditional project write, never the sync's fill", async () => {
+    mocks.branchUpsert.mockResolvedValue({ ok: true, value: { id: "b-1" } });
+
+    const response = await POST(
+      request({ projectId: PROJECT_ID, branchName: "feature/refile" }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.branchUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT_ID }),
+      undefined
+    );
+    expect(mocks.branchUpsert.mock.calls[0]?.[0]).not.toHaveProperty(
+      "projectFillOnly"
+    );
+  });
+
+  // ISS-8175: `DesktopPullRequestBase` outranks `McpInput` because it is gh's
+  // own answer rather than an agent's claim, so a client that could NAME it
+  // would buy that rank for free. Adding the member to the const object widened
+  // this `z.enum` by derivation and nothing failed tsc — hence the explicit
+  // refusal, and hence this pair (an accepted source alongside it, so the
+  // rejection cannot be a blanket one).
+  it("refuses a client-asserted desktop PR base source but accepts MCP input", async () => {
+    mocks.branchUpsert.mockResolvedValue({ ok: true, value: { id: "b-1" } });
+    const body = {
+      projectId: PROJECT_ID,
+      branchName: "feature/spoof",
+      baseBranch: "release/2026-08",
+    };
+
+    const refused = await POST(
+      request({
+        ...body,
+        baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+      }),
+      routeContext()
+    );
+    expect(refused.status).toBe(400);
+    expect(mocks.branchUpsert).not.toHaveBeenCalled();
+
+    const accepted = await POST(
+      request({ ...body, baseBranchSource: BranchBaseBranchSource.McpInput }),
+      routeContext()
+    );
+    expect(accepted.status).toBe(200);
+    expect(mocks.branchUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseBranchSource: BranchBaseBranchSource.McpInput,
+      }),
+      undefined
+    );
   });
 
   it("returns a typed rejection when service validation denies a source artifact", async () => {
@@ -82,10 +145,10 @@ describe("POST /artifact-links/branches", () => {
         baseBranch: "main",
         baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
         headSha: "head-sha",
-        sourceArtifactTargetRepoAllowlist: ["closedloop-ai/symphony-alpha"],
+        sourceArtifactTargetRepoAllowlist: ["closedloop-ai/closedloop-ai"],
         sourceArtifactTargetRepoAuthorization: {
           provenance: "spoofed",
-          repositoryFullNames: ["closedloop-ai/symphony-alpha"],
+          repositoryFullNames: ["closedloop-ai/closedloop-ai"],
         },
       }),
       routeContext()
@@ -99,9 +162,10 @@ describe("POST /artifact-links/branches", () => {
       expect.objectContaining({
         organizationId: "org-1",
         repositoryId: "repo-1",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sourceArtifactId: SOURCE_ARTIFACT_ID,
-      })
+      }),
+      undefined
     );
     expect(mocks.branchUpsert.mock.calls[0]?.[0]).not.toHaveProperty(
       "sourceArtifactTargetRepoAllowlist"

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// FEA-1626 (wongk review): `Artifact.updatedAt` is what the recency window
+// FEA-1626 (whitlockk review): `Artifact.updatedAt` is what the recency window
 // filters on, and the primary save-version path writes DocumentDetail and
 // DocumentVersion — both children of the artifact. Without an explicit touch on
 // the parent, a two-year-old document edited this morning keeps a two-year-old

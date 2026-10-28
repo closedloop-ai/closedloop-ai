@@ -11,9 +11,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
 import { backfillActivitySegmentsFromTranscripts } from "../src/main/collectors/parsing/activity-segment-backfill.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import { backfillArtifactLinksFromTranscripts } from "../src/main/collectors/parsing/artifact-link-backfill.js";
 import type {
   NormalizedSession,

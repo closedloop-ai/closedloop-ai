@@ -14,24 +14,33 @@ import {
   agentComponentInvocationSyncPartHashPreimage,
   agentComponentInvocationSyncProtocolVersionForItems,
 } from "@repo/api/src/types/agent-component-invocation";
-import { agentComponentInvocationSyncPartSchema } from "@repo/api/src/types/agent-component-invocation-schema";
+import {
+  agentComponentInvocationSyncPartSchema,
+  canonicalizeAgentComponentInvocationSyncItem,
+  canonicalizeAgentComponentInvocationSyncString,
+} from "@repo/api/src/types/agent-component-invocation-schema";
+import { redactInvocationDefinitionContent } from "@repo/lib/security/redact-definition-content";
 
 const textEncoder = new TextEncoder();
 const SHA_256_PLACEHOLDER = "0".repeat(64);
 
 /**
  * Produce immutable, byte-bounded protocol parts from one complete Desktop
- * projection. Definition content above the dedicated cap is omitted before the
- * generation identity is checked, while its exact hash/status remain present.
+ * projection. Definition content is secret-redacted, and content above the
+ * dedicated cap is omitted, before the generation identity is checked, while its
+ * hash/status remain present.
  */
 export function prepareAgentComponentInvocationSyncParts(
   generation: AgentComponentInvocationCompleteGeneration,
   options: AgentComponentInvocationSyncPayloadOptions = {}
 ): AgentComponentInvocationSyncPart[] {
   const items = canonicalInvocationItems(generation.items);
+  const externalSessionId = canonicalizeAgentComponentInvocationSyncString(
+    generation.externalSessionId
+  );
   const expectedGenerationId = sha256Hex(
     agentComponentInvocationGenerationHashPreimage({
-      externalSessionId: generation.externalSessionId,
+      externalSessionId,
       items,
     })
   );
@@ -60,7 +69,7 @@ export function prepareAgentComponentInvocationSyncParts(
       // retryable `protocol_unsupported` instead of a permanent 400.
       protocolVersion:
         agentComponentInvocationSyncProtocolVersionForItems(partItems),
-      externalSessionId: generation.externalSessionId,
+      externalSessionId,
       externalGenerationId: generation.externalGenerationId,
       sourceUpdatedAt: generation.sourceUpdatedAt,
       dataRevision: generation.dataRevision,
@@ -86,7 +95,7 @@ export function prepareAgentComponentInvocationSyncParts(
 }
 
 /**
- * ISS-4976 (@wongk review): run the SHARED ingest boundary over the part the
+ * ISS-4976 (@whitlockk review): run the SHARED ingest boundary over the part the
  * producer just built, so the producer has the same boundary as the cloud
  * instead of a type-only construction path.
  *
@@ -118,7 +127,8 @@ export function computeAgentComponentInvocationGenerationId(
 ): string {
   return sha256Hex(
     agentComponentInvocationGenerationHashPreimage({
-      externalSessionId,
+      externalSessionId:
+        canonicalizeAgentComponentInvocationSyncString(externalSessionId),
       items: canonicalInvocationItems(items),
     })
   );
@@ -132,14 +142,26 @@ function canonicalInvocationItems(
       "invocation generation exceeds the item-count limit"
     );
   }
+  // ISS-6889: string canonicalization runs over the FINAL item — the one the
+  // API will parse — and never earlier. Running it first left one escape: the
+  // item schema rejects oversized `definitionContent`, so the canonicalizer
+  // returned that item untrimmed, and `omitOversizedDefinitionContent` then
+  // CURED the rejection, shipping a part whose strings the API still trims.
+  // Sorting after it also keeps `compareItems` on the same
+  // `externalInvocationId` bytes the cloud stores and later replays through the
+  // generation-hash reconciliation.
+  // ISS-4965: secrets are redacted BEFORE the cap is measured — a marker can be
+  // longer than the token it replaces, so the cap judges the bytes that ship.
   const items = input
     .map(canonicalizeInvocationDates)
+    .map(redactInvocationDefinitionContent)
     .map(omitOversizedDefinitionContent)
+    .map(canonicalizeAgentComponentInvocationSyncItem)
     .sort(compareItems);
   const ids = new Set<string>();
   for (const item of items) {
     if (ids.has(item.externalInvocationId)) {
-      throw new Error(
+      throw new AgentComponentInvocationSyncPayloadDuplicateIdError(
         "invocation generation contains a duplicate invocation id"
       );
     }
@@ -307,5 +329,26 @@ export class AgentComponentInvocationSyncPayloadContractError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AgentComponentInvocationSyncPayloadContractError";
+  }
+}
+
+/**
+ * ISS-6889 (codex P1 review): two of the generation's items canonicalize to the
+ * same `externalInvocationId`.
+ *
+ * This condition became REACHABLE in this file: canonicalization trims, so two
+ * stored ids differing only by surrounding whitespace now collide where they
+ * previously stayed distinct. A plain `Error` here escaped both
+ * {@link computeAgentComponentInvocationGenerationId} and
+ * `buildInvocationSyncParts` and aborted the ENCLOSING import `$transaction` —
+ * sync data taking down the core ingest flow, which invariant 8 in
+ * `src/main/sync/AGENTS.md` forbids outright. A declared subclass is what lets
+ * both callers turn it into the lane's ordinary recorded dead-letter outcome
+ * (`AgentComponentInvocationSyncLocalError.DuplicateInvocationId`) instead.
+ */
+export class AgentComponentInvocationSyncPayloadDuplicateIdError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentComponentInvocationSyncPayloadDuplicateIdError";
   }
 }

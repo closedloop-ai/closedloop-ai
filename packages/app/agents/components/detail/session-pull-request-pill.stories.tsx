@@ -4,7 +4,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import { PullRequestPill } from "./session-pull-request-pill";
 
-const FIXTURE_REPO = "closedloop-ai/symphony-alpha" as const;
+const FIXTURE_REPO = "closedloop-ai/closedloop-ai" as const;
 
 function makePullRequest(overrides: Partial<SessionPR> = {}): SessionPR {
   return {
@@ -35,9 +35,9 @@ function PullRequestPillFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Pull Request Pill",
+  title: "Composites v1.0/Agents/Detail/Session Pull Request Pill",
   component: PullRequestPill,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

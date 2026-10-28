@@ -46,6 +46,12 @@ export function registerCreateArtifactLink(
           targetId,
           linkType,
         });
+        // A 2xx carrying no link row leaves the write's outcome unknown. Shaping
+        // it would hand back a five-null "success" that tells the caller a link
+        // exists while naming neither it nor its endpoints.
+        if (!(link && typeof link === "object")) {
+          throw new Error("API response missing the created artifact link");
+        }
         const shaped = shapeArtifactLink(link);
         return {
           content: [

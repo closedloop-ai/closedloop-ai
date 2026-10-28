@@ -9,9 +9,9 @@ import { Bold, Italic, Underline } from "lucide-react";
  * A set of two-state buttons that can be toggled on or off.
  */
 const meta: Meta<typeof ToggleGroup> = {
-  title: "Design System/Primitives/Toggle Group",
+  title: "Primitives v1.0/Inputs/Toggle Group",
   component: ToggleGroup,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     type: {
       options: ["multiple", "single"],

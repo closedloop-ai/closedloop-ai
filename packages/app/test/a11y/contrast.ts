@@ -641,3 +641,18 @@ function themeTokenColor(
 ) {
   return themeTokens[theme][token];
 }
+
+/**
+ * The light-theme grey `--sidebar-ring` carried before ISS-10057, and the
+ * positive control both sidebar-ring suites measure: a floor nothing can fail
+ * proves nothing.
+ *
+ * It lives HERE, in the converter both already import, rather than beside
+ * either suite (ISS-10104, marisolashgrove on PR #7316). The independence that
+ * matters is from the STYLESHEET — a control read out of `globals.css` moves
+ * with the token it polices and can never fail — and this module is not the
+ * stylesheet. Two copies bought nothing and could drift the one way that hides
+ * a regression: retire a DIFFERENT grey later, update one copy, and the browser
+ * control silently stops testing the value the ticket was about.
+ */
+export const RETIRED_LIGHT_SIDEBAR_RING = "oklch(0.762 0 0)";

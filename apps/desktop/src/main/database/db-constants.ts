@@ -25,10 +25,15 @@ import { SESSION_STATUS } from "@repo/api/src/types/session-status";
  *
  * A local row CAN still store a literal `waiting`: migration
  * `0042_iss4586_session_status_ends_with_error` collapsed only
- * `completed`/`abandoned` and says so in its own text. Reads of such a row go
- * through the cloud `DISPLAYED_SESSION_STATUS.WAITING`
- * (`../session/session-status-filter-match.ts`) and a raw SQL literal
- * (`session-aggregate-filters.ts`), not through this module.
+ * `completed`/`abandoned` and says so in its own text. ISS-10629 deleted the two
+ * reads this paragraph used to name — the `DISPLAYED_SESSION_STATUS.WAITING` arm
+ * in `../session/session-status-filter-match.ts` and the raw `'waiting'` union in
+ * `session-aggregate-filters.ts` — so such a row is now reached only by the
+ * stored-status equality at the bottom of each, and not even that if it is also
+ * awaiting input. ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting
+ * display word outright, so such a row no longer renders distinctly either — it
+ * folds to Active like any other spelling this build does not treat as a
+ * display word. Either way, not through this module.
  *
  * `DESKTOP_AGENT_STATUS` below is a DIFFERENT axis (per-agent, not per-session)
  * and keeps its own `waiting`. See the "Session State" section of the root
@@ -65,7 +70,7 @@ export const MAX_DASHBOARD_PLAN_PAGE_LIMIT = 100;
 // ISS-6451: the dashboard pull-request read's page size — BOTH the default and
 // the hard ceiling, mirroring `MAX_DASHBOARD_PLAN_PAGE_LIMIT` above. It was the
 // last unwindowed full-corpus row read in `dashboard-queries.ts`: every
-// `kind='pull_request'` artifact, wide rows and all (title, url, head_sha,
+// `kind='pull_request'` artifact, wide rows and all (title, url,
 // session_name), sorted in JS and shipped across the IPC boundary in one array,
 // through EITHER of two entry points that both reach it — the `getCoreFeatures`
 // bundle and the standalone `desktop:db:get-pull-requests` channel. (How many
@@ -126,12 +131,11 @@ export function sqlStringList(values: readonly string[]): string {
  */
 export const EVENT_INSERT_PARAM_CAP = 900;
 
-// Bounds variant of SESSION_STARTED_AT_TS_EXPR: NULL (not epoch) for
-// NULL/empty/malformed `started_at`. MIN/MAX ignore NULL, so a legacy row with
-// no real start cannot drag earliestSessionAt back to 1970. Assumes `sessions s`
-// alias.
+// Fixed-width UTC bounds key: unlike stored TEXT, lexicographic MIN/MAX now
+// preserve instant order across offsets and fractional-second spellings.
+// Unparseable values remain NULL rather than pinning a bound to 1970.
 export const SESSION_STARTED_AT_BOUNDS_EXPR =
-  "(CASE WHEN s.started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN s.started_at ELSE NULL END)";
+  "(CASE WHEN s.started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN strftime('%Y-%m-%dT%H:%M:%fZ', s.started_at) ELSE NULL END)";
 
 /**
  * FEA-1839: prefix for the synthetic `session_id` of a
@@ -144,3 +148,28 @@ export const SESSION_STARTED_AT_BOUNDS_EXPR =
  * and its readers share a neutral module — `sqlite.ts` no longer re-exports it.
  */
 export const COLLECTION_VIOLATION_SESSION_PREFIX = "mutual-exclusivity:";
+
+/**
+ * ISS-10365: `<column> IN (…)` over a caller-supplied id list, bound as ONE host
+ * parameter instead of one per id. A `?`-per-id list makes a statement's bind
+ * count scale with the corpus and throws past `SQLITE_MAX_VARIABLE_NUMBER` — the
+ * 999 floor `EVENT_INSERT_PARAM_CAP` above is set against — which on the branch
+ * DETAIL reads meant a branch written by enough sessions could not be opened at
+ * all. `json_each` unpacks the whole list out of a single JSON-array parameter,
+ * so the statement binds a constant 1 at any width: nothing is chunked, and no
+ * id is dropped.
+ *
+ * Pass the matching value as `JSON.stringify([...ids])`. Ids are values, never
+ * SQL text, so this stays inert for any caller-supplied list.
+ */
+export function jsonIdListInSql(column: string): string {
+  return `${column} IN (SELECT value FROM json_each(?))`;
+}
+
+/**
+ * Stable key for a row's stored/worktree repository identity pair. NULL and
+ * blank values collapse exactly as the stored-first resolver does; CHAR(31)
+ * separates the two values so grouped resolution and SQL matching agree.
+ */
+export const REPOSITORY_PAIR_KEY_EXPR =
+  "COALESCE(s.cwd, '') || CHAR(31) || TRIM(COALESCE(s.repo_full_name, ''))";

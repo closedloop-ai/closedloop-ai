@@ -45,14 +45,15 @@ const CAPPED_TRACK = "flex min-w-0 items-center gap-1 overflow-hidden";
 const UNCAPPED_TRACK = "flex min-w-0 flex-wrap items-center gap-1";
 
 /**
- * FEA-4209 / FEA-4210: the shared LINKED-ENTITY cell for the Sessions table —
- * the `Owning project` column and the `Linked issues` column are both this
- * with a different chip list.
+ * FEA-4210: the LINKED-ENTITY cell for the Sessions table, now the `Linked
+ * issues` column alone — ISS-12454 replaced the `Owning project` chip with an
+ * editable picker, so the second caller this was generalised for is gone. Kept
+ * generic (`chips`, `overflowNoun`, `testId`) rather than re-specialised to
+ * issues: narrowing it is a refactor that ticket did not ask for.
  *
- * One component rather than two because the hard parts are identical and are
- * exactly the parts a second copy gets wrong: how many chips the measured track
- * holds, what the `+N` counter announces, and whether the overflow is reachable
- * without a mouse. ISS-5282 settled all three for the `Signals` column
+ * The hard parts are the ones a second copy would get wrong: how many chips the
+ * measured track holds, what the `+N` counter announces, and whether the
+ * overflow is reachable without a mouse. ISS-5282 settled all three for the `Signals` column
  * (`SessionQualifiersCell`) and this follows it deliberately — a MEASURED fit
  * rather than a fixed cap, and a real `<button>` Popover rather than a hover
  * tooltip, because a hover secret is one two thirds of input methods never had.
@@ -86,8 +87,8 @@ export function SessionLinkedChipsCell({
    */
   icon?: ReactNode;
   /**
-   * What the overflow counter is counting, singular, in customer-facing words —
-   * "issue", "project". Used to build the counter's accessible name.
+   * What the overflow counter is counting, singular, in customer-facing words
+   * ("issue"). Used to build the counter's accessible name.
    */
   overflowNoun: string;
   /** Test hook for the overflow trigger; the column supplies a per-column id. */
@@ -160,7 +161,7 @@ export function SessionLinkedChipsCell({
               of short labels, and a 288px panel beside a 40px chip reads as a
               dialog rather than as the overflow of the row it belongs to.
 
-              Bounded in HEIGHT for the opposite reason (wongk review):
+              Bounded in HEIGHT for the opposite reason (whitlockk review):
               `linkedArtifacts` is not a handful in the tail — the projection
               test already carries 27 — and an unbounded list runs past the
               viewport and strands the links below the fold, which is exactly the
@@ -202,12 +203,10 @@ export function SessionLinkedChipsCell({
  *
  * EVERY chip gets a tooltip, even one whose `title` adds nothing beyond the
  * visible label. The label renders in a `truncate` span inside a track whose
- * floor is narrow, so it can be ellipsised — and for `Owning project` the
- * `+N` popover can never be the escape hatch, because the contract yields at
- * most one project and the fit returns early for a single chip. Without this
- * fallback the column most likely to hold a long name would be the one with no
- * way at all to read it: no overflow, no tooltip, no accessible name. Mirrors
- * what the Repository cell already does (`renderRepoChip` passes `tooltip: label`).
+ * floor is narrow, so a chip that FIT can still be ellipsised — and `+N`
+ * discloses only the chips that did not fit, never the truncation of one that
+ * did. Without this fallback a clipped label would have no way to be read at
+ * all. Mirrors the Repository cell (`renderRepoChip` passes `tooltip: label`).
  */
 function LinkedEntityChip({
   chip,

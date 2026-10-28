@@ -3,18 +3,16 @@
  * @description Per-file (mtime, size) cache shared by every harness importer
  * (FEA-1503; ported from the vendor `catchup-cache.js`, logic preserved). The
  * boot import + catchup poll re-list files cheaply: an unchanged file is skipped
- * with one stat() call instead of a full parse. When constructed with a
- * `persistPath` the cache survives process restarts (best-effort JSON file), so a
- * cold-start boot import skips unchanged history with a single stat() each.
+ * with one stat() call instead of a full parse. When constructed with an
+ * `IngestStorePort` the cache survives process restarts (ISS-9838: a row in the
+ * local SQLite store, best-effort), so a cold-start boot import skips unchanged
+ * history with a single stat() each.
  */
-import {
-  mkdirSync,
-  readFileSync,
-  type Stats,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import path from "node:path";
+import { type Stats, statSync } from "node:fs";
+import type {
+  IngestStorePort,
+  IngestStoreSnapshot,
+} from "./ingest-store-port.js";
 
 /**
  * Bump this whenever parser/import semantics change in a way that must
@@ -35,18 +33,55 @@ type SeenEntry = {
   size: number;
   /** FEA-1459 Fix 11: Optional extra mtime (e.g., max subagent file mtime). */
   extraMtimeMs?: number;
+  /**
+   * ISS-12036: this source's last pass parsed it to NO session, at these bytes.
+   *
+   * A Codex root rollout dropped by the burst classifier, or one carrying no
+   * usable timestamp, returns an empty session list BY DESIGN — so no row will
+   * ever exist under the id `sessionIdForSource` derives from its path, and the
+   * orphan self-heal (`isOrphanedFromDb`) readmitted it on every scan forever.
+   * Measured as a backfill that never drained: `sources_remaining` flat at 66
+   * for 48h. ISS-7306 closed the same loop for a folded CHILD rollout, which the
+   * scan recognises as a burst ARTIFACT ahead of the orphan check; a root has no
+   * parent, so nothing recognised it.
+   *
+   * Scoped to the fingerprint above, which is what keeps it from becoming a
+   * permanent drop: a transcript that grows past the burst window, or gains a
+   * timestamp, changes its mtime/size and is re-parsed from scratch. A change to
+   * how the parser decides the zero — the burst thresholds included — is a
+   * parser-semantics change and is retired by {@link PERSIST_VERSION}, the lever
+   * that already exists for exactly that. A change to the collector's RUNTIME
+   * parse settings (the Codex burst env vars) is retired by
+   * {@link SeenEntry.noSessionKey} instead.
+   */
+  noSession?: boolean;
+  /**
+   * The collector's `zeroSessionParseKey` when {@link SeenEntry.noSession} was
+   * stamped. Codex re-reads its burst thresholds on every parse, so raising
+   * the record minimum can turn a dropped burst into a valid session with no
+   * change to the file; the mark is honoured only while this still matches.
+   */
+  noSessionKey?: string;
 };
 
 export type CatchupCache = {
+  /**
+   * ISS-12036: `yieldedNoSession` reports the {@link SeenEntry.noSession} mark,
+   * and only ever alongside `unchanged: true` — the mark describes a specific set
+   * of bytes, so it is meaningless once the fingerprint has moved. Answered here,
+   * off the one fingerprint comparison this function already makes, so no caller
+   * re-derives freshness to read it.
+   */
   isUnchanged(
     filePath: string,
     extraMtimeMs?: number | null
-  ): { unchanged: boolean; stat: Stats | null };
+  ): { unchanged: boolean; stat: Stats | null; yieldedNoSession: boolean };
   markSeen(filePath: string): void;
   markSeenWith(
     filePath: string,
     stat: Stats | null,
-    extraMtimeMs?: number | null
+    extraMtimeMs?: number | null,
+    options?: { yieldedNoSession?: boolean }
   ): void;
   pruneTo(currentPaths: string[]): void;
   flush(): void;
@@ -65,40 +100,44 @@ function parseSeenEntry(value: unknown): SeenEntry | null {
   if (typeof v.extraMtimeMs === "number") {
     entry.extraMtimeMs = v.extraMtimeMs;
   }
+  // ISS-12036: additive and version-skew safe. An entry persisted before the
+  // mark shipped loads without it and behaves exactly as it did — readmitted by
+  // the orphan self-heal until a pass re-parses the source to zero and stamps it.
+  if (v.noSession === true) {
+    entry.noSession = true;
+  }
+  if (typeof v.noSessionKey === "string") {
+    entry.noSessionKey = v.noSessionKey;
+  }
   return entry;
 }
 
 export function createCatchupCache(
-  options: { persistPath?: string } = {}
+  options: {
+    store?: IngestStorePort;
+    /** See {@link SeenEntry.noSessionKey}; read live on every check and mark. */
+    zeroSessionParseKey?: () => string;
+  } = {}
 ): CatchupCache {
-  const persistPath =
-    typeof options.persistPath === "string" && options.persistPath.length > 0
-      ? options.persistPath
-      : null;
+  const store = options.store ?? null;
+  const zeroSessionParseKey = options.zeroSessionParseKey ?? (() => "");
 
   const seen = new Map<string, SeenEntry>();
   let dirty = false;
 
-  if (persistPath) {
-    try {
-      const parsed = JSON.parse(readFileSync(persistPath, "utf8")) as {
-        version?: number;
-        entries?: Record<string, unknown>;
-      };
-      // Discard caches written by a different PERSIST_VERSION: entries from an
-      // older parser pipeline would skip files the new pipeline must reparse.
-      const entries =
-        parsed?.version === PERSIST_VERSION ? parsed.entries : undefined;
-      if (entries && typeof entries === "object") {
-        for (const [key, value] of Object.entries(entries)) {
-          const entry = parseSeenEntry(value);
-          if (entry) {
-            seen.set(key, entry);
-          }
-        }
+  // ISS-9837 R1: `hydrated` was resolved before this constructor ran, so the
+  // load stays synchronous. R3: discard a snapshot written by a different
+  // PERSIST_VERSION WHOLE — entries from an older parser pipeline would skip
+  // files the new pipeline must reparse.
+  const hydrated = store?.hydrated ?? null;
+  const entries =
+    hydrated?.version === PERSIST_VERSION ? hydrated.entries : undefined;
+  if (entries) {
+    for (const [key, value] of Object.entries(entries)) {
+      const entry = parseSeenEntry(value);
+      if (entry) {
+        seen.set(key, entry);
       }
-    } catch {
-      /* missing or corrupt cache file — start empty, non-fatal */
     }
   }
 
@@ -108,12 +147,13 @@ export function createCatchupCache(
   ): {
     unchanged: boolean;
     stat: Stats | null;
+    yieldedNoSession: boolean;
   } {
     let stat: Stats;
     try {
       stat = statSync(filePath);
     } catch {
-      return { unchanged: false, stat: null };
+      return { unchanged: false, stat: null, yieldedNoSession: false };
     }
     const cached = seen.get(filePath);
     if (
@@ -121,28 +161,55 @@ export function createCatchupCache(
       cached.mtimeMs === stat.mtimeMs &&
       cached.size === stat.size
     ) {
-      // FEA-1459 Fix 11: Also check extra mtime (e.g., max subagent mtime).
-      // If the extra mtime is newer than what we saw last, it's changed.
+      // FEA-1459 Fix 11: Also check the extra mtime (e.g. max subagent mtime).
+      //
+      // ISS-7198: DIFFERENT, not GREATER. Collectors fold several independent
+      // clocks into this one number — the Claude one sums its subagent clock and
+      // its Desktop-sidecar clock — so it is a FINGERPRINT, not a timestamp, and
+      // it moves DOWN whenever one of those inputs goes away. Under a `>` test a
+      // decrease read as "unchanged", which is how a DELETED input kept its
+      // stale enrichment alive: a removed Desktop sidecar lowered the fold, the
+      // source was skipped, and the session kept serving a `claudeDesktopOrigin`
+      // whose file no longer existed until the transcript itself changed. Any
+      // difference is a real change to a real input, and a re-import is
+      // idempotent, so treating it as one converges rather than oscillating.
       if (extraMtimeMs != null) {
         const cachedExtra = cached.extraMtimeMs ?? 0;
-        if (extraMtimeMs > cachedExtra) {
-          return { unchanged: false, stat };
+        if (extraMtimeMs !== cachedExtra) {
+          return { unchanged: false, stat, yieldedNoSession: false };
         }
       }
-      return { unchanged: true, stat };
+      return {
+        unchanged: true,
+        stat,
+        yieldedNoSession:
+          cached.noSession === true &&
+          (cached.noSessionKey ?? "") === zeroSessionParseKey(),
+      };
     }
-    return { unchanged: false, stat };
+    return { unchanged: false, stat, yieldedNoSession: false };
   }
 
   function markSeenWith(
     filePath: string,
     stat: Stats | null,
-    extraMtimeMs?: number | null
+    extraMtimeMs?: number | null,
+    options?: { yieldedNoSession?: boolean }
   ): void {
     if (stat) {
       const entry: SeenEntry = { mtimeMs: stat.mtimeMs, size: stat.size };
       if (extraMtimeMs != null) {
         entry.extraMtimeMs = extraMtimeMs;
+      }
+      // ISS-12036: written only when TRUE, so re-marking a source that now
+      // yields a session clears the mark by replacing the whole entry rather
+      // than carrying a stale `false` — the entry is rebuilt here on every mark.
+      if (options?.yieldedNoSession === true) {
+        entry.noSession = true;
+        const key = zeroSessionParseKey();
+        if (key !== "") {
+          entry.noSessionKey = key;
+        }
       }
       seen.set(filePath, entry);
       dirty = true;
@@ -171,20 +238,26 @@ export function createCatchupCache(
   }
 
   function flush(): void {
-    if (!(persistPath && dirty)) {
+    if (!(store && dirty)) {
       return;
     }
     dirty = false;
+    const snapshot: IngestStoreSnapshot = {
+      version: PERSIST_VERSION,
+      entries: {},
+    };
+    for (const [key, value] of seen) {
+      snapshot.entries[key] = value;
+    }
     try {
-      mkdirSync(path.dirname(persistPath), { recursive: true });
-      const entries: Record<string, SeenEntry> = {};
-      for (const [key, value] of seen) {
-        entries[key] = value;
-      }
-      writeFileSync(
-        persistPath,
-        JSON.stringify({ version: PERSIST_VERSION, entries })
-      );
+      // Deliberately NOT retried (ISS-5302): `dirty` is already cleared above, so
+      // an unaccepted write is dropped rather than re-flushed. Unlike the
+      // quarantine, a lost fingerprint costs one re-import of an unchanged
+      // source, never a re-parse of a poison one.
+      store.save(snapshot).catch(() => {
+        // The port contract says `save` never rejects; terminating the chain
+        // keeps a port that breaks it from becoming an unhandled rejection.
+      });
     } catch {
       /* best-effort persistence — cache stays correct in memory */
     }
@@ -209,7 +282,7 @@ export function createCatchupCache(
     flush,
     size,
     clear,
-    persisted: persistPath != null,
+    persisted: store != null,
   };
 }
 
@@ -236,13 +309,14 @@ export function createPassSeenWriter(
   markSeen(
     filePath: string,
     stat: Stats | null,
-    extraMtimeMs: number | null
+    extraMtimeMs: number | null,
+    options?: { yieldedNoSession?: boolean }
   ): void;
 } {
   let lastFlushAt = now();
   return {
-    markSeen(filePath, stat, extraMtimeMs): void {
-      cache.markSeenWith(filePath, stat, extraMtimeMs);
+    markSeen(filePath, stat, extraMtimeMs, options): void {
+      cache.markSeenWith(filePath, stat, extraMtimeMs, options);
       const at = now();
       if (at - lastFlushAt >= intervalMs) {
         lastFlushAt = at;

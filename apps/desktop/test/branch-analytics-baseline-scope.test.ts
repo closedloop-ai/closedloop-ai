@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import type { BranchAnalytics, BranchKpi } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { test } from "vitest";
 import { projectBranchAnalytics } from "../src/main/branch/branch-analytics-projection.js";
 import { makeBranchRowFixture as makeRow } from "./shared-branches-test-helpers.js";
 
@@ -31,18 +31,15 @@ const MEASURED_KPI_KEYS = [
 ] as const satisfies readonly (keyof BranchAnalytics)[];
 
 test("desktop analytics emits no baseline without the scope it was measured over", () => {
-  const analytics = projectBranchAnalytics(
-    [
-      makeRow({
-        id: "b1",
-        prState: GitHubPRState.Merged,
-        additions: 100,
-        deletions: 20,
-      }),
-      makeRow({ id: "b2", prState: GitHubPRState.Open }),
-    ],
-    { totalSpendUsd: 40, locEnrichedSpendUsd: 10 }
-  );
+  const analytics = projectBranchAnalytics([
+    makeRow({
+      id: "b1",
+      prState: GitHubPRState.Merged,
+      additions: 100,
+      deletions: 20,
+    }),
+    makeRow({ id: "b2", prState: GitHubPRState.Open }),
+  ]);
 
   for (const key of MEASURED_KPI_KEYS) {
     const kpi: BranchKpi = analytics[key];

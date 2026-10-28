@@ -1,24 +1,26 @@
 "use client";
 
+import type { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import type {
   CustomFieldEntityType,
   CustomFieldEnumOption,
   CustomFieldSettingWithOptions,
   CustomFieldValueDetail,
 } from "@repo/api/src/types/custom-field";
-import {
-  CustomFieldType,
-  LabelPosition,
-  NumberFormat,
-} from "@repo/api/src/types/custom-field";
+import { CustomFieldType } from "@repo/api/src/types/custom-field";
 import type { BasicUser } from "@repo/api/src/types/user";
 import { useUpdateCustomFieldValue } from "@repo/app/custom-fields/hooks/use-custom-fields";
+import { isDurationFormattedField } from "@repo/app/custom-fields/lib/duration-field";
+import { knownCustomFieldOptionColorClass } from "@repo/app/custom-fields/lib/option-colors";
+import {
+  CUSTOM_FIELD_DURATION_FORMAT_FEATURE_FLAG_KEY,
+  CUSTOM_FIELD_EDITOR_CONTRACTS_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
-import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
-import { Input } from "@repo/design-system/components/ui/input";
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
 import {
   Popover,
   PopoverContent,
@@ -31,203 +33,56 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { cn } from "@repo/design-system/lib/utils";
+import {
+  CustomFieldEditor,
+  resolveCustomFieldEditor,
+} from "@repo/lib/custom-fields/custom-field-editor";
 import { XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
+import type { BaseEditorProps } from "./custom-field-editor-props";
+import { renderScalarCustomFieldEditor } from "./custom-field-scalar-editor";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type BaseEditorProps = {
-  fieldId: string;
-  entityType: CustomFieldEntityType;
-  entityId: string;
-};
-
-// ---------------------------------------------------------------------------
-// TextFieldEditor — blur-to-save Input
-// ---------------------------------------------------------------------------
-
-type TextFieldEditorProps = BaseEditorProps & {
-  initialValue: string | null;
-  fieldName: string;
-};
-
-function TextFieldEditor({
-  fieldId,
-  entityType,
-  entityId,
-  initialValue,
-  fieldName,
-}: Readonly<TextFieldEditorProps>) {
-  const [text, setText] = useState(initialValue ?? "");
-  const focusedRef = useRef(false);
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
-
-  // Sync from server when value changes, but only when not actively editing
-  useEffect(() => {
-    if (!focusedRef.current) {
-      setText(initialValue ?? "");
-    }
-  }, [initialValue]);
-
-  const handleBlur = () => {
-    focusedRef.current = false;
-    const value = text.trim() === "" ? null : text.trim();
-    mutation.mutate({ fieldId, value });
-  };
-
-  return (
-    <Input
-      aria-label={fieldName}
-      onBlur={handleBlur}
-      onChange={(e) => setText(e.target.value)}
-      onFocus={() => {
-        focusedRef.current = true;
-      }}
-      placeholder="Enter text..."
-      value={text}
-    />
-  );
-}
-
-// ---------------------------------------------------------------------------
-// NumberFieldEditor — formatted display when unfocused, raw number when editing
-// ---------------------------------------------------------------------------
-
-type NumberFieldEditorProps = BaseEditorProps & {
-  initialValue: number | null;
-  displayValue: string | null;
-  numberFormat: string | null;
-  precision: number | null;
-  customLabel: string | null;
-  customLabelPosition: string | null;
-  fieldName: string;
-};
-
-function formatNumber(
-  value: number,
-  format: string | null,
-  precision: number | null,
-  label: string | null,
-  labelPosition: string | null
-): string {
-  const decimals = precision ?? 2;
-  const formatted = value.toFixed(decimals);
-
-  if (format === NumberFormat.Currency) {
-    return `$${formatted}`;
-  }
-  if (format === NumberFormat.Percentage) {
-    return `${formatted}%`;
-  }
-  if (format === NumberFormat.Custom && label) {
-    if (labelPosition === LabelPosition.Suffix) {
-      return `${formatted} ${label}`;
-    }
-    return `${label} ${formatted}`;
-  }
-  return formatted;
-}
-
-function NumberFieldEditor({
-  fieldId,
-  entityType,
-  entityId,
-  initialValue,
-  displayValue,
-  numberFormat,
-  precision,
-  customLabel,
-  customLabelPosition,
-  fieldName,
-}: Readonly<NumberFieldEditorProps>) {
-  const [focused, setFocused] = useState(false);
-  const [raw, setRaw] = useState(
-    initialValue === null ? "" : String(initialValue)
-  );
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
-
-  // Sync from server when value changes, but only when not actively editing
-  useEffect(() => {
-    if (!focused) {
-      setRaw(initialValue === null ? "" : String(initialValue));
-    }
-  }, [initialValue, focused]);
-
-  let prefix: string | null = null;
-  if (numberFormat === NumberFormat.Currency) {
-    prefix = "$";
-  } else if (
-    numberFormat === NumberFormat.Custom &&
-    customLabel &&
-    customLabelPosition !== LabelPosition.Suffix
-  ) {
-    prefix = customLabel;
-  }
-
-  let suffix: string | null = null;
-  if (numberFormat === NumberFormat.Percentage) {
-    suffix = "%";
-  } else if (
-    numberFormat === NumberFormat.Custom &&
-    customLabel &&
-    customLabelPosition === LabelPosition.Suffix
-  ) {
-    suffix = customLabel;
-  }
-
-  let displayText = "";
-  if (!focused && initialValue !== null) {
-    displayText =
-      displayValue ??
-      formatNumber(
-        initialValue,
-        numberFormat,
-        precision,
-        customLabel,
-        customLabelPosition
-      );
-  }
-
-  const handleBlur = () => {
-    setFocused(false);
-    const parsed = raw === "" ? null : Number.parseFloat(raw);
-    const value = parsed !== null && !Number.isNaN(parsed) ? parsed : null;
-    mutation.mutate({ fieldId, value });
-  };
-
-  return (
-    <div className="flex items-center gap-1">
-      {prefix && (
-        <span className="shrink-0 text-muted-foreground text-sm">{prefix}</span>
-      )}
-      <Input
-        aria-label={fieldName}
-        onBlur={handleBlur}
-        onChange={(e) => setRaw(e.target.value)}
-        onFocus={() => setFocused(true)}
-        placeholder="0"
-        type="text"
-        value={focused ? raw : displayText}
-      />
-      {suffix && (
-        <span className="shrink-0 text-muted-foreground text-sm">{suffix}</span>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // EnumFieldEditor — Select with colored dot per option
-// ---------------------------------------------------------------------------
 
 type EnumFieldEditorProps = BaseEditorProps & {
   initialEnumValue: CustomFieldEnumOption | null;
   options: CustomFieldEnumOption[];
 };
 
+/**
+ * The persisted option colour.
+ *
+ * Feeding the stored value straight to CSS made a canonical id like `green`
+ * paint `#008000` while the picker two components away painted `bg-green-500` —
+ * one option, two greens on one screen — and a legacy `bg-success` was not a
+ * colour at all, so the dot vanished. Gated, a value from the palette is drawn
+ * from the same class map the picker reads.
+ *
+ * The inline style stays for everything else, deliberately: `color` is an
+ * unconstrained string server-side and a row can hold a raw `#ff0000`, so
+ * narrowing this to the palette would stop rendering a colour it shows today
+ * (ISS-8215).
+ */
 function ColorDot({ color }: Readonly<{ color: string }>) {
+  const canonicalColors = useFeatureFlagEnabledOptional(
+    CUSTOM_FIELD_EDITOR_CONTRACTS_FEATURE_FLAG_KEY
+  );
+  const paletteClass = canonicalColors
+    ? knownCustomFieldOptionColorClass(color)
+    : undefined;
+  if (paletteClass) {
+    return (
+      <span
+        className={cn(
+          "inline-block size-2.5 shrink-0 rounded-full",
+          paletteClass
+        )}
+      />
+    );
+  }
   return (
     <span
       className="inline-block size-2.5 shrink-0 rounded-full"
@@ -245,7 +100,7 @@ function RemoveValueButton({
 }: Readonly<{ label: string; onRemove: () => void }>) {
   return (
     <button
-      className="ml-0.5 rounded-sm p-0.5 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      className={`ml-0.5 rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-foreground ${CHIP_FOCUS_RING_CLASS}`}
       onClick={onRemove}
       type="button"
     >
@@ -259,13 +114,14 @@ function EnumFieldEditor({
   fieldId,
   entityType,
   entityId,
+  surface,
   initialEnumValue,
   options,
 }: Readonly<EnumFieldEditorProps>) {
   const [selectedId, setSelectedId] = useState<string | null>(
     initialEnumValue?.id ?? null
   );
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
+  const mutation = useUpdateCustomFieldValue(entityType, entityId, surface);
   const activeOptions = options.filter((o) => o.enabled);
 
   // Sync from server when value changes
@@ -322,9 +178,7 @@ function EnumFieldEditor({
   );
 }
 
-// ---------------------------------------------------------------------------
 // MultiEnumFieldEditor — Popover checkbox list + Badge pills with x to remove
-// ---------------------------------------------------------------------------
 
 type MultiEnumFieldEditorProps = BaseEditorProps & {
   initialValues: CustomFieldEnumOption[];
@@ -335,6 +189,7 @@ function MultiEnumFieldEditor({
   fieldId,
   entityType,
   entityId,
+  surface,
   initialValues,
   options,
 }: Readonly<MultiEnumFieldEditorProps>) {
@@ -342,7 +197,7 @@ function MultiEnumFieldEditor({
     initialValues.map((v) => v.id)
   );
   const [open, setOpen] = useState(false);
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
+  const mutation = useUpdateCustomFieldValue(entityType, entityId, surface);
   const activeOptions = options.filter((o) => o.enabled);
   const initialIdKey = initialValues.map((v) => v.id).join(",");
 
@@ -460,48 +315,7 @@ function MultiEnumFieldEditor({
   );
 }
 
-// ---------------------------------------------------------------------------
-// DateFieldEditor — reuses DatePickerPopover
-// ---------------------------------------------------------------------------
-
-type DateFieldEditorProps = BaseEditorProps & {
-  initialValue: Date | null;
-};
-
-function DateFieldEditor({
-  fieldId,
-  entityType,
-  entityId,
-  initialValue,
-}: Readonly<DateFieldEditorProps>) {
-  const [date, setDate] = useState<Date | null>(initialValue);
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
-  const dateKey = initialValue?.getTime() ?? null;
-
-  // Sync from server when value changes (use stable primitive dep to avoid re-firing on every render)
-  useEffect(() => {
-    setDate(dateKey === null ? null : new Date(dateKey));
-  }, [dateKey]);
-
-  const handleSelect = (selected: Date | null) => {
-    setDate(selected);
-    const value = selected ? selected.toISOString() : null;
-    mutation.mutate({ fieldId, value });
-  };
-
-  return (
-    <DatePickerPopover
-      className="w-full"
-      onSelect={handleSelect}
-      placeholder="Select date..."
-      value={date}
-    />
-  );
-}
-
-// ---------------------------------------------------------------------------
 // PeopleFieldEditor — multi-select of org users (MVP: display + add via popover)
-// ---------------------------------------------------------------------------
 
 type PeopleFieldEditorProps = BaseEditorProps & {
   initialPeople: BasicUser[];
@@ -511,10 +325,11 @@ function PeopleFieldEditor({
   fieldId,
   entityType,
   entityId,
+  surface,
   initialPeople,
 }: Readonly<PeopleFieldEditorProps>) {
   const [selected, setSelected] = useState<BasicUser[]>(initialPeople);
-  const mutation = useUpdateCustomFieldValue(entityType, entityId);
+  const mutation = useUpdateCustomFieldValue(entityType, entityId, surface);
   const initialPeopleKey = initialPeople.map((u) => u.id).join(",");
 
   // Sync from server when people change (use stable string key to avoid infinite re-renders)
@@ -554,13 +369,12 @@ function PeopleFieldEditor({
   );
 }
 
-// ---------------------------------------------------------------------------
-// CustomFieldValueEditor — parent switch-dispatcher
-// ---------------------------------------------------------------------------
+// CustomFieldValueEditor — parent dispatcher, over the ISS-9484 editor registry
 
 export type CustomFieldValueEditorProps = {
   entityType: CustomFieldEntityType;
   entityId: string;
+  surface?: ArtifactStatusEditSurface;
   setting: CustomFieldSettingWithOptions;
   /** Optional resolved value; omit when value is not yet loaded. */
   value?: CustomFieldValueDetail;
@@ -569,12 +383,17 @@ export type CustomFieldValueEditorProps = {
 export function CustomFieldValueEditor({
   entityType,
   entityId,
+  surface,
   setting,
   value,
 }: Readonly<CustomFieldValueEditorProps>) {
   const { customField } = setting;
-  const { id: fieldId, fieldType } = customField;
-  const enumOptions = customField.enumOptions ?? [];
+  // ISS-8213: read once, here, and let it pick between two whole editors. A
+  // DURATION field is a NUMBER field, so `fieldType` alone cannot select the
+  // right unit.
+  const durationFormatEnabled = useFeatureFlagEnabledOptional(
+    CUSTOM_FIELD_DURATION_FORMAT_FEATURE_FLAG_KEY
+  );
 
   return (
     <div className="flex flex-col gap-1">
@@ -582,68 +401,127 @@ export function CustomFieldValueEditor({
         {customField.name}
       </span>
 
-      {fieldType === CustomFieldType.Text && (
-        <TextFieldEditor
-          entityId={entityId}
-          entityType={entityType}
-          fieldId={fieldId}
-          fieldName={customField.name}
-          initialValue={value?.textValue ?? null}
-        />
-      )}
+      {renderCustomFieldEditor({
+        customField,
+        entityId,
+        entityType,
+        surface,
+        isDurationField:
+          durationFormatEnabled === true &&
+          isDurationFormattedField(customField),
+        value,
+      })}
+    </div>
+  );
+}
 
-      {fieldType === CustomFieldType.Number && (
-        <NumberFieldEditor
-          customLabel={customField.customLabel}
-          customLabelPosition={customField.customLabelPosition}
-          displayValue={value?.displayValue ?? null}
-          entityId={entityId}
-          entityType={entityType}
-          fieldId={fieldId}
-          fieldName={customField.name}
-          initialValue={value?.numberValue ?? null}
-          numberFormat={customField.numberFormat}
-          precision={customField.precision}
-        />
-      )}
+type EditorRenderArgs = {
+  customField: CustomFieldSettingWithOptions["customField"];
+  entityId: string;
+  entityType: CustomFieldEntityType;
+  surface?: ArtifactStatusEditSurface;
+  isDurationField: boolean;
+  value?: CustomFieldValueDetail;
+};
 
-      {fieldType === CustomFieldType.Enum && (
-        <EnumFieldEditor
-          entityId={entityId}
-          entityType={entityType}
-          fieldId={fieldId}
-          initialEnumValue={value?.enumValue ?? null}
-          options={enumOptions}
-        />
-      )}
-
-      {fieldType === CustomFieldType.MultiEnum && (
-        <MultiEnumFieldEditor
-          entityId={entityId}
-          entityType={entityType}
-          fieldId={fieldId}
-          initialValues={value?.multiEnumValues ?? []}
-          options={enumOptions}
-        />
-      )}
-
-      {fieldType === CustomFieldType.Date && (
-        <DateFieldEditor
-          entityId={entityId}
-          entityType={entityType}
-          fieldId={fieldId}
-          initialValue={value?.dateValue ? new Date(value.dateValue) : null}
-        />
-      )}
-
-      {fieldType === CustomFieldType.People && (
+/**
+ * ISS-9484 (#7902 review: tamsinb). The field type picks its editor through
+ * the registry, exactly as the grid cell does, rather than through a chain of
+ * `if`s over `fieldType` — a type added to the registry against an editor this
+ * file already renders used to compile here and leave the panel showing a field
+ * name with nothing under it.
+ *
+ * A type this build has no row for resolves to `None` and renders read-only, so
+ * a peer on the other side of a rolling deploy cannot be offered an editor that
+ * collects what this build cannot store.
+ */
+function renderCustomFieldEditor({
+  customField,
+  entityId,
+  entityType,
+  surface,
+  isDurationField,
+  value,
+}: EditorRenderArgs): ReactNode {
+  const editor = resolveCustomFieldEditor(customField.fieldType);
+  switch (editor) {
+    case CustomFieldEditor.Scalar:
+      return renderScalarCustomFieldEditor({
+        customField,
+        entityId,
+        entityType,
+        surface,
+        isDurationField,
+        value,
+      });
+    case CustomFieldEditor.Choice:
+      return renderChoiceCustomFieldEditor({
+        customField,
+        entityId,
+        entityType,
+        isDurationField,
+        value,
+      });
+    case CustomFieldEditor.People:
+      return (
         <PeopleFieldEditor
           entityId={entityId}
           entityType={entityType}
-          fieldId={fieldId}
+          fieldId={customField.id}
           initialPeople={value?.peopleValues ?? []}
+          surface={surface}
         />
-      )}
-    </div>
+      );
+    // The reference picker is a grid-only control today
+    // (`EditableReferenceCustomFieldCell`); it needs a target search and the
+    // owning entity id, neither of which this panel is given. Read-only here is
+    // what shipped, not a decision taken in this file.
+    case CustomFieldEditor.Reference:
+      return null;
+    case CustomFieldEditor.None:
+      return null;
+    default:
+      return assertNoUnhandledEditor(editor);
+  }
+}
+
+function renderChoiceCustomFieldEditor({
+  customField,
+  entityId,
+  entityType,
+  surface,
+  value,
+}: EditorRenderArgs): ReactNode {
+  const options = customField.enumOptions ?? [];
+  if (customField.fieldType === CustomFieldType.MultiEnum) {
+    return (
+      <MultiEnumFieldEditor
+        entityId={entityId}
+        entityType={entityType}
+        fieldId={customField.id}
+        initialValues={value?.multiEnumValues ?? []}
+        options={options}
+        surface={surface}
+      />
+    );
+  }
+  return (
+    <EnumFieldEditor
+      entityId={entityId}
+      entityType={entityType}
+      fieldId={customField.id}
+      initialEnumValue={value?.enumValue ?? null}
+      options={options}
+      surface={surface}
+    />
   );
+}
+
+/**
+ * A sixth `CustomFieldEditor` would otherwise compile and fall silently to an
+ * empty slot — the same hole the registry exists to close, one level up. The
+ * grid cell carries the identical guard.
+ */
+function assertNoUnhandledEditor(editor: never): never {
+  throw new Error(`Unhandled custom-field editor: ${String(editor)}`);
 }

@@ -9,9 +9,21 @@ import type { Artifact } from "@repo/api/src/types/artifact";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { TagSummary } from "@repo/api/src/types/tag";
 import { TagColor } from "@repo/api/src/types/tag";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
+import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
+import {
+  cleanup,
+  fireEvent,
+  render as rtlRender,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
+
+// The overflow indicator's tooltip renders through a Radix portal that never
+// mounts in jsdom, so the capped tag's NAME is unreadable without this.
+vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
 const mockUseFeatureFlagEnabled = vi.fn();
 
@@ -29,13 +41,6 @@ vi.mock(
   async () => await import("./__mocks__/use-artifact-favorites")
 );
 
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useCodeJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-}));
-
 // TagPicker calls useTags when opened. Mock the hooks module so the picker
 // renders without a QueryClient provider.
 vi.mock("@repo/app/tags/hooks/use-tags", () => ({
@@ -43,6 +48,7 @@ vi.mock("@repo/app/tags/hooks/use-tags", () => ({
   useApplyTag: vi.fn(() => ({ mutate: vi.fn() })),
   useRemoveTag: vi.fn(() => ({ mutate: vi.fn() })),
   useCreateTag: vi.fn(() => ({ mutate: vi.fn() })),
+  useUpdateTag: vi.fn(() => ({ mutate: vi.fn() })),
   tagKeys: {
     all: ["tags"],
     lists: () => ["tags", "list"],
@@ -61,9 +67,7 @@ import {
 } from "@repo/app/shared/test-fixtures/documents";
 import { makeProject } from "@repo/app/shared/test-fixtures/project";
 
-// ---------------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------------
 
 const ADD_TAG_PATTERN = /add tag/i;
 
@@ -73,14 +77,31 @@ const TAG_BLUE: TagSummary = {
   color: TagColor.Blue,
 };
 const TAG_RED: TagSummary = { id: "t2", name: "urgent", color: TagColor.Red };
+const TAG_GREEN: TagSummary = {
+  id: "t3",
+  name: "platform",
+  color: TagColor.Green,
+};
 
 function renderTagsColumn(item: DocumentRowItem) {
   return render(<DocumentRow item={item} visibleColumns={[Col.Tags]} />);
 }
 
-// ---------------------------------------------------------------------------
+/**
+ * Same mount, but the navigation store is returned so a chip press can be
+ * asserted against the href it actually drove.
+ */
+function renderTagsColumnWithNav(item: DocumentRowItem) {
+  const nav = createMemoryNavigation({ orgSlug: "test-org" });
+  rtlRender(
+    <NavigationProvider adapter={nav.adapter}>
+      <DocumentRow item={item} visibleColumns={[Col.Tags]} />
+    </NavigationProvider>
+  );
+  return nav;
+}
+
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("TagsCell", () => {
   afterEach(() => {
@@ -116,6 +137,53 @@ describe("TagsCell", () => {
 
       expect(screen.getByText("backend")).toBeInTheDocument();
       expect(screen.getByText("urgent")).toBeInTheDocument();
+    });
+
+    /**
+     * ISS-9215 (davetho review). Documents is the one surface whose chips
+     * NAVIGATE, so they cannot nest inside the picker's trigger button — and
+     * that layout used to be bought by handing the run to `TagPicker`, which
+     * draws every applied tag uncapped. A 3-tag document therefore widened the
+     * cell while Sessions and Branches, sharing the same component, capped at
+     * two. The cap belongs to the cell on every surface.
+     */
+    it("caps the chips and names the overflow instead of widening the cell", () => {
+      const item: DocumentRowItem = {
+        kind: "document",
+        data: makeArtifact({ tags: [TAG_BLUE, TAG_RED, TAG_GREEN] }),
+      };
+      renderTagsColumn(item);
+
+      expect(
+        screen.getByRole("button", { name: TAG_BLUE.name })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: TAG_RED.name })
+      ).toBeInTheDocument();
+      expect(screen.getByText("+1")).toBeInTheDocument();
+      // Past the cap the tag is still NAMED — it moves into the overflow
+      // indicator's tooltip rather than being dropped — but it is no longer its
+      // own chip, which is the whole point of the cap.
+      expect(
+        screen.queryByRole("button", { name: TAG_GREEN.name })
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(TAG_GREEN.name)).toBeInTheDocument();
+    });
+
+    it("still routes a visible chip to that tag's search", () => {
+      const item: DocumentRowItem = {
+        kind: "document",
+        data: makeArtifact({ tags: [TAG_BLUE, TAG_RED, TAG_GREEN] }),
+      };
+      const nav = renderTagsColumnWithNav(item);
+
+      fireEvent.click(screen.getByRole("button", { name: TAG_BLUE.name }));
+
+      // The cap must not cost the surviving chips their navigation: capping by
+      // rendering plain, unpressable chips would satisfy the case above.
+      expect(nav.getCurrentHref()).toBe(
+        `/test-org/search?tagId=${TAG_BLUE.id}`
+      );
     });
 
     it("renders applied tag chips inside the trigger for a feature row", () => {

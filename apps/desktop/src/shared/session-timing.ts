@@ -18,19 +18,19 @@ export type SessionTiming = {
  */
 export type SessionTimingBounds = { startMs: number; endMs: number };
 
-export function computeSessionTiming(
-  events: ReadonlyArray<{ eventType: string; createdAt: string }>,
+export type SessionTimingAccumulator = {
+  push(event: { eventType: string; createdAt: string }): void;
+  finish(): SessionTiming;
+};
+
+/** Incremental form of {@link computeSessionTiming} for ordered event streams. */
+export function createSessionTimingAccumulator(
   bounds?: SessionTimingBounds
-): SessionTiming {
+): SessionTimingAccumulator {
   let activeAgentMs = 0;
   let waitingUserMs = 0;
-
-  if (events.length === 0) {
-    return { activeAgentMs, waitingUserMs };
-  }
-
-  // A finite, well-ordered window enables clamping; otherwise fall back to the
-  // unclamped raw-gap sum (behaviourally identical to pre-FEA-3582 callers).
+  let previousRole: ReturnType<typeof eventRole> | null = null;
+  let previousTime = Number.NaN;
   const clampWindow =
     bounds &&
     Number.isFinite(bounds.startMs) &&
@@ -39,32 +39,53 @@ export function computeSessionTiming(
       ? bounds
       : null;
 
-  let prevRole = eventRole(events[0].eventType);
-  let prevTime = new Date(events[0].createdAt).getTime();
-
-  for (let i = 1; i < events.length; i++) {
-    const role = eventRole(events[i].eventType);
-    const time = new Date(events[i].createdAt).getTime();
-    // Clamp the [prevTime, time) gap to the wall window before measuring it: an
-    // interval starting before `startMs` or ending after `endMs` contributes
-    // only its in-window portion, so no bucket can outrun wall time. A gap that
-    // is wholly outside the window (or zero/negative) yields `lo >= hi` and
-    // contributes nothing.
-    const lo = clampWindow ? Math.max(prevTime, clampWindow.startMs) : prevTime;
-    const hi = clampWindow ? Math.min(time, clampWindow.endMs) : time;
-    const gap = hi - lo;
-
-    if (Number.isFinite(gap) && gap > 0) {
-      if (prevRole === "agent" && role === "human") {
-        waitingUserMs += gap;
-      } else if (prevRole !== "system") {
-        activeAgentMs += gap;
+  return {
+    push(event) {
+      const role = eventRole(event.eventType);
+      const time = new Date(event.createdAt).getTime();
+      if (previousRole !== null) {
+        const lo = clampWindow
+          ? Math.max(previousTime, clampWindow.startMs)
+          : previousTime;
+        const hi = clampWindow ? Math.min(time, clampWindow.endMs) : time;
+        const gap = hi - lo;
+        const bucket = timingGapBucket(previousRole, role, gap);
+        if (bucket === "waiting") {
+          waitingUserMs += gap;
+        } else if (bucket === "active") {
+          activeAgentMs += gap;
+        }
       }
-    }
+      previousRole = role;
+      previousTime = time;
+    },
+    finish() {
+      return { activeAgentMs, waitingUserMs };
+    },
+  };
+}
 
-    prevRole = role;
-    prevTime = time;
+function timingGapBucket(
+  previousRole: ReturnType<typeof eventRole>,
+  role: ReturnType<typeof eventRole>,
+  gap: number
+): "active" | "waiting" | null {
+  if (!(Number.isFinite(gap) && gap > 0)) {
+    return null;
   }
+  if (previousRole === "agent" && role === "human") {
+    return "waiting";
+  }
+  return previousRole === "system" ? null : "active";
+}
 
-  return { activeAgentMs, waitingUserMs };
+export function computeSessionTiming(
+  events: ReadonlyArray<{ eventType: string; createdAt: string }>,
+  bounds?: SessionTimingBounds
+): SessionTiming {
+  const accumulator = createSessionTimingAccumulator(bounds);
+  for (const event of events) {
+    accumulator.push(event);
+  }
+  return accumulator.finish();
 }

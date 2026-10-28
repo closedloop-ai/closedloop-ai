@@ -232,13 +232,8 @@ function DocumentComments() {
           />
         </article>
         <FeedRail
-          activeTab="feed"
           feedPanel={commentRail}
-          hasChat={false}
           onClose={() => setShowComments(false)}
-          onTabChange={() => {
-            // Single Feed tab in this prototype; nothing to switch to.
-          }}
           onWidthChange={setRailWidth}
           visible={showComments}
           width={railWidth}

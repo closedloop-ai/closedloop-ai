@@ -1,28 +1,31 @@
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { redactGatewaySessionId } from "../redact-correlation";
+import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
+  SupportUploadReason,
+} from "../telemetry/desktop-lifecycle-triggers";
 import {
   buildDesktopTelemetryPayload,
   buildValidationFailedPayload,
   sanitizeDesktopTelemetryDiagnostics,
 } from "../telemetry/emitter";
-import type { TelemetryTraceContext } from "../telemetry/schema";
 import {
-  DesktopShutdownTrigger,
-  DesktopUpdateTrigger,
-  desktopTelemetryEventSchema,
-  isLoopPerfTelemetryRateLimitBypass,
-  KNOWN_LOOP_COMMANDS,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
   OutboundNetworkDestinationClass,
   OutboundNetworkSurface,
-  SupportUploadReason,
-  TelemetryCategory,
-  TelemetrySeverity,
-  telemetryDiagnosticsSchema,
+} from "../telemetry/outbound-network";
+import type { TelemetryTraceContext } from "../telemetry/schema";
+import {
+  desktopTelemetryEventSchema,
   telemetryTraceContextSchema,
 } from "../telemetry/schema";
+import {
+  TelemetryCategory,
+  TelemetrySeverity,
+} from "../telemetry/telemetry-category";
+import { reportedDecisionTableVerification } from "./decision-table-verification-fixtures";
 import { importModuleWithFetch, parseFlushedBody } from "./test-helpers";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,8 @@ import { importModuleWithFetch, parseFlushedBody } from "./test-helpers";
 
 const VALID_UUID_A = "166e7770-fd87-49aa-a09b-a91cd2c404c8";
 const VALID_UUID_B = "85c4e16f-43d1-4422-b017-e9a2b7073c15";
+// An installed Desktop build still sends this lifecycle command value.
+const OLD_DESKTOP_LIFECYCLE_COMMAND = "EXECUTE";
 
 const validTraceContext = {
   commandId: "cmd-1",
@@ -55,38 +60,6 @@ const validDesktopWirePayload = {
   },
 };
 
-const reportedDecisionTableVerification = {
-  telemetryStatus: "reported",
-  telemetryFilePath:
-    "/tmp/work/.closedloop-ai/decision-table-verifications.jsonl",
-  lineNumber: 3,
-  timestamp: "2026-05-01T13:20:06.234Z",
-  workdir: "/tmp/work",
-  decisionTablePath: ".closedloop-ai/decision-tables/pln-302.md",
-  finalStatus: "aligned",
-  iterations: 3,
-  driftKindCounts: {
-    codeDrift: 2,
-    testDrift: 1,
-    planAmbiguity: 0,
-  },
-  fixesAttempted: 3,
-  parseFailures: 0,
-  verifierInvocations: 3,
-  phaseDurationMs: 58_921,
-};
-
-const missingDecisionTableVerification = {
-  telemetryStatus: "missing",
-  telemetryFilePath:
-    "/tmp/work/.closedloop-ai/decision-table-verifications.jsonl",
-  filePresent: true,
-  linesRead: 0,
-  invalidLines: 0,
-  missingReason: "no_current_run_records",
-  readError: "permission denied",
-};
-
 // ---------------------------------------------------------------------------
 // telemetryTraceContextSchema
 // ---------------------------------------------------------------------------
@@ -101,222 +74,6 @@ describe("telemetryTraceContextSchema", () => {
     const { loopSessionId: _omit, ...rest } = validTraceContext;
     const result = telemetryTraceContextSchema.safeParse(rest);
     expect(result.success).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// telemetryDiagnosticsSchema
-// ---------------------------------------------------------------------------
-
-describe("telemetryDiagnosticsSchema", () => {
-  it("accepts an empty diagnostics object (all fields optional)", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts diagnostics with logTail and exitCode", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      logTail: "some log output",
-      exitCode: 0,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts diagnostics with tokenUsage", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      tokenUsage: { inputTokens: 100, outputTokens: 50 },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects tokenUsage missing inputTokens", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      tokenUsage: { outputTokens: 50 },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects tokenUsage missing outputTokens", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      tokenUsage: { inputTokens: 100 },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts a numeric ackLatencyMs", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({ ackLatencyMs: 123 });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts EXECUTE plan source diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      planSource: {
-        source: "imported-plan-compat",
-        rawPlanPayload: true,
-        rawPlanAligned: false,
-        localPlanJsonPresent: false,
-        localPlanJsonAligned: false,
-        importedPlanFileStaged: true,
-        closedLoopPlanFileSet: true,
-        planArtifactContentLength: 10_455,
-        rawPlanContentLength: 23_906,
-        planArtifactContentHash: "abc123def456",
-        rawPlanContentHash: "fed654cba321",
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts reported decision-table verification diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      decisionTableVerification: reportedDecisionTableVerification,
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.decisionTableVerification?.telemetryStatus).toBe(
-        "reported"
-      );
-      if (
-        result.data.decisionTableVerification?.telemetryStatus === "reported"
-      ) {
-        expect(result.data.decisionTableVerification.finalStatus).toBe(
-          "aligned"
-        );
-        expect(result.data.decisionTableVerification.decisionTablePath).toBe(
-          ".closedloop-ai/decision-tables/pln-302.md"
-        );
-        expect(
-          result.data.decisionTableVerification.driftKindCounts.codeDrift
-        ).toBe(2);
-        expect(result.data.decisionTableVerification.fixesAttempted).toBe(3);
-        expect(result.data.decisionTableVerification.phaseDurationMs).toBe(
-          58_921
-        );
-      }
-    }
-  });
-
-  it("accepts missing decision-table verification diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      decisionTableVerification: missingDecisionTableVerification,
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.decisionTableVerification?.telemetryStatus).toBe(
-        "missing"
-      );
-      if (
-        result.data.decisionTableVerification?.telemetryStatus === "missing"
-      ) {
-        expect(result.data.decisionTableVerification.missingReason).toBe(
-          "no_current_run_records"
-        );
-        expect(result.data.decisionTableVerification.filePresent).toBe(true);
-        expect(result.data.decisionTableVerification.linesRead).toBe(0);
-        expect(result.data.decisionTableVerification.readError).toBe(
-          "permission denied"
-        );
-      }
-    }
-  });
-
-  it("accepts outbound network decision diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      outboundNetwork: {
-        surface: OutboundNetworkSurface.LoopAttachmentDownload,
-        decision: OutboundNetworkDecision.Denied,
-        reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
-        destinationClass: OutboundNetworkDestinationClass.External,
-        protocol: "https:",
-        hostname: "attacker.example.com",
-        port: "443",
-        statusCode: 403,
-      },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts bounded desktop update diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      desktopUpdate: {
-        trigger: "renderer-apply-update",
-        status: "downloaded",
-        version: "0.14.29",
-        percent: 100,
-        downloaded: true,
-        readyToInstall: true,
-      },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts bounded desktop shutdown diagnostics", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      desktopShutdown: {
-        trigger: "shutdown-sequence",
-        result: "timed_out",
-        phase: "server.stop",
-        elapsedMs: 5002,
-        duringUpdate: true,
-        outerHardExit: false,
-      },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("maps unknown desktop update and shutdown triggers to a safe value", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      desktopUpdate: {
-        trigger: "future-update-trigger",
-        status: "downloaded",
-      },
-      desktopShutdown: {
-        trigger: "future-shutdown-trigger",
-        result: "failed",
-      },
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.desktopUpdate?.trigger).toBe(
-        DesktopUpdateTrigger.Unknown
-      );
-      expect(result.data.desktopShutdown?.trigger).toBe(
-        DesktopShutdownTrigger.Unknown
-      );
-    }
-  });
-
-  it("accepts install-blocked-read-only-volume and gateway-apply-update triggers as known values", () => {
-    for (const trigger of [
-      "install-blocked-read-only-volume",
-      "gateway-apply-update",
-    ]) {
-      const result = telemetryDiagnosticsSchema.safeParse({
-        desktopUpdate: { trigger, status: "error" },
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.desktopUpdate?.trigger).toBe(trigger);
-      }
-    }
-  });
-
-  it("accepts absence of ackLatencyMs (optional)", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a non-number ackLatencyMs", () => {
-    const result = telemetryDiagnosticsSchema.safeParse({
-      ackLatencyMs: "fast",
-    });
-    expect(result.success).toBe(false);
   });
 });
 
@@ -773,11 +530,10 @@ describe("desktopTelemetryEventSchema", () => {
     }
   });
 
-  // T-2.2: every canonical LoopCommand value is accepted in lifecycle.command (AC-004)
-  it("lifecycle.command — accepts every canonical LoopCommand value", () => {
-    expect(KNOWN_LOOP_COMMANDS.size).toBeGreaterThan(0);
-
-    for (const command of KNOWN_LOOP_COMMANDS) {
+  // ISS-12435: Desktop builds older than the Loops removal still attribute
+  // job.* events to a loop command; those payloads keep validating.
+  it("lifecycle.command — accepts the loop command strings older Desktop builds send", () => {
+    for (const command of OLD_DESKTOP_LOOP_COMMANDS) {
       const result = desktopTelemetryEventSchema.safeParse({
         ...validDesktopWirePayload,
         category: TelemetryCategory.JobStarted,
@@ -820,7 +576,10 @@ describe("desktopTelemetryEventSchema", () => {
       ...validDesktopWirePayload,
       category: TelemetryCategory.JobStarted,
       diagnostics: {
-        lifecycle: { command: LoopCommand.Execute, unknownField: "value" },
+        lifecycle: {
+          command: OLD_DESKTOP_LIFECYCLE_COMMAND,
+          unknownField: "value",
+        },
       },
     });
 
@@ -829,7 +588,7 @@ describe("desktopTelemetryEventSchema", () => {
       const lifecycle = result.data.diagnostics?.lifecycle as
         | Record<string, unknown>
         | undefined;
-      expect(lifecycle?.command).toBe(LoopCommand.Execute);
+      expect(lifecycle?.command).toBe(OLD_DESKTOP_LIFECYCLE_COMMAND);
       expect(lifecycle?.unknownField).toBe("value");
     }
   });
@@ -850,7 +609,7 @@ describe("desktopTelemetryEventSchema", () => {
         sessionId: VALID_UUID_B,
       },
       diagnostics: {
-        lifecycle: { command: LoopCommand.Execute },
+        lifecycle: { command: OLD_DESKTOP_LIFECYCLE_COMMAND },
         exitCode: 0,
         elapsedMs: 5000,
       },
@@ -874,7 +633,7 @@ describe("desktopTelemetryEventSchema", () => {
           loopSessionId: VALID_UUID_B,
         },
         diagnostics: {
-          lifecycle: { command: LoopCommand.Execute },
+          lifecycle: { command: OLD_DESKTOP_LIFECYCLE_COMMAND },
           exitCode: 0,
           elapsedMs: 5000,
         },
@@ -1432,25 +1191,6 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     expect(new TextEncoder().encode(rawBytes).length).toBeLessThanOrEqual(1024);
   });
 
-  it("keeps non-loopPerf relay rate-limit checks cheap before full telemetry parsing", () => {
-    const payload = {
-      schemaVersion: "1",
-      category: TelemetryCategory.JobStarted,
-      severity: TelemetrySeverity.Info,
-      timestamp: "2024-01-01T00:00:00.000Z",
-      get trace() {
-        throw new Error("trace should not be parsed for generic telemetry");
-      },
-      get diagnostics() {
-        throw new Error(
-          "diagnostics should not be parsed for generic telemetry"
-        );
-      },
-    };
-
-    expect(isLoopPerfTelemetryRateLimitBypass(payload, "target-1")).toBe(false);
-  });
-
   it("server-side fallback: collapses home-rooted paths in reported decisionTableVerification (version-skewed older client)", () => {
     // An older Desktop build sends absolute, home-rooted paths that never went
     // through the FEA-2702 producer relativization. The server must still strip
@@ -1647,12 +1387,11 @@ describe("emitCommandLifecycleEvent() validation failure paths", () => {
     );
     const { log: freshLog } = await import("../log");
 
+    const opts: Parameters<typeof emitter.emitCommandLifecycleEvent>[2] = {};
     emitter.emitCommandLifecycleEvent(
       TelemetryCategory.CommandQueued,
       validTraceContext,
-      {
-        diagnostics: null as any,
-      }
+      Object.assign(opts, { diagnostics: null })
     );
     await freshLog.flush();
 
@@ -1667,3 +1406,6 @@ describe("emitCommandLifecycleEvent() validation failure paths", () => {
     expect(parsed.failedCategory).toBe(TelemetryCategory.CommandQueued);
   });
 });
+
+/** Written out: these are values an older Desktop build put on the wire. */
+const OLD_DESKTOP_LOOP_COMMANDS = ["PLAN", "EXECUTE", "CHAT", "MANUAL"];

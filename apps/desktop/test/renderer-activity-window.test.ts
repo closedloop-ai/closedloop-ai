@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 
 import { isRendererRecentlyActive } from "../src/main/renderer-activity-window.js";
 
@@ -7,7 +7,7 @@ const WINDOW_MS = 750;
 
 describe("ISS-4711 renderer-activity window (hasRecentRendererRead backing)", () => {
   test("a recent trusted DB read alone keeps the renderer active with no user input", () => {
-    // wongk PR #4184: the whole point of the fix — a hands-off-keyboard
+    // whitlockk PR #4184: the whole point of the fix — a hands-off-keyboard
     // auto-refreshing list issues a DB read (no user-input event), and that must
     // still count as active so the rebuild holds its full pause.
     const now = 10_000;

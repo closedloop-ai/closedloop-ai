@@ -27,7 +27,8 @@ export async function refreshExistingPublicRepositoryAuthority(
   );
 }
 
-async function refreshExistingPublicRepositoryAuthorityInTransaction(
+/** Exported for tests, which drive it with a hand-rolled transaction client. */
+export async function refreshExistingPublicRepositoryAuthorityInTransaction(
   tx: TransactionClient,
   organizationId: string,
   githubRepoId: string,
@@ -147,7 +148,9 @@ async function refreshExistingPublicRepositoryAuthorityInTransaction(
     current?.defaultBranchObservedAt &&
     current.defaultBranchObservedAt > data.defaultBranchObservedAt
   ) {
-    log.error("github_repository_default_authority_stale_rejected", {
+    // Ordinary loser of a concurrent-observation race, not an integrity
+    // failure: a delivery we received later already won the row.
+    log.info("github_repository_default_authority_stale_rejected", {
       githubRepoId,
       repositoryFullName: current.fullName,
       source: incoming.provenance.source,

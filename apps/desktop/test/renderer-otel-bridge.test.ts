@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import {
   SpanKind,
   SpanStatusCode,
 } from "@closedloop-ai/telemetry-contract/span";
-import { vi } from "vitest";
+import { test, vi } from "vitest";
 import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import { parseRendererOtelBridgePayload } from "../src/shared/renderer-otel-bridge.js";
 import {
@@ -433,7 +432,7 @@ test("rejects sensitive, resource-like, path, URL, and unknown top-level payload
         {
           signal: DesktopOtelSignal.Trace,
           name: "renderer.span",
-          attributes: { "renderer.path": "/Users/peter/project" },
+          attributes: { "renderer.path": "/Users/perrin/project" },
         },
       ],
     },
@@ -484,7 +483,7 @@ test("rejects unapproved renderer attribute keys before append", () => {
 
 test("rejects sensitive renderer record value strings and arrays", () => {
   const mutations: unknown[] = [
-    { value: "prompt token /Users/peter/.ssh/id_rsa" },
+    { value: "prompt token /Users/perrin/.ssh/id_rsa" },
     { value: "/tmp/cache/data.json" },
     { value: "/var/folders/aa/bb/data.json" },
     { value: "/etc/passwd" },
@@ -503,7 +502,7 @@ test("rejects sensitive renderer record value strings and arrays", () => {
     { value: "session raw error stack trace" },
     { value: "sk-proj-secret" },
     { value: "github_pat_1234567890abcdefghijklmnop" },
-    { value: ["ready", "/home/peter/secret-session.txt"] },
+    { value: ["ready", "/home/perrin/secret-session.txt"] },
     { value: ["ready", "C:/Temp/cache/data.json"] },
     { value: ["ready", String.raw`\\server\share\data.json`] },
     { value: ["ready", String.raw`D:\work\cache\data.bin`] },
@@ -929,9 +928,22 @@ function makeRuntime() {
     // DesktopOtelRuntime contract rather than a convenient slice of it.
     emitAppLifecycleEvent() {},
     emitAppExceptionEvent() {},
+    emitSanitizedAppExceptionEvent() {},
     emitIpcPerfEvent() {},
     emitSyncBatchEvent() {},
     emitImportHealthEvent() {},
+    emitAuthFailureEvent() {
+      return false;
+    },
+    emitDeadEndEvent() {
+      return true;
+    },
+    emitOnboardingEvent() {},
+    emitOnboardingDiscardEvent() {},
+    emitGenAiRequestEvent() {},
+    emitUpdateEvent() {
+      return true;
+    },
     exportExternalRecords() {
       this.exportCalls += 1;
       return {

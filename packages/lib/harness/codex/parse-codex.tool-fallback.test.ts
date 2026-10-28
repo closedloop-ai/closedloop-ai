@@ -21,6 +21,7 @@
  *    190[0-1] (error path for mcp end output)
  */
 
+import { estimateAgentComponentFootprintTokens } from "@repo/api/src/types/agent-component-footprint";
 import { describe, expect, it } from "vitest";
 import { parseCodexRollout } from "./parse-codex";
 
@@ -640,5 +641,98 @@ describe("handleMcpToolCallEndEvent — ambiguous positional fallback still sets
     // Positional fallback writes the output
     expect(mcp?.output).toBe("LEGACY_RESULT");
     expect(session?.parseQuality?.ambiguousToolOutputs).toBe(1);
+  });
+});
+
+// ── ISS-10736 outputFootprintTokens (tamsinb + whitlockk review of #7816) ───────
+
+/**
+ * Codex set `tool.output` in three places and counted the footprint in none, so
+ * every codex `tool`/`mcp`/`orchestration` row stayed NULL after the
+ * DATA_REVISION 103 rebuild while Claude's and Cursor's filled. `output` is
+ * byte-capped at 4096 by `truncateText`, so the count cannot be recovered
+ * downstream — it has to be taken at each of those three sites.
+ */
+describe("ISS-10736 codex counts the footprint before the 4 KiB cap", () => {
+  /* Comfortably past the cap, so the stored `output` is a strict prefix and a
+     count over it cannot equal the count over the whole payload. */
+  const HUGE = "x".repeat(20_000);
+
+  it("counts a function_call_output over the WHOLE payload", async () => {
+    const session = await parseCodexRollout(
+      [
+        SM(),
+        TC_BASIC,
+        responseItem("function_call", {
+          call_id: "fn-fp",
+          name: "bash",
+          arguments: "{}",
+        }),
+        responseItem("function_call_output", {
+          call_id: "fn-fp",
+          output: HUGE,
+        }),
+        tokenCount(),
+      ],
+      { sessionId: "codex-fp-fn" }
+    );
+    const tool = session?.toolUses.find((t) => t.name === "bash");
+
+    expect(tool?.outputFootprintTokens).toBe(
+      estimateAgentComponentFootprintTokens(HUGE)
+    );
+    const stored = String(tool?.output ?? "");
+    expect(stored.length).toBeLessThan(HUGE.length);
+    expect(estimateAgentComponentFootprintTokens(stored)).toBeLessThan(
+      tool?.outputFootprintTokens ?? 0
+    );
+  });
+
+  it("leaves the count absent when the call carried no result at all", async () => {
+    const session = await parseCodexRollout(
+      [
+        SM(),
+        TC_BASIC,
+        responseItem("function_call", {
+          call_id: "fn-none",
+          name: "bash",
+          arguments: "{}",
+        }),
+        // `out` defaults to `{}` inside the handler so `isError` has a record to
+        // probe; counting that default would publish ~1 token for a call that
+        // returned NOTHING, which is the fact the absent value states.
+        responseItem("function_call_output", { call_id: "fn-none" }),
+        tokenCount(),
+      ],
+      { sessionId: "codex-fp-none" }
+    );
+    const tool = session?.toolUses.find((t) => t.name === "bash");
+
+    expect(tool).toBeDefined();
+    expect(tool?.outputFootprintTokens).toBeUndefined();
+  });
+
+  it("counts an MCP tool's end-event output", async () => {
+    const session = await parseCodexRollout(
+      [
+        SM(),
+        TC_BASIC,
+        eventMsg("mcp_tool_call_begin", {
+          call_id: "mcp-fp",
+          server: "srv",
+          tool: "lookup",
+        }),
+        eventMsg("mcp_tool_call_end", { call_id: "mcp-fp", result: HUGE }),
+        tokenCount(),
+      ],
+      { sessionId: "codex-fp-mcp" }
+    );
+    const tool = session?.toolUses.find(
+      (t) => t.outputFootprintTokens !== undefined
+    );
+
+    expect(tool?.outputFootprintTokens).toBe(
+      estimateAgentComponentFootprintTokens(HUGE)
+    );
   });
 });

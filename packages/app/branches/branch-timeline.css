@@ -1,6 +1,15 @@
 /* Branch-detail Epic-E timeline surfaces (PR activity timeline, event-dot rail,
    hover tooltips, actor Gantt) — split out of branch-detail.css so each
    feature stylesheet stays under the 1000-line ceiling (FEA-4234). */
+
+/* Two steps below the design-system scale (--text-xs is the smallest) for chart
+   annotation, ISS-12208: 11px is the branches prototype's legend/axis size
+   (ISS-8358), 10px the design-system badge size (`components/ui/utils.ts`). */
+:root {
+  --bq-text-2xs: 11px;
+  --bq-text-3xs: 10px;
+}
+
 /* PR activity timeline (Epic E / E1): per-hour stacked token bars, by actor */
 .bq-act {
   margin-top: 0;
@@ -20,12 +29,49 @@
   background: var(--background);
 }
 
+.bq-timeline-sticky::before {
+  position: absolute;
+  inset: 0 -100vw;
+  z-index: -1;
+  background: var(--background);
+  content: "";
+}
+
 .bq-act-head {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
   margin-bottom: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bq-act-head-left,
+.bq-act-head-right {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bq-act-head-left {
+  flex: 1 1 auto;
+  align-items: flex-start;
+}
+
+.bq-act-head-right {
+  flex: 0 0 auto;
+  align-items: flex-end;
+}
+
+.bq-act-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.bq-act-scale {
+  min-height: 34px;
 }
 
 /* Same real-heading treatment as `.bq-sec-title` (foreground, 13px, normal
@@ -37,14 +83,14 @@
   flex: 0 0 auto;
   color: var(--foreground);
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm, 0.8125rem);
 }
 
 /* Trailing detail on a heading (session label / count): subordinate to the
    foreground `.bq-act-title` — smaller, normal weight, muted. */
 .bq-act-sub {
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
   color: var(--muted-foreground);
 }
 
@@ -77,7 +123,7 @@
 .bq-lg-name {
   color: var(--muted-foreground);
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
   white-space: nowrap;
 }
 
@@ -105,7 +151,7 @@
   border: none;
   border-radius: 2px 2px 0 0;
   padding: 0;
-  background: #94a3b8;
+  background: var(--muted-foreground);
   cursor: pointer;
 }
 
@@ -132,7 +178,7 @@
   );
 }
 
-/* Event-dot rail (Epic E / E3): green/red local outcomes + orange PR comments */
+/* Event-dot rail (Epic E / E3): human/GitHub/failure outcomes in the compact rail. */
 .bq-drail-wrap {
   position: relative;
   /* Dots sit just under the bars (the time-axis row follows the dots). */
@@ -141,25 +187,51 @@
 
 .bq-drail {
   position: relative;
-  height: 14px;
+}
+
+.bq-marker-trigger {
+  position: absolute;
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  transform: translateX(-50%);
+  border: none;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bq-marker-static {
+  cursor: default;
 }
 
 .bq-dot {
-  position: absolute;
-  top: 3px;
-  width: 8px;
-  height: 8px;
+  position: static;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
   border: none;
   border-radius: 50%;
   padding: 0;
-  cursor: pointer;
   transition: transform 0.1s;
-  transform: translateX(-50%);
 }
 
-.bq-dot:hover,
+.bq-marker-trigger:hover .bq-dot,
+.bq-marker-trigger.hot .bq-dot,
 .bq-dot.hot {
-  transform: translateX(-50%) scale(1.4);
+  transform: scale(1.25);
+}
+
+.bq-marker-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.bq-dot.d-blue {
+  background: var(--primary);
 }
 
 .bq-dot.d-green {
@@ -174,13 +246,19 @@
   background: var(--warning, #d9a441);
 }
 
+.bq-dot-cluster {
+  box-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 3px color-mix(in oklab, var(--foreground) 34%, transparent);
+}
+
 .bq-drail-foot {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-top: 2px;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
 }
 
 .bq-drail-comments {
@@ -191,6 +269,8 @@
 
 .bq-drail-comments .bq-dot {
   position: static;
+  width: 8px;
+  height: 8px;
   transform: none;
 }
 
@@ -243,7 +323,7 @@
   gap: 12px;
   margin-bottom: 6px;
   color: var(--foreground);
-  font-size: 12px;
+  font-size: var(--text-xs, 0.75rem);
 }
 
 .bq-tip-h .font-mono {
@@ -255,7 +335,7 @@
   align-items: center;
   gap: 7px;
   padding: 1px 0;
-  font-size: 11.5px;
+  font-size: var(--text-xs, 0.75rem);
 }
 
 .bq-tip-sw {
@@ -294,7 +374,7 @@
 .bq-tip-splitlabel {
   margin-bottom: 1px;
   color: var(--muted-foreground);
-  font-size: 9.5px;
+  font-size: var(--bq-text-3xs);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -304,7 +384,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: var(--bq-text-2xs);
 }
 
 .bq-tip-spdot {
@@ -333,7 +413,7 @@
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
-  font-size: 11.5px;
+  font-size: var(--text-xs, 0.75rem);
   font-weight: 600;
 }
 
@@ -347,7 +427,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 11.5px;
+  font-size: var(--text-xs, 0.75rem);
   line-height: 1.4;
 }
 
@@ -359,7 +439,7 @@
 
 .bq-tip-lt {
   color: var(--muted-foreground);
-  font-size: 10.5px;
+  font-size: var(--bq-text-2xs);
   white-space: nowrap;
 }
 
@@ -367,6 +447,28 @@
   min-width: 0;
   color: var(--foreground);
   overflow-wrap: anywhere;
+}
+
+.bq-tip-action {
+  align-items: stretch;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  padding: 4px;
+  text-align: left;
+}
+
+.bq-tip-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.bq-tip-action:hover {
+  background: var(--accent);
+}
+
+.bq-tip-cluster-sw {
+  background: var(--muted-foreground);
 }
 
 /* Actor Gantt swimlane (Epic E / E4): one lane per session, active bursts solid */
@@ -417,7 +519,7 @@
 .bq-lane-name {
   flex: 0 0 auto;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--text-xs, 0.75rem);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -425,7 +527,7 @@
 .bq-lane-sub {
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -437,7 +539,7 @@
   padding: 0 4px;
   color: var(--muted-foreground);
   font-weight: 700;
-  font-size: 9px;
+  font-size: var(--bq-text-3xs);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -449,10 +551,10 @@
   gap: 3px;
   border-radius: 999px;
   padding: 1px 7px;
-  background: color-mix(in oklab, #c0762b 16%, transparent);
-  color: #9a5a1e;
+  background: color-mix(in oklab, var(--warning) 16%, transparent);
+  color: var(--warning-foreground);
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: var(--bq-text-3xs);
   white-space: nowrap;
 }
 
@@ -500,7 +602,7 @@
   justify-content: flex-end;
   gap: 10px;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
 }
 
 /* PR timeline header stat cluster (cost / value / duration) + time axis */
@@ -509,27 +611,40 @@
   flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: baseline;
+  justify-content: flex-end;
   gap: 12px;
 }
 
 .bq-stat {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-xs, 0.75rem);
+  white-space: nowrap;
 }
 
 .bq-stat b {
   color: var(--foreground);
-  font-weight: 600;
-  font-size: 12px;
+  font-weight: 700;
 }
 
 @media (max-width: 640px) {
   .bq-act-head {
     align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
     gap: 8px 12px;
+  }
+
+  .bq-act-head-left,
+  .bq-act-head-right {
+    flex-basis: 100%;
+  }
+
+  .bq-act-title-row {
+    gap: 8px 12px;
+  }
+
+  .bq-act-head-right {
+    align-items: flex-start;
   }
 
   .bq-act-legend,
@@ -543,6 +658,7 @@
 
   .bq-stats {
     gap: 6px 12px;
+    justify-content: flex-start;
   }
 }
 
@@ -551,7 +667,7 @@
   justify-content: space-between;
   margin-top: 6px;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--bq-text-2xs);
 }
 
 /* Shown in place of the bars when sessions ran but the cost-sized chart can't be
@@ -565,7 +681,7 @@
   align-items: center;
   min-height: 72px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: var(--text-xs, 0.75rem);
   line-height: 1.4;
 }
 

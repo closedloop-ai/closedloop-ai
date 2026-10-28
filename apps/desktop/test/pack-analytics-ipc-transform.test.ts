@@ -28,8 +28,15 @@
  * and it reads the legacy wire key off the shared SSOT rather than restating it.
  */
 import assert from "node:assert/strict";
-import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { emitLocPerDollarWithLegacy } from "@repo/api/src/utils/loc-per-dollar";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  it,
+} from "vitest";
 import { PACK_ANALYTICS_IPC_CHANNEL } from "../src/shared/pack-analytics-channel.js";
 import {
   type ElectronModuleMock,
@@ -46,7 +53,7 @@ const BASE_WIRE_PAYLOAD = {
   packId: "pack-under-test",
   invocations: 12,
   sessions: 3,
-  owners: ["mike"],
+  owners: ["marisol"],
   deviceCount: 2,
 };
 
@@ -63,6 +70,8 @@ type PackAnalyticsResult = {
   locPerDollar: number | null;
   locDelta: number | null;
   mergedPrsTruncated?: boolean;
+  baselineSampleSize?: number | null;
+  installerCount?: number;
 };
 
 let mock: ElectronModuleMock;
@@ -73,7 +82,7 @@ let registerPackAnalyticsIpc: (deps: {
 }) => void;
 let originalFetchDescriptor: PropertyDescriptor | undefined;
 
-before(async () => {
+beforeAll(async () => {
   mock = registerElectronModuleMock();
   // Dynamic, because the redirect must be installed before the module under
   // test evaluates its `import { ipcMain } from "electron"`.
@@ -82,7 +91,7 @@ before(async () => {
     module.registerPackAnalyticsIpc as typeof registerPackAnalyticsIpc;
 });
 
-after(() => {
+afterAll(() => {
   mock.deregister();
 });
 
@@ -198,7 +207,7 @@ describe("pack-analytics IPC version-skew transform", () => {
 
   /**
    * ISS-6462: the schema declared `mergedPrs` but not the flag saying that count
-   * covered only the first `COHORT_SCAN_CAP` cohort sessions, so Zod stripped
+   * covered only a bounded sample of the cohort sessions, so Zod stripped
    * the disclosure at this boundary and the overlay's Performance tile printed a
    * capped scan as an exact count. These two are the whole reason the field is
    * `.optional()` and NOT `.default(false)`.
@@ -261,7 +270,7 @@ describe("pack-analytics IPC version-skew transform", () => {
   });
 
   /**
-   * ISS-6462 (wongk, #5096 review): `null` was only the FIRST unusable spelling.
+   * ISS-6462 (whitlockk, #5096 review): `null` was only the FIRST unusable spelling.
    * A string, a number, or a future tri-state value all mean the same thing —
    * this response does not declare its coverage — and none of them is worth
    * blanking eleven real metrics over. The web path already reads anything other
@@ -288,6 +297,124 @@ describe("pack-analytics IPC version-skew transform", () => {
       assert.equal(result.mergedPrsTruncated, undefined);
       // The rest of the payload survives intact — the point of catching rather
       // than failing is that the other metrics still reach the tile.
+      assert.equal(result.locPerDollar, CANONICAL_LOC_PER_DOLLAR);
+    });
+  }
+
+  it("carries a declared baseline sample size across the IPC boundary", async () => {
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+      baselineSampleSize: 500,
+    });
+
+    assert.equal(result?.baselineSampleSize, 500);
+  });
+
+  it("keeps a declared whole-window comparator as null, not as undeclared", async () => {
+    // `null` means something here — "the comparator was not a strict sample" —
+    // unlike the truncation flag's null, so folding it to undefined would lose
+    // a claim the producer actually made.
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+      baselineSampleSize: null,
+    });
+
+    assert.equal(result?.baselineSampleSize, null);
+  });
+
+  it("leaves an omitted baseline sample size absent rather than defaulting it", async () => {
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+    });
+
+    assert.equal(result?.baselineSampleSize, undefined);
+  });
+
+  /**
+   * ISS-9853: a sample size is a positive integer or it is not a sample size.
+   * The renderer prints this number inside "vs. last N baseline sessions", so a
+   * fractional, zero, negative or non-finite value would read as a confident
+   * measurement — worse than saying nothing. Every one degrades to undeclared,
+   * exactly like the junk spellings above, and never blanks the overlay.
+   */
+  for (const [label, unusable] of [
+    ["a fractional", 12.5],
+    ["a zero", 0],
+    ["a negative", -3],
+    ["a string", "500"],
+  ] as const) {
+    it(`degrades ${label} baseline sample size to undeclared`, async () => {
+      const result = await invokeWithWirePayload({
+        ...BASE_WIRE_PAYLOAD,
+        locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+        baselineSampleSize: unusable,
+      });
+
+      assert.ok(
+        result,
+        "an unusable advisory field must not blank the overlay"
+      );
+      assert.equal(result.baselineSampleSize, undefined);
+      assert.equal(result.locPerDollar, CANONICAL_LOC_PER_DOLLAR);
+    });
+  }
+
+  it("carries a declared exact installer count across the IPC boundary", async () => {
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+      installerCount: 4999,
+    });
+
+    assert.equal(result?.installerCount, 4999);
+  });
+
+  it("carries a declared zero installer count as zero, not as undeclared", async () => {
+    // Zero is a real measurement here (a pack nobody installed), unlike the
+    // baseline sample size where zero is junk.
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+      installerCount: 0,
+    });
+
+    assert.equal(result?.installerCount, 0);
+  });
+
+  it("leaves an omitted installer count absent so the renderer falls back to the roster", async () => {
+    const result = await invokeWithWirePayload({
+      ...BASE_WIRE_PAYLOAD,
+      locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+    });
+
+    assert.equal(result?.installerCount, undefined);
+  });
+
+  /**
+   * ISS-9854 (Codex, #7148): a count is a nonnegative integer or it is not a
+   * count. The renderer prints this as "N teammates" and divides it into the
+   * adoption ring, so a fractional or negative value would render as a
+   * confident measurement. Every one degrades to omission — the renderer's
+   * `owners.length` fallback — and never blanks the overlay.
+   */
+  for (const [label, unusable] of [
+    ["a fractional", 1.5],
+    ["a negative", -1],
+    ["a string", "7"],
+    ["a null", null],
+  ] as const) {
+    it(`degrades ${label} installer count to omission`, async () => {
+      const result = await invokeWithWirePayload({
+        ...BASE_WIRE_PAYLOAD,
+        locPerDollar: CANONICAL_LOC_PER_DOLLAR,
+        installerCount: unusable,
+      });
+
+      assert.ok(result, "an unusable count must not blank the overlay");
+      assert.equal(result.installerCount, undefined);
       assert.equal(result.locPerDollar, CANONICAL_LOC_PER_DOLLAR);
     });
   }

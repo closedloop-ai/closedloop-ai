@@ -1,11 +1,11 @@
+import { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import type { ReactNode } from "react";
-import { DataSyncLevel } from "../../../shared/contracts";
-import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
+import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../shared/feature-flags-labs-detail";
 import { DataSyncTab } from "./data-sync-tab";
 
 /**
- * ISS-4779 (wongk story review on PR #4500): the closed-by-default gating of the
+ * ISS-4779 (whitlockk story review on PR #4500): the closed-by-default gating of the
  * "Redacted sessions" option is a prop-driven visual state matrix, and exactly
  * the kind of thing a jsdom render test cannot pin — `visibleLevels` filters the
  * rendered radio set from two inputs (the show-Redacted Labs flag and the level
@@ -23,7 +23,8 @@ import { DataSyncTab } from "./data-sync-tab";
  * Apply round-trips on the canvas the way the real IPC bridge does.
  */
 const meta = {
-  title: "Desktop/Settings/Data Sync Tab",
+  title: "Composites v1.0/Desktop Shell/Data Sync Tab",
+  tags: ["deprecated"],
   component: DataSyncTab,
   parameters: {
     layout: "fullscreen",

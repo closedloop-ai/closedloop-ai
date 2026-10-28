@@ -1,129 +1,20 @@
-import {
-  type BranchPageDetail,
-  BranchStatus,
-} from "@repo/api/src/types/branch";
-import {
-  BranchTraceCompletenessState,
-  type BranchTraceResult,
-  BranchTraceSessionHydrationState,
-  BranchTraceUnavailableReason,
-} from "@repo/api/src/types/branch-trace";
-import { GitHubPRState } from "@repo/api/src/types/github-status";
+import type { BranchTraceResult } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
 import { createRef } from "react";
-import {
-  makeBranchDetail,
-  makeBranchSession,
-} from "../../__tests__/branch-fixtures";
 import type { BranchesDataSource } from "../../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../../data-source/provider";
-import { completeMetrics } from "../branch-story-metric-fixtures";
+import {
+  partialSessionsTrace,
+  sessionsPanelDetail,
+} from "./branch-sessions-panel-fixtures";
 import { BranchSessionsTimelineTab } from "./branch-sessions-timeline-tab";
 
 const LOADING_BRANCH_ID = "timeline-loading";
 const PARTIAL_BRANCH_ID = "timeline-partial";
 const scrollElementRef = createRef<HTMLDivElement>();
 
-const partialDetail = makeBranchDetail({
-  id: PARTIAL_BRANCH_ID,
-  branchName: "feature/branches-detail",
-  repoFullName: "owner/repo",
-  status: BranchStatus.Merged,
-  prNumber: 1270,
-  prTitle: "Add Branch Detail page",
-  prState: GitHubPRState.Merged,
-  prUrl: "https://github.com/owner/repo/pull/1270",
-  additions: 180,
-  deletions: 24,
-  estimatedCostUsd: 4,
-  lastActivityAt: "2026-06-17T12:00:00.000Z",
-  sessionIds: ["s1", "s2"],
-  openedAt: "2026-06-17T11:00:00.000Z",
-  closedAt: "2026-06-17T12:00:00.000Z",
-  mergedAt: "2026-06-17T12:00:00.000Z",
-  sessions: [
-    makeBranchSession({
-      sessionId: "s1",
-      slug: "SES-1",
-      name: "Implement Branch Details",
-      startedAt: "2026-06-17T10:00:00.000Z",
-      endedAt: "2026-06-17T11:00:00.000Z",
-      estimatedCostUsd: 2.5,
-      ownerUserName: "Chris",
-    }),
-    makeBranchSession({
-      sessionId: "s2",
-      slug: "SES-2",
-      name: "Review Branch Details",
-      startedAt: "2026-06-17T11:00:00.000Z",
-      endedAt: "2026-06-17T12:00:00.000Z",
-      estimatedCostUsd: 1.5,
-      ownerUserName: "Daniel",
-    }),
-  ],
-  canonicalMetrics: completeMetrics(),
-});
-
-const partialTrace: BranchTraceResult = {
-  items: [
-    {
-      type: "sessionstart",
-      sessionId: "s1",
-      t: "2026-06-17T10:00:00.000Z",
-      actor: { name: "Chris", harness: "codex" },
-    },
-    {
-      type: "prompt",
-      sessionId: "s1",
-      t: "2026-06-17T10:05:00.000Z",
-      tMs: 300_000,
-      cumCostUsd: 0.5,
-      actorName: "Chris",
-      text: "Align the Branch Details screen with the approved prototype.",
-    },
-    {
-      type: "say",
-      sessionId: "s1",
-      t: "2026-06-17T10:25:00.000Z",
-      tMs: 1_500_000,
-      cumCostUsd: 2.5,
-      actorName: "Codex",
-      text: "Implemented the selected-cycle detail panels and responsive layout.",
-    },
-    { type: "end", sessionId: "s1", text: "Session ended" },
-  ],
-  sessions: [
-    {
-      identity: {
-        artifactId: "s1",
-        name: "Implement Branch Details",
-        slug: "SES-1",
-        navigableRef: "SES-1",
-      },
-      state: BranchTraceSessionHydrationState.Loaded,
-    },
-    {
-      identity: {
-        artifactId: "s2",
-        name: "Review Branch Details",
-        slug: "SES-2",
-        navigableRef: "SES-2",
-      },
-      state: BranchTraceSessionHydrationState.Unavailable,
-      reason: BranchTraceUnavailableReason.Permission,
-    },
-  ],
-  qualifyingSessionCount: 2,
-  completeness: {
-    state: BranchTraceCompletenessState.Incomplete,
-    reason: BranchTraceUnavailableReason.Permission,
-    eventsTruncated: true,
-  },
-  aggregateCompleteness: {
-    state: BranchTraceCompletenessState.Incomplete,
-    reason: BranchTraceUnavailableReason.Permission,
-  },
-};
+const partialDetail = { ...sessionsPanelDetail, id: PARTIAL_BRANCH_ID };
+const partialTrace = partialSessionsTrace;
 
 const timelineSource: BranchesDataSource = {
   scope: "timeline-state-story",
@@ -138,9 +29,9 @@ const timelineSource: BranchesDataSource = {
 };
 
 const meta = {
-  title: "App Core/Branches/Branch Sessions Timeline Tab",
+  title: "Composites v1.0/Branches/Branch Sessions Timeline Tab",
   component: BranchSessionsTimelineTab,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (

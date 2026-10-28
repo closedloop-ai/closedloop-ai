@@ -26,8 +26,81 @@ export type ComputeTargetServerCapabilities = {
    * `agentSessionSync` / `agentSessionSyncCompression`.
    */
   agentSessionSyncActivityChunking?: boolean;
+  /**
+   * ISS-9859: the server merges a session part marked `prRefsPaginated` into the
+   * session's stored PR links instead of replacing them. There is NO
+   * commit-time sweep — an earlier draft promised one and it was not built,
+   * because it is not needed: the FIRST slice part of a sequence rides UNMARKED
+   * and therefore takes the ordinary replace path, so retraction happens there
+   * and the marked parts that follow are purely additive. Only an explicit `true` lets
+   * the desktop paginate `prRefs` across parts. Without it `prRefs` ride every
+   * part whole, which fits or dead-letters the session, because an older server
+   * would REPLACE the links with each part's slice.
+   */
+  agentSessionSyncPrRefChunking?: boolean;
   /** Server accepts the additive monitored-session activity ref carrier. */
   agentSessionSyncMonitoredActivity?: boolean;
+  /**
+   * ISS-5850: the server's `sessionSpanSchema` knows `SessionSpan.startMs` /
+   * `endMs` — the absolute extent the producer's activity bins tile — and
+   * therefore PERSISTS them rather than stripping them.
+   *
+   * Unlike the flags above, this one does not select what the desktop SENDS: the
+   * pair is additive and optional, so an older server silently drops it with no
+   * harm to the rest of the payload. What it selects is what the desktop is
+   * allowed to consider DELIVERED. The session lane's durable cursor stamps a
+   * payload-contract revision, and a stamped revision means "every row behind
+   * this watermark carries that contract" — so stamping the extent-bearing
+   * revision after an older server dropped the field would record a replay as
+   * done that never happened, leaving those sessions bounds-less forever with
+   * nothing left to re-push them (`AGENT_SESSION_SYNC_INTEGRITY_VERSION`).
+   * Gating the stamp on this flag is what keeps that replay owed until a server
+   * that can actually store the extent acknowledges it.
+   *
+   * Missing/false (an older server) is therefore not a degraded mode — it is the
+   * desktop declining to claim delivery it cannot prove.
+   */
+  agentSessionSyncSpanExtent?: boolean;
+  /**
+   * ISS-7896: the server preserves `metadata.humanTurnTimestamps` WHOLE — up to
+   * this key's own 1000-entry bound — rather than capping it at the generic
+   * `MAX_METADATA_ARRAY_ITEMS` (100) its persist boundary applies to an
+   * unrecognized array.
+   *
+   * Same shape of guarantee as `agentSessionSyncSpanExtent` above, and gated for
+   * the same reason: it does not select what the desktop SENDS (the key is
+   * additive, and an older server stores a capped copy rather than rejecting the
+   * batch), it selects what the desktop may consider DELIVERED. An older server
+   * answers a normal ack for a 250-entry array it truncated to 100, and the
+   * cloud heatmap then reads that array as AUTHORITATIVE — reporting 100 human
+   * turns for a session that had 250, permanently, because the keyset cursor
+   * walks `sessions.updated_at` and nothing re-pushes an unchanged session
+   * (`AGENT_SESSION_SYNC_INTEGRITY_VERSION`).
+   *
+   * Gating the stamp on this flag is what keeps the one-time replay owed until a
+   * server that actually stores the whole array acknowledges it — so a release
+   * that ships Desktop before the API self-corrects on the first connection to a
+   * capable API instead of silently under-reporting forever.
+   */
+  agentSessionSyncHumanTurnTimestamps?: boolean;
+  /**
+   * ISS-9864: the server's persist boundary preserves `metadata.agentTurnTimestamps`
+   * whole rather than capping it at the generic 100-item array bound, and its
+   * activity heatmap reads that key as authoritative on a session that synced no
+   * token events. Gates the desktop's cursor stamp exactly as
+   * `agentSessionSyncHumanTurnTimestamps` does, for the same reason: an older
+   * server stores a capped copy, acks normally, and the heatmap would then read
+   * 100 agent turns as measured, permanently.
+   */
+  agentSessionSyncAgentTurnTimestamps?: boolean;
+  /**
+   * ISS-12552: the server accepts a token event's `agentExternalId` (the owning
+   * subagent, or `$parent`) and corrects a stored owner from it. An older
+   * server treats any owner differing from the stored one as a transport
+   * identity collision and rejects the batch, and every event it already holds
+   * was stored without one, so the desktop sends owners only under this flag.
+   */
+  agentSessionSyncTokenEventOwner?: boolean;
 };
 
 export const DesktopSecurityStatus = {
@@ -67,7 +140,12 @@ export type ComputeTarget = {
   supportedOperations: string[];
   lastSeenAt: Date;
   isOnline: boolean;
-  isSharedWithOrg: boolean;
+  /**
+   * @deprecated ISS-12617 retired target sharing. The API still sends `false`
+   * so a client built before the change keeps parsing; ISS-12450 removes the
+   * field once no such client can be served.
+   */
+  isSharedWithOrg?: boolean;
   serverCapabilities?: ComputeTargetServerCapabilities;
   security?: ComputeTargetSecurity;
   ownerName?: string;
@@ -117,10 +195,7 @@ export type CheckResult = {
   remediationLinks?: RemediationLink[];
   /**
    * How the panel should read this row. Additive and optional: a gateway that
-   * predates ISS-5369 omits it, and consumers fall back to the legacy
-   * `passed`/`error` derivation (see `resolveCheckSeverity`). A value this
-   * client does not recognise (newer gateway) also falls back rather than
-   * rendering an unknown state.
+   * predates ISS-5369 omits it.
    */
   severity?: CheckSeverity;
   /**
@@ -137,15 +212,6 @@ export type CheckResult = {
    * "everything is repairable" (ISS-5389).
    */
   repair?: CheckResultRepair;
-};
-
-export type BackendMismatchBody = {
-  error: "backend_mismatch";
-  message: string;
-  originalComputeTargetId: string | null;
-  originalComputeTargetName: string | null;
-  preferredComputeTargetId: string | null;
-  documentId: string;
 };
 
 /**
@@ -169,52 +235,10 @@ export const CheckSeverity = {
 } as const;
 export type CheckSeverity = (typeof CheckSeverity)[keyof typeof CheckSeverity];
 
-const KNOWN_CHECK_SEVERITIES = new Set<string>(Object.values(CheckSeverity));
-
-/**
- * Resolve the severity a consumer should render for a check row.
- *
- * Version-skew tolerant in both directions: an older gateway sends no
- * `severity` and gets the legacy derivation (a passing row carrying an `error`
- * has always been the panel's advisory tier); a newer gateway sending a
- * severity this build does not know falls back to that same derivation instead
- * of rendering an unrecognised state.
- */
-export function resolveCheckSeverity(
-  check: Pick<CheckResult, "passed" | "error" | "severity">
-): CheckSeverity {
-  if (check.severity && KNOWN_CHECK_SEVERITIES.has(check.severity)) {
-    return check.severity;
-  }
-  if (!check.passed) {
-    return CheckSeverity.Error;
-  }
-  return check.error ? CheckSeverity.Warning : CheckSeverity.Passed;
-}
-
-/** True when a row reports a finding the user cannot be expected to act on directly. */
-export function isIndeterminateCheckSeverity(severity: CheckSeverity): boolean {
-  return (
-    severity === CheckSeverity.Blocked || severity === CheckSeverity.Unknown
-  );
-}
-
-/**
- * The Gateway Version row's wire identity (ISS-5369).
- *
- * The gateway produces the row and the web panel relabels/normalizes it, so
- * the id and the user-facing label are a shared contract in the same category
- * as `CheckSeverity` and `blockedBy` above. Declared once here so a rename on
- * one side cannot silently disagree with the other.
- */
-export const APP_VERSION_CHECK_ID = "app-version";
-export const APP_VERSION_CHECK_LABEL = "Gateway Version";
-
 /**
  * Wire identities of the two AI-harness CLI rows (ISS-5687).
  *
- * Same category as `APP_VERSION_CHECK_ID`: the gateway produces the row and
- * cloud consumers read it back by id. They live here rather than in
+ * The gateway produces the row and cloud consumers read it back by id. They live here rather than in
  * `apps/desktop` because harness availability is derived cloud-side
  * (`deriveAvailableHarnesses`), and `packages/api`/`apps/app` cannot import a
  * desktop module — which is how availability came to be derived from the
@@ -261,77 +285,3 @@ export type CheckResultRepair = {
    */
   blockedByCheckId?: string;
 };
-
-/** Terminal state of one repair step. */
-export const HealthCheckRepairStepStatus = {
-  Succeeded: "succeeded",
-  Failed: "failed",
-  /** Deliberately not run — normally because a root fault blocked it. */
-  Skipped: "skipped",
-} as const;
-export type HealthCheckRepairStepStatus =
-  (typeof HealthCheckRepairStepStatus)[keyof typeof HealthCheckRepairStepStatus];
-
-/**
- * One step the gateway ran (or deliberately did not run) during a repair. The
- * step names itself and carries its own reason so a failure is never a generic
- * red — see `detail`.
- */
-export type HealthCheckRepairStep = {
-  action: HealthCheckRepairAction;
-  /** Human-readable name of the step, e.g. "Clear stale Claude CLI path override". */
-  label: string;
-  status: HealthCheckRepairStepStatus;
-  /** Check ids this step was meant to fix. */
-  checkIds: string[];
-  /** Why it failed, or why it was skipped. Always present unless it succeeded. */
-  detail?: string;
-};
-
-/**
- * The one predicate that decides whether a System Check row BLOCKS a command.
- *
- * Every consumer that answers "is this machine ready?" calls this — the cloud
- * pre-loop gate and summary badge (`apps/app/lib/system-check`) and the gateway
- * that mints `allRequiredPassed` (`apps/desktop`, ISS-5868). It lives here
- * because it is the only module both surfaces can import, and because two
- * hand-written copies of `required && !passed` are exactly how the two sides
- * came to disagree.
- *
- * `required && !passed` alone was not enough (ISS-5811). ISS-5369 introduced
- * `severity: "unknown" | "blocked"` precisely so a row the gateway COULD NOT
- * DETERMINE stops asserting a fault it has no evidence for — the producer even
- * says so where it mints the row: "That is not-determinable, not a proven
- * failure". But those rows still carry `passed: false`, and the cloud predicate
- * read only `passed`, so an undeterminable row blocked every Generate/Execute
- * launch exactly as hard as a proven one. On the reported machine the five
- * Closedloop plugin rows were all "Could not verify enabled state" with
- * `repair.repairable: false` — five blockers the user had no action for, which
- * made web→desktop commands unlaunchable with no request ever reaching the API.
- *
- * `Warning` is exempt for the same reason and on the contract's own words —
- * "Non-blocking finding. The command can still run." A REQUIRED row the gateway
- * deliberately downgraded to `warning` was still blocking purely because it also
- * carried `passed: false`, which is the identical `passed`-only read.
- *
- * A PROVEN failure still blocks: `PLUGIN_DISABLED_ERROR` ("Disabled") and a
- * missing binary carry no indeterminate severity and are unchanged here.
- * Version skew is safe in both directions because `resolveCheckSeverity` owns
- * it: a gateway predating ISS-5369 sends no `severity` and a newer one may send
- * a value this build does not know, and both fall back to the legacy
- * `!passed → error` derivation — i.e. they keep blocking rather than being
- * guessed non-blocking off a signal that was never sent. A row claiming
- * `severity: "passed"` while reporting `passed: false` is self-contradictory
- * rather than downgraded, so it is NOT exempted: it keeps blocking.
- */
-export function isFailingRequiredCheck(
-  check: Pick<CheckResult, "required" | "passed" | "error" | "severity">
-): boolean {
-  if (!(check.required && !check.passed)) {
-    return false;
-  }
-  const severity = resolveCheckSeverity(check);
-  return !(
-    isIndeterminateCheckSeverity(severity) || severity === CheckSeverity.Warning
-  );
-}

@@ -1,6 +1,5 @@
 "use client";
 
-import { GitHubBackfillMode } from "@repo/api/src/types/github";
 import { GitHubConnectReturnStatus } from "@repo/api/src/types/github-status";
 import { BRANCH_DETAIL_TAB_PARAM } from "@repo/api/src/types/notification-routes";
 import {
@@ -10,43 +9,43 @@ import {
   resolveBranchDetailTab,
 } from "@repo/app/branches/components/branch-detail-page";
 import { useAutoClearBranchRefreshState } from "@repo/app/branches/components/branch-refresh-status";
+import { BranchShellView } from "@repo/app/branches/components/branch-shell-view";
+import { BranchCommentsPaneToggle } from "@repo/app/branches/components/comments/branch-comments-pane-toggle";
 import { BranchCommentsToggle } from "@repo/app/branches/components/comments/branch-comments-toggle";
 import { useBranchCommentsControl } from "@repo/app/branches/components/comments/use-branch-comments-control";
+import { BranchDetailSignalRefresh } from "@repo/app/branches/components/detail/branch-detail-signal-refresh";
 import {
   GitHubConnectReturnNotice,
   GitHubConnectReturnVariant,
 } from "@repo/app/branches/components/github-connect-return-notice";
-import {
-  branchesKeys,
-  useBranchAnalytics,
-  useBranchDetail,
-} from "@repo/app/branches/hooks/use-branches";
+import { useBranchDetail } from "@repo/app/branches/hooks/use-branches";
 import {
   resolveBranchBackHref,
   resolveBranchBackLabel,
 } from "@repo/app/branches/lib/branch-back-href";
+import { RelatedSessionsSection } from "@repo/app/documents/components/related-sessions-section";
 import {
   getRouteForSlug,
   withOrgSlug,
 } from "@repo/app/documents/lib/document-navigation";
-import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/app/shared/api/api-timeout";
-import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { usePostConnectBackfill } from "@repo/app/github/hooks/use-post-connect-backfill";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useDocumentTitle } from "@repo/app/shared/hooks/use-document-title";
-import { SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { readArtifactCommentThreadId } from "@repo/app/shared/lib/artifact-comment-href";
+import {
+  ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY,
+  SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import {
   NAV_FROM_PARAM,
   resolveNavReferrerSurface,
 } from "@repo/app/shared/lib/nav-referrer";
 import { useRouteParams } from "@repo/navigation/use-route-params";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
-import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-
-const WEB_BRANCH_DETAIL_STALE_TIME_MS = 30_000;
+import { claimPostConnectBackfill } from "@/lib/github-post-connect-backfill";
 
 export default function BranchDetailRoutePage() {
   return <BranchDetailRouteContent />;
@@ -55,9 +54,6 @@ export default function BranchDetailRoutePage() {
 function BranchDetailRouteContent() {
   const orgSlug = useOrgSlug();
   const searchParams = useSearchParamsValue();
-  const apiClient = useApiClient();
-  const queryClient = useQueryClient();
-  const backfillStartedRef = useRef(false);
   const params = useRouteParams();
   const branchId = typeof params.branchId === "string" ? params.branchId : "";
   const queryIdentity = useMemo(
@@ -69,22 +65,7 @@ function BranchDetailRouteContent() {
   );
   const commentsControl = useBranchCommentsControl(branchId);
   useAutoClearBranchRefreshState(refreshState, setRefreshState);
-  const detailQuery = useBranchDetail(
-    branchId,
-    {
-      staleTime: WEB_BRANCH_DETAIL_STALE_TIME_MS,
-      refetchOnWindowFocus: true,
-    },
-    queryIdentity
-  );
-  const analyticsQuery = useBranchAnalytics(
-    {},
-    {
-      staleTime: WEB_BRANCH_DETAIL_STALE_TIME_MS,
-      refetchOnWindowFocus: true,
-    },
-    queryIdentity
-  );
+  const detailQuery = useBranchDetail(branchId, undefined, queryIdentity);
   const branchesHref = `/${orgSlug}/branches`;
   const sessionsHref = `/${orgSlug}/sessions`;
   // FEA-4262: when this page was opened via a session's Branch cross-link
@@ -125,6 +106,9 @@ function BranchDetailRouteContent() {
   const initialTab = resolveBranchDetailTab(
     searchParams.get(BRANCH_DETAIL_TAB_PARAM)
   );
+  // ISS-10980: the Activity tab's comment rows link here with `?comment=`; the
+  // host that owns the URL reads it, as the Session route does.
+  const selectedThreadId = readArtifactCommentThreadId(searchParams);
   const title = detailQuery.data?.branchName ?? "Branch";
   // ISS-5574: name the tab for this record, reusing the SAME `title` the page
   // heading renders so the tab and the heading cannot drift. Its `"Branch"`
@@ -135,55 +119,56 @@ function BranchDetailRouteContent() {
   );
   useDocumentTitle(tabTitlesEnabled ? title : null);
   const errorKind = classifyBranchDetailError(detailQuery.error);
+  const branchArtifactId = detailQuery.data?.artifactId;
 
-  useEffect(() => {
-    if (githubStatus !== GitHubConnectReturnStatus.Connected) {
-      return;
-    }
-    queryClient.invalidateQueries({ queryKey: githubKeys.all });
-    queryClient.invalidateQueries({ queryKey: branchesKeys.all });
-    if (backfillStartedRef.current) {
-      return;
-    }
-    backfillStartedRef.current = true;
-    // Long-running by design: Apply mode runs the whole backfill (repos ->
-    // branches -> PRs -> projections) synchronously before responding, so it
-    // needs more than the default client deadline.
-    const backfill = apiClient.post(
-      "/integrations/github/backfill",
-      { mode: GitHubBackfillMode.Apply },
-      { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
-    );
-    backfill
-      .catch(() => {
-        setRefreshState(BranchDetailRefreshState.Error);
-      })
-      // Settled, not success — same reason as the Branches list (ISS-5013): an
-      // abandoned Apply-mode run can still have written rows, and a stale
-      // population would then assert "nothing here" about data that exists.
-      .finally(() => {
-        queryClient.invalidateQueries({ queryKey: branchesKeys.all });
-      });
-  }, [apiClient, githubStatus, queryClient]);
+  const handleBackfillStartError = useCallback(() => {
+    setRefreshState(BranchDetailRefreshState.Error);
+  }, []);
+  // ISS-7338's claim is threaded in rather than held in a ref: a remount must
+  // not re-fire the Apply run, and only a document navigation — how every real
+  // reconnect arrives — clears it.
+  const claimBackfillStart = useCallback(
+    () => claimPostConnectBackfill(orgSlug),
+    [orgSlug]
+  );
+  usePostConnectBackfill({
+    claimStart: claimBackfillStart,
+    enabled: githubStatus === GitHubConnectReturnStatus.Connected,
+    onError: handleBackfillStartError,
+  });
+
+  // ONE read per shell, at the mount, swapping two whole pages — the shared
+  // shell adoption (ISS-10797) under the same key Session detail uses.
+  const shellEnabled = useFeatureFlagEnabled(
+    ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY
+  );
+  const BranchDetailBody = shellEnabled ? BranchShellView : BranchDetailPage;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <BranchDetailSignalRefresh
+        branchId={branchId}
+        queryIdentity={queryIdentity}
+      />
       <Header
         breadcrumbs={[{ label: backLabel, href: backHref }, { label: title }]}
         suppressPageHeading
       >
-        <BranchCommentsToggle
-          onOpenChange={commentsControl.onOpenChange}
-          open={commentsControl.open}
-          toggleRef={commentsControl.toggleRef}
-        />
+        {shellEnabled ? (
+          <BranchCommentsPaneToggle toggleRef={commentsControl.toggleRef} />
+        ) : (
+          <BranchCommentsToggle
+            onOpenChange={commentsControl.onOpenChange}
+            open={commentsControl.open}
+            toggleRef={commentsControl.toggleRef}
+          />
+        )}
       </Header>
       <GitHubConnectReturnNotice
         status={githubStatus}
         variant={GitHubConnectReturnVariant.Detail}
       />
-      <BranchDetailPage
-        analytics={analyticsQuery.data}
+      <BranchDetailBody
         backHref={backHref}
         backLabel={backLabel}
         branchId={branchId}
@@ -197,6 +182,24 @@ function BranchDetailRouteContent() {
         isLoading={detailQuery.isLoading}
         queryIdentity={queryIdentity}
         refreshState={refreshState}
+        relatedSessionsSlot={
+          // ISS-7235 AC1 — BRANCH inherits the read-only Related Sessions field
+          // here, on the web shell, rather than inside `BranchDetailPage`: that
+          // component also renders in the packaged desktop renderer, and
+          // `related-sessions-field` is a web-only PostHog key with no Labs
+          // registration (see the prop's docstring).
+          //
+          // Keyed on `artifactId`, never on `branchId`: `branchId` is often
+          // `encodeBranchId(repo, name)` rather than an artifact UUID, and the
+          // provenance route addresses ARTIFACTS. A local/legacy branch
+          // projection omits `artifactId` entirely, and for those the field is
+          // ABSENT rather than empty — "we cannot ask" and "nothing contributed"
+          // are different facts, and only absence states neither.
+          branchArtifactId ? (
+            <RelatedSessionsSection artifactId={branchArtifactId} />
+          ) : undefined
+        }
+        selectedThreadId={selectedThreadId}
       />
     </div>
   );

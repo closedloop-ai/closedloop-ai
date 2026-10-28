@@ -23,7 +23,6 @@ export type NavIconName =
   | "branches"
   | "agents"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -47,7 +46,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches", isActive: true },
-  { label: "Agents", icon: "agents" },
+  { label: "Agentic Components", icon: "agents" },
 ];
 
 export const teams: readonly TeamItem[] = [
@@ -57,7 +56,7 @@ export const teams: readonly TeamItem[] = [
     name: "ClosedLoop",
     favorites: [
       { id: "fav-night-crew", name: "Night Crew" },
-      { id: "fav-parker-triage", name: "Parker Triage" },
+      { id: "fav-pascoe-triage", name: "Pascoe Triage" },
       { id: "fav-sprint", name: "6/29-7/2" },
     ],
   },
@@ -67,7 +66,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -179,13 +177,13 @@ export const branchRows: readonly BranchRow[] = [
     id: "br_1284",
     branchName: "agent/synthetic-seed-generator",
     baseBranch: "main",
-    repo: "closedloop-ai/symphony-alpha",
+    repo: "closedloop-ai/closedloop-ai",
     owner: "Alex Rivera",
     status: BranchStatus.Review,
     provenance: Provenance.Agent,
     prNumber: 1284,
     prTitle: "Synthetic seed generator for fixtures",
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/1284",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1284",
     prState: PrState.Open,
     checksPassed: 9,
     checksTotal: 11,
@@ -195,7 +193,7 @@ export const branchRows: readonly BranchRow[] = [
     commentCount: 6,
     lastActivityAt: "2026-07-28T18:00:00Z",
     lastActivityLabel: "1h ago",
-    collaborators: ["Alex Rivera", "Sam Chen", "Parker Byrd"],
+    collaborators: ["Alex Rivera", "Sam Chen", "Pascoe Birchall"],
     tags: ["fixtures", "ci", "database"],
   },
   {
@@ -226,7 +224,7 @@ export const branchRows: readonly BranchRow[] = [
     branchName: "agent/repo-overrides-workspace-config",
     baseBranch: "main",
     repo: "closedloop-ai/closedloop-web",
-    owner: "Parker Byrd",
+    owner: "Pascoe Birchall",
     status: BranchStatus.Merged,
     provenance: Provenance.Agent,
     prNumber: 1270,
@@ -241,20 +239,20 @@ export const branchRows: readonly BranchRow[] = [
     commentCount: 4,
     lastActivityAt: "2026-07-28T17:00:00Z",
     lastActivityLabel: "2h ago",
-    collaborators: ["Alex Rivera", "Parker Byrd"],
+    collaborators: ["Alex Rivera", "Pascoe Birchall"],
     tags: ["migration", "backend"],
   },
   {
     id: "br_saml",
     branchName: "agent/saml-sso-implementation",
     baseBranch: "main",
-    repo: "closedloop-ai/symphony-alpha",
+    repo: "closedloop-ai/closedloop-ai",
     owner: "Sam Chen",
     status: BranchStatus.Open,
     provenance: Provenance.Agent,
     prNumber: 1290,
     prTitle: "SAML SSO — implementation",
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/1290",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1290",
     prState: PrState.Open,
     checksPassed: 10,
     checksTotal: 12,
@@ -264,7 +262,7 @@ export const branchRows: readonly BranchRow[] = [
     commentCount: 2,
     lastActivityAt: "2026-07-28T13:00:00Z",
     lastActivityLabel: "6h ago",
-    collaborators: ["Parker Byrd", "Sam Chen"],
+    collaborators: ["Pascoe Birchall", "Sam Chen"],
     tags: ["auth", "backend"],
   },
   {
@@ -526,13 +524,13 @@ export const TRACE_USERS: Record<string, TraceUser> = {
   "u-alex": { id: "u-alex", name: "Alex Rivera", initials: "AR" },
   "u-sam": { id: "u-sam", name: "Sam Chen", initials: "SC" },
   "u-jordan": { id: "u-jordan", name: "Jordan Lee", initials: "JL" },
-  "u-parker": { id: "u-parker", name: "Parker Byrd", initials: "PB" },
+  "u-pascoe": { id: "u-pascoe", name: "Pascoe Birchall", initials: "PB" },
 };
 
 const COMMENT_AUTHOR_NAMES: Record<string, string> = {
   "alex-rivera": "Alex Rivera",
   "jordan-lee": "Jordan Lee",
-  "parker-byrd": "Parker Byrd",
+  "pascoe-birchall": "Pascoe Birchall",
   "sam-chen": "Sam Chen",
 };
 

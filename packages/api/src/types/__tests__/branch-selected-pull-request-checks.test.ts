@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { ChecksStatus } from "../branch-checks";
 import {
   BranchSelectedPullRequestChecksAvailability,
   BranchSelectedPullRequestChecksSummary,
@@ -25,41 +24,28 @@ describe("projectBranchSelectedPullRequestChecks", () => {
     {
       counts: { successful: 2, failing: 1, pending: 1, neutral: 0 },
       summary: BranchSelectedPullRequestChecksSummary.Failing,
-      checksStatus: ChecksStatus.Failing,
     },
     {
       counts: { successful: 2, failing: 0, pending: 1, neutral: 0 },
       summary: BranchSelectedPullRequestChecksSummary.Pending,
-      checksStatus: ChecksStatus.Pending,
     },
     {
       counts: { successful: 3, failing: 0, pending: 0, neutral: 0 },
       summary: BranchSelectedPullRequestChecksSummary.Successful,
-      checksStatus: ChecksStatus.Passing,
     },
-  ])("derives complete actionable $summary evidence and compatible scalars", ({
-    counts,
-    summary,
-    checksStatus,
-  }) => {
+  ])("derives complete actionable $summary evidence", ({ counts, summary }) => {
     const evidenceValue = evidence({ counts });
-    const projection = projectBranchSelectedPullRequestChecks(evidenceValue);
 
-    expect(projection).toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Available,
-        value: { ...evidenceValue, summary },
-      },
-      legacy: {
-        checksStatus,
-        checksPassed: counts.successful,
-        checksTotal:
-          counts.successful + counts.failing + counts.pending + counts.neutral,
-      },
+    // ISS-8241 Half A: the fold emits the evidence response and NOTHING else.
+    // The Branch's checks scalars are the selected PR's own measured rollup and
+    // are no longer derived from whatever this live acquisition returned.
+    expect(projectBranchSelectedPullRequestChecks(evidenceValue)).toEqual({
+      status: BranchSelectedPullRequestChecksAvailability.Available,
+      value: { ...evidenceValue, summary },
     });
   });
 
-  it("maps complete neutral-only and known-empty evidence to N/A without legacy counts", () => {
+  it("maps complete neutral-only and known-empty evidence to N/A", () => {
     const neutral = projectBranchSelectedPullRequestChecks(
       evidence({
         counts: { successful: 0, failing: 0, pending: 0, neutral: 2 },
@@ -77,19 +63,14 @@ describe("projectBranchSelectedPullRequestChecks", () => {
     expect(availableSummary(empty)).toBe(
       BranchSelectedPullRequestChecksSummary.NotApplicable
     );
-    expect(neutral.legacy).toEqual(nullLegacy());
-    expect(empty.legacy).toEqual(nullLegacy());
   });
 
-  it("preserves partial rows and counts while clearing unqualified legacy scalars", () => {
+  it("preserves partial rows and counts without upgrading coverage", () => {
     const evidenceValue = evidence({
       counts: { successful: 5, failing: 0, pending: 0, neutral: 0 },
       completeness: SelectedPullRequestChecksCompleteness.Partial,
     });
-    const projection = projectBranchSelectedPullRequestChecks(evidenceValue);
-
-    expect(projection.legacy).toEqual(nullLegacy());
-    expect(projection.response).toEqual({
+    expect(projectBranchSelectedPullRequestChecks(evidenceValue)).toEqual({
       status: BranchSelectedPullRequestChecksAvailability.Available,
       value: {
         ...evidenceValue,
@@ -98,20 +79,17 @@ describe("projectBranchSelectedPullRequestChecks", () => {
     });
   });
 
-  it("preserves typed access and evidence failures without legacy values", () => {
+  it("preserves typed access and evidence failures", () => {
     expect(
       branchSelectedPullRequestChecksAccessUnavailable(
         GitHubAccessDenialReason.RateLimited,
         30
       )
     ).toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Access,
-        reason: GitHubAccessDenialReason.RateLimited,
-        retryAfterSeconds: 30,
-      },
-      legacy: nullLegacy(),
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Access,
+      reason: GitHubAccessDenialReason.RateLimited,
+      retryAfterSeconds: 30,
     });
     expect(
       branchSelectedPullRequestChecksEvidenceUnavailable({
@@ -119,12 +97,9 @@ describe("projectBranchSelectedPullRequestChecks", () => {
         reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
       })
     ).toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-        reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
-      },
-      legacy: nullLegacy(),
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
     });
   });
 });
@@ -133,12 +108,11 @@ function availableSummary(
   projection: ReturnType<typeof projectBranchSelectedPullRequestChecks>
 ) {
   if (
-    projection.response.status !==
-    BranchSelectedPullRequestChecksAvailability.Available
+    projection.status !== BranchSelectedPullRequestChecksAvailability.Available
   ) {
     throw new Error("Expected available selected-PR checks");
   }
-  return projection.response.value.summary;
+  return projection.value.summary;
 }
 
 function evidence(options: {
@@ -158,9 +132,9 @@ function evidence(options: {
   return {
     identity: {
       githubId: "123",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       number: 4394,
-      url: "https://github.com/closedloop-ai/symphony-alpha/pull/4394",
+      url: "https://github.com/closedloop-ai/closedloop-ai/pull/4394",
     },
     revision: { headSha: "a".repeat(40) },
     checks: [],
@@ -192,13 +166,5 @@ function evidence(options: {
           ? [SelectedPullRequestChecksPartialReason.CountMismatch]
           : [],
     },
-  };
-}
-
-function nullLegacy() {
-  return {
-    checksStatus: null,
-    checksPassed: null,
-    checksTotal: null,
   };
 }

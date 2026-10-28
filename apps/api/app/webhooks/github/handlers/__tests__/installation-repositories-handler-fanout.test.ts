@@ -24,13 +24,17 @@ import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 
 const mocks = vi.hoisted(() => ({
   publish: vi.fn(),
+  prepareBatch: vi.fn(),
   findInstallationByInstallationId: vi.fn(),
   addRepositories: vi.fn(),
   removeRepositories: vi.fn(),
 }));
 
 vi.mock("@/app/integrations/github/dirty-scope-service", () => ({
-  githubDirtyScopeService: { publish: mocks.publish },
+  githubDirtyScopeService: {
+    publish: mocks.publish,
+    prepareBatch: mocks.prepareBatch,
+  },
 }));
 
 vi.mock("@/app/integrations/github/service", () => ({
@@ -103,9 +107,12 @@ function buildRemovedEvent(
   } as unknown as InstallationRepositoriesRemovedEvent;
 }
 
+const BATCH = { organizationId: ORG_ID, targets: [] };
+
 describe("installation_repositories webhook fan-out (FEA-3299)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.prepareBatch.mockResolvedValue(BATCH);
   });
 
   describe("added", () => {
@@ -141,7 +148,47 @@ describe("installation_repositories webhook fan-out (FEA-3299)", () => {
           organizationId: ORG_ID,
           repositoryId: "repo-row-0",
           repositoryFullName: "acme/repo-0",
-        })
+        }),
+        BATCH
+      );
+    });
+
+    it("resolves the org-wide publish prerequisites once for the whole payload", async () => {
+      // ISS-7276: the concurrency bound caps connections, not round trips. The
+      // org target read and expiry sweep must not scale with payload size.
+      mocks.publish.mockResolvedValue(undefined);
+
+      await handleInstallationRepositoriesAdded(buildAddedEvent(REPO_COUNT));
+
+      expect(mocks.prepareBatch).toHaveBeenCalledTimes(1);
+      expect(mocks.prepareBatch).toHaveBeenCalledWith(ORG_ID);
+    });
+
+    it("skips the org-wide prerequisites when the payload adds nothing", async () => {
+      // A redelivered webhook can resolve to zero repositories. Hoisting must
+      // not turn what was zero queries into an org target read plus a sweep.
+      mocks.addRepositories.mockResolvedValue([]);
+
+      await handleInstallationRepositoriesAdded(buildAddedEvent(0));
+
+      expect(mocks.prepareBatch).not.toHaveBeenCalled();
+      expect(mocks.publish).not.toHaveBeenCalled();
+    });
+
+    it("still publishes when preparing the batch fails", async () => {
+      // Best-effort: a failed prepare falls back to per-publish resolution
+      // rather than dropping every repository's pull hint.
+      mocks.prepareBatch.mockRejectedValue(new Error("prepare boom"));
+      mocks.publish.mockResolvedValue(undefined);
+
+      await expect(
+        handleInstallationRepositoriesAdded(buildAddedEvent(REPO_COUNT))
+      ).resolves.toBeUndefined();
+
+      expect(mocks.publish).toHaveBeenCalledTimes(REPO_COUNT);
+      expect(mocks.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ repositoryId: "repo-row-0" }),
+        undefined
       );
     });
 
@@ -195,6 +242,7 @@ describe("installation_repositories webhook fan-out (FEA-3299)", () => {
       );
 
       expect(mocks.publish).toHaveBeenCalledTimes(REPO_COUNT);
+      expect(mocks.prepareBatch).toHaveBeenCalledTimes(1);
     });
   });
 });

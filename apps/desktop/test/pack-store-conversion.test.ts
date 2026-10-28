@@ -1,20 +1,24 @@
 /**
  * @file pack-store-conversion.test.ts
- * @description The pack-store runs fully on the single DesktopPrisma client. The
- * upsert WRITES (`upsertPack`/`upsertSkill`/`upsertProjectAssociation`) and the
- * simple reads (`getPack`/`listSkillsForPack`/`collectPackPaths`) use typed
- * delegates; only the aggregation reads (`listPacks`/`listSkills`/
- * `listSkillInvocations`/`listPackUsage`/`listPackSessions`) stay on
- * `prisma.client.$queryRawUnsafe`, where string_agg, COUNT(DISTINCT …), the
- * version CASE, jsonb prompt extraction, and the multi-source path LIKE
- * attribution have no clean typed-delegate form. This test seeds
+ * @description The pack-store runs on the one DesktopPrisma layer. The upsert
+ * WRITES (`upsertPack`/`upsertSkill`/`upsertProjectAssociation`) and the simple
+ * reads (`getPack`/`listSkillsForPack`/`collectPackPaths`) use typed delegates;
+ * only the aggregation reads (`listPacks`/`listSkills`/`listSkillInvocations`/
+ * `listPackUsage`/`listPackSessions`) stay on `$queryRawUnsafe`, where
+ * group_concat, COUNT(DISTINCT …), the version CASE, json_extract prompt
+ * extraction, and the multi-source path LIKE attribution have no clean
+ * typed-delegate form. Four of those five run on the reader pool; which
+ * connection each takes is pinned by the sibling
+ * `pack-store-reader-pool.test.ts`, not here. This test seeds
  * packs/skills/associations via the typed upserts and seeds sessions/events via
  * raw SQL, then asserts the reads produce the correct results — including that
  * every aggregate count is Number()-coerced (COUNT can surface as bigint through
  * the adapter, which would break IPC/JSON).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
+import { MS_PER_DAY } from "../src/main/database/db-helpers.js";
+import { DEFAULT_SESSION_RETENTION_DAYS } from "../src/main/database/session-maintenance.js";
 import {
   getPack,
   listPackSessions,
@@ -36,17 +40,32 @@ async function seedSession(db: RawDb, id: string): Promise<void> {
   );
 }
 
+function daysAgoIso(days: number): string {
+  return new Date(Date.now() - days * MS_PER_DAY).toISOString();
+}
+
+// An hour back, not a day: the `lookbackDays: 0` case below clamps to a
+// one-day floor, and a fixture seeded at exactly one day old would fall on the
+// wrong side of that cutoff by however long the test took to reach it.
+const RECENT_EVENT_ISO = new Date(Date.now() - 60 * 60_000).toISOString();
+
+// ISS-6751: `created_at` is seeded RELATIVE TO NOW, not at a fixed calendar
+// date. `listPackSessions` bounds its scan to a rolling
+// DEFAULT_SESSION_RETENTION_DAYS window, so a hardcoded timestamp would have
+// aged out of that window on a real clock and turned these assertions red for
+// reasons that have nothing to do with the code under test.
 async function seedEvent(
   db: RawDb,
   id: string,
   sessionId: string,
   eventType: string,
-  data: string
+  data: string,
+  createdAt: string = RECENT_EVENT_ISO
 ): Promise<void> {
   await db.query(
     `INSERT INTO events (id, session_id, event_type, data, created_at)
-     VALUES ($1, $2, $3, $4, '2026-06-18T01:00:00.000Z')`,
-    [id, sessionId, eventType, data]
+     VALUES ($1, $2, $3, $4, $5)`,
+    [id, sessionId, eventType, data, createdAt]
   );
 }
 
@@ -124,7 +143,7 @@ async function setup() {
     JSON.stringify({ cmd: "ls /packs/alpha-codex" })
   );
 
-  return { prisma, close: opened.close };
+  return { db, prisma, close: opened.close };
 }
 
 test("listPacks: string_agg harnesses, version CASE, Number() skillCount", async () => {
@@ -234,6 +253,164 @@ test("listPackSessions: per-session rollup with Number()-coerced tool_calls", as
   }
 });
 
+// ISS-6751: the pack-path attribution is a leading-wildcard `data LIKE '%…%'`
+// that no index can serve, and the LIMIT applies AFTER the GROUP BY — so before
+// the fix the read dragged EVERY event row's multi-KB `data` blob through the
+// db-host worker on every call, with cost growing with total event volume
+// rather than with the pack's usage. The scan is now floored at a
+// `created_at >= ?` window. This test fails if that predicate (or the parens
+// around the OR-chain it ANDs onto) is removed: an out-of-window session comes
+// back.
+test("listPackSessions: scan is floored at the created_at lookback window (ISS-6751)", async () => {
+  const { db, prisma, close } = await setup();
+  try {
+    // Two out-of-window sessions, deliberately hitting DIFFERENT detection
+    // paths — the install path and the project association. Dropping the parens
+    // around the OR-chain leaves only ONE clause ANDed to the window, so
+    // whichever path is not first would go back to an unbounded scan; with a
+    // session behind each path, that mutation always surfaces here.
+    await seedSession(db, "s-old-install");
+    await seedEvent(
+      db,
+      "e-old-install",
+      "s-old-install",
+      "PreToolUse",
+      JSON.stringify({ cmd: "cat /packs/alpha/ancient.md" }),
+      daysAgoIso(DEFAULT_SESSION_RETENTION_DAYS + 30)
+    );
+    await seedSession(db, "s-old-assoc");
+    await seedEvent(
+      db,
+      "e-old-assoc",
+      "s-old-assoc",
+      "PreToolUse",
+      JSON.stringify({ cmd: "cat /proj/ancient.md" }),
+      daysAgoIso(DEFAULT_SESSION_RETENTION_DAYS + 30)
+    );
+
+    // Default window: the in-window sessions only.
+    assert.deepEqual(
+      (await listPackSessions(prisma, "alpha")).map((s) => s.session_id).sort(),
+      ["s1", "s2"]
+    );
+
+    // Widened explicitly: both old sessions are reachable again, so their
+    // absence above is the WINDOW and not a broken LIKE or a dropped row.
+    assert.deepEqual(
+      (
+        await listPackSessions(prisma, "alpha", {
+          lookbackDays: DEFAULT_SESSION_RETENTION_DAYS + 365,
+        })
+      )
+        .map((s) => s.session_id)
+        .sort(),
+      ["s-old-assoc", "s-old-install", "s1", "s2"]
+    );
+  } finally {
+    await close();
+  }
+});
+
+// The window is only ever a floor: a caller cannot widen it into an unbounded
+// scan by passing a value that would make `new Date(...)` invalid. NaN falls
+// back to the default window; 0/negative clamp to one day.
+test("listPackSessions: non-finite and sub-day lookbacks stay bounded (ISS-6751)", async () => {
+  const { db, prisma, close } = await setup();
+  try {
+    await seedSession(db, "s-old-install");
+    await seedEvent(
+      db,
+      "e-old-install",
+      "s-old-install",
+      "PreToolUse",
+      JSON.stringify({ cmd: "cat /packs/alpha/ancient.md" }),
+      daysAgoIso(DEFAULT_SESSION_RETENTION_DAYS + 30)
+    );
+
+    // NaN → default window, not an Invalid Date (whose toISOString() throws).
+    assert.deepEqual(
+      (await listPackSessions(prisma, "alpha", { lookbackDays: Number.NaN }))
+        .map((s) => s.session_id)
+        .sort(),
+      ["s1", "s2"]
+    );
+    // Finite but absurd. These pass `Number.isFinite`, so the finite-check
+    // alone does not cover them: the cutoff overflows past the epoch and
+    // `new Date(...)` goes Invalid, whose `toISOString()` THROWS on a live IPC
+    // read. Clamped at the epoch they degrade to "no lower bound" and return
+    // everything, which is what asking for a window that wide means.
+    for (const absurd of [
+      Number.MAX_SAFE_INTEGER,
+      1e308,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      assert.deepEqual(
+        (await listPackSessions(prisma, "alpha", { lookbackDays: absurd }))
+          .map((s) => s.session_id)
+          .sort(),
+        ["s-old-install", "s1", "s2"],
+        `lookbackDays: ${absurd} must clamp to the epoch, not throw`
+      );
+    }
+    // 0 clamps to one day, which still covers the hour-old fixture events.
+    assert.deepEqual(
+      (await listPackSessions(prisma, "alpha", { lookbackDays: 0 }))
+        .map((s) => s.session_id)
+        .sort(),
+      ["s1", "s2"]
+    );
+  } finally {
+    await close();
+  }
+});
+
+// ISS-6751: `events.created_at` is TEXT and is NOT one of the columns the
+// timestamp-format heal normalizes (`HEALED_COLUMNS` omits it), so a row can
+// hold a value that is not date-shaped at all. Byte-wise, such a value sorts
+// ABOVE every ISO timestamp — so a bare `created_at >= ?` lower bound admits it
+// at EVERY window width, which is the opposite of what a bound is for. This
+// fails if the ISO_DATE_PREFIX_GLOB_SQL guard is dropped from the query.
+test("listPackSessions: a non-date-shaped created_at is not admitted by the window (ISS-6751)", async () => {
+  const { db, prisma, close } = await setup();
+  try {
+    await seedSession(db, "s-junk");
+    await seedEvent(
+      db,
+      "e-junk",
+      "s-junk",
+      "PreToolUse",
+      JSON.stringify({ cmd: "cat /packs/alpha/junk.md" }),
+      "not-a-timestamp"
+    );
+
+    // Sanity: the junk value really does outrank the cutoff, so its exclusion
+    // below is the GUARD doing the work and not the range predicate.
+    assert.ok(
+      new Date().toISOString() < "not-a-timestamp",
+      "fixture must sort above the cutoff for this test to mean anything"
+    );
+
+    assert.deepEqual(
+      (await listPackSessions(prisma, "alpha")).map((s) => s.session_id).sort(),
+      ["s1", "s2"]
+    );
+    // Not merely out-of-window: no width of window can order it, so widening
+    // must not surface it either.
+    assert.deepEqual(
+      (
+        await listPackSessions(prisma, "alpha", {
+          lookbackDays: Number.POSITIVE_INFINITY,
+        })
+      )
+        .map((s) => s.session_id)
+        .sort(),
+      ["s1", "s2"]
+    );
+  } finally {
+    await close();
+  }
+});
+
 // FEA-3048 (root cause 4): the legacy Skills-page prompt matcher must match
 // "leading slash + at least one more char" via an escape-safe form (literal
 // '/%' + length > 1), NOT the bare `_` LIKE wildcard. A bare "/" prompt must be
@@ -272,6 +449,98 @@ test("listSkills: escape-safe leading-slash match excludes bare '/' but counts '
       escSkill?.invocationCount,
       1,
       "only the '/esc-skill' prompt counts; the bare '/' is excluded"
+    );
+  } finally {
+    await close();
+  }
+});
+
+// ISS-6752: the invocation-count subquery now narrows to the installed
+// skill-name set before it GROUP BYs, so the group set scales with the small
+// `skills` inventory rather than with total prompt history. That narrowing is
+// only safe if it is a strict subset of what the outer LEFT JOIN already kept,
+// so this pins the observable half of that claim: prompt-history noise that
+// matches no live install must not perturb an installed skill's count.
+//
+// The inner `uninstalled_at IS NULL` half is deliberately NOT pinnable -- the
+// outer `WHERE s.uninstalled_at IS NULL` already drops every tombstoned row,
+// so dropping the inner copy changes no output, only how many groups the
+// aggregate builds. The tombstoned-skill assertion below therefore pins the
+// pre-existing tombstone contract (unchanged by this diff), not the new inner
+// predicate; deleting that inner predicate leaves this test green by design.
+test("listSkills: unrelated slash prompts don't perturb installed counts, tombstoned skills stay out (ISS-6752)", async () => {
+  const { db, prisma, close } = await openTestPrisma();
+  try {
+    await upsertSkill(prisma, {
+      skill_id: "sk-live",
+      pack_id: null,
+      harness: "claude",
+      install_path: "/local/live-skill",
+      name: "live-skill",
+    });
+    await upsertSkill(prisma, {
+      skill_id: "sk-gone",
+      pack_id: null,
+      harness: "claude",
+      install_path: "/local/gone-skill",
+      name: "gone-skill",
+    });
+    await db.query(
+      "UPDATE skills SET uninstalled_at = $1 WHERE skill_id = 'sk-gone'",
+      ["2026-06-18T02:00:00.000Z"]
+    );
+    await seedSession(db, "sess-narrow");
+
+    // Two real invocations of the installed skill.
+    await seedEvent(
+      db,
+      "nar-1",
+      "sess-narrow",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/live-skill go" })
+    );
+    await seedEvent(
+      db,
+      "nar-2",
+      "sess-narrow",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/live-skill" })
+    );
+    // Prompt-history noise that matches no install: a slash command for a
+    // skill that was never installed, and a path-shaped prompt.
+    await seedEvent(
+      db,
+      "nar-3",
+      "sess-narrow",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/never-installed do a thing" })
+    );
+    await seedEvent(
+      db,
+      "nar-4",
+      "sess-narrow",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/Users/someone/notes.md" })
+    );
+    // A prompt for the tombstoned skill.
+    await seedEvent(
+      db,
+      "nar-5",
+      "sess-narrow",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/gone-skill run" })
+    );
+
+    const skills = await listSkills(prisma);
+    assert.equal(
+      skills.find((s) => s.name === "live-skill")?.invocationCount,
+      2,
+      "both '/live-skill' prompts still count through the narrowed subquery"
+    );
+    assert.equal(
+      skills.find((s) => s.name === "gone-skill"),
+      undefined,
+      "tombstoned skills are excluded from the result, as before"
     );
   } finally {
     await close();

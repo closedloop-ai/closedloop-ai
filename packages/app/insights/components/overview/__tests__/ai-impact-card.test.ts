@@ -4,9 +4,13 @@ import type {
   DeliveryInsightsResponse,
   KpiStat,
 } from "@repo/api/src/types/insights";
-import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
+import {
+  InsightsSection,
+  InsightsTileAvailabilityState,
+  KpiFormat,
+} from "@repo/api/src/types/insights";
 import { describe, expect, it } from "vitest";
-import { deriveAiImpact } from "../ai-impact-card";
+import { AiImpactVolumeVocabulary, deriveAiImpact } from "../ai-impact-card";
 
 const EMPTY_SERIES = { series: [], points: [] };
 
@@ -184,7 +188,7 @@ describe("deriveAiImpact", () => {
   });
 
   // FEA-3431: "Cost per merged PR" is an aggregate cost KPI and must render as
-  // whole dollars (no cents), matching the Branches/Sessions "AI spend" cards
+  // whole dollars (no cents), matching the Sessions summary cost card
   // and the whole-dollar overview headline — never a compact "$9.1k".
   it("rounds cost-per-merged-PR to a whole dollar (no cents, no compact k)", () => {
     const metrics = byKey(
@@ -420,5 +424,207 @@ describe("deriveAiImpact", () => {
     expect(metrics["tokens-per-kloc"].value).toBe("—");
     expect(metrics["top-model"].value).toBe("—");
     expect(metrics["top-repo"].value).toBe("—");
+  });
+});
+
+/**
+ * ISS-8424: "Top repo by output" is the one metric on this card derived from a
+ * CHART (`prByRepo`) rather than a KPI value, so the null the cloud producer
+ * writes into the merged-PR KPIs never reached it — it kept telling an org with
+ * 87 unverified session-linked merged PRs "No merged PRs yet".
+ */
+describe("top repo under an unmeasured merged-PR population", () => {
+  function deliveryWithAvailability(
+    tileAvailability: DeliveryInsightsResponse["tileAvailability"]
+  ): DeliveryInsightsResponse {
+    return { ...delivery([], []), tileAvailability };
+  }
+
+  it("says not-measured when the producer reports prByRepo unavailable", () => {
+    const metrics = byKey(
+      deriveAiImpact({
+        [InsightsSection.Delivery]: deliveryWithAvailability({
+          "chart:prByRepo": InsightsTileAvailabilityState.Unavailable,
+        }),
+      })
+    );
+
+    expect(metrics["top-repo"].detail).toBe("Not measured yet");
+  });
+
+  it("still says no-merged-PRs when the tile is available and simply empty", () => {
+    // The counterfactual half: a card that reported not-measured whenever the
+    // chart was empty would pass the case above and fail here, and would lie to
+    // every org that genuinely has no merged PRs.
+    const metrics = byKey(
+      deriveAiImpact({
+        [InsightsSection.Delivery]: deliveryWithAvailability({
+          "chart:prByRepo": InsightsTileAvailabilityState.Available,
+        }),
+      })
+    );
+
+    expect(metrics["top-repo"].detail).toBe("No merged PRs yet");
+  });
+
+  it("still says no-merged-PRs when the payload carries no availability map", () => {
+    const metrics = byKey(
+      deriveAiImpact({ [InsightsSection.Delivery]: delivery([], []) })
+    );
+
+    expect(metrics["top-repo"].detail).toBe("No merged PRs yet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-8184 — the LOC terminology vocabulary, and the version skew across it
+// ---------------------------------------------------------------------------
+
+describe("deriveAiImpact LOC terminology vocabulary", () => {
+  // Literals, not the constants under test: a fixture built from
+  // `AiImpactVolumeVocabulary.Loc.label` agrees with any future edit to it, so it
+  // could not fail on the rename it exists to pin.
+  it("renders the raw-line label and caption, over the raw-line operand", () => {
+    const metrics = byKey(
+      deriveAiImpact(
+        {
+          [InsightsSection.Delivery]: delivery(
+            [
+              // BOTH keys, because ruling 3 is a per-key contract: with only one
+              // present, a derivation that ignored the vocabulary and always read
+              // whichever key it found would pass.
+              kpi("mergedKloc", 4, KpiFormat.Number),
+              kpi("mergedLoc", 4000, KpiFormat.Number),
+            ],
+            []
+          ),
+          [InsightsSection.Agents]: agents(
+            [kpi("tokens", 2_000_000, KpiFormat.Tokens)],
+            []
+          ),
+        },
+        AiImpactVolumeVocabulary.Loc
+      )
+    );
+
+    expect(metrics["tokens-per-kloc"]?.label).toBe("Tokens per LOC");
+    expect(metrics["tokens-per-kloc"]?.detail).toBe("Tokens ÷ merged LOC");
+    // 2,000,000 tokens ÷ 4,000 lines. The KLOC shape divides the same tokens by
+    // 4 and reads 500,000 — the 1000x drop the operator ruled for.
+    expect(metrics["tokens-per-kloc"]?.value).toBe("500");
+  });
+
+  it("reports a sub-1 ratio to two decimals rather than rounding it to 0", () => {
+    // Reachable on the LOC shape but not the KLOC one: `mergedLoc` is gross
+    // lines over ALL merged PRs, so a large vendored bump landing in a window
+    // of modest agent spend puts this under 1. The compact token format rounds
+    // anything under 1000 to a whole number, which rendered this window as
+    // "0 tokens per LOC" while it had burned 1,600 of them.
+    const metrics = byKey(
+      deriveAiImpact(
+        {
+          [InsightsSection.Delivery]: delivery(
+            [kpi("mergedLoc", 4000, KpiFormat.Number)],
+            []
+          ),
+          [InsightsSection.Agents]: agents(
+            [kpi("tokens", 1600, KpiFormat.Tokens)],
+            []
+          ),
+        },
+        AiImpactVolumeVocabulary.Loc
+      )
+    );
+
+    expect(metrics["tokens-per-kloc"]?.value).toBe("0.40");
+  });
+
+  it("keeps the KLOC shape on the deprecated key when the flag is off", () => {
+    const metrics = byKey(
+      deriveAiImpact(
+        {
+          [InsightsSection.Delivery]: delivery(
+            [
+              kpi("mergedKloc", 4, KpiFormat.Number),
+              kpi("mergedLoc", 4000, KpiFormat.Number),
+            ],
+            []
+          ),
+          [InsightsSection.Agents]: agents(
+            [kpi("tokens", 2_000_000, KpiFormat.Tokens)],
+            []
+          ),
+        },
+        AiImpactVolumeVocabulary.Kloc
+      )
+    );
+
+    expect(metrics["tokens-per-kloc"]?.label).toBe("Tokens per KLOC");
+    // `KpiFormat.Tokens` compacts above a thousand, which is why the same window
+    // reads "500k" here and a plain "500" on the LOC shape above.
+    expect(metrics["tokens-per-kloc"]?.value).toBe("500k");
+  });
+
+  it("defaults to the KLOC shape, so an ungated caller is unchanged", () => {
+    const sections = {
+      [InsightsSection.Delivery]: delivery(
+        [kpi("mergedKloc", 4, KpiFormat.Number)],
+        []
+      ),
+      [InsightsSection.Agents]: agents(
+        [kpi("tokens", 2000, KpiFormat.Tokens)],
+        []
+      ),
+    };
+
+    expect(byKey(deriveAiImpact(sections))["tokens-per-kloc"]?.label).toBe(
+      "Tokens per KLOC"
+    );
+  });
+
+  // Version skew, both directions. A producer predating ruling 3 emits only
+  // `mergedKloc`; one that has dropped nothing emits both. Neither crashes, and
+  // neither fabricates: the absent operand renders the honest empty state rather
+  // than a value scaled out of the other key, which is what "no consumer applies
+  // a factor" forbids.
+  it("dashes rather than scaling when an old producer sends only mergedKloc", () => {
+    const metrics = byKey(
+      deriveAiImpact(
+        {
+          [InsightsSection.Delivery]: delivery(
+            [kpi("mergedKloc", 4, KpiFormat.Number)],
+            []
+          ),
+          [InsightsSection.Agents]: agents(
+            [kpi("tokens", 2000, KpiFormat.Tokens)],
+            []
+          ),
+        },
+        AiImpactVolumeVocabulary.Loc
+      )
+    );
+
+    expect(metrics["tokens-per-kloc"]?.label).toBe("Tokens per LOC");
+    expect(metrics["tokens-per-kloc"]?.value).toBe("—");
+  });
+
+  it("dashes rather than scaling when only mergedLoc is present under the KLOC shape", () => {
+    const metrics = byKey(
+      deriveAiImpact(
+        {
+          [InsightsSection.Delivery]: delivery(
+            [kpi("mergedLoc", 4000, KpiFormat.Number)],
+            []
+          ),
+          [InsightsSection.Agents]: agents(
+            [kpi("tokens", 2000, KpiFormat.Tokens)],
+            []
+          ),
+        },
+        AiImpactVolumeVocabulary.Kloc
+      )
+    );
+
+    expect(metrics["tokens-per-kloc"]?.value).toBe("—");
   });
 });

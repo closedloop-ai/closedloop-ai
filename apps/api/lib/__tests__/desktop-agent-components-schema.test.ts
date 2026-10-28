@@ -9,7 +9,6 @@
  * trim, an invalid ISO date, plus a valid minimal round-trip.
  */
 import {
-  SYNCED_COMPONENT_CONTENT_MAX_CHARS,
   SYNCED_COMPONENT_VARIANTS_MAX,
   SyncedComponentVariantsTruncatedReason,
 } from "@repo/api/src/types/synced-component-content";
@@ -103,18 +102,6 @@ describe("syncedComponentSchema", () => {
     }
   });
 
-  it("accepts content exactly at the cap and rejects one char over", () => {
-    const atCap = "x".repeat(SYNCED_COMPONENT_CONTENT_MAX_CHARS);
-    expect(
-      syncedComponentSchema.safeParse(validComponent({ content: atCap }))
-        .success
-    ).toBe(true);
-    expect(
-      syncedComponentSchema.safeParse(validComponent({ content: `${atCap}x` }))
-        .success
-    ).toBe(false);
-  });
-
   it("normalizes nullable trimmed string fields (empty → null)", () => {
     const result = syncedComponentSchema.safeParse(
       validComponent({ name: "  ", harness: "claude" })
@@ -174,17 +161,12 @@ describe("desktopAgentComponentsPayloadSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a components array exceeding 200 entries", () => {
-    const tooMany = Array.from({ length: 201 }, (_, i) =>
-      validComponent({ externalId: `skill::c-${i}` })
-    );
-    const result = desktopAgentComponentsPayloadSchema.safeParse(
-      validPayload({ components: tooMany, componentCount: 201 })
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts exactly 200 components (boundary)", () => {
+  // ISS-8051 deleted the companion "rejects a components array exceeding 200
+  // entries" case with the `.max(200)` it asserted — an over-length batch is now
+  // accepted whole rather than refused whole. The 201-component acceptance lives
+  // in `desktop-agent-sessions-array-cardinality-schema.test.ts`; this case keeps
+  // pinning that a batch at the old boundary still round-trips.
+  it("accepts exactly 200 components (the retired boundary)", () => {
     const exactly200 = Array.from({ length: 200 }, (_, i) =>
       validComponent({ externalId: `skill::c-${i}` })
     );
@@ -261,20 +243,6 @@ describe("syncedComponentSchema — ISS-4662 variants", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a variant body over the content cap", () => {
-    const result = syncedComponentSchema.safeParse(
-      validComponent({
-        variants: [
-          {
-            contentHash: "abc123",
-            content: "x".repeat(SYNCED_COMPONENT_CONTENT_MAX_CHARS + 1),
-          },
-        ],
-      })
-    );
-    expect(result.success).toBe(false);
-  });
-
   it("TRUNCATES to the shared cap instead of rejecting the component", () => {
     const tooMany = Array.from(
       { length: SYNCED_COMPONENT_VARIANTS_MAX + 3 },
@@ -301,7 +269,7 @@ describe("syncedComponentSchema — ISS-4662 variants", () => {
   });
 
   it("MARKS the component truncated in the same pass, so the drop is never stored as complete", () => {
-    // wongk, #4391. The slice used to live on the `variants` field alone, where
+    // whitlockk, #4391. The slice used to live on the `variants` field alone, where
     // it could not reach the sibling marker — so the API knowingly dropped
     // revisions and then persisted the result as a whole history. That is this
     // ticket's own bug reproduced one layer below the desktop packer, which is
@@ -422,7 +390,7 @@ describe("syncedComponentSchema — ISS-5029 variantsTruncated", () => {
   });
 
   it("ACCEPTS an unrecognized cap reason instead of rejecting the whole batch", () => {
-    // wongk, #4391 + the root cross-repo rule. A `z.enum` here would let ONE
+    // whitlockk, #4391 + the root cross-repo rule. A `z.enum` here would let ONE
     // component carrying a future reason 400 up to 200 components, on every
     // retry. The reader is what maps unknown to "no proof".
     const result = syncedComponentSchema.safeParse(

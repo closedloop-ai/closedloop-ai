@@ -1,10 +1,8 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentMonitorRuntimeStatusKind } from "../../../shared/agent-monitor-status";
-import {
-  __resetRuntimeStatusPollForTests,
-  parseAgentMonitorStatus,
-} from "../../hooks/use-ingest-progress";
+import { parseAgentMonitorStatus } from "../../hooks/use-agent-monitor-status";
+import { __resetRuntimeStatusPollForTests } from "../../hooks/use-runtime-status-poll";
 import {
   AgentMonitorDbAheadBanner,
   DB_AHEAD_BANNER_MESSAGE,
@@ -75,7 +73,7 @@ describe("AgentMonitorDbAheadBanner", () => {
   });
 
   it("keeps the banner copy tight, plain, and in sync with the e2e pin", () => {
-    // ISS-4834 (Parker copy pass). The Electron e2e spec cannot import this
+    // ISS-4834 (Pascoe copy pass). The Electron e2e spec cannot import this
     // module (its `@closedloop-ai/design-system` / renderer-hook imports abort the
     // Playwright loader), so it pins a literal substring. Assert that substring
     // here - this is the only place the two can be compared.
@@ -154,7 +152,7 @@ describe("AgentMonitorDbAheadBanner", () => {
     // it from the strip the way UpdateBanner does, because
     // `--destructive-foreground` is white in both themes and would be
     // unreadable over the 10% wash.
-    // Pinned to TriangleAlert specifically, not just "some svg" (wongk review):
+    // Pinned to TriangleAlert specifically, not just "some svg" (whitlockk review):
     // lucide stamps `lucide-<icon>` on the element, so removing the mark OR
     // swapping it for a different glyph fails here rather than sliding through
     // on a generic `querySelector("svg")` that the next icon would satisfy.
@@ -168,8 +166,8 @@ describe("AgentMonitorDbAheadBanner", () => {
   });
 
   it("stops polling once a terminal DB-ahead verdict is observed", async () => {
-    // ISS-4714 (wongk review): the runtime verdict is terminal at boot, so the
-    // shared 1s poll (which reads authorized_keys.json on main each tick) must
+    // ISS-4714 (whitlockk review): the runtime verdict is terminal at boot, so the
+    // shared 1s poll must
     // latch off after the first Failed/Ready snapshot instead of running for the
     // whole session.
     const getRuntimeStatus = installRuntimeStatus({

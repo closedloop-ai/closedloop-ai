@@ -1,12 +1,9 @@
-import { createHash } from "node:crypto";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
   DesktopCommandEvent,
   DesktopCommandEventType,
   DesktopCommandSummary,
-  RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
 import {
   DesktopCommandStatus,
@@ -22,56 +19,56 @@ import {
 } from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
+import { ErrorClass } from "@repo/observability/telemetry/schema";
 import {
-  ErrorClass,
   TelemetryCategory,
   TelemetrySeverity,
-} from "@repo/observability/telemetry/schema";
-import { BoundedCache } from "@/lib/bounded-cache";
+} from "@repo/observability/telemetry/telemetry-category";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 import {
-  clearOperationCommandCache,
-  getCachedOperationCommandId,
-  rememberOperationCommand,
-} from "@/lib/desktop-command-operation-cache";
+  type EventSubscriber,
+  replayBufferedEvents,
+  resolveEventReadUpperBound,
+} from "@/lib/desktop-command-event-page";
+import {
+  fingerprintCommand,
+  normalizeCommandInput,
+  stripTransientCommandFields,
+} from "@/lib/desktop-command-fingerprint";
+import {
+  type CreateCommandResult,
+  clearIdempotencyCache,
+  findCommandById,
+  findCommandByIdScoped,
+  IdempotencyConflictError,
+  recoverDuplicateCommand,
+  rememberIdempotentCommand,
+  resolveIdempotentCommand,
+} from "@/lib/desktop-command-lookup";
+import {
+  type DispatchableCommand,
+  IN_FLIGHT_DESKTOP_COMMAND_STATUSES,
+  STORED_COMMAND_EVENT_SELECT,
+  STORED_COMMAND_SELECT,
+  type StoredCommandRow,
+  TERMINAL_DESKTOP_COMMAND_STATUSES,
+  toDispatchableCommand,
+  toEventWire,
+  toStoredCommand,
+  toSummary,
+} from "@/lib/desktop-command-mappers";
 import { resolveCommandUpdate } from "@/lib/desktop-command-transitions";
+import {
+  byCreatedAtThenId,
+  capQueuedCommandsForReconnect,
+  HELLO_QUEUED_COMMAND_LIMIT,
+} from "@/lib/desktop-gateway-reconnect";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 import { safeEmit } from "@/lib/telemetry-utils";
-import { isRecord } from "@/lib/type-guards";
-
-type StoredCommand = {
-  commandId: string;
-  computeTargetId: string;
-  operationId: string;
-  status: DesktopCommandStatus;
-  requestPayload: CreateDesktopCommandInput;
-  error?: string;
-  createdAt: Date;
-  startedAt?: Date;
-  finishedAt?: Date;
-  lastSequenceAcked: number;
-  idempotencyKey?: string;
-  requestFingerprint: string;
-};
-
-type StoredCommandRow = {
-  id: string;
-  computeTargetId: string;
-  operationId: string;
-  status: string;
-  requestPayload: unknown;
-  error: string | null;
-  createdAt: Date;
-  startedAt: Date | null;
-  finishedAt: Date | null;
-  lastSequenceAcked: number;
-  idempotencyKey: string | null;
-  requestFingerprint: string;
-};
-
-type CreateCommandResult = {
-  command: StoredCommand;
-  deduped: boolean;
-};
 
 type IngestCommandEventInput = {
   commandId: string;
@@ -88,43 +85,22 @@ type IngestCommandEventInput = {
 
 type IngestCommandEventResult =
   | { accepted: true; duplicate: true; sequence: number }
-  | { accepted: true; duplicate: false; sequence: number }
+  | {
+      accepted: true;
+      duplicate: false;
+      sequence: number;
+      /**
+       * The status this event moved the command to, absent when it changed none.
+       * Already returned at runtime; declaring it lets callers release a freed
+       * concurrency slot without re-reading the row.
+       */
+      nextStatus?: DesktopCommandStatus;
+    }
   | {
       accepted: false;
       reason: "unknown_command" | "sequence_gap";
       expected?: number;
     };
-
-type IdempotencyEntry = {
-  commandId: string;
-  fingerprint: string;
-};
-
-type DispatchableCommand = {
-  commandId: string;
-  computeTargetId: string;
-  operationId: string;
-  status: DesktopCommandStatus;
-  lastSequenceAcked: number;
-  method: CreateDesktopCommandInput["method"];
-  path: string;
-  headers?: Record<string, string>;
-  query?: Record<string, string | string[]>;
-  body?: JsonValue;
-  timeoutMs?: number;
-  lockKey?: string;
-  requiresApproval?: boolean;
-  approvalReason?: string;
-  streaming?: boolean;
-  createdAt: string;
-};
-
-class IdempotencyConflictError extends Error {
-  constructor(message = "Idempotency key collision with different payload") {
-    super(message);
-    this.name = "IdempotencyConflictError";
-  }
-}
 
 class ClientCommandIdConflictError extends Error {
   constructor(message = "Command ID already exists") {
@@ -133,105 +109,7 @@ class ClientCommandIdConflictError extends Error {
   }
 }
 
-type EventSubscriber = (event: DesktopCommandEvent) => void;
-
 const eventSubscribers = new Map<string, Set<EventSubscriber>>();
-
-const CACHE_MAX_SIZE = 10_000;
-const idempotencyCache = new BoundedCache<string, IdempotencyEntry>(
-  CACHE_MAX_SIZE
-);
-
-function stripTransientCommandFields(
-  input: CreateDesktopCommandInput
-): CreateDesktopCommandInput {
-  const {
-    commandId: _commandId,
-    signature: _signature,
-    signaturePayload: _signaturePayload,
-    publicKeyFingerprint: _publicKeyFingerprint,
-    ...persistable
-  } = input;
-  return persistable;
-}
-
-function fingerprintCommand(input: CreateDesktopCommandInput): string {
-  return createHash("sha256")
-    .update(stableStringify(stripTransientCommandFields(input)))
-    .digest("hex");
-}
-
-function isDesktopCommandStatus(value: string): value is DesktopCommandStatus {
-  return (
-    value === DesktopCommandStatus.Queued ||
-    value === DesktopCommandStatus.Accepted ||
-    value === DesktopCommandStatus.Running ||
-    value === DesktopCommandStatus.Done ||
-    value === DesktopCommandStatus.Failed ||
-    value === DesktopCommandStatus.Cancelled ||
-    value === DesktopCommandStatus.Expired
-  );
-}
-
-function toDesktopCommandStatus(value: string): DesktopCommandStatus {
-  return isDesktopCommandStatus(value) ? value : DesktopCommandStatus.Failed;
-}
-
-function toStoredCommand(row: StoredCommandRow): StoredCommand {
-  const requestPayload = isRecord(row.requestPayload)
-    ? (row.requestPayload as CreateDesktopCommandInput)
-    : ({
-        operationId: row.operationId,
-        method: "POST",
-        path: "/api/gateway",
-      } as CreateDesktopCommandInput);
-
-  return {
-    commandId: row.id,
-    computeTargetId: row.computeTargetId,
-    operationId: row.operationId,
-    status: toDesktopCommandStatus(row.status),
-    requestPayload,
-    error: row.error ?? undefined,
-    createdAt: row.createdAt,
-    startedAt: row.startedAt ?? undefined,
-    finishedAt: row.finishedAt ?? undefined,
-    lastSequenceAcked: row.lastSequenceAcked,
-    idempotencyKey: row.idempotencyKey ?? undefined,
-    requestFingerprint: row.requestFingerprint,
-  };
-}
-
-function toSummary(command: StoredCommand): DesktopCommandSummary {
-  return {
-    commandId: command.commandId,
-    computeTargetId: command.computeTargetId,
-    operationId: command.operationId,
-    status: command.status,
-    error: command.error,
-    createdAt: command.createdAt.toISOString(),
-    startedAt: command.startedAt?.toISOString(),
-    finishedAt: command.finishedAt?.toISOString(),
-    lastSequenceAcked: command.lastSequenceAcked,
-    idempotencyKey: command.idempotencyKey,
-  };
-}
-
-function toEventWire(
-  commandId: string,
-  sequence: number,
-  eventType: DesktopCommandEventType,
-  data: JsonValue,
-  createdAt?: Date
-): DesktopCommandEvent {
-  return {
-    commandId,
-    sequence,
-    eventType,
-    data,
-    createdAt: (createdAt ?? new Date()).toISOString(),
-  };
-}
 
 function publishEvent(event: DesktopCommandEvent): void {
   const listeners = eventSubscribers.get(event.commandId);
@@ -241,133 +119,6 @@ function publishEvent(event: DesktopCommandEvent): void {
   for (const listener of listeners) {
     listener(event);
   }
-}
-
-function mapRelayPayloadToCommandInput(
-  operation: RelayOperationDispatchRequest
-): CreateDesktopCommandInput {
-  const params = isRecord(operation.params) ? operation.params : {};
-  const request = isRecord(params.request) ? params.request : {};
-  const headers = isRecord(request.headers)
-    ? Object.fromEntries(
-        Object.entries(request.headers).filter(
-          (entry): entry is [string, string] => typeof entry[1] === "string"
-        )
-      )
-    : {};
-  const method = typeof request.method === "string" ? request.method : "POST";
-  const path = typeof request.path === "string" ? request.path : "/api/gateway";
-  const timeoutMs =
-    typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
-  const lockKey =
-    typeof params.lockKey === "string" ? params.lockKey : undefined;
-  const requiresApproval =
-    typeof params.requiresApproval === "boolean"
-      ? params.requiresApproval
-      : undefined;
-  const approvalReason =
-    typeof params.approvalReason === "string"
-      ? params.approvalReason
-      : undefined;
-
-  return {
-    operationId: operation.operationId,
-    method: ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)
-      ? (method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE")
-      : "POST",
-    path,
-    headers,
-    body: (request.body as JsonValue | undefined) ?? null,
-    timeoutMs,
-    lockKey,
-    requiresApproval,
-    approvalReason,
-    streaming: operation.streaming,
-  };
-}
-
-function toDispatchableCommand(command: StoredCommand): DispatchableCommand {
-  return {
-    commandId: command.commandId,
-    computeTargetId: command.computeTargetId,
-    operationId: command.operationId,
-    status: command.status,
-    lastSequenceAcked: command.lastSequenceAcked,
-    method: command.requestPayload.method,
-    path: command.requestPayload.path,
-    headers: command.requestPayload.headers,
-    query: command.requestPayload.query,
-    body: command.requestPayload.body,
-    timeoutMs: command.requestPayload.timeoutMs,
-    lockKey: command.requestPayload.lockKey,
-    requiresApproval: command.requestPayload.requiresApproval,
-    approvalReason: command.requestPayload.approvalReason,
-    streaming: command.requestPayload.streaming,
-    createdAt: command.createdAt.toISOString(),
-  };
-}
-
-async function findCommandById(
-  commandId: string
-): Promise<StoredCommand | null> {
-  const command = await withDb((db) =>
-    db.desktopCommand.findUnique({
-      where: { id: commandId },
-    })
-  );
-  if (!command) {
-    return null;
-  }
-  return toStoredCommand(command as StoredCommandRow);
-}
-
-async function findCommandByIdScoped(
-  commandId: string,
-  computeTargetId?: string
-): Promise<StoredCommand | null> {
-  if (!computeTargetId) {
-    return findCommandById(commandId);
-  }
-  const row = await withDb((db) =>
-    db.desktopCommand.findFirst({
-      where: { id: commandId, computeTargetId },
-    })
-  );
-  return row ? toStoredCommand(row as StoredCommandRow) : null;
-}
-
-async function recoverDuplicateCommand(
-  computeTargetId: string,
-  idempotencyKey: string,
-  fingerprint: string
-): Promise<CreateCommandResult> {
-  const winner = await withDb((db) =>
-    db.desktopCommand.findFirst({
-      where: { computeTargetId, idempotencyKey },
-      orderBy: { createdAt: "desc" },
-    })
-  );
-  if (!winner) {
-    log.warn("recoverDuplicateCommand: no winner found for idempotency key", {
-      computeTargetId,
-      idempotencyKey,
-      errorClass: ErrorClass.Protocol,
-    });
-    throw new IdempotencyConflictError();
-  }
-  const winnerCommand = toStoredCommand(winner as StoredCommandRow);
-  if (winnerCommand.requestFingerprint !== fingerprint) {
-    log.warn(
-      "recoverDuplicateCommand: fingerprint mismatch on idempotency key",
-      {
-        computeTargetId,
-        idempotencyKey,
-        errorClass: ErrorClass.Protocol,
-      }
-    );
-    throw new IdempotencyConflictError();
-  }
-  return { command: winnerCommand, deduped: true };
 }
 
 async function createEventRow(
@@ -390,66 +141,6 @@ async function createEventRow(
     }
     throw error;
   }
-}
-
-async function resolveIdempotentCommand(
-  computeTargetId: string,
-  idempotencyKey: string,
-  fingerprint: string
-): Promise<CreateCommandResult | null> {
-  const cacheKey = `${computeTargetId}:${idempotencyKey}`;
-  const cached = idempotencyCache.get(cacheKey);
-  if (cached) {
-    if (cached.fingerprint !== fingerprint) {
-      log.warn(
-        "resolveIdempotentCommand: cache fingerprint mismatch on idempotency key",
-        {
-          computeTargetId,
-          idempotencyKey,
-          errorClass: ErrorClass.Protocol,
-        }
-      );
-      throw new IdempotencyConflictError();
-    }
-    const existing = await findCommandById(cached.commandId);
-    if (existing) {
-      return { command: existing, deduped: true };
-    }
-  }
-
-  const existing = await withDb((db) =>
-    db.desktopCommand.findFirst({
-      where: { computeTargetId, idempotencyKey },
-      orderBy: { createdAt: "desc" },
-    })
-  );
-
-  if (!existing) {
-    return null;
-  }
-
-  const existingCommand = toStoredCommand(existing as StoredCommandRow);
-  if (existingCommand.requestFingerprint !== fingerprint) {
-    log.warn(
-      "resolveIdempotentCommand: db fingerprint mismatch on idempotency key",
-      {
-        computeTargetId,
-        idempotencyKey,
-        errorClass: ErrorClass.Protocol,
-      }
-    );
-    throw new IdempotencyConflictError();
-  }
-  idempotencyCache.set(cacheKey, {
-    commandId: existingCommand.commandId,
-    fingerprint,
-  });
-  rememberOperationCommand(
-    existingCommand.operationId,
-    existingCommand.commandId,
-    existingCommand.computeTargetId
-  );
-  return { command: existingCommand, deduped: true };
 }
 
 function emitCommandLifecycleEventForStatus(
@@ -502,10 +193,25 @@ export const desktopCommandStore = {
       TelemetryTraceContext,
       "gatewaySessionId" | "schemaVersion"
     > &
-      Partial<TelemetryTraceContext>
+      Partial<TelemetryTraceContext>,
+    /**
+     * Runs on the insert's transaction (ISS-12552); a deduplicated command
+     * inserts nothing, so it is not called for one.
+     */
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<CreateCommandResult> {
-    const idempotencyKey = input.idempotencyKey?.trim() || undefined;
-    const requestPayload = stripTransientCommandFields(input);
+    // Normalize BEFORE the fingerprint and the write: `timeoutMs` is part of
+    // `requestPayload` and therefore part of the hash, and the REST route
+    // bounds it `.positive()` with no ceiling while the relay mapper clamps.
+    const normalized = normalizeCommandInput(input, (rejection) => {
+      log.warn("createCommand: timeoutMs out of range, normalized", {
+        computeTargetId,
+        operationId: input.operationId,
+        ...rejection,
+      });
+    });
+    const idempotencyKey = normalized.idempotencyKey?.trim() || undefined;
+    const requestPayload = stripTransientCommandFields(normalized);
     // Fingerprint with the trimmed key so " key " and "key" produce the
     // same hash — prevents false IdempotencyConflictError on retry.
     const fingerprint = fingerprintCommand({
@@ -526,19 +232,25 @@ export const desktopCommandStore = {
 
     let created: StoredCommandRow;
     try {
-      created = (await withDb((db) =>
-        db.desktopCommand.create({
-          data: {
-            ...(input.commandId ? { id: input.commandId } : {}),
-            computeTargetId,
-            operationId: input.operationId,
-            idempotencyKey: idempotencyKey ?? null,
-            requestFingerprint: fingerprint,
-            requestPayload: requestPayload as unknown as Prisma.InputJsonValue,
-            status: DesktopCommandStatus.Queued,
-            lastSequenceAcked: 0,
-          },
-        })
+      created = (await writeRecorded(
+        recordWrite,
+        () =>
+          withDb((db) =>
+            db.desktopCommand.create({
+              data: {
+                ...(normalized.commandId ? { id: normalized.commandId } : {}),
+                computeTargetId,
+                operationId: normalized.operationId,
+                idempotencyKey: idempotencyKey ?? null,
+                requestFingerprint: fingerprint,
+                requestPayload:
+                  requestPayload as unknown as Prisma.InputJsonValue,
+                status: DesktopCommandStatus.Queued,
+                lastSequenceAcked: 0,
+              },
+            })
+          ),
+        () => ({ changed: true })
       )) as StoredCommandRow;
     } catch (error) {
       if (idempotencyKey && getPrismaErrorCode(error) === "P2002") {
@@ -555,16 +267,13 @@ export const desktopCommandStore = {
     }
 
     const command = toStoredCommand(created);
-    rememberOperationCommand(
-      command.operationId,
-      command.commandId,
-      command.computeTargetId
-    );
     if (idempotencyKey) {
-      idempotencyCache.set(`${computeTargetId}:${idempotencyKey}`, {
-        commandId: command.commandId,
-        fingerprint,
-      });
+      rememberIdempotentCommand(
+        computeTargetId,
+        idempotencyKey,
+        command.commandId,
+        fingerprint
+      );
     }
 
     if (context) {
@@ -577,19 +286,6 @@ export const desktopCommandStore = {
     }
 
     return { command, deduped: false };
-  },
-
-  createFromRelayOperation(
-    computeTargetId: string,
-    operation: RelayOperationDispatchRequest,
-    context?: Pick<
-      TelemetryTraceContext,
-      "gatewaySessionId" | "schemaVersion"
-    > &
-      Partial<TelemetryTraceContext>
-  ): Promise<CreateCommandResult> {
-    const input = mapRelayPayloadToCommandInput(operation);
-    return this.createCommand(computeTargetId, input, context);
   },
 
   /**
@@ -615,39 +311,68 @@ export const desktopCommandStore = {
     if (!command) {
       return null;
     }
+    // A late first-ever ack for a row that already went terminal by another
+    // path (`markCommandExpired`) writes nothing, so `ackedAt` stays null there
+    // even though the target did answer. Harmless for delivery — terminal rows
+    // are never requeued, so no retry ever reads them — but it does mean this
+    // column is not a complete audit of "did the target ever answer" for
+    // terminal rows. Do not repurpose it as one without closing this path.
     if (isTerminalStatus(command.status)) {
       return toSummary(command);
     }
 
     const now = new Date();
-    let data:
-      | {
-          status?: string;
-          error?: string;
-          finishedAt?: Date;
-        }
-      | Record<string, never>;
+    // ISS-9630: `ackedAt` is stamped on EVERY branch below, including the one
+    // that changes nothing else. The column records that the target ANSWERED,
+    // which is a different fact from any status it moved to — a rejection is an
+    // answer, and so is an ack for a command that already raced ahead to
+    // `running`. Writing it only where `status` changes would leave both of
+    // those reading back as never-answered, which is exactly the reading a
+    // retry policy must not get wrong.
+    //
+    // The stamp is the QUEUE ATTEMPT being answered, not wall-clock `now`
+    // (whitlockk on #7012). `requeueUndeliveredCommands` can advance `queuedAt`
+    // between the read above and the write below — the ack that read `running`
+    // lands after the reconnect reset — and a `now` taken on this side of that
+    // reset is at or after the NEW entry, so `ackedAt >= queuedAt` and the
+    // sweep reports work the target had already taken as never answered.
+    // Binding to the entry is sound whichever write wins: answering the current
+    // delivery leaves `ackedAt == queuedAt` (not earlier), and being requeued
+    // underneath leaves `ackedAt < queuedAt` (earlier, which is the truth).
+    //
+    // `queuedAt` is null only for rows written before ISS-7223 added it, and
+    // the crossings read selects on `queuedAt`, so those rows reach no reader
+    // of this comparison; `now` is the honest fallback rather than a value
+    // pretending to date a queue entry that was never recorded.
+    const answeredDeliveryAt = command.queuedAt ?? now;
+    let data: {
+      status?: string;
+      error?: string;
+      finishedAt?: Date;
+      ackedAt: Date;
+    };
     if (!accepted) {
       data = {
         status: DesktopCommandStatus.Failed,
         error: reason || "Command rejected",
+        // The terminal instant is when the rejection was PROCESSED, so it stays
+        // wall-clock; only the ack stamp dates the delivery it answers.
         finishedAt: now,
+        ackedAt: answeredDeliveryAt,
       };
     } else if (command.status === DesktopCommandStatus.Queued) {
-      data = { status: DesktopCommandStatus.Accepted };
+      data = {
+        status: DesktopCommandStatus.Accepted,
+        ackedAt: answeredDeliveryAt,
+      };
     } else {
-      data = {};
+      data = { ackedAt: answeredDeliveryAt };
     }
 
     // Use conditional update to prevent overwriting a concurrent terminal transition.
     // When accepting a queued command, narrow the guard to "queued" to prevent
     // regressing a command that has already progressed to "running".
-    const terminalStatuses = [
-      DesktopCommandStatus.Done,
-      DesktopCommandStatus.Failed,
-      DesktopCommandStatus.Cancelled,
-      DesktopCommandStatus.Expired,
-    ];
+    const terminalStatuses = TERMINAL_DESKTOP_COMMAND_STATUSES;
     const statusGuard:
       | DesktopCommandStatus
       | { notIn: DesktopCommandStatus[] } =
@@ -661,6 +386,17 @@ export const desktopCommandStore = {
           id: commandId,
           ...(computeTargetId ? { computeTargetId } : {}),
           status: statusGuard,
+          // Last-write-wins is not freshness-safe across instances: two acks
+          // for DIFFERENT deliveries of one command can be in flight at once,
+          // and the slower of them carries the older entry. Without this clause
+          // that straggler overwrites the newer verdict, and a command whose
+          // current delivery was answered reads back as answered on an earlier
+          // one. The write applies only where it moves the record forward, so a
+          // duplicate or superseded ack matches no row and changes nothing —
+          // which is also why the status half is guarded by it: an ack for a
+          // delivery no newer than the one already answered has no business
+          // moving `status` either.
+          OR: [{ ackedAt: null }, { ackedAt: { lt: answeredDeliveryAt } }],
         },
         data,
       })
@@ -727,9 +463,11 @@ export const desktopCommandStore = {
               id: input.commandId,
               computeTargetId: input.computeTargetId,
             },
+            select: STORED_COMMAND_SELECT,
           })
         : await tx.desktopCommand.findUnique({
             where: { id: input.commandId },
+            select: STORED_COMMAND_SELECT,
           });
       if (!row) {
         log.warn("ingestCommandEvent: unknown command", {
@@ -740,7 +478,7 @@ export const desktopCommandStore = {
         return { accepted: false, reason: "unknown_command" } as const;
       }
 
-      const command = toStoredCommand(row as StoredCommandRow);
+      const command = toStoredCommand(row);
       const expected = command.lastSequenceAcked + 1;
       const sequence = input.sequence ?? expected;
 
@@ -781,11 +519,30 @@ export const desktopCommandStore = {
         where: { id: input.commandId },
         data: {
           lastSequenceAcked: sequence,
+          // ISS-9630: an event IS the target answering, so it records the same
+          // fact an ack does. This is not redundant with `acknowledgeCommand`:
+          // `resolveCommandUpdate`'s queued/accepted arm moves a command to
+          // `running` on a streamed event with no accept RPC at all, and a
+          // reconnect requeues exactly those in-flight rows. Were this path
+          // silent, a command the target had demonstrably taken would read
+          // back as never-answered after that requeue — the false negative the
+          // column exists to prevent, and the one that would let a retry re-run
+          // work that already ran.
+          //
+          // Bound to the queue attempt this event belongs to, for the reason
+          // `acknowledgeCommand` is: a requeue committing between this
+          // transaction's read and its write would otherwise leave a wall-clock
+          // stamp at or after the NEW entry and erase the earlier-delivery
+          // signal. No monotonic guard is needed here — the sequence gate above
+          // already refuses anything but `lastSequenceAcked + 1`, so an event
+          // from a superseded delivery cannot reach this write.
+          ackedAt: command.queuedAt ?? new Date(),
           ...(nextState.status ? { status: nextState.status } : {}),
           ...(nextState.startedAt ? { startedAt: nextState.startedAt } : {}),
           ...(nextState.finishedAt ? { finishedAt: nextState.finishedAt } : {}),
           ...(nextState.error === undefined ? {} : { error: nextState.error }),
         },
+        select: { id: true },
       });
 
       return {
@@ -846,41 +603,13 @@ export const desktopCommandStore = {
           id: commandId,
           computeTargetId,
         },
+        select: STORED_COMMAND_SELECT,
       })
     );
     if (!command) {
       return null;
     }
-    return toSummary(toStoredCommand(command as StoredCommandRow));
-  },
-
-  async getCommandByOperationId(
-    operationId: string
-  ): Promise<DesktopCommandSummary | null> {
-    const cachedId = getCachedOperationCommandId(operationId);
-    if (cachedId) {
-      const cached = await findCommandById(cachedId);
-      if (cached) {
-        return toSummary(cached);
-      }
-    }
-
-    const command = await withDb((db) =>
-      db.desktopCommand.findFirst({
-        where: { operationId },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-    if (!command) {
-      return null;
-    }
-    const stored = toStoredCommand(command as StoredCommandRow);
-    rememberOperationCommand(
-      stored.operationId,
-      stored.commandId,
-      stored.computeTargetId
-    );
-    return toSummary(stored);
+    return toSummary(toStoredCommand(command));
   },
 
   async getCommandById(
@@ -900,17 +629,45 @@ export const desktopCommandStore = {
       return null;
     }
 
-    const events = await withDb((db) =>
-      db.desktopCommandEvent.findMany({
+    // Bounded by BYTES, not by row count, and it reads forward across as many
+    // sizing probes as the budget allows rather than stopping at the first 500
+    // rows. Both halves are load-bearing:
+    //
+    //  - bytes, because nothing caps a single stored payload, so any row cap is
+    //    a response bound only by accident (see the constant);
+    //  - forward, because the polling consumer gets exactly one call per tick
+    //    (the SSE arm's replay poll at 2s), so a fixed 500-row answer puts
+    //    delivery at 250 events/sec against a `chunk` per NDJSON line off the
+    //    gateway. A chatty run outruns that and the cursor never catches up
+    //    for the life of the command.
+    //
+    // It does not truncate: the caller resumes from the `sequence` of the last
+    // event it consumed, so whatever the budget held back arrives on the next
+    // poll. Ordering ascending from just after the cursor is what makes that
+    // true — do not reorder this read.
+    const events = await withDb(async (db) => {
+      const throughSequence = await resolveEventReadUpperBound(
+        db,
+        commandId,
+        options?.afterSequence
+      );
+      if (throughSequence === undefined) {
+        return [];
+      }
+      return db.desktopCommandEvent.findMany({
         where: {
           commandId,
-          ...(options?.afterSequence == null
-            ? {}
-            : { sequence: { gt: options.afterSequence } }),
+          sequence: {
+            ...(options?.afterSequence == null
+              ? {}
+              : { gt: options.afterSequence }),
+            lte: throughSequence,
+          },
         },
         orderBy: { sequence: "asc" },
-      })
-    );
+        select: STORED_COMMAND_EVENT_SELECT,
+      });
+    });
 
     return events.map((event) =>
       toEventWire(
@@ -965,19 +722,15 @@ export const desktopCommandStore = {
 
     if (replayNeeded) {
       try {
-        const replay =
-          (await this.getCommandEvents(computeTargetId, commandId, {
-            afterSequence: options?.afterSequence,
-          })) ?? [];
-        for (const event of replay) {
-          if (
-            typeof event.sequence === "number" &&
-            liveSequences.has(event.sequence)
-          ) {
-            continue;
-          }
-          listener(event);
-        }
+        await replayBufferedEvents({
+          readPage: (afterSequence) =>
+            this.getCommandEvents(computeTargetId, commandId, {
+              afterSequence,
+            }),
+          afterSequence: options?.afterSequence,
+          liveSequences,
+          listener,
+        });
       } catch (error) {
         // The listener is already registered. Without this the caller never
         // receives the cleanup handle, yet the callback stays in
@@ -988,37 +741,6 @@ export const desktopCommandStore = {
     }
 
     return unsubscribe;
-  },
-
-  async findCommandIdByOperationId(
-    operationId: string,
-    computeTargetId?: string
-  ): Promise<string | null> {
-    const cachedId = getCachedOperationCommandId(operationId, computeTargetId);
-    if (cachedId) {
-      return cachedId;
-    }
-
-    const where: { operationId: string; computeTargetId?: string } = {
-      operationId,
-    };
-    if (computeTargetId) {
-      where.computeTargetId = computeTargetId;
-    }
-
-    const command = await withDb((db) =>
-      db.desktopCommand.findFirst({
-        where,
-        select: { id: true, computeTargetId: true },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-    if (!command) {
-      return null;
-    }
-
-    rememberOperationCommand(operationId, command.id, command.computeTargetId);
-    return command.id;
   },
 
   countCommandsForTarget(
@@ -1035,27 +757,78 @@ export const desktopCommandStore = {
     );
   },
 
+  /**
+   * A hello's pending commands: every in-flight row, plus a bounded queued page.
+   *
+   * Split by status because only ONE half is safe to cap. An `accepted`/
+   * `running` row the handshake does not return is stranded forever — the
+   * reconnect requeue derives its id list from this result — so those are read
+   * whole. A truncated QUEUED row is still `queued`, so the drain and the next
+   * hello can both still reach it; that asymmetry in consequence — not a
+   * measurement of which half is deeper — is why the queued half is the capped
+   * one.
+   *
+   * Bounded HERE, not at either caller: both hello lanes issue this read under
+   * that same timeout, so a per-caller cap is one a lane can be written
+   * without. `HELLO_QUEUED_COMMAND_LIMIT` carries the rest.
+   *
+   * QUEUED IS READ FIRST, AND THE TWO READS ARE SEQUENTIAL. Splitting one
+   * statement into two means two snapshots however they are issued — under READ
+   * COMMITTED Postgres takes a fresh one per statement — so a row whose status
+   * changes between them lands in both pages or in neither, and the order decides
+   * which. Queued-then-in-flight makes the racing transition `queued -> accepted`
+   * (what a concurrent `dispatchQueuedCommand` writes) a DUPLICATE, collapsed by
+   * id below and harmless on the wire because the desktop executor keys on
+   * `commandId` and re-acks. The reverse order makes that same dispatch a MISS:
+   * the row is in neither page, so it is neither emitted nor withheld,
+   * `requeueUndeliveredCommands` never sees it, and it sits `accepted` on no
+   * desktop, counting against `free` until some later reconnect. The miss this
+   * order can still produce needs `accepted -> queued`, which only
+   * `requeueUndeliveredCommands` writes — and it leaves the row `queued`, which
+   * is where the drain looks.
+   *
+   * `id` breaks the `createdAt` tie. `createdAt` defaults to a transaction
+   * timestamp, so a burst shares one value; without a tiebreaker the capped
+   * page is a different 256 rows on each hello.
+   */
   async listNonTerminalDispatchCommands(
     computeTargetId: string
   ): Promise<DispatchableCommand[]> {
-    const commands = await withDb((db) =>
-      db.desktopCommand.findMany({
+    const { queued, inFlight } = await withDb(async (db) => {
+      const queuedPage = await db.desktopCommand.findMany({
+        where: { computeTargetId, status: DesktopCommandStatus.Queued },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        // One row past the cap, so a bound read is distinguishable from a
+        // backlog that happens to be exactly this deep.
+        take: HELLO_QUEUED_COMMAND_LIMIT + 1,
+        select: STORED_COMMAND_SELECT,
+      });
+      const inFlightRows = await db.desktopCommand.findMany({
         where: {
           computeTargetId,
-          status: {
-            notIn: [
-              DesktopCommandStatus.Done,
-              DesktopCommandStatus.Failed,
-              DesktopCommandStatus.Cancelled,
-              DesktopCommandStatus.Expired,
-            ],
-          },
+          status: { in: IN_FLIGHT_DESKTOP_COMMAND_STATUSES },
         },
-        orderBy: { createdAt: "asc" },
-      })
-    );
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: STORED_COMMAND_SELECT,
+      });
+      return { queued: queuedPage, inFlight: inFlightRows };
+    });
 
-    return commands.map((row) => toDispatchableCommand(toStoredCommand(row)));
+    // In-flight is written second so a row that appeared in both pages keeps its
+    // later, truer status.
+    const byId = new Map<string, StoredCommandRow>();
+    for (const command of capQueuedCommandsForReconnect(
+      queued,
+      computeTargetId
+    )) {
+      byId.set(command.id, command);
+    }
+    for (const command of inFlight) {
+      byId.set(command.id, command);
+    }
+
+    const pending = [...byId.values()].sort(byCreatedAtThenId);
+    return pending.map((row) => toDispatchableCommand(toStoredCommand(row)));
   },
 
   async markCommandExpired(
@@ -1067,14 +840,7 @@ export const desktopCommandStore = {
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
-          status: {
-            notIn: [
-              DesktopCommandStatus.Done,
-              DesktopCommandStatus.Failed,
-              DesktopCommandStatus.Cancelled,
-              DesktopCommandStatus.Expired,
-            ],
-          },
+          status: { notIn: TERMINAL_DESKTOP_COMMAND_STATUSES },
         },
         data: {
           status: DesktopCommandStatus.Expired,
@@ -1123,8 +889,7 @@ export const desktopCommandStore = {
 
   __resetForTests(): void {
     eventSubscribers.clear();
-    clearOperationCommandCache();
-    idempotencyCache.clear();
+    clearIdempotencyCache();
   },
 
   IdempotencyConflictError,

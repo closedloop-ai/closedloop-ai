@@ -1,4 +1,4 @@
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchAndParseTranscript,
@@ -15,10 +15,10 @@ import {
 // not the generic combined error) we drive a throw from the core directly. The
 // default export is the real implementation; individual tests override it with
 // `mockImplementationOnce` to throw.
-vi.mock("@repo/lib/harness/claude/parse-claude-core", async (importActual) => {
+vi.mock("@repo/lib/harness/claude/parse-claude", async (importActual) => {
   const actual =
     await importActual<
-      typeof import("@repo/lib/harness/claude/parse-claude-core")
+      typeof import("@repo/lib/harness/claude/parse-claude")
     >();
   return {
     ...actual,
@@ -694,5 +694,46 @@ describe("fetchAndParseTranscript incremental streaming (FEA-3714)", () => {
     // as a parse failure.
     expect(caught).toBe(abortError);
     expect(caught).not.toBeInstanceOf(TranscriptParseError);
+  });
+});
+
+/**
+ * ISS-8565: `redactRecordStrings` rebuilt every parsed tool payload on a plain
+ * `{}`, so a `__proto__` key — which `JSON.parse` DOES deliver as a real own
+ * key — was silently dropped from the redacted copy. It is mutually recursive,
+ * so the restore has to sit at the return or a null-prototype object escapes
+ * into the parsed session.
+ */
+describe("transcript redaction keeps a __proto__ key (ISS-8565)", () => {
+  it("keeps it as an own key on a redacted tool payload", async () => {
+    const text = [
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          model: "claude-opus-4-5",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu1",
+              name: "Bash",
+              input: JSON.parse('{"__proto__":{"nested":"kept"},"cmd":"ls"}'),
+            },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const session = await parseTranscriptText({
+      harness: "claude",
+      sessionId: "proto-tool-input",
+      text,
+    });
+    const toolUse = session?.toolUses[0];
+
+    expect(toolUse).toBeDefined();
+    const input = toolUse?.input as Record<string, unknown>;
+    expect(Object.keys(input)).toContain("__proto__");
+    expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
   });
 });

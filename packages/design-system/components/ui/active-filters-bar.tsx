@@ -16,7 +16,14 @@ import {
   StatusFilterContent,
   TagsFilterContent,
 } from "./filter-popover";
+import {
+  formatRangeValue,
+  isFilterMenuGroupActive,
+} from "./filter-range-submenu";
 import type {
+  FilterMenuGroup,
+  FilterRangeGroup,
+  TableDateFilterField,
   TableFilterCategory,
   TableFilterLabels,
   TableFiltersController,
@@ -43,6 +50,11 @@ type ActiveFiltersBarProps<
    * so a "Clear all" button never sits there with nothing to clear.
    */
   showFilterControls?: boolean;
+  /** Forwarded to the add-filter menu, as `FilterPopover` takes it. */
+  renderRangeSubmenu?: (
+    group: FilterRangeGroup,
+    clearLabel: string
+  ) => ReactNode;
 };
 
 const DEFAULT_LABELS: Required<Pick<TableFilterLabels, "addFilter" | "clearAll">> =
@@ -50,6 +62,49 @@ const DEFAULT_LABELS: Required<Pick<TableFilterLabels, "addFilter" | "clearAll">
     addFilter: "Add filter",
     clearAll: "Clear all",
   };
+
+/**
+ * Whether the bar below has anything to show: a built-in chip it would render
+ * or an active host facet. A host that hides the bar while nothing is filtered
+ * asks this rather than re-deriving the answer, so the two cannot disagree.
+ */
+export function hasVisibleActiveFilters<
+  TStatus extends string = string,
+  TPriority extends string = string,
+>(
+  controller: TableFiltersController<TStatus, TPriority>,
+  viewModel: TableFiltersViewModel<TStatus, TPriority>
+): boolean {
+  return (
+    visibleActiveChips(controller, viewModel).length > 0 ||
+    activeHostFacetGroups(viewModel).length > 0
+  );
+}
+
+function visibleActiveChips<TStatus extends string, TPriority extends string>(
+  controller: TableFiltersController<TStatus, TPriority>,
+  viewModel: TableFiltersViewModel<TStatus, TPriority>
+) {
+  return controller.activeChips.filter(
+    (chip) =>
+      (!viewModel.hideAssignee || chip.category !== "assignee") &&
+      ((viewModel.showTags ?? true) || chip.category !== "tags")
+  );
+}
+
+// Both facet lists: `facetGroups` REPLACES the built-in controls, so a surface
+// driving filters that way pairs it with a no-op controller and contributes no
+// `activeChips` — reading only `additionalFacetGroups` leaves that half unnamed
+// and unclearable.
+function activeHostFacetGroups<
+  TStatus extends string,
+  TPriority extends string,
+>(viewModel: TableFiltersViewModel<TStatus, TPriority>) {
+  return [
+    ...(viewModel.facetGroups ?? []),
+    ...(viewModel.additionalFacetGroups ?? []),
+  ].filter(isFilterMenuGroupActive);
+}
 
 export function ActiveFiltersBar<
   TStatus extends string = string,
@@ -59,17 +114,15 @@ export function ActiveFiltersBar<
   viewModel,
   extraChips,
   showFilterControls = true,
+  renderRangeSubmenu,
 }: ActiveFiltersBarProps<TStatus, TPriority>) {
   const labels = {
     ...DEFAULT_LABELS,
     ...viewModel.labels,
   };
 
-  const visibleChips = controller.activeChips.filter(
-    (chip) =>
-      (!viewModel.hideAssignee || chip.category !== "assignee") &&
-      ((viewModel.showTags ?? true) || chip.category !== "tags")
-  );
+  const visibleChips = visibleActiveChips(controller, viewModel);
+  const activeHostFacets = activeHostFacetGroups(viewModel);
 
   return (
     <div className="flex flex-wrap items-center gap-1 px-4 pb-2">
@@ -85,10 +138,20 @@ export function ActiveFiltersBar<
             <ChipDropdownContent
               category={chip.category}
               controller={controller}
+              dateField={controller.filters.date?.field}
               viewModel={viewModel}
             />
           )}
         </FilterChip>
+      ))}
+      {activeHostFacets.map((group) => (
+        <FilterChip
+          // Namespaced: a host facet is free to use an id that matches a
+          // built-in category name ("status"), and these two maps are siblings.
+          key={`facet:${group.id}`}
+          label={hostFacetLabel(group)}
+          onRemove={() => clearHostFacet(group)}
+        />
       ))}
       {showFilterControls && (
         <>
@@ -102,11 +165,20 @@ export function ActiveFiltersBar<
                 <PlusIcon className="size-3.5" />
               </button>
             </DropdownMenuTrigger>
-            <FilterMenuContent controller={controller} viewModel={viewModel} />
+            <FilterMenuContent
+              controller={controller}
+              renderRangeSubmenu={renderRangeSubmenu}
+              viewModel={viewModel}
+            />
           </DropdownMenu>
           <Button
             className="h-auto px-2 py-1 text-xs"
-            onClick={controller.clearAllFilters}
+            onClick={() => {
+              controller.clearAllFilters();
+              for (const group of activeHostFacets) {
+                clearHostFacet(group);
+              }
+            }}
             variant="ghost"
           >
             {labels.clearAll}
@@ -117,12 +189,40 @@ export function ActiveFiltersBar<
   );
 }
 
+/** "Status: Active, Blocked" / "Cost: 0 – 9" for one active host facet. */
+function hostFacetLabel(group: FilterMenuGroup): string {
+  if (group.kind === "range") {
+    const value = formatRangeValue(group.min, group.max);
+    if (value !== null) {
+      return `${group.label}: ${value}`;
+    }
+    // Bounded but unrenderable, i.e. non-finite. Name the facet without
+    // asserting a bound, so the chip's remove action still reaches it.
+    return group.label;
+  }
+  const selectedLabels = group.options
+    .filter((option) => group.selectedValues.includes(option.id))
+    .map((option) => option.label);
+  return `${group.label}: ${selectedLabels.join(", ")}`;
+}
+
+function clearHostFacet(group: FilterMenuGroup) {
+  if (group.kind === "range") {
+    group.onChange({});
+    return;
+  }
+  for (const value of group.selectedValues) {
+    group.onToggle(value);
+  }
+}
+
 function ChipDropdownContent<
   TStatus extends string = string,
   TPriority extends string = string,
 >({
   category,
   controller,
+  dateField,
   viewModel,
 }: {
   category: Extract<
@@ -130,6 +230,7 @@ function ChipDropdownContent<
     "assignee" | "status" | "priority" | "date" | "tags"
   >;
   controller: TableFiltersController<TStatus, TPriority>;
+  dateField?: TableDateFilterField;
   viewModel: TableFiltersViewModel<TStatus, TPriority>;
 }) {
   switch (category) {
@@ -142,7 +243,9 @@ function ChipDropdownContent<
         <PriorityFilterContent controller={controller} viewModel={viewModel} />
       );
     case "date":
-      return <DateFilterContent controller={controller} />;
+      return (
+        <DateFilterContent controller={controller} field={dateField} />
+      );
     case "tags":
       return <TagsFilterContent controller={controller} viewModel={viewModel} />;
     default:

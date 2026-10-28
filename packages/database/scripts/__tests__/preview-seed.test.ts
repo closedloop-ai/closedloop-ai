@@ -43,11 +43,12 @@ describe("buildPreviewSeedInvocation", () => {
     expect(invocation.env.DATABASE_URL).toContain("sslmode=require");
     expect(invocation.env.PGSCHEMA).toBe(PREVIEW_SCHEMA);
     expect(invocation.env.SEED_ALLOW_REMOTE).toBe("1");
-    // FEA-1786: the seed must connect to RDS with relaxed TLS verification
-    // (rejectUnauthorized: false), matching index.ts/migrate — otherwise it
-    // dies on the RDS self-signed cert chain. A localhost integration test can't
-    // exercise the RDS-TLS path, so guard it at the invocation-env level.
-    expect(invocation.env.ALLOW_INSECURE_SSL).toBe("1");
+    // The seed carries an IAM database token, so it must reach RDS over
+    // VERIFIED TLS. FEA-1786 forced ALLOW_INSECURE_SSL=1 here; PR #2084 put the
+    // RDS CA bundle on the verified path, so forcing it now only disables
+    // certificate verification for the token. A localhost integration test
+    // can't exercise the RDS-TLS path, so guard it at the invocation-env level.
+    expect(invocation.env.ALLOW_INSECURE_SSL).toBeUndefined();
     expect(invocation.command).toBe("pnpm");
     expect(invocation.args).toEqual([...PREVIEW_SEED_ARGS]);
   });

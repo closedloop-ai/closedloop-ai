@@ -6,18 +6,17 @@ import { resolveCloudSyncBacklog } from "../../../shared/cloud-read-readiness-co
 import { ConnectionSecurityMode } from "../../../shared/connection-security";
 import {
   SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
 } from "../../../shared/sync-burndown-contract";
-import type {
-  CloudStatus,
-  CloudSyncProgress,
-} from "../../hooks/use-ingest-progress";
-import { CloudStatusKind } from "../../hooks/use-ingest-progress";
+import type { CloudStatus } from "../../hooks/use-cloud-status";
+import { CloudStatusKind } from "../../hooks/use-cloud-status";
+import type { CloudSyncProgress } from "../../hooks/use-cloud-sync-progress";
 import { ConnectionStatusSection } from "./connection-status-section";
 
 /**
- * ISS-5310 (wongk story review on PR #4484): the gateway health rollup that used
+ * ISS-5310 (whitlockk story review on PR #4484): the gateway health rollup that used
  * to sit behind the Labs flag as `GatewayHealthCard` now renders here
  * unconditionally, as the first cell of Connection Status — because behind an
  * off-by-default gate the one rollup you want when the desktop will not connect
@@ -40,7 +39,8 @@ import { ConnectionStatusSection } from "./connection-status-section";
  * checkable.
  */
 const meta = {
-  title: "Desktop/Settings/Connection Status Section",
+  title: "Composites v1.0/Desktop Shell/Connection Status Section",
+  tags: ["deprecated"],
   component: ConnectionStatusSection,
   parameters: {
     layout: "padded",
@@ -82,7 +82,7 @@ export const Connected = {
  * failed cloud socket, paused remote commands, and a backfill still draining, so
  * the warning tone appears on more than one cell at once.
  *
- * ISS-5768 (wongk story review): the backlog here has to MATCH that draining
+ * ISS-5768 (whitlockk story review): the backlog here has to MATCH that draining
  * backfill. Pairing the draining `cloudSyncProgress` with a drained backlog made
  * History Sync render "Up to date" inside a story whose own caption said the
  * backfill was still running — a canvas contradicting itself, which is the exact
@@ -150,7 +150,7 @@ export const UnreportedPortAndSecurity = {
 };
 
 /**
- * ISS-5768 (wongk story review): the three History Sync states no other story
+ * ISS-5768 (whitlockk story review): the three History Sync states no other story
  * on this canvas reaches, side by side.
  *
  * They are the whole point of the ticket and every one of them is effectively
@@ -166,6 +166,7 @@ export const UnreportedPortAndSecurity = {
  *     down to the happy one.
  */
 export const HistorySyncStates = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col gap-6">
       <ConnectionStatusSection
@@ -216,9 +217,11 @@ function backlogWith(
     lanes: SYNC_LANE_IDS.map((lane) => ({
       lane,
       state: SyncLaneDrainState.Drained,
+      resumeBlocked: false,
       itemsRemaining: 0,
       itemsRemainingIsLowerBound: false,
       deadLetteredCount: 0,
+      deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
       unmeasuredRows: 0,
       ...(lane === overrides.lane ? overrides : {}),
     })),

@@ -6,8 +6,15 @@ import {
   decodeOtlpAnyValue,
   decodeOtlpBytesToHex,
   numberFromOtlpValue,
+  walkOtlpLogRecords,
+  walkOtlpMetrics,
   walkOtlpTraceSpans,
 } from "../otlp/decode-utilities.js";
+import {
+  identifiesClaude,
+  identifiesCodex,
+  otlpIdentityValues,
+} from "../otlp/harness-identity.js";
 import {
   getOtlpRequestType,
   getOtlpResponseType,
@@ -28,6 +35,33 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const REQUEST_BODY_TIMEOUT_MS = 30_000;
 const CONTENT_TYPE_PROTOBUF = "application/x-protobuf";
 const UNKNOWN_EXPORT_DIAGNOSTIC_LIMIT = 10;
+
+/**
+ * Headers only a browser sets. A CLI OTLP exporter sends none of them, so any
+ * one being present means the caller is a web page — see
+ * `disallowedCallerReason`.
+ */
+const BROWSER_ORIGIN_HEADERS = [
+  "origin",
+  "sec-fetch-site",
+  "sec-fetch-mode",
+] as const;
+
+/**
+ * How many ACKed exports may be awaiting their callback at once.
+ *
+ * The receiver ACKs before dispatching, so without a cap a burst would queue
+ * unbounded work against the shared DB write queue. At the cap the OLDEST
+ * pending export is dropped rather than the newest: a burst is most often a
+ * backlog flush, and the newest data is the data a reader is about to look at.
+ */
+const MAX_PENDING_DISPATCHES = 64;
+
+/**
+ * How long `stop()` waits for queued callbacks before giving up and saying so.
+ * Bounded because a wedged store must not be able to hold app shutdown open.
+ */
+const DISPATCH_DRAIN_TIMEOUT_MS = 5000;
 
 // Resource container -> instrumentation-scope array, one entry per OTLP signal.
 // discriminateHarness() never inspects scope names, so the diagnostic surfaces
@@ -84,6 +118,26 @@ export type OtlpHttpReceiverOptions = {
   onUnknownExport?: (payload: UnknownOtlpExport) => void | Promise<void>;
   onBindError?: (reason: string) => void;
   log?: (message: string) => void;
+  /**
+   * How many ACKed exports may await their callback before the OLDEST is
+   * dropped. Defaults to {@link MAX_PENDING_DISPATCHES}; injectable so the
+   * bound can be driven in a test without queueing 64 real exports.
+   */
+  maxPendingDispatches?: number;
+  /**
+   * ISS-10717: called when an ACKed export is evicted before its callback runs.
+   *
+   * The response has already gone out, so the exporter will never re-send it —
+   * the export is simply gone, and before this hook the only record was a log
+   * line. Without a count, a cloud consumer cannot tell a session that produced
+   * no permission events from one whose export was evicted here, so every synced
+   * count would read as authoritative when it is a lower bound.
+   *
+   * The payload's SIGNAL count is not knowable at this point (it is decoded
+   * further downstream), so the callback is told the harness and nothing more:
+   * one call is one lost EXPORT.
+   */
+  onExportDropped?: (harness: OtlpHarness) => void;
 };
 
 type DecodedOtlpExport = Omit<NormalizedOtlpExport, "harness">;
@@ -104,12 +158,20 @@ export class OtlpHttpReceiver {
   private server: http.Server | null = null;
   private readonly sockets = new Set<Socket>();
   private state: OtlpReceiverState;
+  /** ACKed exports whose callback has not run yet. Bounded, FIFO, drained by `stop()`. */
+  private readonly pendingDispatches: CallbackDispatch[] = [];
+  private readonly maxPendingDispatches: number;
+  private draining: Promise<void> | null = null;
 
   constructor(options: OtlpHttpReceiverOptions = {}) {
     this.options = options;
     this.host = options.host ?? DEFAULT_OTLP_RECEIVER_HOST;
     this.port = options.port ?? DEFAULT_OTLP_RECEIVER_PORT;
     this.maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES;
+    this.maxPendingDispatches = Math.max(
+      1,
+      options.maxPendingDispatches ?? MAX_PENDING_DISPATCHES
+    );
     this.state = makeOtlpReceiverUnavailableState(
       OtlpReceiverUnavailableReason.NotStarted,
       this.port
@@ -182,7 +244,7 @@ export class OtlpHttpReceiver {
     });
   }
 
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     const server = this.server;
     this.server = null;
     this.boundPort = null;
@@ -192,19 +254,22 @@ export class OtlpHttpReceiver {
         this.port
       )
     );
-    if (!server) {
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      server.close(() => {
-        this.sockets.clear();
-        resolve();
+    if (server) {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          this.sockets.clear();
+          resolve();
+        });
+        server.closeAllConnections();
+        for (const socket of this.sockets) {
+          socket.destroy();
+        }
       });
-      server.closeAllConnections();
-      for (const socket of this.sockets) {
-        socket.destroy();
-      }
-    });
+    }
+    // AFTER the socket is closed, so nothing new can be queued behind us. These
+    // exports were already ACKed, so dropping them here would mean telling an
+    // exporter we kept data we then threw away.
+    await this.drainWithDeadline();
   }
 
   private setState(state: OtlpReceiverState): void {
@@ -217,6 +282,18 @@ export class OtlpHttpReceiver {
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+    // Binding 127.0.0.1 keeps remote hosts off the socket; it does NOT stop a
+    // page the user is browsing from reaching it. A DNS-rebinding attacker
+    // resolves their own hostname to 127.0.0.1 and a browser then issues
+    // same-origin requests to this port — the socket is loopback, the caller is
+    // not. Since ISS-7352 this receiver WRITES to the local store, so the two
+    // header checks below are what actually gates that write.
+    const rejection = disallowedCallerReason(req);
+    if (rejection) {
+      this.log(`OTLP receiver refused a request: ${rejection}`);
+      this.respondText(res, 403, "forbidden");
+      return;
+    }
     const kind = kindForPath(req.url ?? "");
     if (!kind) {
       this.respondText(res, 404, "not found");
@@ -298,17 +375,92 @@ export class OtlpHttpReceiver {
     };
   }
 
+  /**
+   * Queues an already-ACKed export for its callback.
+   *
+   * The response has gone out by now, so this work cannot be rejected back to
+   * the exporter — it can only be bounded. Callbacks run ONE at a time so a
+   * burst cannot monopolize the shared DB write queue, and `stop()` drains
+   * what is queued so the last accepted export is not lost at shutdown.
+   */
   private dispatchAfterAck(dispatch: CallbackDispatch): void {
     if (dispatch.payload.harness === OtlpHarness.Unknown) {
       this.log(
         `OTLP receiver dropped unknown-harness ${dispatch.payload.kind} export. ${describeUnknownExport(dispatch.payload)}`
       );
     }
-    Promise.resolve(dispatch.callback?.(dispatch.payload)).catch(() => {
+    if (!dispatch.callback) {
+      return;
+    }
+    this.pendingDispatches.push(dispatch);
+    while (this.pendingDispatches.length > this.maxPendingDispatches) {
+      const dropped = this.pendingDispatches.shift();
       this.log(
-        `OTLP receiver callback failed for ${dispatch.payload.kind}/${dispatch.payload.harness}.`
+        `OTLP receiver dropped an ACKed ${dropped?.payload.kind} export: more than ${this.maxPendingDispatches} exports are awaiting persistence.`
       );
+      if (dropped) {
+        this.options.onExportDropped?.(dropped.payload.harness);
+      }
+    }
+    this.startDraining();
+  }
+
+  private startDraining(): void {
+    if (this.draining) {
+      return;
+    }
+    this.draining = this.drainPendingDispatches().finally(() => {
+      this.draining = null;
+      // A dispatch queued while the last callback was in flight would otherwise
+      // sit here until the next export arrived.
+      if (this.pendingDispatches.length > 0) {
+        this.startDraining();
+      }
     });
+  }
+
+  private async drainPendingDispatches(): Promise<void> {
+    let dispatch = this.pendingDispatches.shift();
+    while (dispatch) {
+      try {
+        await dispatch.callback?.(dispatch.payload);
+      } catch {
+        this.log(
+          `OTLP receiver callback failed for ${dispatch.payload.kind}/${dispatch.payload.harness}.`
+        );
+      }
+      dispatch = this.pendingDispatches.shift();
+    }
+  }
+
+  /**
+   * Waits for every queued callback to finish, bounded so a wedged store cannot
+   * hold the app open forever. Exposed for `stop()` and for tests that must
+   * observe persistence without racing it.
+   */
+  private async drainWithDeadline(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<"expired">((resolve) => {
+      timer = setTimeout(() => resolve("expired"), DISPATCH_DRAIN_TIMEOUT_MS);
+    });
+    try {
+      const settled = await Promise.race([
+        (async () => {
+          while (this.draining) {
+            await this.draining;
+          }
+          return "drained" as const;
+        })(),
+        expired,
+      ]);
+      if (settled === "expired") {
+        this.log(
+          `OTLP receiver stopped with ${this.pendingDispatches.length} export(s) still awaiting persistence.`
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private respondText(
@@ -335,6 +487,55 @@ export class OtlpHttpReceiver {
     });
     res.end(body);
   }
+}
+
+/**
+ * Why this request must not be served, or null when it may be.
+ *
+ * Two independent checks, because they stop different things:
+ *
+ * - **Host** must name loopback. A DNS-rebinding attacker's page reaches this
+ *   port with `Host: attacker.example`, which no real OTLP exporter would send:
+ *   an exporter is configured with the endpoint URL and sends the loopback
+ *   authority it dialed.
+ * - **Browser-origin headers** (`Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`)
+ *   are stamped by the browser and cannot be forged from page JavaScript, so
+ *   their PRESENCE is the tell. A CLI exporter never sends them, which is why
+ *   any value at all is refused rather than an allow-list of origins — there is
+ *   no origin this receiver wants to hear from.
+ */
+function disallowedCallerReason(req: IncomingMessage): string | null {
+  const host = req.headers.host;
+  if (host !== undefined && !isLoopbackAuthority(host)) {
+    return `non-loopback Host header "${host}"`;
+  }
+  for (const header of BROWSER_ORIGIN_HEADERS) {
+    if (req.headers[header] !== undefined) {
+      return `browser-originated request (${header} present)`;
+    }
+  }
+  return null;
+}
+
+function isLoopbackAuthority(host: string): boolean {
+  const hostname = hostnameOfAuthority(host);
+  return (
+    hostname === DEFAULT_OTLP_RECEIVER_HOST ||
+    hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname.startsWith("127.")
+  );
+}
+
+/** The host portion of a `Host` header, dropping the port and IPv6 brackets. */
+function hostnameOfAuthority(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.startsWith("[")) {
+    const closing = trimmed.indexOf("]");
+    return closing === -1 ? trimmed.slice(1) : trimmed.slice(1, closing);
+  }
+  const colon = trimmed.indexOf(":");
+  return colon === -1 ? trimmed : trimmed.slice(0, colon);
 }
 
 export function encodeEmptyOtlpResponse(kind: OtlpExportKind): Buffer {
@@ -406,38 +607,30 @@ function collectResourceAttributes(
 function collectMetricNames(
   resourceMetrics: Record<string, unknown>[]
 ): string[] {
-  return resourceMetrics.flatMap((resourceMetric) =>
-    asOtlpRecordArray(resourceMetric.scopeMetrics).flatMap((scopeMetric) =>
-      asOtlpRecordArray(scopeMetric.metrics)
-        .map((metric) => stringValue(metric.name))
-        .filter((name): name is string => name !== undefined)
-    )
-  );
+  return walkOtlpMetrics(resourceMetrics)
+    .map((metric) => stringValue(metric.name))
+    .filter((name): name is string => name !== undefined);
 }
 
 function collectLogSummaries(
   resourceLogs: Record<string, unknown>[]
 ): OtlpLogSummary[] {
-  return resourceLogs.flatMap((resourceLog) =>
-    asOtlpRecordArray(resourceLog.scopeLogs).flatMap((scopeLog) =>
-      asOtlpRecordArray(scopeLog.logRecords).map((record) => {
-        const summary: OtlpLogSummary = {};
-        const severityText = stringValue(record.severityText);
-        const severityNumber = numberFromOtlpValue(record.severityNumber);
-        const body = scalarFromAnyValue(asRecord(record.body));
-        if (severityText !== undefined) {
-          summary.severityText = severityText;
-        }
-        if (severityNumber !== undefined) {
-          summary.severityNumber = severityNumber;
-        }
-        if (body !== undefined) {
-          summary.body = body;
-        }
-        return summary;
-      })
-    )
-  );
+  return walkOtlpLogRecords(resourceLogs).map((record) => {
+    const summary: OtlpLogSummary = {};
+    const severityText = stringValue(record.severityText);
+    const severityNumber = numberFromOtlpValue(record.severityNumber);
+    const body = scalarFromAnyValue(asRecord(record.body));
+    if (severityText !== undefined) {
+      summary.severityText = severityText;
+    }
+    if (severityNumber !== undefined) {
+      summary.severityNumber = severityNumber;
+    }
+    if (body !== undefined) {
+      summary.body = body;
+    }
+    return summary;
+  });
 }
 
 function collectSpanSummaries(
@@ -462,7 +655,10 @@ function collectSpanSummaries(
 function keyValuesToAttributes(
   values: Record<string, unknown>[]
 ): OtlpResourceAttributes {
-  const attributes: OtlpResourceAttributes = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const attributes: OtlpResourceAttributes = Object.create(null);
   for (const value of values) {
     const key = stringValue(value.key);
     const scalar = scalarFromAnyValue(asRecord(value.value));
@@ -470,7 +666,9 @@ function keyValuesToAttributes(
       attributes[key] = scalar;
     }
   }
-  return attributes;
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...attributes };
 }
 
 function scalarFromAnyValue(
@@ -485,42 +683,21 @@ function scalarFromAnyValue(
 }
 
 function discriminateHarness(decoded: DecodedOtlpExport): OtlpHarness {
-  const searchable = [
-    ...decoded.metricNames,
-    ...decoded.spanSummaries.map((span) => span.name),
-    ...decoded.resourceAttributes.flatMap((attributes) =>
-      Object.entries(attributes).flatMap(([key, value]) => [key, String(value)])
-    ),
-  ].map((value) => value.toLowerCase());
+  const searchable = otlpIdentityValues({
+    names: [
+      ...decoded.metricNames,
+      ...decoded.spanSummaries.map((span) => span.name),
+    ],
+    resourceAttributes: decoded.resourceAttributes,
+  });
 
-  if (searchable.some(isClaudeIdentifier)) {
+  if (identifiesClaude(searchable)) {
     return OtlpHarness.Claude;
   }
-  if (searchable.some(isCodexIdentifier)) {
+  if (identifiesCodex(searchable)) {
     return OtlpHarness.Codex;
   }
   return OtlpHarness.Unknown;
-}
-
-function isClaudeIdentifier(value: string): boolean {
-  return (
-    value === "claude-code" ||
-    value === "claude_code" ||
-    value.startsWith("claude-code.") ||
-    value.startsWith("claude_code.")
-  );
-}
-
-function isCodexIdentifier(value: string): boolean {
-  // The Codex product family stamps its identity with a "codex-"/"codex_"
-  // prefix (e.g. service.name "codex-cli", "codex-app-server"; scope
-  // "codex_otel.log_only"). Anchoring at the start — rather than a substring
-  // match — keeps incidental names like "my_codex_cli_helper" unclassified.
-  return (
-    value === "codex" ||
-    value.startsWith("codex-") ||
-    value.startsWith("codex_")
-  );
 }
 
 // Compact, bounded summary of an unrecognized export's identity-bearing

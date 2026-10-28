@@ -21,19 +21,21 @@ import {
   collectCodexUsageIdentities,
   parseCodexRollout,
 } from "@repo/lib/harness/codex/parse-codex";
+import type { NormalizedParseQuality } from "@repo/lib/harness/parse-quality";
 import {
   addStorageTokenCounts,
   InvalidTokenCountError,
 } from "@repo/lib/harness/token-counts";
-import type {
-  NormalizedParseQuality,
-  NormalizedSession,
-  NormalizedTokenCounts,
-} from "@repo/lib/harness/types";
+import type { NormalizedSession } from "@repo/lib/harness/types";
+import { codexBurstWindowMs } from "../../../shared/codex-burst-window.js";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
 import { foldChildParseQuality } from "../engine/parse-quality-scan.js";
+import { stampFileCreatedAt } from "../file-created-at.js";
 import {
   findWorkflowJournals,
   scanWorkflowJournal,
+  type WorkflowScanResult,
 } from "../parsing/codex-workflow-scanner.js";
 import { sessionIdFromRolloutPath } from "./codex-home.js";
 
@@ -55,6 +57,10 @@ export type ParseRolloutFileOptions = {
   mergeWorkflowJournalTokens?: boolean;
   /** Leading cumulative usage snapshots already owned by a present parent fork. */
   replayedUsageIdentities?: ReadonlySet<string>;
+  /** ISS-7625: see `ParseCodexRolloutOptions.onUnreadableParse`. */
+  onUnreadableParse?: (quality: NormalizedParseQuality) => void;
+  /** ISS-12552: the policy to parse under; this process's current one by default. */
+  parsePolicy?: ParsePolicy;
 };
 
 /**
@@ -64,8 +70,7 @@ export type ParseRolloutFileOptions = {
  */
 async function mergeWorkflowJournalTokens(
   filePath: string,
-  tokensByModel: Record<string, NormalizedTokenCounts>,
-  parseQuality: NormalizedParseQuality | undefined
+  session: NormalizedSession
 ): Promise<void> {
   const sessionDir = path.dirname(filePath);
   const workflowJournals = findWorkflowJournals(sessionDir);
@@ -83,37 +88,13 @@ async function mergeWorkflowJournalTokens(
       // malformed count. This extraction folds into the RETURNED session's
       // `parseQuality` (the core computed the main-file counts, FEA-2717); the
       // core always sets it, so the guard is a type narrow for the optional field.
-      if (parseQuality) {
-        foldChildParseQuality(parseQuality, wfResult);
+      if (session.parseQuality) {
+        foldChildParseQuality(session.parseQuality, wfResult);
       }
       if (wfResult.entries.length === 0) {
         continue;
       }
-      // Merge workflow tokens into an aggregate model key
-      const workflowKey = "workflow-agent";
-      const existing = tokensByModel[workflowKey];
-      tokensByModel[workflowKey] = {
-        input: addStorageTokenCounts(
-          existing?.input ?? 0,
-          wfResult.totalInput,
-          "workflow_input_tokens"
-        ),
-        output: addStorageTokenCounts(
-          existing?.output ?? 0,
-          wfResult.totalOutput,
-          "workflow_output_tokens"
-        ),
-        cacheRead: addStorageTokenCounts(
-          existing?.cacheRead ?? 0,
-          wfResult.totalCacheRead,
-          "workflow_cache_read_tokens"
-        ),
-        cacheWrite: addStorageTokenCounts(
-          existing?.cacheWrite ?? 0,
-          wfResult.totalCacheWrite,
-          "workflow_cache_write_tokens"
-        ),
-      };
+      foldWorkflowJournalSpend(session, wfResult);
     } catch (error) {
       if (error instanceof InvalidTokenCountError) {
         throw error;
@@ -143,18 +124,19 @@ export async function parseRolloutFile(
   // can tune for their workload without code changes.
   // SYMPHONY_CODEX_BURST_RECORD_MIN — minimum records to trigger burst detection
   // SYMPHONY_CODEX_BURST_WINDOW_MS — time window for burst detection (ms)
-  const burstRecordMin = Number(
-    safeEnv("SYMPHONY_CODEX_BURST_RECORD_MIN") ?? "20"
-  );
-  const burstWindowMs = Number(
-    safeEnv("SYMPHONY_CODEX_BURST_WINDOW_MS") ?? "5000"
-  );
-
   const session = await parseCodexRollout(rl, {
     sessionId,
-    burstRecordMin,
-    burstWindowMs,
+    burstRecordMin: codexBurstRecordMin(),
+    burstWindowMs: codexBurstWindowMs(),
     replayedUsageIdentities: options.replayedUsageIdentities,
+    attributionEvidence: (options.parsePolicy ?? effectiveParsePolicy())
+      .attributionEvidence,
+    // ISS-7625: forwarded verbatim; this shell adds workflow-journal tokens and
+    // `fileModifiedAt` to a session that EXISTS, and has nothing to add to the
+    // no-timestamp path the core reports through here.
+    ...(options.onUnreadableParse
+      ? { onUnreadableParse: options.onUnreadableParse }
+      : {}),
   });
   if (!session) {
     return null;
@@ -163,15 +145,13 @@ export async function parseRolloutFile(
   // Gap 9: Scan companion Codex workflow journal files for inner-agent token
   // usage and merge into the session's per-model token totals.
   if (options.mergeWorkflowJournalTokens !== false) {
-    await mergeWorkflowJournalTokens(
-      filePath,
-      session.tokensByModel,
-      session.parseQuality
-    );
+    await mergeWorkflowJournalTokens(filePath, session);
   }
 
   try {
-    session.fileModifiedAt = fs.statSync(filePath).mtimeMs;
+    const fileStats = fs.statSync(filePath);
+    session.fileModifiedAt = fileStats.mtimeMs;
+    stampFileCreatedAt(session, fileStats);
   } catch {
     /* non-fatal */
   }
@@ -191,4 +171,83 @@ export async function collectRolloutUsageSnapshotIdentities(
   } finally {
     rl.close();
   }
+}
+
+/** The burst record minimum, read live (`SYMPHONY_CODEX_BURST_RECORD_MIN`). */
+export function codexBurstRecordMin(): number {
+  return Number(safeEnv("SYMPHONY_CODEX_BURST_RECORD_MIN") ?? "20");
+}
+
+/**
+ * ISS-12036: the settings a Codex zero-session parse depends on, for the
+ * catch-up cache's no-session mark (`FileCollector.zeroSessionParseKey`).
+ */
+export function codexZeroSessionParseKey(): string {
+  return `burst:${codexBurstRecordMin()}:${codexBurstWindowMs()}`;
+}
+
+/**
+ * Fold one workflow journal's spend into BOTH `tokensByModel` and
+ * `tokenSeries` under the same `workflow-agent` key (Gap 9).
+ *
+ * ISS-12037: it has to land in both, because `sum(tokenSeries) +
+ * tokenSeriesTruncation.droppedTokens === tokensByModel` is a declared
+ * invariant of `NormalizedSession` (ISS-7534), and the two desktop token
+ * stores are derived one from each side of it — `token_events` from the
+ * series, `token_usage` from the aggregate — so an aggregate-only fold made
+ * them permanently disagree on any Codex session that also had `token_count`
+ * events. Reconciling downstream by matching MODEL NAMES instead cannot work:
+ * the series and the aggregate are deliberately different vocabularies
+ * (`buildTokensByModel` remaps `codex-auto-review` series rows onto the real
+ * model, and Copilot and OpenCode key the two from different fields), so a
+ * name match reads a re-keyed row as missing and synthesizes the same spend a
+ * second time.
+ *
+ * The journal records no per-entry instant, so the record carries the
+ * session's `startedAt` — the stamp the importer's own aggregate fallback
+ * already uses for a series-less model (FEA-1459 Fix C). `inferred` marks it a
+ * placeholder rather than an extracted model id, which is what keeps
+ * `hasRealModel` from emitting a GenAI request span for a model named
+ * `workflow-agent` (gen-ai-request-telemetry.ts).
+ */
+function foldWorkflowJournalSpend(
+  session: NormalizedSession,
+  wfResult: WorkflowScanResult
+): void {
+  const workflowKey = "workflow-agent";
+  const existing = session.tokensByModel[workflowKey];
+  session.tokensByModel[workflowKey] = {
+    input: addStorageTokenCounts(
+      existing?.input ?? 0,
+      wfResult.totalInput,
+      "workflow_input_tokens"
+    ),
+    output: addStorageTokenCounts(
+      existing?.output ?? 0,
+      wfResult.totalOutput,
+      "workflow_output_tokens"
+    ),
+    cacheRead: addStorageTokenCounts(
+      existing?.cacheRead ?? 0,
+      wfResult.totalCacheRead,
+      "workflow_cache_read_tokens"
+    ),
+    cacheWrite: addStorageTokenCounts(
+      existing?.cacheWrite ?? 0,
+      wfResult.totalCacheWrite,
+      "workflow_cache_write_tokens"
+    ),
+  };
+  if (!session.startedAt) {
+    return;
+  }
+  session.tokenSeries.push({
+    timestamp: session.startedAt,
+    model: workflowKey,
+    input: wfResult.totalInput,
+    output: wfResult.totalOutput,
+    cacheRead: wfResult.totalCacheRead,
+    cacheWrite: wfResult.totalCacheWrite,
+    inferred: true,
+  });
 }

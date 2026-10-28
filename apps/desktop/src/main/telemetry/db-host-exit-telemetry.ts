@@ -1,39 +1,3 @@
-/**
- * @file db-host-exit-telemetry.ts
- * @description ISS-5715 — the ALERTABLE signal for an UNEXPECTED db-host exit.
- *
- * The db-host utility process going away takes ingestion (the collector live
- * import, transcript sync) and the Sessions read path down together, and only
- * the read half is visible to a user. So the exit cannot be reported by a local
- * `onLog` line alone: that never leaves the machine, and ingestion stopping is
- * exactly the failure nobody would notice.
- *
- * SCOPE — WHAT THIS DOES NOT DO. Emitting here does not, by itself, page
- * anyone. The event travels desktop → gateway → `apps/api`
- * `handleTelemetryEvent`, which logs EVERY desktop telemetry event at
- * `log.info` regardless of `severity` — the severity below is a queryable
- * FIELD, not a log level, and no monitor keys on it. What this module buys is
- * that the exit becomes a first-class, bounded-cardinality Datadog facet
- * (`@category:desktop.db_host.exited_unexpectedly`, plus
- * `@diagnostics.dbHostExit.*`) on `service:cl-api`, which is the precondition
- * for an alert. The alert ITSELF is a `datadog_monitor` resource and monitors
- * live in `closedloop-ai/cl-tofu-aws-live`, not in this repo — see
- * `_modules/datadog/monitors/token-cost-pricing-miss-*.tf` for the same
- * desktop-telemetry-category pattern. Until that companion monitor lands this
- * signal is QUERYABLE but not PAGING; it is tracked as the follow-up on
- * ISS-5715 and called out in the PR body rather than implied to be done here.
- *
- * It lives beside `observability.ts` rather than inside it because that file is
- * at the 1,000 logical-line ceiling — a per-concern telemetry module is the
- * pattern the repo already uses for `loop-perf-telemetry.ts`. It emits through
- * `Observability.getTelemetryEmitter()`, so it shares the one transport and
- * inherits the same trace/envelope enrichment as every other event.
- *
- * Only the restart branch of `DbHostClient.handleExit` reaches here. An exit
- * inside the intentional-teardown window (ISS-4713) is expected and must stay
- * off this channel, or every quit would raise an alert.
- */
-
 import { Observability } from "./observability.js";
 import type { DbHostExitDiagnostics } from "./telemetry-protocol.js";
 
@@ -44,6 +8,24 @@ import type { DbHostExitDiagnostics } from "./telemetry-protocol.js";
  */
 const DB_HOST_EXITED_UNEXPECTEDLY_CATEGORY =
   "desktop.db_host.exited_unexpectedly" as const;
+
+/**
+ * ISS-8776 — category for a db-host restart ladder that GAVE UP.
+ *
+ * Strictly rarer and strictly worse than the exit above: that one says a
+ * replacement is coming, this one says none is. It is a separate `@category`
+ * rather than a field on the exit event because a monitor on "the store is
+ * permanently gone in a shipped app" must not be diluted by the ordinary
+ * bounce, which is common and self-healing.
+ *
+ * The DIAGNOSTICS payload is deliberately the same `dbHostExit` shape. The wire
+ * schema (`packages/observability/telemetry/schema.ts`) strips diagnostics keys
+ * it has not been taught, so a fresh key would have validated away to nothing
+ * until a companion change landed in that package — the exact silent-drop class
+ * the strict-boundary lesson names. Every field it carries is meaningful here.
+ */
+const DB_HOST_RESTART_EXHAUSTED_CATEGORY =
+  "desktop.db_host.restart_exhausted" as const;
 
 /**
  * Report an unexpected db-host exit on the telemetry path.
@@ -62,6 +44,18 @@ export function reportDbHostExitedUnexpectedly(
     severity: "error",
     category: DB_HOST_EXITED_UNEXPECTEDLY_CATEGORY,
     message: "Desktop db-host exited unexpectedly",
+    trace: {},
+    diagnostics: { dbHostExit: input },
+  });
+}
+
+export function reportDbHostRestartExhausted(
+  input: DbHostExitDiagnostics
+): void {
+  Observability.getTelemetryEmitter().emit({
+    severity: "error",
+    category: DB_HOST_RESTART_EXHAUSTED_CATEGORY,
+    message: "Desktop db-host restart ladder exhausted",
     trace: {},
     diagnostics: { dbHostExit: input },
   });

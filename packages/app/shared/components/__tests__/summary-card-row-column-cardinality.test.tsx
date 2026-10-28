@@ -355,7 +355,7 @@ describe("SummaryCardRow column cardinality (ISS-4966)", () => {
   });
 
   it("re-ranks AND re-floors when the row is resized across the density tier", () => {
-    // ISS-5366 (wongk review). This used to widen 800 -> 1364 and claim it
+    // ISS-5366 (whitlockk review). This used to widen 800 -> 1364 and claim it
     // proved the rank follows "BOTH the new width and the new floor". It did
     // not: 1364 is exactly where five 260px cards fit, so BOTH endpoints resolve
     // comfortable and the floor never moves. The rank changed, the floor was

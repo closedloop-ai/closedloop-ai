@@ -3,8 +3,15 @@ import {
   GitHubProviderResultStatus,
 } from "@repo/github";
 import { getInstallationOctokit } from "@repo/github/installation-auth";
-import { toGitHubProviderFailure } from "@repo/github/provider-error-classification";
-import type { Octokit } from "@repo/github/user-token-auth";
+import { classifyGitHubInstallationClientAcquisitionError } from "@repo/github/provider-error-classification";
+import {
+  GitHubOperationProviderResultStatus,
+  GitHubProviderFailureStage,
+} from "@repo/github/provider-result";
+import type {
+  Octokit,
+  UserTokenOctokitOptions,
+} from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
 
 /**
@@ -18,20 +25,48 @@ import { log } from "@repo/observability/log";
  * `apps/api` — uses these helpers rather than calling `getInstallationOctokit`
  * and catching, because a bare mint at such a call site is an unguarded throw
  * escaping into an errors-as-values contract. A caller that genuinely signals
- * failure by throwing (`authorizeAdditionalRepos`) may mint directly.
+ * failure by throwing may mint directly.
  */
 
 /** Acquire an installation client as a value rather than as a throw. */
 export async function acquireInstallationClient(
-  installationId: string
+  installationId: string,
+  options?: UserTokenOctokitOptions
 ): Promise<GitHubProviderResult<Octokit>> {
+  const result = options
+    ? await acquireInstallationClientWithStage(installationId, options)
+    : await acquireInstallationClientWithStage(installationId);
+  if (result.status === GitHubProviderResultStatus.Success) {
+    return result;
+  }
+  if (
+    result.status === GitHubProviderResultStatus.ProviderInstallationNotFound ||
+    result.status === GitHubProviderResultStatus.CredentialUnauthorized ||
+    result.status === GitHubOperationProviderResultStatus.InvalidResponse
+  ) {
+    return { status: GitHubProviderResultStatus.ProviderUnavailable };
+  }
+  const { stage: _stage, ...failure } = result;
+  return failure;
+}
+
+/** Acquire an installation client while preserving the exact failure stage. */
+export async function acquireInstallationClientWithStage(
+  installationId: string,
+  options?: UserTokenOctokitOptions
+): Promise<InstallationClientAcquisitionResult> {
   try {
     return {
       status: GitHubProviderResultStatus.Success,
-      value: await getInstallationOctokit(installationId),
+      value: options
+        ? await getInstallationOctokit(installationId, options)
+        : await getInstallationOctokit(installationId),
     };
   } catch (error) {
-    const failure = toGitHubProviderFailure(error);
+    const failure = {
+      ...classifyGitHubInstallationClientAcquisitionError(error),
+      stage: GitHubProviderFailureStage.InstallationClientAcquisition,
+    } as const;
     // Logged here because callers receive the classified result and can no
     // longer tell a failed acquisition from a failed read — losing that
     // distinction would make "our App credentials are broken" and "GitHub is
@@ -39,17 +74,26 @@ export async function acquireInstallationClient(
     log.warn("[github/installation-client] Client acquisition failed", {
       installationId,
       status: failure.status,
-      error,
+      stage: failure.stage,
     });
     return failure;
   }
 }
 
 /** The failure arms every provider-result family shares. */
-type InstallationAcquisitionFailure = Exclude<
+export type InstallationAcquisitionFailure = Exclude<
   GitHubProviderResult<never>,
   { status: typeof GitHubProviderResultStatus.Success }
 >;
+
+type InstallationClientAcquisitionResult =
+  | {
+      status: typeof GitHubProviderResultStatus.Success;
+      value: Octokit;
+    }
+  | (ReturnType<typeof classifyGitHubInstallationClientAcquisitionError> & {
+      stage: typeof GitHubProviderFailureStage.InstallationClientAcquisition;
+    });
 
 /**
  * Run a provider read with a freshly acquired installation client, reporting a

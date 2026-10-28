@@ -1,52 +1,41 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
 import {
+  SelectedPullRequestContentNotApplicableReason,
   SelectedPullRequestContentReferenceAvailability,
   SelectedPullRequestEvidenceAvailability,
-  SelectedPullRequestEvidenceUnavailableReason,
   SelectedPullRequestFileCompleteness,
   SelectedPullRequestFilePartialReason,
   SelectedPullRequestFileStatus,
   SelectedPullRequestPatchAvailability,
   SelectedPullRequestPatchOmissionReason,
 } from "@repo/api/src/types/selected-pull-request-evidence";
-import type { SelectedPullRequestOctokit } from "../selected-pull-request-client";
 import { getSelectedPullRequestEvidence } from "../selected-pull-request-evidence";
+import {
+  BASE_SHA,
+  HEAD_SHA,
+  MERGE_BASE_SHA,
+  makeFile,
+  makeFiles,
+  mockCompareCommitsWithBasehead,
+  mockGet,
+  mockListFiles,
+  mockStableMetadata,
+  mockThirtyFullPages,
+  OWNER,
+  octokit,
+  PULL_NUMBER,
+  REPO,
+  resetEvidenceMocks,
+} from "./selected-pull-request-evidence-fixtures";
 
-const BASE_SHA = "a".repeat(40);
-const HEAD_SHA = "b".repeat(40);
-const NEXT_HEAD_SHA = "c".repeat(40);
-const MERGE_BASE_SHA = "d".repeat(40);
-const OWNER = "Acme";
-const REPO = "Widgets";
-const PULL_NUMBER = 42;
-
-const mockGet = vi.fn();
-const mockListFiles = vi.fn();
-const mockCompareCommitsWithBasehead = vi.fn();
-const octokit: SelectedPullRequestOctokit = {
-  rest: {
-    pulls: { get: mockGet, listFiles: mockListFiles },
-    repos: { compareCommitsWithBasehead: mockCompareCommitsWithBasehead },
-  },
-};
-
-describe("getSelectedPullRequestEvidence", () => {
+describe("getSelectedPullRequestEvidence acquisition and completeness", () => {
   beforeEach(() => {
-    mockGet.mockReset();
-    mockListFiles.mockReset();
-    mockCompareCommitsWithBasehead.mockReset();
-    mockCompareCommitsWithBasehead.mockResolvedValue({
-      data: { merge_base_commit: { sha: MERGE_BASE_SHA } },
-    });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
+    resetEvidenceMocks();
   });
 
   it("returns complete immutable evidence and normalizes rename and omitted patch behavior", async () => {
@@ -389,295 +378,10 @@ describe("getSelectedPullRequestEvidence", () => {
     }
   });
 
-  it("rejects malformed input before provider I/O", async () => {
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      "bad/owner",
-      REPO,
-      0
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.MalformedRequest,
-    });
-    expect(mockGet).not.toHaveBeenCalled();
-    expect(mockListFiles).not.toHaveBeenCalled();
-    expect(mockCompareCommitsWithBasehead).not.toHaveBeenCalled();
-  });
-
-  it("rejects missing immutable revisions before listing files", async () => {
-    mockGet.mockResolvedValueOnce({
-      data: makeMetadata({ head: { sha: "" } }),
-    });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason:
-        SelectedPullRequestEvidenceUnavailableReason.MissingImmutableRevision,
-    });
-    expect(mockListFiles).not.toHaveBeenCalled();
-    expect(mockCompareCommitsWithBasehead).not.toHaveBeenCalled();
-  });
-
-  it("rejects a missing PR merge base before listing files", async () => {
-    mockGet.mockResolvedValueOnce({ data: makeMetadata() });
-    mockCompareCommitsWithBasehead.mockResolvedValueOnce({
-      data: { merge_base_commit: { sha: null } },
-    });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason:
-        SelectedPullRequestEvidenceUnavailableReason.MissingImmutableRevision,
-    });
-    expect(mockListFiles).not.toHaveBeenCalled();
-  });
-
-  it("classifies merge-base provider failures before listing files", async () => {
-    mockGet.mockResolvedValueOnce({ data: makeMetadata() });
-    mockCompareCommitsWithBasehead.mockRejectedValueOnce({ status: 503 });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderUnavailable,
-    });
-    expect(mockListFiles).not.toHaveBeenCalled();
-  });
-
-  it("rejects malformed metadata without listing files", async () => {
-    mockGet.mockResolvedValueOnce({ data: makeMetadata({ html_url: "nope" }) });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.MalformedResponse,
-    });
-    expect(mockListFiles).not.toHaveBeenCalled();
-  });
-
-  it("classifies file-page provider failures", async () => {
-    mockGet.mockResolvedValueOnce({ data: makeMetadata() });
-    mockListFiles.mockRejectedValueOnce({ status: 503 });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderUnavailable,
-    });
-    expect(mockGet).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects evidence when immutable metadata changes during pagination", async () => {
-    mockGet
-      .mockResolvedValueOnce({ data: makeMetadata() })
-      .mockResolvedValueOnce({
-        data: makeMetadata({ head: { sha: NEXT_HEAD_SHA } }),
-      });
-    mockListFiles.mockResolvedValueOnce({ data: [makeFile()] });
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
-    });
-  });
-
-  it("bounds the complete multi-request acquisition with one deadline", async () => {
-    vi.useFakeTimers();
-    mockGet.mockReturnValueOnce(new Promise(() => undefined));
-
-    const resultPromise = getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-    await vi.advanceTimersByTimeAsync(120_000);
-
-    await expect(resultPromise).resolves.toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
-    });
-    expect(mockGet).toHaveBeenCalledWith({
-      owner: "acme",
-      repo: "widgets",
-      pull_number: PULL_NUMBER,
-      request: { signal: expect.objectContaining({ aborted: true }) },
-    });
-  });
-
-  it("rejects a pre-aborted caller before provider I/O", async () => {
-    const controller = new AbortController();
-    const cancellation = new DOMException("Request canceled", "AbortError");
-    controller.abort(cancellation);
-
-    await expect(
-      getSelectedPullRequestEvidence(
-        octokit,
-        OWNER,
-        REPO,
-        PULL_NUMBER,
-        controller.signal
-      )
-    ).rejects.toBe(cancellation);
-
-    expect(mockGet).not.toHaveBeenCalled();
-    expect(mockCompareCommitsWithBasehead).not.toHaveBeenCalled();
-    expect(mockListFiles).not.toHaveBeenCalled();
-  });
-
-  it("propagates caller cancellation through pagination and cleans its deadline", async () => {
-    vi.useFakeTimers();
+  it("preserves absent provider line counts as null without marking evidence partial", async () => {
     mockStableMetadata(1);
-    let resolvePaginationStarted: (signal: AbortSignal) => void = () => {
-      throw new Error("Pagination start resolver was not initialized");
-    };
-    const paginationStarted = new Promise<AbortSignal>((resolve) => {
-      resolvePaginationStarted = resolve;
-    });
-    mockListFiles.mockImplementationOnce(
-      ({ request }: { request: { signal: AbortSignal } }) => {
-        resolvePaginationStarted(request.signal);
-        return new Promise((_resolve, reject) => {
-          request.signal.addEventListener(
-            "abort",
-            () => reject(request.signal.reason),
-            { once: true }
-          );
-        });
-      }
-    );
-    const controller = new AbortController();
-    const cancellation = new DOMException("Request canceled", "AbortError");
-    const removeEventListener = vi.spyOn(
-      controller.signal,
-      "removeEventListener"
-    );
-
-    const resultPromise = getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER,
-      controller.signal
-    );
-    const providerSignal = await paginationStarted;
-    controller.abort(cancellation);
-
-    await expect(resultPromise).rejects.toBe(cancellation);
-    expect(providerSignal.aborted).toBe(true);
-    expect(mockGet).toHaveBeenCalledTimes(1);
-    expect(mockCompareCommitsWithBasehead).toHaveBeenCalledTimes(1);
-    expect(mockListFiles).toHaveBeenCalledTimes(1);
-    expect(removeEventListener).toHaveBeenCalledWith(
-      "abort",
-      expect.any(Function)
-    );
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("cleans its provider deadline after an ordinary typed result", async () => {
-    vi.useFakeTimers();
-    mockGet.mockRejectedValueOnce({ status: 401 });
-
-    await expect(
-      getSelectedPullRequestEvidence(octokit, OWNER, REPO, PULL_NUMBER)
-    ).resolves.toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason:
-        SelectedPullRequestEvidenceUnavailableReason.CredentialUnauthorized,
-    });
-
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it.each([
-    [
-      "unauthorized",
-      { status: 401 },
-      SelectedPullRequestEvidenceUnavailableReason.CredentialUnauthorized,
-    ],
-    [
-      "insufficient scope",
-      { status: 403 },
-      SelectedPullRequestEvidenceUnavailableReason.CredentialInsufficientScope,
-    ],
-    [
-      "missing PR",
-      { status: 404 },
-      SelectedPullRequestEvidenceUnavailableReason.PullRequestMissingOrInaccessible,
-    ],
-    [
-      "provider unavailable",
-      { status: 503 },
-      SelectedPullRequestEvidenceUnavailableReason.ProviderUnavailable,
-    ],
-    [
-      "provider failure",
-      new Error("socket closed"),
-      SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
-    ],
-  ])("classifies %s metadata failure", async (_name, error, reason) => {
-    mockGet.mockRejectedValueOnce(error);
-
-    const result = await getSelectedPullRequestEvidence(
-      octokit,
-      OWNER,
-      REPO,
-      PULL_NUMBER
-    );
-
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason,
-    });
-  });
-
-  it("gives rate-limit evidence precedence over a generic 403", async () => {
-    mockGet.mockRejectedValueOnce({
-      status: 403,
-      headers: { "retry-after": "7" },
-      message: "secondary rate limit",
+    mockListFiles.mockResolvedValueOnce({
+      data: [makeFile({ additions: null, changes: null, deletions: null })],
     });
 
     const result = await getSelectedPullRequestEvidence(
@@ -687,71 +391,59 @@ describe("getSelectedPullRequestEvidence", () => {
       PULL_NUMBER
     );
 
-    expect(result).toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderRateLimited,
-      retryAfterSeconds: 7,
+    expect(result).toMatchObject({
+      status: SelectedPullRequestEvidenceAvailability.Available,
+      value: {
+        files: [{ additions: null, changes: null, deletions: null }],
+        coverage: {
+          completeness: SelectedPullRequestFileCompleteness.Complete,
+          reasons: [],
+        },
+      },
+    });
+  });
+
+  it("drops the base reference for an added file and the head reference for a removed file", async () => {
+    mockStableMetadata(2);
+    mockListFiles.mockResolvedValueOnce({
+      data: [
+        makeFile({ filename: "src/added.ts", status: "added" }),
+        makeFile({ filename: "src/removed.ts", status: "removed" }),
+      ],
+    });
+
+    const result = await getSelectedPullRequestEvidence(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result.status).toBe(
+      SelectedPullRequestEvidenceAvailability.Available
+    );
+    if (result.status !== SelectedPullRequestEvidenceAvailability.Available) {
+      return;
+    }
+    expect(result.value.files[0]?.baseContent).toEqual({
+      availability:
+        SelectedPullRequestContentReferenceAvailability.NotApplicable,
+      reason: SelectedPullRequestContentNotApplicableReason.AddedFile,
+    });
+    expect(result.value.files[0]?.headContent).toEqual({
+      availability: SelectedPullRequestContentReferenceAvailability.Available,
+      path: "src/added.ts",
+      ref: HEAD_SHA,
+    });
+    expect(result.value.files[1]?.baseContent).toEqual({
+      availability: SelectedPullRequestContentReferenceAvailability.Available,
+      path: "src/removed.ts",
+      ref: MERGE_BASE_SHA,
+    });
+    expect(result.value.files[1]?.headContent).toEqual({
+      availability:
+        SelectedPullRequestContentReferenceAvailability.NotApplicable,
+      reason: SelectedPullRequestContentNotApplicableReason.RemovedFile,
     });
   });
 });
-
-function mockStableMetadata(changedFiles: number | null) {
-  mockGet.mockResolvedValue({
-    data: makeMetadata({ changed_files: changedFiles }),
-  });
-}
-
-function mockThirtyFullPages() {
-  mockListFiles.mockImplementation(({ page }: { page: number }) =>
-    Promise.resolve({ data: makeFiles(100, (page - 1) * 100) })
-  );
-}
-
-function makeMetadata(
-  overrides: Partial<{
-    id: number;
-    number: number;
-    html_url: string;
-    changed_files: number | null;
-    base: { sha: string };
-    head: { sha: string };
-  }> = {}
-) {
-  return {
-    id: 123,
-    number: PULL_NUMBER,
-    html_url: "https://github.com/acme/widgets/pull/42",
-    changed_files: 1,
-    base: { sha: BASE_SHA },
-    head: { sha: HEAD_SHA },
-    ...overrides,
-  };
-}
-
-function makeFiles(count: number, offset: number) {
-  return Array.from({ length: count }, (_, index) =>
-    makeFile({ filename: `src/file-${offset + index + 1}.ts` })
-  );
-}
-
-function makeFile(
-  overrides: Partial<{
-    filename: string;
-    previous_filename: string;
-    status: string;
-    additions: number;
-    deletions: number;
-    changes: number;
-    patch: string | undefined;
-  }> = {}
-) {
-  return {
-    filename: "src/file.ts",
-    status: "modified",
-    additions: 1,
-    deletions: 1,
-    changes: 2,
-    patch: "@@ -1 +1 @@",
-    ...overrides,
-  };
-}

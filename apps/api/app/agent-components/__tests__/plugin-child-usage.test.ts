@@ -12,6 +12,7 @@ import {
   AgentComponentKind,
   PLUGIN_CHILD_KINDS,
 } from "@repo/api/src/types/agent-component";
+import { normalizeComponentKey } from "@repo/api/src/types/agent-component-analytics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   emitPackIdentity,
@@ -23,6 +24,14 @@ import {
 } from "../plugin-child-usage";
 
 const ORG = "org-1";
+
+/**
+ * The row ceiling this lane carried before ISS-6891, restated here rather than
+ * imported: the production constant now bounds only the DETAIL reads, so
+ * importing it would tie this fixture to a value that no longer governs the code
+ * under test. Sized to fill the former cap on its own.
+ */
+const FORMER_CHILD_USAGE_CAP = 20_000;
 
 type ChildInvRow = {
   id?: string;
@@ -44,10 +53,16 @@ type ChildUsageRow = {
   lastInvokedAt: Date | null;
 };
 
-type UsageOr = Array<{
+type UsageIdentityOr = {
   componentKind: string;
-  componentKey: { contains: string; mode: "insensitive" };
-}>;
+  componentKeyNormalized: string;
+};
+
+type UsageComponentIdOr = {
+  agentComponentId: { in: string[] };
+};
+
+type UsageOr = Array<UsageIdentityOr | UsageComponentIdOr>;
 
 /**
  * ISS-6180: the `AND`-nested lane-membership arms
@@ -62,7 +77,7 @@ type UsageAnd = Array<{
 }>;
 
 /**
- * ISS-6180 (shafty023 review): evaluate one arm of the child lane's
+ * ISS-6180 (davetho review): evaluate one arm of the child lane's
  * tombstoned-FK exclusion against a usage row, resolving the `agentComponent`
  * relation from the FIXTURE'S OWN inventory.
  *
@@ -93,11 +108,19 @@ function matchesFkLivenessArm(
 }
 
 /**
- * Honor the production usage read's `OR` identity prefilter (a case-insensitive
- * `contains` of each normalized key), its `AND`-nested tombstoned-FK exclusion
- * (ISS-6180), `orderBy` (lastInvokedAt desc, nulls last, then id asc), and `take`
- * cap so a test can prove the cap drops the LEAST-recent MATCHED rows — not that
- * unrelated org rows fill the cap ahead of a target row (wongk review).
+ * Honor the production usage read's `OR` identity prefilter (an equality on the
+ * persisted `componentKeyNormalized` fold), its `AND`-nested tombstoned-FK
+ * exclusion (ISS-6180), `orderBy` (lastInvokedAt desc, nulls last, then id asc),
+ * and `take` cap so a test can prove the cap drops the LEAST-recent MATCHED rows
+ * — not that unrelated org rows fill the cap ahead of a target row (whitlockk
+ * review).
+ *
+ * The fold is DERIVED here from each fixture row's `componentKey`, never read off
+ * a field the fixture sets, because that is what the ISS-6756 BEFORE
+ * INSERT/UPDATE trigger does to the real column. A double that let a fixture
+ * supply its own fold could seed a row whose stored value disagrees with its key
+ * — a state the trigger makes unreachable — and the case/whitespace-parity case
+ * below would then pass on the fixture rather than on the fold.
  */
 function applyUsageQuery(
   rows: ChildUsageRow[],
@@ -111,13 +134,15 @@ function applyUsageQuery(
   let matched = rows;
   if (or) {
     matched = rows.filter((r) =>
-      or.some(
-        (o) =>
+      or.some((o) => {
+        if ("agentComponentId" in o) {
+          return o.agentComponentId.in.includes(r.agentComponentId ?? "");
+        }
+        return (
           o.componentKind === r.componentKind &&
-          r.componentKey
-            .toLowerCase()
-            .includes(o.componentKey.contains.toLowerCase())
-      )
+          normalizeComponentKey(r.componentKey) === o.componentKeyNormalized
+        );
+      })
     );
   }
   for (const clause of args?.where?.AND ?? []) {
@@ -153,16 +178,18 @@ function makeDb(
   usageFindMany: ReturnType<typeof vi.fn>;
   inventoryFindMany: ReturnType<typeof vi.fn>;
 } {
+  const inventoryRows = childInventory.map((row, index) => ({
+    ...row,
+    id: row.id ?? `inventory-${index}`,
+  }));
   const inventoryFindMany = vi.fn(
     (args?: {
       where?: { packId?: { in?: string[] }; uninstalledAt?: Date | null };
     }) => {
       const packFilter = args?.where?.packId?.in;
       let rows = packFilter
-        ? childInventory.filter(
-            (r) => r.packId && packFilter.includes(r.packId)
-          )
-        : childInventory;
+        ? inventoryRows.filter((r) => r.packId && packFilter.includes(r.packId))
+        : inventoryRows;
       // Honor the live-inventory scope so a test can prove a tombstoned child is
       // dropped by the QUERY, not by application code downstream of it.
       if (args?.where && "uninstalledAt" in args.where) {
@@ -177,17 +204,40 @@ function makeDb(
   // tombstoned rows, which the live-only inventory read above filters out), so
   // the relation predicate is evaluated against the row the FK really points at.
   const inventoryById = new Map(
-    childInventory.flatMap((row) => (row.id ? [[row.id, row] as const] : []))
+    inventoryRows.map((row) => [row.id, row] as const)
   );
+  // ISS-8932: the production read selects the row's primary key and de-duplicates
+  // its sliced statements on it, so a fixture row that declares none is given a
+  // STABLE synthetic one. Without it every id-less row would collapse onto the
+  // same key and this double would report a rollup no database could produce.
+  const usageWithIds = childUsage.map((row, index) => ({
+    id: `child-usage-${index}`,
+    ...row,
+  }));
   const usageFindMany = vi.fn(
     (args?: { where?: { OR?: UsageOr; AND?: UsageAnd }; take?: number }) =>
-      Promise.resolve(applyUsageQuery(childUsage, inventoryById, args))
+      Promise.resolve(applyUsageQuery(usageWithIds, inventoryById, args))
   );
   const db = {
     agentComponent: { findMany: inventoryFindMany },
     agentComponentSessionUsage: { findMany: usageFindMany },
   };
   return { db, usageFindMany, inventoryFindMany };
+}
+
+/**
+ * The prefilter the rollup actually asked SQL for, in emission order.
+ *
+ * ISS-8932 issues the FK lane and the identity lane as separate bound-sliced
+ * statements, so the predicate a case is asserting is their union rather than one
+ * call's `OR`. Reading every call also means an arm silently moved into a second
+ * statement still has to be there — a per-call assertion would let one vanish.
+ */
+function emittedPrefilterArms(usageFindMany: ReturnType<typeof vi.fn>) {
+  return usageFindMany.mock.calls.flatMap(
+    (call) =>
+      (call[0] as { where?: { OR?: UsageOr } } | undefined)?.where?.OR ?? []
+  );
 }
 
 describe("loadChildUsageByPackId (FEA-4337)", () => {
@@ -257,6 +307,42 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     expect(byPack.get("pack-x")?.invocations).toBe(4);
   });
 
+  it("keeps stable-FK usage written before an inventory key rename (whitlockk)", async () => {
+    const { db, usageFindMany } = makeDb(
+      [
+        {
+          id: "inv-reviewer",
+          componentKind: AgentComponentKind.Skill,
+          componentKey: "reviewer",
+          packId: "pack-x",
+        },
+      ],
+      [
+        {
+          agentSessionId: "s-before-rename",
+          agentComponentId: "inv-reviewer",
+          componentKind: AgentComponentKind.Skill,
+          componentKey: "reviewer-extra",
+          invocationCount: 6,
+          errorCount: 1,
+          lastInvokedAt: new Date("2026-08-01"),
+        },
+      ]
+    );
+
+    const byPack = await loadChildUsageByPackId(db as never, ["pack-x"], ORG);
+
+    expect(byPack.get("pack-x")?.invocations).toBe(6);
+    expect(byPack.get("pack-x")?.errors).toBe(1);
+    expect(emittedPrefilterArms(usageFindMany)).toEqual([
+      { agentComponentId: { in: ["inv-reviewer"] } },
+      {
+        componentKind: AgentComponentKind.Skill,
+        componentKeyNormalized: "reviewer",
+      },
+    ]);
+  });
+
   it("excludes a TOMBSTONED (uninstalled) child from the rollup (ISS-6180)", async () => {
     // Scanners tombstone rather than delete and nothing clears the child's
     // `packId`, so an uninstalled child's usage kept rolling into its plugin's
@@ -314,15 +400,16 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     // read's identity prefilter either.
     const invWhere = inventoryFindMany.mock.calls[0]?.[0]?.where;
     expect(invWhere?.uninstalledAt).toBeNull();
-    expect(usageFindMany.mock.calls[0]?.[0]?.where?.OR).toEqual([
+    expect(emittedPrefilterArms(usageFindMany)).toEqual([
+      { agentComponentId: { in: ["inv-live"] } },
       {
         componentKind: AgentComponentKind.Skill,
-        componentKey: { contains: "gstack-nav", mode: "insensitive" },
+        componentKeyNormalized: "gstack-nav",
       },
     ]);
   });
 
-  it("excludes a tombstoned child whose (kind, key) a LIVE sibling still carries (ISS-6180, shafty023)", async () => {
+  it("excludes a tombstoned child whose (kind, key) a LIVE sibling still carries (ISS-6180, davetho)", async () => {
     // The case scoping the inventory join to live children does NOT cover. The
     // live sibling keeps `skill::gstack-nav` in `packIdsByIdentity` and in the
     // SQL identity prefilter, so the DEAD row's usage is admitted by the
@@ -425,7 +512,7 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     expect(byPack.get("gstack")?.errors).toBe(1);
   });
 
-  it("attributes an orphan-FK child under two packs to ONE pack, so the summed list rollup can't double-count (wongk)", async () => {
+  it("attributes an orphan-FK child under two packs to ONE pack, so the summed list rollup can't double-count (whitlockk)", async () => {
     // The same child (kind, key) belongs to two of the plugin's candidate packs.
     // Folding the usage row into BOTH buckets made `sumPluginChildUsage` add its
     // invocations twice. The row is now attributed to exactly one deterministic
@@ -465,7 +552,7 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     expect(rollup.sessionIds.size).toBe(1);
   });
 
-  it("credits a usage row's authoritative agentComponentId FK to that inventory row's pack, not an org-global identity match (wongk)", async () => {
+  it("credits a usage row's authoritative agentComponentId FK to that inventory row's pack, not an org-global identity match (whitlockk)", async () => {
     // Two compute targets carry the same (kind, key) under DIFFERENT packs. The
     // usage row's FK points at compute-target-B's inventory row, so it must be
     // credited to pack-b — the exact pack the writer linked — even though the
@@ -507,7 +594,7 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     expect(byPack.get("pack-a")).toBeUndefined();
   });
 
-  it("keeps the requested pack's usage even when it sorts BEYOND the MAX cap behind unrelated org activity (wongk)", async () => {
+  it("keeps the requested pack's usage even when it sorts BEYOND the MAX cap behind unrelated org activity (whitlockk)", async () => {
     // The requested pack's only child usage row is the OLDEST (last-invoked). A
     // flood of unrelated org child usage sits ahead of it by recency. Because the
     // identity prefilter runs in SQL BEFORE the cap, the unrelated rows never
@@ -552,14 +639,75 @@ describe("loadChildUsageByPackId (FEA-4337)", () => {
     // The target row is recovered despite being least-recent org-wide.
     expect(byPack.get("target-pack")?.invocations).toBe(11);
     // Proof the prefilter is in SQL: the usage read carried the identity OR
-    // (a case-insensitive `contains` of the normalized child key).
-    const usageWhere = usageFindMany.mock.calls[0]?.[0]?.where;
-    expect(usageWhere?.OR).toEqual([
+    // (an equality on the persisted normalized child key).
+    expect(emittedPrefilterArms(usageFindMany)).toEqual([
+      { agentComponentId: { in: ["inventory-0"] } },
       {
         componentKind: "command",
-        componentKey: { contains: "target-cmd", mode: "insensitive" },
+        componentKeyNormalized: "target-cmd",
       },
     ]);
+  });
+
+  it("keeps a QUIET pack's usage when a busy sibling pack fills the read (ISS-6891)", async () => {
+    // The residual truncation ISS-6891 removed from this lane. The list rollup
+    // unions EVERY candidate pack across the population into one read, ordered by
+    // recency globally — so the prefilter above (which only keeps unrelated org
+    // activity out) does nothing here: both packs are inside the same prefiltered
+    // read, and a busy pack's recent rows crowded a quiet pack's older row out of
+    // the retained set. The quiet plugin then rolled up to zero, by an amount that
+    // depended on which facet assembled the pack union.
+    const quietRow: ChildUsageRow = {
+      id: "z-quiet",
+      agentSessionId: "s-quiet",
+      agentComponentId: null,
+      componentKind: "command",
+      componentKey: "quiet-cmd",
+      invocationCount: 7,
+      errorCount: 0,
+      lastInvokedAt: new Date("2020-01-01"), // older than every busy row
+    };
+    const busyRows: ChildUsageRow[] = Array.from(
+      { length: FORMER_CHILD_USAGE_CAP },
+      (_unused, index) => ({
+        id: `busy-${index}`,
+        agentSessionId: `busy-s-${index}`,
+        agentComponentId: null,
+        componentKind: "command",
+        componentKey: "busy-cmd",
+        invocationCount: 1,
+        errorCount: 0,
+        lastInvokedAt: new Date(2026, 0, 1, 0, 0, index),
+      })
+    );
+
+    const { db } = makeDb(
+      [
+        {
+          componentKind: "command",
+          componentKey: "busy-cmd",
+          packId: "busy-pack",
+        },
+        {
+          componentKind: "command",
+          componentKey: "quiet-cmd",
+          packId: "quiet-pack",
+        },
+      ],
+      [...busyRows, quietRow]
+    );
+
+    const byPack = await loadChildUsageByPackId(
+      db as never,
+      ["busy-pack", "quiet-pack"],
+      ORG
+    );
+
+    // Pinned to independent literals. Under the former cap the quiet pack read
+    // `undefined` here, while the busy pack reported its full total — a narrower
+    // request (quiet-pack alone) would then have surfaced usage the wider one hid.
+    expect(byPack.get("quiet-pack")?.invocations).toBe(7);
+    expect(byPack.get("busy-pack")?.invocations).toBe(FORMER_CHILD_USAGE_CAP);
   });
 
   it("returns an empty map (no usage read) when no child inventory matches", async () => {
@@ -672,7 +820,7 @@ describe("pluginPackCandidates / sumPluginChildUsage", () => {
 });
 
 /**
- * ISS-5534 (wongk review on #4902): the parent-pack identity the list emits
+ * ISS-5534 (whitlockk review on #4902): the parent-pack identity the list emits
  * beside a row's `invocations`, so a consumer can drop a plugin's rolled-up
  * total ONLY when that plugin's own children are in the same population —
  * instead of zeroing every plugin the moment any child-kind row appears.

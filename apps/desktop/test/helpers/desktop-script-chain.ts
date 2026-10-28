@@ -2,7 +2,7 @@
  * The desktop package scripts a lane's entry script chains through, and the
  * `NODE_TEST_RUNNER_TIMEOUT_MS` values they declare.
  *
- * ISS-6410 review (wongk): `run-node-tests.mjs` honors that override, so the
+ * ISS-6410 review (whitlockk): `run-node-tests.mjs` honors that override, so the
  * cap a lane's job budget has to clear is not necessarily
  * `DEFAULT_RUNNER_TIMEOUT_MS`. This is not theoretical — `test:node:coverage`
  * already raises it to 2400000 in the very same manifest. It sits outside the

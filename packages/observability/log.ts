@@ -4,9 +4,11 @@
 // API: same as console — log.info("msg", { key: val }), log.error(...), etc.
 //
 // When DD_API_KEY and DD_SITE are set, logs are batched and shipped to
-// Datadog's HTTP intake API (agentless), unless DD_LOGS_DISABLED=1 forces the
-// sink closed (see resolveExportKey). Console output is always preserved for
-// local dev and container stdout.
+// Datadog's HTTP intake API (agentless). When DD_LOGS_FORWARDER_URL names a
+// loopback forwarder (a collector sidecar that adds the key), the same batches
+// go there instead and the process needs no key. DD_LOGS_DISABLED=1 forces the
+// sink closed either way (see isLogExportDisabled). Console output is always
+// preserved for local dev and container stdout.
 //
 // Serverless callers must wrap log.flush() with waitUntil() to ensure
 // pending logs are delivered before the function freezes.
@@ -16,27 +18,39 @@ import {
   DEFAULT_DD_SITE,
   isAllowedDatadogSite,
 } from "@repo/api/src/types/datadog-sites";
+import type { z } from "zod";
+import { isRetryableDatadogStatus } from "./datadog-retry";
 import { keys } from "./keys";
+import {
+  BoundedLogBuffer,
+  DatadogIntakeError,
+  resolveMaxBufferEntries,
+  type TelemetryDropStats,
+  TelemetryFlushFailure,
+} from "./log-buffer";
+import {
+  LOG_SAMPLE_RATE_KEY,
+  LogLevel,
+  logMinLevelSchema,
+  logSampleRateSchema,
+} from "./log-emit-rule";
+import { isLoopbackUrl } from "./loopback-url";
 import { redactLogValue } from "./redact";
 import { resolveGitSha, resolveServerVersion } from "./telemetry/context";
 import { KNOWN_ORIGINS, ORIGIN, type Origin } from "./telemetry/origin";
 import { getTraceContext, toLogCorrelationFields } from "./trace-context";
 
-// DD_API_KEY has two unrelated consumers: this agentless log sink, and
-// dd-trace's agentless Test Optimization reporter, which CI sets on every
-// instrumented test lane (ISS-4399). Neither knows about the other, so a lane
-// that sets the key to feed the tracer would also open the log sink inside the
-// test workers — shipping the code-under-test's log calls to Datadog as if they
-// were production, and holding a 5s flush interval plus an exit hook in every
-// worker. DD_LOGS_DISABLED lets a caller that needs the key for something else
-// keep the sink closed. Accepted values mirror DD_LOGS_JSON; anything else
-// (including "") leaves the sink enabled.
-function resolveExportKey(apiKey: string | undefined): string | undefined {
+// DD_API_KEY can reach a process that never meant to ship logs. Until ISS-12354
+// CI set it on every instrumented test lane for dd-trace's agentless Test
+// Optimization reporter (ISS-4399), which opened this sink inside the test
+// workers — shipping the code-under-test's log calls to Datadog as if they were
+// production, and holding a 5s flush interval plus an exit hook in every worker.
+// DD_LOGS_DISABLED lets a caller that needs the key for something else keep the
+// sink closed; pr-test.yml's test steps set it. Accepted values mirror
+// DD_LOGS_JSON; anything else (including "") leaves the sink enabled.
+export function isLogExportDisabled(): boolean {
   const flag = process.env.DD_LOGS_DISABLED;
-  if (flag === "1" || flag === "true") {
-    return undefined;
-  }
-  return apiKey;
+  return flag === "1" || flag === "true";
 }
 
 /**
@@ -61,15 +75,55 @@ function resolveExportTarget(apiKey: string | undefined, site: string) {
   return apiKey;
 }
 
+const LOGS_INTAKE_PATH = "/api/v2/logs";
+
+/** Where batches are POSTed, and the key to send with them, if any. */
+type LogExportTarget = { url: string; apiKey: string | undefined };
+
+/**
+ * A forwarder wins over a key in the environment: it adds the key itself, and
+ * the realtime app container holds none (ISS-11827). It must be loopback, so a
+ * misconfigured value cannot ship every log line to another host.
+ */
+function resolveLogExportTarget(
+  apiKey: string | undefined,
+  site: string
+): LogExportTarget | undefined {
+  if (isLogExportDisabled()) {
+    return undefined;
+  }
+  const forwarderUrl = process.env.DD_LOGS_FORWARDER_URL;
+  if (forwarderUrl) {
+    if (!isLoopbackUrl(forwarderUrl)) {
+      console.error(
+        "[observability] DD_LOGS_FORWARDER_URL is not a loopback HTTP(S) URL without credentials — log export disabled"
+      );
+      return undefined;
+    }
+    return {
+      url: new URL(LOGS_INTAKE_PATH, forwarderUrl).toString(),
+      apiKey: undefined,
+    };
+  }
+  const key = resolveExportTarget(apiKey, site);
+  return key
+    ? {
+        url: `https://http-intake.logs.${site}${LOGS_INTAKE_PATH}`,
+        apiKey: key,
+      }
+    : undefined;
+}
+
 function loadConfig() {
   try {
     const env = keys();
     const site = env.DD_SITE ?? DEFAULT_DD_SITE;
     return {
-      apiKey: resolveExportTarget(resolveExportKey(env.DD_API_KEY), site),
-      site,
+      target: resolveLogExportTarget(env.DD_API_KEY, site),
       service: env.DD_SERVICE ?? "cl-unknown",
       env: env.DD_ENV ?? process.env.NODE_ENV ?? "development",
+      minLevel: env.DD_LOGS_MIN_LEVEL ?? LogLevel.Debug,
+      sampleRate: env.DD_LOGS_SAMPLE_RATE ?? 1,
     };
   } catch {
     // keys() may throw outside Next.js (e.g., standalone relay).
@@ -83,11 +137,7 @@ function loadConfig() {
     // value that was never a site.
     const site = process.env.DD_SITE || DEFAULT_DD_SITE;
     return {
-      apiKey: resolveExportTarget(
-        resolveExportKey(process.env.DD_API_KEY),
-        site
-      ),
-      site,
+      target: resolveLogExportTarget(process.env.DD_API_KEY, site),
       // "||", not "??": this branch reads process.env RAW, because it is reached
       // only when keys() threw — so keys()'s `emptyStringAsUndefined` never ran
       // and "" survives. The module-load guard below is `!process.env.DD_SERVICE`,
@@ -96,15 +146,28 @@ function loadConfig() {
       // service-scoped Datadog query.
       service: process.env.DD_SERVICE || "cl-unknown",
       env: process.env.DD_ENV || process.env.NODE_ENV || "development",
+      minLevel: readRawEmitSetting(
+        "DD_LOGS_MIN_LEVEL",
+        process.env.DD_LOGS_MIN_LEVEL,
+        logMinLevelSchema,
+        LogLevel.Debug
+      ),
+      sampleRate: readRawEmitSetting(
+        "DD_LOGS_SAMPLE_RATE",
+        process.env.DD_LOGS_SAMPLE_RATE,
+        logSampleRateSchema,
+        1
+      ),
     };
   }
 }
 
 const DD: {
-  apiKey?: string;
-  site: string;
+  target?: LogExportTarget;
   service: string;
   env: string;
+  minLevel: LogLevel;
+  sampleRate: number;
   version: string;
   gitSha: string;
 } = {
@@ -113,9 +176,27 @@ const DD: {
   gitSha: resolveGitSha(),
 };
 
+// Read by the module-load `log.warn` calls below, so it cannot sit at the
+// bottom of the file.
+const LOG_LEVEL_SEVERITY: Record<LogLevel, number> = {
+  [LogLevel.Debug]: 0,
+  [LogLevel.Info]: 1,
+  [LogLevel.Warn]: 2,
+  [LogLevel.Error]: 3,
+};
+
 const FLUSH_INTERVAL_MS = 5000;
-const MAX_BATCH_SIZE = 100;
-const MAX_RETRY_COUNT = 2;
+
+/** Entries per intake request. Exported so a test can assert the batch seam. */
+export const MAX_BATCH_SIZE = 100;
+
+/**
+ * Retries a single drain cycle may spend before it gives up and leaves the
+ * backlog for the next interval. Exported because it BOUNDS the cycle: the
+ * intake sees at most `MAX_RETRY_COUNT + 1` requests per drain no matter how
+ * many callers asked for one, and that bound is the contract a test pins.
+ */
+export const MAX_RETRY_COUNT = 2;
 
 // ---------------------------------------------------------------------------
 // Structured-JSON console output for deployed runtimes.
@@ -145,15 +226,6 @@ function resolveStructuredConsole(): boolean {
 
 const STRUCTURED_CONSOLE = resolveStructuredConsole();
 
-export const LogLevel = {
-  Debug: "debug",
-  Info: "info",
-  Warn: "warn",
-  Error: "error",
-} as const;
-
-export type LogLevel = (typeof LogLevel)[keyof typeof LogLevel];
-
 // `status` is Datadog's RESERVED severity attribute; `level` is not. Datadog
 // resolves a log's status from the first of `status`, `severity`, `level`,
 // `syslog.severity` that the payload carries — so anything a caller put under
@@ -178,10 +250,23 @@ export type DatadogLogEntry = {
 // Datadog HTTP intake — batched with bounded retries
 // ---------------------------------------------------------------------------
 
-const buffer: DatadogLogEntry[] = [];
+const buffer = new BoundedLogBuffer<DatadogLogEntry>(resolveMaxBufferEntries());
 let flushTimer: ReturnType<typeof setInterval> | null = null;
-let flushInProgress: Promise<void> | null = null;
+// The ONE drain in flight, shared by every caller: the 5s interval, the
+// batch-size trigger in `enqueue()`, and `log.flush()` all receive this exact
+// promise rather than chaining a fresh follow-up onto it.
+//
+// Chaining was the bug. Every log arriving while a flush was active and the
+// buffer was at the batch size queued another `then(() => flushToDatadog())`,
+// so a sustained outage accumulated an unbounded promise queue — and each
+// waiter in it started its own retry cycle against the same retained batch,
+// hitting the intake far past the retry budget. One shared drain is bounded by
+// construction: at most one cycle exists, and a joiner waits for it rather than
+// scheduling another.
+let drainInProgress: Promise<void> | null = null;
 let retryCount = 0;
+// Guards the `beforeExit` handler against re-arming itself forever; see there.
+let exitFlushAttempted = false;
 
 function startFlushTimer(): void {
   if (flushTimer) {
@@ -197,82 +282,169 @@ function startFlushTimer(): void {
 }
 
 function flushToDatadog(): Promise<void> {
-  if (buffer.length === 0 || !DD.apiKey) {
-    return flushInProgress ?? Promise.resolve();
+  const target = DD.target;
+  if (!target) {
+    return Promise.resolve();
   }
 
-  // If a flush is already in flight, chain a follow-up after it completes so
-  // entries enqueued during that flush are also delivered. The returned
-  // promise resolves only after the buffer is fully drained — critical for
-  // `waitUntil(log.flush())` callers in serverless, where the runtime can
-  // freeze the function between batches and drop logs that haven't been
-  // chained into the awaited promise.
-  if (flushInProgress) {
-    return flushInProgress.then(() => flushToDatadog());
+  // Join the drain already running rather than scheduling another. Its loop
+  // re-checks the buffer between batches, so entries enqueued during the drain
+  // are still delivered before the shared promise resolves — the guarantee
+  // `waitUntil(log.flush())` callers depend on in serverless, where the runtime
+  // can freeze the function between batches.
+  if (drainInProgress) {
+    return drainInProgress;
+  }
+  if (buffer.length === 0) {
+    return Promise.resolve();
   }
 
-  const batch = buffer.splice(0, MAX_BATCH_SIZE);
-
-  flushInProgress = fetch(`https://http-intake.logs.${DD.site}/api/v2/logs`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "DD-API-KEY": DD.apiKey,
-    },
-    body: JSON.stringify(batch, jsonReplacer),
-    signal: AbortSignal.timeout(10_000),
-    // Do NOT follow redirects: a 307/308 replays the batch AND the DD-API-KEY
-    // header to the redirect target, carrying both past the site allowlist.
-    redirect: "error",
-  })
-    .then((response) => {
-      if (!response.ok) {
-        if (
-          response.status === 429 ||
-          response.status === 408 ||
-          response.status >= 500
-        ) {
-          throw new Error(`Datadog responded with ${response.status}`);
-        }
-        console.error(
-          `[observability] Dropping ${batch.length} log entries — Datadog returned ${response.status}`
-        );
-        retryCount = 0;
-        return;
-      }
-      retryCount = 0;
-    })
-    .catch((error) => {
-      console.error("[observability] Failed to flush logs to Datadog:", error);
-      // Re-enqueue only if under retry limit; drop the batch otherwise
-      if (retryCount < MAX_RETRY_COUNT) {
-        retryCount++;
-        buffer.unshift(...batch);
-        // Backoff: wait 2^retryCount * 100ms before the next retry so
-        // transient failures (especially 429 rate-limiting) don't hammer
-        // the intake at full speed. This delays the chain re-call in the
-        // `.finally` → `.then()` drain check below.
-        const delayMs = Math.min(100 * 2 ** retryCount, 10_000);
-        return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-      }
-      console.error(
-        `[observability] Dropping ${batch.length} log entries after ${MAX_RETRY_COUNT} retries`
-      );
-      retryCount = 0;
-    })
-    .finally(() => {
-      flushInProgress = null;
-    });
-
-  // Chain the drain into the returned promise so it resolves only after the
-  // buffer is empty. Without this, callers awaiting log.flush() would resolve
-  // after the first batch completes and miss entries enqueued during the flush.
-  return flushInProgress!.then(() => {
-    if (buffer.length > 0) {
-      return flushToDatadog();
-    }
-    return undefined;
+  const drain = drainBuffer(target).finally(() => {
+    drainInProgress = null;
   });
+  drainInProgress = drain;
+  return drain;
+}
+
+/**
+ * Drain the buffer batch by batch until it is empty or this cycle gives up.
+ *
+ * Bounded on both axes: one batch is in flight at a time, and the loop stops
+ * the moment a cycle spends its retry budget, so a dead intake costs at most
+ * `MAX_RETRY_COUNT + 1` requests per cycle no matter how many callers asked.
+ * The 5s interval picks the backlog up again with a fresh budget.
+ */
+async function drainBuffer(target: LogExportTarget): Promise<void> {
+  let abandoned = false;
+  try {
+    while (buffer.length > 0) {
+      const keepDraining = await sendNextBatch(target);
+      if (!keepDraining) {
+        abandoned = true;
+        break;
+      }
+    }
+  } catch (error) {
+    // `enqueue()` starts this drain without awaiting it, so a rejection
+    // escaping here would surface as an unhandled rejection inside every
+    // importer of this module — including client components. A logging sink
+    // does not get to take its callers down.
+    abandoned = true;
+    console.error("[observability] Log drain failed unexpectedly:", error);
+  } finally {
+    // Everything below has to survive an unexpected throw mid-drain, which is
+    // why it is a `finally` and not the tail of the `try`.
+    //
+    // `retryCount` is CYCLE-local state living in a module-level variable.
+    // Leaving it wherever an error struck hands the next cycle a budget of
+    // `MAX_RETRY_COUNT - retryCount` instead of the full one — a silent,
+    // compounding shrink that makes a dead intake give up sooner on each pass
+    // with nothing in the logs to explain it.
+    retryCount = 0;
+    if (abandoned) {
+      buffer.noteCycleAbandoned();
+    }
+    // The pending drops are already tallied; this is only their EMISSION.
+    // Skipping it on the error path strands them until the next drop event or
+    // process exit — which is exactly the window an operator is staring at.
+    buffer.reportPending();
+  }
+}
+
+/**
+ * Ship one batch. Resolves `false` when this cycle has spent its retry budget.
+ *
+ * The entries stay BUFFERED either way rather than being dropped — but buffered
+ * is not the same as delivered, and on a runtime that freezes the process they
+ * are lost with no drop counter moving. `buffer.noteCycleAbandoned()` in the
+ * caller is what makes that window visible; see `TELEMETRY_UNDELIVERED_CATEGORY`.
+ */
+async function sendNextBatch(target: LogExportTarget): Promise<boolean> {
+  const payload = buildIntakePayload(buffer.takeBatch(MAX_BATCH_SIZE));
+  if (!payload) {
+    // Nothing in the batch could be serialized; the loss is already counted.
+    // Keep draining what is behind it.
+    return true;
+  }
+  try {
+    const response = await fetch(target.url, {
+      method: "POST",
+      headers: target.apiKey
+        ? { "Content-Type": "application/json", "DD-API-KEY": target.apiKey }
+        : { "Content-Type": "application/json" },
+      body: payload.body,
+      signal: AbortSignal.timeout(10_000),
+      // Do NOT follow redirects: a 307/308 replays the batch AND the
+      // DD-API-KEY header to the redirect target, carrying both past the site
+      // allowlist.
+      redirect: "error",
+    });
+    return handleIntakeResponse(response, payload.entries);
+  } catch (error) {
+    return await handleFlushError(error, payload.entries);
+  }
+}
+
+function handleIntakeResponse(
+  response: Response,
+  entries: readonly DatadogLogEntry[]
+): boolean {
+  if (response.ok) {
+    retryCount = 0;
+    buffer.noteFlushSuccess();
+    return true;
+  }
+  if (isRetryableDatadogStatus(response.status)) {
+    throw new DatadogIntakeError(
+      TelemetryFlushFailure.ServerError,
+      response.status
+    );
+  }
+  // Non-retryable: no amount of replay makes the intake accept this batch, so
+  // the entries are gone. Counting them is what turns a silent loss into a
+  // known denominator (ISS-7219).
+  buffer.noteFlushFailure(TelemetryFlushFailure.ClientError);
+  buffer.recordRejected(entries.length, response.status);
+  retryCount = 0;
+  return true;
+}
+
+async function handleFlushError(
+  error: unknown,
+  entries: readonly DatadogLogEntry[]
+): Promise<boolean> {
+  // Order is load-bearing. The entries are OUT of the buffer right now, so
+  // anything that throws before `returnBatch` loses them with no counter
+  // moving — the uncounted-loss shape this whole change exists to remove. Get
+  // the data back first; the console line is the fallible part and goes last.
+  //
+  // `noteFlushFailure` still precedes `returnBatch`, because returning a batch
+  // into a full buffer sheds and the shed report reads `lastFailure` for its
+  // `cause` — noting after would attribute this cycle's shed to the previous
+  // failure.
+  buffer.noteFlushFailure(classifyFlushFailure(error));
+  // The batch goes back regardless of the retry budget. Retries are what this
+  // cycle gives up on, not the data — in a process that lives long enough for
+  // the next interval. A serverless runtime that freezes after
+  // `waitUntil(log.flush())` resolves takes the backlog with it, which is
+  // reported as an abandoned cycle rather than pretended away.
+  //
+  // These are the entries the payload was actually BUILT from, which is not
+  // necessarily the batch that was taken: anything serialization refused has
+  // already been counted and must not come back, or it would poison every
+  // subsequent batch it lands in for the life of the process.
+  buffer.returnBatch(entries);
+  console.error("[observability] Failed to flush logs to Datadog:", error);
+  if (retryCount >= MAX_RETRY_COUNT) {
+    retryCount = 0;
+    return false;
+  }
+  retryCount++;
+  // Backoff: wait 2^retryCount * 100ms before the next retry so transient
+  // failures (especially 429 rate-limiting) don't hammer the intake at full
+  // speed.
+  await delay(Math.min(100 * 2 ** retryCount, 10_000));
+  return true;
 }
 
 function enqueue(entry: DatadogLogEntry): void {
@@ -375,6 +547,12 @@ function makeLogFn(
   consoleFn: (...args: unknown[]) => void
 ): (message: string, ...args: unknown[]) => void {
   return (message: string, ...args: unknown[]) => {
+    // ISS-12265: decided once, before the sinks split, so the console line the
+    // platform drain reads and the intake entry are kept or dropped together.
+    if (!isEmitted(level)) {
+      return;
+    }
+
     // ISS-4659: enrich here, not in buildEntry(). buildEntry() only feeds the
     // agentless intake payload, so trace ids added there would be missing on
     // the Vercel Log Drain path — the same asymmetry that made `origin` get
@@ -385,8 +563,8 @@ function makeLogFn(
     // Always write to console (local dev + container/platform stdout drain).
     writeConsole(consoleFn, level, message, args, meta);
 
-    // Ship to Datadog directly when configured (agentless HTTP intake).
-    if (DD.apiKey) {
+    // Ship to Datadog when configured (agentless intake, or a forwarder).
+    if (DD.target) {
       enqueue(buildEntry(level, message, meta));
     }
   };
@@ -399,11 +577,28 @@ function makeLogFn(
 // signal handlers cannot await async work before the runtime freezes.
 // ---------------------------------------------------------------------------
 
-if (typeof process !== "undefined" && DD.apiKey) {
+if (typeof process !== "undefined" && DD.target) {
   process.on("beforeExit", () => {
+    // ONE attempt, ever. `beforeExit` re-fires every time the event loop
+    // drains, and flushToDatadog() issues a fetch that keeps the loop alive.
+    // A failed batch now stays buffered instead of being dropped, so during an
+    // intake outage `buffer.length > 0` is permanently true — re-arming here
+    // would flush, fail, re-buffer, drain, and fire again forever, and the
+    // process could never exit. Durability across flush cycles is worth having;
+    // an unkillable process is not.
+    if (exitFlushAttempted) {
+      return;
+    }
+    exitFlushAttempted = true;
     if (buffer.length > 0) {
       flushToDatadog();
     }
+    // The ONLY throttle bypass in the module. A drop the throttle was still
+    // holding when the process wound down is the one nobody would ever see
+    // reported, and there is no later window to report it in. Every other
+    // caller stays throttled, because a bypass on the normal drain path would
+    // emit after each flush cycle and recreate the log storm the interval caps.
+    buffer.reportFinal();
   });
 }
 
@@ -422,7 +617,32 @@ export const log = {
    *
    * In Vercel serverless routes, wrap with waitUntil(log.flush()).
    */
-  flush: (): Promise<void> => flushToDatadog(),
+  flush: (): Promise<void> =>
+    flushToDatadog().then(() => {
+      // Throttled, like every non-shutdown caller. The drain already reports on
+      // its way out; this covers the case where there was nothing to drain but
+      // a drop is still pending.
+      buffer.reportPending();
+    }),
+  /**
+   * Cumulative telemetry-loss accounting for this process (ISS-7219).
+   *
+   * Every count sourced from logs is a floor unless the reader can put a number
+   * on what never arrived. `cumulativeDropped` is that number for entries that
+   * left the pipeline DEFINITIVELY — capacity shed, an intake refusal replay
+   * cannot fix, metadata nothing could serialize.
+   *
+   * It is deliberately NOT a complete account of loss, and reading it as one is
+   * the mistake this docstring exists to prevent. Entries still buffered when a
+   * drain cycle gave up are not counted here, because a long-running process
+   * usually delivers them on the next interval — but a serverless runtime that
+   * freezes after `waitUntil(log.flush())` resolves loses them, and this counter
+   * would read 0 throughout. `cumulativeAbandonedCycles` is the signal for that
+   * window; both reach Datadog on the `telemetry.dropped` and
+   * `telemetry.undelivered` categories, which ride the platform log drain
+   * rather than the intake that is failing.
+   */
+  droppedStats: (): TelemetryDropStats => buffer.stats(),
 };
 
 // Server-only diagnostics: these warnings signal a misconfigured deploy to
@@ -484,8 +704,9 @@ function withTraceCorrelation(
 const CALLER_STATUS_KEY = "callerStatus";
 
 /**
- * Stamp the fields both sinks must agree on: the message, and the severity
- * under Datadog's reserved `status` as well as the legacy `level`.
+ * Stamp the fields both sinks must agree on: the message, the severity
+ * under Datadog's reserved `status` as well as the legacy `level`, and the
+ * sample rate when one below 1 is set.
  *
  * Shared by `buildEntry()` (agentless HTTP intake) and `writeConsole()` (the
  * JSON line the platform drain parses) so the two cannot drift — the same
@@ -504,6 +725,10 @@ function stampSeverity(
   if (meta && Object.hasOwn(meta, "status")) {
     stamped[CALLER_STATUS_KEY] = meta.status;
   }
+  // ISS-12265: only below 1, so the default entry is unchanged.
+  if (DD.sampleRate < 1) {
+    stamped[LOG_SAMPLE_RATE_KEY] = DD.sampleRate;
+  }
   return stamped;
 }
 
@@ -513,3 +738,142 @@ type StampedSeverity = Record<string, unknown> & {
   level: LogLevel;
   status: LogLevel;
 };
+
+/**
+ * Name the failure mode a rejected flush represents, so a drop report can say
+ * WHY the backlog built rather than only that it did.
+ *
+ * `redirect: "error"` and DNS/socket failures both surface as a plain
+ * `TypeError` here, which is `transport_error` — the one case a caller cannot
+ * distinguish from the outside and should not have to.
+ */
+function classifyFlushFailure(error: unknown): TelemetryFlushFailure {
+  if (error instanceof DatadogIntakeError) {
+    return error.failure;
+  }
+  if (isTimeoutError(error)) {
+    return TelemetryFlushFailure.Timeout;
+  }
+  return TelemetryFlushFailure.TransportError;
+}
+
+/**
+ * Match the NAME the web spec fixes, not the class.
+ *
+ * `AbortSignal.timeout()` rejects with a `DOMException`, and whether that
+ * shares a prototype chain with `Error` is a host-object detail that differs by
+ * runtime. Testing `instanceof Error` would make the whole `cause` facet depend
+ * on that detail, and would fail open to `transport_error` — a wrong reason on
+ * the exact signal this module exists to make trustworthy.
+ */
+function isTimeoutError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  return Reflect.get(error, "name") === "TimeoutError";
+}
+
+/** The intake body, and exactly the entries it was built from. */
+type IntakePayload = {
+  body: string;
+  entries: readonly DatadogLogEntry[];
+};
+
+/** `JSON.stringify`, reporting refusal instead of raising it. */
+function trySerialize(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, jsonReplacer);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the intake body from a batch, tolerating metadata `JSON.stringify`
+ * refuses.
+ *
+ * A logging call must never throw into its caller, and serializing the whole
+ * batch in one go did exactly that: `JSON.stringify` raises SYNCHRONOUSLY on
+ * circular (or BigInt) metadata, so `log.info("x", circular)` threw out of
+ * `log.info` itself the moment the batch-size trigger fired — from inside the
+ * `fetch(...)` argument list, before any `.catch` existed to see it. The
+ * console sink deliberately ACCEPTS such values, so the caller had every reason
+ * to think the call was safe.
+ *
+ * The entries are already out of the buffer by then, so discarding the poison
+ * ones silently would be an uncounted loss — the exact false-completeness this
+ * whole change exists to remove. Each poison entry is counted as
+ * `unserializable`; replay cannot help, since the same value throws every time.
+ * Entries that DO serialize are still shipped, and are the ones handed back for
+ * a retry if the intake later refuses the batch.
+ *
+ * Serializing per entry and joining is byte-identical to serializing the array:
+ * `jsonReplacer` only rewrites `Error` instances and redacts by KEY NAME, and
+ * neither the array's `""` root key nor its `"0"`, `"1"`, … element keys are
+ * sensitive.
+ */
+function buildIntakePayload(
+  batch: readonly DatadogLogEntry[]
+): IntakePayload | undefined {
+  const serialized: string[] = [];
+  const entries: DatadogLogEntry[] = [];
+  for (const entry of batch) {
+    const line = trySerialize(entry);
+    if (line !== undefined) {
+      serialized.push(line);
+      entries.push(entry);
+    }
+  }
+  buffer.recordUnserializable(batch.length - entries.length);
+  if (serialized.length === 0) {
+    return undefined;
+  }
+  return { body: `[${serialized.join(",")}]`, entries };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Whether log entries leave the process beyond the console sink. */
+export function isLogExportOpen(): boolean {
+  return DD.target !== undefined;
+}
+
+/**
+ * `DD_LOGS_MIN_LEVEL` and `DD_LOGS_SAMPLE_RATE`; the defaults emit every call.
+ * At rate 1 the RNG is not drawn, so a log call does not shift a caller's
+ * `Math.random()` sequence.
+ */
+function isEmitted(level: LogLevel): boolean {
+  return (
+    LOG_LEVEL_SEVERITY[level] >= LOG_LEVEL_SEVERITY[DD.minLevel] &&
+    (DD.sampleRate === 1 || Math.random() < DD.sampleRate)
+  );
+}
+
+/**
+ * `loadConfig()`'s raw-env branch: `keys()` threw, so its schema never ran. An
+ * invalid value is reported and treated as unset, per key, the way an invalid
+ * `DD_SITE` is reported and closes the sink.
+ */
+function readRawEmitSetting<T>(
+  key: string,
+  raw: string | undefined,
+  schema: z.ZodType<T>,
+  fallback: T
+): T {
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  console.error(
+    `[observability] ${key} "${raw}" is not valid — treated as unset`
+  );
+  return fallback;
+}

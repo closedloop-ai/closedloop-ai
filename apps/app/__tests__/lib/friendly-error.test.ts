@@ -1,15 +1,8 @@
-import {
-  DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-  resolveFriendlyError,
-} from "@repo/api/src/types/friendly-error";
-import { LoopErrorCode, RunnerErrorSubcode } from "@repo/api/src/types/loop";
+import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
 import { describe, expect, it } from "vitest";
 
-const SPECIFIC_GOAL_REGEX = /specific goal/i;
 const LINT_ERRORS_REGEX = /lint errors/i;
-const SYSTEM_CHECK_REGEX = /System Check/i;
-const CLOSEDLOOP_PLUGINS_REGEX = /closedloop-ai plugins/i;
-const MANAGED_ONBOARDING_REGEX = /managed onboarding/i;
 
 describe("friendly error resolver", () => {
   it("has display copy for every LoopErrorCode", () => {
@@ -20,35 +13,6 @@ describe("friendly error resolver", () => {
       expect(friendly.description.length).toBeGreaterThan(0);
       expect(friendly.remediation.length).toBeGreaterThan(0);
     }
-  });
-
-  it("uses runner subcode remediation for MAX_ITERATIONS_NO_PROGRESS", () => {
-    const friendly = resolveFriendlyError({
-      code: LoopErrorCode.RunnerError,
-      message: "runner stopped",
-      result: { subcode: "MAX_ITERATIONS_NO_PROGRESS" },
-    });
-
-    expect(friendly.title).toBe("Loop stopped after no progress");
-    expect(friendly.remediation.join(" ")).toMatch(SPECIFIC_GOAL_REGEX);
-    expect(friendly.technicalDetails.result).toEqual({
-      subcode: "MAX_ITERATIONS_NO_PROGRESS",
-    });
-  });
-
-  it("uses specific remediation for CLAUDE_UNKNOWN_SKILL", () => {
-    const friendly = resolveFriendlyError({
-      code: LoopErrorCode.RunnerError,
-      message: "Claude plugin command unavailable: Unknown skill: code:code",
-      result: { subcode: RunnerErrorSubcode.ClaudeUnknownSkill },
-    });
-
-    expect(friendly.title).toBe("Closedloop plugin command unavailable");
-    expect(friendly.remediation.join(" ")).toMatch(SYSTEM_CHECK_REGEX);
-    expect(friendly.remediation.join(" ")).toMatch(CLOSEDLOOP_PLUGINS_REGEX);
-    expect(friendly.technicalDetails.result).toEqual({
-      subcode: RunnerErrorSubcode.ClaudeUnknownSkill,
-    });
   });
 
   it("maps git pre-commit hook categories without making stderr primary copy", () => {
@@ -74,22 +38,6 @@ describe("friendly error resolver", () => {
     });
   });
 
-  it("surfaces the desktop signed-launch fail-fast message in visible copy", () => {
-    const friendly = resolveFriendlyError({
-      code: LoopErrorCode.ProcessFailed,
-      message: DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-    });
-
-    expect(friendly.title).toBe("Desktop managed signing is not ready");
-    expect(friendly.description).toBe(
-      DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE
-    );
-    expect(friendly.remediation.join(" ")).toMatch(MANAGED_ONBOARDING_REGEX);
-    expect(friendly.technicalDetails.message).toBe(
-      DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE
-    );
-  });
-
   it("does not let git category details override known non-git error codes", () => {
     const friendly = resolveFriendlyError({
       code: LoopErrorCode.SpawnFailed,
@@ -100,16 +48,6 @@ describe("friendly error resolver", () => {
     expect(friendly.title).toBe(
       resolveFriendlyError({ code: LoopErrorCode.SpawnFailed }).title
     );
-  });
-
-  it("uses compute target categories for pre-run validation failures", () => {
-    const friendly = resolveFriendlyError({
-      code: LoopErrorCode.PreRunValidationFailed,
-      details: { category: "compute_target_offline" },
-      message: "Compute target is offline",
-    });
-
-    expect(friendly.title).toBe("Compute target is offline");
   });
 
   it("does not let git categories override pre-run validation failures", () => {

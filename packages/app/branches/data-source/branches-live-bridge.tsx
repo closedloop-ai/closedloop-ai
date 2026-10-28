@@ -4,6 +4,10 @@ import {
   LIVE_BRIDGE_INVALIDATION_THROTTLE_MS,
   useLiveQueryBridge,
 } from "../../shared/hooks/use-live-query-bridge";
+import {
+  branchAlwaysConvergePrefixes,
+  branchBroadConvergePrefixes,
+} from "../hooks/branch-cache-convergence";
 import { branchesKeys } from "../hooks/use-branches";
 import type { BranchesChange } from "./branches-data-source";
 import { useBranchesDataSource, useBranchesQueryContext } from "./provider";
@@ -17,23 +21,12 @@ import { useBranchesDataSource, useBranchesQueryContext } from "./provider";
  * The throttle / visibility / cleanup machinery lives in the shared
  * {@link useLiveQueryBridge} hook (identical to AgentSessionsLiveBridge); this
  * component supplies only the branch-specific change-id extraction and the
- * invalidation policy:
- * - **Usage + analytics + cohort analytics + page-data always move** — any
- *   branch change can shift the visible page, the aggregate summary, the exact
- *   filtered-cohort metrics, AND the KPI cards (B6
- *   wired the always-on `BranchesSummaryCards` to the combined `pageData` read
- *   — FEA-3056 follow-up — so a local DB change such as a PR merging must
- *   refresh the merge-rate card too, not leave it stale until remount).
- *   `analytics` (still used standalone by the branch detail page) and
- *   `pageData` read the same bounded grouped queries, so the extra
- *   invalidation is proportionate — not a new hot path. There is no
- *   standalone list query to invalidate (`pageData` is the only list read).
- * - **Details + traces** — a `{ branchId }` change refreshes that one `detail`
- *   AND its lazily-fetched merged `trace` (PLN-1148 Phase 2), both keyed by the
- *   active source's scope; a broad `{}` change refreshes all open details and
- *   traces. The trace is a first-class cache entry (`useBranchTrace`), so a DB
- *   change must invalidate it too or the open Sessions & timeline tab keeps
- *   showing a stale trace until remount.
+ * per-entity fan-out.
+ *
+ * ISS-9553: the invalidation POLICY is declared once in
+ * `branchCacheConvergence` over `keyof branchesKeys`, and this bridge iterates
+ * the prefixes that declaration derives. The inline list this replaced had gone
+ * stale in a way only a total classification could catch: it omitted `lists`.
  *
  * NOTE (openQuestion #1): the desktop local source maps `onDbChanged`'s
  * `{ sessionId? }` to a BROAD `{}` change (no stable per-branch identity yet), so
@@ -50,36 +43,25 @@ export function BranchesLiveBridge() {
     subscribe: dataSource.subscribe,
     getChangeId: (change) => change.branchId,
     flush: ({ broad, ids }) => {
-      // Usage + analytics + cohort analytics + page-data always move: all are
-      // derived from the local branch corpus, and the KPI cards (B6) read
-      // analytics, so a branch change must refresh them too rather than leave
-      // the cards stale.
-      queryClient.invalidateQueries({ queryKey: branchesKeys.usages() });
-      queryClient.invalidateQueries({ queryKey: branchesKeys.analyticsRoot() });
-      queryClient.invalidateQueries({
-        queryKey: branchesKeys.cohortAnalyticsRoot(),
-      });
-      queryClient.invalidateQueries({ queryKey: branchesKeys.pageDataRoot() });
+      for (const queryKey of branchAlwaysConvergePrefixes()) {
+        queryClient.invalidateQueries({ queryKey });
+      }
 
       if (broad) {
         // A `{}` event can touch any branch, so refresh every open detail and
         // its lazily-fetched trace (PLN-1148 Phase 2).
-        queryClient.invalidateQueries({ queryKey: branchesKeys.details() });
-        queryClient.invalidateQueries({ queryKey: branchesKeys.traces() });
-        queryClient.invalidateQueries({
-          queryKey: branchesKeys.commentsRoot(),
-        });
+        for (const queryKey of branchBroadConvergePrefixes()) {
+          queryClient.invalidateQueries({ queryKey });
+        }
         return;
       }
       // A scoped event only moves its own detail + trace + comments, keyed by the active
       // source's scope (detail/trace keys are scope-qualified).
       for (const branchId of ids) {
         queryClient.invalidateQueries({
-          queryKey: branchesKeys.detail(
-            dataSource.scope,
-            branchId,
-            queryIdentity
-          ),
+          queryKey: branchesKeys
+            .detail(dataSource.scope, branchId, queryIdentity)
+            .slice(0, -1),
         });
         queryClient.invalidateQueries({
           queryKey: branchesKeys.trace(

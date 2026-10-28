@@ -159,7 +159,7 @@ describe("TraceMessageBody", () => {
     );
   });
 
-  // wongk (#4248): the body only ever sees `NormalizedMessage.text` after the
+  // whitlockk (#4248): the body only ever sees `NormalizedMessage.text` after the
   // 4,096-byte cut, which can land inside the invocation's last field. The
   // orphaned tail must stay part of the SAME chip — before this it fell through
   // to the generic unterminated-tag fold and one command rendered as two chips.

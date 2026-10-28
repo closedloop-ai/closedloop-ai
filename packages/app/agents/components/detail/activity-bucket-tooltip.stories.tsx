@@ -30,7 +30,9 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
  * parent-view story cannot reach without hovering exactly the right bar. They
  * are two stories rather than one because a synthesized bucket at zero cost
  * still carries a real observation (`total === 0`) and must not be answered with
- * the priced branch's "wasn't recorded".
+ * the priced branch's "wasn't recorded". ISS-5632 adds the third point on that
+ * axis, {@link UnpublishedPriced}: the withdrawal without the sentence, which is
+ * what a flag-off synthesized strip gets.
  *
  * No `autodocs` tag: `ActivityBucketTooltip` portals to `document.body` at
  * `position: fixed` (`ViewportTooltipPortal`), so a docs page rendering every
@@ -39,7 +41,8 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
  * `agent-session-detail-view.stories.tsx` omits the tag for the same reason.
  */
 const meta = {
-  title: "App Core/Agents/Activity Bucket Tooltip",
+  title: "Composites v1.0/Agents/Detail/Activity Bucket Tooltip",
+  tags: ["deprecated"],
   component: ActivityBucketTooltip,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof ActivityBucketTooltip>;
@@ -60,6 +63,7 @@ function BucketTooltipStage({
   block,
   bucket,
   caption,
+  costsUnpublished = false,
   costUnmeasured = false,
   grouping,
   segments,
@@ -68,6 +72,7 @@ function BucketTooltipStage({
   block: BucketJumpBlock | null;
   bucket: ActivityBucket;
   caption: ReactNode;
+  costsUnpublished?: boolean;
   costUnmeasured?: boolean;
   grouping?: TimelineStackGrouping;
   segments?: readonly TimelineStackSegment[];
@@ -107,6 +112,7 @@ function BucketTooltipStage({
         anchor={anchor}
         block={block}
         bucket={bucket}
+        costsUnpublished={costsUnpublished}
         costUnmeasured={costUnmeasured}
         grouping={grouping}
         segments={segments}
@@ -320,6 +326,86 @@ export const UnmeasuredIdle: Story = {
 };
 
 /**
+ * ISS-5632, the third state on the provenance axis, and the one that shipped
+ * broken: the disclosure flag is OFF, so the strip may not publish the
+ * `Math.max(estimatedCost, 0.01)` floor — but it has not been given the copy
+ * that explains why either.
+ *
+ * Same $7.21 bucket as {@link PricedMultiModel} and {@link UnmeasuredPriced}, so
+ * the three read as one axis. Against `UnmeasuredPriced` the only difference is
+ * the missing sentence; against `PricedMultiModel` it is every dollar figure.
+ *
+ * A regression reads as the header total or a `$` cell coming back — which is
+ * this card rendering as `PricedMultiModel` beside a rail that withheld the very
+ * same number.
+ */
+export const UnpublishedPriced: Story = {
+  args: {
+    anchor: UNMEASURED_ANCHOR,
+    block: null,
+    bucket: {
+      label: "14:00 – 14:15",
+      cIn: 0.64,
+      cOut: 2.17,
+      cCache: 4.4,
+      total: 128,
+      toolStart: 31,
+      tl0: 412,
+      byModel: {
+        "claude-opus-4": { cIn: 0.6, cOut: 2.05, cCache: 4.1 },
+        "claude-sonnet-4": { cIn: 0.04, cOut: 0.12, cCache: 0.3 },
+      },
+    },
+    costsUnpublished: true,
+  },
+  render: (args) => (
+    <BucketTooltipStage
+      {...args}
+      caption="Synthesized costs, disclosure flag off: no header total and no table, and no sentence either — the withdrawal is ungated, the copy explaining it is not."
+    />
+  ),
+};
+
+/**
+ * The zero-cost half of {@link UnpublishedPriced}, and the one state this fix
+ * deliberately makes QUIETER than it was.
+ *
+ * The measured strip answers an empty slice with "Agent asleep | scheduled
+ * wake-up | no tokens billed", and {@link UnmeasuredIdle} replaces that with a
+ * sentence that drops the billing claim. Flag off there is no such sentence to
+ * fall back to — it is gated copy — so the card falls silent rather than assert
+ * "no tokens billed" on a session whose costs were never measured at all.
+ *
+ * What survives is the meta row: `0 events | 0 tool calls` is measured from the
+ * transcript, so the true-zero observation ISS-5566 fought to keep is still on
+ * screen. If this story ever shows the measured idle line, that argument has
+ * been lost.
+ */
+export const UnpublishedIdle: Story = {
+  args: {
+    anchor: UNMEASURED_ANCHOR,
+    block: BucketJumpBlock.NoTurn,
+    bucket: {
+      label: "02:15 – 02:30",
+      cIn: 0,
+      cOut: 0,
+      cCache: 0,
+      total: 0,
+      toolStart: 0,
+      tl0: null,
+      byModel: {},
+    },
+    costsUnpublished: true,
+  },
+  render: (args) => (
+    <BucketTooltipStage
+      {...args}
+      caption="Synthesized costs, disclosure flag off, empty bucket: no figure and no sentence, but the measured 0 events | 0 tool calls still says the slice was quiet."
+    />
+  ),
+};
+
+/**
  * ISS-5819 (#4753 review, krisw-story-reviewer): the "Group by" branch, which
  * swaps the four-column per-model cache/out/in table for a TWO-column grouped
  * one — header naming the dimension, each row a swatch plus its label.
@@ -377,16 +463,24 @@ export const GroupedByModel: Story = {
 };
 
 /**
- * The same branch cut by ACTIVITY PHASE, which is the one that also exercises
- * `UNATTRIBUTED_KEY`'s label reaching the card.
+ * ISS-5632 (#5146 review, whitlockk): the grouped card with the money withdrawn, and
+ * the state the fix exists to produce. This is what a floor-priced strip's hover
+ * card looks like with the disclosure flag OFF and a "Group by" cut active — the
+ * common case, since Token Type is the default cut.
  *
- * Two stories rather than one because the header text is derived per grouping,
- * and a single scenario would let a hardcoded "model" header pass. The
- * `Unattributed` row is here deliberately: it is what the projection emits for
- * the stretch of a column no classifier span covers, so it is the most common
- * real segment on this cut and the one most likely to be mistaken for a bug.
+ * The pair to compare it against is {@link GroupedByModel}, which differs in
+ * exactly one respect: the cost column, header and cells together, is gone. What
+ * must NOT differ is the swatch-and-label mapping. The flag-off stack is still
+ * painted in colour and the "Group by" control names only the DIMENSION, so this
+ * table is the sole colour-to-label key a sighted reader has — an earlier
+ * revision returned no body at all here, which left the cut encoded in hue alone
+ * (WCAG 1.4.1) while the bar's accessible name kept the labels for everyone
+ * else.
+ *
+ * A regression reads as either half coming back wrong: a `$` cell returning, or
+ * the rows losing their labels.
  */
-export const GroupedByActivityPhase: Story = {
+export const UnpublishedGroupedByModel: Story = {
   args: {
     anchor: UNMEASURED_ANCHOR,
     block: null,
@@ -400,34 +494,30 @@ export const GroupedByActivityPhase: Story = {
       tl0: 412,
       byModel: {
         "claude-opus-4": { cIn: 0.6, cOut: 2.05, cCache: 4.1 },
+        "claude-sonnet-4": { cIn: 0.04, cOut: 0.12, cCache: 0.3 },
       },
     },
-    grouping: TimelineStackGrouping.ActivityPhase,
+    costsUnpublished: true,
+    grouping: TimelineStackGrouping.Model,
     segments: [
       {
         colorVar: "var(--chart-1)",
-        key: "implement",
-        label: "Implement",
-        value: 3.0,
+        key: "claude-opus-4",
+        label: "claude-opus-4",
+        value: 6.75,
       },
       {
         colorVar: "var(--chart-2)",
-        key: "review",
-        label: "Review",
-        value: 3.0,
-      },
-      {
-        colorVar: "var(--chart-4)",
-        key: "unattributed",
-        label: "Unattributed",
-        value: 1.21,
+        key: "claude-sonnet-4",
+        label: "claude-sonnet-4",
+        value: 0.46,
       },
     ],
   },
   render: (args) => (
     <BucketTooltipStage
       {...args}
-      caption="Group by activity phase: the header follows the cut, and the Unattributed row is the stretch of the column no classifier span covered — not a rendering gap."
+      caption="Group by model, costs unpublished: one column, not two — every swatch and label survives, and only the money comes off."
     />
   ),
 };

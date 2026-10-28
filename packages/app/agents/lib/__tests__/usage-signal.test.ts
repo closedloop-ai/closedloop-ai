@@ -1,5 +1,5 @@
 /**
- * ISS-5363 (wongk review): the three-state usage signal every component-detail
+ * ISS-5363 (whitlockk review): the three-state usage signal every component-detail
  * surface keys its empty state off.
  *
  * `AgentComponentDetail.sessions` is `number | null` on the wire and a

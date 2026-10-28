@@ -6,7 +6,7 @@
  * `subagent` qualifies: it authors its own session, so that session's full
  * LOC/cost is genuinely one component's.
  *
- * `skill` and `command` are DELIBERATELY excluded (wongk, PR #3720): a single
+ * `skill` and `command` are DELIBERATELY excluded (whitlockk, PR #3720): a single
  * session can record a skill AND a command independently, yet each usage row is
  * attributed the session's FULL LOC/cost, so both would report session-level
  * efficiency, not their own share. Until a session's LOC/cost can be partitioned
@@ -26,7 +26,7 @@ describe("isLocPerDollarVerifiableKind (FEA-4052)", () => {
 
   // Skill and Command are excluded until session partitioning exists — a session
   // gives every co-invoked component its FULL LOC/cost, so their per-component
-  // LOC/$ would be a misleading session-level number (wongk, PR #3720).
+  // LOC/$ would be a misleading session-level number (whitlockk, PR #3720).
   const NON_VERIFIABLE: AgentComponentKind[] = [
     AgentComponentKind.Skill,
     AgentComponentKind.Command,
@@ -49,7 +49,7 @@ describe("isLocPerDollarVerifiableKind (FEA-4052)", () => {
     expect(LOC_PER_DOLLAR_VERIFIABLE_KINDS.has(kind)).toBe(false);
   });
 
-  it("excludes skill and command from the LOC/$ gate (session-level attribution, wongk PR #3720)", () => {
+  it("excludes skill and command from the LOC/$ gate (session-level attribution, whitlockk PR #3720)", () => {
     expect(isLocPerDollarVerifiableKind(AgentComponentKind.Skill)).toBe(false);
     expect(isLocPerDollarVerifiableKind(AgentComponentKind.Command)).toBe(
       false

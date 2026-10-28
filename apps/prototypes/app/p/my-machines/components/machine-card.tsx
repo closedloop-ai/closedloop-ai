@@ -22,7 +22,7 @@ import { MachineDetail } from "./machine-detail";
 import { MachineSummary } from "./machine-summary";
 
 // One machine, summary-first with the per-component detail behind a disclosure
-// (Parker: progressive disclosure, summary first, detail on demand). The card is
+// (Pascoe: progressive disclosure, summary first, detail on demand). The card is
 // the machine; its header carries name + online/offline, its body the summary,
 // and the disclosure reveals the component list. A machine that has work opens
 // expanded (matching the admin matrix, which defaults to expanded) so the answer

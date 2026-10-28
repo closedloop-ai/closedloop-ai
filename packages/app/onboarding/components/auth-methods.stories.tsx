@@ -2,19 +2,15 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { AuthMethods } from "./auth-methods";
 
 /**
- * The sign-in method chooser itself, shared by desktop onboarding, web sign-in,
- * and Settings → Account. Every surface that asks "how do you want to sign in?"
+ * The sign-in method chooser itself, shared by desktop onboarding and web
+ * sign-in. Every surface that asks "how do you want to sign in?"
  * renders this one component, so its hierarchy is a cross-surface contract:
  * GitHub is the single filled primary, Google is de-emphasized to outline, and
  * email is a secondary Continue (PRD-532 §5.2).
  *
- * Worth seeing as a matrix because the states differ by which controls EXIST,
- * not by copy, and each one is owned by a different host. Nothing else renders
- * the two-method form in isolation: the composed stories that mount it
- * (`account-dialog`, `guest-landing-sign-in`) both go through
- * `DesktopOnboardingFlow` with `showEmail={false}`, so before this file the
- * default three-method state — the one `desktop-account-tab` and the
- * first-launch overlay actually ship — appeared in no story at all.
+ * ISS-5954: the method set is FIXED — GitHub, Google, and email, always. The
+ * per-host `showEmail` opt-out is retired, so the states below differ only by
+ * copy and in-flight method, never by which controls exist.
  */
 const meta: Meta<typeof AuthMethods> = {
   args: {
@@ -32,7 +28,8 @@ const meta: Meta<typeof AuthMethods> = {
       </div>
     ),
   ],
-  title: "App Core/Onboarding/Auth Methods",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Onboarding/Auth Methods",
 };
 
 export default meta;
@@ -40,29 +37,13 @@ export default meta;
 type Story = StoryObj<typeof AuthMethods>;
 
 /**
- * The full set, and the default every host gets unless it opts out. This is
- * what `desktop-account-tab` renders to a signed-out user and what the blocking
- * first-launch overlay still offers.
+ * The full set — the one state every desktop host ships (ISS-5954): the
+ * blocking first-launch overlay and the landing's sign-in step both render
+ * exactly this.
  */
 export const AllThreeMethods: Story = {
   args: {
     emailCtaLabel: "Create account with email",
-    showEmail: true,
-  },
-};
-
-/**
- * ISS-5112: the two doors into the loopback OAuth flow — the landing's sign-in
- * step and the post-tour account dialog — offer GitHub and Google only, matching
- * the `pre-auth-desktop-onboarding` prototype.
- *
- * Paired with {@link AllThreeMethods} on purpose. Hiding the email form removes
- * a real capability from those screens, so the difference is a host decision to
- * look at deliberately, not a default to drift into.
- */
-export const TwoMethodsNoEmail: Story = {
-  args: {
-    showEmail: false,
   },
 };
 
@@ -75,14 +56,21 @@ export const GitHubPending: Story = {
   args: {
     emailCtaLabel: "Create account with email",
     pendingMethod: "github",
-    showEmail: true,
   },
 };
 
-/** The same in-flight rule on the trimmed set: no second door while one is open. */
-export const GooglePendingWithoutEmail: Story = {
+/** Google's pick in flight — the same disable-everything contract as GitHub. */
+export const GooglePending: Story = {
   args: {
+    emailCtaLabel: "Create account with email",
     pendingMethod: "google",
-    showEmail: false,
+  },
+};
+
+/** Email's pick in flight, after a real address was typed and submitted. */
+export const EmailPending: Story = {
+  args: {
+    emailCtaLabel: "Create account with email",
+    pendingMethod: "email",
   },
 };

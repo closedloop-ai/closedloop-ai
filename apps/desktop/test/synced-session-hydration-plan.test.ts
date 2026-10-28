@@ -11,9 +11,10 @@
  * packing case below therefore also asserts the id set survives intact.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
+  ACTIVITY_SEGMENT_ROW_HEAP_BYTES,
   EVENT_DATA_HEAP_BYTES_PER_SOURCE_BYTE,
   EVENT_ROW_HEAP_BYTES,
   estimateSessionHydrationHeapBytes,
@@ -57,6 +58,7 @@ function cost(
     eventRowCount: 0,
     eventDataBytes: 0,
     tokenEventRowCount: 0,
+    activitySegmentRowCount: 0,
     ...overrides,
   };
 }
@@ -86,6 +88,9 @@ const EVENT_DATA_SUM_SQL = /SUM\(LENGTH\(CAST\(e2\.data AS BLOB\)\)\)/;
  * session is exactly what packs an oversized load into a shared chunk.
  */
 const METADATA_BYTES_SQL = /LENGTH\(CAST\(s\.metadata AS BLOB\)\)/;
+/** ISS-9865: the tiling term, which every shape pays because every shape loads it. */
+const ACTIVITY_SEGMENT_COUNT_SQL =
+  /COUNT\(\*\)\s+FROM session_activity_segments sas/;
 const SIZING_FAILURE_LOG = /sizing read failed/;
 const SIZING_FAILURE_CAUSE_LOG = /reader unavailable/;
 
@@ -142,7 +147,7 @@ test("ISS-6105: keeping the token-event cost blob raises the estimate for the sa
   );
   assert.ok(
     syncEstimate > listEstimate,
-    "ISS-6050 nulls `cost_summary` for list reads, so the sync shape must cost more"
+    "ISS-6050 drops `cost_summary` from list reads, so the sync shape must cost more"
   );
 });
 
@@ -196,6 +201,79 @@ test("ISS-6105: the full-data shape prices event payloads by SIZE, not by row co
   );
 });
 
+test("ISS-9865: an activity tiling is priced, so heavy-tiling sessions cannot pack as free", () => {
+  const segments = 50_000;
+  const tiled = cost("tiled", { activitySegmentRowCount: segments });
+
+  assert.equal(
+    estimateSessionHydrationHeapBytes(tiled, SYNC_SHAPE),
+    Math.ceil(
+      segments *
+        ACTIVITY_SEGMENT_ROW_HEAP_BYTES *
+        HYDRATION_ASSEMBLY_HEAP_MULTIPLIER
+    ),
+    "the tiling the hydration loads is a term of the estimate, not a free row set"
+  );
+
+  // The regression this pins: before ISS-9865 a session contributed at most one
+  // capped page of segments, and the planner priced the tiling at nothing. Paging
+  // made the tiling unbounded-per-session up to the absolute ceiling, so an
+  // unpriced tiling would let the 200-id count backstop be the ONLY bound and
+  // admit 200 of these into one db-host operation. Priced, each one is isolated.
+  const ids = Array.from({ length: 12 }, (_, i) => `tiled-${i}`);
+  const chunks = planSyncedSessionHydrationChunks(
+    ids,
+    costMap(ids.map((id) => cost(id, { activitySegmentRowCount: segments }))),
+    SYNC_SHAPE
+  );
+
+  assert.deepEqual(
+    chunks,
+    ids.map((id) => [id]),
+    "each heavy-tiling session takes a chunk of its own"
+  );
+  assert.deepEqual(flatten(chunks), ids, "and no id is lost isolating them");
+});
+
+test("ISS-9865: every shape sizes the tiling, because every hydration loads it", async () => {
+  const statements: string[] = [];
+  const reader = {
+    read: (
+      fn: (client: {
+        $queryRawUnsafe: (sql: string) => Promise<unknown[]>;
+      }) => unknown
+    ) =>
+      fn({
+        $queryRawUnsafe: (sql: string) => {
+          statements.push(sql);
+          return Promise.resolve([
+            {
+              session_id: "s",
+              metadata_bytes: 0,
+              event_rows: 0,
+              event_data_bytes: 0,
+              token_event_rows: 0,
+              activity_segment_rows: 7n,
+            },
+          ]);
+        },
+      }),
+  } as unknown as DesktopPrisma;
+
+  for (const shape of [LIST_SHAPE, SYNC_SHAPE, FULL_SHAPE]) {
+    const costs = await loadSyncedSessionHydrationCosts(reader, ["s"], shape);
+    assert.ok(
+      ACTIVITY_SEGMENT_COUNT_SQL.test(statements.at(-1) ?? ""),
+      "`selectBoundedActivitySegments` runs for every shape, so every shape must size it"
+    );
+    assert.equal(
+      costs.get("s")?.activitySegmentRowCount,
+      7,
+      "the count reaches the cost record as a number, not a bigint"
+    );
+  }
+});
+
 test("ISS-6105: a shape that nulls events.data does not pay for the blob it never reads", () => {
   const rows = cost("s", { eventRowCount: 100, eventDataBytes: 100 * 64_000 });
 
@@ -240,6 +318,7 @@ test("ISS-6105: a nonsense sizing count sizes the session at the WHOLE budget, n
       { metadataBytes: invalid },
       { eventRowCount: invalid },
       { tokenEventRowCount: invalid },
+      { activitySegmentRowCount: invalid },
     ];
     for (const overrides of perField) {
       assert.equal(
@@ -298,6 +377,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
               event_rows: Number.NaN,
               event_data_bytes: -5,
               token_event_rows: Number.POSITIVE_INFINITY,
+              activity_segment_rows: -2,
             },
             {
               session_id: "null-columns",
@@ -305,6 +385,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
               event_rows: null,
               event_data_bytes: null,
               token_event_rows: null,
+              activity_segment_rows: null,
             },
             {
               session_id: "healthy",
@@ -312,6 +393,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
               event_rows: 10n,
               event_data_bytes: 4096n,
               token_event_rows: 0,
+              activity_segment_rows: 12n,
             },
           ]),
       }),
@@ -329,6 +411,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
     eventRowCount: null,
     eventDataBytes: null,
     tokenEventRowCount: null,
+    activitySegmentRowCount: null,
   });
   assert.deepEqual(costs.get("null-columns"), {
     sessionId: "null-columns",
@@ -336,6 +419,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
     eventRowCount: null,
     eventDataBytes: null,
     tokenEventRowCount: null,
+    activitySegmentRowCount: null,
   });
   assert.deepEqual(
     costs.get("healthy"),
@@ -345,6 +429,7 @@ test("ISS-6105: the sizing read reports an unusable column as unknown, never as 
       eventRowCount: 10,
       eventDataBytes: 4096,
       tokenEventRowCount: 0,
+      activitySegmentRowCount: 12,
     },
     "a genuine zero is a real count and stays a real count"
   );
@@ -379,6 +464,7 @@ test("ISS-6105: the payload-size term is selected only for the shape that reads 
               metadata_bytes: 0,
               event_rows: 1,
               token_event_rows: 0,
+              activity_segment_rows: 0,
             },
           ]);
         },
@@ -556,14 +642,13 @@ test("ISS-6105: a sizing-read failure degrades to fixed chunking and still retur
   );
   assert.match(logged[0], SIZING_FAILURE_LOG);
   assert.match(logged[0], SIZING_FAILURE_CAUSE_LOG);
-  // thadeusb (#4910): the same text also goes to the DURABLE main-process log,
+  // tamsinb (#4910): the same text also goes to the DURABLE main-process log,
   // because `db-host-worker.ts` never supplies the injectable sink above — so in
   // production `logged` is a no-op and this would otherwise be the one
   // degradation in this module with no trace at all. Both sinks are handed the
-  // output of one builder, which is what this pins; the `writePersistentLog`
-  // call itself is not directly asserted because the desktop node suite has no
-  // mock convention for it (see the same note in
-  // `shared-branches-zero-spend.test.ts`).
+  // output of one builder, which is what this pins. ISS-6204 asserts the durable
+  // write itself — level, scope and wording, plus the four-argument production
+  // call shape — in `synced-session-hydration-durable-log.test.ts`.
   assert.equal(
     logged[0],
     sizingDegradeMessage(ids.length, new Error("reader unavailable")),

@@ -12,7 +12,7 @@
  * without hunting anything.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { censusTestFiles } from "../scripts/node-test-census.mjs";
 import {
   positiveIntEnv,
@@ -121,11 +121,11 @@ describe("ISS-4934: stressLane takes the lane from the census", () => {
   });
 
   test("a file the census does not cover keeps the legacy behaviour", () => {
-    // `censusTestFiles` reads `test/*.test.ts` only, so an excluded suite or a
-    // typo reaches here in neither list. Routing those to `tsx --test` is what
-    // this tool has always done, including its loud error for a missing file.
+    // `censusTestFiles` reads `test/*.test.ts` only, so a path typo reaches
+    // here in neither list. `tsx --test` is what this tool has always spawned
+    // for one, and it fails loudly on the missing file.
     assert.equal(
-      stressLane("test/prisma-baseline-equivalence.test.ts", { vitest: [] }),
+      stressLane("test/ingest-orchestrater.test.ts", { vitest: [] }),
       StressLane.NodeTest
     );
   });
@@ -138,8 +138,9 @@ describe("ISS-5303: stress-node-tests.mjs is wired to the lib", () => {
     assert.deepEqual(
       namedImportsFrom(entrypoint, "./stress-node-tests-lib.mjs"),
       // ISS-4934 added the lane selector; the entrypoint must reach the census
-      // through it rather than picking a runner itself.
-      ["StressLane", "positiveIntEnv", "stressLane"]
+      // through it rather than picking a runner itself. ISS-6258 added the
+      // `STRESS_FILE` list parser.
+      ["StressLane", "positiveIntEnv", "stressFiles", "stressLane"]
     );
     assert.equal(
       declaredFunctionNames(entrypoint).includes("positiveIntEnv"),

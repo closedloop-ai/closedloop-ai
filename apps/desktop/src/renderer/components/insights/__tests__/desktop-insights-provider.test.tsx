@@ -11,11 +11,13 @@ import {
   InsightsSection,
   InsightsTileAvailabilityState,
 } from "@repo/api/src/types/insights";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
 import { useInsightsDataSource } from "@repo/app/insights/data/insights-data-source";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DesktopAuthStatus } from "../../../../shared/contracts";
 import { DesktopAppCoreMode } from "../../../shared-agent-sessions/desktop-app-core-mode";
 import { DesktopInsightsProvider } from "../desktop-insights-provider";
 
@@ -25,12 +27,23 @@ const {
   useApiClientMock,
   apiGetMock,
   getInsightsMock,
+  useFeatureFlagEnabledOptionalMock,
 } = vi.hoisted(() => ({
   useDesktopAuthMock: vi.fn(),
   useDesktopAppCoreModeMock: vi.fn(),
   useApiClientMock: vi.fn(),
   apiGetMock: vi.fn(async () => ({ charts: {}, kpis: [] })),
   getInsightsMock: vi.fn(async () => ({ charts: {}, kpis: [] })),
+  // ISS-10604: default `undefined` — the flag unresolved — which folds to the
+  // pre-alignment basis, so every case that says nothing about the flag pins
+  // what a viewer outside the rollout gets.
+  useFeatureFlagEnabledOptionalMock: vi.fn(
+    () => undefined as boolean | undefined
+  ),
+}));
+
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabledOptional: useFeatureFlagEnabledOptionalMock,
 }));
 
 vi.mock("../../../shared-agent-sessions/desktop-auth-provider", () => ({
@@ -44,6 +57,17 @@ vi.mock("../../../shared-agent-sessions/desktop-app-core-provider", () => ({
 vi.mock("@repo/app/shared/api/use-api-client", () => ({
   useApiClient: useApiClientMock,
 }));
+
+/**
+ * ISS-10604 — the session date basis the renderer sends with every LOCAL
+ * insights read, in the default (flag-unresolved) state these cases run under.
+ * A literal, not an import from the contract it polices: a fixture reading it
+ * out of `SessionDateWindowField` would follow a swap of the two members.
+ *
+ * The flag-ON wiring and the overlay deadline live in the sibling
+ * `desktop-insights-provider-date-window.test.tsx`, split out when these
+ * additions pushed this file past the 1,000-line ceiling.
+ */
 
 const originalDesktopApi = Object.getOwnPropertyDescriptor(
   window,
@@ -203,10 +227,66 @@ describe("DesktopInsightsProvider source selection (PLN-1138 Phase 3)", () => {
     );
   });
 
+  // ISS-5958 D1/M4: signed out, the gated tiles' CTA starts ACCOUNT CREATION —
+  // the hook signs the user in before it can open the GitHub authorize page, so
+  // a control labelled "Connect GitHub" was hiding a step the user never agreed
+  // to. The session, not the GitHub status, is what decides this.
+  it("declares a signed-out connect CTA as a sign-up", async () => {
+    installDesktopApi();
+    useDesktopAuthMock.mockReturnValue(
+      authState({ state: { status: DesktopAuthStatus.SignedOut } })
+    );
+    useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Local);
+
+    renderWithProvider(<TileProbe />);
+
+    expect(
+      await screen.findByText(`action:${GitHubConnectAction.SignUp}`)
+    ).toBeTruthy();
+  });
+
+  it("declares a signed-in connect CTA as a connect", async () => {
+    installDesktopApi();
+    useDesktopAuthMock.mockReturnValue(authState());
+    useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Cloud);
+
+    renderWithProvider(<TileProbe />);
+
+    expect(
+      await screen.findByText(`action:${GitHubConnectAction.Connect}`)
+    ).toBeTruthy();
+  });
+
+  // ISS-5958 D2: the CTA's verb is resolved from the SAME status that gated the
+  // tile -- this provider's IPC read. Resolving it from a second, HTTP status
+  // read (which this suite never serves, and which Local mode may never land)
+  // would report the generic first-time connect to a user whose own grant was
+  // revoked, collapsing the repair case back into it.
+  it("declares a revoked grant a reconnect, from the status it gated on", async () => {
+    installDesktopApi({
+      githubIntegrationStatus: {
+        connected: false,
+        githubDataConnection: {
+          connected: false,
+          sources: [],
+          oauthRequiredReasons: [GitHubOAuthRequiredReason.CredentialRevoked],
+        },
+      },
+    });
+    useDesktopAuthMock.mockReturnValue(authState());
+    useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Local);
+
+    renderWithProvider(<TileProbe />);
+
+    expect(
+      await screen.findByText(`action:${GitHubConnectAction.Reconnect}`)
+    ).toBeTruthy();
+  });
+
   it("signed out / offline (Local mode) exposes only me and reads the local database", async () => {
     installDesktopApi();
     useDesktopAuthMock.mockReturnValue(
-      authState({ state: { status: "signed-out" } })
+      authState({ state: { status: DesktopAuthStatus.SignedOut } })
     );
     useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Local);
 
@@ -346,13 +426,12 @@ describe("DesktopInsightsProvider tile availability — Local mode", () => {
   it("ignores a stale disconnected refresh that resolves after a newer connected refresh", async () => {
     const staleDisconnectedStatus = createDeferredGitHubStatus();
     const connectedStatus = createDeferredGitHubStatus();
-    // getGitHubIntegrationStatus is called: once on mount (refresh), twice by the
-    // connect flow (install pre-flight + post-connect refresh), once by the focus
-    // refresh. The last two returns are deferred so the newer (focus) resolves
-    // before the older (post-connect) — the stale sequence must be ignored.
+    // getGitHubIntegrationStatus is called: once on mount (refresh), once by the
+    // connect flow's post-connect refresh, once by the focus refresh. The last
+    // two returns are deferred so the newer (focus) resolves before the older
+    // (post-connect) — the stale sequence must be ignored.
     const getGitHubIntegrationStatus = vi
       .fn<() => Promise<GitHubIntegrationStatus | null>>()
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockReturnValueOnce(staleDisconnectedStatus.promise)
       .mockReturnValueOnce(connectedStatus.promise);
@@ -370,13 +449,13 @@ describe("DesktopInsightsProvider tile availability — Local mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "connect" }));
 
     await waitFor(() =>
-      expect(getGitHubIntegrationStatus).toHaveBeenCalledTimes(3)
+      expect(getGitHubIntegrationStatus).toHaveBeenCalledTimes(2)
     );
 
     globalThis.dispatchEvent(new Event("focus"));
 
     await waitFor(() =>
-      expect(getGitHubIntegrationStatus).toHaveBeenCalledTimes(4)
+      expect(getGitHubIntegrationStatus).toHaveBeenCalledTimes(3)
     );
 
     connectedStatus.resolve(legacyConnectedGitHubStatus());
@@ -447,6 +526,59 @@ describe("DesktopInsightsProvider tile availability — Cloud mode", () => {
   });
 });
 
+/**
+ * ISS-8424: the cloud producer reports the merged-PR CHARTS unavailable when
+ * nothing in the org-merged population has been verified, and desktop's Cloud
+ * org Insights render that same `/insights/delivery` response.
+ *
+ * `resolveInsightsTileAvailability` is pinned on its own in
+ * `packages/app/insights/lib/__tests__/tile-availability.test.ts`. What is
+ * pinned HERE is the desktop-only wiring that reaches it: the provider must hand
+ * a CHART tile the Cloud source kind and the cloud payload. The existing
+ * Cloud-mode cases above all probe `kpi:merged`, a GitHub-truth tile that takes
+ * the other branch of the resolver — so this path was unasserted on desktop.
+ *
+ * It is also what makes the single server-side gate legitimate: because desktop
+ * reads the producer's map rather than deciding for itself, one flag on the
+ * producer covers both shells and neither can leak the honest render past the
+ * other. Fork desktop onto its own builder and this goes red.
+ */
+describe("DesktopInsightsProvider merged-PR chart availability — Cloud mode (ISS-8424)", () => {
+  afterEach(resetMocks);
+
+  it("believes a cloud payload that reports a merged-PR chart unavailable", async () => {
+    installDesktopApi();
+    useDesktopAuthMock.mockReturnValue(authState());
+    useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Cloud);
+
+    renderWithProvider(
+      <ChartTileProbe state={InsightsTileAvailabilityState.Unavailable} />
+    );
+
+    expect(
+      await screen.findByText(`chart:${BranchKpiState.Unavailable}`)
+    ).toBeTruthy();
+  });
+
+  /**
+   * The control. Same tile, same wiring, availability flipped — so the case
+   * above cannot be satisfied by a provider that gates every chart.
+   */
+  it("leaves the same chart available when the payload reports it available", async () => {
+    installDesktopApi();
+    useDesktopAuthMock.mockReturnValue(authState());
+    useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Cloud);
+
+    renderWithProvider(
+      <ChartTileProbe state={InsightsTileAvailabilityState.Available} />
+    );
+
+    expect(
+      await screen.findByText(`chart:${BranchKpiState.Available}`)
+    ).toBeTruthy();
+  });
+});
+
 describe("DesktopInsightsProvider GitHub connect", () => {
   afterEach(resetMocks);
 
@@ -489,7 +621,7 @@ describe("DesktopInsightsProvider GitHub connect", () => {
     const beginSignIn = vi.fn(async () => ({ ok: true }));
     installDesktopApi({ openGitHubConnect });
     useDesktopAuthMock.mockReturnValue(
-      authState({ state: { status: "signed-out" }, beginSignIn })
+      authState({ state: { status: DesktopAuthStatus.SignedOut }, beginSignIn })
     );
     useDesktopAppCoreModeMock.mockReturnValue(DesktopAppCoreMode.Local);
     const queryClient = createQueryClient();
@@ -532,7 +664,11 @@ describe("DesktopInsightsProvider GitHub connect", () => {
     });
   });
 
-  it("opens GitHub install for a fresh org without an App installation", async () => {
+  // ISS-5958 D3 follow-on: this surface used to send `install: true` for a fresh
+  // org, dropping the user into the org App-installation flow from a CTA that
+  // said "Connect GitHub". Installing the App is an admin action reached from
+  // Settings; a connect CTA is always a personal authorize.
+  it("opens a personal authorize — never the App install — for a fresh org without an App installation", async () => {
     const openGitHubConnect = vi.fn(async () => ({ ok: true }));
     installDesktopApi({
       githubIntegrationStatus: {
@@ -557,7 +693,6 @@ describe("DesktopInsightsProvider GitHub connect", () => {
 
     await waitFor(() =>
       expect(openGitHubConnect).toHaveBeenCalledWith({
-        install: true,
         returnTo: "/insights",
       })
     );
@@ -595,11 +730,17 @@ describe("DesktopInsightsProvider GitHub connect", () => {
 });
 
 function resetMocks() {
+  // Unconditional, never the last line of a case: a case that throws between
+  // `useFakeTimers` and a per-case restore would leak a frozen clock into every
+  // later test in this worker, and `restoreAllMocks` does not cover timers.
+  vi.useRealTimers();
   vi.restoreAllMocks();
   useDesktopAuthMock.mockReset();
   useDesktopAppCoreModeMock.mockReset();
   useApiClientMock.mockReset();
   useApiClientMock.mockReturnValue({ get: apiGetMock });
+  useFeatureFlagEnabledOptionalMock.mockReset();
+  useFeatureFlagEnabledOptionalMock.mockReturnValue(undefined);
   apiGetMock.mockClear();
   getInsightsMock.mockClear();
   if (originalDesktopApi) {
@@ -703,11 +844,27 @@ function TileProbe({
       <div>scopes:{source.availableScopes.join(",")}</div>
       <div>org:{orgAvailability?.state}</div>
       <div>local:{meAvailability?.state}</div>
-      <button onClick={() => source.onConnectGitHub?.()} type="button">
+      <div>action:{source.githubConnect?.action}</div>
+      <button onClick={() => source.githubConnect?.onConnect?.()} type="button">
         connect
       </button>
     </div>
   );
+}
+
+function ChartTileProbe({ state }: { state: InsightsTileAvailabilityState }) {
+  const source = useInsightsDataSource();
+  const availability = source.getTileAvailability?.({
+    tileId: "chart:prByRepo",
+    section: InsightsSection.Delivery,
+    scope: InsightsScope.Org,
+    payloadAvailability: { "chart:prByRepo": state },
+    payloadGitHubProvenance: {
+      checkedAt: "2026-08-29T00:00:00.000Z",
+      state: InsightsGitHubProvenanceState.Active,
+    },
+  });
+  return <div>chart:{availability?.state}</div>;
 }
 
 function renderWithProvider(

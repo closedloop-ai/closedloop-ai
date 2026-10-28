@@ -12,11 +12,12 @@ import {
   type TranscriptBytesTransport,
   TranscriptBytesTransportProvider,
 } from "../../data-source/transcript-bytes-transport";
-import { agentSessionKeys } from "../use-agent-sessions";
+import { MAIN_TRANSCRIPT_FILE_KEY } from "../../lib/session-transcript-href";
+import { TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS } from "../../lib/transcript-access-freshness";
+import { agentSessionKeys } from "../agent-session-keys";
 import {
   TRANSCRIPT_AUTO_LOAD_MAX_BYTES,
   TRANSCRIPT_DOWNLOAD_PROGRESS_FLAG,
-  TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS,
   useSessionTranscript,
   useTranscriptAccess,
 } from "../use-session-transcript";
@@ -491,7 +492,10 @@ describe("useSessionTranscript", () => {
     await waitFor(() =>
       expect(result.current.isDeferredLoadRequested).toBe(false)
     );
-    expect(result.current.isOversized).toBe(true);
+    // ISS-12276: descriptors are presigned per file, so the second file reads
+    // its own descriptor before its oversized gate can show.
+    await waitFor(() => expect(result.current.isOversized).toBe(true));
+    expect(result.current.isDeferredLoadRequested).toBe(false);
     expect(result.current.session).toBeUndefined();
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
@@ -977,9 +981,12 @@ describe("useTranscriptAccess pending re-poll (FEA-3481 G5)", () => {
       wrapper,
     });
     await settle();
-    const query = client
-      ?.getQueryCache()
-      .find({ queryKey: agentSessionKeys.transcriptAccess(SESSION_ID) });
+    const query = client?.getQueryCache().find({
+      queryKey: agentSessionKeys.transcriptAccess(
+        SESSION_ID,
+        MAIN_TRANSCRIPT_FILE_KEY
+      ),
+    });
     return query?.observers[0]?.options.refetchIntervalInBackground;
   }
 

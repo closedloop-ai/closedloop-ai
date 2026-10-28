@@ -8,6 +8,7 @@
  *  - a seed re-apply updates seed-owned fields but PRESERVES fetcher-owned live
  *    fields (stars/forks/description_live) — the update block lists only
  *    seed-owned columns;
+ *  - the seed pass deletes a retired pack's stored row on every boot;
  *  - the REAL bundled catalog-seed.json populates the visible catalog through
  *    the Prisma path (guards the boot-seed regression where first-run users
  *    would otherwise see an empty Packs page — seed failures are caught+logged
@@ -15,12 +16,13 @@
  *    actually fills the catalog).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import catalogSeed from "../src/main/packs/catalog-seed.json" with {
   type: "json",
 };
 import {
   listCatalog,
+  RETIRED_CATALOG_PACK_IDS,
   upsertCatalogSeed,
 } from "../src/main/packs/catalog-store.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
@@ -186,5 +188,52 @@ test("the real bundled catalog seed populates the visible catalog via Prisma", a
     assert.equal(rtk?.displayName, "RTK (Rust Token Killer)");
   } finally {
     await close();
+  }
+});
+
+test("the seed pass deletes a retired pack's stored row and keeps every other row", async () => {
+  const { db, prisma, close } = await openTestPrisma();
+  try {
+    const [retiredPackId] = RETIRED_CATALOG_PACK_IDS;
+    assert.ok(retiredPackId, "at least one retired pack id is declared");
+    // Stand in for an install that stored the retired pack under an earlier
+    // seed, beside an unrelated pack the user still has.
+    await upsertCatalogSeed(prisma, {
+      seed_version: 1,
+      packs: [SEED_PACK],
+    });
+    await prisma.write((client) =>
+      client.packCatalog.create({
+        data: {
+          packId: retiredPackId,
+          displayName: "Retired pack",
+          githubUrl: "https://example.com/retired",
+          seedVersion: 99,
+        },
+      })
+    );
+
+    await upsertCatalogSeed(prisma, { seed_version: 1, packs: [] });
+
+    const rows = await db.query<{ pack_id: string }>(
+      "SELECT pack_id FROM pack_catalog ORDER BY pack_id ASC",
+      []
+    );
+    assert.deepEqual(
+      rows.rows.map((row) => row.pack_id),
+      [SEED_PACK.pack_id]
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("the bundled seed no longer carries a retired pack", () => {
+  const seededIds = catalogSeed.packs.map((pack) => pack.pack_id);
+  for (const retired of RETIRED_CATALOG_PACK_IDS) {
+    assert.ok(
+      !seededIds.includes(retired),
+      `${retired} is retired and must not be re-seeded`
+    );
   }
 });

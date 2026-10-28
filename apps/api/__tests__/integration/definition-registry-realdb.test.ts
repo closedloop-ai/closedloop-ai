@@ -50,13 +50,6 @@ async function seedOrg(orgId: string, userId: string, targetId: string) {
         clerkId: `clerk_org_${orgId}`,
         name: "Registry Test Org",
         slug: `registry-test-${orgId}`,
-        // FEA-4169: the desktop components sync lane is now gated server-side by
-        // the org session-sync policy (`isOrgSessionSyncPolicyEnabled`), which
-        // fail-closes on the NOT NULL DEFAULT false column. This org drives the
-        // real-DB sync assertions below, so enable the policy to exercise the
-        // write path against a genuinely allowed org (rather than injecting an
-        // override) — the policy-off denial is covered in the unit suite.
-        sessionSyncPolicyEnabled: true,
       },
     });
     await db.user.create({
@@ -329,7 +322,7 @@ describe("registerDefinitionVersion (real Postgres)", () => {
           accessState: SourceAccessState.inaccessible,
           computeTargetId: null,
           installPath: null,
-          repoFullName: "closedloop-ai/symphony-alpha",
+          repoFullName: "closedloop-ai/closedloop-ai",
           repoPath: ".claude/skills/example/SKILL.md",
           repoCommit: "abc123",
           observedAt: older,
@@ -343,7 +336,7 @@ describe("registerDefinitionVersion (real Postgres)", () => {
           accessState: SourceAccessState.accessible,
           computeTargetId: null,
           installPath: null,
-          repoFullName: "closedloop-ai/symphony-alpha",
+          repoFullName: "closedloop-ai/closedloop-ai",
           repoPath: ".claude/skills/example/SKILL.md",
           repoCommit: "abc123",
           observedAt: newer,
@@ -357,7 +350,7 @@ describe("registerDefinitionVersion (real Postgres)", () => {
           organizationId: ORG_A,
           definitionVersionId,
           occurrenceType: SourceOccurrenceType.repository,
-          repoFullName: "closedloop-ai/symphony-alpha",
+          repoFullName: "closedloop-ai/closedloop-ai",
           repoPath: ".claude/skills/example/SKILL.md",
           repoCommit: "abc123",
           computeTargetId: null,

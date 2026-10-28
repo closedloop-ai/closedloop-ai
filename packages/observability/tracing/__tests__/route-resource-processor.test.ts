@@ -1,7 +1,8 @@
 import { SpanKind, trace } from "@opentelemetry/api";
 import type { ReadableSpan, Span } from "@opentelemetry/sdk-trace-node";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteEnvForTest } from "../../__tests__/test-helpers";
+import { resetSpanFlushHook } from "../hooks";
 import { initTracing, resetTracingForTest } from "../provider";
 import { RouteResourceSpanProcessor } from "../route-resource-processor";
 
@@ -29,9 +30,16 @@ const ATTR_DATADOG_RESOURCE_NAME = "resource.name";
 const ATTR_NEXT_SPAN_NAME = "next.span_name";
 const BRANCHES_SPAN_NAME = "GET /branches/route";
 const GITHUB_FETCH_SPAN_NAME =
-  "fetch GET https://api.github.com/repos/closedloop-ai/symphony-alpha/pulls?state=open&per_page=100";
+  "fetch GET https://api.github.com/repos/closedloop-ai/closedloop-ai/pulls?state=open&per_page=100";
 const BARE_METHOD_SPAN_NAME = "GET";
 const RSC_BRANCHES_SPAN_NAME = "RSC GET /branches/route";
+
+// `initTracing()` below writes a process-wide slot since ISS-6817, so this
+// file's own starting state has to be established rather than inherited from
+// whichever sibling suite the worker ran last.
+beforeEach(() => {
+  resetSpanFlushHook();
+});
 
 afterEach(async () => {
   await resetTracingForTest();

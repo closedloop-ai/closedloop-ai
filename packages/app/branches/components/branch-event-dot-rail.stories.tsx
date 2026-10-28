@@ -20,9 +20,9 @@ const greenAndRed: MergedTraceItem[] = [
 ];
 
 const meta = {
-  title: "App Core/Branches/Event Dot Rail",
+  title: "Composites v1.0/Branches/Branch Event Dot Rail",
   component: BranchEventDotRail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchEventDotRail>;
 
@@ -45,6 +45,20 @@ export const StackedSemanticEvents: Story = {
       ev("b", "Human steering", "2026-06-10T10:05:00.000Z"),
       ev("g", "Commit pushed", "2026-06-10T10:15:00.000Z"),
       ev("r", "CI limit reached", "2026-06-10T10:25:00.000Z"),
+    ],
+  },
+};
+
+export const DenseOverflow: Story = {
+  args: {
+    onScrub: () => undefined,
+    onScrubRow: () => undefined,
+    traceItems: [
+      ev("b", "First human steering turn", "2026-06-10T10:00:00.000Z"),
+      ev("b", "Second human steering turn", "2026-06-10T10:00:00.000Z"),
+      ev("g", "Commit pushed", "2026-06-10T10:00:00.000Z"),
+      ev("r", "CI failed", "2026-06-10T10:00:00.000Z"),
+      ev("b", "Reviewer requested follow-up", "2026-06-10T10:00:00.000Z"),
     ],
   },
 };

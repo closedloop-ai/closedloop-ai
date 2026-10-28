@@ -28,13 +28,10 @@
  * SQL comparisons, the yaml `reference_now` guard) and the Date (every
  * `now?: Date` query parameter).
  */
-
-import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import {
   AGENT_FAILED_STATUS_TERMS,
   AGENT_SUCCESS_STATUS_TERMS,
 } from "@repo/api/src/agent-session-status";
-import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
 import { PROSE_MENTION_REF_METHODS } from "@repo/api/src/types/session-artifact-link";
 import type {
   Harness,
@@ -50,7 +47,6 @@ import {
   formatLocalDayKey,
   packIdFromSkillName,
 } from "../../src/main/database/db-helpers.js";
-import { PrState } from "../../src/main/enrichment/types.js";
 import type { openTestDb } from "../agent-db-test-utils.js";
 import { discoverDossiers, type GoldenDossier } from "./golden-corpus.js";
 import { loadLayer2Input } from "./golden-layer2-input.js";
@@ -58,7 +54,6 @@ import { loadLayer2Input } from "./golden-layer2-input.js";
 type TestDb = Awaited<ReturnType<typeof openTestDb>>;
 
 export const MS_PER_DAY = 86_400_000;
-export const TREND_LOOKBACK_DAYS = 90;
 const ISO_DATE_PREFIX = /^\d{4}-\d{2}-\d{2}/;
 
 // ── Corpus loading + reference clock ─────────────────────────────────────────
@@ -129,6 +124,10 @@ export type SessionRow = {
   status: string;
   billing_mode: string | null;
   started_at: string | null;
+  /** NOT NULL with an epoch default (migration 0005), so non-nullable here —
+   *  matching every other raw row shape in the suite. Epoch is a SENTINEL
+   *  ("not computed yet"), not an absence, and an all-time window admits it. */
+  last_activity_at: string;
   ended_at: string | null;
   updated_at: string | null;
   awaiting_input_since: string | null;
@@ -186,17 +185,12 @@ export type ArtifactRow = {
   repo_full_name: string | null;
   branch_name: string | null;
   pr_number: number | bigint | null;
-  pr_state: string | null;
   url: string | null;
   title: string | null;
-  head_sha: string | null;
   sha: string | null;
   committed_at: string | null;
   observed_at: string | null;
   created_at: string | null;
-  lines_added: number | bigint | null;
-  lines_removed: number | bigint | null;
-  files_changed: number | bigint | null;
   first_pushed_at: string | null;
   harness: string | null;
 };
@@ -218,12 +212,9 @@ export type PullRequestRow = {
   repo_full_name: string | null;
   pr_number: number | bigint | null;
   branch_name: string | null;
-  state: string | null;
   pr_url: string | null;
-  title: string | null;
   head_sha: string | null;
   opened_at: string | null;
-  merged_at: string | null;
   closed_at: string | null;
   observed_at: string | null;
   created_at: string | null;
@@ -347,43 +338,6 @@ function epochSeconds(iso: string): number {
   return Date.parse(iso) / 1000;
 }
 
-// ── Window math (deliberately independent of local-insights resolveRange) ────
-
-export type RangeTwin = {
-  startIso: string;
-  endIso: string;
-  trendStartIso: string;
-  priorStartIso: string;
-};
-
-export function rangeTwin(period: InsightsPeriod, refIso: string): RangeTwin {
-  const now = new Date(refIso);
-  const endIso = now.toISOString();
-  const trendDays =
-    period === InsightsPeriod.All
-      ? TREND_LOOKBACK_DAYS
-      : Math.min(Number(period), TREND_LOOKBACK_DAYS);
-  const trendStartIso = new Date(
-    now.getTime() - trendDays * MS_PER_DAY
-  ).toISOString();
-  if (period === InsightsPeriod.All) {
-    return {
-      startIso: new Date(0).toISOString(),
-      endIso,
-      trendStartIso,
-      priorStartIso: new Date(0).toISOString(),
-    };
-  }
-  const days = Number(period);
-  const start = new Date(now.getTime() - days * MS_PER_DAY);
-  return {
-    startIso: start.toISOString(),
-    endIso,
-    trendStartIso,
-    priorStartIso: new Date(start.getTime() - days * MS_PER_DAY).toISOString(),
-  };
-}
-
 /** ISO-string BETWEEN (inclusive both ends) — matches SQL string comparison. */
 export function inWindow(
   iso: string | null | undefined,
@@ -393,13 +347,20 @@ export function inWindow(
   return typeof iso === "string" && iso >= startIso && iso <= endIso;
 }
 
-/** Sessions whose started_at falls in [startIso, endIso] — the insights gate. */
+/** Sessions whose last_activity_at falls in [startIso, endIso] — the Utilization
+ *  and Delivery gate. ISS-10541 moved it off `started_at`; the column is spelled
+ *  out rather than imported for the reason `golden-layer3-range-twin.ts` gives
+ *  about the window EDGES. On THIS corpus both bases select the same rows, so no
+ *  pinned number rests on it; the straddler that separates them is seeded by
+ *  `local-insights-activity-window-alignment.test.ts`. */
 export function windowSessions(
   rows: L3Rows,
   startIso: string,
   endIso: string
 ): SessionRow[] {
-  return rows.sessions.filter((s) => inWindow(s.started_at, startIso, endIso));
+  return rows.sessions.filter((s) =>
+    inWindow(s.last_activity_at, startIso, endIso)
+  );
 }
 
 export function windowSessionIdSet(
@@ -445,17 +406,6 @@ export function prWindowTs(a: ArtifactRow): string | null {
   return a.observed_at ?? a.created_at;
 }
 
-/** DISTINCT artifact ids with a relation='created' link (createdArtifactLinksSubquery twin). */
-export function createdArtifactIdSet(rows: L3Rows): Set<string> {
-  const set = new Set<string>();
-  for (const l of rows.artifactLinks) {
-    if (l.relation === "created") {
-      set.add(l.artifact_id);
-    }
-  }
-  return set;
-}
-
 /** FEA-3585 + ISS-5764: ids whose ONLY links are non-delivery evidence. */
 export function nonDeliveryOnlyArtifactIdSet(rows: L3Rows): Set<string> {
   const hasNonDelivery = new Set<string>();
@@ -495,34 +445,6 @@ export function prArtifactsInWindow(
   );
 }
 
-/**
- * Merge-rate twin (FEA-3217): mirror the delivery query's terminal-state
- * arithmetic over the same delivery PR population — merged =
- * LOWER(pr_state)='merged', decided = merged OR closed — then route the counts
- * through the SAME shared SSOT (`ssotMergeRateFromCounts`, parity.ts) that the
- * production `computeDelivery` now calls, honoring its null-on-empty-cohort
- * contract: 0 decided PRs ⇒ `null` ("—"), NOT a fabricated `0` reading "0%
- * merged". Recomputed from the raw `pr_state` column, so it stays a fidelity
- * check rather than a copy of the query SQL.
- */
-export function deriveMergeRateTwin(
-  rows: L3Rows,
-  startIso: string,
-  endIso: string
-): number | null {
-  let merged = 0;
-  let closed = 0;
-  for (const a of prArtifactsInWindow(rows, startIso, endIso)) {
-    const state = a.pr_state?.toLowerCase() ?? null;
-    if (state === PrState.Merged) {
-      merged += 1;
-    } else if (state === PrState.Closed) {
-      closed += 1;
-    }
-  }
-  return ssotMergeRateFromCounts(merged, closed);
-}
-
 /** The dashboard getPullRequests population: PR artifacts with a pr_number,
  * a repo_full_name, AND at least one session link (the SQL's inner joins). */
 export function deriveDashboardPrArtifactIds(rows: L3Rows): Set<string> {
@@ -558,7 +480,24 @@ export function branchHasPushEvidence(
   );
 }
 
-/** Active write link: write-method link to a push-qualified branch artifact. */
+/**
+ * Active write link: a write-method link to a named branch artifact.
+ *
+ * ISS-8751: deliberately NOT push-qualified, because the production projection
+ * this twins is not. `activeWriteLinkSql` (`branch-reads.ts`) is exactly
+ * `method IN (BRANCH_WRITE_METHOD_SQL)`; ISS-8148 / PRD-683 D7 moved publication
+ * eligibility downstream of it, so the raw corpus retains every Wrote link and
+ * the eligibility coordinator gates Product membership afterwards. This twin
+ * kept the old gate and drifted silently for as long as no corpus session had a
+ * Wrote-linked branch with zero push evidence.
+ *
+ * The same un-gated fragment is also the even-split DIVISOR in
+ * `branchTokenAggregateSql`, so this population feeds `branchTokenAggregateTwin`
+ * below and must not be narrowed for it either.
+ *
+ * `branchHasPushEvidence` survives as its own predicate for the one place that
+ * genuinely wants push qualification: `distinct_push_qualified_branch_keys`.
+ */
 export function activeWriteLinks(
   rows: L3Rows
 ): { link: ArtifactLinkRow; artifact: ArtifactRow }[] {
@@ -570,9 +509,6 @@ export function activeWriteLinks(
     }
     const a = byId.get(l.artifact_id);
     if (a?.kind !== "branch" || a.branch_name === null) {
-      continue;
-    }
-    if (!branchHasPushEvidence(a, rows)) {
       continue;
     }
     out.push({ link: l, artifact: a });
@@ -974,10 +910,11 @@ export function deriveLocRows(
   const out: LocRowTwin[] = [];
   for (const a of prArtifactsInWindow(rows, startIso, endIso)) {
     const ts = prWindowTs(a);
+    // No line counts are stored (ISS-12709): every PR is unsized.
     out.push({
-      loc: num(a.lines_added) + num(a.lines_removed),
-      enriched: a.lines_added !== null && a.lines_removed !== null,
-      sized: a.lines_added !== null || a.lines_removed !== null,
+      loc: 0,
+      enriched: false,
+      sized: false,
       day: ts === null ? "" : localDayOf(ts),
     });
   }
@@ -1223,29 +1160,6 @@ export function derivePacks(
     packs.set(skill.packId, pack);
   }
   return packs;
-}
-
-/** getWorkflowData cooccurrence twin: DISTINCT (session, agent-type) pairs,
- * then per unordered type pair (t1 < t2) COUNT(DISTINCT session). */
-export function deriveCooccurrence(rows: L3Rows): Map<string, number> {
-  const typesBySession = new Map<string, Set<string>>();
-  for (const a of rows.agents) {
-    const type = a.subagent_type ?? a.type ?? "unknown";
-    const set = typesBySession.get(a.session_id) ?? new Set<string>();
-    set.add(type);
-    typesBySession.set(a.session_id, set);
-  }
-  const weights = new Map<string, number>();
-  for (const types of typesBySession.values()) {
-    const sorted = [...types].sort(compareStrings);
-    for (let i = 0; i < sorted.length; i++) {
-      for (let j = i + 1; j < sorted.length; j++) {
-        const key = `${sorted[i]}→${sorted[j]}`;
-        weights.set(key, (weights.get(key) ?? 0) + 1);
-      }
-    }
-  }
-  return weights;
 }
 
 // Independent Layer 3 twin of the production display allocator. This must not

@@ -5,15 +5,14 @@
  * PLN-1535 M5 deletion 2 retired the local-`gh` PR data lane, so the
  * git-pr-identity.ts and `/pr/list` / `/pr/files` / `/pr/file-diff` cases this
  * file also carried went with the code they covered. The retired routes' 410
- * contract is asserted in gateway-server.test.ts, over all eight paths at once.
+ * contract is asserted in gateway-server.test.ts and the provider route tests.
  *
  * Pure-function tests import the symbols directly and assert exact return
  * values; they need no dispatcher or harness. Route tests drive a bare
  * OperationDispatcher using an inline dispatchReq helper.
  *
- * All route tests return before any gh or git binary resolution, so no
- * gh fixture is required. getRepoSlug tests use real temp directories
- * (git binary required, matches existing test conventions in this suite).
+ * Most route tests return before git binary resolution. getRepoSlug tests use
+ * real temp directories (git binary required, matching existing conventions).
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -22,14 +21,11 @@ import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
+import { configureBinaryPathsResolver } from "../src/server/operations/binary-path-overrides.js";
 import { registerGitPrCreateRoute } from "../src/server/operations/git-pr-create.js";
-import {
-  getRepoSlug,
-  parsePrNumber,
-} from "../src/server/operations/git-pr-exec.js";
-import { configureBinaryPathsResolver } from "../src/server/operations/symphony-loop.js";
+import { getRepoSlug } from "../src/server/operations/git-pr-exec.js";
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -97,20 +93,8 @@ function makeCreateDispatcher(allowedDir: string): OperationDispatcher {
 }
 
 // ---------------------------------------------------------------------------
-// git-pr-exec.ts — parsePrNumber and getRepoSlug
+// git-pr-exec.ts — getRepoSlug
 // ---------------------------------------------------------------------------
-
-test("parsePrNumber: URL without /pull/ segment returns null (line 69 true)", () => {
-  assert.equal(parsePrNumber("https://github.com/owner/repo/issues/42"), null);
-});
-
-test("parsePrNumber: URL with /pull/ segment returns the number (line 69 false)", () => {
-  assert.equal(parsePrNumber("https://github.com/owner/repo/pull/99"), 99);
-});
-
-// line 74 path 0 (NaN branch) is STRUCTURALLY UNREACHABLE: PR_NUMBER_REGEX
-// captures only \d+ so match[1] is always a digit string; parseInt can never
-// return NaN.  Documented here rather than silently skipped.
 
 test("getRepoSlug: non-git directory returns empty string (line 61 catch)", async () => {
   const dir = makeTempDir();

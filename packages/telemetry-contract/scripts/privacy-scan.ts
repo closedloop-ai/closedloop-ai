@@ -2,13 +2,13 @@ const LOCAL_ABSOLUTE_PATH_PATTERN =
   /\/Users\/|\/home\/runner\/|\/github\/workspace\/|\/tmp\/|\/private\/tmp\/|\/var\/folders\/|[A-Za-z]:\\/;
 
 const LOCAL_ABSOLUTE_PATH_POSITIVE_CONTROLS = [
-  "/Users/dev/work/symphony-alpha/packages/telemetry-contract/src/span.ts",
-  "/home/runner/work/symphony-alpha/packages/telemetry-contract/src/span.ts",
+  "/Users/dev/work/closedloop-ai/packages/telemetry-contract/src/span.ts",
+  "/home/runner/work/closedloop-ai/packages/telemetry-contract/src/span.ts",
   "/github/workspace/packages/telemetry-contract/src/span.ts",
   "/tmp/telemetry-contract/build/span.ts",
   "/private/tmp/telemetry-contract/build/span.ts",
   "/var/folders/10/telemetry-contract/build/span.ts",
-  "C:\\Users\\dev\\symphony-alpha\\packages\\telemetry-contract\\src\\span.ts",
+  "C:\\Users\\dev\\closedloop-ai\\packages\\telemetry-contract\\src\\span.ts",
 ] as const;
 
 export function assertNoLocalAbsolutePath(path: string, source: string) {

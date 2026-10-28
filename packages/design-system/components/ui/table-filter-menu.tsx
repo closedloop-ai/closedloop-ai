@@ -13,7 +13,6 @@ import {
   DropdownMenuTrigger,
 } from "@closedloop-ai/design-system/components/ui/dropdown-menu";
 import { ListFilterIcon } from "lucide-react";
-import type { ReactNode } from "react";
 
 /**
  * Generic table filter menu — a `Filter` button opening a dropdown of submenus.
@@ -28,7 +27,6 @@ export type TableFilterOption = { value: string; label: string };
 export type TableFilterGroup = {
   id: string;
   label: string;
-  icon: ReactNode;
   options: TableFilterOption[];
   value: string;
   onValueChange: (value: string) => void;
@@ -53,13 +51,12 @@ export function TableFilterMenu({ groups }: { groups: TableFilterGroup[] }) {
 }
 
 function FilterSubMenu({ group }: { group: TableFilterGroup }) {
-  const { icon, label, options, value, onValueChange } = group;
+  const { label, options, value, onValueChange } = group;
   const selectedLabel = options.find((option) => option.value === value)?.label;
 
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        {icon}
         <span className="flex-1">{label}</span>
         {selectedLabel ? (
           <span className="text-muted-foreground text-xs">{selectedLabel}</span>

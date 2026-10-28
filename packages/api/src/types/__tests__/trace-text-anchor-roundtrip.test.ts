@@ -4,9 +4,9 @@
  * {@link traceTextAnchorSchema} wire boundary.
  *
  * `TraceTextAnchor` crosses a real trust boundary: the trace renderer emits it,
- * `apps/api` persists it in comment metadata, and
- * `apps/desktop/src/main/dashboard/agent-dashboard-trace-comment-sync.ts` reads
- * it back on the desktop side.
+ * `apps/api` persists it in comment metadata, and the comment read routes return
+ * it to every client, including desktop builds older than ISS-11213 that read it
+ * back through their local comment lane.
  *
  * What was already covered before this file: `service-mcp-projection.test.ts`
  * parses a populated anchor and persists it through `traceCommentsService.create`,
@@ -56,7 +56,7 @@ const MAXIMAL_ANCHOR: TraceTextAnchor = {
   startOffset: 8,
   endOffset: 41,
   sessionId: "sess-7731",
-  actor: { name: "claude", human: "mike" },
+  actor: { name: "claude", human: "marisol" },
 };
 
 /**

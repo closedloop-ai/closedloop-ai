@@ -17,9 +17,10 @@
     "@repo/observability": "workspace:*",
     "@repo/redis": "workspace:*",
     "tsx": "^4.21.0",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@repo/vitest-config": "workspace:*",
     "typescript": "^7.0.2"
   }
 }

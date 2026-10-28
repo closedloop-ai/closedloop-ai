@@ -59,7 +59,7 @@ export function SessionCard({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <HarnessBadge harness={session.harness} />
-          <SessionStatusBadge status={session.status} />
+          <SessionStatusBadge artifactId={session.id} status={session.status} />
         </div>
       </div>
 

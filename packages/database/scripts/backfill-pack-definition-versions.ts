@@ -66,13 +66,16 @@
 // throw before `main()` runs (Vitest only hides this because it aliases the
 // marker to the empty stub). The module is inherently server-side — it imports
 // the Prisma client at runtime — so the marker adds nothing but a broken entry.
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { catalogTargetKindToComponentKind } from "@repo/api/src/catalog-component-kind";
 import {
   computeDefinitionHash,
   NORMALIZER_CONTRACT_VERSION,
 } from "@repo/api/src/definition-fingerprint";
 import { SourceAccessState, SourceOccurrenceType } from "../generated/client";
-import type { TransactionClient } from "../index";
+import type { TransactionClient, withDb as withDbType } from "../index";
 
 /** Default page size for the bounded scan of pack-member version rows. */
 const DEFAULT_PAGE_SIZE = 500;
@@ -577,9 +580,7 @@ async function main(): Promise<void> {
  * transaction client), so they throw if reached — surfacing a wiring mistake
  * instead of silently writing outside a transaction.
  */
-function toScanClient(
-  withDbFn: typeof import("../index").withDb
-): PackBackfillClient {
+function toScanClient(withDbFn: typeof withDbType): PackBackfillClient {
   const unreachable = () => {
     throw new Error("scan client is read-only; writes must use the page tx");
   };
@@ -606,8 +607,8 @@ function toScanClient(
 
 // Only run when invoked directly (not when imported by the test).
 if (
-  typeof process !== "undefined" &&
-  import.meta.url === `file://${process.argv[1]}`
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href
 ) {
   main().catch((error) => {
     console.error("[backfill-pack-definition-versions] failed:", error);

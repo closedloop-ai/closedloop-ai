@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   collectSessionPrEvidence,
   resolveSessionPrAdmissionIdentity,
@@ -7,6 +6,7 @@ import {
   toSessionPrEvidenceRecords,
 } from "@repo/api/src/types/session-artifact-link";
 import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   localSessionHasPr,
@@ -59,7 +59,7 @@ test("orphaned CREATED write is suppressed from BOTH prs and prRefs", () => {
 });
 
 // A resolved branch that belongs to repo A must NOT un-orphan a CREATED PR write
-// for repo B (wongk reviewer: hasResolvedBranch was session-wide).
+// for repo B (whitlockk reviewer: hasResolvedBranch was session-wide).
 test("repo-A branch does not vouch for a CREATED write in repo B", () => {
   const s = session({
     externalSessionId: "cross-repo",
@@ -88,7 +88,7 @@ test("repo-A branch does not vouch for a CREATED write in repo B", () => {
 });
 
 // Repo-scoped identity: repo-a#42 and repo-b#42 are distinct PRs and must both
-// render (number-only identity would collapse them — wongk reviewer +
+// render (number-only identity would collapse them — whitlockk reviewer +
 // apps/desktop/AGENTS.md).
 test("same PR number in two repos renders as two distinct rows", () => {
   const s = session({
@@ -138,7 +138,7 @@ test("duplicate refs for the same repo+number fold to one row", () => {
   assert.equal(localSessionPullRequests(s).length, 1);
 });
 
-// ISS-4922 (wongk review): dedup keys on the SHARED `sessionPrIdentityKey`, which
+// ISS-4922 (whitlockk review): dedup keys on the SHARED `sessionPrIdentityKey`, which
 // runs the repo through `normalizeRepoFullName`. A trim/lowercase-only key made
 // `acme/repo-a.git#7` and `acme/repo-a#7` two identities here while the admission
 // gate treated them as ONE — so the same PR rendered twice.

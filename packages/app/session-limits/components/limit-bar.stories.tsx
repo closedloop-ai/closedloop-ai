@@ -11,7 +11,7 @@ import { LimitBar } from "./limit-bar";
  * 74% and at 91%, so a DOM assertion has to reach for a class name, and
  * reproducing it live needs an account genuinely sitting near its ceiling. A
  * canvas with every band on it at once turns "did the colour still change" into
- * a glance (wongk, PR #4572).
+ * a glance (whitlockk, PR #4572).
  *
  * `showResetDateTime` gets a canvas for the same reason. The drawer turns it on
  * and the sidebar leaves it off, so the two renderings of the same reset moment
@@ -19,8 +19,9 @@ import { LimitBar } from "./limit-bar";
  * without either one looking wrong on its own.
  */
 const meta = {
-  title: "App Core/Session Limits/Limit Bar",
+  title: "Composites v1.0/Session Limits/Limit Bar",
   component: LimitBar,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -66,6 +67,9 @@ function drawerFrame(children: ReactNode) {
  * than merely untested.
  */
 export const UrgencyScale = {
+  // Every urgency band in one canvas, not one concept per story — kept out of
+  // the AI manifest for that reason.
+  tags: ["!manifest"],
   render: () =>
     sidebarFrame(
       <div className="flex flex-col gap-3">

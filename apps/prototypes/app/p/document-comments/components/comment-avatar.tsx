@@ -74,13 +74,13 @@ export function CommentAvatar({
   return (
     <span className={cn("flex shrink-0 overflow-hidden rounded-[8px]", box)}>
       <Avatar className={cn("rounded-none", box)}>
-        {authorAvatar ? (
-          <AvatarImage
-            alt={author}
-            className="object-cover"
-            src={authorAvatar}
-          />
-        ) : null}
+        {/* ISS-8972: always mounted, `src` possibly undefined — see
+         * table-cell-list-primitives.tsx's ReferenceChip for why. */}
+        <AvatarImage
+          alt={author}
+          className="object-cover"
+          src={authorAvatar ?? undefined}
+        />
         <AvatarFallback
           className={cn("rounded-none", AVATAR_FALLBACK_CLASS_NAME[size])}
         >

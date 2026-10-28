@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { SessionPrLifecycleStatus } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 function emptyAttributionCache() {
@@ -33,7 +34,6 @@ async function seedPrArtifactLink(
     relation: string;
     method: string;
     title?: string | null;
-    prState?: string | null;
   }
 ): Promise<void> {
   const {
@@ -42,23 +42,21 @@ async function seedPrArtifactLink(
     relation,
     method,
     title = `PR #${prNumber}`,
-    prState = null,
   } = opts;
   const artifactId = `art-pr-${repoFullName}-${prNumber}`;
   const identityKey = `pull_request:${repoFullName}#${prNumber}`;
   const linkId = `${sessionId}:${artifactId}:${relation}:${method}`;
   await db.run(
     `INSERT INTO artifacts
-       (id, identity_key, kind, repo_full_name, pr_number, title, pr_state,
+       (id, identity_key, kind, repo_full_name, pr_number, title,
         harness, observed_at, created_at, last_seen_at)
-     VALUES ($1, $2, 'pull_request', $3, $4, $5, $6, 'claude', 't1', 't1', 't1')
+     VALUES ($1, $2, 'pull_request', $3, $4, $5, 'claude', 't1', 't1', 't1')
      ON CONFLICT(identity_key) DO NOTHING`,
     artifactId,
     identityKey,
     repoFullName,
     prNumber,
-    title,
-    prState
+    title
   );
   await db.run(
     `INSERT INTO session_artifact_links
@@ -89,10 +87,9 @@ test("FEA-2806: harness_pr_link referenced PR appears in synced session prs", as
       );
       await seedPrArtifactLink(db, "s1", {
         prNumber: 2353,
-        repoFullName: "closedloop-ai/symphony-alpha",
+        repoFullName: "closedloop-ai/closedloop-ai",
         relation: "referenced",
         method: "harness_pr_link",
-        prState: "MERGED",
       });
 
       const [session] = await db.syncSource.loadSyncedSessions(
@@ -105,8 +102,8 @@ test("FEA-2806: harness_pr_link referenced PR appears in synced session prs", as
       assert.equal(session.prs[0].num, 2353);
       assert.equal(
         session.prs[0].status,
-        "merged",
-        "harness_pr_link PR with MERGED state surfaces lifecycle status"
+        SessionPrLifecycleStatus.Unknown,
+        "no PR state is stored (ISS-12709), so the lifecycle status is unknown"
       );
     } finally {
       await db.close();

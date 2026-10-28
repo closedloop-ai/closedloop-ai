@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { safeStorageCountSchema } from "./safe-counts";
 
 const TOKEN_COUNT_DECIMAL_RE = /^(?:0|[1-9]\d*)$/;
 const MAX_SAFE_TOKEN_COUNT_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -8,13 +8,7 @@ const MAX_SAFE_TOKEN_COUNT_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
  * Accept only exact non-negative safe integers so widened BIGINT storage cannot
  * silently persist a value that was already rounded in JS.
  */
-export const safeStorageTokenCountSchema = z
-  .number()
-  .int()
-  .nonnegative()
-  .refine((value) => Number.isSafeInteger(value), {
-    message: "must be a safe integer",
-  });
+export const safeStorageTokenCountSchema = safeStorageCountSchema;
 
 /** Error raised when a token counter cannot be represented exactly in JS. */
 export class InvalidTokenCountError extends Error {

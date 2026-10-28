@@ -6,7 +6,7 @@
  * `test/agent-components-plugin-live-child-scope.test.ts`. That suite stops at
  * `listAgentComponentsLocal`, so it cannot prove the corrected number reaches
  * the screen — the production path could keep rendering the double-count while
- * the reader test passes (wongk review). This drives the built Electron app.
+ * the reader test passes (whitlockk review). This drives the built Electron app.
  *
  * Deliberately a SIBLING of `agents-invocations-dedupe.spec.ts` rather than an
  * extension of it: that spec's `DEDUPED_TOTAL` / `DOUBLE_COUNTED_TOTAL` are
@@ -136,15 +136,11 @@ const SEEDED_CORPUS: AgentComponentUsageCorpus = {
   sessions: [
     {
       costUsd: 4,
-      linesAdded: 400,
-      linesRemoved: 40,
       name: "ISS-6180 live session",
       sessionId: "iss-6180-live-session",
     },
     {
       costUsd: 2,
-      linesAdded: 120,
-      linesRemoved: 10,
       name: "ISS-6180 dead session",
       sessionId: "iss-6180-dead-session",
     },

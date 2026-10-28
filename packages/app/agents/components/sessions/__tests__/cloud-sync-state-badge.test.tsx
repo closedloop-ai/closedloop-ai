@@ -1,5 +1,6 @@
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +13,8 @@ const IN_THE_CLOUD = /this session is in the cloud/i;
 const LOCAL_ONLY_PREFIX = /^\s*Local only:/i;
 const LAST_UPLOAD_FAILED = /last transcript upload failed/i;
 const SYNCS_AUTOMATICALLY = /syncs automatically/i;
+const RETRIES_AUTOMATICALLY = /retries automatically/i;
+const UPLOAD_STOPPED = /isn't available, so the upload stopped/i;
 
 describe("CloudSyncStateBadge (PRD-536 E6, #3449)", () => {
   it("renders a state-carrying visible label on a pending row", () => {
@@ -139,20 +142,23 @@ describe("CloudSyncStateBadge transcript-scoped copy (ISS-4647)", () => {
     TranscriptDisposition.Stale,
     TranscriptDisposition.FailedPermanent,
     TranscriptDisposition.NeverExpected,
-  ])("keeps the Local only copy when the transcript is settled (%s)", (transcriptDisposition) => {
-    // A settled transcript cannot be the reason this row is pending, so the gap
-    // is the session itself — the broader statement is the honest one.
-    render(
-      <CloudSyncStateBadge
-        cloudSyncState={AgentSessionCloudSyncState.Pending}
-        transcriptDisposition={transcriptDisposition}
-      />
-    );
+  ])(
+    "keeps the Local only copy when the transcript is settled (%s)",
+    (transcriptDisposition) => {
+      // A settled transcript cannot be the reason this row is pending, so the gap
+      // is the session itself — the broader statement is the honest one.
+      render(
+        <CloudSyncStateBadge
+          cloudSyncState={AgentSessionCloudSyncState.Pending}
+          transcriptDisposition={transcriptDisposition}
+        />
+      );
 
-    expect(screen.getByTestId("cloud-sync-state-badge")).toHaveTextContent(
-      "Local only"
-    );
-  });
+      expect(screen.getByTestId("cloud-sync-state-badge")).toHaveTextContent(
+        "Local only"
+      );
+    }
+  );
 
   it("keeps the Local only copy when no transcript verdict was published", () => {
     // The desktop-outbox case, and any version-skewed producer that omits the
@@ -160,6 +166,67 @@ describe("CloudSyncStateBadge transcript-scoped copy (ISS-4647)", () => {
     render(
       <CloudSyncStateBadge
         cloudSyncState={AgentSessionCloudSyncState.Pending}
+      />
+    );
+
+    expect(screen.getByTestId("cloud-sync-state-badge")).toHaveTextContent(
+      "Local only"
+    );
+  });
+});
+
+describe("CloudSyncStateBadge paused copy (ISS-9884)", () => {
+  it("says the upload is paused, and does not promise a retry", () => {
+    // Inherited finding 2 from C1's review: this chip rendered "Transcript sync
+    // failed / It retries automatically" for a lane that had STOPPED
+    // attempting. Both halves were false of it.
+    render(
+      <CloudSyncStateBadge
+        cloudSyncState={AgentSessionCloudSyncState.Pending}
+        transcriptDisposition={TranscriptDisposition.FailedTransient}
+        transcriptDispositionReason={
+          TranscriptSkipReason.EnvironmentUnavailable
+        }
+      />
+    );
+
+    const badge = screen.getByTestId("cloud-sync-state-badge");
+    expect(badge).toHaveTextContent("Transcript upload paused");
+    expect(badge).not.toHaveTextContent(LAST_UPLOAD_FAILED);
+    expect(screen.getByTestId("tooltip-content")).not.toHaveTextContent(
+      RETRIES_AUTOMATICALLY
+    );
+    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+      UPLOAD_STOPPED
+    );
+  });
+
+  it("keeps the retrying copy for the OTHER failedTransient producer", () => {
+    // The control: same disposition, no reason. The desktop really is
+    // re-queueing this one, so "It retries automatically" is honest.
+    render(
+      <CloudSyncStateBadge
+        cloudSyncState={AgentSessionCloudSyncState.Pending}
+        transcriptDisposition={TranscriptDisposition.FailedTransient}
+      />
+    );
+
+    expect(screen.getByTestId("cloud-sync-state-badge")).toHaveTextContent(
+      "Transcript sync failed"
+    );
+    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+      RETRIES_AUTOMATICALLY
+    );
+  });
+
+  it("needs BOTH halves: a paused reason on a settled verdict changes nothing", () => {
+    render(
+      <CloudSyncStateBadge
+        cloudSyncState={AgentSessionCloudSyncState.Pending}
+        transcriptDisposition={TranscriptDisposition.FailedPermanent}
+        transcriptDispositionReason={
+          TranscriptSkipReason.EnvironmentUnavailable
+        }
       />
     );
 

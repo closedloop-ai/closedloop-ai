@@ -1,14 +1,11 @@
 "use client";
 
-import type { CatalogItemDto } from "@repo/api/src/types/distribution";
 import type { PackDistributionWithdrawal } from "@repo/app/packs/hooks/use-pack-distribution-withdrawal";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
 
 type WithdrawDistributionDialogProps = {
   /** The withdraw flow this dialog confirms. */
   readonly withdrawal: PackDistributionWithdrawal;
-  /** The pack being withdrawn; named in the blast-radius sentence. */
-  readonly pack: CatalogItemDto | null;
 };
 
 /**
@@ -30,11 +27,14 @@ type WithdrawDistributionDialogProps = {
  */
 export function WithdrawDistributionDialog({
   withdrawal,
-  pack,
 }: WithdrawDistributionDialogProps) {
+  // ISS-6925 review (whitlockk): the subject comes from the flow's own capture at
+  // request time, NOT from the surface's live selection. Back/Forward now move
+  // the selection under an open dialog, and renaming the subject mid-flight
+  // would make the confirmation describe a pack the pending ids do not touch.
   // Falls back to a generic subject rather than an empty string or a fabricated
-  // name if the selection is cleared while the dialog is open.
-  const subject = pack?.name ?? "This pack";
+  // name when no name was known.
+  const subject = withdrawal.pendingPackName ?? "This pack";
 
   return (
     <ConfirmationDialog

@@ -41,7 +41,7 @@ import type {
 } from "@repo/api/src/types/convert-install";
 import type { ConversionCapability } from "@repo/api/src/types/harness-conversion";
 import { resolveConversionCapability } from "@repo/api/src/types/harness-conversion";
-import type { HarnessName } from "@repo/crewd/model";
+import type { HarnessName } from "@repo/api/src/types/harness-name";
 import {
   Alert,
   AlertDescription,
@@ -91,8 +91,8 @@ import { InstallStateStatus } from "./install-state-status";
  * the engine — the Sheet never handles a working directory). Deriving it with
  * `Omit` rather than hand-mirroring the fields means a new required field added
  * to `ConvertInstallRequest` breaks this seam at compile time instead of silently
- * diverging (wongk review). The owning surface resolves a pack's `Harness` to a
- * concrete crewd `HarnessName` before it reaches here.
+ * diverging (whitlockk review). The owning surface resolves a pack's `Harness` to a
+ * concrete `HarnessName` before it reaches here.
  */
 export type ConvertInstallTarget = Omit<ConvertInstallRequest, "cwd">;
 
@@ -259,7 +259,7 @@ const DroppedFields = ({ fields }: { fields: readonly string[] }) => {
 // and tells the truth about retryability: a PERMANENT failure (invalid request,
 // missing catalog command, invalid/missing working directory) can never succeed
 // on retry, so the copy says the install is blocked rather than inviting a retry
-// that would fail again (wongk review). A transient/unclassified failure keeps
+// that would fail again (whitlockk review). A transient/unclassified failure keeps
 // the "Try again" invitation.
 const FailureAlert = ({
   targetLabel,
@@ -408,7 +408,7 @@ const confirmLabel = (params: {
   }
   if (params.phase === ConvertInstallPhase.Error) {
     // A permanent failure can't succeed on retry, so the confirm reads as
-    // blocked rather than inviting a retry that would fail again (wongk review).
+    // blocked rather than inviting a retry that would fail again (whitlockk review).
     return params.retryable ? "Try again" : "Can't install";
   }
   return requiresLossConfirm(params.summaryState)
@@ -464,7 +464,7 @@ const ConvertInstallSheetBody = ({
   // (invalid request, missing catalog command, invalid/missing cwd) blocks the
   // confirm rather than offering a retry that would immediately fail again. A
   // rejected engine call leaves no outcome (undefined class) and degrades to
-  // retryable so older producers stay safe (wongk review).
+  // retryable so older producers stay safe (whitlockk review).
   const retryable = isRetryableFailure(outcome?.failureClass);
   const errorPermanent = isError && !retryable;
   // The single canonical status token the header shows, in the FEA-4083
@@ -533,7 +533,7 @@ const ConvertInstallSheetBody = ({
             {/* The conversion runs from the component's CURRENT format, not its
                 original provenance: a Claude-authored component already in Codex
                 format converts Codex → target, so the arrow names the current
-                harness (wongk review). Provenance stays visible in the body. */}
+                harness (whitlockk review). Provenance stays visible in the body. */}
             <HarnessArrow from={currentHarnessLabel} to={targetLabel} />
           </div>
         </SheetDescription>
@@ -610,7 +610,7 @@ const ConvertInstallSheetBody = ({
  * on dismiss. The body is keyed by the full CONVERSION IDENTITY (packId + source
  * + current + target harness), so switching any conversion axis while the Sheet
  * stays mounted remounts a fresh state machine — a stale in-flight result from
- * the previous conversion can never paint Done against a new target (wongk
+ * the previous conversion can never paint Done against a new target (whitlockk
  * review). Keying by `packId` alone let that stale completion survive an axis
  * switch.
  */

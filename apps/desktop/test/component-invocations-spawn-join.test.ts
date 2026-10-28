@@ -5,7 +5,7 @@
  * Before ISS-4592 Claude parser subagents carried no `type`, so the fuzzy
  * "same type" tier never fired for them and mispairing was impossible in
  * practice. Populating `type` activates that tier — and with N same-type
- * siblings (16 in golden dossier f216298d) it pairs by ARRAY ORDER, which is
+ * siblings (16 in golden dossier 3870c244) it pairs by ARRAY ORDER, which is
  * not identity. The parser now records the delegating tool_use id on the
  * subagent, so the exact join runs first.
  *
@@ -13,8 +13,8 @@
  * `subagent:<parser subagent id>` when a parser record was matched.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
+import { describe, test } from "vitest";
 import { deriveAgentComponentInvocationCandidates } from "../src/main/database/component-invocations.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 

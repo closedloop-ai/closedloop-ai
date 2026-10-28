@@ -8,8 +8,8 @@
  * historical-import delay and the deferred-import task wrapper that lets
  * `onBootImportComplete` wait on a delayed import.
  *
- * Extracted from `collector-manager.ts` so that grandfathered file stays
- * shrink-only. The manager still owns the epoch (`generation`), the boot-import
+ * Extracted from `collector-manager.ts` so that file shrinks rather than
+ * grows. The manager still owns the epoch (`generation`), the boot-import
  * watchdog, and the import passes themselves; this module only builds the plan
  * and hands back the promises/handles the manager must track for `stop()`.
  */
@@ -45,6 +45,11 @@ export type HarnessStartupInput = {
   historicalImportStaggerMs?: number | undefined;
   catchupPollMs?: number | null | undefined;
   watchDirectory?: HarnessWatcherOptions["watchDirectory"] | undefined;
+  /**
+   * ISS-8600: forwarded to each watcher this epoch starts, harness bound here
+   * because `createHarnessWatcher` is generic and holds no harness identity.
+   */
+  onWatchLost?: ((harness: Harness) => void) | undefined;
   /** Full-sweep import for one harness (a watcher catch-up, or the boot pass). */
   runFullImport: (
     collector: HarnessCollector,
@@ -200,6 +205,9 @@ function startCollectorWatcher(
     initialImportDelayMs: historicalDelayMs || undefined,
     catchupPollMs: runHistoricalImport ? input.catchupPollMs : null,
     ...(input.watchDirectory ? { watchDirectory: input.watchDirectory } : {}),
+    // ISS-8600: the engine stays harness-agnostic — the identity is closed over
+    // here, where the collector is in scope, rather than threaded through it.
+    onWatchLost: () => input.onWatchLost?.(collector.key),
     log: input.log,
   });
 }

@@ -1,7 +1,15 @@
-import { DocumentType } from "@repo/api/src/types/document";
-import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document";
+import {
+  createMockDocument,
+  makeRawArtifact,
+} from "@repo/app/shared/test-fixtures/documents";
 import { describe, expect, test } from "vitest";
 import {
+  getArtifactRoute,
   getDocumentRoute,
   getDocumentTypeLabel,
   getDocumentTypeRoute,
@@ -12,29 +20,32 @@ import {
 } from "../document-navigation";
 
 describe("getDocumentRoute", () => {
-  // FEA-4137: Feature was renamed "Issue" and its detail route moved to /issues/.
-  test("routes Feature documents to the org-relative /issues/:slug", () => {
+  test("routes Feature documents to the org-relative /documents/:slug", () => {
     const doc = createMockDocument({
       type: DocumentType.Feature,
       slug: "login-flow",
     });
-    expect(getDocumentRoute(doc)).toBe("/issues/login-flow");
+    expect(getDocumentRoute(doc)).toBe(`/${DOCUMENT_ROUTE_PREFIX}/login-flow`);
   });
 
-  test("routes PRD documents to the org-relative /prds/:slug", () => {
+  test("routes PRD documents to the org-relative /documents/:slug", () => {
     const doc = createMockDocument({
       type: DocumentType.Prd,
       slug: "checkout-prd",
     });
-    expect(getDocumentRoute(doc)).toBe("/prds/checkout-prd");
+    expect(getDocumentRoute(doc)).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/checkout-prd`
+    );
   });
 
-  test("routes ImplementationPlan documents to /implementation-plans/:slug", () => {
+  test("routes ImplementationPlan documents to /documents/:slug", () => {
     const doc = createMockDocument({
       type: DocumentType.ImplementationPlan,
       slug: "auth-rewrite",
     });
-    expect(getDocumentRoute(doc)).toBe("/implementation-plans/auth-rewrite");
+    expect(getDocumentRoute(doc)).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/auth-rewrite`
+    );
   });
 
   test("returns null for Template documents", () => {
@@ -71,25 +82,25 @@ describe("isNavigableDocument", () => {
 // `documentType` + `slug`, so it resolves via getDocumentTypeRoute rather than
 // the Artifact-keyed getArtifactRoute.
 describe("getDocumentTypeRoute", () => {
-  test("routes each navigable document type to its org-relative prefix", () => {
+  test("routes each navigable document type to /documents/:slug", () => {
     expect(getDocumentTypeRoute(DocumentType.Feature, "FEA-3628")).toBe(
-      "/issues/FEA-3628"
+      `/${DOCUMENT_ROUTE_PREFIX}/FEA-3628`
     );
     expect(getDocumentTypeRoute(DocumentType.Feature, "ISS-3628")).toBe(
-      "/issues/ISS-3628"
+      `/${DOCUMENT_ROUTE_PREFIX}/ISS-3628`
     );
     expect(getDocumentTypeRoute(DocumentType.Prd, "PRD-538")).toBe(
-      "/prds/PRD-538"
+      `/${DOCUMENT_ROUTE_PREFIX}/PRD-538`
     );
     expect(
       getDocumentTypeRoute(DocumentType.ImplementationPlan, "PLN-810")
-    ).toBe("/implementation-plans/PLN-810");
+    ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PLN-810`);
     expect(getDocumentTypeRoute(DocumentType.Doc, "DOC-1")).toBe(
-      "/documents/DOC-1"
+      `/${DOCUMENT_ROUTE_PREFIX}/DOC-1`
     );
   });
 
-  test("returns null for a non-navigable type (Template)", () => {
+  test("returns null for a Template, which has no detail route", () => {
     expect(getDocumentTypeRoute(DocumentType.Template, "blank")).toBeNull();
   });
 
@@ -105,7 +116,25 @@ describe("getDocumentTypeRoute", () => {
         "acme",
         getDocumentTypeRoute(DocumentType.Feature, "FEA-3628")
       )
-    ).toBe("/acme/issues/FEA-3628");
+    ).toBe(`/acme/${DOCUMENT_ROUTE_PREFIX}/FEA-3628`);
+  });
+});
+
+describe("getArtifactRoute", () => {
+  test("routes a document artifact to /documents/:slug", () => {
+    const artifact = makeRawArtifact(ArtifactType.Document, {
+      subtype: DocumentType.Prd,
+      slug: "PRD-1",
+    });
+    expect(getArtifactRoute(artifact)).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PRD-1`);
+  });
+
+  test("returns null for a Template artifact, which has no detail route", () => {
+    const artifact = makeRawArtifact(ArtifactType.Document, {
+      subtype: DocumentType.Template,
+      slug: "TPL-1",
+    });
+    expect(getArtifactRoute(artifact)).toBeNull();
   });
 });
 
@@ -114,28 +143,46 @@ describe("getDocumentTypeRoute", () => {
 // the slug prefix and delegates to getDocumentTypeRoute.
 describe("getRouteForSlug", () => {
   test("routes each navigable typed-slug prefix to its org-relative route", () => {
-    expect(getRouteForSlug("FEA-3595")).toBe("/issues/FEA-3595");
-    expect(getRouteForSlug("ISS-3595")).toBe("/issues/ISS-3595");
-    expect(getRouteForSlug("PRD-538")).toBe("/prds/PRD-538");
-    expect(getRouteForSlug("PLN-988")).toBe("/implementation-plans/PLN-988");
-    expect(getRouteForSlug("DOC-1")).toBe("/documents/DOC-1");
+    expect(getRouteForSlug("FEA-3595")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/FEA-3595`
+    );
+    expect(getRouteForSlug("ISS-3595")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/ISS-3595`
+    );
+    expect(getRouteForSlug("PRD-538")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/PRD-538`
+    );
+    expect(getRouteForSlug("PLN-988")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/PLN-988`
+    );
+    expect(getRouteForSlug("DOC-1")).toBe(`/${DOCUMENT_ROUTE_PREFIX}/DOC-1`);
   });
 
   // A lowercase branch-name slug must resolve to the CANONICAL-cased route, not a
   // lowercase one: the by-slug DB lookup is a case-sensitive exact match against
-  // the stored `FEA-1952`/`ISS-1952` row, so `/issues/fea-1952` would 404 (wongk).
+  // the stored `FEA-1952`/`ISS-1952` row, so `/documents/fea-1952` would 404 (whitlockk).
   test("normalizes a lowercase prefix to canonical case in the route", () => {
-    expect(getRouteForSlug("fea-1952")).toBe("/issues/FEA-1952");
-    expect(getRouteForSlug("prd-538")).toBe("/prds/PRD-538");
-    expect(getRouteForSlug("pln-988")).toBe("/implementation-plans/PLN-988");
+    expect(getRouteForSlug("fea-1952")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/FEA-1952`
+    );
+    expect(getRouteForSlug("prd-538")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/PRD-538`
+    );
+    expect(getRouteForSlug("pln-988")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/PLN-988`
+    );
   });
 
   // The FEA compat alias resolves to the Issue route WITHOUT re-listing FEA here:
   // the alias entry is derived from SLUG_PREFIX_ALIASES (the single alias SSOT),
-  // so both prefixes for the same identity route identically (wongk).
+  // so both prefixes for the same identity route identically (whitlockk).
   test("resolves the FEA compat alias to the Issue route via the alias SSOT", () => {
-    expect(getRouteForSlug("FEA-592")).toBe("/issues/FEA-592");
-    expect(getRouteForSlug("ISS-592")).toBe("/issues/ISS-592");
+    expect(getRouteForSlug("FEA-592")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/FEA-592`
+    );
+    expect(getRouteForSlug("ISS-592")).toBe(
+      `/${DOCUMENT_ROUTE_PREFIX}/ISS-592`
+    );
   });
 
   test("returns null for a prefix with no navigable route (PRO/WRK/SES)", () => {
@@ -154,7 +201,7 @@ describe("getRouteForSlug", () => {
 
   test("composes with withOrgSlug into an absolute path", () => {
     expect(withOrgSlug("acme", getRouteForSlug("FEA-3595"))).toBe(
-      "/acme/issues/FEA-3595"
+      `/acme/${DOCUMENT_ROUTE_PREFIX}/FEA-3595`
     );
   });
 });
@@ -225,7 +272,7 @@ describe("withOrgSlug", () => {
       slug: "login-flow",
     });
     expect(withOrgSlug("test-org", getDocumentRoute(doc))).toBe(
-      "/test-org/issues/login-flow"
+      `/test-org/${DOCUMENT_ROUTE_PREFIX}/login-flow`
     );
   });
 

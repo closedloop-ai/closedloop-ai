@@ -219,7 +219,7 @@ describe("GET /api/collaboration/rooms/resolve", () => {
       const body = await response.json();
 
       expect(body).toHaveLength(1);
-      expect(body[0].url).toBe("/test-org/prds/prd-abc");
+      expect(body[0].url).toBe("/test-org/documents/prd-abc");
     });
 
     it("constructs correct URL for IMPLEMENTATION_PLAN type", async () => {
@@ -237,7 +237,7 @@ describe("GET /api/collaboration/rooms/resolve", () => {
       const response = await GET(createRequest(roomId));
       const body = await response.json();
 
-      expect(body[0].url).toBe("/test-org/implementation-plans/plan-xyz");
+      expect(body[0].url).toBe("/test-org/documents/plan-xyz");
     });
 
     it("constructs correct URL for FEATURE type", async () => {
@@ -255,10 +255,10 @@ describe("GET /api/collaboration/rooms/resolve", () => {
       const response = await GET(createRequest(roomId));
       const body = await response.json();
 
-      expect(body[0].url).toBe("/test-org/issues/feat-001");
+      expect(body[0].url).toBe("/test-org/documents/feat-001");
     });
 
-    it("leaves url null when meta.type is not a navigable type (e.g. TEMPLATE)", async () => {
+    it("leaves a TEMPLATE room without a url: Template has no detail route (ISS-12855, PRD-799)", async () => {
       setupAuthAndUser();
       setupParseRoomId();
 
@@ -266,7 +266,6 @@ describe("GET /api/collaboration/rooms/resolve", () => {
       mockResolveRoomMetadata.mockResolvedValue([
         { roomId, name: "tmpl-001", url: null },
       ]);
-      // TEMPLATE has no route prefix in TYPE_ROUTE_PREFIX
       mockFetchBatchMeta.mockResolvedValue({
         "tmpl-001": { title: "My Template", type: DocumentType.Template },
       });
@@ -373,7 +372,7 @@ describe("GET /api/collaboration/rooms/resolve", () => {
 
       expect(body).toHaveLength(2);
       // prd room had url: null → gets enriched
-      expect(body[0].url).toBe("/test-org/prds/prd-abc");
+      expect(body[0].url).toBe("/test-org/documents/prd-abc");
       expect(body[0].name).toBe("My PRD");
       // plan room had non-null url → not overridden
       expect(body[1].url).toBe("/implementation-plans/plan-xyz");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import type { ShutdownResult } from "../src/main/lifecycle/shutdown.js";
 import {
   type BeforeQuitEvent,

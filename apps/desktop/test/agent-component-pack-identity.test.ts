@@ -1,5 +1,5 @@
 /**
- * ISS-5534 (wongk review on #4902) — the DESKTOP half of the parent-pack
+ * ISS-5534 (whitlockk review on #4902) — the DESKTOP half of the parent-pack
  * identity the Agents list emits beside each row's `invocations`.
  *
  * The shared Invocations summary card drops a plugin's rolled-up total only when
@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   emitPackIdentity,
   pluginPackCandidates,

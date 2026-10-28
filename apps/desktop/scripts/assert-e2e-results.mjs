@@ -50,6 +50,38 @@
 //     that produced no outcome proves nothing, and a swallowed wrapper status
 //     would otherwise turn it into a green required check.
 //  3. SPEC FAILURES — `stats.unexpected > 0`.
+//
+//     ISS-10132 narrowed this by DATADOG QUARANTINE, and only ever by a spec
+//     the run NAMED as quarantined. dd-trace applies Test Management quarantine
+//     inside Playwright's runner — a run whose every failure is quarantined
+//     returns `passed` and exits 0 — but it never rewrites this report, so
+//     `unexpected` still counted them and this gate ejected the merge group
+//     anyway. Measured over EVERY `merge_group` run whose `desktop-e2e` job
+//     failed between 2026-09-09 and 2026-09-12 — 14 of them. 13 printed no pnpm
+//     `[ELIFECYCLE]` line, so Playwright had exited 0 and dd-trace had already
+//     prevented-to-fail; the 1 that DID print it is the unquarantined control.
+//     `SPEC FAILURES` failed all 14.
+//
+//     `dd-quarantine-reporter.ts` writes dd-trace's `_ddIsQuarantined` tags
+//     beside this report and the partition below drops exactly the specs it
+//     names — and only the ones dd-trace ITSELF absorbs, which excludes a
+//     quarantined attempt-to-fix test, one the runner leaves red on purpose.
+//
+//     This is NOT the "clear condition 3 when the wrapper exited 0" shortcut,
+//     which would reopen the droppable-exit-code hole ISS-5111 exists to close.
+//     The wrapper's exit code is not read here and is still re-raised by both
+//     callers. Three things keep the narrowing from widening into that:
+//       - an absent, unreadable or wholly malformed quarantine report absorbs
+//         NOTHING, and a single entry short of its three join fields contributes
+//         no key, so the VERDICT is its pre-ISS-10132 self on every such input
+//         (the failure message gained a clause, so the text is not identical);
+//       - a failing spec the report does not name still reddens, whatever else
+//         is quarantined alongside it;
+//       - `unexpected > 0` with NO namable failing spec still reddens, because a
+//         failure this gate cannot name is not one it can match against a list.
+//
+//     The trade it settles is on the record: ISS-6377 (quarantine-on) against
+//     ISS-5111 (fail-closed), on a REQUIRED context.
 //  4. CONTRACT CHANGE / unreadable report — see `readReport` and the
 //     `stats.unexpected` type check below.
 //
@@ -119,7 +151,7 @@ function failingTitles(report) {
   const visitSuite = (suite) => {
     for (const spec of suite.specs ?? []) {
       if (spec.ok !== true) {
-        titles.push(`${spec.file ?? "?"}:${spec.line ?? "?"} › ${spec.title}`);
+        titles.push(specKey(spec));
       }
     }
     for (const child of suite.suites ?? []) {
@@ -154,7 +186,7 @@ function statCount(stats, key) {
  * same entry. Spec titles are PR-controlled, so a whole-message search let any PR
  * mark an unrelated FATAL error tolerated just by naming a spec "Worker teardown
  * timeout of doom", waving through the exact load abort this gate exists to catch
- * (wongk, PR #4731). The header is the only part of the entry Playwright itself
+ * (whitlockk, PR #4731). The header is the only part of the entry Playwright itself
  * writes, so it is the only part that may decide this.
  *
  * Matched loosely WITHIN that line rather than pinned to the duration: were a
@@ -223,6 +255,77 @@ function runnerErrorMessages(report) {
   });
 }
 
+// Written by `dd-quarantine-reporter.ts` into the same directory, so the two
+// artifacts move together and a caller redirecting the report cannot silently
+// leave the gate reading a stale quarantine verdict from the default path.
+const QUARANTINE_REPORT = "dd-quarantine.json";
+
+/**
+ * How one spec is named, for a human reading the failure AND for the ISS-10132
+ * join against the quarantine report. ONE formatter, because the two sides are
+ * compared: a second copy of this template is a join that silently stops
+ * matching and a gate that silently stops absorbing.
+ */
+function specKey(spec) {
+  return `${spec.file ?? "?"}:${spec.line ?? "?"} › ${spec.title}`;
+}
+
+/**
+ * The quarantine verdict `dd-quarantine-reporter.ts` wrote beside this report,
+ * as the SAME `file:line › title` keys `failingTitles` builds — so neither side
+ * invents an identifier the other has to reproduce.
+ *
+ * Best-effort BY DESIGN, and in exactly one direction: no reporter, no tracer,
+ * no key, an unparseable file — each yields an EMPTY set, and an entry short of
+ * its three join fields contributes NO key, so the worst a reshaped file can do
+ * is absorb less. It is never an error, because a missing quarantine verdict is
+ * not evidence about the suite — it is the absence of a reason to be lenient.
+ */
+function readQuarantinedKeys() {
+  const keys = new Set();
+  let parsed;
+  try {
+    parsed = JSON.parse(
+      readFileSync(
+        path.join(path.dirname(REPORT_PATH), QUARANTINE_REPORT),
+        "utf8"
+      )
+    );
+  } catch {
+    return keys;
+  }
+  for (const spec of Array.isArray(parsed?.quarantinedSpecs)
+    ? parsed.quarantinedSpecs
+    : []) {
+    if (isNamedSpec(spec)) {
+      keys.add(specKey(spec));
+    }
+  }
+  return keys;
+}
+
+/**
+ * All three join fields present and usable — the precondition for a quarantine
+ * entry to be a STATEMENT about a spec rather than a shape this gate happens to
+ * survive parsing.
+ *
+ * `specKey` renders an absent `file` or `line` as `?`, so an entry short of one
+ * would key as `?:? › title` and match a FAILING spec the report left equally
+ * unnamed: a reshaped quarantine report absorbing a failure neither side can
+ * identify, which is the opposite of what `readQuarantinedKeys` promises
+ * (whitlockk, PR #7187).
+ */
+function isNamedSpec(spec) {
+  return (
+    typeof spec?.file === "string" &&
+    spec.file.length > 0 &&
+    Number.isInteger(spec?.line) &&
+    spec.line > 0 &&
+    typeof spec?.title === "string" &&
+    spec.title.length > 0
+  );
+}
+
 const report = readReport();
 const stats = report?.stats;
 if (!stats || typeof stats.unexpected !== "number") {
@@ -274,18 +377,38 @@ if (outcomes === 0) {
   );
 }
 
-// Condition 3: individual specs failed every attempt.
+// Condition 3: individual specs failed every attempt, minus the ones Datadog
+// quarantine already absorbed inside the runner (ISS-10132).
+const quarantinedKeys = readQuarantinedKeys();
+let absorbedTitles = [];
 if (unexpected > 0) {
   const titles = failingTitles(report);
-  fail(
-    `SPEC FAILURES: ${unexpected} spec(s) failed every attempt:\n${titles.map((title) => `  - ${title}`).join("\n")}`
+  // A failing spec this gate could not name cannot be matched against the
+  // quarantine list, so it can never be absorbed — `titles` being short of
+  // `unexpected` means the report shape changed, which is a reason to redden.
+  const unabsorbed =
+    titles.length === unexpected
+      ? titles.filter((title) => !quarantinedKeys.has(title))
+      : titles;
+  absorbedTitles = titles.filter((title) => quarantinedKeys.has(title));
+
+  if (unabsorbed.length > 0 || titles.length !== unexpected) {
+    fail(
+      `SPEC FAILURES: ${unexpected} spec(s) failed every attempt, ${unabsorbed.length} of them NOT quarantined in Datadog:\n${unabsorbed.map((title) => `  - ${title}`).join("\n")}`
+    );
+  }
+
+  // Loud, never silent — the same treatment as a tolerated teardown error. A
+  // quarantined spec that keeps failing is still a spec nobody is gating on.
+  process.stderr.write(
+    `::warning::e2e suite had ${unexpected} failing spec(s), ALL of them quarantined in Datadog Test Management; not treated as a suite failure (ISS-10132). Quarantine is not coverage — each of these is ungated until its tag comes off:\n${absorbedTitles.map((title) => `  - ${title}`).join("\n")}\n`
   );
 }
 
 // The tolerated count is reported rather than folded into "0 runner errors" —
 // a pass that silently absorbed a harness error would misdescribe the run.
 process.stdout.write(
-  `e2e result assertion passed: 0 unexpected, 0 fatal runner errors (${toleratedRunnerErrors.length} tolerated), ${expected} passed, ${skipped} skipped, ${flaky} flaky.\n`
+  `e2e result assertion passed: ${unexpected} unexpected (${absorbedTitles.length} Datadog-quarantined), 0 fatal runner errors (${toleratedRunnerErrors.length} tolerated), ${expected} passed, ${skipped} skipped, ${flaky} flaky.\n`
 );
 
 // Reached only after every condition above passed, so this cannot report a

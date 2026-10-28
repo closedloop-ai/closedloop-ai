@@ -1,3 +1,4 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import {
   type TranscriptCompleteResponse,
   TranscriptUploadStatus,
@@ -5,8 +6,13 @@ import {
 } from "@repo/api/src/types/desktop-transcripts";
 import { transcriptSearchIndexService } from "@/app/search/transcript-search-indexer";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import { parseBody, successResponse } from "@/lib/route-utils";
 import { transcriptSyncService } from "../service";
+import { transcriptCompleteReceiptWrite } from "../transcript-complete-receipt";
 import { transcriptErrorResponse } from "../transcript-route-helpers";
 
 /** Max control-plane request body — identity + checksums only, no bytes. */
@@ -22,37 +28,48 @@ const TRANSCRIPT_COMPLETE_MAX_BYTES = 8192;
 export const POST = withAnyAuth<
   TranscriptCompleteResponse,
   "/desktop/transcripts/complete"
->(async ({ user, clerkUserId }, request) => {
-  const { body, errorResponse: bodyError } = await parseBody(
-    request,
-    transcriptCompleteRequestSchema,
-    { maxBytes: TRANSCRIPT_COMPLETE_MAX_BYTES }
-  );
-  if (bodyError) {
-    return bodyError;
-  }
+>(
+  withOperationReceipts(
+    OperationKind.DesktopSync,
+    async ({ user, clerkUserId, authMethod }, request, _params, receipts) => {
+      const { body, errorResponse: bodyError } = await parseBody(
+        request,
+        transcriptCompleteRequestSchema,
+        { maxBytes: TRANSCRIPT_COMPLETE_MAX_BYTES }
+      );
+      if (bodyError) {
+        return bodyError;
+      }
 
-  const result = await transcriptSyncService.complete({
-    request: body,
-    organizationId: user.organizationId,
-    userId: user.id,
-    clerkUserId,
-  });
+      const result = await transcriptSyncService.complete(
+        {
+          request: body,
+          organizationId: user.organizationId,
+          userId: user.id,
+          clerkUserId,
+          authMethod,
+        },
+        receipts.whenRecording((tx, written) =>
+          receipts.record(tx, transcriptCompleteReceiptWrite(written))
+        )
+      );
 
-  if (result.ok) {
-    // FEA-3930: on a verified upload, best-effort index the transcript CONTENT
-    // into unified search — gated on the org's `searchIncludeTranscripts` and
-    // scoped to the MAIN file inside the indexer. Fail-open via `waitUntil`; a
-    // projection failure never affects the completed upload.
-    if (result.value.status === TranscriptUploadStatus.Uploaded) {
-      transcriptSearchIndexService.indexAfterCommit({
-        organizationId: user.organizationId,
-        computeTargetId: body.computeTargetId,
-        externalSessionId: body.externalSessionId,
-        fileKey: body.fileKey,
-      });
+      if (result.ok) {
+        // FEA-3930: on a verified upload, best-effort index the transcript CONTENT
+        // into unified search — gated on the org's `searchIncludeTranscripts` and
+        // scoped to the MAIN file inside the indexer. Fail-open via `waitUntil`; a
+        // projection failure never affects the completed upload.
+        if (result.value.status === TranscriptUploadStatus.Uploaded) {
+          transcriptSearchIndexService.indexAfterCommit({
+            organizationId: user.organizationId,
+            computeTargetId: body.computeTargetId,
+            externalSessionId: body.externalSessionId,
+            fileKey: body.fileKey,
+          });
+        }
+        return successResponse(withOperationReceipt(result.value, receipts));
+      }
+      return transcriptErrorResponse(result.error);
     }
-    return successResponse(result.value);
-  }
-  return transcriptErrorResponse(result.error);
-});
+  )
+);

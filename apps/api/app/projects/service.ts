@@ -1,23 +1,51 @@
-import type { JsonObject } from "@repo/api/src/types/common";
+import type { JsonObject, Priority } from "@repo/api/src/types/common";
 import { isTerminalStatusForSubtype } from "@repo/api/src/types/document";
+import { isStaleExpectation } from "@repo/api/src/types/optimistic-write-guard";
 import {
   type CreateProjectInput,
+  MAX_PROJECT_TEAMS,
   PROJECT_COMPLETION_ARTIFACT_TYPE,
+  PROJECT_TEAM_CAP_MESSAGE,
   ProjectStatus,
   type ProjectWithDetails,
   type UpdateProjectInput,
 } from "@repo/api/src/types/project";
+import {
+  type ProjectFieldMutationError,
+  staleProjectDescriptionConflict,
+  staleProjectNameConflict,
+} from "@repo/api/src/types/project-field-mutation";
+import { Result, Status } from "@repo/api/src/types/result";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import { Prisma, type Project as PrismaProject, withDb } from "@repo/database";
 import { waitUntil } from "@vercel/functions";
+import type { FavoriteWrite } from "@/app/artifacts/favorites-service";
 import {
   projectProjection,
   searchIndexService,
 } from "@/app/search/search-index-service";
-import { mapTagRelations, TAG_RELATION_INCLUDE } from "@/app/tags/service";
-import { basicUserSelect } from "@/lib/db-utils";
+import {
+  mapTagRelations,
+  TAG_RELATION_INCLUDE,
+} from "@/app/tags/tag-projection-select";
+import { fieldsThatMoved } from "@/lib/operation-receipts/changed-fields";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
 import { generateSlug } from "@/lib/slug-generator";
+import {
+  isUserInOrganization,
+  orgCheckedUserSelect,
+  projectAssigneeInOrganization,
+  USER_NOT_IN_ORGANIZATION_MESSAGE,
+} from "@/lib/user-org-membership";
+import {
+  PROJECT_TEAMS_CHANGED_FIELD,
+  PROJECT_UPDATE_FIELDS,
+  PROJECT_UPDATE_SELECT,
+} from "./project-update-receipt";
 
 /**
  * Projects service - handles database operations for project management
@@ -38,7 +66,7 @@ export const projectsService = {
           ...(statusFilter ? { status: statusFilter } : {}),
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }, { id: "asc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -64,7 +92,7 @@ export const projectsService = {
           ...(statusFilter ? { status: statusFilter } : {}),
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
+        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }, { id: "asc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -109,12 +137,17 @@ export const projectsService = {
   async create(
     organizationId: string,
     userId: string,
-    input: CreateProjectInput
-  ) {
+    input: CreateProjectInput,
+    recordCreated?: RecordWriteInTransaction<PrismaProject>
+  ): Promise<Result<PrismaProject, ProjectWriteError>> {
     const { teamIds, ...projectData } = input;
+    if (!(await isAssignableInOrg(projectData.assigneeId, organizationId))) {
+      return Result.err(ASSIGNEE_NOT_IN_ORGANIZATION);
+    }
+
     const slug = await generateSlug(organizationId, SlugPrefix.Project);
 
-    return withDb
+    const created = await withDb
       .tx(async (tx) => {
         const project = await tx.project.create({
           data: {
@@ -125,96 +158,185 @@ export const projectsService = {
           },
         });
 
-        // Add project to teams if specified
-        if (teamIds && teamIds.length > 0) {
-          const resolvedTeamIds = await resolveOrgTeamIds(
-            tx,
-            teamIds,
-            organizationId
-          );
+        // `teamIds` is required and validated non-empty at the API boundary
+        // (ISS-6966), so there is no teamless create left to guard against.
+        const resolvedTeamIds = await resolveOrgTeamIds(
+          tx,
+          teamIds,
+          organizationId
+        );
 
-          await tx.projectTeam.createMany({
-            data: resolvedTeamIds.map((teamId) => ({
-              projectId: project.id,
-              teamId,
-            })),
-            skipDuplicates: true,
-          });
-        }
+        await tx.projectTeam.createMany({
+          data: resolvedTeamIds.map((teamId) => ({
+            projectId: project.id,
+            teamId,
+          })),
+          skipDuplicates: true,
+        });
 
+        await recordCreated?.(tx, project);
         return project;
       })
       .then((project) => {
         // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
         // upsert. The owning team (for the team-scoped project route) is the
         // first team the project was just added to, if any.
-        indexProjectProjection(project, teamIds?.[0] ?? null);
+        indexProjectProjection(project, teamIds[0]);
         return project;
       });
+    return Result.ok(created);
   },
 
   /**
    * Update a project
    */
-  update(
+  async update(
     id: string,
     organizationId: string,
-    input: Omit<UpdateProjectInput, "id">
-  ) {
-    // `teamIds` is the ProjectTeam relation, not a Project column: leaving it
-    // in `data` makes Prisma reject the whole update (ISS-6561).
-    const { teamIds, ...projectData } = input;
+    input: Omit<UpdateProjectInput, "id">,
+    recordUpdated?: RecordWriteInTransaction<UpdatedProjectWrite>
+  ): Promise<
+    Result<UpdatedProject, ProjectWriteError | ProjectFieldMutationError>
+  > {
+    // `teamIds` is the ProjectTeam relation and the `expected*` keys are guards,
+    // not Project columns: leaving any in `data` makes Prisma reject the whole
+    // update (ISS-6561).
+    const {
+      teamIds,
+      expectedName: _expectedName,
+      expectedDescription: _expectedDescription,
+      ...projectData
+    } = input;
+    if (!(await isAssignableInOrg(projectData.assigneeId, organizationId))) {
+      return Result.err(ASSIGNEE_NOT_IN_ORGANIZATION);
+    }
 
-    return withDb
-      .tx(async (tx) => {
-        const project = await tx.project.update({
-          where: { id, organizationId },
-          data: projectData,
-        });
-
-        // Update team associations if specified
-        if (project && teamIds !== undefined) {
-          const resolvedTeamIds = await resolveOrgTeamIds(
-            tx,
-            teamIds,
-            organizationId
-          );
-
-          await tx.projectTeam.deleteMany({ where: { projectId: id } });
-
-          if (resolvedTeamIds.length > 0) {
-            await tx.projectTeam.createMany({
-              data: resolvedTeamIds.map((teamId) => ({
-                projectId: id,
-                teamId,
-              })),
-              skipDuplicates: true,
-            });
-          }
+    const written = await withDb.tx(
+      async (
+        tx
+      ): Promise<Result<UpdatedProject, ProjectFieldMutationError>> => {
+        // ISS-9688 (#7225 review, whitlockk and codex): the audit receipt's
+        // before-image is read HERE, under the row lock this update will take
+        // anyway, and returned alongside the written row.
+        //
+        // The route used to diff a pre-update `findById` against a post-update
+        // `findById` — three separate statements on three connections with the
+        // whole update and the custom-field work in between. A second PUT
+        // landing in either gap put ITS transition on the append-only ledger
+        // under THIS request's actor, or recorded a `from` that was never this
+        // writer's. The ledger is hashed and cannot be corrected afterwards, so
+        // a wrong row there is permanent.
+        //
+        // `FOR UPDATE` rather than a bare read because the transaction runs at
+        // READ COMMITTED: an unlocked `findUnique` here would still let a
+        // concurrent writer commit between the read and the update, which is
+        // the same lost-update the lock exists to serialize (same shape as
+        // `apps/api/app/comments/service.ts`). A concurrent PUT now blocks
+        // until this one commits and reads this row as ITS before-image.
+        const locked = await tx.$queryRaw<ProjectBeforeImage[]>`
+          SELECT "status", "priority", "name", "description"
+            FROM "projects"
+           WHERE "id" = ${id}::uuid
+             AND "organization_id" = ${organizationId}::uuid
+           FOR UPDATE`;
+        const previous = locked[0] ?? null;
+        // ISS-11198: compared on the locked before-image, so no writer can land
+        // between this check and the update below.
+        const stale = previous && staleProjectField(id, previous, input);
+        if (stale) {
+          return Result.err(stale);
         }
+        // ISS-12552 flag-off parity: unrecorded, main's update and team
+        // replace; recorded, the same writes plus the reads its receipt's
+        // diff needs, under the lock above.
+        return writeInShape(recordUpdated, {
+          unrecorded: async () => {
+            const project = await tx.project.update({
+              where: { id, organizationId },
+              data: projectData,
+            });
 
-        return project;
-      })
-      .then((project) => {
-        // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
-        // upsert. When this update set the teams, the owning team is the first
-        // of them; otherwise it is left unresolved (undefined) so the indexer
-        // reads the current owning team instead of clobbering it.
-        const teamId = teamIds === undefined ? undefined : (teamIds[0] ?? null);
-        indexProjectProjection(project, teamId);
-        return project;
-      });
+            // Update team associations if specified
+            if (project && teamIds !== undefined) {
+              const resolvedTeamIds = await resolveOrgTeamIds(
+                tx,
+                teamIds,
+                organizationId
+              );
+
+              await tx.projectTeam.deleteMany({ where: { projectId: id } });
+
+              if (resolvedTeamIds.length > 0) {
+                await tx.projectTeam.createMany({
+                  data: resolvedTeamIds.map((teamId) => ({
+                    projectId: id,
+                    teamId,
+                  })),
+                  skipDuplicates: true,
+                });
+              }
+            }
+
+            return Result.ok({ project, previous });
+          },
+          recorded: async (record) => {
+            const before = await tx.project.findFirst({
+              where: { id, organizationId },
+              select: PROJECT_UPDATE_SELECT,
+            });
+            const project = await tx.project.update({
+              where: { id, organizationId },
+              data: projectData,
+            });
+            const teamsChanged =
+              teamIds !== undefined &&
+              (await replaceProjectTeams(tx, id, teamIds, organizationId));
+            const changedFields = [
+              ...(before
+                ? fieldsThatMoved(
+                    PROJECT_UPDATE_FIELDS,
+                    projectData,
+                    before,
+                    project
+                  )
+                : []),
+              ...(teamsChanged ? [PROJECT_TEAMS_CHANGED_FIELD] : []),
+            ];
+            await record(tx, { project, previous, changedFields });
+            return Result.ok({ project, previous });
+          },
+        });
+      }
+    );
+    if (written.ok) {
+      // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
+      // upsert. When this update set the teams, the owning team is the first
+      // of them; otherwise it is left unresolved (undefined) so the indexer
+      // reads the current owning team instead of clobbering it.
+      const teamId = teamIds === undefined ? undefined : (teamIds[0] ?? null);
+      indexProjectProjection(written.value.project, teamId);
+    }
+    return written;
   },
 
   /**
-   * Delete a project
+   * Delete a project. `recordDeleted` runs on the delete's transaction, so a
+   * receipt that cannot be stored keeps the project (ISS-12552).
    */
-  delete(id: string, organizationId: string) {
+  delete(
+    id: string,
+    organizationId: string,
+    recordDeleted?: RecordWriteInTransaction<{ projectId: string }>
+  ) {
     return withDb
       .tx(async (tx) => {
         // Remove team associations first
         await tx.projectTeam.deleteMany({ where: { projectId: id } });
-        return tx.project.delete({ where: { id, organizationId } });
+        const project = await tx.project.delete({
+          where: { id, organizationId },
+        });
+        await recordDeleted?.(tx, { projectId: id });
+        return project;
       })
       .then((project) => {
         // FEA-3863: best-effort, post-commit, fail-open search projection removal.
@@ -271,45 +393,97 @@ export const projectsService = {
   },
 
   /**
-   * Add a project to the user's favorites (idempotent).
+   * Add a project to the user's favorites (idempotent). Recorded, the favorite
+   * and `recordWrite` share one transaction and the record learns whether a
+   * row was inserted, so a receipt that cannot be stored rolls the favorite
+   * back (ISS-12552); unrecorded, it is main's autocommit upsert.
    */
-  addFavorite(projectId: string, userId: string, organizationId: string) {
-    return withDb(async (db) => {
-      // Verify project belongs to this org
-      const project = await db.project.findUnique({
-        where: { id: projectId, organizationId },
-        select: { id: true },
-      });
-      if (!project) {
-        return null;
-      }
-      await db.favoriteProject.upsert({
-        where: { userId_projectId: { userId, projectId } },
-        create: { userId, projectId },
-        update: {},
-        select: { id: true },
-      });
-      return { favorited: true };
+  addFavorite(
+    projectId: string,
+    userId: string,
+    organizationId: string,
+    recordWrite?: RecordWriteInTransaction<FavoriteWrite>
+  ) {
+    return writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb(async (db) => {
+          // Verify project belongs to this org
+          const project = await db.project.findUnique({
+            where: { id: projectId, organizationId },
+            select: { id: true },
+          });
+          if (!project) {
+            return null;
+          }
+          await db.favoriteProject.upsert({
+            where: { userId_projectId: { userId, projectId } },
+            create: { userId, projectId },
+            update: {},
+            select: { id: true },
+          });
+          return { favorited: true };
+        }),
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          const project = await tx.project.findUnique({
+            where: { id: projectId, organizationId },
+            select: { id: true },
+          });
+          if (!project) {
+            return null;
+          }
+          const { count } = await tx.favoriteProject.createMany({
+            data: [{ userId, projectId }],
+            skipDuplicates: true,
+          });
+          await record(tx, { favorited: true, changed: count > 0 });
+          return { favorited: true };
+        }),
     });
   },
 
   /**
-   * Remove a project from the user's favorites.
+   * Remove a project from the user's favorites. Recorded, `recordWrite` runs
+   * on the delete's transaction (ISS-12552); unrecorded, it is main's
+   * autocommit delete.
    */
-  removeFavorite(projectId: string, userId: string, organizationId: string) {
-    return withDb(async (db) => {
-      // Verify project belongs to this org
-      const project = await db.project.findUnique({
-        where: { id: projectId, organizationId },
-        select: { id: true },
-      });
-      if (!project) {
-        return null;
-      }
-      await db.favoriteProject.deleteMany({
-        where: { userId, projectId },
-      });
-      return { favorited: false };
+  removeFavorite(
+    projectId: string,
+    userId: string,
+    organizationId: string,
+    recordWrite?: RecordWriteInTransaction<FavoriteWrite>
+  ) {
+    return writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb(async (db) => {
+          // Verify project belongs to this org
+          const project = await db.project.findUnique({
+            where: { id: projectId, organizationId },
+            select: { id: true },
+          });
+          if (!project) {
+            return null;
+          }
+          await db.favoriteProject.deleteMany({
+            where: { userId, projectId },
+          });
+          return { favorited: false };
+        }),
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          const project = await tx.project.findUnique({
+            where: { id: projectId, organizationId },
+            select: { id: true },
+          });
+          if (!project) {
+            return null;
+          }
+          const { count } = await tx.favoriteProject.deleteMany({
+            where: { userId, projectId },
+          });
+          await record(tx, { favorited: false, changed: count > 0 });
+          return { favorited: false };
+        }),
     });
   },
 
@@ -330,7 +504,7 @@ export const projectsService = {
             status: { not: ProjectStatus.Archived },
           },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
         include: {
           project: {
             include: PROJECT_DETAIL_INCLUDE,
@@ -365,7 +539,32 @@ export const projectsService = {
       isTerminalStatusForSubtype(a.subtype, a.status)
     ).length;
 
-    return Math.round((completedCount / artifacts.length) * 100);
+    // 100 and 0 are terminal claims about the population, and they are made
+    // FROM THE COUNTS rather than from arithmetic on a ratio: this function
+    // owns the numerator and denominator, so it can say "every one" and "none"
+    // exactly. 199 of 200 documents is 99.5%, which `Math.round` promoted to a
+    // filled complete check with nothing left on the row to contradict it
+    // (ISS-9922).
+    if (completedCount === artifacts.length) {
+      return 100;
+    }
+    if (completedCount === 0) {
+      return 0;
+    }
+    // Multiply before dividing: `(completedCount / n) * 100` can land a hair
+    // under an exact integer in binary floating point, which rounding then
+    // carries into the sent value.
+    //
+    // ROUND, THEN CAP AT 99 (operator ruling 2026-09-18). The guards above have
+    // already made both terminal claims, so everything reaching here is a
+    // genuine partial and the only job left is to stop it rounding INTO 100.
+    // Flooring the mid-range instead would have moved the number on roughly
+    // half of all partial projects — 2/3 from 67 to 66 — which the ticket did
+    // not ask for and no human ruled on; rounding is what shipped and what
+    // stays. The same rule is applied to a bare percentage by
+    // `packages/design-system/lib/completion-percentage.ts`; this one owns the
+    // counts, which that one never sees, so the two cannot be one function.
+    return Math.min(99, Math.round((completedCount * 100) / artifacts.length));
   },
 
   /**
@@ -418,7 +617,7 @@ type ProjectListOptions = {
  * Standard include pattern for project queries with assignee, teams, and artifacts
  */
 const PROJECT_DETAIL_INCLUDE = {
-  assignee: basicUserSelect,
+  assignee: orgCheckedUserSelect,
   teams: {
     include: {
       team: {
@@ -447,18 +646,14 @@ type ProjectFromDb = Prisma.ProjectGetPayload<{
 }>;
 
 function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
+  const assignee = projectAssigneeInOrganization(project, project.assignee);
   return {
     ...project,
     settings: project.settings as JsonObject,
-    assignee: project.assignee
-      ? {
-          id: project.assignee.id,
-          email: project.assignee.email,
-          firstName: project.assignee.firstName,
-          lastName: project.assignee.lastName,
-          avatarUrl: project.assignee.avatarUrl,
-        }
-      : undefined,
+    // A foreign assignee's id is dropped with the user: the id alone still
+    // names a user in another organization (ISS-10989).
+    assigneeId: assignee?.id ?? null,
+    assignee: assignee ?? undefined,
     ...toCompletionFields(projectsService.calculateStatus(project.artifacts)),
     teams: project.teams.map((pt) => ({
       id: pt.team.id,
@@ -569,13 +764,26 @@ function firstProjectTeamId(projectId: string): Promise<string | null> {
   });
 }
 
-/** Matches the `customFields` array cap in this surface's validators. */
-export const MAX_PROJECT_TEAMS = 100;
+/**
+ * Why a requested `teamIds` set was refused. The two reasons need different
+ * responses: `Unresolved` is fixable by naming a real team, so the route offers
+ * the caller its org's teams; `OverCap` is not, and attaching a team roster to
+ * it would be remediation the caller cannot act on.
+ */
+export const InvalidProjectTeamsReason = {
+  OverCap: "over_cap",
+  Unresolved: "unresolved",
+} as const;
+export type InvalidProjectTeamsReason =
+  (typeof InvalidProjectTeamsReason)[keyof typeof InvalidProjectTeamsReason];
 
 export class InvalidProjectTeamsError extends Error {
-  constructor(message: string) {
+  readonly reason: InvalidProjectTeamsReason;
+
+  constructor(message: string, reason: InvalidProjectTeamsReason) {
     super(message);
     this.name = "InvalidProjectTeamsError";
+    this.reason = reason;
   }
 }
 
@@ -599,7 +807,8 @@ async function resolveOrgTeamIds(
   // (projectId, teamId) constraint makes duplicates a write error otherwise.
   if (teamIds.length > MAX_PROJECT_TEAMS) {
     throw new InvalidProjectTeamsError(
-      `A project can be linked to at most ${MAX_PROJECT_TEAMS} teams.`
+      PROJECT_TEAM_CAP_MESSAGE,
+      InvalidProjectTeamsReason.OverCap
     );
   }
 
@@ -615,9 +824,131 @@ async function resolveOrgTeamIds(
 
   if (teams.length !== uniqueTeamIds.length) {
     throw new InvalidProjectTeamsError(
-      "One or more teams were not found in this organization."
+      "One or more teams were not found in this organization.",
+      InvalidProjectTeamsReason.Unresolved
     );
   }
 
   return uniqueTeamIds;
+}
+
+type ProjectBeforeImage = {
+  status: ProjectStatus;
+  priority: Priority | null;
+  name: string;
+  description: string | null;
+};
+
+/**
+ * A refused project write. `message` is the caller-facing reason, carried here
+ * so a route never has to infer it from `status`.
+ */
+type ProjectWriteError = {
+  status: typeof Status.BadRequest;
+  message: string;
+};
+
+const ASSIGNEE_NOT_IN_ORGANIZATION: ProjectWriteError = {
+  status: Status.BadRequest,
+  message: USER_NOT_IN_ORGANIZATION_MESSAGE,
+};
+
+type UpdatedProject = {
+  project: PrismaProject;
+  previous: ProjectBeforeImage | null;
+};
+
+/** What a recorded project update wrote, for its receipt (ISS-12552). */
+type UpdatedProjectWrite = UpdatedProject & {
+  /** The columns, and the team set, this write actually moved. */
+  changedFields: string[];
+};
+
+/**
+ * Whether `assigneeId` may be written on a project in `organizationId`, so a
+ * project can only ever be assigned to a user the caller can already see — the
+ * same rule `resolveOrgTeamIds` applies above, and the one `documentsService`
+ * already applies to an artifact's assignee.
+ *
+ * `projects.assignee_id` has a real FK to `users.id`, so the column alone
+ * cannot express this: a user in ANOTHER organization satisfies it. Without
+ * this check the write commits, `findById` then projects that foreign user's
+ * name and avatar into the org's project list, and the route's assignment
+ * notification is dispatched to them.
+ *
+ * `undefined` leaves the column untouched and `null` clears it; neither names a
+ * user, so neither is looked up.
+ */
+async function isAssignableInOrg(
+  assigneeId: string | null | undefined,
+  organizationId: string
+): Promise<boolean> {
+  if (!assigneeId) {
+    return true;
+  }
+  return await withDb((db) =>
+    isUserInOrganization(db, assigneeId, organizationId)
+  );
+}
+
+/**
+ * The first guard the locked row refutes, or null. The description is compared
+ * as rendered, an unset one as `""`, because that is what the client read.
+ */
+function staleProjectField(
+  projectId: string,
+  previous: ProjectBeforeImage,
+  input: Omit<UpdateProjectInput, "id">
+): ProjectFieldMutationError | null {
+  const { expectedName, expectedDescription } = input;
+  if (
+    expectedName !== undefined &&
+    isStaleExpectation(previous.name, input.name, expectedName)
+  ) {
+    return staleProjectNameConflict({
+      projectId,
+      currentName: previous.name,
+      expectedName,
+    });
+  }
+  const currentDescription = previous.description ?? "";
+  if (
+    expectedDescription !== undefined &&
+    isStaleExpectation(
+      currentDescription,
+      input.description,
+      expectedDescription
+    )
+  ) {
+    return staleProjectDescriptionConflict({
+      projectId,
+      currentDescription,
+      expectedDescription,
+    });
+  }
+  return null;
+}
+
+/** Replaces the project's teams; whether the set of teams changed. */
+async function replaceProjectTeams(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  teamIds: string[],
+  organizationId: string
+): Promise<boolean> {
+  const resolvedTeamIds = await resolveOrgTeamIds(tx, teamIds, organizationId);
+  const current = await tx.projectTeam.findMany({
+    where: { projectId },
+    select: { teamId: true },
+  });
+  await tx.projectTeam.deleteMany({ where: { projectId } });
+  if (resolvedTeamIds.length > 0) {
+    await tx.projectTeam.createMany({
+      data: resolvedTeamIds.map((teamId) => ({ projectId, teamId })),
+      skipDuplicates: true,
+    });
+  }
+  const before = new Set(current.map((row) => row.teamId));
+  const after = new Set(resolvedTeamIds);
+  return before.size !== after.size || [...after].some((id) => !before.has(id));
 }

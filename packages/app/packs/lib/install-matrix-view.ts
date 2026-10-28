@@ -7,7 +7,7 @@
  * `./pack-install-matrix`) into the row/column grid the admin matrix renders, and
  * computes the aggregate rollup the detail card shows.
  *
- * The Parker reconciliation principle (FEA-4074 prototype): the aggregate MUST
+ * The Pascoe reconciliation principle (FEA-4074 prototype): the aggregate MUST
  * reconcile with the rows. The card's per-state counts are computed from the
  * exact same cell set the grid renders (`countMatrixStates` over `matrixCells`),
  * so the card can never claim a number the matrix doesn't show. There is one
@@ -25,6 +25,7 @@
  * view-model stays surface-agnostic (pure functions over the FEA-4072a model).
  */
 
+import { resolveTotalPages } from "@repo/api/src/utils/math";
 import { PackInstallState } from "./install-state";
 import type {
   PackComponentInstallMatrix,
@@ -340,7 +341,7 @@ export function pageMatrixRows(
   pageSize: number
 ): { rows: MatrixRow[]; totalPages: number; page: number } {
   const size = Math.max(1, pageSize);
-  const totalPages = Math.max(1, Math.ceil(rows.length / size));
+  const totalPages = resolveTotalPages(rows.length, size);
   const clamped = Math.min(Math.max(0, page), totalPages - 1);
   const start = clamped * size;
   return {

@@ -1,6 +1,6 @@
 /**
  * @file data-revision-rebuild-outstanding-progress.test.ts
- * @description ISS-6241 (shafty023 review) — the rebuild's progress count must
+ * @description ISS-6241 (davetho review) — the rebuild's progress count must
  * not claim more completeness than the pass can substantiate.
  *
  * Two distinct defects, same family as the rest of the ticket:
@@ -21,7 +21,7 @@
  * which is at its grandfathered size ceiling.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
 import type { DataRevisionRebuildProgress } from "../src/main/collectors/engine/data-revision-rebuild-progress.js";
 import {
@@ -61,7 +61,7 @@ describe("ISS-6241 outstanding retry work is never counted as processed", () => 
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: (_collector: unknown, source: unknown) => {
         if (sessionIdFromSource(source) === stale[0].id) {
@@ -103,7 +103,7 @@ describe("ISS-6241 outstanding retry work is never counted as processed", () => 
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       // The batch source survives but yields nothing this pass.
       parseSource: () => Promise.resolve([]),
@@ -137,7 +137,7 @@ describe("ISS-6241 outstanding retry work is never counted as processed", () => 
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // One of the four fails its rollup recompute and is withheld from the
         // stamp — it stays stale and retryable.
         recomputeAnalyticsRollups: (ids: string[]) =>
@@ -182,7 +182,7 @@ describe("ISS-6241 the batch path reports live, not 0-then-N", () => {
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       // One source, every stale session inside it — the OpenCode shape.
       parseSource: () =>

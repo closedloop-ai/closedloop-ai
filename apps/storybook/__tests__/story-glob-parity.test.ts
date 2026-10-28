@@ -33,10 +33,10 @@
  * five extensions at every root), whereas globbing less means stories that never
  * run.
  */
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript6";
 import { describe, expect, it } from "vitest";
+import { readTurboConfig } from "../../../scripts/lint/read-turbo-config";
 import {
   STORYBOOK_DIR,
   storybookStoryPatterns,
@@ -76,9 +76,9 @@ describe("story sweep glob parity with .storybook/main.ts", () => {
     // sweep replays a cached pass over stories it never executed. So the sweep
     // does not cache, and this asserts nobody re-adds caching without replacing
     // that reasoning.
-    const turbo = JSON.parse(readFileSync(TURBO_JSON_PATH, "utf8")) as {
+    const turbo = readTurboConfig<{
       tasks?: Record<string, { cache?: boolean }>;
-    };
+    }>(TURBO_JSON_PATH);
     const task = turbo.tasks?.[SWEEP_TASK];
 
     expect(task, `turbo.json declares no \`${SWEEP_TASK}\` task`).toBeDefined();

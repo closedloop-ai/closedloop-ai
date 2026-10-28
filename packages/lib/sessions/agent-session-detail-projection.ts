@@ -1,20 +1,18 @@
-import {
-  AgentSessionState,
-  type SessionTimelineEvent,
-  type SubagentBodyLine,
-  type SyncedAgentSessionAgent,
-  type SyncedAgentSessionEvent,
-  type SyncedAgentSessionTokenUsage,
-  type TokenEventCostPoint,
-  type TranscriptTurnIdentity,
-  type TurnActor,
-  type TurnItem,
+import type {
+  SessionTimelineEvent,
+  SubagentBodyLine,
+  SyncedAgentSessionAgent,
+  SyncedAgentSessionEvent,
+  SyncedAgentSessionTokenUsage,
+  TokenEventCostPoint,
+  TranscriptTurnIdentity,
+  TurnActor,
+  TurnItem,
 } from "@repo/api/src/types/agent-session";
 import {
   resolveToolCallDetailState,
   type ToolItem,
 } from "@repo/api/src/types/agent-session-tool-call";
-import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { resolveActivityEndMs } from "../session-trace/derivation";
 import {
   asRecord,
@@ -72,20 +70,6 @@ type TurnProjectionActors = {
   human: TurnActor;
 };
 
-type StateFallbackInput = {
-  status: string;
-  awaitingInputSince?: Date | string | null;
-  endedAt?: Date | string | null;
-};
-
-// The terminal FAILURE status, mapped to its own terminal AgentSessionState
-// (FEA-4287). ISS-6588 removed the sibling `completed`/`abandoned` sets with the
-// branches that read them; ISS-5592 then removed the `failed` alias, once the
-// desktop stopped manufacturing that spelling from a stored `error`.
-const ERROR_SESSION_STATUSES: ReadonlySet<string> = new Set([
-  SESSION_STATUS.ERROR,
-]);
-
 const AGENT_ACTOR_COLOR_TOKEN = "var(--primary)";
 const TOOL_DETAIL_TEXT_LIMIT = 240;
 
@@ -101,6 +85,12 @@ const TURN_BOUNDARY_HOOK_TYPES = new Set(["stop", "subagentstop"]);
 
 function isTurnBoundaryHookType(eventType: string): boolean {
   return TURN_BOUNDARY_HOOK_TYPES.has(eventType.toLowerCase());
+}
+
+// ISS-12467: no `TurnDuration` row between turns; the turn's timing is shown
+// by the existing per-turn duration presentation.
+function isTurnDurationEventType(eventType: string): boolean {
+  return eventType.toLowerCase() === "turnduration";
 }
 
 /**
@@ -172,15 +162,25 @@ export function projectAgentSessionTurnItems(
   );
 
   const eventItems: TurnItem[] = [];
+  // A skipped `TurnDuration` row still ends its turn: the next agent item is
+  // marked so two turns with no prompt between them stay two groups.
+  let turnBreak = false;
   for (let index = 0; index < timeline.length; index++) {
     const event = timeline[index]!;
-    if (isToolLikeTimelineEvent(event)) {
-      const toolsTurn = buildToolsTurn(timeline, index, agentActor);
-      eventItems.push(toolsTurn.item);
-      index = toolsTurn.endIndex;
+    if (event.isTurnDuration) {
+      turnBreak = true;
       continue;
     }
-    eventItems.push(buildTimelineEventTurnItem(event, index, actors));
+    let item: TurnItem;
+    if (isToolLikeTimelineEvent(event)) {
+      const toolsTurn = buildToolsTurn(timeline, index, agentActor);
+      item = toolsTurn.item;
+      index = toolsTurn.endIndex;
+    } else {
+      item = buildTimelineEventTurnItem(event, index, actors);
+    }
+    eventItems.push(turnBreak ? markTurnStart(item) : item);
+    turnBreak = false;
   }
 
   const subagentSpans: SubagentCostSpan[] = [];
@@ -351,6 +351,7 @@ function eventToTimelineEvent(
     err: eventIndicatesToolError(event) || undefined,
     git: event.eventType.toLowerCase().includes("git") || undefined,
     isBoundary: isTurnBoundaryHookType(event.eventType) || undefined,
+    isTurnDuration: isTurnDurationEventType(event.eventType) || undefined,
     transcriptIdentity: {
       eventId: event.externalEventId,
       ...(event.providerToolUseId
@@ -376,42 +377,6 @@ function eventToTimelineEvent(
     // transcript and the row says so instead of claiming "no detail".
     ...(event.toolName ? toolCallDetailFields(event) : {}),
   };
-}
-
-/**
- * Derive the display workflow state for sessions that do not carry an explicit
- * persisted AgentSessionState. Ended sessions are terminal even if their status
- * has not yet been canonicalized.
- *
- * ISS-6588 removed the `completed`/`abandoned` branches and the FEA-3551 PR
- * rescue that rode on one of them. Both spellings were retired by ISS-4654 and
- * are unreachable — the cloud ingest fold makes them unwritable (ISS-5981), a
- * production count returned 0, and desktop migration 0042 collapsed every local
- * row that held one — so the branches classified nothing.
- *
- * The cost, decided by Chris on 2026-08-15 rather than assumed: an `abandoned`
- * row with no `endedAt` now falls through to `Running` instead of `Completed`.
- * That is only reachable if a producer starts writing a spelling this build
- * retired, which is the thing ISS-5592 established cannot happen.
- */
-export function deriveAgentSessionFallbackState({
-  status,
-  awaitingInputSince,
-  endedAt,
-}: StateFallbackInput): AgentSessionState {
-  const normalizedStatus = status.toLowerCase();
-  // FEA-4287: preserve the terminal FAILURE outcome instead of collapsing to
-  // Blocked, so the detail projection matches what the Sessions LIST renders.
-  if (ERROR_SESSION_STATUSES.has(normalizedStatus)) {
-    return AgentSessionState.Error;
-  }
-  if (awaitingInputSince && !endedAt) {
-    return AgentSessionState.PendingApproval;
-  }
-  if (endedAt) {
-    return AgentSessionState.Completed;
-  }
-  return AgentSessionState.Running;
 }
 
 function eventKindToTimelineKind(
@@ -463,7 +428,11 @@ function timelineEventDetail(
     statusDetail(data, toolResponse),
     durationDetail(data, toolResponse),
   ].filter(Boolean);
-  const diffDelta = asRecord(data.diffDelta ?? toolInput?.diffDelta);
+  // ISS-11084: deliberately no `toolInput` fallback, unlike the arms above —
+  // `file_path`, `path`, `command` and `args` are real tool arguments, while
+  // `diffDelta` is computed BY the parser FROM a tool's input and is never
+  // carried inside it. `data.diffDelta` is the only spelling a writer produces.
+  const diffDelta = asRecord(data.diffDelta);
   const add = numberValue(diffDelta?.add);
   const del = numberValue(diffDelta?.del);
   if (add || del) {
@@ -877,4 +846,26 @@ function agentTranscriptIdentity(
     externalAgentId: agent.externalAgentId,
     ...(timestamp ? { timestamp, timestampOrdinal } : {}),
   };
+}
+
+/**
+ * ISS-12277: the turn rows for a session, with the timeline derived internally
+ * from `events` + `metadata`. Every producer builds its timeline from exactly
+ * that pair and serves none of it, so it stays a local of this call rather
+ * than one a caller could spread back into a response.
+ */
+export function projectAgentSessionTurnItemsFromEvents(
+  input: Omit<TurnProjectionInput, "timeline"> & TimelineProjectionInput
+): TurnItem[] {
+  const { metadata, ...turnInput } = input;
+  return projectAgentSessionTurnItems({
+    ...turnInput,
+    timeline: projectAgentSessionTimelineEvents(input.events, { metadata }),
+  });
+}
+
+function markTurnStart(item: TurnItem): TurnItem {
+  return item.type === "say" || item.type === "tools"
+    ? { ...item, turnStart: true }
+    : item;
 }

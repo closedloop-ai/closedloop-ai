@@ -21,6 +21,11 @@ import {
 } from "@/lib/auth/api-key-verification";
 import { hashToken } from "@/lib/auth/token-hash";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import { isUuid } from "@/lib/is-uuid";
+import {
+  ApiKeyVisibility,
+  apiKeyVisibilityForOrgRole,
+} from "./api-key-visibility";
 
 const FULL_ACCESS_SCOPES = [
   "read",
@@ -202,8 +207,8 @@ export const apiKeysService = {
   },
 
   /**
-   * List API keys for an organization.
-   * Admins (org:admin) see all keys in the org; regular users see only their own.
+   * List API keys for an organization. A role with organization-wide
+   * visibility sees every key in the org; everyone else sees only their own.
    */
   list(
     organizationId: string,
@@ -213,18 +218,20 @@ export const apiKeysService = {
     return withDb(async (db) => {
       const records = await db.apiKey.findMany({
         where:
-          orgRole === "org:admin"
+          apiKeyVisibilityForOrgRole(orgRole) === ApiKeyVisibility.Organization
             ? { organizationId }
             : { organizationId, userId },
         orderBy: { createdAt: "desc" },
+        select: STORED_API_KEY_SELECT,
       });
       return records.map(toApiKey);
     });
   },
 
   /**
-   * Revoke an API key by setting revokedAt to the current time.
-   * Admins can revoke any key in the org; regular users can only revoke their own.
+   * Revoke an API key by setting revokedAt to the current time. A role with
+   * organization-wide visibility can revoke any key in the org; everyone else
+   * can revoke only their own.
    * Returns false if the key was not found or already revoked.
    */
   revoke(
@@ -233,9 +240,16 @@ export const apiKeysService = {
     userId: string,
     orgRole?: string
   ): Promise<boolean> {
+    // `ApiKey.id` is `@db.Uuid`, so a malformed route segment raises at the
+    // driver instead of matching no row — which made the "not found" answer
+    // this method's own contract promises unreachable for exactly that input.
+    if (!isUuid(id)) {
+      return Promise.resolve(false);
+    }
+
     return withDb(async (db) => {
       const where =
-        orgRole === "org:admin"
+        apiKeyVisibilityForOrgRole(orgRole) === ApiKeyVisibility.Organization
           ? { id, organizationId, revokedAt: null }
           : { id, organizationId, userId, revokedAt: null };
 
@@ -295,6 +309,9 @@ export const apiKeysService = {
           revokedAt: null,
           OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
         },
+        // `keyHash` is the lookup predicate, never a value verification reads
+        // back — the plaintext was already hashed to build the `where`.
+        select: VERIFIED_API_KEY_SELECT,
       })
     );
 
@@ -375,3 +392,41 @@ export const apiKeysService = {
     return updateLastUsedAt(apiKeyId, new Date());
   },
 };
+
+/**
+ * The columns the keys list renders. `keyHash` is deliberately absent: it is
+ * the stored credential, and `list` never needed it.
+ */
+const STORED_API_KEY_SELECT = {
+  id: true,
+  organizationId: true,
+  userId: true,
+  name: true,
+  keyPrefix: true,
+  expiresAt: true,
+  scopes: true,
+  lastUsedAt: true,
+  createdAt: true,
+  revokedAt: true,
+} as const satisfies Record<keyof StoredApiKeyRecord, true>;
+
+/** The columns {@link apiKeysService.verifyKeyOutcome} resolves a caller from. */
+type VerifiedApiKeyRow = {
+  id: string;
+  userId: string;
+  organizationId: string;
+  scopes: string[];
+  source: ApiKeySource;
+  gatewayId: string | null;
+  boundPublicKey: string | null;
+};
+
+const VERIFIED_API_KEY_SELECT = {
+  id: true,
+  userId: true,
+  organizationId: true,
+  scopes: true,
+  source: true,
+  gatewayId: true,
+  boundPublicKey: true,
+} as const satisfies Record<keyof VerifiedApiKeyRow, true>;

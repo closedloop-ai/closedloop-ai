@@ -9,6 +9,7 @@ import {
   withDb,
 } from "@repo/database";
 import { mergeGitHubAuthorProviderDetail } from "./github-author-provider-detail";
+import { githubShadowClerkId } from "./github-shadow-identity";
 
 const UNKNOWN_GITHUB_USER_LOGIN = "unknown-github-user";
 const UNKNOWN_GITHUB_USER_DISPLAY_NAME = "Unknown GitHub user";
@@ -34,7 +35,13 @@ export type ExternalGitHubUser = {
  * part of ghost identity generation when GitHub omits/deletes user data.
  */
 export type ExternalGitHubAuthorSource = {
-  sourceKind: "issue_comment" | "review_comment" | "review" | "review_thread";
+  sourceKind:
+    | "issue_comment"
+    | "review_comment"
+    | "review"
+    | "review_thread"
+    | "pull_request_author"
+    | "push";
   githubObjectId: string;
   repositoryId?: string;
   pullNumber?: number;
@@ -230,6 +237,7 @@ async function resolveExternalGitHubAuthorWithDb(
       input.organizationId,
       identity,
       linkedConnection.user.id,
+      input.author,
       existingProviderDetail
     );
     return {
@@ -256,6 +264,7 @@ async function resolveExternalGitHubAuthorWithDb(
       input.organizationId,
       identity,
       existingDisposition.user.id,
+      input.author,
       existingExternalAuthor.providerDetail
     );
     return {
@@ -272,6 +281,7 @@ async function resolveExternalGitHubAuthorWithDb(
     input.organizationId,
     identity,
     shadowUser.id,
+    input.author,
     existingExternalAuthor?.providerDetail
   );
 
@@ -421,9 +431,16 @@ function upsertExternalAuthor(
   organizationId: string,
   identity: NormalizedExternalGitHubAuthor,
   userId: string,
+  author: ExternalGitHubUser | null,
   existingProviderDetail: unknown
 ) {
-  const data = externalAuthorData(organizationId, identity, userId);
+  const createData = externalAuthorData(organizationId, identity, userId);
+  const updateData = externalAuthorUpdateData(
+    organizationId,
+    identity,
+    userId,
+    author
+  );
   const providerDetail = mergeGitHubAuthorProviderDetail(
     existingProviderDetail,
     identity.actorType
@@ -433,8 +450,8 @@ function upsertExternalAuthor(
 
   return db.externalCommentAuthor.upsert({
     where: externalAuthorUniqueWhere(organizationId, identity),
-    create: { ...data, ...providerDetailData, lastSeenAt },
-    update: { ...data, ...providerDetailData, lastSeenAt },
+    create: { ...createData, ...providerDetailData, lastSeenAt },
+    update: { ...updateData, ...providerDetailData, lastSeenAt },
     select: EXTERNAL_AUTHOR_SELECT,
   });
 }
@@ -444,7 +461,7 @@ function shadowUserIdentity(
   identity: NormalizedExternalGitHubAuthor
 ) {
   return {
-    clerkId: `github-shadow:${organizationId}:${identity.providerUserId}`,
+    clerkId: githubShadowClerkId(organizationId, identity.providerUserId),
     email: `github-shadow+${organizationId}+${identity.providerUserId}@invalid.closedloop.local`,
   };
 }
@@ -480,4 +497,47 @@ function upsertShadowUser(
     update: data,
     select: USER_SELECT,
   });
+}
+
+/** Non-comment GitHub evidence that uses the same stable author mapping. */
+export const ExternalGitHubCollaboratorSourceKind = {
+  PullRequestAuthor: "pull_request_author",
+  Push: "push",
+} as const;
+function externalAuthorUpdateData(
+  organizationId: string,
+  identity: NormalizedExternalGitHubAuthor,
+  userId: string,
+  author: ExternalGitHubUser | null
+) {
+  const update = {
+    organizationId,
+    provider: identity.provider,
+    providerUserId: identity.providerUserId,
+    userId,
+    ...(identity.isGhost || hasGitHubAuthorField(author, "node_id")
+      ? { providerNodeId: identity.providerNodeId }
+      : {}),
+    ...(identity.isGhost || hasGitHubAuthorField(author, "login")
+      ? {
+          providerLogin: identity.providerLogin,
+          normalizedProviderLogin: identity.normalizedLogin,
+          displayName: identity.displayName,
+        }
+      : {}),
+    ...(identity.isGhost || hasGitHubAuthorField(author, "avatar_url")
+      ? { avatarUrl: identity.avatarUrl }
+      : {}),
+    ...(identity.isGhost || hasGitHubAuthorField(author, "html_url")
+      ? { profileUrl: identity.profileUrl }
+      : {}),
+  };
+  return update;
+}
+
+function hasGitHubAuthorField(
+  author: ExternalGitHubUser | null,
+  field: keyof ExternalGitHubUser
+): boolean {
+  return author !== null && Object.hasOwn(author, field);
 }

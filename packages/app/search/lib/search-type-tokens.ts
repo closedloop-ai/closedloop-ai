@@ -63,9 +63,9 @@ function isTypeTokenFor(token: string, kind: SearchEntityType): boolean {
   // The canonical parser marks a kind active for both the `type:kind` and the
   // equality-operator `type=kind` forms (see splitKeyOperator in search-query),
   // so the control must recognize the same syntaxes to deselect them — matching
-  // only `type:` would strand a `type=loop` filter as un-removable. Quotes are
-  // already stripped upstream by the query bar's tokenizer, so `type:"loop"`
-  // reaches here as `type:loop`.
+  // only `type:` would strand a `type=project` filter as un-removable. Quotes are
+  // already stripped upstream by the query bar's tokenizer, so `type:"project"`
+  // reaches here as `type:project`.
   const prefix = TYPE_TOKEN_PREFIXES.find((candidate) =>
     lower.startsWith(candidate)
   );

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  AGENT_COMPONENT_LIST_MAX_OFFSET,
   type AgentComponentDetail,
   AgentComponentKind,
   type AgentComponentListResponse,
@@ -34,7 +35,7 @@ import {
  * `total`/`hasMore` are echoed back — never re-slice the returned page.
  */
 // Derived from the live `Harness` enum so the description cannot drift as new
-// harnesses are added (ISS-4386, shafty023): a new value automatically appears
+// harnesses are added (ISS-4386, davetho): a new value automatically appears
 // here instead of the text still claiming only claude/codex/both. Individual
 // harnesses are every value except the synthetic `both` collapse.
 const HARNESS_FILTER_DESCRIPTION = `Filter to a single target harness: ${Object.values(
@@ -111,11 +112,13 @@ const agentComponentListInputSchema = {
     .enum(Object.values(AgentComponentSortDir) as [string, ...string[]])
     .optional()
     .describe('Sort direction: "asc" or "desc".'),
-  // The route allows up to AGENT_COMPONENT_INVENTORY_CAP (5000), but that cap
-  // exists for the Agents workspace, which pulls the whole inventory to filter
-  // and group it client-side. An MCP caller has no such need and a 5000-row
-  // page would swamp its context, so bound this at the shared MCP page limit
-  // like every sibling list tool.
+  // The route allows a page of up to AGENT_COMPONENT_INVENTORY_CAP (5000), sized
+  // for the Agents workspace, which pulls the inventory to filter and group it
+  // client-side. An MCP caller has no such need and a 5000-row page would swamp
+  // its context, so bound this at the shared MCP page limit like every sibling
+  // list tool. ISS-6891: this bounds the PAGE only — the route's `total`/`hasMore`
+  // describe the org's complete population, which `offset` reaches up to
+  // AGENT_COMPONENT_LIST_MAX_OFFSET (ISS-8734).
   limit: z
     .number()
     .int()
@@ -129,10 +132,24 @@ const agentComponentListInputSchema = {
     .number()
     .int()
     .min(0)
+    // Bounded by the SHARED constant the API validates against. An unbounded
+    // input here would let an agent send an offset the API rejects with a 400,
+    // turning what used to be a clean empty page into a tool error.
+    .max(AGENT_COMPONENT_LIST_MAX_OFFSET)
     .optional()
-    .describe("Starting offset for pagination (default 0)."),
-} as const;
+    .describe(
+      `Starting offset for pagination (0-${AGENT_COMPONENT_LIST_MAX_OFFSET}, default 0).`
+    ),
+} as const satisfies Record<keyof AgentComponentListInput, z.ZodTypeAny>;
 
+/**
+ * ISS-5608 keys-covered guard. {@link AgentComponentListInput} is declared
+ * independently of the shape above rather than inferred from it, and the two are
+ * wired together only by the handler's parameter annotation — so without
+ * `satisfies` a filter added to the type but never taught to the shape is simply
+ * never sent by any client, and nothing fails. That is the ISS-4942 failure
+ * exactly: a renamed `owner` filter that the route accepted but silently ignored.
+ */
 type AgentComponentListInput = {
   kinds?: string[];
   collaborator?: string;
@@ -279,6 +296,39 @@ type GetAgentComponentInput = {
 };
 
 /**
+ * Extracted from the `registerTool` call below so the keys-covered guard can see
+ * it, for the reason given on {@link agentComponentListInputSchema}.
+ */
+const getAgentComponentInputSchema = {
+  slug: z
+    .string()
+    .describe(
+      'Agent-component slug — the `slug` field returned by list-agent-components, formed as `kind::key` (e.g. "skill::code-review"). Pass it verbatim; it is URL-encoded for you. The `id` UUID is not accepted here.'
+    ),
+  includePrompt: z
+    .boolean()
+    .optional()
+    .describe(
+      "Include the definition text of the selected revision. Definition bodies can reach 256 KiB, so this is off by default; `promptLength` and per-revision `contentLength` are always returned so you can size the read first. Default false."
+    ),
+  promptMaxChars: z
+    .number()
+    .int()
+    .min(200)
+    .max(MAX_PROMPT_MAX_CHARS)
+    .optional()
+    .describe(
+      `Maximum definition characters when includePrompt=true (default ${DEFAULT_PROMPT_MAX_CHARS}, max ${MAX_PROMPT_MAX_CHARS}).`
+    ),
+  versionHash: z
+    .string()
+    .optional()
+    .describe(
+      "Read a specific historical revision instead of the current one — pass a `hash` from `versions`. Only that revision's text is returned, and only when includePrompt=true. Defaults to the current revision."
+    ),
+} as const satisfies Record<keyof GetAgentComponentInput, z.ZodTypeAny>;
+
+/**
  * Shape the detail payload for the `get-agent-component` response.
  *
  * The API bounds the detail to 20 revisions, but each `versions[].content` body
@@ -368,34 +418,7 @@ export function registerGetAgentComponent(
     {
       description:
         "Get one agent component by its org-level slug — the list row plus definition metadata (path, format, model, allowed tools), content-hash version history, per-device provenance, and the sessions that invoked it. `versionsTruncated: true` appears only when that version history is partial; its absence means complete. Set includePrompt to read the definition text itself. Read-only.",
-      inputSchema: {
-        slug: z
-          .string()
-          .describe(
-            'Agent-component slug — the `slug` field returned by list-agent-components, formed as `kind::key` (e.g. "skill::code-review"). Pass it verbatim; it is URL-encoded for you. The `id` UUID is not accepted here.'
-          ),
-        includePrompt: z
-          .boolean()
-          .optional()
-          .describe(
-            "Include the definition text of the selected revision. Definition bodies can reach 256 KiB, so this is off by default; `promptLength` and per-revision `contentLength` are always returned so you can size the read first. Default false."
-          ),
-        promptMaxChars: z
-          .number()
-          .int()
-          .min(200)
-          .max(MAX_PROMPT_MAX_CHARS)
-          .optional()
-          .describe(
-            `Maximum definition characters when includePrompt=true (default ${DEFAULT_PROMPT_MAX_CHARS}, max ${MAX_PROMPT_MAX_CHARS}).`
-          ),
-        versionHash: z
-          .string()
-          .optional()
-          .describe(
-            "Read a specific historical revision instead of the current one — pass a `hash` from `versions`. Only that revision's text is returned, and only when includePrompt=true. Defaults to the current revision."
-          ),
-      },
+      inputSchema: getAgentComponentInputSchema,
     },
     (input: GetAgentComponentInput) =>
       withErrorHandling(async () => {

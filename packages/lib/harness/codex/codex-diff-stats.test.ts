@@ -59,7 +59,7 @@ describe("extractDiffFilePaths", () => {
   });
 
   it("matches Codex + unified headers in a CRLF (Windows) patch", () => {
-    // shafty023 CR: a `\r\n` rollout must not miss every `*** … File:` directive
+    // davetho CR: a `\r\n` rollout must not miss every `*** … File:` directive
     // (which would rebuild the session with filesChanged: 0). Splitting on
     // /\r?\n/ drops the trailing \r so the header regex still matches.
     expect(
@@ -84,7 +84,7 @@ describe("extractDiffFilePaths", () => {
   });
 
   it("gives a Codex envelope and a unified diff for the same file one identity", () => {
-    // wongk CR: a mixed-format session must NOT count src/a.ts twice.
+    // whitlockk CR: a mixed-format session must NOT count src/a.ts twice.
     const acc: CodexDiffAccumulator = {
       diffStats: null,
       diffFiles: new Set<string>(),
@@ -95,7 +95,7 @@ describe("extractDiffFilePaths", () => {
   });
 
   it("keeps added files distinct despite the shared /dev/null old header", () => {
-    // wongk CR: every unified ADD has `--- /dev/null`; pick the real +++ side
+    // whitlockk CR: every unified ADD has `--- /dev/null`; pick the real +++ side
     // so two added files don't collapse to a single /dev/null entry.
     expect(
       extractDiffFilePaths(

@@ -14,8 +14,8 @@ export const ICON_STROKE_WIDTH = 1.66;
 /**
  * Track (background circle) color for low-emphasis empty rings — the Todo
  * (Feature) and Draft (Document) states. A muted-foreground tint that stays
- * legible without competing with filled/progress states. Shared so the domain
- * status icons and the generic StatusIcon render an identical empty-ring track.
+ * legible without competing with filled/progress states. Read once, by the
+ * `empty-ring` entry in the appearance registry.
  */
 export const EMPTY_RING_TRACK_COLOR =
   "color-mix(in oklch, var(--muted-foreground) 40%, transparent)";
@@ -73,7 +73,16 @@ export function FilledSwapCircle({ fill }: { fill: string }) {
   );
 }
 
-/** Filled circle with a white exclamation mark — used for blocked states. */
+/**
+ * Filled circle with a white exclamation mark — the blocked / changes-requested
+ * states, filled with `--warning`.
+ *
+ * ISS-8692 briefly pointed `failed` at this same path in `--destructive`. The
+ * ISS-6801 decision-maker ruled on 2026-09-01 that Failed gets a mark of its
+ * own, so it draws {@link FilledBoltCircle} instead and this path is back to a
+ * single meaning. Do not re-point a second status at it: two states that part
+ * on fill alone part on hue alone (WCAG 1.4.1).
+ */
 export function FilledExclamationCircle({ fill }: { fill: string }) {
   return (
     <>
@@ -86,6 +95,47 @@ export function FilledExclamationCircle({ fill }: { fill: string }) {
         fill="none"
       />
       <circle cx={CENTER} cy={14} r={0.9} fill="var(--background)" />
+    </>
+  );
+}
+
+/**
+ * Filled circle with a white lightning bolt — the `failed` status (ISS-8692, on
+ * the ISS-6801 decision-maker's 2026-09-01 ruling that Failed gets a mark of
+ * its own rather than sharing the exclamation with `--warning` Blocked).
+ *
+ * Why a new shape and not a recolour: the artifact table can draw Failed one
+ * row from Blocked and Changes requested, and at 16px a hue delta between two
+ * identical silhouettes is texture the eye loses in a dense table — the same
+ * reasoning {@link NO_MEASURE_DASH_COLOR}'s dash gives for separating by
+ * silhouette. A bolt differs in SHAPE at any size and in either theme, so the
+ * pair cannot part on hue alone (WCAG 1.4.1). It is also the conventional
+ * fault mark, where the neighbouring X (`wont-do`) reads as
+ * terminal-by-decision rather than terminal-and-went-wrong.
+ *
+ * A solid path rather than a stroked zigzag: at 16px the stroked form closes up
+ * into a blob. It spans y 5.2–14.8, just inside the exclamation's own inked
+ * extent — that mark's stem is `M10 5.5V11` with a round cap and its dot is
+ * `cy=14 r=0.9`, so it actually inks y 4.67–14.9, not the 5.2–14.8 an earlier
+ * revision of this comment claimed.
+ *
+ * KNOWN, and NOT settled here: bounding-box parity is not optical parity. Both
+ * apexes are acute wedges opening about 0.6 units per unit of height, so within
+ * ~1.4 units of either tip the ink is under one device pixel at 16px, where
+ * every other glyph in this family holds {@link ICON_STROKE_WIDTH} end to end.
+ * Blunting the tips to that weight is not reachable by moving these six points:
+ * inset by half a stroke, this polygon collapses through its own centre. It
+ * needs a longer or heavier mark, which is a change to the SHAPE and belongs to
+ * whoever owns the 2026-09-01 ruling, not to this file. See PR #6397.
+ */
+export function FilledBoltCircle({ fill }: { fill: string }) {
+  return (
+    <>
+      <circle cx={CENTER} cy={CENTER} r={RADIUS + STROKE_WIDTH / 2} fill={fill} />
+      <path
+        d="M11.6 5.2L6.8 10.8H9.4L8.4 14.8L13.2 9.2H10.6Z"
+        fill="var(--background)"
+      />
     </>
   );
 }

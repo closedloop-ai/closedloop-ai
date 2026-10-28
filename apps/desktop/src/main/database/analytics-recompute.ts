@@ -2,7 +2,7 @@
  * @file analytics-recompute.ts
  * @description Re-derivation of the `session_analytics` rollups (and their
  * FEA-2273 activity-metrics rows) for an explicit set of session ids, extracted
- * from sqlite.ts (ISS-5064) to shrink that grandfathered file.
+ * from sqlite.ts (ISS-5064) to shrink that file rather than grow it.
  *
  * This is NOT boot-only work, which is why it is its own module rather than part
  * of ./boot-maintenance.js: `recomputeAnalyticsRollupsFor` backs BOTH the
@@ -35,7 +35,7 @@ import {
  * answer: stamping a session whose rollup never rebuilt seals it at the current
  * revision with stale derived rows, and nothing selects it again.
  *
- * ISS-5071 (@wongk): the recompute performs TWO writes per chunk — the PRIMARY
+ * ISS-5071 (@whitlockk): the recompute performs TWO writes per chunk — the PRIMARY
  * `session_analytics` transaction, then a separate best-effort activity-metrics
  * transaction — and a single number cannot answer both questions its callers
  * ask. So the outcome is reported on two independent axes:
@@ -94,11 +94,12 @@ export type AnalyticsRollupRecomputeResult = {
  * `failed` and a silent failure got a session SEALED with stale cohort keys.
  *
  * The old docstring claimed "the boot backfill remains the safety net on the
- * next open". It is not: `backfillActivityMetrics` selects
- * `WHERE sam.session_id IS NULL OR sam.version < seg.version`, and this
- * recompute deliberately does not bump `session_activity_segments.version`, so
- * an existing metrics row at the same version is never re-selected. Withholding
- * the stamp is the heal path — the session stays retryable.
+ * next open". It is not: every disjunct of `backfillActivityMetrics`'s predicate
+ * is a VERSION comparison — missing row, `sam.version < seg.version`, or
+ * (ISS-6759) `sam.metric_version < ATTRIBUTION_METRIC_VERSION` — and this
+ * recompute bumps neither version while changing the cohort INPUTS, so an
+ * existing metrics row at the same versions is never re-selected. Withholding the
+ * stamp is the heal path — the session stays retryable.
  *
  * @returns true when the metrics rollup committed; false when it failed (logged).
  */
@@ -160,7 +161,7 @@ export async function recomputeAnalyticsRollupsFor(
   // that answer. A chunk that throws must make the caller withhold the stamp so
   // the session stays retryable, instead of being sealed with un-rebuilt rows.
   let failed = 0;
-  // ISS-5071 (@wongk): the PRIMARY analytics outcome, tracked independently of
+  // ISS-5071 (@whitlockk): the PRIMARY analytics outcome, tracked independently of
   // `failed`. A chunk whose `session_analytics` transaction committed has
   // rewritten rows on disk even if the SECONDARY metrics transaction below then
   // failed, so callers that invalidate caches / emit `desktop:db:changed` must

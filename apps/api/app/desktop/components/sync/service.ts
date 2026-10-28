@@ -1,6 +1,6 @@
 import type { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import { inferComponentFormat } from "@repo/api/src/types/agent-component-properties";
-import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
+import { Result, Status } from "@repo/api/src/types/result";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import {
   SourceAccessState,
@@ -19,9 +19,27 @@ import {
 import { admitSyncedCommandComponents } from "@/lib/command-key-admission";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import type { DesktopAgentComponentsPayload } from "@/lib/desktop-agent-sessions-schema";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
-import type { DesktopComponentsSyncResponse } from "./route";
+import { countProjected, projectIndexKey } from "@/lib/index-key-projection";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
+import {
+  resolveStoredComponentIdentity,
+  type StoredComponentIdentity,
+  type SyncedComponent,
+  toComponentIndexKeys,
+} from "./component-identity-lookup";
+import { reportComponentIndexKeyProjections } from "./component-index-key-telemetry";
+import {
+  mapSyncedComponentToUpsert,
+  parseDateField,
+} from "./component-upsert-args";
+import type { DesktopComponentsSyncResponse } from "./contract";
 import { dropSkillShadowedCommands } from "./skill-shadow-guard";
+import { degradeUnstorableComponentTimestamps } from "./timestamp-floor";
+import { reportDegradedComponentTimestamps } from "./timestamp-floor-telemetry";
+import { persistVariantUsageScopeHashes } from "./variant-usage-scope-hash";
 
 type DesktopComponentsSyncInput = {
   clerkUserId: string | null;
@@ -29,132 +47,7 @@ type DesktopComponentsSyncInput = {
   organizationId: string;
   payload: DesktopAgentComponentsPayload;
   userId: string;
-  /**
-   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
-   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
-   */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
 };
-
-type SyncedComponent = DesktopAgentComponentsPayload["components"][number];
-
-/** Parse an ISO string field to Date, or null if absent. */
-function parseDateField(value: string | null | undefined): Date | null {
-  return value ? new Date(value) : null;
-}
-
-/**
- * Map an optional/nullable ISO date field on the UPDATE path so an OMITTED
- * value is a no-op, not a clear (FEA-4011 review). `uninstalledAt` is optional
- * on the wire; an older Desktop that omits it must not clear an existing
- * tombstone (which would re-index a removed component into search). Three
- * states: `undefined` (omitted → leave stored value untouched), `null`
- * (explicit clear → set null), a string (set the parsed date).
- */
-function parseUpdateDateField(
-  value: string | null | undefined
-): Date | null | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return value ? new Date(value) : null;
-}
-
-/**
- * Build the `create` payload for an AgentComponent upsert.
- * Split from `update` so each function stays under the complexity budget.
- */
-function buildUpsertCreate(
-  component: SyncedComponent,
-  organizationId: string,
-  computeTargetId: string
-) {
-  return {
-    organizationId,
-    computeTargetId,
-    componentKind: component.componentKind,
-    externalComponentId: component.externalId,
-    harness: component.harness ?? null,
-    name: component.name ?? null,
-    componentKey: component.componentKey ?? null,
-    version: component.version ?? null,
-    description: component.description ?? null,
-    sourceUrl: component.sourceUrl ?? null,
-    installPath: component.installPath ?? null,
-    packId: component.packId ?? null,
-    scope: component.scope ?? null,
-    projectPath: component.projectPath ?? null,
-    metadata: component.metadata ?? undefined,
-    content: component.content ?? null,
-    contentHash: component.contentHash ?? null,
-    // F1 (FEA-3290 / PRD-527 Slice 4 / AC-007): honest resolution state. A
-    // brand-new cloud row minted from a label with no captured definition
-    // defaults to `unresolved` (mirrors the desktop mint gate) so it never
-    // surfaces as a configured component; a stale desktop that omits the field
-    // folds to the same default.
-    resolvedState: component.resolvedState ?? "unresolved",
-    ...buildVariantsTruncationWrite(component),
-    firstSeenAt: parseDateField(component.firstSeenAt),
-    lastSeenAt: parseDateField(component.lastSeenAt),
-    uninstalledAt: parseDateField(component.uninstalledAt),
-  };
-}
-
-/**
- * Build the `update` payload for an AgentComponent upsert.
- * Split from `create` so each function stays under the complexity budget.
- */
-function buildUpsertUpdate(component: SyncedComponent) {
-  const lastSeenAt = parseDateField(component.lastSeenAt);
-  return {
-    harness: component.harness ?? null,
-    name: component.name ?? null,
-    componentKey: component.componentKey ?? null,
-    version: component.version ?? null,
-    description: component.description ?? null,
-    sourceUrl: component.sourceUrl ?? null,
-    installPath: component.installPath ?? null,
-    packId: component.packId ?? null,
-    scope: component.scope ?? null,
-    projectPath: component.projectPath ?? null,
-    metadata: component.metadata ?? undefined,
-    content: component.content ?? null,
-    contentHash: component.contentHash ?? null,
-    // F1 (FEA-3290 Slice 4 / AC-007): update the resolution state ONLY when the
-    // desktop sends one. `undefined` (a stale client that omits the field) is a
-    // no-op — it must never demote a cloud row the collector already resolved.
-    resolvedState: component.resolvedState ?? undefined,
-    ...buildVariantsTruncationWrite(component),
-    lastSeenAt: lastSeenAt ?? undefined,
-    // Preserve an OMITTED `uninstalledAt` (undefined → no-op) so a stale Desktop
-    // that drops the field does not clear an existing tombstone and resurrect a
-    // removed component in search. Only an explicit null clears it.
-    uninstalledAt: parseUpdateDateField(component.uninstalledAt),
-  };
-}
-
-/**
- * Map a synced component payload to Prisma upsert args.
- * Delegates create/update construction to dedicated helpers to keep each
- * function under the cognitive complexity budget.
- */
-function mapSyncedComponentToUpsert(
-  component: SyncedComponent,
-  organizationId: string,
-  computeTargetId: string
-) {
-  return {
-    where: {
-      computeTargetId_componentKind_externalComponentId: {
-        computeTargetId,
-        componentKind: component.componentKind,
-        externalComponentId: component.externalId,
-      },
-    },
-    create: buildUpsertCreate(component, organizationId, computeTargetId),
-    update: buildUpsertUpdate(component),
-  };
-}
 
 /**
  * Upsert a content-hash version-history row for a synced component that carries
@@ -177,29 +70,43 @@ function mapSyncedComponentToUpsert(
  */
 function buildVersionUpsert(
   component: SyncedComponent,
-  organizationId: string
+  organizationId: string,
+  stored: StoredComponentIdentity
 ) {
   if (component.content == null || component.contentHash == null) {
     return null;
   }
-  const componentKey = component.componentKey ?? component.externalId;
+  // ISS-8069: this row's identity IS the `(organizationId, componentKind,
+  // componentKey, source, contentHash)` UNIQUE btree — four strings in one
+  // tuple — so every one of them is taken from the projected keys, not from the
+  // raw payload. Taking some from each would build a `where` that cannot match
+  // the row the sibling `AgentComponent` upsert just wrote.
+  // ISS-8285: taken from the STORED component identity, so a legacy raw row's
+  // version history stays on the tuple it is already keyed by instead of a
+  // second, projected one appearing beside it.
+  const componentKey = stored.componentKey ?? stored.externalComponentId;
+  // Projected from the same non-null value the guard above already proved, so
+  // this stays a `string` — reusing `indexKeys.contentHash` would drag its
+  // nullable type (and a second, unreachable null branch) in behind it.
+  const contentHash = projectIndexKey(component.contentHash).value;
   return {
     where: {
       organizationId_componentKind_componentKey_source_contentHash: {
         organizationId,
-        componentKind: component.componentKind,
+        componentKind: stored.componentKind,
         componentKey,
         source: "",
-        contentHash: component.contentHash,
+        contentHash,
       },
     },
     create: {
       organizationId,
-      componentKind: component.componentKind,
+      componentKind: stored.componentKind,
       componentKey,
       source: "",
-      contentHash: component.contentHash,
+      contentHash,
       content: component.content,
+      usageScopeHash: component.usageScopeHash ?? null,
       format: inferComponentFormat(
         component.componentKind,
         component.installPath
@@ -223,9 +130,25 @@ function buildVersionUpsert(
     // The observation window is widened MONOTONICALLY after the upsert (see
     // `widenVersionObservationWindows`), never clobbered here: version identity
     // is org-global, so an older retained observation arriving from one desktop
-    // must not overwrite a newer one already recorded from another (wongk,
+    // must not overwrite a newer one already recorded from another (whitlockk,
     // #4295).
-    update: {},
+    //
+    // ISS-4965 (Perrin, 2026-10-05): the usage digest is written on update too.
+    // Every sync re-links this row to the DefinitionVersion of the redacted body
+    // (`registerDefinitionVersionForComponent`), so a row stored before the
+    // column existed needs the digest its usage rows carry in the same sync.
+    // The redacted body is written too, so a row stored raw before redaction is
+    // scrubbed on its next sync (Perrin, 2026-10-05, #8391).
+    update: component.usageScopeHash
+      ? { usageScopeHash: component.usageScopeHash, content: component.content }
+      : {},
+    // ISS-6318: the caller discards this upsert's row, so `RETURNING *` would
+    // ship every column of a wide `AgentComponentVersion` — `content` included —
+    // for a value nobody reads. `no-discarded-wide-prisma-write` cannot police
+    // this site whichever way it is written: the call passes an identifier
+    // rather than an object literal, so the rule falls out before it tests for
+    // `select`. The assertion in service-variants.test.ts is the only guard.
+    select: { id: true },
   };
 }
 
@@ -255,6 +178,7 @@ type VariantVersionRow = {
   source: string;
   contentHash: string;
   content: string;
+  usageScopeHash: string | null;
   format: string;
   firstSeenAt: Date | null;
   lastSeenAt: Date | null;
@@ -268,9 +192,11 @@ type VariantVersionRow = {
  * identity `buildVersionUpsert` uses for the primary, differing only in
  * `contentHash` — so the cloud accumulates the revision set the desktop shipped,
  * and the web detail panel stops showing one revision where Desktop shows
- * several. Content identity is the desktop's hash forwarded VERBATIM; the cloud
- * never re-derives or widens the preimage, so no existing version row is re-keyed
- * or orphaned by this lane.
+ * several. Content identity is the desktop's hash, forwarded verbatim for every
+ * hash an index tuple can physically hold — the cloud never re-derives or widens
+ * the preimage. ISS-8069 is the ONE exception and it is not a re-keying of
+ * anything that exists: a hash over `INDEX_KEY_MAX_BYTES` could not be written
+ * at all before, so the row it now lands is one this lane previously threw on.
  *
  * NOT a full mirror of desktop retention, and the docstring used to overclaim
  * that (closedloop-ai-stage, #4295): this lane only ever ADDS rows. A revision
@@ -294,18 +220,31 @@ type VariantVersionRow = {
  */
 function buildVariantVersionRows(
   component: SyncedComponent,
-  organizationId: string
-): VariantVersionRow[] {
+  organizationId: string,
+  stored: StoredComponentIdentity
+): { rows: VariantVersionRow[]; projectedCount: number } {
   const variants = component.variants;
   if (!variants || variants.length === 0) {
-    return [];
+    return { rows: [], projectedCount: 0 };
   }
-  const componentKey = component.componentKey ?? component.externalId;
+  // ISS-8069: variant rows land in the same five-column UNIQUE btree as the
+  // primary, so they take the same projected identity. The variant's own hash is
+  // projected alongside them — the base ISS-8051 bound on it is 512 CHARACTERS,
+  // which does not bound the tuple's BYTES.
+  // ISS-8285: the same STORED identity the primary row resolved to — a variant
+  // shares its component's five-column tuple, so it must not be keyed by the
+  // projection while the primary is keyed by the legacy raw value.
+  const componentKey = stored.componentKey ?? stored.externalComponentId;
   const fallbackFormat = inferComponentFormat(
     component.componentKind,
     component.installPath
   );
   const rows: VariantVersionRow[] = [];
+  // ISS-8069 (review, whitlockk): a variant hash is an index key like any other, so
+  // a variant-only projection has to reach the batch tally too. Counted from the
+  // rows actually BUILT, not from `component.variants`, so a variant skipped for
+  // matching the primary is not reported as a bound value that landed.
+  let projectedCount = 0;
   for (const variant of variants) {
     if (variant.contentHash === component.contentHash) {
       continue;
@@ -313,19 +252,22 @@ function buildVariantVersionRows(
     const observedAt =
       parseDateField(variant.lastSeenAt) ??
       parseDateField(component.lastSeenAt);
+    const variantContentHash = projectIndexKey(variant.contentHash);
+    projectedCount += countProjected(variantContentHash);
     rows.push({
       organizationId,
-      componentKind: component.componentKind,
+      componentKind: stored.componentKind,
       componentKey,
       source: "",
-      contentHash: variant.contentHash,
+      contentHash: variantContentHash.value,
       content: variant.content,
+      usageScopeHash: variant.usageScopeHash ?? null,
       format: variant.format || fallbackFormat,
       firstSeenAt: parseDateField(variant.firstSeenAt) ?? observedAt,
       lastSeenAt: observedAt,
     });
   }
-  return rows;
+  return { rows, projectedCount };
 }
 
 /**
@@ -335,14 +277,16 @@ function buildVariantVersionRows(
  * a valid 200-component request could expand to as many as 1 600 sequential
  * round trips. The per-request limiter bounds concurrent connections, not total
  * database work, so that was a self-inflicted load multiplier on a single request
- * (wongk, #4295). This instead does:
+ * (whitlockk, #4295). This instead does:
  *
  *   1. ONE `createMany({ skipDuplicates: true })` for the entire batch — an
  *      `INSERT ... ON CONFLICT DO NOTHING` against the version identity, so a
  *      revision the cloud already has is a no-op rather than a rewrite;
  *   2. a monotonic window widening for the rows that already existed, grouped by
  *      timestamp so it is a handful of `updateMany`s (in practice one — a batch
- *      shares its observation instant), not one per row.
+ *      shares its observation instant), not one per row;
+ *   3. ONE update setting a sent usage digest on rows that already existed
+ *      (`persistVariantUsageScopeHashes`, ISS-4965).
  *
  * Step 2 never moves a window inward. Version identity is org-global, so an
  * older retained observation arriving from one desktop must not overwrite a newer
@@ -363,6 +307,7 @@ async function persistVariantVersionRows(
     skipDuplicates: true,
   });
   await widenVersionObservationWindows(db, rows);
+  await persistVariantUsageScopeHashes(db, rows);
 }
 
 /**
@@ -478,6 +423,7 @@ function appendGrouped(
 async function registerDefinitionVersionForComponent(
   db: TransactionClient,
   component: SyncedComponent,
+  stored: StoredComponentIdentity,
   organizationId: string,
   computeTargetId: string,
   editorUserId: string
@@ -487,9 +433,33 @@ async function registerDefinitionVersionForComponent(
   }
   const definitionVersionId = await registerDefinitionVersion(db, {
     organizationId,
-    // `componentKind` is a free-form string on the wire; the fingerprint folds
-    // it in verbatim, so passing it through is faithful.
+    // ISS-8201: the RAW kind is the FINGERPRINT input, the PROJECTED one is what
+    // lands in the index-bearing column — and they are deliberately two
+    // arguments, not one.
+    //
+    // `DefinitionVersion` carries its own `@@index([organizationId,
+    // componentKind])`, so this is a second btree the same string lands in, and
+    // it is the one the wire cap used to be standing in front of. With that cap
+    // gone, writing the raw kind into that column made an over-long component
+    // throw `index row size ... exceeds btree version 4 maximum` inside the
+    // fan-out, after siblings had committed: strictly worse than the 400 the cap
+    // produced. So the column takes the projection — the same value the sibling
+    // `AgentComponent` row is stored under (`toComponentIndexKeys`), keeping ONE
+    // spelling of the kind across the two tables.
+    //
+    // The HASH must not move with it (codex P2 + whitlockk review, PR #7220).
+    // `definitionHash` IS the version identity, so folding the projection into it
+    // would rekey every version already registered under a raw multibyte kind —
+    // a resync would miss the existing row, insert a duplicate, and move the
+    // `AgentComponentVersion` link — and would split provenance against any
+    // producer that registers the same bytes without a projection.
+    //
+    // NOT counted again: the projection is the same key the batch tally already
+    // reported once via `toComponentIndexKeys`, and `projectIndexKey` is a pure
+    // function of its input, so re-deriving it here cannot disagree.
     componentKind: component.componentKind as AgentComponentKind,
+    storedComponentKind: projectIndexKey(component.componentKind)
+      .value as AgentComponentKind,
     content: component.content,
     format: inferComponentFormat(
       component.componentKind,
@@ -514,18 +484,31 @@ async function registerDefinitionVersionForComponent(
   // exact row above; the where-key mirrors it (same "" source sentinel + the
   // componentKey fallback), and `organizationId` scopes it so no cross-org row
   // is ever touched.
-  const componentKey = component.componentKey ?? component.externalId;
+  //
+  // ISS-8285 (review — codex, whitlockk): mirrors it through the SAME STORED
+  // identity `buildVersionUpsert` wrote with, never a fresh projection of the
+  // payload. Re-deriving the keys here was correct only while both sides
+  // projected; once the version upsert adopted a legacy raw component's stored
+  // identity, this rebuilt a DIFFERENT tuple, so the update raised P2025 AFTER
+  // the component and version writes had already landed — a partial sync whose
+  // retry replays the same failure forever.
+  const componentKey = stored.componentKey ?? stored.externalComponentId;
   await db.agentComponentVersion.update({
     where: {
       organizationId_componentKind_componentKey_source_contentHash: {
         organizationId,
-        componentKind: component.componentKind,
+        componentKind: stored.componentKind,
         componentKey,
         source: "",
-        contentHash: component.contentHash,
+        // Projected from the same non-null value the guard at the top of this
+        // function already proved, exactly as `buildVersionUpsert` does. No
+        // `?? ""` fallback: an empty-string key would silently target a
+        // different row rather than fail.
+        contentHash: projectIndexKey(component.contentHash).value,
       },
     },
     data: { definitionVersionId },
+    select: { id: true },
   });
 }
 
@@ -545,8 +528,9 @@ async function registerDefinitionVersionForComponent(
  */
 export const desktopComponentsSyncService = {
   async sync(
-    input: DesktopComponentsSyncInput
-  ): Promise<Result<DesktopComponentsSyncResponse, StatusCode>> {
+    input: DesktopComponentsSyncInput,
+    recordInventoryWrite?: RecordWriteInTransaction<undefined>
+  ): Promise<Result<DesktopComponentsSyncResponse, typeof Status.Forbidden>> {
     // Gate: verify the compute target is owned by this user + org.
     const target = await computeTargetsService.findOwnedById(
       input.computeTargetId,
@@ -558,16 +542,11 @@ export const desktopComponentsSyncService = {
       return Result.err(Status.Forbidden);
     }
 
-    // FEA-4169: server-owned ORG POLICY gate. Component inventory rows are
-    // session-derived data materialized at transcript-import time, so a
-    // policy-off org must not ingest them either — enforced server-side so an
-    // older/compromised Desktop that ignores the policy cannot persist them.
-    // Fail-closed (unresolved org → deny) and independent of any client field.
-    const isOrgPolicyEnabled =
-      input.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
-    if (!(await isOrgPolicyEnabled(input.organizationId))) {
-      return Result.err(Status.Forbidden);
-    }
+    // ISS-11449 retired the org session-sync policy, so ownership of the compute
+    // target above is the only gate at every ingest boundary now, this one
+    // included. Component INVENTORY carries no session-derived content anyway —
+    // it is the set of agents, skills and commands installed on a machine — so
+    // it never had an egress gate to lose.
 
     const { components, schemaVersion: _schemaVersion } = input.payload;
 
@@ -592,6 +571,11 @@ export const desktopComponentsSyncService = {
     // below so a projection failure can never roll back or fail this sync.
     const indexed: ReturnType<typeof agentComponentProjection>[] = [];
     const removed: string[] = [];
+    // ISS-8069: how many index-key columns this inventory had to be projected
+    // down on. One emission for the whole request, never one per component, and
+    // incremented only where the write that stored the projected key has
+    // already resolved — an attempted projection is not a persisted one.
+    let indexKeyProjections = 0;
 
     // `withDb` is NOT a transaction — each component upsert commits on its own.
     // Collect the projection input as each upsert succeeds, and flush in a
@@ -621,93 +605,112 @@ export const desktopComponentsSyncService = {
             organizationId: input.organizationId,
           });
         }
-        const ingestible = await dropSkillShadowedCommands(
+        const unshadowed = await dropSkillShadowedCommands(
           db,
           admitted,
           input.computeTargetId
         );
-        if (ingestible.length !== admitted.length) {
+        if (unshadowed.length !== admitted.length) {
           log.info("Dropped skill-shadowed phantom command components", {
             computeTargetId: input.computeTargetId,
-            droppedCount: admitted.length - ingestible.length,
+            droppedCount: admitted.length - unshadowed.length,
             organizationId: input.organizationId,
           });
         }
+        // ISS-8735: strip every timestamp below the Postgres floor BEFORE any
+        // write. `withDb` is not a transaction, so the INSERT that used to
+        // throw on one left the earlier components durable and the request
+        // 500'd forever. Runs AFTER the shadow drop so the tally reports only
+        // components that are actually written. Reporting is throttled per
+        // (org, compute target) rather than emitted per request, because the
+        // desktop replays a poisoned batch forever and nothing repairs it —
+        // see `timestamp-floor-telemetry.ts`.
+        const { components: ingestible, degraded } =
+          degradeUnstorableComponentTimestamps(unshadowed);
+        reportDegradedComponentTimestamps(
+          {
+            computeTargetId: input.computeTargetId,
+            organizationId: input.organizationId,
+          },
+          degraded
+        );
         // ISS-4662: variant version rows are collected across the whole batch
         // and written SET-BASED once, instead of one upsert per variant inside
         // this loop (which could reach ~1 600 sequential round trips for a valid
         // 200-component request). See `persistVariantVersionRows`.
         const variantRows: VariantVersionRow[] = [];
+        // ISS-8069 (review, davetho): variant projections are tallied only
+        // once their SET-BASED write below has committed, so they are held
+        // apart from the per-component count until then. Counting them as the
+        // rows are BUILT would report attempted projections as persisted ones
+        // whenever `persistVariantVersionRows` throws.
+        let variantIndexKeyProjections = 0;
         await mapWithDbConcurrency(ingestible, async (component) => {
-          const upserted = await db.agentComponent.upsert(
-            mapSyncedComponentToUpsert(
-              component,
-              input.organizationId,
-              input.computeTargetId
-            )
-          );
-          if (upserted.uninstalledAt === null) {
-            indexed.push(
-              agentComponentProjection({
-                id: upserted.id,
-                organizationId: upserted.organizationId,
-                componentKind: upserted.componentKind,
-                name: upserted.name,
-                componentKey: upserted.componentKey,
-                externalComponentId: upserted.externalComponentId,
-                description: upserted.description,
-                updatedAt: upserted.updatedAt,
-                // FEA-4335: route the search hit to the content-hash detail URI
-                // so two same-named different-content synced components resolve
-                // to distinct detail pages instead of colliding.
-                contentHash: upserted.contentHash,
-              })
-            );
-          } else {
-            removed.push(upserted.id);
-          }
-          const versionUpsert = buildVersionUpsert(
-            component,
-            input.organizationId
-          );
-          if (versionUpsert) {
-            await db.agentComponentVersion.upsert(versionUpsert);
-            // ISS-4662: the upsert no longer clobbers `lastSeenAt` on conflict
-            // (version identity is org-global, so a stale observation from one
-            // desktop must not overwrite a newer one from another). Widen the
-            // window monotonically instead — same treatment the variant rows get.
-            await widenVersionObservationWindows(db, [
-              {
-                ...versionIdentityWhereSource(versionUpsert),
-                firstSeenAt: versionUpsert.create.firstSeenAt ?? null,
-                lastSeenAt: versionUpsert.create.lastSeenAt ?? null,
-              },
-            ]);
-            // FEA-3290 (F1): register the exact DefinitionVersion +
-            // SourceOccurrence and stamp definitionVersionId onto the version
-            // row just upserted, in the same tx. Gated on the same
-            // content/contentHash condition as the version upsert, so it only
-            // runs when there is a coarse row to link.
-            await registerDefinitionVersionForComponent(
-              db,
-              component,
-              input.organizationId,
-              input.computeTargetId,
-              input.userId
-            );
-          }
-          // ISS-4662: collect the retained variant revisions for the batch-level
-          // set-based write below. Runs whether or not the PRIMARY carried
-          // content — a component whose display row lost its body can still have
-          // retained revisions.
-          variantRows.push(
-            ...buildVariantVersionRows(component, input.organizationId)
-          );
+          const variants = await writeInShape(recordInventoryWrite, {
+            unrecorded: async () => {
+              // ISS-8285: resolved ONCE per component and threaded through every
+              // statement below, so the component upsert, its version row and its
+              // variant rows cannot disagree about which identity this sync is
+              // about.
+              const { stored, upserted } = await upsertSyncedComponent(
+                db,
+                component,
+                input
+              );
+              // Tallied HERE, after the upsert that stored them resolved, and not
+              // from a pre-pass over `ingestible`: the fan-out is not a
+              // transaction, so a component whose write throws stored no projected
+              // key and must not be counted (review, davetho).
+              indexKeyProjections +=
+                toComponentIndexKeys(component).projectedCount;
+              collectComponentProjection({ indexed, removed }, upserted);
+              return await writeComponentHistory(db, component, input, stored);
+            },
+            // ISS-12552: recorded, each component writes in its
+            // own transaction with the caller's receipt for it, so a component
+            // and its receipt commit or roll back together. Its projection is
+            // collected once that transaction committed.
+            recorded: async (record) => {
+              const written = await withDb.tx(async (tx) => {
+                const { stored, upserted } = await upsertSyncedComponent(
+                  tx,
+                  component,
+                  input
+                );
+                const history = await writeComponentHistory(
+                  tx,
+                  component,
+                  input,
+                  stored
+                );
+                await record(tx, undefined);
+                return { upserted, history };
+              });
+              indexKeyProjections +=
+                toComponentIndexKeys(component).projectedCount;
+              collectComponentProjection(
+                { indexed, removed },
+                written.upserted
+              );
+              return written.history;
+            },
+          });
+          variantIndexKeyProjections += variants.projectedCount;
+          variantRows.push(...variants.rows);
         });
-        await persistVariantVersionRows(db, variantRows);
+        await writeInShape(recordInventoryWrite, {
+          unrecorded: () => persistVariantVersionRows(db, variantRows),
+          recorded: (record) => persistRecordedVariantRows(variantRows, record),
+        });
+        indexKeyProjections += variantIndexKeyProjections;
       });
     } finally {
       flushComponentSearchIndex(input.organizationId, indexed, removed);
+      // In the `finally` for the same reason the index flush is: the fan-out is
+      // not a transaction, so a request that threw part-way still WROTE the
+      // projected keys of everything that committed before it, and that is
+      // exactly the case worth hearing about.
+      reportComponentIndexKeyProjections(input, indexKeyProjections);
     }
 
     // Invocation sync may arrive before inventory. Once inventory is durable,
@@ -784,39 +787,126 @@ function dedupeProjectionsBySlug(
 }
 
 /**
- * ISS-5029 (wongk, #4391): the truncation-marker columns for one upsert, shared
- * by `create` and `update` so the two can never drift.
- *
- * The wire field has THREE states and they mean three different things:
- *
- *  - **absent** — a desktop that predates the marker. It has NO OPINION, so both
- *    keys are omitted and Prisma no-ops: `update` leaves whatever is stored
- *    alone, `create` takes the column's `false` default. This is the case the
- *    first cut got wrong — folding absent to `false` let a stale desktop CLEAR a
- *    `true` that an upgraded peer device on the same identity had just recorded,
- *    which is a plain version-skew regression.
- *  - **`false`** — a marker-aware packer stating it dropped nothing. That is a
- *    real claim and it must be able to clear a stale `true`, so it writes
- *    `false` and nulls the reason.
- *  - **`true`** — truncation, with the reason that bound alongside it.
- *
- * The reason is stored VERBATIM rather than validated against the known set: a
- * newer desktop's reason is then preserved for whoever learns it, and the only
- * consumer (`emitVersionsTruncated`) already treats anything it does not
- * recognize as "no proof", which is the same safe default as absent.
+ * One component's existence row: its stored identity, resolved ONCE so the
+ * upsert, its version row and its variant rows agree on it (ISS-8285), and the
+ * upsert itself.
  */
-function buildVariantsTruncationWrite(component: SyncedComponent): {
-  variantsTruncated?: boolean;
-  variantsTruncatedReason?: string | null;
-} {
-  if (component.variantsTruncated === undefined) {
-    return {};
+async function upsertSyncedComponent(
+  db: TransactionClient,
+  component: SyncedComponent,
+  input: DesktopComponentsSyncInput
+) {
+  const stored = await resolveStoredComponentIdentity(
+    db,
+    input.computeTargetId,
+    component
+  );
+  const upserted = await db.agentComponent.upsert(
+    mapSyncedComponentToUpsert(
+      component,
+      input.organizationId,
+      input.computeTargetId,
+      stored
+    )
+  );
+  return { stored, upserted };
+}
+
+/**
+ * One component's history after its upsert: the content-hash version row and
+ * its definition registration, and the retained variant rows it carries for
+ * the batch-level write.
+ */
+async function writeComponentHistory(
+  db: TransactionClient,
+  component: SyncedComponent,
+  input: DesktopComponentsSyncInput,
+  stored: StoredComponentIdentity
+) {
+  const versionUpsert = buildVersionUpsert(
+    component,
+    input.organizationId,
+    stored
+  );
+  if (versionUpsert) {
+    await db.agentComponentVersion.upsert(versionUpsert);
+    // ISS-4662: the upsert no longer clobbers `lastSeenAt` on conflict
+    // (version identity is org-global, so a stale observation from one
+    // desktop must not overwrite a newer one from another). Widen the
+    // window monotonically instead — same treatment the variant rows get.
+    await widenVersionObservationWindows(db, [
+      {
+        ...versionIdentityWhereSource(versionUpsert),
+        firstSeenAt: versionUpsert.create.firstSeenAt ?? null,
+        lastSeenAt: versionUpsert.create.lastSeenAt ?? null,
+      },
+    ]);
+    // FEA-3290 (F1): register the exact DefinitionVersion +
+    // SourceOccurrence and stamp definitionVersionId onto the version
+    // row just upserted, in the same tx. Gated on the same
+    // content/contentHash condition as the version upsert, so it only
+    // runs when there is a coarse row to link.
+    await registerDefinitionVersionForComponent(
+      db,
+      component,
+      stored,
+      input.organizationId,
+      input.computeTargetId,
+      input.userId
+    );
   }
-  if (component.variantsTruncated) {
-    return {
-      variantsTruncated: true,
-      variantsTruncatedReason: component.variantsTruncatedReason ?? null,
-    };
+  // ISS-4662: the retained variant revisions go to the batch-level set-based
+  // write. Built whether or not the PRIMARY carried content: a component whose
+  // display row lost its body can still have retained revisions.
+  return buildVariantVersionRows(component, input.organizationId, stored);
+}
+
+/**
+ * FEA-4011: an upserted component goes to the search projection, or is removed
+ * from it once uninstalled.
+ */
+function collectComponentProjection(
+  projections: {
+    indexed: ReturnType<typeof agentComponentProjection>[];
+    removed: string[];
+  },
+  upserted: Awaited<ReturnType<typeof upsertSyncedComponent>>["upserted"]
+): void {
+  if (upserted.uninstalledAt === null) {
+    projections.indexed.push(
+      agentComponentProjection({
+        id: upserted.id,
+        organizationId: upserted.organizationId,
+        componentKind: upserted.componentKind,
+        name: upserted.name,
+        componentKey: upserted.componentKey,
+        externalComponentId: upserted.externalComponentId,
+        description: upserted.description,
+        updatedAt: upserted.updatedAt,
+        // FEA-4335: route the search hit to the content-hash detail URI
+        // so two same-named different-content synced components resolve
+        // to distinct detail pages instead of colliding.
+        contentHash: upserted.contentHash,
+      })
+    );
+  } else {
+    projections.removed.push(upserted.id);
   }
-  return { variantsTruncated: false, variantsTruncatedReason: null };
+}
+
+/**
+ * ISS-12552: the request's retained variant rows with the caller's receipt
+ * for them, in one transaction; nothing when the request carried none.
+ */
+async function persistRecordedVariantRows(
+  rows: readonly VariantVersionRow[],
+  record: RecordWriteInTransaction<undefined>
+): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+  await withDb.tx(async (tx) => {
+    await persistVariantVersionRows(tx, rows);
+    await record(tx, undefined);
+  });
 }

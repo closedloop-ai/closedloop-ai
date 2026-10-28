@@ -13,7 +13,16 @@
  * grandfathered service file carries only the sync lane, not the read model.
  */
 
-import type { SessionDateWindowField } from "./session-date-window.js";
+import type { SessionQuality } from "@repo/api/src/agent-session-filters";
+import type { ListQueryExecution } from "@repo/api/src/types/list-query-observability";
+import type { PriorityFilterValue } from "@repo/api/src/types/priority-filter";
+import type { SessionStatusOrderingName } from "@repo/api/src/types/session-status-root-order";
+import type { BasicUser } from "@repo/api/src/types/user";
+import type { SessionDateWindowField } from "../../shared/session-date-window-contract.js";
+import type {
+  SharedAgentSessionListResponse,
+  SharedAgentSessionsListRequest,
+} from "../../shared/shared-agent-sessions-contract.js";
 
 export type SessionCursorRow = {
   id: string;
@@ -29,9 +38,8 @@ export const SessionListCursorSortKey = {
    * UNSORTED list read is already served in (`sortSyncedSessions` returns its
    * input untouched when `sortBy` is unset). It exists so a read that carries no
    * sort can ride this page instead of falling to the capped full-corpus
-   * hydration, which was the only thing keeping it there. Never selectable from
-   * the UI: no table header maps to it, and a request that names a real sort
-   * column resolves to `LastActivity`/`Started` as before.
+   * hydration, which was the only thing keeping it there. ISS-12439: an explicit
+   * `updated` sort takes it too, in the request's own direction.
    */
   Updated: "updated",
 } as const;
@@ -39,6 +47,10 @@ export type SessionListCursorSortKey =
   (typeof SessionListCursorSortKey)[keyof typeof SessionListCursorSortKey];
 
 export type SessionListCursorPageRequest = {
+  /** Applied in SQLite before paging; absent means all-quality for older callers. */
+  quality?: SessionQuality;
+  repositories?: readonly string[];
+  componentSessionIds?: readonly string[];
   limit: number;
   offset: number;
   sortBy: SessionListCursorSortKey;
@@ -56,8 +68,8 @@ export type SessionListCursorPageRequest = {
   /**
    * Goal stage 1 (sync reliability): the Status facet selection, applied before
    * paging — OR within the set, AND with the other filters. Values are the
-   * shared Status-facet vocabulary (including the display-derived
-   * `waiting`/`stale`/`unknown` and retired-spelling requests). An
+   * shared three-value Status-facet vocabulary. Retired spellings are removed
+   * by the query parse boundary before this request is built. An
    * implementation MUST partition rows exactly as the hydrated
    * `matchesStatusFilter` fold does — the sqlite source renders it via
    * `buildUsageStatusPredicate`, the established SQL twin the count-only badge
@@ -69,12 +81,59 @@ export type SessionListCursorPageRequest = {
    * db-host OOM shape) on every list poll. Absent/empty → no status predicate.
    */
   statuses?: readonly string[];
+  /**
+   * ISS-12439: the Owner, Harness, Model and Priority facets, applied before
+   * paging so a facet read hydrates one page instead of the matched corpus.
+   * Each is the `matchesQuery` predicate rendered over the `sessions` column the
+   * hydrated row reads it from, and an implementation MUST partition rows as
+   * that predicate does or not be admitted to the paging branch. Absent/empty
+   * → no predicate.
+   */
+  userIds?: readonly string[];
+  harness?: string;
+  harnesses?: readonly string[];
+  models?: readonly string[];
+  priorities?: readonly PriorityFilterValue[];
 };
+
+/** ISS-12439: the facets of {@link SessionListCursorPageRequest} beyond Status. */
+export type SessionListCursorFacets = Pick<
+  SessionListCursorPageRequest,
+  | "userIds"
+  | "harness"
+  | "harnesses"
+  | "models"
+  | "priorities"
+  | "componentSessionIds"
+>;
 
 export type SessionListCursorPage = {
   rows: SessionCursorRow[];
   total: number;
+  /** Idle rows hidden by a substantive filter within the other active filters. */
+  idleCount?: number;
 };
+
+/** Clone-safe request for the DB-host-owned local Sessions list projection. */
+export type LocalSessionListProjectionRequest = {
+  request: SharedAgentSessionsListRequest;
+  /** Optional so an older main/DB-host peer retains persisted-string order. */
+  statusOrdering?: SessionStatusOrderingName;
+  computeTargetId: string | null;
+  users: BasicUser[];
+};
+
+export type LocalSessionListProjectionResponse =
+  SharedAgentSessionListResponse & {
+    /** Whether the metadata-outbox lane completed for this projection. */
+    pendingOutboxAvailable: boolean;
+    /** Optional for a response from an older projection host. */
+    queryExecution?: ListQueryExecution;
+    /** Filter-matched population; optional across DB-host version skew. */
+    queryMatchedCount?: number;
+    /** Rows actually inspected in memory; omitted for SQL-only paths. */
+    queryScannedCount?: number;
+  };
 
 export type SessionRow = {
   id: string;
@@ -119,6 +178,15 @@ export type TokenUsageRow = {
  * aggregation can apply them in SQL without hydrating sessions.
  */
 export type AgentSessionUsageAggregateFilters = {
+  /** Omitted by older callers means the all-quality population. */
+  quality?: SessionQuality;
+  /** Facets pushed into the grouped SQLite read before aggregation. */
+  harnesses?: readonly string[];
+  models?: readonly string[];
+  repositories?: readonly string[];
+  /** Resolved cwd/stored-repository pairs, owned by the SQLite source. */
+  repositoryPairKeys?: readonly string[];
+  componentSessionIds?: readonly string[];
   harness?: string;
   status?: string;
   /**
@@ -301,3 +369,11 @@ export type RepositoryScopedSessionIdsOptions = Partial<
     "startDate" | "endDate" | "limit" | "sortBy" | "sortDir"
   >
 >;
+
+/**
+ * ISS-10606: the sanitized message a failed analytics aggregate rejects with,
+ * the analytics twin of `USAGE_AGGREGATE_UNAVAILABLE_MESSAGE`. No SQL, no path,
+ * no driver detail.
+ */
+export const ANALYTICS_AGGREGATE_UNAVAILABLE_MESSAGE =
+  "local analytics aggregate unavailable";

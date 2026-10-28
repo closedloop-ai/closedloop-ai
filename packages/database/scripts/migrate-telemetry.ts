@@ -16,6 +16,8 @@
  * and `AGENTS.md` state. So this reimplements the minimal agentless-intake path
  * from `@repo/observability`'s `log.ts` rather than importing it, and reads DD_*
  * straight from `process.env`.
+ * These hand-rolled lines carry both `status` and `level`: Datadog reserves
+ * `status` for severity, while `level` preserves the shared logger contract.
  *
  * The one `@repo/*` import is the Datadog site allowlist (ISS-5417). That is a
  * different case, and deliberately not covered by the rule above: `@repo/api` is
@@ -63,26 +65,85 @@ import {
 
 // --- contract enums -------------------------------------------------------
 
-/** Terminal outcome of a schema-migrate run. */
+/** Outcome of a schema-migrate run. Not all of them are terminal — see below. */
 export const MigrateOutcome = {
   Ok: "ok",
   /** Timed out acquiring Prisma's advisory lock 72707369 — the storm signature. */
   P1002: "p1002",
   OtherError: "other_error",
+  /**
+   * ISS-6837: the caller's wall-clock deadline expired with the run still going.
+   * PARTIAL — whatever was known at cut-off, never a result.
+   *
+   * A PIPELINE cutoff, not a migrate-subprocess one: the deadline being enforced
+   * is the ensure caller's budget for the whole of `applyMigrationsToSchema`, so
+   * the cut can land in the migrate OR in a post-migrate phase (clone,
+   * plain-index build, invalid-index sweep). Narrowing it to the subprocess
+   * would put those phases — the clone is the pipeline's one unbounded step —
+   * back to emitting nothing at all, which is the blind spot this exists to
+   * close.
+   *
+   * So `migrate_ms` DISCRIMINATES rather than being fixed: null means the
+   * migrate had not returned (and the run may still hold the serialize lock);
+   * non-null is the real duration `markMigrateDone()` had already measured, and
+   * places the cut downstream of the migrate. Neither shape is ever a fabricated
+   * number.
+   *
+   * It does NOT terminate the run: if the abandoned migrate later ends, it emits
+   * its own terminal row under the same `migrate_run_id`.
+   */
+  DeadlineCut: "deadline_cut",
 } as const;
 export type MigrateOutcome =
   (typeof MigrateOutcome)[keyof typeof MigrateOutcome];
+
+/**
+ * Which outcomes mean the run reached an END. Exhaustive by `satisfies`, so a new
+ * `MigrateOutcome` fails `tsc` here until it is classified, and
+ * `TerminalMigrateOutcome` is derived from this one table so the two cannot drift.
+ */
+const MIGRATE_OUTCOME_IS_TERMINAL = {
+  [MigrateOutcome.Ok]: true,
+  [MigrateOutcome.P1002]: true,
+  [MigrateOutcome.OtherError]: true,
+  [MigrateOutcome.DeadlineCut]: false,
+} as const satisfies Record<MigrateOutcome, boolean>;
+
+/** What `finish` accepts: a run that ended, never one cut mid-flight. */
+export type TerminalMigrateOutcome = {
+  [K in MigrateOutcome]: (typeof MIGRATE_OUTCOME_IS_TERMINAL)[K] extends true
+    ? K
+    : never;
+}[MigrateOutcome];
 
 /** Result of the FEA-3065 serialization gate for this run. */
 export const MigrateGateOutcome = {
   Acquired: "acquired",
   /** Gate acquire failed → ran unguarded (the fail-open trap that lets P1002 through). */
   FailOpen: "fail_open",
-  /** Gate acquire failed under `onContended: "skip"` → the walk skipped the schema. */
+  /** Gate acquire failed under a fail-closed `onContended` → the work was skipped. */
   FailClosed: "fail_closed",
 } as const;
 export type MigrateGateOutcome =
   (typeof MigrateGateOutcome)[keyof typeof MigrateGateOutcome];
+
+/**
+ * WHICH MECHANISM APPLIED THE MIGRATIONS, so `migrate_ms` stays interpretable.
+ *
+ * ISS-8039 gave the fresh-preview path a second executor, and the two are not
+ * comparable: `migrate_ms` was the ticket's whole diagnosis BECAUSE it measured
+ * Prisma CLI time (258s of a 290s budget), and a 1.5s replay next to a 1.5s
+ * `migrate deploy` is indistinguishable without this field. `null` when no
+ * migrate ran at all (the at-head skip).
+ */
+export const MigrateExecutor = {
+  /** `prisma migrate deploy`, spawned per run. */
+  PrismaCli: "prisma_cli",
+  /** ISS-8039: the same migration files replayed over one pg connection. */
+  SqlReplay: "sql_replay",
+} as const;
+export type MigrateExecutor =
+  (typeof MigrateExecutor)[keyof typeof MigrateExecutor];
 
 /** Whether a P3005/P3009/P3018 recovery forced a full-history replay, and which. */
 export const MigrateResetKind = {
@@ -105,6 +166,11 @@ export type MigrateDeployEvent = {
    * agentless POST — so a raw row count double-counts when both are live. Downstream
    * metrics must `count_distinct(migrate_run_id)` (mirrors the pool-telemetry
    * one-source contract). Both copies carry the same id, so the two rows collapse.
+   *
+   * ISS-6837 adds a second way one run yields two DIFFERENT events under this id:
+   * a deadline cut emits a partial row, and the abandoned migrate emits its
+   * terminal row if it later ends. `count_distinct` still counts one run; read the
+   * run's outcome as the LATEST row for the id, never an arbitrary one.
    */
   migrate_run_id: string;
   /** ISO-8601 start of the run — with `duration_ms` reconstructs concurrency windows. */
@@ -125,13 +191,14 @@ export type MigrateDeployEvent = {
   gate_wait_ms: number | null;
   /**
    * ISO start of the ACTUAL `prisma migrate deploy` interval (null when it never
-   * ran — at-head skip). Axis-A concurrency must be derived from
+   * ran — at-head skip, or a `deadline_cut` taken before the migrate started). Axis-A concurrency must be derived from
    * `[migrate_started_at, migrate_started_at + migrate_ms]`, NOT the whole-run
    * `started_at`/`duration_ms`: those bracket the pre-lock wait + post-migrate
    * clone too, so gate-serialized runs (only one migrating at a time) would show
    * false overlap. Whole-run duration is kept for total deploy-time analysis.
    */
   migrate_started_at: string | null;
+  migrate_executor: MigrateExecutor | null;
   migrate_ms: number | null;
   reset_kind: MigrateResetKind;
   outcome: MigrateOutcome;
@@ -202,6 +269,8 @@ export type BuildMigrateEventInput = {
   gateOutcome: MigrateGateOutcome | null;
   gateWaitMs: number | null;
   migrateStartedAt: string | null;
+  /** ISS-8039: `null` when no migrate ran (the at-head skip). */
+  migrateExecutor: MigrateExecutor | null;
   migrateMs: number | null;
   resetKind: MigrateResetKind;
   outcome: MigrateOutcome;
@@ -240,6 +309,7 @@ export function buildMigrateEvent(
     gate_outcome: input.gateOutcome,
     gate_wait_ms: input.gateWaitMs,
     migrate_started_at: input.migrateStartedAt,
+    migrate_executor: input.migrateExecutor,
     migrate_ms: input.migrateMs,
     reset_kind: input.resetKind,
     outcome: input.outcome,
@@ -251,7 +321,15 @@ export function buildMigrateEvent(
 
 // --- sinks ----------------------------------------------------------------
 
-const DD_LOG_INTAKE_TIMEOUT_MS = 3000;
+/**
+ * Ceiling on one intake POST, and therefore on `flushMigrateTelemetry` itself.
+ *
+ * Exported (ISS-6403) so a caller that awaits the flush inside its own
+ * wall-clock budget can reserve enough room for it against THIS number instead
+ * of a copy of it — `apps/api/app/preview-schemas/ensure` sizes its deadline
+ * reserve on it and pins the relationship in a test.
+ */
+export const DD_LOG_INTAKE_TIMEOUT_MS = 3000;
 const DD_SOURCE = "migrate";
 const DEFAULT_DD_SERVICE = "api";
 
@@ -269,6 +347,7 @@ function warnOnce(key: WarnKey, message: string): void {
   console.warn(
     JSON.stringify({
       level: "warn",
+      status: "warn",
       event: `migrate_telemetry.${key}`,
       message,
     })
@@ -325,11 +404,12 @@ export function recordMigrateEvent(
     const log = deps.logImpl ?? console.log;
     log(
       JSON.stringify({
-        level: "info",
         ddsource: DD_SOURCE,
         service: env.DD_SERVICE ?? DEFAULT_DD_SERVICE,
         message: "migrate_deploy",
         ...event,
+        level: "info",
+        status: "info",
       })
     );
   } catch {
@@ -349,6 +429,8 @@ function toIntakeEntry(
     service,
     message: "migrate_deploy",
     ...event,
+    level: "info",
+    status: "info",
   };
 }
 
@@ -515,13 +597,30 @@ export type MigrateRunRecorder = {
   setAtHeadSkip(value: boolean): void;
   setGate(outcome: MigrateGateOutcome, waitMs: number): void;
   markMigrateStart(): void;
+  /** ISS-8039: which mechanism applied the migrations; unset leaves it `null`. */
+  setMigrateExecutor(executor: MigrateExecutor): void;
   markMigrateDone(): void;
   setAttempts(attempts: number): void;
   setResetKind(kind: MigrateResetKind): void;
   /** ISS-4601: the post-deploy sweep's result; unset leaves it `null` (unswept). */
   setInvalidIndexes(names: string[]): void;
-  finish(outcome: MigrateOutcome): void;
+  finish(outcome: TerminalMigrateOutcome): void;
 };
+
+/** A started, not-yet-emitted run, as the deadline-cut registry holds it. */
+type LiveMigrateRun = {
+  schema: string | null;
+  cutAtDeadline: () => void;
+};
+
+/**
+ * Runs that have started and not yet emitted (ISS-6837). A run is added on
+ * `start()` and removed by whichever emit happens first, so this holds at most
+ * the migrates actually in flight in this process. A genuinely wedged child that
+ * neither settles nor is cut keeps its slot until the process recycles — the
+ * same bound, deliberately, as the ensure service's `inFlightPipelines` map.
+ */
+const liveRuns = new Set<LiveMigrateRun>();
 
 export function createMigrateRunRecorder(
   ctx: MigrateRunRecorderContext
@@ -536,16 +635,60 @@ export function createMigrateRunRecorder(
   let gateWaitMs: number | null = null;
   let migrateStartMs: number | null = null;
   let migrateStartedIso: string | null = null;
+  let migrateExecutor: MigrateExecutor | null = null;
   let migrateMs: number | null = null;
   let attempts: number | null = null;
   let resetKind: MigrateResetKind = MigrateResetKind.None;
   let invalidIndexes: string[] | null = null;
   let finished = false;
 
+  function emitEvent(outcome: MigrateOutcome): void {
+    try {
+      const endedAtMs = now();
+      emit(
+        buildMigrateEvent({
+          env: ctx.env,
+          schema: ctx.schema,
+          isPreview: ctx.isPreview,
+          startedAt: startedAtIso || new Date(endedAtMs).toISOString(),
+          durationMs: startedAtMs === null ? 0 : endedAtMs - startedAtMs,
+          atHeadSkip,
+          gateOutcome,
+          gateWaitMs,
+          migrateStartedAt: migrateStartedIso,
+          migrateExecutor,
+          migrateMs,
+          resetKind,
+          outcome,
+          attempts,
+          invalidIndexes,
+        })
+      );
+    } catch {
+      warnOnce("sink_failed", "migrate telemetry: emit threw; event dropped.");
+    }
+  }
+
+  const liveRun: LiveMigrateRun = {
+    schema: ctx.schema,
+    /**
+     * Deliberately does NOT mark the run finished. The cut does not stop the
+     * migrate — the abandoned child runs on — so suppressing its eventual
+     * `finish()` would trade an existing complete event for a partial one and
+     * make a run that ended `ok` or `p1002` indistinguishable from one still
+     * wedged (review). Idempotent because `liveRuns` is the only handle on it.
+     */
+    cutAtDeadline() {
+      liveRuns.delete(liveRun);
+      emitEvent(MigrateOutcome.DeadlineCut);
+    },
+  };
+
   return {
     start() {
       startedAtMs = now();
       startedAtIso = new Date(startedAtMs).toISOString();
+      liveRuns.add(liveRun);
     },
     setAtHeadSkip(value) {
       atHeadSkip = value;
@@ -553,6 +696,9 @@ export function createMigrateRunRecorder(
     setGate(outcome, waitMs) {
       gateOutcome = outcome;
       gateWaitMs = waitMs;
+    },
+    setMigrateExecutor(executor) {
+      migrateExecutor = executor;
     },
     markMigrateStart() {
       migrateStartMs = now();
@@ -578,39 +724,38 @@ export function createMigrateRunRecorder(
         return;
       }
       finished = true;
-      try {
-        const endedAtMs = now();
-        emit(
-          buildMigrateEvent({
-            env: ctx.env,
-            schema: ctx.schema,
-            isPreview: ctx.isPreview,
-            startedAt: startedAtIso || new Date(endedAtMs).toISOString(),
-            durationMs: startedAtMs === null ? 0 : endedAtMs - startedAtMs,
-            atHeadSkip,
-            gateOutcome,
-            gateWaitMs,
-            migrateStartedAt: migrateStartedIso,
-            migrateMs,
-            resetKind,
-            outcome,
-            attempts,
-            invalidIndexes,
-          })
-        );
-      } catch {
-        warnOnce(
-          "sink_failed",
-          "migrate telemetry: finish threw; event dropped."
-        );
-      }
+      liveRuns.delete(liveRun);
+      emitEvent(outcome);
     },
   };
 }
 
-/** Test-only: clear the buffer and warn-once latches so cases cannot leak. */
+/**
+ * Emit a PARTIAL event for every run still in flight on `schema` (ISS-6837).
+ *
+ * The pipeline pushes its event from a `finally` that a deadline-cut run never
+ * reaches, so without this the buffer a caller flushes on expiry is empty and the
+ * slowest runs — the ones worth observing — emit nothing at all.
+ *
+ * Scoped to `schema`: other schemas migrating on the same warm instance are
+ * unaffected by THIS caller's deadline, and cutting them would label a healthy
+ * run as deadline-cut. Returns how many runs were cut, so the caller can say so.
+ */
+export function cutMigrateRunsAtDeadline(schema: string | null): number {
+  let cut = 0;
+  for (const run of liveRuns) {
+    if (run.schema === schema) {
+      run.cutAtDeadline();
+      cut += 1;
+    }
+  }
+  return cut;
+}
+
+/** Test-only: clear the buffer, live runs and warn-once latches between cases. */
 export function __resetMigrateTelemetryForTests(): void {
   buffer.length = 0;
+  liveRuns.clear();
   warned.sink_failed = false;
   warned.flush_failed = false;
 }

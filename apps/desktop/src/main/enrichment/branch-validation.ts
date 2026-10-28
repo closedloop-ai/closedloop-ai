@@ -1,3 +1,5 @@
+import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
+
 const GIT_INTERNAL_REFS = new Set([
   "FETCH_HEAD",
   "HEAD",
@@ -22,7 +24,7 @@ const INVALID_BRANCH_CHAR_RE =
   /[\s~^:?*[\]\\'"`,;|&<>(){}$\u0000-\u001f\u007f]/;
 
 export function isValidBranchName(name: string): boolean {
-  if (name.length === 0) {
+  if (name.length === 0 || name.length > BRANCH_NAME_MAX_LENGTH) {
     return false;
   }
   if (GIT_INTERNAL_REFS.has(name)) {
@@ -45,6 +47,13 @@ export function isValidBranchName(name: string): boolean {
     return false;
   }
   if (name.endsWith(".") || name.endsWith("/") || name.endsWith(".lock")) {
+    return false;
+  }
+  // git check-ref-format: a ref can neither BEGIN nor end with `/`, nor hold
+  // consecutive slashes. The end and the interior were covered; the start was
+  // not, so an absolute path passed as a branch name — `git worktree add
+  // --detach /tmp/x` minted `branch::/tmp/x` (ISS-8751).
+  if (name.startsWith("/") || name.includes("//")) {
     return false;
   }
   if (name.includes("..") || name.includes("@{")) {

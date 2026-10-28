@@ -173,6 +173,7 @@
  *   still is.
  */
 
+import { SESSION_LIST_TRACE_BACKFILL_STORE_OP } from "../session-list-trace-maintenance-contract.js";
 import { BOUNDED_READ_OPS } from "./db-host-op-lane-registry.js";
 import {
   type AdmissionGate,
@@ -188,15 +189,16 @@ import {
  * heavy-op gate so their heap peaks never SUM past the single worker's heap.
  * These are the `*.backfill` jobs that scan thousands of transcripts/sessions.
  *
- * Everything else on the store-op surface — trace-comment create/reply/list,
- * plan confirm/reject, overlay reads/writes, catalog seed, etc. — is cheap and
- * often user-facing, so it runs UNGATED. Gating the whole surface (the earliest
+ * Everything else on the store-op surface — plan confirm/reject, catalog
+ * seed, etc. — is cheap and often user-facing, so it runs
+ * UNGATED. Gating the whole surface (the earliest
  * approach) queued those interactive ops behind a full backfill for its entire
  * duration, which is exactly what we must avoid.
  */
 export const HEAVY_STORE_OPS: ReadonlySet<string> = new Set<string>([
   "artifactLinks.backfill",
   "activitySegments.backfill",
+  SESSION_LIST_TRACE_BACKFILL_STORE_OP,
 ]);
 
 /**
@@ -295,6 +297,29 @@ export const BRANCHES_PAGE_MAX_CONCURRENT_BOUNDED_OPS = 1;
  * coincidence rather than the derivation: for a phase made only of
  * `aggregateUsage` the pool already caps execution at 2, so there the ceiling
  * costs nothing at all.
+ *
+ * ## ISS-8246 M4 — re-derived against the split, and it stays 2
+ *
+ * The measurement above was taken when the db-host was one isolate, so M1's
+ * split is a reason to re-check it. Both terms move the same way:
+ *
+ * - The reads themselves still all execute in ONE isolate (the store thread), so
+ *   "limit × one result set live at once" bounds exactly what it did before.
+ * - The split ADDED a second live copy per admitted op. Since ISS-12022 it is
+ *   the store thread's encoding, transferred to the dispatcher and held as bytes
+ *   until main has pulled them, not a decoded clone. Both hops still sit inside
+ *   the permit by design (`db-host-invoke-dispatch.ts`), so each permit still
+ *   covers more retained bytes than the result set alone.
+ *
+ * A wider lane is therefore strictly worse than it was, never better, and the
+ * conservative value is still the one to hold. The `admit` signal it is compared
+ * against also improved rather than drifted: M1 §1.11 made the pressure read the
+ * MAX of the two isolates' heaps, so the gate observes the isolate that actually
+ * allocates.
+ *
+ * No new heap number was taken — that would need the 15-way fan-out rig, and the
+ * ISS-8246 M2 harness measured latency, not heap. This is a derivation, and it is
+ * recorded as one. "Neither value has a latency measurement" still holds too.
  */
 export const BOUNDED_READ_OP_LIMIT = 2;
 
@@ -330,10 +355,35 @@ export function createDbHostOpLanes(opts?: {
    * they have opposite fixes.
    */
   onBoundedTiming?: (op: string, timing: BoundedLaneTiming) => void;
+  /**
+   * ISS-12023 (PRD-785) — called once per EXCLUSIVE-lane trip, after the op has
+   * settled AND the width-1 mutex has been released. The db-host wires it to the
+   * store's `PRAGMA shrink_memory` pass, so the 16 MiB-per-connection page cache
+   * a whole-corpus scan filled is released instead of staying resident until the
+   * app happens to go idle.
+   *
+   * Only the EXCLUSIVE lane, deliberately: its members are the whole-corpus
+   * scans ({@link HEAVY_STORE_OPS} plus the insights recompute), which are
+   * exactly what fills that cache and are rare enough that dropping it after one
+   * costs nothing. {@link BOUNDED_READ_OPS} are interactive page loads firing
+   * continuously at up to {@link BOUNDED_READ_OP_LIMIT} concurrent, and
+   * reclaiming after each of those would spend the page cache's hit rate — the
+   * thing `cache_size` exists to buy — on the surfaces that need it most.
+   *
+   * Fires on a FAILED op too: a scan that threw part-way still touched pages.
+   * The callback must not throw and its result is not awaited, so the shrink
+   * never extends the op's latency or the mutex's critical section.
+   */
+  onExclusiveSettled?: () => void;
 }): DbHostOpLanes {
   const admit = opts?.admit;
   const onBoundedTiming = opts?.onBoundedTiming;
-  const { runExclusive } = createHeavyOpGate({ admit });
+  const onExclusiveSettled = opts?.onExclusiveSettled;
+  const { runExclusive: runExclusiveGate } = createHeavyOpGate({ admit });
+  const runExclusive = onExclusiveSettled
+    ? <T>(task: () => Promise<T>): Promise<T> =>
+        runExclusiveGate(task).finally(onExclusiveSettled)
+    : runExclusiveGate;
   const readLane: BoundedOpLane = createBoundedOpLane({
     limit: BOUNDED_READ_OP_LIMIT,
     admit,

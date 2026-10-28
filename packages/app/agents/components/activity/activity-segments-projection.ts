@@ -1,7 +1,4 @@
-import {
-  MAX_SYNCED_ACTIVITY_SEGMENTS,
-  type SyncedActivitySegmentRow,
-} from "@repo/api/src/types/agent-session";
+import type { SyncedActivitySegmentRow } from "@repo/api/src/types/agent-session";
 import { clamp, clamp01 } from "@repo/api/src/utils/math";
 import {
   IDLE_PHASE_KEY,
@@ -19,7 +16,13 @@ import { ActivitySegmentKind } from "./activity-segment-kind";
  * `phase`, a confidence in [0, 1], and ranked evidence layers. This projection
  * NEVER re-classifies or re-prices (PLN-1398): it only normalizes/positions the
  * verbatim rows and marks the honest states the AC requires the UI to represent
- * (active, idle, unavailable, empty, truncated, malformed).
+ * (active, idle, unavailable, empty, malformed).
+ *
+ * Read-side truncation of the tiling
+ * (`AgentSessionDetail.activitySegmentRowsTruncated`) is NOT projected here: its
+ * one reader is the Session Timeline legend, which takes the flag straight off
+ * the detail (ISS-9858). The only production caller of this projection is
+ * `getPhaseTilingSpan`, which reads the span bounds and nothing else.
  */
 
 // `ActivitySegmentKind` — the rendered kind of a projected segment — is declared
@@ -74,34 +77,8 @@ export type ActivitySegmentsProjection = {
   spanStartMs: number | null;
   /** Projected span upper bound (epoch-ms); null when nothing renderable. */
   spanEndMs: number | null;
-  /**
-   * FEA-4238: fraction of the projected span [0, 1] covered by `idle` segments.
-   * For a mostly-idle session (a long wall-clock span the agent slept through —
-   * e.g. a 66h run) this approaches 1, which is exactly when the phase strip
-   * paints ~98% empty hatch and reads broken. The session-detail surface uses
-   * this to fold the strip behind a disclosure instead of leading with a nearly
-   * empty visualization above the trace. Duration-weighted (not a segment count)
-   * so a handful of long idle spans dominating a few short active ones is
-   * correctly read as mostly idle.
-   */
-  idleDurationShare: number;
-  /**
-   * FEA-4238: true when the non-idle (active + unavailable) segments cover so
-   * little of the span that the strip is not worth leading with — the derived
-   * "hide/disclose when idle dominates" signal. Kept as a projected field (not
-   * re-derived in the component) so web and desktop fold on identical data and a
-   * single test pins the threshold.
-   */
-  idleDominant: boolean;
   /** Count of input rows dropped as malformed (bad bounds / non-finite). */
   malformedCount: number;
-  /**
-   * True when the input row set hit the wire/DB cap
-   * (`MAX_SYNCED_ACTIVITY_SEGMENTS`), so earlier spans may be missing. Surfaced
-   * so the UI shows an honest "showing first N" affordance rather than implying
-   * the tiling is complete.
-   */
-  truncated: boolean;
 };
 
 const EMPTY_PROJECTION: ActivitySegmentsProjection = {
@@ -109,24 +86,11 @@ const EMPTY_PROJECTION: ActivitySegmentsProjection = {
   segments: [],
   spanStartMs: null,
   spanEndMs: null,
-  idleDurationShare: 0,
-  idleDominant: false,
   malformedCount: 0,
-  truncated: false,
 };
 
-/**
- * FEA-4238: the non-idle coverage floor below which the phase strip is treated
- * as too empty to lead with. At 5% a session whose active/unattributed work
- * covers less than a twentieth of its wall-clock span (the ~98%-idle 66h case)
- * folds the strip behind a disclosure; a session with even a modest working
- * stretch keeps it inline. Duration-weighted, so it is the share of TIME, not of
- * segment count.
- */
-const MIN_NON_IDLE_SHARE = 0.05;
-
 /** Phase labels the classifier uses for genuinely idle (no-billed-work) spans. */
-const IDLE_PHASES = new Set([IDLE_PHASE_KEY]);
+const IDLE_PHASES = new Set<string>([IDLE_PHASE_KEY]);
 /**
  * Phase labels that carry no positive attribution — rendered as `unavailable`.
  * `unknown`/`""` are defensive shapes for a malformed row, not taxonomy keys, so
@@ -144,22 +108,12 @@ const UNAVAILABLE_PHASES = new Set<string>([OTHER_PHASE_KEY, "unknown", ""]);
  * yields `empty` — distinct from `unavailable`, because the data DID arrive.
  */
 export function projectActivitySegments(
-  rows: readonly SyncedActivitySegmentRow[] | null | undefined,
-  options?: Readonly<{ rowsTruncated?: boolean | null }>
+  rows: readonly SyncedActivitySegmentRow[] | null | undefined
 ): ActivitySegmentsProjection {
   if (!Array.isArray(rows) || rows.length === 0) {
     return EMPTY_PROJECTION;
   }
 
-  // Truncation from either the row cap OR the upstream byte-budget signal
-  // (`activitySegmentRowsTruncated`, FEA-3779): the desktop can cut the tiling
-  // below the row cap on serialized bytes, and the cloud does not re-derive the
-  // row count from that, so a start-ordered prefix can be short without hitting
-  // MAX_SYNCED_ACTIVITY_SEGMENTS. Honor the explicit flag so a partial prefix is
-  // never treated as a complete tiling.
-  const truncated =
-    rows.length >= MAX_SYNCED_ACTIVITY_SEGMENTS ||
-    options?.rowsTruncated === true;
   const valid: NormalizedRow[] = [];
   let malformedCount = 0;
   for (const row of rows) {
@@ -176,7 +130,6 @@ export function projectActivitySegments(
       ...EMPTY_PROJECTION,
       state: ActivitySegmentsState.Empty,
       malformedCount,
-      truncated,
     };
   }
 
@@ -209,43 +162,12 @@ export function projectActivitySegments(
     };
   });
 
-  // FEA-4238: duration-weighted idle vs non-idle coverage of the projected span,
-  // so the surface can fold a mostly-idle strip. Sum idle segment durations
-  // against the span (not the segment count) so a few long sleeps outweigh many
-  // short active spans. `idleDominant` is the derived "too empty to lead with"
-  // flag consumed by the phase strip.
-  const idleDurationMs = segments.reduce(
-    (sum, segment) =>
-      segment.kind === ActivitySegmentKind.Idle
-        ? sum + segment.durationMs
-        : sum,
-    0
-  );
-  const nonIdleDurationMs = segments.reduce(
-    (sum, segment) =>
-      segment.kind === ActivitySegmentKind.Idle
-        ? sum
-        : sum + segment.durationMs,
-    0
-  );
-  const idleDurationShare = clamp01(idleDurationMs / spanMs);
-  // Never fold a TRUNCATED tiling as idle-dominant: a byte/row-truncated
-  // start-ordered prefix can be all-idle at the front while the dropped tail held
-  // the real work, so labeling it "mostly idle" and hiding it would lie about a
-  // partial input. A truncated strip stays inline (the honest "later phases
-  // truncated" note still surfaces). Only a COMPLETE tiling can fold.
-  const idleDominant =
-    !truncated && nonIdleDurationMs / spanMs < MIN_NON_IDLE_SHARE;
-
   return {
     state: ActivitySegmentsState.Ready,
     segments,
     spanStartMs,
     spanEndMs,
-    idleDurationShare,
-    idleDominant,
     malformedCount,
-    truncated,
   };
 }
 

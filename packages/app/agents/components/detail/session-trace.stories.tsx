@@ -11,8 +11,9 @@ import {
   traceCostReadoutItems,
   traceToolCardItems,
 } from "./agent-session-detail-fixtures";
-import { SessionTrace, type SessionTraceItem } from "./session-trace";
+import { SessionTrace } from "./session-trace";
 import type { SessionTraceHandle } from "./session-trace-contract";
+import type { SessionTraceItem } from "./session-trace-groups";
 
 const REASONING_BUTTON_NAME = "Reasoning";
 const FAILED_TOOL_CARD_NAME = /Ran 2 tools/;
@@ -60,9 +61,9 @@ const staffDecorator: Decorator = (Story) => (
  * list to an empty set.
  */
 const meta = {
-  title: "App Core/Agents/Session Trace",
+  title: "Composites v1.0/Agents/Detail/Session Trace",
   component: SessionTrace,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     items: populatedSessionTraceItems,
@@ -264,6 +265,9 @@ export const LongContent: Story = {
  */
 export const Virtualized: Story = {
   args: { items: WINDOWED_TRACE_ITEMS },
+  parameters: {
+    controls: { include: ["items"] },
+  },
   render: (args) => <VirtualizedTraceStage items={args.items} />,
   play: ({ canvasElement }) => {
     const trace = canvasElement.querySelector<HTMLElement>(".st");

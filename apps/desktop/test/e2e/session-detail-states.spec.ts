@@ -209,7 +209,7 @@ test.describe("Session detail missing-session state (ISS-5593)", () => {
         // …and it is a way out that WORKS. A link that merely exists is not an
         // exit: this href could point back at the detail route the user is
         // already stuck on and every assertion above would still be green
-        // (wongk, #4669). Click it, and prove the Sessions LIST is what mounted
+        // (whitlockk, #4669). Click it, and prove the Sessions LIST is what mounted
         // on the other side — which also drives the desktop hash-navigation
         // adapter end to end, the one piece of this route no shared-component
         // assertion can reach.

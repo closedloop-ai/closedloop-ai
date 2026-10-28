@@ -1,5 +1,6 @@
 "use client";
 
+import type { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import type { Priority } from "@repo/api/src/types/common";
 import type { ArtifactStatus } from "@repo/api/src/types/document";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
@@ -13,9 +14,25 @@ import { createContext } from "react";
  */
 export type RowEditHandlers = {
   onUpdateAssignee?: (itemId: string, assigneeId: string | null) => void;
-  onUpdatePriority?: (itemId: string, priority: Priority) => void;
-  onUpdateDueDate?: (itemId: string, date: Date | null) => void;
-  onUpdateStatus?: (itemId: string, status: ArtifactStatus) => void;
+  /** ISS-9665: `null` clears the priority. Only ever emitted for rows whose
+   * entity can hold it — see `ArtifactPriorityMenu`'s `allowUnset`. */
+  onUpdatePriority?: (itemId: string, priority: Priority | null) => void;
+  /** Returns the write settlement so retained-failure cells can render refusals. */
+  onUpdateDueDate?: (
+    itemId: string,
+    date: Date | null,
+    recoverableErrorOwner?: () => boolean
+  ) => Promise<unknown> | undefined;
+  onUpdateStatus?: (
+    itemId: string,
+    status: ArtifactStatus,
+    surface: ArtifactStatusEditSurface
+  ) => void;
+  onUpdateTitle?: (
+    itemId: string,
+    title: string,
+    expectedTitle: string
+  ) => Promise<unknown> | undefined;
   /** Team members for the UserSelectPopover. */
   teamMembers?: User[];
   /** Parent entity title, injected per-row for the Parent column cell. */

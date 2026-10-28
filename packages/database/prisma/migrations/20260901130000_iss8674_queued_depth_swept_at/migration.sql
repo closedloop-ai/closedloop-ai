@@ -1,0 +1,25 @@
+-- ISS-8674: the rotation key that makes the queue-depth sweep COMPLETE.
+--
+-- WHAT WAS OMITTED. The sampler caps its per-tick emission at
+-- MAX_SAMPLED_TARGETS and read its zero-fill page in primary-key order, which
+-- is stable — so past the cap the SAME tail of the fleet was dropped on every
+-- tick, forever. The decision comment on ISS-8674 (Marisol, 2026-09-01) forbids
+-- that: "do not permanently omit targets ... bound operational work through
+-- complete pagination/chunking with truthful progress/completeness semantics,
+-- not by discarding data."
+--
+-- WHY A ROTATION KEY AND NOT A CURSOR. A stored cursor needs its own row, its
+-- own wraparound, and it still misses a target registered behind the cursor
+-- until the next wrap. Ordering by "least recently swept" needs none of that:
+-- every target is swept before any target is swept twice, a new target sorts to
+-- the head rather than the tail, and how much of the fleet is still owed a
+-- sweep is a COUNT anyone can run rather than arithmetic on a cursor position.
+--
+-- WHY NOT NULL, DEFAULTING TO THE EPOCH. "Never swept" has to sort FIRST, and
+-- Postgres puts NULLs last in an ascending btree. NULLS FIRST is not
+-- expressible in a Prisma index and an expression index is not expressible at
+-- all, so the sentinel goes in the value instead of the ordering. This column
+-- is a SCHEDULING key: nothing reports it to a user, and it is never presented
+-- as when a depth was measured.
+ALTER TABLE "compute_targets"
+  ADD COLUMN "queued_depth_swept_at" TIMESTAMP(3) NOT NULL DEFAULT '1970-01-01 00:00:00';

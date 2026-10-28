@@ -199,7 +199,7 @@ describe("GridTable resize handles (FEA-4168)", () => {
     expect(onResize).not.toHaveBeenCalled();
   });
 
-  it("ignores moves from a second concurrent pointer (wongk review)", () => {
+  it("ignores moves from a second concurrent pointer (whitlockk review)", () => {
     const onResize = vi.fn();
     renderGrid(onResize, { owner: 150, status: 120 });
     const handle = screen.getByRole("button", {
@@ -218,7 +218,7 @@ describe("GridTable resize handles (FEA-4168)", () => {
     }
   });
 
-  it("tears down the drag when pointer capture is lost (wongk review)", () => {
+  it("tears down the drag when pointer capture is lost (whitlockk review)", () => {
     const onResize = vi.fn();
     renderGrid(onResize, { owner: 150, status: 120 });
     const handle = screen.getByRole("button", {

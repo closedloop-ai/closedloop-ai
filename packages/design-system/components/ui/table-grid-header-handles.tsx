@@ -243,7 +243,7 @@ export function ColumnResizeHandle({
       // divider (`-right-px w-3`) so the pointer does not have to find a 1px
       // border, while what the user SEES is the `after:` hairline.
       //
-      // ISS-5812 (wongk review) is why the strip reaches BACK rather than
+      // ISS-5812 (whitlockk review) is why the strip reaches BACK rather than
       // straddling. `-right-1.5` centred the 12px box on the divider, so it hung
       // 6px past this cell's padding box — 5px into the NEXT column's padding
       // box, once that column's 1px `border-l` is taken off. The next column's

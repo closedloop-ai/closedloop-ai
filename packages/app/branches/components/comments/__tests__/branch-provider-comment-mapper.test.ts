@@ -4,17 +4,45 @@ import {
   BranchPrCommentKind,
   type BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mapSelectedProviderComments } from "../branch-provider-comment-mapper";
 
 describe("mapSelectedProviderComments", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * The provider rail is one of the two halves of a single comment list, so it
+   * has to stay wired to the shared label helper rather than carry its own copy.
+   * Both the readable and the unparseable case are asserted through the mapper:
+   * swapping `formatBranchCommentTime` back out for a private formatter here
+   * fails on the fallback wording rather than passing silently.
+   */
+  it("labels root and reply timestamps through the shared branch formatter", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-10T12:00:00.000Z"));
+    const response = makeResponse();
+    response.comments[0]!.createdAt = "2026-08-10T11:55:00.000Z";
+    response.comments[1]!.createdAt = "not-a-timestamp";
+
+    const result = mapSelectedProviderComments(
+      response,
+      "branch-1",
+      "closedloop-ai/closedloop-ai#42"
+    );
+
+    expect(result?.threads[0]?.createdAtLabel).toBe("5 min ago");
+    expect(result?.threads[0]?.replies[0]?.createdAtLabel).toBe("Unknown time");
+  });
+
   it("carries root, reply, and independent availability evidence", () => {
     const response = makeResponse();
 
     const result = mapSelectedProviderComments(
       response,
       "branch-1",
-      "ClosedLoop-AI/Symphony-Alpha#42"
+      "ClosedLoop-AI/ClosedLoop-AI#42"
     );
 
     expect(result?.availability).toEqual({
@@ -41,12 +69,12 @@ describe("mapSelectedProviderComments", () => {
         login: "root-login",
         path: "packages/app/root.tsx",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r1",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r1",
         resolved: false,
         stale: true,
         threadId: "thread-1",
       },
-      pullRequestKey: "ClosedLoop-AI/Symphony-Alpha#42",
+      pullRequestKey: "ClosedLoop-AI/ClosedLoop-AI#42",
     });
     expect(result?.threads[0]?.replies[0]).toMatchObject({
       author: {
@@ -60,7 +88,7 @@ describe("mapSelectedProviderComments", () => {
         kind: BranchPrCommentKind.ReviewReply,
         login: "reply-login",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r2",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r2",
         resolved: true,
         stale: true,
         threadId: "thread-1",
@@ -82,14 +110,14 @@ describe("mapSelectedProviderComments", () => {
       mapSelectedProviderComments(
         response,
         "branch-1",
-        "closedloop-ai/symphony-alpha#41"
+        "closedloop-ai/closedloop-ai#41"
       )
     ).toBeNull();
     expect(
       mapSelectedProviderComments(
         response,
         "branch-2",
-        "closedloop-ai/symphony-alpha#42"
+        "closedloop-ai/closedloop-ai#42"
       )
     ).toBeNull();
   });
@@ -98,12 +126,12 @@ describe("mapSelectedProviderComments", () => {
     const response = makeResponse();
     response.comments[0]!.providerUrl = "javascript:alert(1)";
     response.comments[1]!.providerUrl =
-      "https://github.example/closedloop-ai/symphony-alpha/pull/42#discussion_r2";
+      "https://github.example/closedloop-ai/closedloop-ai/pull/42#discussion_r2";
 
     const result = mapSelectedProviderComments(
       response,
       "branch-1",
-      "closedloop-ai/symphony-alpha#42"
+      "closedloop-ai/closedloop-ai#42"
     );
 
     expect(result?.threads[0]?.provider?.providerUrl).toBeNull();
@@ -112,12 +140,12 @@ describe("mapSelectedProviderComments", () => {
     response.comments[0]!.providerUrl =
       "https://github.com/closedloop-ai/other-repo/pull/42#issuecomment-1";
     response.comments[1]!.providerUrl =
-      "https://github.com/closedloop-ai/symphony-alpha/pull/41#discussion_r2";
+      "https://github.com/closedloop-ai/closedloop-ai/pull/41#discussion_r2";
 
     const mismatchedPathResult = mapSelectedProviderComments(
       response,
       "branch-1",
-      "closedloop-ai/symphony-alpha#42"
+      "closedloop-ai/closedloop-ai#42"
     );
 
     expect(mismatchedPathResult?.threads[0]?.provider?.providerUrl).toBeNull();
@@ -137,7 +165,7 @@ describe("mapSelectedProviderComments", () => {
         kind: BranchPrCommentKind.ReviewReply,
         providerNodeId: "orphan-node",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r3",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r3",
         threadId: "omitted-thread",
       }),
     ];
@@ -145,7 +173,7 @@ describe("mapSelectedProviderComments", () => {
     const result = mapSelectedProviderComments(
       response,
       "branch-1",
-      "closedloop-ai/symphony-alpha#42"
+      "closedloop-ai/closedloop-ai#42"
     );
 
     expect(result?.threads).toHaveLength(2);
@@ -175,7 +203,7 @@ describe("mapSelectedProviderComments", () => {
     const result = mapSelectedProviderComments(
       response,
       "branch-1",
-      "closedloop-ai/symphony-alpha#42"
+      "closedloop-ai/closedloop-ai#42"
     );
 
     expect(result?.threads).toHaveLength(2);
@@ -212,7 +240,7 @@ describe("mapSelectedProviderComments", () => {
     const result = mapSelectedProviderComments(
       response,
       "branch-1",
-      "closedloop-ai/symphony-alpha#42"
+      "closedloop-ai/closedloop-ai#42"
     );
 
     expect(result?.threads.map((thread) => thread.id)).toEqual([
@@ -251,7 +279,7 @@ function makeResponse(): BranchPrCommentsResponse {
         path: "packages/app/root.tsx",
         providerNodeId: "root-node",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r1",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r1",
         resolved: false,
       }),
       makeComment({
@@ -266,15 +294,15 @@ function makeResponse(): BranchPrCommentsResponse {
         kind: BranchPrCommentKind.ReviewReply,
         providerNodeId: "reply-node",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r2",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r2",
         resolved: true,
       }),
     ],
     mixedProjection: true,
     prNumber: 42,
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     providerProofedAt: "2026-08-10T12:00:00.000Z",
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     stale: true,
     state: BranchCommentsState.StaleMixed,
   };

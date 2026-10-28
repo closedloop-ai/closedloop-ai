@@ -2,10 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
-import { PullRequestState } from "@repo/api/src/types/document";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
 import {
   SESSION_TRACE_SOURCE_LIMITS,
@@ -13,6 +11,7 @@ import {
   SessionTraceCorrectionKind,
   SessionTracePhaseSourceType,
 } from "@repo/lib/session-trace/derivation";
+import { test } from "vitest";
 import { SESSION_PAYLOAD_BYTE_CAP } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { resolveTokenUsageCostUsd } from "../src/main/agent-sync/agent-session-token-cost-resolution.js";
@@ -24,15 +23,12 @@ import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { normalizeRepoFullName } from "../src/main/database/db-helpers.js";
 import { chunkWatermark } from "../src/main/database/session-sync-watermark.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import {
-  artifactIdFromIdentityKey,
-  computeIdentityKey,
-} from "../src/main/enrichment/identity-key.js";
 import { repairPollutedRepoFullNames } from "../src/main/enrichment/repo-fullname-repair.js";
 import { getSharedAgentSessionAnalytics } from "../src/main/session/shared-agent-sessions-api.js";
 import { initGitRepoWithOrigin } from "./attribution-test-helpers.js";
 import {
   insertSqliteEvent,
+  insertSqlitePrArtifact,
   insertSqliteSession,
 } from "./sqlite-session-fixtures.js";
 
@@ -99,9 +95,9 @@ test("FEA-1962: sync_state round-trips across reopen, separates by source key, a
   const stateA = {
     observedTopUpdatedAt: "2026-06-08T12:05:00.000Z",
     observedIdsAtTopUpdatedAt: ["a", "b"],
-    // Migration 0022: dead-lettered ids round-trip on the cursor so the
-    // watermark can advance past intentionally-abandoned rows.
-    deadLetteredIds: ["dead-1", "dead-2"],
+    // ISS-11427: empty, because the load keeps a cursor dead-letter only while
+    // its outbox row is `dead_lettered` (pinned in the redrive suite).
+    deadLetteredIds: [],
   };
   const stateB = {
     observedTopUpdatedAt: "2026-06-09T01:00:00.000Z",
@@ -175,11 +171,7 @@ test("FEA-1962: sync_state round-trips across reopen, separates by source key, a
 test("SQLite close drains queued lifecycle writes before closing", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     const write = db.processEvent(
@@ -194,9 +186,14 @@ test("SQLite close drains queued lifecycle writes before closing", async () => {
     await db.close();
     assert.equal(await write, true);
 
+    // ISS-9279: the reopen runs on the SAME pinned clock as the write above.
+    // Boot maintenance sweeps sessions past DEFAULT_SESSION_RETENTION_DAYS (90),
+    // so a reopen on the REAL clock expires this fixture rather than reading it
+    // back, turning a drain assertion into a wall-clock countdown.
     const reopened = await openSqliteAgentDatabase({
       dataDir,
       detectBillingMode: () => "metered_api",
+      now: () => FIXTURE_NOW_ISO,
     });
     try {
       assert.equal(
@@ -213,12 +210,7 @@ test("SQLite close drains queued lifecycle writes before closing", async () => {
 
 test("SQLite live hook event data is capped before storage", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // `tool_input` is a hook payload object, not a bare string (`HookData`).
@@ -242,12 +234,7 @@ test("SQLite live hook event data is capped before storage", async () => {
 
 test("SQLite preserves live hook payloads used for tool details", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.processEvent(
@@ -310,12 +297,7 @@ test("SQLite preserves live hook payloads used for tool details", async () => {
 
 test("SQLite workflow queries satisfy PostgreSQL GROUP BY rules", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.processEvent(
@@ -360,10 +342,6 @@ test("SQLite workflow queries satisfy PostgreSQL GROUP BY rules", async () => {
       workflow.orchestration.subagentTypes[0].subagentType,
       "subagent"
     );
-    assert.equal(workflow.orchestration.edges[0].source, "main");
-    // Same identity rule as the bucket above: a NULL-subagent_type child edge
-    // falls back to the structured `type` ('subagent'), not the free-text `name`.
-    assert.equal(workflow.orchestration.edges[0].target, "subagent");
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -372,12 +350,7 @@ test("SQLite workflow queries satisfy PostgreSQL GROUP BY rules", async () => {
 
 test("SQLite workflow avgDurationSec excludes clock-skew (negative) sessions", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // A clean +60s session and a clock-skew session whose ended_at precedes
@@ -410,12 +383,7 @@ test("SQLite workflow avgDurationSec excludes clock-skew (negative) sessions", a
 
 test("SQLite dashboard core features are filled from imported sessions", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     const imported = await db.importer.importSession(
@@ -435,13 +403,12 @@ test("SQLite dashboard core features are filled from imported sessions", async (
     );
     const deliveryInsights = await db.dashboard.getInsights(
       InsightsSection.Delivery,
-      "90"
+      "90",
+      FIXTURE_NOW
     );
-    assert.equal(deliveryInsights.kpis[0].value, 1);
-    // FEA-2862: "Merged PRs by repository" now counts only in-session-created,
-    // merged PRs. This fixture's PR is reference-only (no `gh pr create`) and
-    // un-enriched (no pr_state='merged'), so it is captured (KPI = 1 above) but
-    // excluded from the merged-by-repo breakdown.
+    assert.equal(deliveryInsights.kpis[0].value, null); // ISS-12902 (#9100)
+    // FEA-2862: "Merged PRs by repository" is empty: no PR state is stored
+    // (ISS-12709), so this fixture's captured PR is never counted as merged.
     assert.ok("prByRepo" in deliveryInsights.charts, DELIVERY_CHARTS_MESSAGE);
     assert.deepEqual(deliveryInsights.charts.prByRepo, []);
     assert.equal(
@@ -462,18 +429,13 @@ test("SQLite dashboard core features are filled from imported sessions", async (
 
 test("SQLite importer stamps the session branch only on PRs the session CREATED, not referenced ones", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     const referencedUrl =
-      "https://github.com/closedloop-ai/symphony-alpha/pull/999";
+      "https://github.com/closedloop-ai/closedloop-ai/pull/999";
     const createdUrl =
-      "https://github.com/closedloop-ai/symphony-alpha/pull/1000";
+      "https://github.com/closedloop-ai/closedloop-ai/pull/1000";
     // A session on branch `fea-attribution-A` that (1) merely VIEWS PR #999 —
     // someone else's PR on another branch — and (2) CREATES PR #1000 from its own
     // branch. The bug: persistNormalizedPullRequests stamped session.gitBranch on
@@ -482,14 +444,14 @@ test("SQLite importer stamps the session branch only on PRs the session CREATED,
       ...makeNormalizedSession(),
       sessionId: "pr-branch-attribution-session",
       gitBranch: "fea-attribution-A",
-      cwd: "/workspace/symphony-alpha",
+      cwd: "/workspace/closedloop-ai",
       toolUses: [
         {
           // `gh pr view` is NOT a create — PR #999 is only referenced.
           name: "Bash",
           timestamp: "2026-06-07T11:01:00.000Z",
           input: {
-            command: "gh pr view 999 --repo closedloop-ai/symphony-alpha",
+            command: "gh pr view 999 --repo closedloop-ai/closedloop-ai",
           },
           output: `Inspecting ${referencedUrl}`,
         },
@@ -505,17 +467,17 @@ test("SQLite importer stamps the session branch only on PRs the session CREATED,
         prs: [
           {
             number: "999",
-            repo: "closedloop-ai/symphony-alpha",
+            repo: "closedloop-ai/closedloop-ai",
             url: referencedUrl,
           },
           {
             number: "1000",
-            repo: "closedloop-ai/symphony-alpha",
+            repo: "closedloop-ai/closedloop-ai",
             url: createdUrl,
           },
         ],
         issues: [],
-        repo: "closedloop-ai/symphony-alpha",
+        repo: "closedloop-ai/closedloop-ai",
       },
     };
 
@@ -566,16 +528,11 @@ test("SQLite importer stamps the session branch only on PRs the session CREATED,
 
 test("SQLite importer attributes a created PR to the branch active at `gh pr create`, not the session start branch", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     const createdUrl =
-      "https://github.com/closedloop-ai/symphony-alpha/pull/2000";
+      "https://github.com/closedloop-ai/closedloop-ai/pull/2000";
     // The session STARTS on `main` (gitBranch), then pushes `fea-real-head`
     // and opens a PR from it. The preceding successful write is exact evidence:
     // the PR's head must be `fea-real-head`, never the stale session start branch.
@@ -583,7 +540,7 @@ test("SQLite importer attributes a created PR to the branch active at `gh pr cre
       ...makeNormalizedSession(),
       sessionId: "pr-head-branch-session",
       gitBranch: "main",
-      cwd: "/workspace/symphony-alpha",
+      cwd: "/workspace/closedloop-ai",
       toolUses: [
         {
           name: "Bash",
@@ -598,12 +555,12 @@ test("SQLite importer attributes a created PR to the branch active at `gh pr cre
         prs: [
           {
             number: "2000",
-            repo: "closedloop-ai/symphony-alpha",
+            repo: "closedloop-ai/closedloop-ai",
             url: createdUrl,
           },
         ],
         issues: [],
-        repo: "closedloop-ai/symphony-alpha",
+        repo: "closedloop-ai/closedloop-ai",
       },
     };
 
@@ -639,12 +596,7 @@ test("SQLite importer attributes a created PR to the branch active at `gh pr cre
 
 test("getPullRequests sources the branch from pull_requests, so an upgrade re-derive clears a stale artifact branch", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.run(
@@ -660,7 +612,7 @@ test("getPullRequests sources the branch from pull_requests, so an upgrade re-de
     // re-derived authoritative pull_requests row now correctly carries a NULL
     // branch (referenced PRs have no head ref). getPullRequests must show null.
     await insertSqlitePrArtifact(db, "stale-pr-session", {
-      repoFullName: "closedloop-ai/symphony-alpha",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 321,
       title: "Foreign referenced PR",
       relation: "workspace",
@@ -676,8 +628,8 @@ test("getPullRequests sources the branch from pull_requests, so an upgrade re-de
        VALUES ($1, $2, $3, 321, $4, NULL, 'claude', $5, $5)`,
       "stale-pr-row",
       "stale-pr-session",
-      "https://github.com/closedloop-ai/symphony-alpha/pull/321",
-      "closedloop-ai/symphony-alpha",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/321",
+      "closedloop-ai/closedloop-ai",
       "2026-06-07T10:05:00.000Z"
     );
 
@@ -685,7 +637,7 @@ test("getPullRequests sources the branch from pull_requests, so an upgrade re-de
     // artifact and linked the session, but there is NO pull_requests import row.
     // getPullRequests must fall back to the artifact branch (no regression).
     await insertSqlitePrArtifact(db, "stale-pr-session", {
-      repoFullName: "closedloop-ai/symphony-alpha",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 654,
       title: "Enrichment-discovered PR",
       relation: "workspace",
@@ -727,7 +679,7 @@ test("SQLite importer persists OpenCode PR artifacts for delivery insights", asy
         prs: [
           {
             number: "411",
-            url: "https://github.com/closedloop-ai/symphony-alpha/pull/411",
+            url: "https://github.com/closedloop-ai/closedloop-ai/pull/411",
           },
         ],
         issues: [],
@@ -741,11 +693,12 @@ test("SQLite importer persists OpenCode PR artifacts for delivery insights", asy
 
     const deliveryInsights = await db.dashboard.getInsights(
       InsightsSection.Delivery,
-      "90"
+      "90",
+      FIXTURE_NOW
     );
-    assert.equal(deliveryInsights.kpis[0].value, 1);
-    // FEA-2862: the OpenCode PR is captured (KPI = 1) but reference-only and
-    // un-merged, so it does not appear in the merged-by-repository breakdown.
+    const prs = await db.dashboard.getPullRequests(); // KPI is null (#9100)
+    assert.equal(prs.length, 1);
+    assert.equal(prs[0].prNumber, 411);
     assert.ok("prByRepo" in deliveryInsights.charts, DELIVERY_CHARTS_MESSAGE);
     assert.deepEqual(deliveryInsights.charts.prByRepo, []);
   } finally {
@@ -754,82 +707,15 @@ test("SQLite importer persists OpenCode PR artifacts for delivery insights", asy
   }
 });
 
-test("FEA-2862: prByRepo counts only in-session-created, merged PRs — not reference-only or un-merged ones", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-20T12:00:00.000Z",
-  });
-
-  try {
-    // A session that owns some PR artifacts. The relation/state combinations
-    // below are what distinguish a genuinely-merged authored PR from the
-    // reference-only noise (competitor scans, CI `uses:` refs, fixture repos)
-    // that FEA-2862 removed from the "Merged PRs by repository" chart.
-    await db.run(
-      `INSERT INTO sessions (id, status, started_at, updated_at)
-       VALUES ('fea2862-session', 'inactive', $1, $1)`,
-      "2026-06-16T10:00:00.000Z"
-    );
-
-    // (a) created + merged → the only PR that should appear.
-    await insertSqlitePrArtifact(db, "fea2862-session", {
-      repoFullName: "closedloop-ai/symphony-alpha",
-      prNumber: 100,
-      relation: "created",
-      prState: "merged",
-    });
-    // (b) created but NOT merged (still open) → excluded by the merged filter.
-    await insertSqlitePrArtifact(db, "fea2862-session", {
-      repoFullName: "closedloop-ai/symphony-alpha",
-      prNumber: 101,
-      relation: "created",
-      prState: "open",
-    });
-    // (c) merged but reference-only (relation='workspace', e.g. a competitor PR
-    //     the session only viewed) → excluded by the created filter.
-    await insertSqlitePrArtifact(db, "fea2862-session", {
-      repoFullName: "competitor/tool",
-      prNumber: 999,
-      relation: "workspace",
-      prState: "merged",
-    });
-
-    const delivery = await db.dashboard.getInsights(
-      InsightsSection.Delivery,
-      "90",
-      new Date("2026-06-20T12:00:00.000Z")
-    );
-
-    assert.ok("prByRepo" in delivery.charts, DELIVERY_CHARTS_MESSAGE);
-    assert.deepEqual(delivery.charts.prByRepo, [
-      {
-        key: "closedloop-ai/symphony-alpha",
-        label: "closedloop-ai/symphony-alpha",
-        value: 1,
-      },
-    ]);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("SQLite agent insights rejects unsafe persisted BIGINT token counts", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.run(
-      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO sessions
+         (id, name, status, started_at, updated_at, harness, last_activity_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $4)`,
       "unsafe-insights-session",
       "Unsafe insights session",
       "inactive",
@@ -855,7 +741,7 @@ test("SQLite agent insights rejects unsafe persisted BIGINT token counts", async
     // (before the value reaches the token validator). Either way the unsafe
     // value never silently corrupts the analytics — assert it is rejected.
     await assert.rejects(
-      () => db.dashboard.getInsights(InsightsSection.Agents, "90"),
+      () => db.dashboard.getInsights(InsightsSection.Agents, "90", FIXTURE_NOW),
       (error: unknown) =>
         error instanceof InvalidTokenCountError || error instanceof RangeError
     );
@@ -867,12 +753,7 @@ test("SQLite agent insights rejects unsafe persisted BIGINT token counts", async
 
 test("SQLite metered usage rows include only metered sessions within the cutoff", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.run(
@@ -921,12 +802,7 @@ test("SQLite metered usage rows include only metered sessions within the cutoff"
 
 test("SQLite token analytics supports sums above PostgreSQL integer range", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.run(
@@ -982,12 +858,7 @@ test("SQLite token reconciliation overwrites with the latest full derivation", a
   // deduped parser). The old counter-reset accumulation stacked the new
   // value on top of the old one in exactly that case.
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.tokenUsage.replace(
@@ -1060,12 +931,7 @@ test("SQLite token reconciliation overwrites with the latest full derivation", a
 
 test("SQLite sessions pagination preserves details, filters, escaping, and deterministic ordering", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     for (let i = 1; i <= 5; i += 1) {
@@ -1186,18 +1052,12 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
 
 // perf/desktop-list-explicit-columns: the session list/detail reads now project
 // an explicit column list instead of `SELECT *` / `s.*`, dropping the large
-// unused JSONB (`trace_phase_sources`, `throttle_sources`, `correction_sources`)
-// and `cost_*` / `data_revision` columns. This guards that every consumed
+// unused `cost_*` / `data_revision` columns. This guards that every consumed
 // `SessionRow` field still maps identically across every read path even when
 // those dropped columns are populated on the row.
 test("SQLite session list reads map every SessionRow field with explicit projection", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // Active session, fully populated INCLUDING the columns the projection
@@ -1207,7 +1067,6 @@ test("SQLite session list reads map every SessionRow field with explicit project
          id, name, status, cwd, model, started_at, updated_at, ended_at,
          awaiting_input_since, metadata, harness, billing_mode,
          user_id, organization_id,
-         trace_phase_sources, throttle_sources, correction_sources,
          cost_usd_estimated, cost_currency, cost_source, data_revision
        )
        VALUES (
@@ -1215,7 +1074,6 @@ test("SQLite session list reads map every SessionRow field with explicit project
          'claude-sonnet-4-5', '2026-06-07T10:00:00.000Z',
          '2026-06-07T10:05:00.000Z', NULL, '2026-06-07T10:04:00.000Z',
          '{"k":"v"}', 'claude', 'metered_api', 'u-proj', 'org-proj',
-         '[{"phase":"plan"}]', '[{"throttle":1}]', '[{"correction":2}]',
          1.23, 'USD', 'estimate', 7
        )`
     );
@@ -1224,13 +1082,13 @@ test("SQLite session list reads map every SessionRow field with explicit project
       `INSERT INTO sessions (
          id, name, status, cwd, model, started_at, updated_at, ended_at,
          awaiting_input_since, metadata, harness, billing_mode,
-         user_id, organization_id, trace_phase_sources
+         user_id, organization_id
        )
        VALUES (
          'proj-done', 'Done Projection', 'inactive', '/work/proj-done',
          'gpt-5', '2026-06-07T09:00:00.000Z', '2026-06-07T09:10:00.000Z',
          '2026-06-07T09:10:00.000Z', NULL, '{"done":true}', 'codex', 'api',
-         'u-proj', 'org-proj', '[{"phase":"impl"}]'
+         'u-proj', 'org-proj'
        )`
     );
 
@@ -1516,23 +1374,6 @@ test("boot heals last_activity_at floor violations before the orphan and retenti
 });
 
 /**
- * Metadata that survives compaction at full size: each string sits at the
- * 1024-char cap, each array at the 100-item cap, and the key count is under the
- * 80-key cap, so compaction cannot shrink it. ~4 MB compacted — genuinely
- * un-shippable, which is the only thing the preflight may dead-letter.
- */
-function buildUncompactableMetadata(): string {
-  return JSON.stringify(
-    Object.fromEntries(
-      Array.from({ length: 40 }, (_, index) => [
-        `bulk${index}`,
-        Array.from({ length: 100 }, () => "x".repeat(1024)),
-      ])
-    )
-  );
-}
-
-/**
  * The real shape of a long session's metadata: thousands of conversation turns
  * under `messages`. Raw this is ~1 MB, but compaction keeps only the first 100
  * messages with 160-char `text` previews, so it ships comfortably.
@@ -1547,7 +1388,13 @@ function buildChattyMetadata(): string {
   });
 }
 
-test("SQLite sync source preflights locally oversized metadata payloads", async () => {
+test("SQLite sync source preflights a locally oversized session the producer cannot degrade", async () => {
+  // ISS-7997 changed what this probe may conclude: an oversized `metadata` blob
+  // is now bounded and the session ships, so metadata can no longer prove a
+  // session unshippable (that case moved to
+  // `sync-oversized-metadata-degrade.test.ts`). A field the producer does NOT
+  // compact still can — `name` is copied verbatim into the wire session — and
+  // this is the POSITIVE case keeping the probe's `[]` results non-vacuous.
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   const db = await openSqliteAgentDatabase({
@@ -1557,19 +1404,19 @@ test("SQLite sync source preflights locally oversized metadata payloads", async 
   });
 
   try {
-    await insertSqliteSession(db, "metadata-oversized", {
-      metadata: buildUncompactableMetadata(),
+    await insertSqliteSession(db, "name-oversized", {
+      name: "n".repeat(SESSION_PAYLOAD_BYTE_CAP + 1),
     });
     await insertSqliteSession(db, "healthy-session");
 
     const oversized = await db.syncSource.findLocallyOversizedSessions?.(
-      ["metadata-oversized", "healthy-session"],
+      ["name-oversized", "healthy-session"],
       SESSION_PAYLOAD_BYTE_CAP
     );
 
     assert.deepEqual(
       oversized?.map((row) => row.id),
-      ["metadata-oversized"]
+      ["name-oversized"]
     );
     assert.ok((oversized?.[0]?.payloadBytes ?? 0) > SESSION_PAYLOAD_BYTE_CAP);
   } finally {
@@ -1832,14 +1679,12 @@ test("SQLite sync source keeps same-number PRs from different repositories", asy
       repoFullName: "closedloop-ai/repo-a",
       prNumber: 17,
       title: "Repo A PR",
-      prState: PullRequestState.Open,
       observedAt: "2026-06-16T10:35:00.000Z",
     });
     await insertSqlitePrArtifact(db, "same-number-pr-session", {
       repoFullName: "closedloop-ai/repo-b",
       prNumber: 17,
       title: "Repo B PR",
-      prState: PullRequestState.Merged,
       observedAt: "2026-06-16T10:36:00.000Z",
     });
 
@@ -1855,8 +1700,8 @@ test("SQLite sync source keeps same-number PRs from different repositories", asy
     assert.deepEqual(
       synced?.prs?.map((pr) => [pr.num, pr.title, pr.status]).sort(),
       [
-        [17, "Repo A PR", SessionPrLifecycleStatus.Open],
-        [17, "Repo B PR", SessionPrLifecycleStatus.Merged],
+        [17, "Repo A PR", SessionPrLifecycleStatus.Unknown],
+        [17, "Repo B PR", SessionPrLifecycleStatus.Unknown],
       ].sort()
     );
     assert.equal(
@@ -1874,14 +1719,14 @@ test("SQLite importer exposes Claude transcript PR refs through synced prs and p
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   const sessionId = "claude-pr-import-session";
   const transcript = path.join(dir, `${sessionId}.jsonl`);
-  const prUrl = "https://github.com/closedloop-ai/symphony-alpha/pull/3210";
+  const prUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/3210";
   await writeFile(
     transcript,
     `${[
       JSON.stringify({
         type: "assistant",
         timestamp: "2026-06-16T10:01:00.000Z",
-        cwd: "/workspace/symphony-alpha",
+        cwd: "/workspace/closedloop-ai",
         gitBranch: "fea-2381-claude-pr",
         message: {
           model: "claude-sonnet-4-5",
@@ -1922,7 +1767,7 @@ test("SQLite importer exposes Claude transcript PR refs through synced prs and p
   assert.deepEqual(parsed.artifacts.prs, [
     {
       number: "3210",
-      repo: "closedloop-ai/symphony-alpha",
+      repo: "closedloop-ai/closedloop-ai",
       url: prUrl,
     },
   ]);
@@ -1954,7 +1799,7 @@ test("SQLite importer exposes Claude transcript PR refs through synced prs and p
     );
     assert.deepEqual(synced?.prRefs, [
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         prNumber: 3210,
         prUrl,
         relationType: SessionPrRelationType.Created,
@@ -1979,7 +1824,7 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
   const sessionsDir = path.join(dir, "sessions");
   const rolloutDir = path.join(sessionsDir, "2026", "06", "16");
   const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-  const prUrl = "https://github.com/closedloop-ai/symphony-alpha/pull/3211";
+  const prUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/3211";
   await mkdir(rolloutDir, { recursive: true });
   const rolloutPath = path.join(
     rolloutDir,
@@ -1993,7 +1838,7 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
         type: "session_meta",
         payload: {
           id: sessionId,
-          cwd: "/workspace/symphony-alpha",
+          cwd: "/workspace/closedloop-ai",
           cli_version: "0.40.0",
           source: "exec",
         },
@@ -2003,7 +1848,7 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
         type: "turn_context",
         payload: {
           model: "gpt-5-codex",
-          cwd: "/workspace/symphony-alpha",
+          cwd: "/workspace/closedloop-ai",
         },
       }),
       JSON.stringify({
@@ -2037,7 +1882,7 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
   assert.deepEqual(parsed.artifacts.prs, [
     {
       number: "3211",
-      repo: "closedloop-ai/symphony-alpha",
+      repo: "closedloop-ai/closedloop-ai",
       url: prUrl,
     },
   ]);
@@ -2066,7 +1911,7 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
     );
     assert.deepEqual(synced?.prRefs, [
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         prNumber: 3211,
         prUrl,
         relationType: SessionPrRelationType.Created,
@@ -2100,7 +1945,7 @@ test("SQLite importer skips malformed normalized PR identities in synced prs and
       sessionId: "malformed-pr-import-session",
       artifacts: {
         prs: [
-          { number: "not-a-number", repo: "closedloop-ai/symphony-alpha" },
+          { number: "not-a-number", repo: "closedloop-ai/closedloop-ai" },
           { number: "3212" },
         ],
         issues: [],
@@ -2195,14 +2040,13 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
     );
     await db.run(
       `INSERT INTO pull_requests
-         (id, session_id, pr_url, pr_number, repo_full_name, title, harness,
+         (id, session_id, pr_url, pr_number, repo_full_name, harness,
           observed_at, created_at)
-       VALUES ($1, $2, $3, 17, $4, $5, 'codex', $6, $6)`,
+       VALUES ($1, $2, $3, 17, $4, 'codex', $5, $5)`,
       "url-only-pr",
       "trace-upgrade-session",
-      "https://github.com/closedloop-ai/symphony-alpha/pull/17",
-      "closedloop-ai/symphony-alpha",
-      "URL-only PR",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/17",
+      "closedloop-ai/closedloop-ai",
       "2026-06-16T10:35:00.000Z"
     );
 
@@ -2226,14 +2070,7 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
     );
     assert.deepEqual(
       columns.map((row) => `${row.table_name}.${row.column_name}`),
-      [
-        "pull_requests.closed_at",
-        "pull_requests.merged_at",
-        "pull_requests.state",
-        "sessions.correction_sources",
-        "sessions.throttle_sources",
-        "sessions.trace_phase_sources",
-      ]
+      ["pull_requests.closed_at"]
     );
 
     await db.run(
@@ -2267,10 +2104,9 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
 
     // FEA-1899: PRs surface from a 'created'/'workspace' artifact link, not the
     // pull_requests detail row. The migration backfilled the artifact (no
-    // pr_state yet) and a 'referenced' link; add the authored link here. With no
-    // pr_state, lifecycle status derives to Unknown.
+    // PR lifecycle yet) and a 'referenced' link; add the authored link here.
     await insertSqlitePrArtifact(db, "trace-upgrade-session", {
-      repoFullName: "closedloop-ai/symphony-alpha",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 17,
       title: "URL-only PR",
     });
@@ -2310,28 +2146,6 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
       }
     );
     assert.equal(metadataOnly?.prs?.length ?? 0, 0);
-
-    // Lifecycle status now derives from artifacts.pr_state (the canonical
-    // attribution spine), not the pull_requests detail row.
-    await db.run(
-      `UPDATE artifacts
-       SET pr_state = $1
-       WHERE identity_key = $2`,
-      PullRequestState.Merged,
-      "pr:closedloop-ai/symphony-alpha:17"
-    );
-    const [withLifecycle] = await db.syncSource.loadSyncedSessions(
-      ["trace-upgrade-session"],
-      {
-        attributionByCwd: new Map(),
-        launchMetadataRootByCwd: new Map(),
-        repoFullNameByPath: new Map(),
-      }
-    );
-    assert.equal(
-      withLifecycle?.prs?.[0]?.status,
-      SessionPrLifecycleStatus.Merged
-    );
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -2627,15 +2441,16 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
     assert.deepEqual(JSON.parse(nativeReads[0]?.data ?? "{}"), {
       tool_name: "Read",
       tool_use_id: "toolu_native_read",
-      input: { file_path: "src/native.ts" },
+      tool_input: { file_path: "src/native.ts" },
     });
     assert.deepEqual(JSON.parse(nativeReads[1]?.data ?? "{}"), {
       tool_name: "Read",
       tool_use_id: "toolu_native_read_2",
-      input: { file_path: "src/native-2.ts" },
+      tool_input: { file_path: "src/native-2.ts" },
     });
 
-    const noPartialRows = async (
+    const corruptSession = "life-native-corrupt";
+    const assertScannerRows = async (
       sessionId: string,
       preToolPayload: Record<string, unknown>,
       stopPayload: Record<string, unknown>,
@@ -2672,29 +2487,29 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
       const sessionEvents = await db.events.getBySession(sessionId);
       assert.equal(
         sessionEvents.some((event) => event.toolName === "Read"),
-        false,
-        `${sessionId} must not insert scanner tool rows`
+        sessionId === corruptSession,
+        `${sessionId}: ISS-6454 — a scanner row is expected ONLY where a corrupt line sits above a readable tool use; every other case here has no readable tool use to find`
       );
     };
 
-    await noPartialRows(
+    await assertScannerRows(
       "life-native-absent-id",
       {},
       { transcript_path: parentTranscript }
     );
-    await noPartialRows(
+    await assertScannerRows(
       "life-native-absent-file",
       { agent_id: "agent-missing" },
       { transcript_path: parentTranscript }
     );
-    await noPartialRows(
+    await assertScannerRows(
       "life-native-subagent-path",
       { agent_id: nativeSubagentId },
       {
         transcript_path: path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
       }
     );
-    await noPartialRows(
+    await assertScannerRows(
       "life-native-traversal",
       { agent_id: "../agent-native_1" },
       { transcript_path: parentTranscript }
@@ -2723,7 +2538,7 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
       })}\n`,
       "utf8"
     );
-    await noPartialRows(
+    await assertScannerRows(
       outRootSession,
       { agent_id: nativeSubagentId },
       { transcript_path: outRootParent },
@@ -2754,14 +2569,13 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
       })}\n`,
       "utf8"
     );
-    await noPartialRows(
+    await assertScannerRows(
       cwdOnlySession,
       { agent_id: nativeSubagentId },
       { transcript_path: cwdOnlyParent },
       { cwd: cwdOnlyDir }
     );
 
-    const corruptSession = "life-native-corrupt";
     const corruptParent = path.join(projectDir, `${corruptSession}.jsonl`);
     const corruptSubDir = path.join(projectDir, corruptSession, "subagents");
     await mkdir(corruptSubDir, { recursive: true });
@@ -2786,7 +2600,7 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
       ].join("\n"),
       "utf8"
     );
-    await noPartialRows(
+    await assertScannerRows(
       corruptSession,
       { agent_id: nativeSubagentId },
       { transcript_path: corruptParent },
@@ -2806,7 +2620,7 @@ test("SQLite lifecycle scans native Claude SubagentStop transcripts through proc
     await mkdir(symlinkSubDir, { recursive: true });
     await writeFile(symlinkParent, "{}\n", "utf8");
     await symlink(outside, path.join(symlinkSubDir, "agent-link.jsonl"));
-    await noPartialRows(
+    await assertScannerRows(
       symlinkSession,
       { agent_id: "agent-link" },
       { transcript_path: symlinkParent }
@@ -3010,7 +2824,7 @@ test("SQLite importer persists overlapping Claude inline and sidecar tool use on
             type: "tool_use",
             id: "toolu_duplicate_import",
             name: "Read",
-            input: { file_path: "sidecar.ts" },
+            input: { file_path: "inline.ts" },
           },
         ],
       },
@@ -3244,7 +3058,7 @@ test("SQLite importer stores folded Codex child tool uses only on subagent", asy
         payload: {
           type: "mcp_tool_call_end",
           output: {
-            url: "https://github.com/closedloop-ai/symphony-alpha/pull/4242",
+            url: "https://github.com/closedloop-ai/closedloop-ai/pull/4242",
           },
         },
       },
@@ -3298,138 +3112,16 @@ test("SQLite importer stores folded Codex child tool uses only on subagent", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
-
-// FEA-1899: PRs surface from artifact links (relation 'created'/'workspace')
-// joined to the canonical artifacts table — no longer from the pull_requests
-// detail store. Mirrors persistNormalizedPullRequests' identity_key/id scheme.
-async function insertSqlitePrArtifact(
-  db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
-  sessionId: string,
-  pr: {
-    repoFullName: string;
-    prNumber: number;
-    title?: string | null;
-    prState?: string | null;
-    relation?: "created" | "workspace";
-    observedAt?: string;
-  }
-): Promise<void> {
-  const relation = pr.relation ?? "created";
-  const observedAt = pr.observedAt ?? "2026-06-16T10:35:00.000Z";
-  const identityKey = computeIdentityKey({
-    kind: "pull_request",
-    repoFullName: pr.repoFullName,
-    prNumber: pr.prNumber,
-  });
-  const artifactId = artifactIdFromIdentityKey(identityKey);
-  await db.run(
-    `INSERT INTO artifacts
-       (id, identity_key, kind, repo_full_name, pr_number, title, pr_state,
-        harness, observed_at, created_at, last_seen_at)
-     VALUES ($1, $2, 'pull_request', $3, $4, $5, $6, 'codex', $7, $7, $7)
-     ON CONFLICT(identity_key) DO UPDATE SET
-       title = COALESCE(artifacts.title, EXCLUDED.title),
-       pr_state = COALESCE(EXCLUDED.pr_state, artifacts.pr_state),
-       last_seen_at = EXCLUDED.last_seen_at`,
-    artifactId,
-    identityKey,
-    pr.repoFullName,
-    pr.prNumber,
-    pr.title ?? null,
-    pr.prState ?? null,
-    observedAt
-  );
-  await db.run(
-    `INSERT INTO session_artifact_links
-       (id, session_id, artifact_id, relation, method, evidence, is_primary,
-        status, extractor_version, observed_at, created_at)
-     VALUES ($1, $2, $3, $4, 'test_fixture', '{}', 0, 'candidate', 1, $5, $5)
-     ON CONFLICT(session_id, artifact_id, relation) DO NOTHING`,
-    `${sessionId}:${artifactId}:${relation}`,
-    sessionId,
-    artifactId,
-    relation,
-    observedAt
-  );
-}
-
-test("FEA-2868: median PR size ignores un-enriched PRs while KLOC still counts them", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-20T12:00:00.000Z",
-  });
-
-  try {
-    await db.run(
-      `INSERT INTO sessions (id, status, started_at, updated_at)
-       VALUES ('fea2868-s', 'inactive', $1, $1)`,
-      "2026-06-16T10:00:00.000Z"
-    );
-
-    // Three ENRICHED PRs with known sizes 100 / 300 / 500 (median 300)...
-    const enriched: [number, number][] = [
-      [1, 100],
-      [2, 300],
-      [3, 500],
-    ];
-    for (const [prNumber, loc] of enriched) {
-      await insertSqlitePrArtifact(db, "fea2868-s", {
-        repoFullName: "closedloop-ai/symphony-alpha",
-        prNumber,
-      });
-      await db.run(
-        "UPDATE artifacts SET lines_added = $1, lines_removed = 0 WHERE pr_number = $2",
-        loc,
-        prNumber
-      );
-    }
-    // ...and five UN-enriched PRs (lines_added/lines_removed left NULL). Before
-    // FEA-2868 these folded into the median as 0, dragging it to 0.
-    for (let prNumber = 10; prNumber < 15; prNumber++) {
-      await insertSqlitePrArtifact(db, "fea2868-s", {
-        repoFullName: "closedloop-ai/symphony-alpha",
-        prNumber,
-      });
-    }
-
-    const delivery = await db.dashboard.getInsights(
-      InsightsSection.Delivery,
-      "90",
-      new Date("2026-06-20T12:00:00.000Z")
-    );
-    const kpi = (key: string) =>
-      delivery.kpis.find((entry) => entry.key === key)?.value;
-
-    // Median reflects only the enriched PRs (300), NOT the zero-padded 0.
-    assert.equal(kpi("pr-size"), 300);
-    // KLOC still sums ALL captured PRs' LOC (900 → 0.9k); un-enriched add 0.
-    assert.equal(kpi("kloc"), 0.9);
-    // Captured PRs still counts every PR artifact in the window (3 + 5).
-    assert.equal(kpi("merged"), 8);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("FEA-2866: import never persists an unvalidated bare-basename repo_full_name", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // A git-validated repo (as captureRepoIdentity would upsert) so the write-path
-    // resolver can map the bare folder name `symphony-alpha` → its owner/repo slug.
+    // resolver can map the bare folder name `closedloop-ai` → its owner/repo slug.
     await db.run(
       `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
-       VALUES ('fea2866-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+       VALUES ('fea2866-repo', '/w/closedloop-ai/.git', 'git@github.com:closedloop-ai/closedloop-ai.git', 'closedloop-ai/closedloop-ai', 'main', $1, $1)`,
       "2026-06-07T00:00:00.000Z"
     );
 
@@ -3452,7 +3144,7 @@ test("FEA-2866: import never persists an unvalidated bare-basename repo_full_nam
       ...makeNormalizedSession(),
       sessionId: "fea2866-known",
       gitBranch: "fea-known",
-      artifacts: { prs: [], issues: [], repo: "symphony-alpha" },
+      artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
     };
     assert.equal(
       (await db.importer.importSession(known, "claude")).skipped,
@@ -3470,7 +3162,7 @@ test("FEA-2866: import never persists an unvalidated bare-basename repo_full_nam
       artifacts: {
         prs: [],
         issues: [],
-        repo: "closedloop-ai/symphony-alpha/nested",
+        repo: "closedloop-ai/closedloop-ai/nested",
       },
     };
     assert.equal(
@@ -3489,9 +3181,9 @@ test("FEA-2866: import never persists an unvalidated bare-basename repo_full_nam
     // The bare worktree name is never surfaced as a repository...
     assert.equal(names.includes("agent-a423e10d3ca273c56"), false);
     // ...the bare known folder is upgraded to its validated owner/repo slug...
-    assert.equal(names.includes("closedloop-ai/symphony-alpha"), true);
+    assert.equal(names.includes("closedloop-ai/closedloop-ai"), true);
     // ...the slash-containing-but-invalid value is dropped by the validator...
-    assert.equal(names.includes("closedloop-ai/symphony-alpha/nested"), false);
+    assert.equal(names.includes("closedloop-ai/closedloop-ai/nested"), false);
     // ...and every surviving value is a valid owner/repo slug.
     assert.equal(
       names.some(
@@ -3507,24 +3199,19 @@ test("FEA-2866: import never persists an unvalidated bare-basename repo_full_nam
 
 test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls junk, is idempotent", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // The background boot-maintenance chain runs its own FEA-2866
     // `repairPollutedRepoFullNames` sweep; await it to completion BEFORE seeding
     // the polluted fixtures below, otherwise the sweep can fire late (once the
-    // `repos` row + bare artifacts exist) and resolve `symphony-alpha` →
-    // `closedloop-ai/symphony-alpha` out from under the assertion, leaving only
+    // `repos` row + bare artifacts exist) and resolve `closedloop-ai` →
+    // `closedloop-ai/closedloop-ai` out from under the assertion, leaving only
     // one bare row for the explicit repair call to fix.
     await db.whenBootMaintenanceSettled();
     await db.run(
       `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
-       VALUES ('fea2866-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+       VALUES ('fea2866-repo', '/w/closedloop-ai/.git', 'git@github.com:closedloop-ai/closedloop-ai.git', 'closedloop-ai/closedloop-ai', 'main', $1, $1)`,
       "2026-06-07T00:00:00.000Z"
     );
     await db.run(
@@ -3535,7 +3222,7 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
 
     // Pre-fix pollution stamped onto existing artifact rows.
     await insertSqlitePrArtifact(db, "fea2866-s", {
-      repoFullName: "symphony-alpha", // bare + KNOWN → resolves to owner/repo
+      repoFullName: "closedloop-ai", // bare + KNOWN → resolves to owner/repo
       prNumber: 1,
     });
     await insertSqlitePrArtifact(db, "fea2866-s", {
@@ -3543,7 +3230,7 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
       prNumber: 2,
     });
     await insertSqlitePrArtifact(db, "fea2866-s", {
-      repoFullName: "closedloop-ai/symphony-alpha", // already valid → untouched
+      repoFullName: "closedloop-ai/closedloop-ai", // already valid → untouched
       prNumber: 3,
     });
 
@@ -3566,17 +3253,17 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
     );
     assert.equal(
       byNumber.get(1)?.repo_full_name,
-      "closedloop-ai/symphony-alpha"
+      "closedloop-ai/closedloop-ai"
     );
     assert.equal(byNumber.get(2)?.repo_full_name, null);
     assert.equal(
       byNumber.get(3)?.repo_full_name,
-      "closedloop-ai/symphony-alpha"
+      "closedloop-ai/closedloop-ai"
     );
 
     // Resolved rows also backfill git_dir so downstream enrichment can use local
     // git; junk rows keep git_dir NULL.
-    assert.equal(byNumber.get(1)?.git_dir, "/w/symphony-alpha/.git");
+    assert.equal(byNumber.get(1)?.git_dir, "/w/closedloop-ai/.git");
     assert.equal(byNumber.get(2)?.git_dir, null);
 
     // Idempotent: nothing bare remains, so a second pass repairs zero rows.
@@ -3592,19 +3279,14 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
 
 test("FEA-3371: repairPollutedRepoFullNames backfills NULL repo_full_name from git_dir, idempotently", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     await db.whenBootMaintenanceSettled();
     // A repo whose remote resolved (canonical owner/repo known) keyed by git_dir.
     await db.run(
       `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
-       VALUES ('fea3371-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+       VALUES ('fea3371-repo', '/w/closedloop-ai/.git', 'git@github.com:closedloop-ai/closedloop-ai.git', 'closedloop-ai/closedloop-ai', 'main', $1, $1)`,
       "2026-06-07T00:00:00.000Z"
     );
     // An orphan git_dir with no canonical name — its artifact must stay NULL.
@@ -3621,7 +3303,7 @@ test("FEA-3371: repairPollutedRepoFullNames backfills NULL repo_full_name from g
     await db.run(
       `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, git_dir, branch_name, created_at, last_seen_at)
        VALUES
-         ('fea3371-a', 'k-a', 'branch', NULL, '/w/symphony-alpha/.git', 'feature/a', $1, $1),
+         ('fea3371-a', 'k-a', 'branch', NULL, '/w/closedloop-ai/.git', 'feature/a', $1, $1),
          ('fea3371-b', 'k-b', 'branch', NULL, '/w/no-remote/.git', 'feature/b', $1, $1),
          ('fea3371-c', 'k-c', 'branch', NULL, NULL, 'feature/c', $1, $1)`,
       "2026-06-07T00:00:00.000Z"
@@ -3646,7 +3328,7 @@ test("FEA-3371: repairPollutedRepoFullNames backfills NULL repo_full_name from g
     );
     assert.equal(
       byId.get("fea3371-a"),
-      "closedloop-ai/symphony-alpha",
+      "closedloop-ai/closedloop-ai",
       "NULL repo_full_name backfilled from the git_dir's canonical repo"
     );
     assert.equal(byId.get("fea3371-b"), null, "orphan git_dir stays NULL");
@@ -3743,12 +3425,7 @@ function makeNormalizedSession(): NormalizedSession {
 // golden test does not cover (it only exercises insights/getTokenAnalytics).
 test("FEA-2038: SQL analytics aggregate matches the hydrate-path buildAnalytics", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // FEA-4299: two sessions sharing one repo cwd (so byRepository merges them
@@ -4024,12 +3701,7 @@ test("FEA-2038: SQL analytics aggregate matches the hydrate-path buildAnalytics"
 // carries baselines so the effective cost exceeds the current-only cost.
 test("FEA-3318: SQL per-repo cost rollup folds baseline for compacted unpriced sessions", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   try {
     // FEA-4299: a REAL git repo cwd so `repositoryFullName` resolves to the
@@ -4127,12 +3799,7 @@ test("FEA-3318: SQL per-repo cost rollup folds baseline for compacted unpriced s
 // row, and re-import must not accumulate it.
 test("web-search cost is added once at the session level and never double-counts", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   const makeSession = (
     id: string,
@@ -4261,12 +3928,7 @@ test("web-search cost is added once at the session level and never double-counts
 // re-import must not accumulate it.
 test("1h cache-write TTL premium is priced per event, conserves, and never double-counts", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
+  const db = await openFixtureDb(dir);
 
   // 1000 cache-write tokens on claude-opus-4-5, of which `oneHourTokens` were
   // one-hour ephemeral writes — carried as the TYPED cacheWriteTtl split on both
@@ -4443,3 +4105,20 @@ test("1h cache-write TTL premium is priced per event, conserves, and never doubl
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * The store clock every fixture below writes at, and the same instant passed to
+ * `getInsights`. `computeLocalInsights` defaults its `now` to the REAL clock, so
+ * an unpinned insights call lets the rolling 90-day window walk off these
+ * date-pinned rows and expire the assertion on a wall-clock date.
+ */
+const FIXTURE_NOW_ISO = "2026-06-07T12:00:00.000Z";
+const FIXTURE_NOW = new Date(FIXTURE_NOW_ISO);
+
+function openFixtureDb(dir: string) {
+  return openSqliteAgentDatabase({
+    dataDir: path.join(dir, "agent-dashboard.pgdata"),
+    detectBillingMode: () => "metered_api",
+    now: () => FIXTURE_NOW_ISO,
+  });
+}

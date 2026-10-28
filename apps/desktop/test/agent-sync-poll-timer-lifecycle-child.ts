@@ -33,12 +33,18 @@ function countHandle(handle: NodeJS.Timeout): NodeJS.Timeout {
 function installTimerProbe(): void {
   const realSetInterval = globalThis.setInterval;
   const realSetTimeout = globalThis.setTimeout;
-  // biome-ignore lint/suspicious/noExplicitAny: probing the ambient timer API
-  globalThis.setInterval = ((fn: any, ms?: number, ...args: any[]) =>
-    countHandle(realSetInterval(fn, ms, ...args))) as typeof setInterval;
-  // biome-ignore lint/suspicious/noExplicitAny: probing the ambient timer API
-  globalThis.setTimeout = ((fn: any, ms?: number, ...args: any[]) =>
-    countHandle(realSetTimeout(fn, ms, ...args))) as typeof setTimeout;
+  const probedSetInterval = <TArgs extends unknown[]>(
+    fn: (...args: TArgs) => void,
+    ms?: number,
+    ...args: TArgs
+  ) => countHandle(realSetInterval(fn, ms, ...args));
+  const probedSetTimeout = <TArgs extends unknown[]>(
+    fn: (...args: TArgs) => void,
+    ms?: number,
+    ...args: TArgs
+  ) => countHandle(realSetTimeout(fn, ms, ...args));
+  globalThis.setInterval = Object.assign(probedSetInterval, realSetInterval);
+  globalThis.setTimeout = Object.assign(probedSetTimeout, realSetTimeout);
 }
 
 function startSessionLane(): void {

@@ -2,11 +2,11 @@
  * Unit tests for artifactActivityFeedService (FEA-3864 / FEA-3535 Slice 3).
  *
  * The database is mocked via vi.mock("@repo/database"): withDb is wired to a
- * client whose five delegate reads (artifactActivityEvent, documentVersion,
- * artifactLink, loop, artifactEvaluation) return per-source rows. Tests verify:
+ * client whose four delegate reads (artifactActivityEvent, documentVersion,
+ * artifactLink, artifactEvaluation) return per-source rows. Tests verify:
  *  - the merged stream is newest-first across all sources;
  *  - actors are normalized (store user/agent/system, version author→human,
- *    loop→agent, derivation/eval→system);
+ *    derivation/eval→system);
  *  - cursor pagination trims a lookahead and round-trips the opaque cursor;
  *  - KEYSET: each source applies the full `(createdAt, id)` predicate so rows
  *    tied at the cursor's timestamp are never truncated (P2 regression);
@@ -17,6 +17,10 @@ import {
   ActivityFeedActorKind,
   ActivityFeedItemSource,
 } from "@repo/api/src/types/artifact-activity-feed";
+import {
+  ArtifactFieldEditField,
+  buildArtifactFieldEditSnapshots,
+} from "@repo/api/src/types/artifact-field-edit-receipt";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => {
@@ -44,7 +48,6 @@ type SourceRows = {
   events?: unknown[];
   versions?: unknown[];
   links?: unknown[];
-  loops?: unknown[];
   evaluations?: unknown[];
 };
 
@@ -53,12 +56,11 @@ type CapturedWheres = {
   events?: Record<string, unknown>;
   versions?: Record<string, unknown>;
   links?: Record<string, unknown>;
-  loops?: Record<string, unknown>;
   evaluations?: Record<string, unknown>;
 };
 
 /**
- * Wire withDb so each of the five source queries resolves against the supplied
+ * Wire withDb so each of the four source queries resolves against the supplied
  * rows. The service issues them via Promise.all, each as its own withDb call;
  * we route by which delegate the callback touches.
  */
@@ -83,12 +85,6 @@ function mockSources(rows: SourceRows): CapturedWheres {
         return Promise.resolve(rows.links ?? []);
       }),
     },
-    loop: {
-      findMany: vi.fn((args: { where: Record<string, unknown> }) => {
-        captured.loops = args.where;
-        return Promise.resolve(rows.loops ?? []);
-      }),
-    },
     artifactEvaluation: {
       findMany: vi.fn((args: { where: Record<string, unknown> }) => {
         captured.evaluations = args.where;
@@ -106,6 +102,48 @@ beforeEach(() => {
 });
 
 describe("artifactActivityFeedService.listActivityFeed", () => {
+  it("preserves canonical redacted names and legacy raw-name receipts exactly", async () => {
+    const canonical = buildArtifactFieldEditSnapshots({
+      field: ArtifactFieldEditField.Name,
+      before: "Private old name",
+      after: "Private new name",
+    });
+    const createdAt = new Date("2026-10-19T12:00:00.000Z");
+    mockSources({
+      events: [
+        {
+          id: "canonical-name",
+          actorType: "user",
+          actorId: "u1",
+          action: "field_change",
+          ...canonical,
+          createdAt,
+        },
+        {
+          id: "legacy-name",
+          actorType: "user",
+          actorId: "u1",
+          action: "field_change",
+          before: { field: ArtifactFieldEditField.Name, value: "Legacy old" },
+          after: { field: ArtifactFieldEditField.Name, value: "Legacy new" },
+          createdAt: new Date(createdAt.getTime() - 1),
+        },
+      ],
+    });
+
+    const page = await artifactActivityFeedService.listActivityFeed({
+      organizationId: ORG,
+      artifactId: ARTIFACT,
+    });
+
+    expect(page.items.map(({ before, after }) => ({ before, after }))).toEqual([
+      canonical,
+      {
+        before: { field: ArtifactFieldEditField.Name, value: "Legacy old" },
+        after: { field: ArtifactFieldEditField.Name, value: "Legacy new" },
+      },
+    ]);
+  });
   it("merges every source newest-first with normalized actors", async () => {
     mockSources({
       events: [
@@ -137,19 +175,9 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
           createdAt: new Date("2026-07-22T03:00:00.000Z"),
         },
       ],
-      loops: [
-        {
-          id: "loop-1",
-          userId: "user-3",
-          status: "COMPLETED",
-          command: "code",
-          createdAt: new Date("2026-07-22T02:00:00.000Z"),
-        },
-      ],
       evaluations: [
         {
           id: "eval-1",
-          loopId: "loop-1",
           reportType: "PLAN",
           createdAt: new Date("2026-07-22T01:00:00.000Z"),
         },
@@ -167,7 +195,6 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
       ActivityFeedItemSource.Event,
       ActivityFeedItemSource.VersionCreated,
       ActivityFeedItemSource.Derivation,
-      ActivityFeedItemSource.Loop,
       ActivityFeedItemSource.Evaluation,
     ]);
     expect(result.nextCursor).toBeNull();
@@ -182,10 +209,6 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
       kind: ActivityFeedActorKind.Human,
       id: "user-9",
     });
-    expect(byId[ActivityFeedItemSource.Loop].actor).toEqual({
-      kind: ActivityFeedActorKind.Agent,
-      id: "user-3",
-    });
     expect(byId[ActivityFeedItemSource.Derivation].actor.kind).toBe(
       ActivityFeedActorKind.System
     );
@@ -198,6 +221,9 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
       direction: "produced",
       relatedArtifactId: "other-artifact",
     });
+    expect(byId[ActivityFeedItemSource.Evaluation].payload).toEqual({
+      reportType: "PLAN",
+    });
   });
 
   it("ORG-SCOPE: every source query filters on organizationId (no leak)", async () => {
@@ -208,7 +234,6 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
     });
 
     expect(captured.events?.organizationId).toBe(ORG);
-    expect(captured.loops?.organizationId).toBe(ORG);
     expect(captured.links?.organizationId).toBe(ORG);
     expect(captured.evaluations?.organizationId).toBe(ORG);
     // document_versions org-scopes through the parent artifact relation.
@@ -379,15 +404,15 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
   });
 
   it("KEYSET cross-source: a different source contributes all its boundary rows or none by prefix", async () => {
-    // Cursor is on the `loop` source at the tied ms. For the `event` source
-    // (prefix "event" < "loop"), all its boundary-ms rows sort AFTER the cursor,
-    // so the fragment includes them (`createdAt == boundary`, no id bound). For
-    // the `version` source (prefix "version" > "loop"), none do, so only
-    // `createdAt < boundary`.
+    // Cursor is on the `evaluation` source at the tied ms. For the
+    // `derivation` source (prefix "derivation" < "evaluation"), all its
+    // boundary-ms rows sort AFTER the cursor, so the fragment includes them
+    // (`createdAt == boundary`, no id bound). For the `version` source (prefix
+    // "version" > "evaluation"), none do, so only `createdAt < boundary`.
     const boundary = new Date("2026-07-22T04:00:00.000Z");
     const captured = mockSources({});
     const cursor = Buffer.from(
-      `${boundary.getTime()}:loop:loop-9`,
+      `${boundary.getTime()}:evaluation:eval-9`,
       "utf8"
     ).toString("base64url");
 
@@ -398,16 +423,16 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
       limit: 5,
     });
 
-    expect(captured.events?.AND).toEqual([
+    expect(captured.links?.AND).toEqual([
       { OR: [{ createdAt: { lt: boundary } }, { createdAt: boundary }] },
     ]);
     expect(captured.versions?.AND).toEqual([{ createdAt: { lt: boundary } }]);
     // The cursor's own source uses the raw-id tiebreak at the boundary.
-    expect(captured.loops?.AND).toEqual([
+    expect(captured.evaluations?.AND).toEqual([
       {
         OR: [
           { createdAt: { lt: boundary } },
-          { createdAt: boundary, id: { lt: "loop-9" } },
+          { createdAt: boundary, id: { lt: "eval-9" } },
         ],
       },
     ]);
@@ -459,5 +484,75 @@ describe("artifactActivityFeedService.listActivityFeed", () => {
       })
     ).rejects.toThrow();
     expect(mockWithDb).not.toHaveBeenCalled();
+  });
+
+  it("treats a cursor beyond Date range as malformed (ISS-9173 S1)", async () => {
+    const captured = mockSources({
+      events: [
+        {
+          id: "e1",
+          actorType: "user",
+          actorId: "u1",
+          action: "field_change",
+          before: null,
+          after: null,
+          createdAt: new Date("2026-07-22T05:00:00.000Z"),
+        },
+      ],
+    });
+
+    // 9e15 is a safe integer but beyond Date's valid range (8.64e15).
+    // Without the bound, this reaches `new Date(9e15)` → Invalid Date → Prisma throws.
+    const badCursor = Buffer.from("9000000000000000:event:e0", "utf8").toString(
+      "base64url"
+    );
+
+    const result = await artifactActivityFeedService.listActivityFeed({
+      organizationId: ORG,
+      artifactId: ARTIFACT,
+      cursor: badCursor,
+    });
+
+    expect(result.items).toHaveLength(1);
+    // The malformed cursor is treated as null → unfiltered first page.
+    // No keyset predicate applied — the query sees no createdAt filter from the cursor.
+    expect(captured.events?.createdAt).toBeUndefined();
+    expect(captured.events?.OR).toBeUndefined();
+  });
+
+  it("treats a cursor beyond MAX_SAFE_INTEGER as malformed (ISS-9173 S1)", async () => {
+    mockSources({ events: [] });
+
+    const badCursor = Buffer.from(
+      "10000000000000000:event:e0",
+      "utf8"
+    ).toString("base64url");
+
+    const result = await artifactActivityFeedService.listActivityFeed({
+      organizationId: ORG,
+      artifactId: ARTIFACT,
+      cursor: badCursor,
+    });
+
+    expect(result.items).toHaveLength(0);
+  });
+
+  it("accepts a cursor at the exact Date boundary (ISS-9173 S1)", async () => {
+    const captured = mockSources({ events: [] });
+
+    // 8_640_000_000_000_000 is exactly the max ms a Date can represent.
+    const boundaryCursor = Buffer.from(
+      "8640000000000000:event:e0",
+      "utf8"
+    ).toString("base64url");
+
+    await artifactActivityFeedService.listActivityFeed({
+      organizationId: ORG,
+      artifactId: ARTIFACT,
+      cursor: boundaryCursor,
+    });
+
+    // The cursor is valid → keyset predicate IS applied (via AND).
+    expect(captured.events?.AND).toBeDefined();
   });
 });

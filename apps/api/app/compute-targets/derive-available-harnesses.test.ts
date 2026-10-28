@@ -106,7 +106,7 @@ describe("deriveAvailableHarnesses", () => {
 });
 
 /**
- * ISS-5687. Mike's screenshot showed `Claude CLI 2.1.220 ✓`, `Codex CLI
+ * ISS-5687. Marisol's screenshot showed `Claude CLI 2.1.220 ✓`, `Codex CLI
  * 0.147.0 ✓`, both MCP rows "Not configured", and the picker rendering "No AI
  * harness available" — a claim the same payload disproves. The MCP server is an
  * OPTIONAL enhancement; the CLI is what runs the harness.

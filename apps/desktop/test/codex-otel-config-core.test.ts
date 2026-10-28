@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 
 import {
   buildManagedOtelBlock,

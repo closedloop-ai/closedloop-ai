@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EXPECTED_TYPE_TAB_LABELS } from "../../__tests__/type-tab-strip-vocabulary";
 import {
   estimateTypeTabWidthPx,
   fitTypeTabs,
@@ -6,19 +7,11 @@ import {
   resolveVisibleTypeTabCount,
 } from "../agents-type-tab-fit";
 
-// ISS-4803: the real strip vocabulary — `All` plus the seven SCOPED_CORE_KINDS
-// plurals from `kindMeta`, in KIND_ORDER. The fit is only interesting against
-// the labels that actually ship.
-const STRIP_LABELS = [
-  "All",
-  "Agents",
-  "Commands",
-  "Skills",
-  "Plugins",
-  "MCPs",
-  "Tools",
-  "Hooks",
-] as const;
+// ISS-4803: the fit is only interesting against the labels that actually ship.
+// ISS-6271: they come from the shared literal the production strip is guarded
+// against, not from a restatement here — a restatement kept this arithmetic
+// pointed at the old vocabulary whenever `SCOPED_OUT_KINDS` changed.
+const STRIP_LABELS = EXPECTED_TYPE_TAB_LABELS;
 
 // The reported viewport (ISS-4803 evidence: `a-web-list-mobile.png` at 390px)
 // minus the row's `px-4` padding on both sides, which is the CONTENT width

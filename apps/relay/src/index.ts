@@ -1,25 +1,7 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  createServer,
-  type IncomingHttpHeaders,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
-import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-  DesktopAgentSessionsAckReason,
-} from "@repo/api/src/types/agent-session";
-import {
-  DESKTOP_POP_HEADER_NAMES,
-  type DesktopPopHeaderName,
-} from "@repo/api/src/types/api-key";
-import {
-  DESKTOP_ANALYTICS_SOCKET_EVENT,
-  type DesktopAnalyticsAck,
-  DesktopAnalyticsAckReason,
-} from "@repo/api/src/types/desktop-analytics";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import { DESKTOP_POP_HEADER_NAMES } from "@repo/api/src/types/api-key";
+import { RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS } from "@repo/api/src/types/relay-heartbeat";
 import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { flushLogsWithDeadline } from "@repo/observability/shutdown";
@@ -29,99 +11,70 @@ import {
   type ProtocolMetric,
 } from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
-import {
-  ErrorClass,
-  isLoopPerfTelemetryRateLimitBypass,
-  TelemetryCategory,
-} from "@repo/observability/telemetry/schema";
+import { ErrorClass } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import { createRedisClient } from "@repo/redis";
-import { Server, type Socket } from "socket.io";
+import type { Socket } from "socket.io";
+import { handleDispatch } from "./dispatch-handler.js";
 import {
-  isRoutablePrivateIpv4,
-  resolveInstanceId,
-  resolvePrivateIp,
-} from "./instance-discovery.js";
+  attachEngineConnectionErrorLogging,
+  attachHttpServerErrorLogging,
+  attachSocketErrorLogging,
+} from "./error-listeners.js";
+import {
+  jsonResponse,
+  parseRequestUrl,
+  respondInternalError,
+} from "./http-io.js";
+import { resolveInstanceId, resolvePrivateIp } from "./instance-discovery.js";
 import { registerKeylessTelemetryNamespace } from "./keyless-otlp-ingress.js";
+import { parseOptionalBoundedEnvInt, parsePositiveEnvMs } from "./parse-env.js";
+import { handleInternalDispatch } from "./peer-dispatch.js";
 import {
-  createRateLimiter,
-  isRateLimited,
-  remove as removeRateLimit,
-} from "./rate-limiter";
-import { isLocalWorkerCurrentOwner } from "./registry-ownership.js";
-import { emitSocketEvents } from "./socket-emit.js";
+  heartbeatPresencePayload,
+  registerPresenceHandler,
+} from "./presence-forward.js";
+import {
+  INTERNAL_API_SECRET,
+  RELAY_PORT,
+  VERCEL_API_URL,
+} from "./relay-env.js";
+import { emitHelloInternalErrorNack, emitSocketEvents } from "./socket-emit.js";
+import { createSocketServer } from "./socket-server.js";
 import {
   InMemoryTargetRegistry,
-  type InstanceInfo,
   RedisTargetRegistry,
   type TargetMetadata,
   type TargetRegistry,
 } from "./target-registry.js";
+import { type DesktopPopHeaders, forwardSocketEvent } from "./vercel-client.js";
 import {
   startWorkerHeartbeat,
   type WorkerContext,
 } from "./worker-heartbeat.js";
+import {
+  cleanupOldWorker,
+  disposeWorkerTimers,
+  drainPendingBuffer,
+  pushPendingBuffer,
+  socketToTarget,
+  workersByTargetId,
+} from "./worker-registry.js";
 
-const RELAY_PORT = Number(
-  process.env.RELAY_PORT ?? process.env.MCP_PORT ?? "3020"
-);
 if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65_535) {
   log.error("Invalid RELAY_PORT");
   process.exit(1);
 }
-const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
-const VERCEL_API_URL = process.env.CLOSEDLOOP_API_URL;
-const HEARTBEAT_INTERVAL_MS = 30_000;
-const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
-  process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS ??
-    String(HEARTBEAT_INTERVAL_MS * 2)
+const HEARTBEAT_DEGRADED_THRESHOLD_MS = parsePositiveEnvMs(
+  "HEARTBEAT_DEGRADED_THRESHOLD_MS",
+  RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS * 2
 );
-const MAX_BODY_SIZE = 1_048_576; // 1 MB
-const MAX_PENDING_BUFFER_SIZE = 100;
 const RELAY_RUNTIME_MODE = process.env.RELAY_RUNTIME_MODE ?? "inmemory";
-const RELAY_INTERNAL_ALLOWED_IPS = (
-  process.env.RELAY_INTERNAL_ALLOWED_IPS ?? ""
-)
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-
-const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
-
-/**
- * Socket.IO CORS origin guard. Desktop workers connect via Node
- * socket.io-client and send no browser Origin header, so those are always
- * allowed. Any request that carries an Origin is a browser — none are expected
- * here — so it is rejected (localhost permitted in non-production for local
- * tooling). This keeps the credentialed `/desktop-gateway` namespace closed to
- * arbitrary sites even if the websocket-only transport is ever broadened.
- */
-function isAllowedSocketOrigin(origin: string | undefined): boolean {
-  if (!origin) {
-    return true;
-  }
-  return (
-    process.env.NODE_ENV !== "production" && LOCALHOST_ORIGIN_REGEX.test(origin)
-  );
-}
 
 let targetRegistry: TargetRegistry = new InMemoryTargetRegistry();
 let relayInstanceId = "unknown";
 let ownerGeneration = 0;
 let instanceKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
-
-const LOOP_PERF_TELEMETRY_RATE_LIMIT_WINDOW_MS = 60_000;
-let loopPerfTelemetryRateLimitPerMinute = Number(
-  process.env.LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE ?? "240"
-);
-if (
-  !Number.isFinite(loopPerfTelemetryRateLimitPerMinute) ||
-  loopPerfTelemetryRateLimitPerMinute <= 0
-) {
-  log.warn(
-    "Invalid LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE, defaulting to 240"
-  );
-  loopPerfTelemetryRateLimitPerMinute = 240;
-}
 
 if (!INTERNAL_API_SECRET) {
   log.error("INTERNAL_API_SECRET is required");
@@ -136,15 +89,6 @@ if (!VERCEL_API_URL) {
 // ---------------------------------------------------------------------------
 // In-memory state — only socket mappings, no business data
 // ---------------------------------------------------------------------------
-
-type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
-
-const workersByTargetId = new Map<string, WorkerContext>();
-const socketToTarget = new Map<string, string>();
-const loopPerfTelemetryRateLimiter = createRateLimiter(
-  loopPerfTelemetryRateLimitPerMinute,
-  LOOP_PERF_TELEMETRY_RATE_LIMIT_WINDOW_MS
-);
 
 function safeEmitConnectionStateCount(
   metric: Extract<ProtocolMetric, { metric: "connection_state_count" }>
@@ -188,22 +132,6 @@ function extractDesktopPopHeaders(
   return result;
 }
 
-function toDesktopPopHeaders(value: unknown): DesktopPopHeaders | undefined {
-  if (!(typeof value === "object" && value !== null)) {
-    return undefined;
-  }
-
-  const result: DesktopPopHeaders = {};
-  for (const headerName of DESKTOP_POP_HEADER_NAMES) {
-    const headerValue = (value as Record<string, unknown>)[headerName];
-    if (typeof headerValue === "string" && headerValue.trim().length > 0) {
-      result[headerName] = headerValue;
-    }
-  }
-
-  return result;
-}
-
 function getHeaderValue(
   headers: IncomingHttpHeaders,
   headerName: string
@@ -225,467 +153,13 @@ let connectCount = 0;
 let disconnectCount = 0;
 let reconnectCount = 0;
 // Per-target timestamp of last successful heartbeat ack (ms since epoch).
-const lastHeartbeatAckAt = new Map<string, number>();
-const DEFAULT_VERCEL_CALL_TIMEOUT_MS = 10_000;
-const AGENT_SESSIONS_SOCKET_EVENT_TIMEOUT_MS = 30_000;
-// Cross-instance proxy dispatch must finish well inside the API caller's budget.
-// apps/api/lib/loops/loop-desktop.ts aborts the POST /dispatch request after
-// 5000ms; a peer timeout at or above that lets a slow peer outlive the upstream
-// request, so the API reports failure while the peer is still working. Keep this
-// comfortably below 5000ms so the relay can return an explicit not-delivered
-// result before the caller gives up.
-export const API_DISPATCH_CALLER_TIMEOUT_MS = 5000;
-export const PEER_DISPATCH_TIMEOUT_MS = 4000;
-
-// ---------------------------------------------------------------------------
-// Vercel API client
-// ---------------------------------------------------------------------------
-
-async function callVercel<T = Record<string, unknown>>(
-  path: string,
-  body: unknown,
-  extraHeaders?: DesktopPopHeaders,
-  timeoutMs = DEFAULT_VERCEL_CALL_TIMEOUT_MS
-): Promise<{
-  ok: boolean;
-  status: number;
-  data: T | null;
-  responseUrl: string;
-  contentType: string | null;
-  rawBody: string;
-}> {
-  const response = await fetch(`${VERCEL_API_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-internal-secret": INTERNAL_API_SECRET as string,
-      ...(extraHeaders ?? {}),
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const rawBody = await response.text();
-  let data: T | null = null;
-
-  try {
-    data = JSON.parse(rawBody) as T;
-  } catch {
-    data = null;
-  }
-
-  return {
-    ok: response.ok,
-    status: response.status,
-    data,
-    responseUrl: response.url,
-    contentType: response.headers.get("content-type"),
-    rawBody,
-  };
-}
-
-async function validateApiKeyViaApi(
-  apiKey: string,
-  desktopPopHeaders?: DesktopPopHeaders
-): Promise<{
-  ok: boolean;
-  context?: { organizationId: string; userId: string; clerkUserId?: string };
-}> {
-  log.info("validateApiKeyViaApi: calling API", {
-    hasApiKey: Boolean(apiKey),
-    url: `${VERCEL_API_URL}/internal/api-keys/verify`,
-    hasDesktopPopHeaders:
-      Object.keys(desktopPopHeaders ?? {}).length ===
-      DESKTOP_POP_HEADER_NAMES.length,
-  });
-
-  const { ok, data, status, responseUrl, contentType, rawBody } =
-    await callVercel(
-      "/internal/api-keys/verify",
-      {
-        key: apiKey,
-        desktopPopRequired: true,
-      },
-      desktopPopHeaders
-    );
-
-  log.info("validateApiKeyViaApi: API response", {
-    ok,
-    status,
-    contentType,
-    responseUrl,
-    hasData: data !== null,
-  });
-
-  if (!(ok && data)) {
-    log.error("validateApiKeyViaApi: verification failed - bad response", {
-      status,
-      responseUrl,
-      contentType,
-      responseLength: rawBody.length,
-      errorClass: ErrorClass.Connection,
-    });
-    return { ok: false };
-  }
-
-  const payload = data.data;
-  if (
-    data.success !== true ||
-    typeof payload !== "object" ||
-    payload === null ||
-    typeof (payload as Record<string, unknown>).organizationId !== "string" ||
-    typeof (payload as Record<string, unknown>).userId !== "string"
-  ) {
-    log.warn("validateApiKeyViaApi: payload shape mismatch", {
-      success: data.success,
-      payloadType: typeof payload,
-      payloadKeys:
-        typeof payload === "object" && payload !== null
-          ? Object.keys(payload)
-          : [],
-      hasOrgId:
-        typeof payload === "object" &&
-        payload !== null &&
-        typeof (payload as Record<string, unknown>).organizationId === "string",
-      hasUserId:
-        typeof payload === "object" &&
-        payload !== null &&
-        typeof (payload as Record<string, unknown>).userId === "string",
-      errorClass: ErrorClass.Connection,
-    });
-    return { ok: false };
-  }
-
-  const scopes = (payload as Record<string, unknown>).scopes;
-  if (!(Array.isArray(scopes) && scopes.includes("write"))) {
-    log.warn("validateApiKeyViaApi: missing write scope", {
-      scopes,
-      errorClass: ErrorClass.Connection,
-    });
-    return { ok: false };
-  }
-
-  log.info("validateApiKeyViaApi: success", {
-    organizationId: (payload as Record<string, unknown>)
-      .organizationId as string,
-  });
-
-  const clerkUserId =
-    typeof (payload as Record<string, unknown>).clerkUserId === "string"
-      ? ((payload as Record<string, unknown>).clerkUserId as string)
-      : undefined;
-
-  return {
-    ok: true,
-    context: {
-      organizationId: (payload as Record<string, unknown>)
-        .organizationId as string,
-      userId: (payload as Record<string, unknown>).userId as string,
-      ...(clerkUserId ? { clerkUserId } : {}),
-    },
-  };
-}
-
-async function forwardSocketEvent(
-  event: string,
-  payload: unknown,
-  auth?: { organizationId: string; userId: string; clerkUserId?: string },
-  targetId?: string,
-  gatewaySessionId?: string,
-  relaySocketId?: string
-): Promise<{
-  targetId?: string;
-  gatewaySessionId?: string;
-  emit: Array<{ event: string; payload: unknown }>;
-  ack?: unknown;
-  disconnect?: boolean;
-}> {
-  if (event === "_relay.validate") {
-    const apiKey =
-      typeof payload === "object" &&
-      payload !== null &&
-      typeof (payload as Record<string, unknown>).apiKey === "string"
-        ? ((payload as Record<string, unknown>).apiKey as string)
-        : null;
-    const desktopPopHeaders =
-      typeof payload === "object" && payload !== null
-        ? toDesktopPopHeaders(
-            (payload as Record<string, unknown>).desktopPopHeaders
-          )
-        : undefined;
-
-    if (!apiKey) {
-      return { emit: [], disconnect: true };
-    }
-
-    const result = await validateApiKeyViaApi(apiKey, desktopPopHeaders);
-    if (!(result.ok && result.context)) {
-      return { emit: [], disconnect: true };
-    }
-
-    return {
-      emit: [
-        {
-          event: "_relay.auth",
-          payload: result.context,
-        },
-      ],
-    };
-  }
-
-  const { ok, data, status, responseUrl, contentType, rawBody } =
-    await callVercel(
-      "/internal/relay/socket-event",
-      {
-        event,
-        payload,
-        auth,
-        targetId,
-        gatewaySessionId,
-        relaySocketId,
-      },
-      undefined,
-      event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT
-        ? AGENT_SESSIONS_SOCKET_EVENT_TIMEOUT_MS
-        : DEFAULT_VERCEL_CALL_TIMEOUT_MS
-    );
-  if (!(ok && data)) {
-    log.error("Vercel socket-event call failed", {
-      event,
-      targetId,
-      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-      status,
-      responseUrl,
-      contentType,
-      responseLength: rawBody.length,
-      errorClass: ErrorClass.Protocol,
-    });
-    return { emit: [] };
-  }
-  const result = data as Record<string, unknown>;
-  if (!Array.isArray(result.emit)) {
-    log.error("forwardSocketEvent: expected data.emit to be an array", {
-      event,
-      targetId,
-      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-      emit: result.emit,
-      errorClass: ErrorClass.Protocol,
-    });
-    return { emit: [] };
-  }
-  return result as {
-    targetId?: string;
-    gatewaySessionId?: string;
-    emit: Array<{ event: string; payload: unknown }>;
-    ack?: unknown;
-    disconnect?: boolean;
-  };
-}
-
-const knownDesktopAnalyticsAckReasons = new Set<string>(
-  Object.values(DesktopAnalyticsAckReason)
-);
-
-function toDesktopAnalyticsAck(value: unknown): DesktopAnalyticsAck {
-  if (!value || typeof value !== "object") {
-    return {
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    };
-  }
-  const record = value as Record<string, unknown>;
-  if (record.accepted === true) {
-    return { accepted: true };
-  }
-  if (
-    typeof record.reason === "string" &&
-    knownDesktopAnalyticsAckReasons.has(record.reason)
-  ) {
-    return {
-      accepted: false,
-      reason: record.reason as DesktopAnalyticsAckReason,
-    };
-  }
-  return {
-    accepted: false,
-    reason: DesktopAnalyticsAckReason.ValidationFailed,
-  };
-}
-
-const knownAgentSessionsAckReasons = new Set<string>(
-  Object.values(DesktopAgentSessionsAckReason)
-);
-
-function toDesktopAgentSessionsAck(value: unknown): DesktopAgentSessionsAck {
-  if (!value || typeof value !== "object") {
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    };
-  }
-  const record = value as Record<string, unknown>;
-  if (record.accepted === true) {
-    return { accepted: true };
-  }
-  if (
-    typeof record.reason === "string" &&
-    knownAgentSessionsAckReasons.has(record.reason)
-  ) {
-    return {
-      accepted: false,
-      reason: record.reason as DesktopAgentSessionsAckReason,
-    };
-  }
-  return {
-    accepted: false,
-    reason: DesktopAgentSessionsAckReason.IngestionFailed,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// HTTP server — /health and /dispatch
-// ---------------------------------------------------------------------------
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_SIZE) {
-        req.destroy();
-        reject(new Error("Request body exceeds 1 MB limit"));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
-}
-
-function jsonResponse(
-  res: ServerResponse,
-  status: number,
-  body: unknown
-): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-function validateSecret(headerValue: string | string[] | undefined): boolean {
-  if (typeof headerValue !== "string" || !INTERNAL_API_SECRET) {
-    return false;
-  }
-  const digestKey = "relay-constant-time-compare";
-  const expectedDigest = createHmac("sha256", digestKey)
-    .update(INTERNAL_API_SECRET, "utf8")
-    .digest();
-  const actualDigest = createHmac("sha256", digestKey)
-    .update(headerValue, "utf8")
-    .digest();
-  return timingSafeEqual(expectedDigest, actualDigest);
-}
-
-type DispatchPayload = { targetId: string; operation: unknown };
-
-type DispatchParseResult =
-  | { ok: true; payload: DispatchPayload }
-  | { ok: false; error: string };
-
-// Pure validation, decoupled from the HTTP cycle so it can be unit-tested in
-// isolation. Callers own the response: parseDispatchBody below sends the 400.
-export function parseDispatchPayload(raw: string): DispatchParseResult {
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "Invalid JSON" };
-  }
-
-  if (
-    typeof body !== "object" ||
-    body === null ||
-    typeof (body as Record<string, unknown>).targetId !== "string"
-  ) {
-    return { ok: false, error: "Missing targetId" };
-  }
-
-  return { ok: true, payload: body as DispatchPayload };
-}
-
-async function parseDispatchBody(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<DispatchPayload | null> {
-  const result = parseDispatchPayload(await readBody(req));
-  if (!result.ok) {
-    jsonResponse(res, 400, { error: result.error });
-    return null;
-  }
-  return result.payload;
-}
-
-async function handleDispatch(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  if (!validateSecret(req.headers["x-internal-secret"])) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
-
-  const payload = await parseDispatchBody(req, res);
-  if (!payload) {
-    return;
-  }
-
-  const { targetId, operation } = payload;
-  const worker = workersByTargetId.get(targetId);
-
-  // Ownership check: in Redis mode the shared registry — not this process's
-  // socket map — is the source of truth for which relay instance currently owns
-  // a target. A desktop that reconnected to a different relay re-registers in
-  // Redis while this instance may still hold a stale local socket for the same
-  // target. Emitting to that stale socket would double-route the command, so
-  // when the registry attributes the target to another owner we proxy to the
-  // registered owner (or report not connected) rather than emitting locally.
-  if (
-    !(
-      worker &&
-      (await isLocalWorkerCurrentOwner(
-        targetRegistry,
-        targetId,
-        worker,
-        relayInstanceId
-      ))
-    )
-  ) {
-    const proxyResult = await tryProxyDispatch(targetId, operation);
-    if (proxyResult) {
-      jsonResponse(res, 200, proxyResult);
-      return;
-    }
-    jsonResponse(res, 200, {
-      delivered: false,
-      reason: "target_not_connected",
-    });
-    return;
-  }
-
-  log.info("Dispatch: emitting desktop.command to worker", {
-    targetId,
-    socketId: worker.socket.id,
-    socketConnected: worker.socket.connected,
-  });
-  worker.socket.emit("desktop.command", operation);
-  jsonResponse(res, 200, { delivered: true });
-}
-
+export const lastHeartbeatAckAt = new Map<string, number>();
 const server = createServer(async (req, res) => {
-  const url = new URL(
-    req.url ?? "/",
-    `http://${req.headers.host ?? "localhost"}`
-  );
+  const url = parseRequestUrl(req);
+  if (!url) {
+    jsonResponse(res, 400, { error: "Invalid request" });
+    return;
+  }
 
   if (url.pathname === "/health" && req.method === "GET") {
     jsonResponse(res, 200, {
@@ -698,10 +172,9 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === "/dispatch" && req.method === "POST") {
     try {
-      await handleDispatch(req, res);
+      await handleDispatch(req, res, { targetRegistry, relayInstanceId });
     } catch (error) {
-      log.error("Dispatch handler error", { error });
-      jsonResponse(res, 500, { error: "Internal server error" });
+      respondInternalError(res, "Dispatch handler error", error);
     }
     return;
   }
@@ -710,8 +183,7 @@ const server = createServer(async (req, res) => {
     try {
       await handleInternalDispatch(req, res);
     } catch (error) {
-      log.error("Internal dispatch handler error", { error });
-      jsonResponse(res, 500, { error: "Internal server error" });
+      respondInternalError(res, "Internal dispatch handler error", error);
     }
     return;
   }
@@ -719,21 +191,15 @@ const server = createServer(async (req, res) => {
   jsonResponse(res, 404, { error: "Not found" });
 });
 
+attachHttpServerErrorLogging(server);
+
 // ---------------------------------------------------------------------------
 // Socket.IO — generic event forwarder
 // ---------------------------------------------------------------------------
 
-const io = new Server(server, {
-  transports: ["websocket"],
-  // Only desktop workers connect, via websocket with API key auth — not browser
-  // clients. The origin guard rejects any browser Origin as defense-in-depth so
-  // that re-adding a polling transport could never expose this credentialed
-  // namespace to arbitrary sites.
-  cors: {
-    origin: (origin, callback) => callback(null, isAllowedSocketOrigin(origin)),
-    credentials: true,
-  },
-});
+const io = createSocketServer(server);
+
+attachEngineConnectionErrorLogging(io);
 
 // ---------------------------------------------------------------------------
 // Keyless telemetry-only OTLP ingress (FEA-1989 / PRD-481 C1). A separate,
@@ -742,27 +208,6 @@ const io = new Server(server, {
 // no state with — and grants no access to — the authenticated command/DB-sync
 // namespace below. Fails closed when RELAY_OTLP_COLLECTOR_URL is unset.
 // ---------------------------------------------------------------------------
-// Keyless telemetry capacity / back-pressure knobs (FEA-1994 / PRD-481 C6).
-// Return undefined when unset/invalid so the ingress module's built-in defaults
-// stay the single source of truth (no default duplicated here).
-function parseOptionalBoundedEnvInt(
-  name: string,
-  min: number
-): number | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") {
-    return undefined;
-  }
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < min) {
-    log.warn(`Invalid ${name}, ignoring (using built-in default)`, {
-      value: raw,
-      min,
-    });
-    return undefined;
-  }
-  return value;
-}
 
 registerKeylessTelemetryNamespace(io, {
   collectorUrl: process.env.RELAY_OTLP_COLLECTOR_URL,
@@ -876,27 +321,6 @@ namespace.use((socket, next) => {
     });
 });
 
-// Clean up if this socket was previously registered for a different target
-function cleanupOldWorker(socket: Socket, newTargetId: string): void {
-  const oldTargetId = socketToTarget.get(socket.id);
-  if (!oldTargetId || oldTargetId === newTargetId) {
-    return;
-  }
-
-  const oldWorker = workersByTargetId.get(oldTargetId);
-  if (oldWorker?.socket.id !== socket.id) {
-    return;
-  }
-
-  if (oldWorker.heartbeatTimer !== null) {
-    clearInterval(oldWorker.heartbeatTimer);
-  }
-  if (oldWorker.degradedTimer !== null) {
-    clearTimeout(oldWorker.degradedTimer);
-  }
-  workersByTargetId.delete(oldTargetId);
-}
-
 // Clean up if a different socket was previously registered for this target
 function cleanupExistingWorker(
   targetId: string,
@@ -908,12 +332,7 @@ function cleanupExistingWorker(
     return;
   }
 
-  if (existingWorker.heartbeatTimer !== null) {
-    clearInterval(existingWorker.heartbeatTimer);
-  }
-  if (existingWorker.degradedTimer !== null) {
-    clearTimeout(existingWorker.degradedTimer);
-  }
+  disposeWorkerTimers(existingWorker);
   emitConnectionState(
     ConnectionState.Disconnected,
     targetId,
@@ -939,61 +358,13 @@ function cleanupExistingWorker(
   });
 }
 
-function pushPendingBuffer(
-  socket: Socket,
-  event: string,
-  ...args: unknown[]
-): void {
-  if (socket.data.pendingBuffer.length >= MAX_PENDING_BUFFER_SIZE) {
-    log.warn("Pending buffer full, dropping event", {
-      socketId: socket.id,
-      event,
-    });
-    if (event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
-      (args[1] as ((response: DesktopAgentSessionsAck) => void) | undefined)?.({
-        accepted: false,
-        reason: DesktopAgentSessionsAckReason.ValidationFailed,
-      });
-    } else if (event === DESKTOP_ANALYTICS_SOCKET_EVENT) {
-      (args[1] as ((response: DesktopAnalyticsAck) => void) | undefined)?.({
-        accepted: false,
-        reason: DesktopAnalyticsAckReason.ValidationFailed,
-      });
-    }
-    return;
-  }
-  socket.data.pendingBuffer.push({ event, args });
-}
-
-function drainPendingBuffer(socket: Socket): void {
-  const pending = socket.data.pendingBuffer;
-  if (!pending || pending.length === 0) {
-    return;
-  }
-  socket.data.pendingBuffer = [];
-  for (const { event, args } of pending) {
-    if (event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
-      (args[1] as ((response: DesktopAgentSessionsAck) => void) | undefined)?.({
-        accepted: false,
-        reason: DesktopAgentSessionsAckReason.ValidationFailed,
-      });
-    } else if (event === DESKTOP_ANALYTICS_SOCKET_EVENT) {
-      (args[1] as ((response: DesktopAnalyticsAck) => void) | undefined)?.({
-        accepted: false,
-        reason: DesktopAnalyticsAckReason.ValidationFailed,
-      });
-    }
-  }
-}
-
 function registerWorker(
   socket: Socket,
   targetId: string,
   auth: { organizationId: string; userId: string; clerkUserId?: string },
-  gatewaySessionId?: string,
-  pluginVersion?: string
+  gatewaySessionId?: string
 ): void {
-  cleanupOldWorker(socket, targetId);
+  cleanupOldWorker(socket, targetId, lastHeartbeatAckAt);
   cleanupExistingWorker(targetId, socket, gatewaySessionId);
 
   // Worker context object created first so heartbeat closure can reference it
@@ -1006,7 +377,6 @@ function registerWorker(
     degradedTimer: null,
     wasDegraded: false,
     gatewaySessionId,
-    pluginVersion,
   };
 
   const heartbeatTimer = startWorkerHeartbeat({
@@ -1015,12 +385,16 @@ function registerWorker(
     gatewaySessionId,
     registry: targetRegistry,
     lastHeartbeatAckAt,
-    intervalMs: HEARTBEAT_INTERVAL_MS,
+    intervalMs: RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS,
     degradedThresholdMs: HEARTBEAT_DEGRADED_THRESHOLD_MS,
+    // ISS-8453: the heartbeat used to send `undefined`, and it shares the
+    // cloud's 25s sampling slot with the desktop's own presence — so a
+    // heartbeat arriving first consumed the slot and the sample carried no
+    // occupancy at all. It reports the last occupancy the desktop stated.
     sendPresence: () =>
       forwardSocketEvent(
         "desktop.presence",
-        undefined,
+        heartbeatPresencePayload(workerContext),
         auth,
         targetId,
         gatewaySessionId
@@ -1038,6 +412,14 @@ function registerWorker(
     workersByTargetId.has(targetId) &&
     workersByTargetId.get(targetId)?.socket.id !== socket.id;
   const isFirstRegistration = !workersByTargetId.has(targetId) || isTakeover;
+
+  // ISS-8531: both cleanups above early-return on the same-socket-same-target
+  // path a repeated desktop.hello produces, so the context this write displaces
+  // is disposed here instead. Timers only, no metric.
+  const displaced = workersByTargetId.get(targetId);
+  if (displaced !== workerContext) {
+    disposeWorkerTimers(displaced);
+  }
   workersByTargetId.set(targetId, workerContext);
   socketToTarget.set(socket.id, targetId);
 
@@ -1052,23 +434,20 @@ function registerWorker(
     connectedAt: Date.now(),
   };
   workerContext.registryMetadata = registryMetadata;
-  targetRegistry
-    .register(targetId, registryMetadata)
-    .then((registered) => {
-      if (registered) {
-        return;
-      }
-      // Non-fatal by design, but never silent again: an unregistered target is
-      // invisible to every other relay instance, and until the heartbeat heal
-      // existed this state lasted until the desktop reconnected. `register`
-      // reports the refusal rather than throwing, so this is the only place the
-      // loss surfaces.
-      log.error("Target registration failed; heartbeat reclaim will retry", {
-        targetId,
-        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-      });
-    })
-    .catch(() => {});
+  targetRegistry.register(targetId, registryMetadata).then((registered) => {
+    if (registered) {
+      return;
+    }
+    // Non-fatal by design, but never silent again: an unregistered target is
+    // invisible to every other relay instance, and until the heartbeat heal
+    // existed this state lasted until the desktop reconnected. `register`
+    // reports the refusal rather than throwing -- which is why there is no
+    // `.catch` here -- so this is the only place the loss surfaces.
+    log.error("Target registration failed; heartbeat reclaim will retry", {
+      targetId,
+      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+    });
+  });
 
   const pending = socket.data.pendingBuffer;
   if (pending && pending.length > 0) {
@@ -1128,6 +507,11 @@ namespace.on("connection", (socket) => {
     transport: socket.conn.transport.name,
   });
 
+  attachSocketErrorLogging(socket, {
+    organizationId: auth.organizationId,
+    userId: auth.userId,
+  });
+
   // Buffer for events that arrive before desktop.hello registration completes
   socket.data.pendingBuffer = [];
 
@@ -1156,6 +540,32 @@ namespace.on("connection", (socket) => {
         return;
       }
 
+      // The call failed outright -- a 5xx, a non-JSON body, or a body whose
+      // `emit` was not an array. Distinct from the API answering with no
+      // target for this socket, and it must NOT be handled as that: an
+      // unregistered socket left connected has no registry entry, no
+      // heartbeat and no frame telling the desktop anything, so it buffers to
+      // the cap and then drops events with nothing re-driving hello. The
+      // network-failure catch below closes for exactly this reason; this arm
+      // keeps the two symmetric (ISS-7976).
+      //
+      // `internal_error` must stay an already-shipped `DesktopHelloNackReason`
+      // -- every installed desktop maps it today, so no new wire value ships.
+      // Nack before disconnect: the frame that says why has to go out ahead of
+      // the close (ISS-6126).
+      if (result.forwardFailed) {
+        log.error("desktop.hello forward failed, disconnecting", {
+          socketId: socket.id,
+          organizationId: auth.organizationId,
+          userId: auth.userId,
+          errorClass: ErrorClass.Connection,
+        });
+        emitHelloInternalErrorNack(socket);
+        drainPendingBuffer(socket);
+        socket.disconnect(true);
+        return;
+      }
+
       // Guard: socket may have disconnected during the async hello call
       if (!socket.connected) {
         return;
@@ -1164,22 +574,8 @@ namespace.on("connection", (socket) => {
       // Capture gatewaySessionId from the hello.ack response
       const gatewaySessionId = result.gatewaySessionId;
 
-      // Extract pluginVersion from the hello payload sent by the desktop client
-      const pluginVersion =
-        typeof payload === "object" && payload !== null
-          ? ((payload as Record<string, unknown>).pluginVersion as
-              | string
-              | undefined)
-          : undefined;
-
       if (result.targetId) {
-        registerWorker(
-          socket,
-          result.targetId,
-          auth,
-          gatewaySessionId,
-          pluginVersion
-        );
+        registerWorker(socket, result.targetId, auth, gatewaySessionId);
       } else {
         drainPendingBuffer(socket);
       }
@@ -1201,6 +597,9 @@ namespace.on("connection", (socket) => {
         userId: auth.userId,
         error,
       });
+      // ISS-11843: an unreachable API is not a refusal, and a desktop reads a
+      // close with no nack as one.
+      emitHelloInternalErrorNack(socket);
       drainPendingBuffer(socket);
       socket.disconnect(true);
     }
@@ -1304,179 +703,13 @@ namespace.on("connection", (socket) => {
     }
   });
 
-  // Handle telemetry events — forward to Vercel with rate limiting.
-  socket.on("desktop.telemetry", (payload: unknown) => {
-    const targetId = socketToTarget.get(socket.id);
-    if (!targetId) {
-      pushPendingBuffer(socket, "desktop.telemetry", payload);
-      return;
-    }
-
-    const loopPerfRateLimitBypass = isLoopPerfTelemetryRateLimitBypass(
-      payload,
-      targetId
-    );
-    const rateLimited = loopPerfRateLimitBypass
-      ? loopPerfTelemetryRateLimiter.isRateLimited(socket.id)
-      : isRateLimited(socket.id);
-    if (rateLimited) {
-      log.info("desktop.telemetry rate_limited", {
-        socketId: socket.id,
-        targetId,
-        limiter: loopPerfRateLimitBypass ? "loopPerf" : "generic",
-      });
-      return;
-    }
-
-    const worker = workersByTargetId.get(targetId);
-    const gatewaySessionId = worker?.gatewaySessionId;
-    const pluginVersion = worker?.pluginVersion;
-
-    const enrichedPayload =
-      typeof payload === "object" && payload !== null
-        ? { ...(payload as Record<string, unknown>), pluginVersion }
-        : { pluginVersion };
-
-    forwardSocketEvent(
-      "desktop.telemetry",
-      enrichedPayload,
-      auth,
-      targetId,
-      gatewaySessionId
-    )
-      .then((result) => {
-        emitSocketEvents(socket, result.emit);
-      })
-      .catch((err) => {
-        log.error("Failed forwarding desktop.telemetry", {
-          socketId: socket.id,
-          targetId,
-          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-          error: err,
-        });
-      });
-  });
-
-  socket.on(
-    DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-    (payload: unknown, ack?: (response: DesktopAgentSessionsAck) => void) => {
-      const targetId = socketToTarget.get(socket.id);
-      if (!targetId) {
-        pushPendingBuffer(
-          socket,
-          DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-          payload,
-          ack
-        );
-        return;
-      }
-
-      const worker = workersByTargetId.get(targetId);
-      const gatewaySessionId = worker?.gatewaySessionId;
-
-      forwardSocketEvent(
-        DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-        payload,
-        auth,
-        targetId,
-        gatewaySessionId,
-        socket.id
-      )
-        .then((result) => {
-          ack?.(toDesktopAgentSessionsAck(result.ack));
-        })
-        .catch((error) => {
-          log.error("Failed forwarding desktop.agent-sessions", {
-            socketId: socket.id,
-            targetId,
-            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-            error,
-          });
-          ack?.({
-            accepted: false,
-            reason: DesktopAgentSessionsAckReason.IngestionFailed,
-          });
-        });
-    }
-  );
-
-  socket.on(
-    DESKTOP_ANALYTICS_SOCKET_EVENT,
-    (payload: unknown, ack?: (response: DesktopAnalyticsAck) => void) => {
-      const targetId = socketToTarget.get(socket.id);
-      if (!targetId) {
-        pushPendingBuffer(socket, DESKTOP_ANALYTICS_SOCKET_EVENT, payload, ack);
-        return;
-      }
-
-      const worker = workersByTargetId.get(targetId);
-      const gatewaySessionId = worker?.gatewaySessionId;
-      const pluginVersion = worker?.pluginVersion;
-      const enrichedPayload =
-        typeof payload === "object" && payload !== null
-          ? { ...(payload as Record<string, unknown>), pluginVersion }
-          : { pluginVersion };
-
-      forwardSocketEvent(
-        DESKTOP_ANALYTICS_SOCKET_EVENT,
-        enrichedPayload,
-        auth,
-        targetId,
-        gatewaySessionId,
-        socket.id
-      )
-        .then((result) => {
-          ack?.(toDesktopAnalyticsAck(result.ack));
-        })
-        .catch((error) => {
-          log.error("Failed forwarding desktop.analytics", {
-            socketId: socket.id,
-            targetId,
-            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-            error,
-          });
-          ack?.({
-            accepted: false,
-            reason: DesktopAnalyticsAckReason.ValidationFailed,
-          });
-        });
-    }
-  );
-
-  // Handle presence — forward to Vercel for heartbeat
-  socket.on("desktop.presence", async () => {
-    const targetId = socketToTarget.get(socket.id);
-    if (!targetId) {
-      pushPendingBuffer(socket, "desktop.presence");
-      return;
-    }
-
-    const worker = workersByTargetId.get(targetId);
-    const gatewaySessionId = worker?.gatewaySessionId;
-
-    try {
-      await forwardSocketEvent(
-        "desktop.presence",
-        undefined,
-        auth,
-        targetId,
-        gatewaySessionId
-      );
-    } catch (error) {
-      log.error("Failed forwarding presence", {
-        socketId: socket.id,
-        targetId,
-        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-        error,
-      });
-    }
-  });
+  // Presence carries the desktop's `activeCommands`, the only source for
+  // `executor_saturation` (ISS-8453). Trimmed to that field before forwarding.
+  registerPresenceHandler(socket, auth);
 
   // Handle disconnect — notify Vercel, clean up local state
   socket.on("disconnect", (reason: string) => {
     socketEventQueues.delete(socket.id);
-    removeRateLimit(socket.id);
-    loopPerfTelemetryRateLimiter.remove(socket.id);
 
     const targetId = socketToTarget.get(socket.id);
     socketToTarget.delete(socket.id);
@@ -1486,12 +719,7 @@ namespace.on("connection", (socket) => {
       const isCurrentOwner = worker?.socket.id === socket.id;
       if (isCurrentOwner) {
         const gatewaySessionId = worker.gatewaySessionId;
-        if (worker.heartbeatTimer !== null) {
-          clearInterval(worker.heartbeatTimer);
-        }
-        if (worker.degradedTimer !== null) {
-          clearTimeout(worker.degradedTimer);
-        }
+        disposeWorkerTimers(worker);
         workersByTargetId.delete(targetId);
         lastHeartbeatAckAt.delete(targetId);
         if (worker.ownerToken) {
@@ -1618,9 +846,20 @@ async function handleShutdown(): Promise<void> {
       instanceKeepaliveTimer = null;
     }
     if (RELAY_RUNTIME_MODE === "redis") {
-      await targetRegistry
+      // Anything this sweep misses stays routable to a dead instance for the
+      // full TARGET_TTL_MS, so the count is the only pre-mortem signal there
+      // is and must not be discarded (ISS-7976). The catch stays -- as `null`,
+      // the honest "unknown", never a made-up 0 -- because a rejection here
+      // would skip the rest of shutdown, including the flush that is what
+      // actually gets this line out.
+      const deregisteredTargets = await targetRegistry
         .deregisterAllByInstance(relayInstanceId)
-        .catch(() => {});
+        .catch(() => null);
+      log.info("Relay shutdown: deregistered instance targets", {
+        instanceId: relayInstanceId,
+        deregisteredTargets,
+        localWorkers: workersByTargetId.size,
+      });
       await targetRegistry.deregisterInstance(relayInstanceId).catch(() => {});
     }
     for (const [targetId, ctx] of workersByTargetId) {
@@ -1704,210 +943,6 @@ async function initializeTargetRegistry(): Promise<void> {
       error,
     });
   }
-}
-
-async function tryProxyDispatch(
-  targetId: string,
-  operation: unknown
-): Promise<{ delivered: boolean; reason?: string } | null> {
-  const targetMeta = await targetRegistry.lookup(targetId);
-  if (!targetMeta || targetMeta.instanceId === relayInstanceId) {
-    return null;
-  }
-
-  const instanceInfo = await targetRegistry.lookupInstance(
-    targetMeta.instanceId
-  );
-  if (!instanceInfo) {
-    return null;
-  }
-
-  // SSRF guard: instanceInfo is read from Redis, which must be treated as
-  // untrusted input. A poisoned or malformed registry record could otherwise
-  // redirect this request — carrying the internal shared secret — to an
-  // attacker-controlled host. Only proxy (and attach the secret) when the peer
-  // address is an allowed private/VPC target on the expected relay port.
-  if (!isAllowedPeerInstance(instanceInfo)) {
-    log.warn("Refusing to proxy dispatch to disallowed peer instance", {
-      targetId,
-      peerInstanceId: targetMeta.instanceId,
-      peerPrivateIp: instanceInfo.privateIp,
-      peerPort: instanceInfo.port,
-    });
-    return null;
-  }
-
-  try {
-    const proxyRes = await fetch(
-      `http://${instanceInfo.privateIp}:${instanceInfo.port}/internal/dispatch`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-secret": INTERNAL_API_SECRET as string,
-        },
-        body: JSON.stringify({ targetId, operation }),
-        signal: AbortSignal.timeout(PEER_DISPATCH_TIMEOUT_MS),
-      }
-    );
-
-    // Treat any non-2xx peer status as not-delivered. Without this, a peer
-    // 401/403/500 with a JSON error body would be forwarded verbatim with a 200,
-    // and the API caller (which only treats delivered === false as failure)
-    // would report the command as successfully dispatched.
-    if (!proxyRes.ok) {
-      log.warn("Peer instance returned non-2xx for proxied dispatch", {
-        targetId,
-        peerInstanceId: targetMeta.instanceId,
-        status: proxyRes.status,
-      });
-      return null;
-    }
-
-    const proxyResult = (await proxyRes.json()) as {
-      delivered: boolean;
-      reason?: string;
-    };
-
-    // Reject a 2xx response whose body does not match the dispatch envelope,
-    // rather than passing an undefined `delivered` through to the caller.
-    if (typeof proxyResult?.delivered !== "boolean") {
-      log.warn("Peer instance returned a malformed dispatch response", {
-        targetId,
-        peerInstanceId: targetMeta.instanceId,
-      });
-      return null;
-    }
-
-    if (
-      !proxyResult.delivered &&
-      proxyResult.reason === "target_not_connected"
-    ) {
-      targetRegistry
-        .deregister(targetId, targetMeta.ownerToken)
-        .catch(() => {});
-    }
-
-    return proxyResult;
-  } catch (error) {
-    // A network error, timeout (AbortSignal), or non-JSON body from the peer
-    // relay all land here (non-2xx statuses are handled above). We return null
-    // and the caller reports "target_not_connected" (the wire contract the
-    // Vercel gateway consumes), but log the underlying cause so a
-    // down/unreachable/slow peer is distinguishable from a genuinely absent
-    // target during debugging.
-    log.warn("Proxy dispatch to peer instance failed", {
-      targetId,
-      peerInstanceId: targetMeta.instanceId,
-      peerPrivateIp: instanceInfo.privateIp,
-      peerPort: instanceInfo.port,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-async function handleInternalDispatch(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  if (!validateSecret(req.headers["x-internal-secret"])) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
-
-  // The timing-safe shared secret (validateSecret, above) is the security
-  // boundary for this endpoint. The CIDR allowlist is optional defense-in-depth
-  // for deployments that want to additionally restrict source IPs to the VPC.
-  // When unset, the secret alone authorizes — a localhost-only fallback would
-  // be wrong here, since legitimate cross-instance proxy traffic originates
-  // from peer relays' private IPs, never loopback.
-  if (RELAY_INTERNAL_ALLOWED_IPS.length > 0) {
-    const sourceIp = req.socket.remoteAddress ?? "";
-    const allowed = RELAY_INTERNAL_ALLOWED_IPS.some((cidr) =>
-      isAddressInCidr(sourceIp, cidr)
-    );
-    if (!allowed) {
-      jsonResponse(res, 403, { error: "Forbidden" });
-      return;
-    }
-  }
-
-  const payload = await parseDispatchBody(req, res);
-  if (!payload) {
-    return;
-  }
-
-  const { targetId, operation } = payload;
-  const worker = workersByTargetId.get(targetId);
-  if (!worker) {
-    jsonResponse(res, 200, {
-      delivered: false,
-      reason: "target_not_connected",
-    });
-    return;
-  }
-
-  worker.socket.emit("desktop.command", operation);
-  jsonResponse(res, 200, { delivered: true });
-}
-
-const IPV6_MAPPED_RE = /^::ffff:/;
-
-export function isAddressInCidr(address: string, cidr: string): boolean {
-  const [subnet, bits] = cidr.split("/");
-  if (!(subnet && bits)) {
-    return address === cidr;
-  }
-  const prefixLen = Number(bits);
-  // Fail closed on malformed or out-of-range prefixes (e.g. "/foo", "/-1",
-  // "/40"). A malformed allowlist entry must never match every address.
-  // Mirrors the MCP counterpart in apps/mcp/src/index.ts.
-  if (!Number.isInteger(prefixLen) || prefixLen < 0 || prefixLen > 32) {
-    return false;
-  }
-  // "/0" legitimately matches all addresses. Handle it explicitly: the mask
-  // computation below would shift by 32, which JS evaluates as a shift by 0
-  // (1 << 32 === 1), producing a full mask instead of an empty one.
-  if (prefixLen === 0) {
-    return true;
-  }
-  // biome-ignore lint/suspicious/noBitwiseOperators: IP address mask computation requires bitwise ops
-  const mask = ~((1 << (32 - prefixLen)) - 1) >>> 0;
-  const ipNum = ipToNumber(address.replace(IPV6_MAPPED_RE, ""));
-  const subnetNum = ipToNumber(subnet);
-  // biome-ignore lint/suspicious/noBitwiseOperators: IP subnet matching requires bitwise AND
-  return (ipNum & mask) === (subnetNum & mask);
-}
-
-function ipToNumber(ip: string): number {
-  let result = 0;
-  for (const octet of ip.split(".")) {
-    // biome-ignore lint/suspicious/noBitwiseOperators: packing IPv4 octets into a 32-bit integer
-    result = (result << 8) + Number(octet);
-  }
-  // biome-ignore lint/suspicious/noBitwiseOperators: unsigned 32-bit conversion
-  return result >>> 0;
-}
-
-// Egress allowlist for cross-instance dispatch. The peer address comes from the
-// Redis registry, so it is untrusted: validate it before sending the internal
-// secret. The port must match this deployment's relay port (every relay task
-// listens on the same port), and the IP must be either inside the configured
-// CIDR allowlist or — when none is configured — an RFC1918 private address.
-export function isAllowedPeerInstance(info: InstanceInfo): boolean {
-  if (typeof info.privateIp !== "string" || !Number.isInteger(info.port)) {
-    return false;
-  }
-  if (info.port !== RELAY_PORT) {
-    return false;
-  }
-  if (RELAY_INTERNAL_ALLOWED_IPS.length > 0) {
-    return RELAY_INTERNAL_ALLOWED_IPS.some((cidr) =>
-      isAddressInCidr(info.privateIp, cidr)
-    );
-  }
-  return isRoutablePrivateIpv4(info.privateIp);
 }
 
 if (process.env.NODE_ENV !== "test") {

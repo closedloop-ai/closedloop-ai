@@ -1,3 +1,4 @@
+import type { AgentComponentDetailReadOptions } from "./detail-read-options";
 import "server-only";
 
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
@@ -17,10 +18,15 @@ import {
   type DetailOrphanUsageLanes,
   type DetailOrphanUsageRow,
   type DetailUsageSeenBounds,
+  detailUsageLaneWheres,
   fetchDetailOrphanUsageLanes,
   fetchDetailUsageSeenBounds,
   foldUsageSeenBounds,
 } from "../detail-usage-reads";
+import {
+  type DetailUsageTotals,
+  fetchDetailUsageTotals,
+} from "../detail-usage-totals";
 import {
   createHarnessAccumulator,
   foldUsageHarness,
@@ -30,8 +36,15 @@ import {
   resolveOrphanHonestSource,
   resolveOrphanSourceType,
 } from "../identity";
-import { loadSessionLocCost, locPerDollarForKind } from "../loc-per-dollar";
-import { resolveDetailSessionTabs } from "./detail-session-tabs";
+import {
+  loadSessionLocCost,
+  locPerDollarForKind,
+  locPerDollarUncoveredOperand,
+} from "../loc-per-dollar";
+import {
+  recordSessionLastInvoked,
+  resolveDetailSessionTabs,
+} from "./detail-session-tabs";
 import { DETAIL_USAGE_SNAPSHOT_TX_TIMEOUT_MS } from "./detail-usage-identity";
 import { loadAgentComponentInvocationReadPage } from "./invocation-read";
 import { ownerCompat } from "./owner-compat";
@@ -86,30 +99,48 @@ export async function buildOrphanOnlyDetail(
   // and `keys` is empty, so `contentScope` (fingerprint) is what selects the
   // used-only rows — filtering `componentKey == ""` would find nothing.
   keys: string[] = [],
-  contentScope: UsageContentScope | null = null
+  contentScope: UsageContentScope | null = null,
+  // ISS-8148: read-side push-evidence gate, resolved by the caller (one flag
+  // evaluation per detail read) and threaded into the tab lane.
+  requirePushEvidence = false,
+  readOptions?: AgentComponentDetailReadOptions
 ): Promise<AgentComponentDetail | null> {
-  // ISS-5577 (wongk review): the two lanes AND the seen-bounds aggregate read
+  // ISS-5577 (whitlockk review): the two lanes AND the seen-bounds aggregate read
   // under ONE snapshot — see `loadOrphanUsageSnapshot`. The lane read still
   // reports its own `take` bound; this path never re-derives truncation from a
   // row count and a cap.
-  const { orphanUsages, seenBounds } = await loadOrphanUsageSnapshot({
-    organizationId,
-    kind,
-    key,
-    keys,
-    contentScope,
-  });
+  const { orphanUsages, seenBounds, totals, truncated } =
+    await loadOrphanUsageSnapshot({
+      organizationId,
+      kind,
+      key,
+      keys,
+      contentScope,
+    });
   if (orphanUsages.length === 0) {
     return null;
   }
 
   const invCountBySession = new Map<string, number>();
-  let totalInvocations = 0;
+  // ISS-9855: max `lastInvokedAt` per session, so the tabs page by recency.
+  const sessionLastInvoked = new Map<string, Date | null>();
+  let foldedInvocations = 0;
   for (const usage of orphanUsages) {
-    totalInvocations += usage.invocationCount;
+    foldedInvocations += usage.invocationCount;
     const prev = invCountBySession.get(usage.agentSessionId) ?? 0;
     invCountBySession.set(usage.agentSessionId, prev + usage.invocationCount);
+    recordSessionLastInvoked(
+      sessionLastInvoked,
+      usage.agentSessionId,
+      usage.lastInvokedAt
+    );
   }
+  // ISS-9852: the cards state the whole population. `totals` is null only when
+  // no lane hit its `take` (the fetched rows ARE the population, so the fold is
+  // exact) or when the aggregate rejected (logged; the folded floor is the
+  // never-reject fallback the seen-bounds read already takes).
+  const totalInvocations = totals?.invocations ?? foldedInvocations;
+  const totalSessions = totals?.sessionIds.size ?? invCountBySession.size;
 
   const {
     usageSessions,
@@ -117,7 +148,16 @@ export async function buildOrphanOnlyDetail(
     branchesTabTruncated,
     sessionsTab,
     sessionsTabTruncated,
-  } = await resolveDetailSessionTabs(db, organizationId, invCountBySession);
+    nextCursor: sessionsTabNextCursor,
+  } = await resolveDetailSessionTabs(
+    db,
+    organizationId,
+    invCountBySession,
+    requirePushEvidence,
+    undefined,
+    sessionLastInvoked,
+    readOptions?.sessionCursor
+  );
 
   const sessionIds = [...invCountBySession.keys()];
 
@@ -141,14 +181,19 @@ export async function buildOrphanOnlyDetail(
     // no inventory row but do carry sessions, so their LOC/$ is still honest
     // when those sessions produced lines.
     loadSessionLocCost(db, organizationId, sessionIds),
-    computeCohortPerformance(db, organizationId, sessionIds),
+    // ISS-9853: the id set is this lane's rows, so its own `take` bound is
+    // what makes the cohort a sample.
+    computeCohortPerformance(db, organizationId, sessionIds, {
+      cohortSampled: truncated,
+    }),
     loadAgentComponentInvocationReadPage(db, {
       organizationId,
       kind,
       key,
       inventoryIds: [],
+      cursor: readOptions?.invocationCursor,
     }),
-    // FEA-4098 (wongk): an orphan-only identity still carries the F1
+    // FEA-4098 (whitlockk): an orphan-only identity still carries the F1
     // `definitionVersionId` its usage ran against — the list-view row already
     // shows authors from it — so resolve the authors lineage here too instead
     // of hardcoding an empty set. Resolve the version links to their exact
@@ -195,12 +240,17 @@ export async function buildOrphanOnlyDetail(
     honestSource: resolveOrphanHonestSource(kind, key),
     harness: deriveOrphanHarness(orphanUsages),
     invocations: totalInvocations,
-    sessions: invCountBySession.size,
+    sessions: totalSessions,
     ...emitLocPerDollarWithLegacy(
-      locPerDollarForKind(kind, invCountBySession.keys(), locCostBySession)
+      locPerDollarForKind(kind, invCountBySession.keys(), locCostBySession),
+      locPerDollarUncoveredOperand(
+        kind,
+        invCountBySession.keys(),
+        locCostBySession
+      )
     ),
     trend: [],
-    // FEA-4098 (wongk): authors resolved from the orphan usage's own
+    // FEA-4098 (whitlockk): authors resolved from the orphan usage's own
     // `definitionVersionId` lineage — parity with the list-view row, which
     // already shows these — rather than a hardcoded empty set. Empty only when
     // no usage row links a `DefinitionVersion` (skew-safe). `owner` is an
@@ -228,6 +278,7 @@ export async function buildOrphanOnlyDetail(
     invocationRows,
     sessionsTab,
     sessionsTabTruncated,
+    sessionsTabNextCursor,
     branchesTab,
     branchesTabTruncated,
     provenance: [],
@@ -272,6 +323,38 @@ function resolveOrphanSeenWindow(
   return Promise.resolve(foldUsageSeenBounds(lanes.rows));
 }
 
+/**
+ * ISS-9852: the whole-population totals, read ONLY when a lane reported its
+ * `take` bound. When it did not, the fetched rows are the population and the
+ * caller's fold is exact and free; when it did, the fold is a floor — the lanes
+ * are ordered `lastInvokedAt desc`, so the dropped rows are the oldest usage,
+ * and the card would state the retained prefix as the total.
+ */
+function resolveOrphanUsageTotals(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  scope: OrphanUsageScope,
+  lanes: DetailOrphanUsageLanes
+): Promise<DetailUsageTotals | null> {
+  if (!lanes.truncated) {
+    return Promise.resolve(null);
+  }
+  return fetchDetailUsageTotals(
+    db,
+    [
+      {
+        OR: detailUsageLaneWheres(
+          scope.organizationId,
+          scope.kind,
+          scope.key,
+          scope.keys,
+          scope.contentScope
+        ),
+      },
+    ],
+    { organizationId: scope.organizationId, kind: scope.kind }
+  );
+}
+
 /** The identity an orphan-only usage snapshot is scoped to. */
 type OrphanUsageScope = {
   organizationId: string;
@@ -282,7 +365,7 @@ type OrphanUsageScope = {
 };
 
 /**
- * ISS-5577 (wongk review): the two orphan lanes and the capped-lane seen-bounds
+ * ISS-5577 (whitlockk review): the two orphan lanes and the capped-lane seen-bounds
  * aggregate, read under ONE short `RepeatableRead` snapshot — the same isolation
  * and timeout the inventory-present path's three-lane read already uses
  * (`loadDetailUsageGroups`).
@@ -303,6 +386,13 @@ type OrphanUsageScope = {
 function loadOrphanUsageSnapshot(scope: OrphanUsageScope): Promise<{
   orphanUsages: DetailOrphanUsageRow[];
   seenBounds: DetailUsageSeenBounds;
+  totals: DetailUsageTotals | null;
+  /**
+   * ISS-9853: the lanes' OWN `take` bound, carried beside `totals` because the
+   * two are not the same fact — `totals` is null both when nothing was bounded
+   * and when the bounded lane's aggregate rejected.
+   */
+  truncated: boolean;
 }> {
   return withDb.tx(
     async (tx) => {
@@ -318,8 +408,18 @@ function loadOrphanUsageSnapshot(scope: OrphanUsageScope): Promise<{
       // made it an orphan-only identity — never the request clock. Inside the
       // snapshot so the aggregate describes the same population the lanes read,
       // and free (no query) unless the lane read reported its `take` bound.
-      const seenBounds = await resolveOrphanSeenWindow(tx, scope, lanes);
-      return { orphanUsages: lanes.rows, seenBounds };
+      // ISS-9852: the same shape for the Invocations/Sessions totals — the
+      // rowless read runs only on the truncated branch, in the same snapshot.
+      const [seenBounds, totals] = await Promise.all([
+        resolveOrphanSeenWindow(tx, scope, lanes),
+        resolveOrphanUsageTotals(tx, scope, lanes),
+      ]);
+      return {
+        orphanUsages: lanes.rows,
+        seenBounds,
+        totals,
+        truncated: lanes.truncated,
+      };
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,

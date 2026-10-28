@@ -41,7 +41,7 @@ const PROGRESS_TONE_STYLES = {
   // its loudest step on its least urgent state and leaves the step up to amber
   // meaning less than it should. Use `Neutral` for the resting band, and for a
   // value the caller could not measure at all — asserting no severity is the
-  // honest rendering of an amount nobody knows (wongk, PR #4572).
+  // honest rendering of an amount nobody knows (whitlockk, PR #4572).
   [ProgressTone.Neutral]: {
     track: "bg-muted-foreground/20",
     fill: "bg-muted-foreground",

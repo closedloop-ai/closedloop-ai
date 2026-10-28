@@ -13,9 +13,11 @@ import {
   RepositoryDefaultReason,
   RepositoryDefaultSource,
   repositoryDefaultAuthorityValidator,
+  repositoryDefaultProvenanceValidator,
   repositoryDefaultUnavailableObservationValidator,
 } from "./repository-default-identity";
 import { VcsProviderKind } from "./vcs-provider-kind";
+import { findIssue } from "./zod-issue.test-helpers";
 
 const observedAt = "2026-08-10T20:00:00.000Z";
 const credentialOwnerId = "019fed13-b752-77c3-bf22-0a6c655d4a38";
@@ -56,25 +58,68 @@ describe("repository default identity", () => {
         authority({ fullName: " /Acme/Widget.git/ " })
       ).repository.fullName
     ).toBe("acme/widget");
-    expect(
-      repositoryDefaultAuthorityValidator.safeParse(
-        authority({ fullName: "widget" })
-      ).success
-    ).toBe(false);
-    expect(
-      repositoryDefaultAuthorityValidator.safeParse(
-        authority({ providerRepositoryId: " " })
-      ).success
-    ).toBe(false);
+
+    const shortFullNameResult = repositoryDefaultAuthorityValidator.safeParse(
+      authority({ fullName: "widget" })
+    );
+    expect(shortFullNameResult.success).toBe(false);
+    if (!shortFullNameResult.success) {
+      const issue = findIssue(shortFullNameResult.error.issues, [
+        "repository",
+        "fullName",
+      ]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe(
+        "repository fullName must be canonical owner/name"
+      );
+    }
+
+    const blankIdResult = repositoryDefaultAuthorityValidator.safeParse(
+      authority({ providerRepositoryId: " " })
+    );
+    expect(blankIdResult.success).toBe(false);
+    if (!blankIdResult.success) {
+      const issue = findIssue(blankIdResult.error.issues, [
+        "repository",
+        "providerRepositoryId",
+      ]);
+      expect(issue?.message).toBe(
+        "Too small: expected string to have >=1 characters"
+      );
+    }
+
+    const extraSegmentResult = repositoryDefaultAuthorityValidator.safeParse(
+      authority({ fullName: "acme/widget/extra" })
+    );
+    expect(extraSegmentResult.success).toBe(false);
+    if (!extraSegmentResult.success) {
+      const issue = findIssue(extraSegmentResult.error.issues, [
+        "repository",
+        "fullName",
+      ]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe(
+        "repository fullName must be canonical owner/name"
+      );
+    }
   });
 
   it("rejects whitespace defaults and invalid state combinations", () => {
-    expect(
-      repositoryDefaultAuthorityValidator.safeParse(
-        authority({ defaultBranch: " " })
-      ).success
-    ).toBe(false);
-    expect(
+    const blankBranchResult = repositoryDefaultAuthorityValidator.safeParse(
+      authority({ defaultBranch: " " })
+    );
+    expect(blankBranchResult.success).toBe(false);
+    if (!blankBranchResult.success) {
+      const issue = findIssue(blankBranchResult.error.issues, [
+        "evidence",
+        "defaultBranch",
+      ]);
+      expect(issue?.message).toBe(
+        "Too small: expected string to have >=1 characters"
+      );
+    }
+
+    const unavailableWithBranchResult =
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         evidence: {
@@ -83,9 +128,16 @@ describe("repository default identity", () => {
           defaultBranch: "main",
           reason: RepositoryDefaultReason.NotReported,
         },
-      }).success
-    ).toBe(false);
-    expect(
+      });
+    expect(unavailableWithBranchResult.success).toBe(false);
+    if (!unavailableWithBranchResult.success) {
+      const issue = findIssue(unavailableWithBranchResult.error.issues, [
+        "evidence",
+      ]);
+      expect(issue?.message).toBe('Unrecognized key: "defaultBranch"');
+    }
+
+    const availablePartialResult =
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         evidence: {
@@ -93,38 +145,74 @@ describe("repository default identity", () => {
           completeness: RepositoryDefaultCompleteness.Partial,
           defaultBranch: "main",
         },
-      }).success
-    ).toBe(false);
+      });
+    expect(availablePartialResult.success).toBe(false);
+    if (!availablePartialResult.success) {
+      const issue = findIssue(availablePartialResult.error.issues, [
+        "evidence",
+        "completeness",
+      ]);
+      expect(issue?.message).toBe('Invalid input: expected "complete"');
+    }
   });
 
   it("rejects missing replay identity, invalid observation time, and extra fields", () => {
-    expect(
+    const blankObservationKeyResult =
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         provenance: { ...authority().provenance, observationKey: " " },
-      }).success
-    ).toBe(false);
-    expect(
+      });
+    expect(blankObservationKeyResult.success).toBe(false);
+    if (!blankObservationKeyResult.success) {
+      const issue = findIssue(blankObservationKeyResult.error.issues, [
+        "provenance",
+        "observationKey",
+      ]);
+      expect(issue?.message).toBe(
+        "Too small: expected string to have >=1 characters"
+      );
+    }
+
+    const invalidObservedAtResult =
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         provenance: { ...authority().provenance, observedAt: "yesterday" },
-      }).success
-    ).toBe(false);
-    expect(
-      repositoryDefaultAuthorityValidator.safeParse({
-        ...authority(),
-        inferredFromBase: true,
-      }).success
-    ).toBe(false);
-    expect(
+      });
+    expect(invalidObservedAtResult.success).toBe(false);
+    if (!invalidObservedAtResult.success) {
+      const issue = findIssue(invalidObservedAtResult.error.issues, [
+        "provenance",
+        "observedAt",
+      ]);
+      expect(issue?.message).toBe("Invalid ISO datetime");
+    }
+
+    const extraFieldResult = repositoryDefaultAuthorityValidator.safeParse({
+      ...authority(),
+      inferredFromBase: true,
+    });
+    expect(extraFieldResult.success).toBe(false);
+    if (!extraFieldResult.success) {
+      const issue = findIssue(extraFieldResult.error.issues, []);
+      expect(issue?.message).toBe('Unrecognized key: "inferredFromBase"');
+    }
+
+    const invalidCredentialOwnerIdResult =
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         provenance: {
           ...authority().provenance,
           credentialOwnerId: "not-a-uuid",
         },
-      }).success
-    ).toBe(false);
+      });
+    expect(invalidCredentialOwnerIdResult.success).toBe(false);
+    if (!invalidCredentialOwnerIdResult.success) {
+      const issue = findIssue(invalidCredentialOwnerIdResult.error.issues, [
+        "provenance",
+        "credentialOwnerId",
+      ]);
+      expect(issue?.message).toBe("Invalid UUID");
+    }
   });
 
   it("accepts typed stale and unavailable evidence without inferring a branch", () => {
@@ -156,32 +244,79 @@ describe("repository default identity", () => {
     ).not.toHaveProperty("defaultBranch");
   });
 
+  it("rejects a whitespace-only defaultBranch on stale evidence", () => {
+    const result = repositoryDefaultAuthorityValidator.safeParse({
+      ...authority(),
+      evidence: {
+        availability: RepositoryDefaultAvailability.Stale,
+        completeness: RepositoryDefaultCompleteness.Partial,
+        defaultBranch: " ",
+        reason: RepositoryDefaultReason.ProviderError,
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = findIssue(result.error.issues, [
+        "evidence",
+        "defaultBranch",
+      ]);
+      expect(issue?.message).toBe(
+        "Too small: expected string to have >=1 characters"
+      );
+    }
+  });
+
   it("rejects compatibility-only producer members and invalid capped evidence", () => {
     for (const reason of [
       RepositoryDefaultReason.LegacyRecord,
       RepositoryDefaultReason.Unknown,
     ]) {
-      expect(
-        repositoryDefaultAuthorityValidator.safeParse({
-          ...authority(),
-          evidence: {
-            availability: RepositoryDefaultAvailability.Unavailable,
-            completeness: RepositoryDefaultCompleteness.Unavailable,
-            reason,
-          },
-        }).success
-      ).toBe(false);
+      const result = repositoryDefaultAuthorityValidator.safeParse({
+        ...authority(),
+        evidence: {
+          availability: RepositoryDefaultAvailability.Unavailable,
+          completeness: RepositoryDefaultCompleteness.Unavailable,
+          reason,
+        },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = findIssue(result.error.issues, ["evidence", "reason"]);
+        expect(issue?.code).toBe("custom");
+        expect(issue?.message).toBe(
+          "producer evidence reason must not be compatibility-only"
+        );
+      }
     }
+
+    const cappedResult = repositoryDefaultAuthorityValidator.safeParse({
+      ...authority(),
+      evidence: {
+        availability: RepositoryDefaultAvailability.Unavailable,
+        completeness: RepositoryDefaultCompleteness.Unavailable,
+        reason: RepositoryDefaultReason.Capped,
+      },
+    });
+    expect(cappedResult.success).toBe(false);
+    if (!cappedResult.success) {
+      const issue = findIssue(cappedResult.error.issues, [
+        "evidence",
+        "completeness",
+      ]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe("capped evidence must be partial");
+    }
+
     expect(
       repositoryDefaultAuthorityValidator.safeParse({
         ...authority(),
         evidence: {
           availability: RepositoryDefaultAvailability.Unavailable,
-          completeness: RepositoryDefaultCompleteness.Unavailable,
+          completeness: RepositoryDefaultCompleteness.Partial,
           reason: RepositoryDefaultReason.Capped,
         },
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("preserves legacy omission and degrades future values conservatively", () => {
@@ -210,6 +345,15 @@ describe("repository default identity", () => {
     expect(normalized?.provenance.source).toBe(RepositoryDefaultSource.Unknown);
     expect(normalized?.provenance.sourceIdentity).toBe("future_source");
     expect(normalized?.provenance.mechanism).toBe(GitHubFetchMechanism.Unknown);
+    expect(normalized?.provenance.credentialOwnerId).toBe(credentialOwnerId);
+    expect(normalized?.provenance.eventAt).toBe("2026-08-10T19:59:00.000Z");
+    // trigger/credentialType were left at their known, valid authority()
+    // values, so the compatibility fallback's normalizeConstValue lookup must
+    // preserve them rather than collapsing every field to Unknown.
+    expect(normalized?.provenance.trigger).toBe(GitHubFetchTrigger.UserAction);
+    expect(normalized?.provenance.credentialType).toBe(
+      GitHubFetchCredentialType.GitHubApp
+    );
   });
 
   it("keeps distinct future raw sources separate across repeated normalization", () => {
@@ -251,6 +395,23 @@ describe("repository default identity", () => {
   it("omits sourceIdentity for known producer sources", () => {
     const normalized = normalizeRepositoryDefaultAuthority(authority());
 
+    expect(normalized?.provenance).not.toHaveProperty("sourceIdentity");
+  });
+
+  it("never invents a sourceIdentity when the compatibility fallback's source is already known", () => {
+    const normalized = normalizeRepositoryDefaultAuthority({
+      ...authority(),
+      provenance: {
+        ...authority().provenance,
+        source: RepositoryDefaultSource.RepositoryRest,
+        sourceIdentity: "leftover-vendor-id",
+        mechanism: "future_mechanism",
+      },
+    });
+
+    expect(normalized?.provenance.source).toBe(
+      RepositoryDefaultSource.RepositoryRest
+    );
     expect(normalized?.provenance).not.toHaveProperty("sourceIdentity");
   });
 
@@ -370,6 +531,16 @@ describe("repository default identity", () => {
     });
     expect(normalized?.provenance?.observedAt).toBe(observedAt);
     expect(normalized?.provenance?.credentialOwnerId).toBe(credentialOwnerId);
+    expect(normalized?.provenance).not.toHaveProperty("eventAt");
+  });
+
+  it("normalizes a persisted group whose observedAt column is already a string", () => {
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({ defaultBranchObservedAt: observedAt })
+    );
+
+    expect(normalized?.provenance?.observedAt).toBe(observedAt);
   });
 
   it("omits absent event time rather than serializing null", () => {
@@ -407,6 +578,322 @@ describe("repository default identity", () => {
       GitHubFetchCredentialType.Unauthenticated
     );
     expect(parsed.provenance).not.toHaveProperty("credentialOwnerId");
+  });
+
+  it("flags sourceIdentity only when paired with a known, non-unknown provenance source", () => {
+    const withKnownSource = repositoryDefaultProvenanceValidator.safeParse({
+      source: RepositoryDefaultSource.RepositoryRest,
+      sourceIdentity: "leftover-vendor-id",
+      mechanism: GitHubFetchMechanism.Rest,
+      trigger: GitHubFetchTrigger.UserAction,
+      credentialType: GitHubFetchCredentialType.GitHubApp,
+      observationKey: "attempt:1",
+      observedAt,
+    });
+    expect(withKnownSource.success).toBe(false);
+    if (!withKnownSource.success) {
+      const issue = findIssue(withKnownSource.error.issues, ["sourceIdentity"]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe(
+        "sourceIdentity is reserved for unknown compatibility sources"
+      );
+    }
+
+    const withUnknownSource = repositoryDefaultProvenanceValidator.safeParse({
+      source: RepositoryDefaultSource.Unknown,
+      sourceIdentity: "leftover-vendor-id",
+      mechanism: GitHubFetchMechanism.Rest,
+      trigger: GitHubFetchTrigger.UserAction,
+      credentialType: GitHubFetchCredentialType.GitHubApp,
+      observationKey: "attempt:1",
+      observedAt,
+    });
+    expect(withUnknownSource.success).toBe(true);
+  });
+
+  it("rejects a whitespace-only sourceIdentity even when paired with an unknown source", () => {
+    const result = repositoryDefaultProvenanceValidator.safeParse({
+      source: RepositoryDefaultSource.Unknown,
+      sourceIdentity: "   ",
+      mechanism: GitHubFetchMechanism.Rest,
+      trigger: GitHubFetchTrigger.UserAction,
+      credentialType: GitHubFetchCredentialType.GitHubApp,
+      observationKey: "attempt:1",
+      observedAt,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = findIssue(result.error.issues, ["sourceIdentity"]);
+      expect(issue?.message).toBe(
+        "Too small: expected string to have >=1 characters"
+      );
+    }
+  });
+
+  it("rejects a compatibility-only reason on a producer unavailable observation", () => {
+    for (const reason of [
+      RepositoryDefaultReason.LegacyRecord,
+      RepositoryDefaultReason.Unknown,
+    ]) {
+      const result = repositoryDefaultUnavailableObservationValidator.safeParse(
+        {
+          reason,
+          provenance: {
+            source: RepositoryDefaultSource.RepositoryRest,
+            mechanism: GitHubFetchMechanism.Rest,
+            trigger: GitHubFetchTrigger.UserAction,
+            credentialType: GitHubFetchCredentialType.GitHubApp,
+            observationKey: "attempt:1",
+            observedAt,
+          },
+        }
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = findIssue(result.error.issues, ["reason"]);
+        expect(issue?.code).toBe("custom");
+        expect(issue?.message).toBe(
+          "producer evidence reason must not be compatibility-only"
+        );
+      }
+    }
+  });
+
+  it("rejects an unknown provenance source on a producer unavailable observation", () => {
+    const result = repositoryDefaultUnavailableObservationValidator.safeParse({
+      reason: RepositoryDefaultReason.NotReported,
+      provenance: {
+        source: RepositoryDefaultSource.Unknown,
+        mechanism: GitHubFetchMechanism.Rest,
+        trigger: GitHubFetchTrigger.UserAction,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "attempt:1",
+        observedAt,
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = findIssue(result.error.issues, ["provenance", "source"]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe("producer provenance source must be known");
+    }
+  });
+
+  it("rejects an unknown mechanism, trigger, or credential type on a producer unavailable observation", () => {
+    const base = {
+      source: RepositoryDefaultSource.RepositoryRest,
+      mechanism: GitHubFetchMechanism.Rest,
+      trigger: GitHubFetchTrigger.UserAction,
+      credentialType: GitHubFetchCredentialType.GitHubApp,
+      observationKey: "attempt:1",
+      observedAt,
+    };
+    for (const override of [
+      { mechanism: GitHubFetchMechanism.Unknown },
+      { trigger: GitHubFetchTrigger.Unknown },
+      { credentialType: GitHubFetchCredentialType.Unknown },
+    ]) {
+      const result = repositoryDefaultUnavailableObservationValidator.safeParse(
+        {
+          reason: RepositoryDefaultReason.NotReported,
+          provenance: { ...base, ...override },
+        }
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = findIssue(result.error.issues, ["provenance"]);
+        expect(issue?.code).toBe("custom");
+        expect(issue?.message).toBe(
+          "producer provenance classifications must be known"
+        );
+      }
+    }
+  });
+
+  it("rejects an unknown mechanism, trigger, or credential type on a producer authority", () => {
+    for (const override of [
+      { mechanism: GitHubFetchMechanism.Unknown },
+      { trigger: GitHubFetchTrigger.Unknown },
+      { credentialType: GitHubFetchCredentialType.Unknown },
+    ]) {
+      const result = repositoryDefaultAuthorityValidator.safeParse({
+        ...authority(),
+        provenance: { ...authority().provenance, ...override },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const issue = findIssue(result.error.issues, ["provenance"]);
+        expect(issue?.code).toBe("custom");
+        expect(issue?.message).toBe(
+          "producer provenance classifications must be known"
+        );
+      }
+    }
+  });
+
+  it("rejects an unknown provenance source on a producer authority", () => {
+    const result = repositoryDefaultAuthorityValidator.safeParse({
+      ...authority(),
+      provenance: {
+        ...authority().provenance,
+        source: RepositoryDefaultSource.Unknown,
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = findIssue(result.error.issues, ["provenance", "source"]);
+      expect(issue?.code).toBe("custom");
+      expect(issue?.message).toBe("producer provenance source must be known");
+    }
+  });
+
+  it("returns undefined when a value fails even the compatibility fallback shape", () => {
+    expect(
+      normalizeRepositoryDefaultAuthority({
+        repository: {
+          provider: VcsProviderKind.GitHub,
+          providerRepositoryId: "1",
+          fullName: "not-canonical",
+        },
+        provenance: authority().provenance,
+      })
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when the compatibility fallback observationKey is whitespace-only", () => {
+    expect(
+      normalizeRepositoryDefaultAuthority({
+        repository: authority().repository,
+        provenance: {
+          source: "totally-unrecognized-source",
+          mechanism: GitHubFetchMechanism.Rest,
+          trigger: GitHubFetchTrigger.UserAction,
+          credentialType: GitHubFetchCredentialType.GitHubApp,
+          observationKey: "   ",
+          observedAt,
+        },
+      })
+    ).toBeUndefined();
+  });
+
+  it("degrades an unrecognized non-string provenance source without inventing an identity", () => {
+    const normalized = normalizeRepositoryDefaultAuthority({
+      repository: authority().repository,
+      provenance: {
+        source: 42,
+        mechanism: GitHubFetchMechanism.Rest,
+        trigger: GitHubFetchTrigger.UserAction,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "attempt:1",
+        observedAt,
+      },
+    });
+
+    expect(normalized?.provenance.source).toBe(RepositoryDefaultSource.Unknown);
+    expect(normalized?.provenance).not.toHaveProperty("sourceIdentity");
+    expect(normalized?.provenance).not.toHaveProperty("credentialOwnerId");
+    expect(normalized?.provenance).not.toHaveProperty("eventAt");
+  });
+
+  it("omits sourceIdentity when both the raw source and any prior identity are blank", () => {
+    const normalized = normalizeRepositoryDefaultAuthority({
+      repository: authority().repository,
+      provenance: {
+        source: "",
+        sourceIdentity: "   ",
+        mechanism: GitHubFetchMechanism.Rest,
+        trigger: GitHubFetchTrigger.UserAction,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "attempt:1",
+        observedAt,
+      },
+    });
+
+    expect(normalized?.provenance.source).toBe(RepositoryDefaultSource.Unknown);
+    expect(normalized?.provenance).not.toHaveProperty("sourceIdentity");
+  });
+
+  it("returns undefined when the persisted repository identity itself is invalid", () => {
+    expect(
+      normalizePersistedRepositoryDefaultAuthority(
+        {
+          provider: VcsProviderKind.GitHub,
+          providerRepositoryId: "1",
+          fullName: "not-canonical",
+        },
+        persistedColumns()
+      )
+    ).toBeUndefined();
+  });
+
+  it("falls back to an unknown reason when a persisted group is missing required provenance fields", () => {
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({ defaultBranchSource: null })
+    );
+
+    expect(normalized?.evidence).toEqual({
+      availability: RepositoryDefaultAvailability.Unavailable,
+      completeness: RepositoryDefaultCompleteness.Unavailable,
+      reason: RepositoryDefaultReason.Unknown,
+    });
+    expect(normalized).not.toHaveProperty("provenance");
+  });
+
+  it("falls back to an unknown reason when the persisted observedAt is not a valid ISO instant", () => {
+    // pins current behavior; looks odd because normalizePersistedInstant does
+    // not validate string format, only that a Date is finite — an already-
+    // string column value is passed through unchanged and only rejected later
+    // by the ISO-datetime schema check.
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({ defaultBranchObservedAt: "not-a-real-date" })
+    );
+
+    expect(normalized?.evidence).toEqual({
+      availability: RepositoryDefaultAvailability.Unavailable,
+      completeness: RepositoryDefaultCompleteness.Unavailable,
+      reason: RepositoryDefaultReason.Unknown,
+    });
+    expect(normalized).not.toHaveProperty("provenance");
+  });
+
+  it("derives unavailable evidence without a default branch when none was persisted, keeping the recorded reason", () => {
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({
+        defaultBranchName: null,
+        defaultBranchAvailability: RepositoryDefaultAvailability.Unavailable,
+        defaultBranchCompleteness: RepositoryDefaultCompleteness.Unavailable,
+        defaultBranchReason: RepositoryDefaultReason.RateLimited,
+      })
+    );
+
+    expect(normalized?.evidence).toEqual({
+      availability: RepositoryDefaultAvailability.Unavailable,
+      completeness: RepositoryDefaultCompleteness.Unavailable,
+      reason: RepositoryDefaultReason.RateLimited,
+    });
+  });
+
+  it("omits credentialOwnerId from persisted provenance when the column is absent", () => {
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({ defaultBranchCredentialOwnerId: null })
+    );
+
+    expect(normalized?.provenance).not.toHaveProperty("credentialOwnerId");
+  });
+
+  it("includes eventAt in persisted provenance when the column carries a provider event time", () => {
+    const normalized = normalizePersistedRepositoryDefaultAuthority(
+      authority().repository,
+      persistedColumns({
+        defaultBranchEventAt: new Date("2026-08-01T00:00:00.000Z"),
+      })
+    );
+
+    expect(normalized?.provenance?.eventAt).toBe("2026-08-01T00:00:00.000Z");
   });
 });
 

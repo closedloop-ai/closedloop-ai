@@ -10,15 +10,18 @@ import {
   seedMultiPrDuplicateLinksScenario,
   seedPrWithoutSidecarScenario,
 } from "@repo/database/scripts/seed/scenarios";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   canRunMigrationUpgradeScenario,
   canRunMigrationUpgradeScenarioExpectingFailure,
   type ExpectedMigrationFailure,
+  hasDisposableDatabase,
   type PgClient,
+  prepareMigrationUpgradeTemplate,
+  releaseMigrationUpgradeTemplates,
   runMigrationUpgradeScenario,
   runMigrationUpgradeScenarioExpectingFailure,
-} from "../utils/migration-upgrade-harness";
+} from "@/__tests__/support/integration/migration-upgrade-harness";
 
 const describeWithDisposableDatabase = canRunMigrationUpgradeScenario()
   ? describe
@@ -30,6 +33,20 @@ const migrationAName = "20260515002500_add_branch_artifact_foundation";
 const migrationBName = "20260515021500_branch_artifact_destructive_cutover";
 const localDatabaseHostErrorPattern = /local DATABASE_URL host/;
 const blockedDatabaseErrorPattern = /blocked database/;
+
+// ISS-8553: the base-migration replay is identical for every scenario in this
+// file, so it runs once here and each scenario clones it. Guarded by the same
+// capability check the scenario describes use — with no disposable database
+// reachable they skip, and there is nothing to prepare.
+beforeAll(async () => {
+  if (canRunMigrationUpgradeScenario()) {
+    await prepareMigrationUpgradeTemplate(migrationAName);
+  }
+});
+
+afterAll(async () => {
+  await releaseMigrationUpgradeTemplates();
+});
 
 type ScenarioSeeder<
   TResult extends IncidentScenarioResult = IncidentScenarioResult,
@@ -286,32 +303,49 @@ describe("migration-upgrade disposable database guard", () => {
     expect(canRunMigrationUpgradeScenario()).toBe(true);
     expect(canRunMigrationUpgradeScenarioExpectingFailure()).toBe(false);
   });
+
+  // Suites that write to a throwaway database gate on this predicate, so both
+  // directions are load-bearing and each fails differently. A wrong `false` on
+  // the tier's own URL is the dangerous one: the suite skips and CI stays
+  // green with nothing proven.
+  it("admits the integration tier's own database and refuses a remote host", () => {
+    process.env.DATABASE_URL =
+      "postgresql://testuser:testpass@localhost:5432/testdb";
+    expect(hasDisposableDatabase()).toBe(true);
+
+    process.env.DATABASE_URL =
+      "postgresql://user:password@db.example.test/symphony_test";
+    expect(hasDisposableDatabase()).toBe(false);
+  });
 });
 
 describeWithDisposableExpectedFailureDatabase(
   "branch-artifact incident scenarios at the destructive cutover guard boundary",
   () => {
-    it.each(
-      scenarioSpecs
-    )("raises the destructive cutover guard for $scenarioName", async (spec) => {
-      const context = makeScenarioContext(`guard-${spec.scenarioName}`);
-      let result: IncidentScenarioResult | null = null;
+    it.each(scenarioSpecs)(
+      "raises the destructive cutover guard for $scenarioName",
+      async (spec) => {
+        const context = makeScenarioContext(`guard-${spec.scenarioName}`);
+        let result: IncidentScenarioResult | null = null;
 
-      await runMigrationUpgradeScenarioExpectingFailure({
-        baseMigrationName: migrationAName,
-        targetMigrationNames: [migrationBName],
-        databaseNamePrefix: "incident_scenario_guard",
-        seed: async (client) => {
-          await seedScenarioBaseRows(client, context);
-          result = await spec.seed(client, context);
-        },
-        assertFailure: (failure) => {
-          expect(result?.scenarioName).toBe(spec.scenarioName);
-          expect(result?.expectedGuardMessage).toBe(spec.expectedGuardMessage);
-          expect(failureText(failure)).toContain(spec.expectedGuardMessage);
-        },
-      });
-    }, 120_000);
+        await runMigrationUpgradeScenarioExpectingFailure({
+          baseMigrationName: migrationAName,
+          targetMigrationNames: [migrationBName],
+          databaseNamePrefix: "incident_scenario_guard",
+          seed: async (client) => {
+            await seedScenarioBaseRows(client, context);
+            result = await spec.seed(client, context);
+          },
+          assertFailure: (failure) => {
+            expect(result?.scenarioName).toBe(spec.scenarioName);
+            expect(result?.expectedGuardMessage).toBe(
+              spec.expectedGuardMessage
+            );
+            expect(failureText(failure)).toContain(spec.expectedGuardMessage);
+          },
+        });
+      }
+    );
 
     it("fails closed when an expected-failure scenario unexpectedly succeeds", async () => {
       const context = makeScenarioContext("unexpected-success");
@@ -327,7 +361,7 @@ describeWithDisposableExpectedFailureDatabase(
           },
         })
       ).rejects.toThrow("Expected migration deploy to fail, but it succeeded");
-    }, 120_000);
+    });
   }
 );
 
@@ -370,7 +404,7 @@ describeWithDisposableDatabase(
       expect(results.map((result) => result.scenarioName).sort()).toEqual(
         scenarioSpecs.map((spec) => spec.scenarioName).sort()
       );
-    }, 120_000);
+    });
 
     it("returns deterministic references for the same namespace across isolated DBs", async () => {
       for (const spec of scenarioSpecs) {
@@ -388,6 +422,6 @@ describeWithDisposableDatabase(
           resultReferences(firstResult)
         );
       }
-    }, 300_000);
+    });
   }
 );

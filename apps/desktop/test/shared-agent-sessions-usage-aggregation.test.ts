@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import type { AgentSessionUsageAggregateFilters } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -274,13 +274,12 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       { harness: "nonexistent" },
       { status: "completed" },
       { status: "active" },
-      // ISS-5366: the two facet values this batch promoted to real filters.
-      // Active/Stale PARTITION the old Active population against the display
-      // staleness cutoff, so both paths must apply the SAME cutoff — `stale`
-      // returns the long-silent `active` row that `active` now excludes (a
-      // non-empty result on both sides, not a vacuous agreement), and `unknown`
-      // matches by EXCLUSION from the recognized vocabulary. The SQL aggregate
-      // learned neither when the hydrate fold did, which is the drift §4 caught.
+      // ISS-10629 retired `stale` and `unknown` as filter values on both paths.
+      // They stay in this sweep as FALLTHROUGH cases — each must now resolve to
+      // the stored-status equality on BOTH paths, so a surface that re-grows an
+      // arm on one side alone still reddens here. They no longer prove the
+      // shared staleness cutoff (nothing but the ACTIVE branch reads it); the
+      // `{ status: "active" }` row above is what covers that.
       { status: "stale" },
       { status: "unknown" },
       // The SQL aggregate path must canonicalize the requested status the same
@@ -355,10 +354,19 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       "claude harness carries fallback cost"
     );
 
+    // ISS-9939 / ISS-10629: EXPECTATION CHANGED. `waiting` was a filter value
+    // that gathered the awaiting-input row (`s-codex-waiting`, which stores
+    // `running`); the operator ruling retired it, so the request now falls to
+    // the stored-status equality and nothing stores `waiting`. Kept as the
+    // counterfactual — a re-added arm would put the row back and redden this.
     const waiting = await getSharedAgentSessionUsage(withAggregate, {
       status: "waiting",
     });
-    assert.equal(waiting.totalSessions, 1, "exactly one waiting session");
+    assert.equal(
+      waiting.totalSessions,
+      0,
+      "the retired `waiting` filter value gathers nothing"
+    );
 
     // ISS-5592: was `["completed", "failed"]`, where `failed` reached the error
     // row only because the boundary manufactured that spelling. Asking for
@@ -378,67 +386,18 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
   }
 });
 
-test("FEA-3149: the Waiting usage facet excludes ended-but-non-terminal awaiting-input sessions (cloud parity)", async () => {
-  const { db, dir } = await openTempDb();
-
-  try {
-    // Live waiting session: non-terminal status + awaiting-input timestamp, not
-    // ended → Waiting on both cloud and desktop.
-    await insertSession(db, {
-      id: "s-waiting-live",
-      harness: "codex",
-      billingMode: "api",
-      status: "running",
-      startedAt: "2026-03-13T10:00:00.000Z",
-      awaitingInputSince: "2026-03-13T12:00:00.000Z",
-      endedAt: null,
-    });
-    // Ended-but-non-terminal awaiting-input session: cloud's projection
-    // (`toAgentSessionState`) reports PendingApproval only while `!sessionEndedAt`
-    // and its facet guards `sessionEndedAt == null`, so this row must NOT count as
-    // Waiting. Before the fix the desktop predicate lacked the `ended_at IS NULL`
-    // guard and double-counted it.
-    await insertSession(db, {
-      id: "s-waiting-ended",
-      harness: "codex",
-      billingMode: "api",
-      status: "running",
-      startedAt: "2026-03-13T11:00:00.000Z",
-      awaitingInputSince: "2026-03-13T12:30:00.000Z",
-      endedAt: "2026-03-13T13:00:00.000Z",
-    });
-
-    const withAggregate = db.syncSource as AgentSessionSyncSource;
-    // Exercise both the SQL aggregate path and the hydrate/buildUsageSummary
-    // reference path so the guard is proven on the aggregate predicate AND the
-    // in-memory `matchesStatusFilter` fallback.
-    const reference: AgentSessionSyncSource = {
-      ...withAggregate,
-      aggregateUsage: undefined,
-    };
-
-    const aggregateWaiting = await getSharedAgentSessionUsage(withAggregate, {
-      status: "waiting",
-    });
-    const hydrateWaiting = await getSharedAgentSessionUsage(reference, {
-      status: "waiting",
-    });
-
-    assert.equal(
-      aggregateWaiting.totalSessions,
-      1,
-      "SQL aggregate Waiting facet excludes the ended awaiting-input session"
-    );
-    assert.equal(
-      hydrateWaiting.totalSessions,
-      1,
-      "hydrate Waiting facet excludes the ended awaiting-input session"
-    );
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
+// ISS-9939 / ISS-10629 DELETED "FEA-3149: the Waiting usage facet excludes
+// ended-but-non-terminal awaiting-input sessions (cloud parity)". Its whole
+// subject was the Waiting FACET's `ended_at IS NULL` guard, and the operator
+// ruling retired that facet on both surfaces — so the contract is gone, not
+// moved, and the test goes with it rather than being re-homed onto a different
+// component to keep a count.
+//
+// The FEA-3149 rule ITSELF still holds on the DISPLAY side: an ended,
+// awaiting-input row badges Active rather than Waiting. That half is covered by
+// `shared-agent-sessions-status-facet.test.ts` ("awaiting-ended-session" is
+// asserted with a served status of `active`), so nothing about the guard is now
+// unpinned.
 
 // FEA-3319: a compacted token_usage row keeps its pre-compaction totals in
 // `baseline_*`; the stored `cost_usd_estimated` is already priced on the
@@ -603,12 +562,12 @@ test("SQLite usage and analytics aggregates apply user ownership filters", async
       userId: "user-alex",
     });
     await insertSession(db, {
-      id: "peter-one",
+      id: "perrin-one",
       harness: "claude",
       billingMode: "api",
       status: "completed",
       startedAt: "2026-03-12T10:00:00.000Z",
-      userId: "user-peter",
+      userId: "user-perrin",
     });
     await insertSession(db, {
       id: "legacy-null-owner",
@@ -621,7 +580,7 @@ test("SQLite usage and analytics aggregates apply user ownership filters", async
     for (const id of [
       "alex-one",
       "alex-two",
-      "peter-one",
+      "perrin-one",
       "legacy-null-owner",
     ]) {
       await insertToken(
@@ -666,7 +625,7 @@ test("SQLite usage and analytics aggregates apply user ownership filters", async
 
     for (const filter of [
       { userId: "user-alex" },
-      { userIds: ["user-alex", "user-peter"] },
+      { userIds: ["user-alex", "user-perrin"] },
       { userId: "user-missing" },
       { userId: "user-missing", userIds: ["user-alex"] },
     ] satisfies SharedAgentSessionsQuery[]) {
@@ -688,7 +647,7 @@ test("SQLite usage and analytics aggregates apply user ownership filters", async
     assert.equal(alexUsage.totalSessions, 2);
 
     const multiUsage = await getSharedAgentSessionUsage(withAggregate, {
-      userIds: ["user-alex", "user-peter"],
+      userIds: ["user-alex", "user-perrin"],
     });
     assert.equal(multiUsage.totalSessions, 3);
 

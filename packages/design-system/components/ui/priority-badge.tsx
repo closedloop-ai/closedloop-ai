@@ -2,6 +2,10 @@
 
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
+import {
+  PRIORITY_LABELS,
+  type PriorityValue,
+} from "@closedloop-ai/design-system/lib/priority-order";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 
 const priorityBadgeVariants = cva(
@@ -11,8 +15,8 @@ const priorityBadgeVariants = cva(
       priority: {
         LOW: "border-info/30 bg-info/10 text-info-foreground",
         MEDIUM: "border-warning/30 bg-warning/10 text-warning-foreground",
-        HIGH: "border-destructive/30 bg-destructive/10 text-destructive-foreground",
-        URGENT: "border-destructive/50 bg-destructive/20 text-destructive-foreground font-semibold",
+        HIGH: "border-destructive/30 bg-destructive/10 text-destructive",
+        URGENT: "border-destructive/50 bg-destructive/20 text-destructive font-semibold",
       },
     },
     defaultVariants: {
@@ -21,14 +25,7 @@ const priorityBadgeVariants = cva(
   }
 );
 
-type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
-
-const priorityLabels: Record<Priority, string> = {
-  LOW: "Low",
-  MEDIUM: "Medium",
-  HIGH: "High",
-  URGENT: "Urgent",
-};
+type Priority = PriorityValue;
 
 interface PriorityBadgeProps
   extends Omit<React.HTMLAttributes<HTMLSpanElement>, "children">,
@@ -47,10 +44,10 @@ function PriorityBadge({ priority, className, ...props }: PriorityBadgeProps) {
       className={cn(priorityBadgeVariants({ priority }), className)}
       {...props}
     >
-      {priorityLabels[priority]}
+      {PRIORITY_LABELS[priority]}
     </span>
   );
 }
 
-export { PriorityBadge, priorityBadgeVariants, priorityLabels };
+export { PriorityBadge, priorityBadgeVariants };
 export type { PriorityBadgeProps, Priority };

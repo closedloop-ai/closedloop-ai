@@ -7,12 +7,13 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SettingsPanel } from "../SettingsPanel";
+import { DesktopAppPanel } from "../../../settings-v2/panels/desktop-app-panel";
+import { desktopAppPanelMountReads } from "./desktop-app-panel-mount-reads";
 
 // ISS-4577: the GLOBAL sandbox base directory — the value onboarding writes via
 // settingsStore.update({ sandboxBaseDirectory }) — is now viewable + editable in
-// the Settings Security tab (GlobalSandboxCard). These tests mount the real
-// SettingsPanel, navigate to the Security tab, and assert:
+// the Settings Security block (GlobalSandboxCard). These tests mount the real
+// DesktopAppPanel and assert:
 //   - the current global sandbox path renders in the editable field,
 //   - saving an edited value threads sandboxBaseDirectory through the EXISTING
 //     updateSettings IPC (the same save path onboarding uses) and re-reads
@@ -51,19 +52,10 @@ function installDesktopApi(overrides: DesktopApiOverrides = {}): void {
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
     value: {
+      ...desktopAppPanelMountReads(),
       getSettings: vi.fn(async () => ({
         sandboxBaseDirectory: GLOBAL_SANDBOX,
         savedConfigs: [],
-      })),
-      getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      getCloudCommandsPaused: vi.fn(async () => false),
-      getCloudConnectionEnabled: vi.fn(async () => true),
-      getAgentMonitorHooksEnabled: vi.fn(async () => false),
-      getDangerousAutoApprove: vi.fn(async () => false),
-      setDangerousAutoApprove: vi.fn(async () => undefined),
-      getApiKeyStatus: vi.fn(async () => ({
-        hasApiKey: false,
-        source: "none",
       })),
       inspectSandboxPath: vi.fn(async (targetPath: string) =>
         defaultInspect(targetPath)
@@ -75,18 +67,13 @@ function installDesktopApi(overrides: DesktopApiOverrides = {}): void {
   });
 }
 
-async function openSecurityTab(): Promise<void> {
-  act(() => {
-    window.dispatchEvent(
-      new CustomEvent("desktop:navigate-settings-tab", { detail: "security" })
-    );
-  });
+async function awaitSecuritySection(): Promise<void> {
   await screen.findByText("Security Settings");
 }
 
 function getSandboxInput(): HTMLInputElement {
   // The section heading names the field; the input carries an sr-only label of
-  // the same name so the visible name is said once (wongk review, ISS-4577).
+  // the same name so the visible name is said once (whitlockk review, ISS-4577).
   // Target the textbox by role so the same-text section heading is not matched.
   return screen.getByRole("textbox", {
     name: "Sandbox Directory",
@@ -102,11 +89,11 @@ afterEach(() => {
   }
 });
 
-describe("SettingsPanel global sandbox card (ISS-4577)", () => {
+describe("Settings global sandbox card (ISS-4577)", () => {
   it("renders the current global sandbox path from settings", async () => {
     installDesktopApi();
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
@@ -119,8 +106,8 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
       savedConfigs: [],
     }));
     installDesktopApi({ updateSettings });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     // Wait for the field to hydrate from the async-loaded settings first, so the
     // save assertion cannot race the seed effect.
@@ -155,12 +142,15 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
     // could fail after the filesystem boundary already changed. We prove this by
     // making getSettings throw on any call after the initial hydration: a save
     // must still succeed with no error surfaced.
-    let hydrated = false;
+    // Armed only once the field is on screen holding the hydrated value: the
+    // panel and the Data Collection card each read the record on mount, so a
+    // latch that rejected every call after the FIRST would fail one of those
+    // instead of the post-write readback this case is about.
+    let rejectReads = false;
     const getSettings = vi.fn(() => {
-      if (hydrated) {
+      if (rejectReads) {
         return Promise.reject(new Error("transient readback failure"));
       }
-      hydrated = true;
       return Promise.resolve({
         sandboxBaseDirectory: GLOBAL_SANDBOX,
         savedConfigs: [],
@@ -171,12 +161,13 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
       savedConfigs: [],
     }));
     installDesktopApi({ getSettings, updateSettings });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
     });
+    rejectReads = true;
     const getSettingsCallsAfterHydration = getSettings.mock.calls.length;
     fireEvent.change(getSandboxInput(), {
       target: { value: EDITED_SANDBOX },
@@ -201,7 +192,7 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
   });
 
   it("blocks save while the inspection for the current value has not settled", async () => {
-    // wongk + codex: the inspection is debounced + an async IPC round trip, so
+    // whitlockk + codex: the inspection is debounced + an async IPC round trip, so
     // immediately after an edit the previous value's inspection (or null) is
     // still in effect. Saving in that window would persist an unvalidated path.
     const updateSettings = vi.fn(async () => undefined);
@@ -218,8 +209,8 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
         exists: targetPath !== MISSING_SANDBOX,
       })),
     });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
@@ -260,8 +251,8 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
         exists: false,
       })),
     });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
@@ -303,8 +294,8 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
         })
     );
     installDesktopApi({ updateSettings });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
@@ -342,14 +333,14 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
     expect(getSandboxInput().value).toBe(EDITED_SANDBOX);
   });
 
-  it("shows a Saved confirmation after a successful save (wongk review)", async () => {
+  it("shows a Saved confirmation after a successful save (whitlockk review)", async () => {
     const updateSettings = vi.fn(async () => ({
       sandboxBaseDirectory: EDITED_SANDBOX,
       savedConfigs: [],
     }));
     installDesktopApi({ updateSettings });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await waitFor(() => {
       expect(getSandboxInput().value).toBe(GLOBAL_SANDBOX);
@@ -381,7 +372,7 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
   });
 
   it("shows Not set (never a placeholder path) when the stored value is empty", async () => {
-    // wongk (blocking): the field must not render a plausible-looking placeholder
+    // whitlockk (blocking): the field must not render a plausible-looking placeholder
     // path as if it were the confined folder. For an unset sandbox the field is
     // empty and the helper line says "Not set".
     installDesktopApi({
@@ -390,8 +381,8 @@ describe("SettingsPanel global sandbox card (ISS-4577)", () => {
         savedConfigs: [],
       })),
     });
-    render(<SettingsPanel />);
-    await openSecurityTab();
+    render(<DesktopAppPanel />);
+    await awaitSecuritySection();
 
     await screen.findByText(NOT_SET_RE);
     await waitFor(() => {

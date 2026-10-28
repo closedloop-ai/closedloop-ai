@@ -1,5 +1,5 @@
 /**
- * ISS-4463 (wongk, #4282): render the REAL `DonutChart` for the two visual modes
+ * ISS-4463 (whitlockk, #4282): render the REAL `DonutChart` for the two visual modes
  * this PR added.
  *
  * The sibling `tile-content.spend-outcome` test mocks `DonutChart` away to prove

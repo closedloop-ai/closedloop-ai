@@ -1,6 +1,5 @@
 import "server-only";
 
-import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
 import {
   SelectedPullRequestContentNotApplicableReason,
   type SelectedPullRequestContentReference,
@@ -19,20 +18,14 @@ import {
 import { z } from "zod";
 import type { SelectedPullRequestOctokit } from "./selected-pull-request-client";
 import { withSelectedPullRequestDeadline } from "./selected-pull-request-deadline";
+import { normalizeSelectedPullRequestInput } from "./selected-pull-request-identity";
 import { readSelectedPullRequestMergeBase } from "./selected-pull-request-merge-base";
 import { classifySelectedPullRequestProviderFailure } from "./selected-pull-request-provider-failure";
 
 const GIT_SHA_REGEX = /^[0-9a-f]{40}$/i;
-const REPOSITORY_FULL_NAME_REGEX = /^[^/]+\/[^/]+$/;
 const FILES_PER_PAGE = 100;
 const MAX_PULL_REQUEST_FILES = 3000;
 const MAX_PULL_REQUEST_FILE_PAGES = MAX_PULL_REQUEST_FILES / FILES_PER_PAGE;
-const selectedPullRequestInputSchema = z.object({
-  owner: z.string().trim().min(1),
-  repo: z.string().trim().min(1),
-  pullNumber: z.number().int().positive(),
-});
-
 const pullRequestMetadataSchema = z.object({
   id: z.number().int().nonnegative(),
   number: z.number().int().positive(),
@@ -204,13 +197,6 @@ async function acquireSelectedPullRequestEvidence(
   };
 }
 
-type NormalizedSelectedPullRequestInput = {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-  repositoryFullName: string;
-};
-
 type PullRequestMetadata = {
   githubId: string;
   number: number;
@@ -239,37 +225,6 @@ type InternalReadResult<T> =
       SelectedPullRequestEvidenceResult,
       { status: typeof SelectedPullRequestEvidenceAvailability.Available }
     >;
-
-function normalizeSelectedPullRequestInput(
-  owner: string,
-  repo: string,
-  pullNumber: number
-): NormalizedSelectedPullRequestInput | null {
-  const parsed = selectedPullRequestInputSchema.safeParse({
-    owner,
-    repo,
-    pullNumber,
-  });
-  if (!parsed.success) {
-    return null;
-  }
-  const repositoryFullName = normalizeRepoFullName(
-    `${parsed.data.owner}/${parsed.data.repo}`
-  );
-  if (!REPOSITORY_FULL_NAME_REGEX.test(repositoryFullName)) {
-    return null;
-  }
-  const [normalizedOwner, normalizedRepo] = repositoryFullName.split("/");
-  if (!(normalizedOwner && normalizedRepo)) {
-    return null;
-  }
-  return {
-    owner: normalizedOwner,
-    repo: normalizedRepo,
-    pullNumber: parsed.data.pullNumber,
-    repositoryFullName,
-  };
-}
 
 async function readPullRequestMetadata(
   octokit: SelectedPullRequestOctokit,

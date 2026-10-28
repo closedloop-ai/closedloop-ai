@@ -1,33 +1,28 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import {
   BACKFILL_SESSION_BATCH_SIZE,
   DEAD_LETTER_RETRY_BASE_MS,
   DEAD_LETTER_RETRY_MAX_MS,
   deadLetterRetryDelayMs,
-  INGESTION_FAILED_BACKOFF_MS,
-  MAX_CONSECUTIVE_INGESTION_FAILED,
-  MAX_CONSECUTIVE_RATE_LIMITED,
-  MAX_CONSECUTIVE_TIMEOUTS,
   MAX_CONSECUTIVE_TRANSPORT_ERRORS,
   MAX_CONSECUTIVE_VALIDATION_FAILED,
   MAX_OBSERVED_TOP_IDS,
   RATE_LIMIT_BACKOFF_MS,
+  SESSION_LANE_STALL_CEILING_MS,
+  SESSION_LANE_STALL_RETRY_MS,
   SESSION_PAYLOAD_BYTE_CAP,
-  TARGET_NOT_OWNED_BACKOFF_MS,
-  UNAUTHENTICATED_BACKOFF_MS,
   VALIDATION_FAILED_BACKOFF_MS,
 } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type {
   AgentSessionSyncBatch,
   AgentSessionSyncTransportPayload,
 } from "../src/main/agent-sync/agent-session-sync-contract.js";
-import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import { maxSessionPayloadBytesForBatch } from "../src/main/agent-sync/agent-session-sync-envelope-reserve.js";
 import {
   type AgentSessionPayloadPreparer,
   estimateAgentSessionSyncBatchBytes,
-  maxSessionPayloadBytesForBatch,
+  estimateSessionPayloadBytes,
   prepareAgentSessionPayload,
 } from "../src/main/agent-sync/agent-session-sync-payload.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
@@ -52,7 +47,9 @@ import {
   makeServiceWithIdentity,
   makeSessionWithLargeTiling,
   makeUnchunkableOversizedSession,
+  PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS,
   ResettingSyncSource,
+  ROUNDS_PAST_EVERY_FAILURE_BUDGET,
   runWithMockedNow,
   settleSelfContinuedDrain,
   UnhydratableFlaggingSyncSource,
@@ -224,7 +221,7 @@ test("ISS-4578 (P1 #11): a transport throw while draining the pending chunk tail
   );
 });
 
-test("ISS-4578 (shafty023 P1): an activity-chunking capability downgrade between prep and send defers the batch (no partial tiling shipped)", async () => {
+test("ISS-4578 (davetho P1): an activity-chunking capability downgrade between prep and send defers the batch (no partial tiling shipped)", async () => {
   // The activity-chunking capability is captured at the top of the tick, then the
   // service awaits hydration + payload prep. If the socket reconnected to an OLDER
   // server (one that REPLACE-ALLs the tiling per chunk) during those awaits,
@@ -490,7 +487,7 @@ test("FEA-1995: transient (sub-threshold) ack failure emits a failure outcome an
   await flushAgentSessionSync();
   service.stop();
 
-  // One timeout is below MAX_CONSECUTIVE_TIMEOUTS → retryable, not dead-lettered.
+  // One ack timeout defers (environmental since ISS-8605), never dead-letters.
   assert.equal(sync.length, 1);
   assert.equal(sync[0].outcome, DesktopSyncBatchOutcome.Failure);
   assert.ok(
@@ -507,7 +504,16 @@ test("FEA-1995: transient (sub-threshold) ack failure emits a failure outcome an
   assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
 });
 
-test("FEA-1995: repeated ack timeouts escalate to a dead_letter outcome", async () => {
+/**
+ * ISS-8605 (PRD-699 F2) — BEHAVIOUR CHANGE, replacing "repeated ack timeouts
+ * escalate to a dead_letter outcome". That expectation encoded the defect: the
+ * sync route was verified never to emit a 408, so every one this lane can see
+ * comes from an intermediary that never read the payload, and charging it to a
+ * row abandoned a healthy session for a proxy's decision. The expectation
+ * changed because the classification deliberately changed in this diff; the
+ * FEA-3426 reason passthrough the old test also covered survives unweakened.
+ */
+test("ISS-8605: sustained ack timeouts never escalate to a dead_letter outcome", async () => {
   const source = new FakeSyncSource([
     makeSyncedSession("timeout-session", "2026-06-08T12:00:00.000Z"),
   ]);
@@ -521,32 +527,36 @@ test("FEA-1995: repeated ack timeouts escalate to a dead_letter outcome", async 
     { sync }
   );
 
-  service.start();
-  await flushAgentSessionSync();
-  for (let i = 1; i < MAX_CONSECUTIVE_TIMEOUTS; i += 1) {
-    service.refresh();
+  /* Double the retired MAX_CONSECUTIVE_TIMEOUTS of 3, written as a literal so
+     deleting the constant cannot quietly shrink what this drives. */
+  const rounds = 6;
+  await runWithMockedNow(async ({ advance }) => {
+    service.start();
     await flushAgentSessionSync();
-  }
+    for (let i = 1; i < rounds; i += 1) {
+      advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
+      service.refresh();
+      await flushAgentSessionSync();
+    }
+  });
   service.stop();
 
-  assert.equal(sync.length, MAX_CONSECUTIVE_TIMEOUTS);
-  // Sub-threshold attempts report failure; the threshold attempt dead-letters.
+  assert.equal(sync.length, rounds);
   assert.deepEqual(
     sync.map((event) => event.outcome),
-    [
-      ...Array.from(
-        { length: MAX_CONSECUTIVE_TIMEOUTS - 1 },
-        () => DesktopSyncBatchOutcome.Failure
-      ),
-      DesktopSyncBatchOutcome.DeadLetter,
-    ]
+    Array.from({ length: rounds }, () => DesktopSyncBatchOutcome.Failure),
+    "every attempt past the retired 3-strike cap is still a plain failure"
   );
-  // FEA-3426: every attempt — sub-threshold failures and the dead_letter — carries
-  // the ack_timeout reason (the dead_letter path also reads `ack.reason`).
+  assert.equal(
+    service.getSyncProgress().deadLetteredSessions,
+    0,
+    "and the row is still on the queue, not abandoned"
+  );
+  // FEA-3426: the ack-reason passthrough is unchanged by the reclassification.
   assert.deepEqual(
     sync.map((event) => event.reason),
     Array.from(
-      { length: MAX_CONSECUTIVE_TIMEOUTS },
+      { length: rounds },
       () => DesktopAgentSessionsAckReason.AckTimeout
     )
   );
@@ -754,8 +764,8 @@ test("FEA-4014: one session's prep failure dead-letters only the offender, not i
 test("FEA-3364: a persistently throwing transport send is bounded and dead-lettered instead of retrying forever", async () => {
   // Regression: before FEA-3364 a THROWN sendBatch (dropped socket /
   // serialization failure) incremented no counter — the batch stayed queued at
-  // retry-count 0 and re-sent every 5s forever. A transient socket throw now
-  // earns a bounded per-session retry budget before being dead-lettered.
+  // retry-count 0 and re-sent every 5s forever. An UNTYPED throw now earns a
+  // bounded per-session budget (ISS-10602: a typed network throw defers the lane).
   const source = new FakeSyncSource([
     makeSyncedSession("transport-session", "2026-06-08T12:00:00.000Z"),
   ]);
@@ -765,7 +775,7 @@ test("FEA-3364: a persistently throwing transport send is bounded and dead-lette
     source,
     async () => {
       sendAttempts += 1;
-      // A transient socket error (connection torn down mid-emit), NOT a
+      // Untyped (the client types a real network failure, ISS-10602) and NOT a
       // serialization bug — so it earns the bounded retry budget.
       throw new Error("socket hang up");
     },
@@ -965,12 +975,16 @@ test("FEA-3366: a transient validation_failed recovers within the retry budget",
   );
 });
 
-test("FEA-1995: repeated rate_limited acks escalate to a dead_letter outcome", async () => {
-  // The rate-limit trip is the third (and subtlest) dead_letter trigger: with
-  // the relay healthy, the per-session counter trips at
-  // MAX_CONSECUTIVE_RATE_LIMITED → the final event is dead_letter, earlier
-  // events are failure. (The transport-down flap that deliberately never
-  // dead-letters is a pre-existing FEA-1461 invariant covered separately.)
+/**
+ * ISS-8605 (PRD-699 F1) — BEHAVIOUR CHANGE, replacing "repeated rate_limited
+ * acks escalate to a dead_letter outcome". That was the defect the ticket names:
+ * the route's limiter keys on `direct|relay:<org>:<user>:<computeTarget>`, so a
+ * 429 is never evidence about a session — every row on that target draws the
+ * identical answer, and giving up on one is giving up on good data because of
+ * someone else's traffic. The expectation changed because the classification
+ * deliberately changed in this diff.
+ */
+test("ISS-8605: sustained rate_limited acks never escalate to a dead_letter outcome", async () => {
   const source = new FakeSyncSource([
     makeSyncedSession("rate-limited-session", "2026-06-08T12:00:00.000Z"),
   ]);
@@ -984,27 +998,27 @@ test("FEA-1995: repeated rate_limited acks escalate to a dead_letter outcome", a
     { sync }
   );
 
+  const rounds = 10; // double the retired MAX_CONSECUTIVE_RATE_LIMITED of 5
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
-    for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
-      advance(RATE_LIMIT_BACKOFF_MS + 1);
+    for (let i = 1; i < rounds; i += 1) {
+      advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
       service.refresh();
       await flushAgentSessionSync();
     }
   });
   service.stop();
 
-  assert.equal(sync.length, MAX_CONSECUTIVE_RATE_LIMITED);
+  assert.equal(sync.length, rounds);
   assert.deepEqual(
     sync.map((event) => event.outcome),
-    [
-      ...Array.from(
-        { length: MAX_CONSECUTIVE_RATE_LIMITED - 1 },
-        () => DesktopSyncBatchOutcome.Failure
-      ),
-      DesktopSyncBatchOutcome.DeadLetter,
-    ]
+    Array.from({ length: rounds }, () => DesktopSyncBatchOutcome.Failure)
+  );
+  assert.equal(
+    service.getSyncProgress().deadLetteredSessions,
+    0,
+    "no number of per-target throttles may abandon a row"
   );
   assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
 });
@@ -1015,10 +1029,13 @@ test("FEA-3792: transport_unavailable acks defer forever and NEVER dead-letter (
   // which via a racy post-hoc `isHttpReady()` re-read. The two causes are now
   // distinct ack reasons, so the classification is structural, not inferred:
   //
-  //   - `RateLimited` (server throttle) dead-letters at MAX_CONSECUTIVE_RATE_LIMITED
-  //     (asserted by the FEA-1995 test above).
   //   - `TransportUnavailable` (relay flap) must ALWAYS defer and never
   //     dead-letter — a run of disconnects must not burn a good session's budget.
+  //
+  /* ISS-8605 narrowed what "distinct from rate_limited" now means. Both classes
+     charge no row budget; they differ in their BOUND — a 429 opens a durable 24h
+     stall clock and eventually gives up, while this class keeps deferring with no
+     clock at all, exactly as `unauthenticated` does. */
   //
   // Critically, this holds even though the service's `isHttpReady()` reports
   // healthy (the default in this harness): the reason ALONE drives the outcome
@@ -1036,12 +1053,12 @@ test("FEA-3792: transport_unavailable acks defer forever and NEVER dead-letter (
     { sync }
   );
 
-  const attempts = MAX_CONSECUTIVE_RATE_LIMITED + 3;
+  const attempts = 8;
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
     for (let i = 1; i < attempts; i += 1) {
-      advance(RATE_LIMIT_BACKOFF_MS + 1);
+      advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
       service.refresh();
       await flushAgentSessionSync();
     }
@@ -1090,17 +1107,16 @@ test("FEA-3363: a dead-lettered session is re-enqueued after its retry-after win
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
-    // Drive MAX_CONSECUTIVE_RATE_LIMITED consecutive rate-limit rejections so
-    // the session dead-letters.
-    for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
-      advance(RATE_LIMIT_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-    }
+    /* ISS-8605: `rate_limited` is environmental, so what dead-letters this row
+       is the 24h wall clock, not a 5-strike counter. The recovery mechanics
+       under test are unchanged — only how the row GETS dead-lettered. */
+    advance(SESSION_LANE_STALL_CEILING_MS);
+    service.refresh();
+    await flushAgentSessionSync();
     assert.equal(
       service.getSyncProgress().deadLetteredSessions,
       1,
-      "the session is dead-lettered after the threshold is reached"
+      "the session is dead-lettered once its stall clock passes the ceiling"
     );
     assert.equal(
       acceptedBatches.length,
@@ -1222,19 +1238,18 @@ test("FEA-3795: a persistently-failing dead-letter escalates its retry window ac
     return { accepted: true };
   });
 
-  // Drive MAX_CONSECUTIVE_RATE_LIMITED consecutive rate-limit rejections so the
-  // session (re-)dead-letters. The caller's most recent send already counts as
-  // failure #1, so this loop supplies the remaining budget.
+  /* ISS-8605: `rate_limited` is environmental, so the row (re-)dead-letters when
+     its durable stall clock crosses the 24h ceiling rather than at a 5-strike
+     counter. `clearFailureStateForId` drops that clock on every dead-letter, so
+     each recovery genuinely opens a fresh run and this helper stays re-drivable. */
   const driveToDeadLetter = async (advance: (ms: number) => void) => {
-    for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
-      advance(RATE_LIMIT_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-    }
+    advance(SESSION_LANE_STALL_CEILING_MS);
+    service.refresh();
+    await flushAgentSessionSync();
     assert.equal(
       service.getSyncProgress().deadLetteredSessions,
       1,
-      "the session is dead-lettered after exhausting the rate-limit budget"
+      "the session is dead-lettered once its environmental stall clock expires"
     );
   };
 
@@ -1385,25 +1400,27 @@ test("FEA-1995: repeated ingestion_failed acks escalate to a dead_letter outcome
     { sync }
   );
 
+  // ISS-7730: repetition alone no longer escalates — `ingestion_failed` is
+  // lane-wide and burns no per-row budget. Two rejections inside the stall
+  // ceiling stay plain failures; only the one past it escalates.
   await runWithMockedNow(async ({ advance }) => {
     service.start();
     await flushAgentSessionSync();
-    for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
-      advance(INGESTION_FAILED_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-    }
+    advance(SESSION_LANE_STALL_RETRY_MS + 1);
+    service.refresh();
+    await flushAgentSessionSync();
+    advance(SESSION_LANE_STALL_CEILING_MS + 1);
+    service.refresh();
+    await flushAgentSessionSync();
   });
   service.stop();
 
-  assert.equal(sync.length, MAX_CONSECUTIVE_INGESTION_FAILED);
+  assert.equal(sync.length, 3);
   assert.deepEqual(
     sync.map((event) => event.outcome),
     [
-      ...Array.from(
-        { length: MAX_CONSECUTIVE_INGESTION_FAILED - 1 },
-        () => DesktopSyncBatchOutcome.Failure
-      ),
+      DesktopSyncBatchOutcome.Failure,
+      DesktopSyncBatchOutcome.Failure,
       DesktopSyncBatchOutcome.DeadLetter,
     ]
   );
@@ -1540,18 +1557,14 @@ test("agent-session sync compacts bulky metadata before chunking", () => {
     `expected compacted metadata to avoid hundreds of chunks, got ${prepared.chunkCount}`
   );
   const chunks = [prepared.firstChunk, ...prepared.remainingChunks];
-  assert.ok(
-    chunks.every(
-      (chunk) =>
-        estimateAgentSessionSyncBatchBytes({
-          schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-          batchId: "00000000-0000-4000-8000-000000000000",
-          syncMode: AgentSessionSyncMode.Backfill,
-          sessionCount: 1,
-          sessions: [chunk],
-        }) <= SESSION_PAYLOAD_BYTE_CAP
-    )
-  );
+  // ISS-8327: measure each chunk against the DERIVED content budget. This was a
+  // hand-written envelope literal carrying none of `encoding`, `dataSyncLevel`
+  // or `wantsAcceptedSessionIds`, so it sat 74 bytes narrower than what the lane
+  // posts and granted the chunker headroom the route does not. That budget plus
+  // the envelope reserve is pinned at EXACTLY the route cap, in both directions,
+  // by agent-session-sync-envelope-reserve.test.ts.
+  const contentCap = maxSessionPayloadBytesForBatch(SESSION_PAYLOAD_BYTE_CAP);
+  assert.ok(chunks.every((c) => estimateSessionPayloadBytes(c) <= contentCap));
 });
 
 test("agent-session sync dead-letters a single event that cannot fit in a valid chunk", () => {
@@ -1615,64 +1628,74 @@ test("FEA-3366: validation_failed retries with backoff but never permanently sta
   service.stop();
 });
 
-test("agent-session sync dead-letters repeated ack timeouts", async () => {
-  const source = new FakeSyncSource([
-    makeSyncedSession("timeout-session", "2026-06-08T12:00:00.000Z"),
-  ]);
-  let attempts = 0;
-  const service = makeService(source, async () => {
-    attempts += 1;
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.AckTimeout,
-    };
-  });
+/**
+ * ISS-8605 — BEHAVIOUR CHANGE, replacing "agent-session sync dead-letters
+ * repeated ack timeouts" / "... repeated server rate limits". Those two pinned
+ * the per-row caps this ticket deleted. The obligation they were really
+ * protecting — invariant 5, "every terminal path stays reachable, nothing
+ * retries forever" — is what these replacements assert, now against the wall
+ * clock that replaced the counters. Written as one parameterized case so the two
+ * classes cannot drift apart.
+ */
+for (const environmentalReason of [
+  DesktopAgentSessionsAckReason.AckTimeout,
+  DesktopAgentSessionsAckReason.RateLimited,
+] as const) {
+  test(`ISS-8605: sustained ${environmentalReason} defers past every retired cap, then terminates on the 24h wall clock`, async () => {
+    const source = new FakeSyncSource([
+      makeSyncedSession(
+        `${environmentalReason}-session`,
+        "2026-06-08T12:00:00.000Z"
+      ),
+    ]);
+    let attempts = 0;
+    const service = makeService(source, async () => {
+      attempts += 1;
+      return { accepted: false, reason: environmentalReason };
+    });
 
-  service.start();
-  await flushAgentSessionSync();
-  for (let i = 1; i < MAX_CONSECUTIVE_TIMEOUTS; i += 1) {
-    service.refresh();
-    await flushAgentSessionSync();
-  }
-  service.refresh();
-  await flushAgentSessionSync();
-  service.stop();
+    try {
+      await runWithMockedNow(async ({ advance }) => {
+        service.start();
+        await flushAgentSessionSync();
 
-  assert.equal(attempts, MAX_CONSECUTIVE_TIMEOUTS);
-});
+        const roundsInsideCeiling = 10; // ~10h staged, inside the 24h ceiling
+        for (let i = 1; i < roundsInsideCeiling; i += 1) {
+          advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
+          service.refresh();
+          await flushAgentSessionSync();
+        }
+        assert.equal(
+          attempts,
+          roundsInsideCeiling,
+          "each elapsed window produced exactly one more attempt — the row is deferring, not hot-retrying"
+        );
+        assert.equal(
+          service.getSyncProgress().deadLetteredSessions,
+          0,
+          "and nothing is abandoned inside the ceiling (invariant 4)"
+        );
 
-test("agent-session sync dead-letters repeated server rate limits", async () => {
-  const source = new FakeSyncSource([
-    makeSyncedSession("rate-limited-session", "2026-06-08T12:00:00.000Z"),
-  ]);
-  let attempts = 0;
-  const service = makeService(source, async () => {
-    attempts += 1;
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.RateLimited,
-    };
-  });
-
-  try {
-    await runWithMockedNow(async ({ advance }) => {
-      service.start();
-      await flushAgentSessionSync();
-      for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
-        advance(RATE_LIMIT_BACKOFF_MS + 1);
+        // Cross the ceiling: the durable stall clock is now expired.
+        advance(SESSION_LANE_STALL_CEILING_MS);
         service.refresh();
         await flushAgentSessionSync();
-      }
-      advance(RATE_LIMIT_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-    });
-  } finally {
-    service.stop();
-  }
-
-  assert.equal(attempts, MAX_CONSECUTIVE_RATE_LIMITED);
-});
+        assert.equal(
+          attempts,
+          roundsInsideCeiling + 1,
+          "the row was retried once more after the ceiling elapsed"
+        );
+        assert.equal(
+          service.getSyncProgress().deadLetteredSessions,
+          1,
+          "and THAT attempt reaches the terminal path — the bound moved from a counter to a clock, it did not disappear (invariant 5)"
+        );
+      });
+    } finally {
+      service.stop();
+    }
+  });
+}
 
 test("agent-session sync dead-letters repeated ingestion failures", async () => {
   const source = new FakeSyncSource([
@@ -1691,12 +1714,14 @@ test("agent-session sync dead-letters repeated ingestion failures", async () => 
     await runWithMockedNow(async ({ advance }) => {
       service.start();
       await flushAgentSessionSync();
-      for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
-        advance(INGESTION_FAILED_BACKOFF_MS + 1);
-        service.refresh();
-        await flushAgentSessionSync();
-      }
-      advance(INGESTION_FAILED_BACKOFF_MS + 1);
+      // ISS-7730: past the stall ceiling the row dead-letters. The trailing
+      // advance is deliberately SHORTER than DEAD_LETTER_RETRY_BASE_MS: it
+      // proves the row left the stall ladder, without crossing the progressive
+      // dead-letter window that FEA-3363 recovery legitimately re-drives it on.
+      advance(SESSION_LANE_STALL_CEILING_MS + 1);
+      service.refresh();
+      await flushAgentSessionSync();
+      advance(DEAD_LETTER_RETRY_BASE_MS / 2);
       service.refresh();
       await flushAgentSessionSync();
     });
@@ -1704,103 +1729,7 @@ test("agent-session sync dead-letters repeated ingestion failures", async () => 
     service.stop();
   }
 
-  assert.equal(attempts, MAX_CONSECUTIVE_INGESTION_FAILED);
-});
-
-test("FEA-3659: a transient ingestion_failed retries with backoff (never dead-letters at attempt 0) and only dead-letters once the budget is exhausted", async () => {
-  // Regression guard for the 179-row attempt_count=0 dead-letter burst: a
-  // transient ingestion_failed must go through the durable retry/backoff path —
-  // incrementing the persisted outbox attempt_count + stamping next_attempt_at —
-  // and dead-letter ONLY after the retry budget is exhausted, never on the first
-  // failure. Mirrors how rate_limited / ack_timeout already defer with an
-  // in-memory backoff before dead-lettering (only ingestion_failed also persists
-  // that backoff to the outbox today); validation_failed, by contrast, is
-  // deterministic and dead-letters at attempt 0 with no retry.
-  const TARGET = "target-ingestion-retry";
-  const key = buildAgentSessionSyncSourceKey(TARGET);
-  const source = new FakeSyncSource([
-    makeSyncedSession("ingest-retry", "2026-06-08T12:00:00.000Z"),
-  ]);
-  const outboxRowFor = (id: string) =>
-    [...source.outbox.values()].find((r) => r.sourceKey === key && r.id === id);
-  const service = makeServiceWithIdentity(
-    source,
-    async () => ({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    }),
-    TARGET
-  );
-
-  try {
-    await runWithMockedNow(async ({ advance }) => {
-      service.start();
-      await flushAgentSessionSync();
-
-      // First failure: the row is deferred (retry), NOT dead-lettered, and the
-      // durable outbox records attempt_count=1 with a next_attempt_at deadline.
-      let row = outboxRowFor("ingest-retry");
-      assert.equal(
-        row?.status,
-        "pending",
-        "attempt 0 schedules a retry — the row stays pending, never dead-lettered"
-      );
-      assert.equal(
-        row?.attemptCount,
-        1,
-        "first failure records attempt_count=1"
-      );
-      assert.equal(row?.reason, "ingestion_failed");
-      assert.ok(
-        row?.nextAttemptAt,
-        "a deferred transient retry stamps a next_attempt_at backoff deadline"
-      );
-
-      // Drive the remaining consecutive failures up to (but not through) the
-      // threshold: the outbox attempt_count grows and the row stays pending.
-      for (
-        let attempt = 2;
-        attempt < MAX_CONSECUTIVE_INGESTION_FAILED;
-        attempt += 1
-      ) {
-        advance(INGESTION_FAILED_BACKOFF_MS + 1);
-        service.refresh();
-        await flushAgentSessionSync();
-        row = outboxRowFor("ingest-retry");
-        assert.equal(
-          row?.status,
-          "pending",
-          `attempt ${attempt - 1} still retries — not yet dead-lettered`
-        );
-        assert.equal(
-          row?.attemptCount,
-          attempt,
-          `attempt_count grows to ${attempt}`
-        );
-      }
-
-      // The threshold failure exhausts the budget → NOW it dead-letters, and the
-      // persisted attempt_count reflects the exhausted budget (not 0).
-      advance(INGESTION_FAILED_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-    });
-  } finally {
-    service.stop();
-  }
-
-  const finalRow = outboxRowFor("ingest-retry");
-  assert.equal(
-    finalRow?.status,
-    "dead_lettered",
-    "dead-letters only after the retry budget is exhausted"
-  );
-  assert.equal(
-    finalRow?.attemptCount,
-    MAX_CONSECUTIVE_INGESTION_FAILED,
-    "the dead-lettered row records the real exhausted attempt_count, not a misleading 0"
-  );
-  assert.equal(finalRow?.reason, "ingestion_failed");
+  assert.equal(attempts, 2);
 });
 
 test("agent-session sync lets healthy siblings pass a rate-limited queue head", async () => {
@@ -2394,12 +2323,12 @@ test("PRD-536 E1: the incremental session lane reads with a (ts,id) keyset and n
   // off (topTs, "top-c") and, after uploading "new-hi", the durable cursor's top
   // is the new timestamp.
   assert.equal(
-    source.loadSyncState(key)?.observedTopUpdatedAt,
+    source.persistedSyncState(key)?.observedTopUpdatedAt,
     "2026-06-08T12:05:00.000Z",
     "the durable keyset cursor advances its (ts) component past the new top row"
   );
   assert.deepEqual(
-    source.loadSyncState(key)?.observedIdsAtTopUpdatedAt,
+    source.persistedSyncState(key)?.observedIdsAtTopUpdatedAt,
     ["new-hi"],
     "the durable keyset cursor carries the new top row's id (the (id) component)"
   );
@@ -2410,11 +2339,10 @@ test("PRD-536 E1 (data-loss regression): a NEW sibling at the top updated_at wit
   // `WHERE updated_at = $1 AND id > $2` (with $2 = maxId of the seen set), a
   // genuinely-new session that lands at the SAME top `updated_at` but with an id
   // sorting BELOW the highest already-seen id was `id > $2 == false` → skipped
-  // FOREVER (data loss). A new row can legitimately share the top timestamp: a
-  // historical import stamps `updated_at = endedAt ?? startedAt`, or two writes
-  // land in the same millisecond. The fix re-reads the tied-top cluster and
-  // excludes exactly the observed-id set, so a new lower-id sibling is selected
-  // (NOT IN the set) while every already-seen id stays excluded.
+  // FOREVER (data loss). A new row can legitimately share the top timestamp:
+  // two writes landing in the same millisecond. The fix re-reads the tied-top
+  // cluster and excludes exactly the observed-id set, so a new lower-id sibling
+  // is selected (NOT IN the set) while every already-seen id stays excluded.
   const TARGET = "target-lower-id-sibling";
   const key = buildAgentSessionSyncSourceKey(TARGET);
   const topTs = "2026-06-08T12:04:00.000Z";
@@ -2476,99 +2404,9 @@ test("PRD-536 E1 (data-loss regression): a NEW sibling at the top updated_at wit
   // The durable cursor now carries all three tied-top ids (the new one folded in),
   // so a subsequent tick excludes it too and never re-emits it.
   assert.deepEqual(
-    source.loadSyncState(key)?.observedIdsAtTopUpdatedAt?.slice().sort(),
+    source.persistedSyncState(key)?.observedIdsAtTopUpdatedAt?.slice().sort(),
     ["session-a", "session-h", "session-m"],
     "the durable observed-id set folds in the newly-selected lower-id sibling"
-  );
-});
-
-test("FEA-3659: a cold restart mid-backoff rehydrates the retry budget + backoff deadline from the outbox (no immediate retry, no count reset)", async () => {
-  // Recording the retry is write-only unless resume reads it back. A prior run
-  // left one session mid-backoff (attempt_count=4, one shy of the cap of 5, with
-  // a future next_attempt_at). On restart the in-memory counters + nextRetryAfterMs
-  // start EMPTY, so without rehydration the row would (a) retry immediately —
-  // ignoring the persisted deadline — and (b) recompute (0 + 1) = 1 on its next
-  // rejection, resetting a nearly-exhausted dead-letter budget and letting an
-  // outage that spans restarts dodge the cap. This proves both are fixed.
-  const TARGET = "target-resume-backoff";
-  const key = buildAgentSessionSyncSourceKey(TARGET);
-  const source = new FakeSyncSource([
-    makeSyncedSession("backing-off", "2026-06-08T12:03:00.000Z"),
-  ]);
-  // A persisted cursor at the corpus top so resume skips the full re-walk.
-  source.seedSyncState(key, {
-    observedTopUpdatedAt: "2026-06-08T12:03:00.000Z",
-    observedIdsAtTopUpdatedAt: ["backing-off"],
-  });
-
-  const acked: string[][] = [];
-  const service = makeServiceWithIdentity(
-    source,
-    async (batch) => {
-      acked.push(batch.sessions.map((s) => s.externalSessionId));
-      return {
-        accepted: false,
-        reason: DesktopAgentSessionsAckReason.IngestionFailed,
-      };
-    },
-    TARGET
-  );
-
-  try {
-    await runWithMockedNow(async ({ advance }) => {
-      // Seed the durable mid-backoff row exactly as the prior run left it:
-      // attempt 4 with a deadline INGESTION_FAILED_BACKOFF_MS out from "now".
-      const deadlineIso = new Date(
-        Date.now() + INGESTION_FAILED_BACKOFF_MS
-      ).toISOString();
-      source.recordOutboxRetry(
-        key,
-        "backing-off",
-        4,
-        deadlineIso,
-        "ingestion_failed"
-      );
-
-      service.start();
-      await flushAgentSessionSync();
-
-      // The rehydrated deadline is still in the future → the row is deferred, NOT
-      // retried on resume (an empty nextRetryAfterMs would have uploaded it now).
-      assert.deepEqual(
-        acked,
-        [],
-        "a resumed mid-backoff row is not retried before its persisted next_attempt_at"
-      );
-
-      // Past the deadline: one retry fires, and because the budget was rehydrated
-      // at 4 (not reset to 0), this 5th consecutive failure exhausts the cap and
-      // dead-letters immediately instead of settling back to attempt 1.
-      advance(INGESTION_FAILED_BACKOFF_MS + 1);
-      service.refresh();
-      await flushAgentSessionSync();
-
-      assert.deepEqual(
-        acked,
-        [["backing-off"]],
-        "exactly one retry fires once the persisted deadline elapses"
-      );
-    });
-  } finally {
-    service.stop();
-  }
-
-  const finalRow = [...source.outbox.values()].find(
-    (r) => r.sourceKey === key && r.id === "backing-off"
-  );
-  assert.equal(
-    finalRow?.status,
-    "dead_lettered",
-    "the rehydrated budget (4) + one more failure hits the cap (5) — proving the count was NOT reset to 1 on resume"
-  );
-  assert.equal(
-    finalRow?.attemptCount,
-    MAX_CONSECUTIVE_INGESTION_FAILED,
-    "the dead-lettered row records the exhausted cap, confirming the budget carried across restart"
   );
 });
 
@@ -2587,7 +2425,8 @@ test("FEA-3659: FakeSyncSource.recordOutboxRetry does not resurrect a dead_lette
     "dead-id",
     6,
     new Date().toISOString(),
-    "ingestion_failed"
+    "ingestion_failed",
+    null
   );
 
   const row = [...source.outbox.values()].find(
@@ -2604,7 +2443,8 @@ test("FEA-3659: FakeSyncSource.recordOutboxRetry does not resurrect a dead_lette
     "fresh-id",
     1,
     new Date().toISOString(),
-    "ingestion_failed"
+    "ingestion_failed",
+    null
   );
   const freshRow = [...source.outbox.values()].find(
     (r) => r.sourceKey === key && r.id === "fresh-id"
@@ -2966,18 +2806,22 @@ test("agent-session sync persists the cursor once dead-lettered, recording the d
     "target-a"
   );
 
-  service.start();
-  await flushAgentSessionSync();
-  // Drive "lost" through repeated timeouts until it is dead-lettered.
-  for (let i = 1; i < MAX_CONSECUTIVE_TIMEOUTS; i += 1) {
+  await runWithMockedNow(async ({ advance }) => {
+    service.start();
+    await flushAgentSessionSync();
+    /* ISS-8605: "lost" is dead-lettered by its 24h environmental stall clock now
+       that 408 no longer burns a 3-strike row budget. What this test is about —
+       the watermark advancing PAST a recorded dead-letter — is unchanged. */
+    advance(SESSION_LANE_STALL_CEILING_MS);
     service.refresh();
     await flushAgentSessionSync();
-  }
-  // A fresh, healthy row arrives and is accepted, draining the queues while
-  // "lost" sits in the dead-letter set.
-  source.upsert(makeSyncedSession("ok", "2026-06-08T12:05:00.000Z"));
-  service.refresh();
-  await flushAgentSessionSync();
+    // A fresh, healthy row arrives and is accepted, draining the queues while
+    // "lost" sits in the dead-letter set.
+    source.upsert(makeSyncedSession("ok", "2026-06-08T12:05:00.000Z"));
+    advance(RATE_LIMIT_BACKOFF_MS + 1);
+    service.refresh();
+    await flushAgentSessionSync();
+  });
   service.stop();
 
   assert.ok(
@@ -3232,16 +3076,6 @@ test("T-10.9: component inventory lane advances its own SyncState cursor indepen
 // a session or advance any failure counter.
 // ---------------------------------------------------------------------------
 
-// Far past every per-reason dead-letter budget: if ANY counter were burned by
-// these rejections, the session would dead-letter mid-loop and attempts would
-// stop short (a dead-lettered id defers for DEAD_LETTER_RETRY_AFTER_MS = 24h,
-// far beyond the 30s advances below).
-const FEA3425_ROUNDS =
-  MAX_CONSECUTIVE_TIMEOUTS +
-  MAX_CONSECUTIVE_RATE_LIMITED +
-  MAX_CONSECUTIVE_INGESTION_FAILED +
-  MAX_CONSECUTIVE_VALIDATION_FAILED;
-
 test("FEA-3425: N consecutive unauthenticated rejections burn no budgets, never dead-letter, and recover on re-auth", async () => {
   const source = new FakeSyncSource([
     makeSyncedSession("unauth-session", "2026-06-08T12:00:00.000Z"),
@@ -3263,24 +3097,25 @@ test("FEA-3425: N consecutive unauthenticated rejections burn no budgets, never 
     await runWithMockedNow(async ({ advance }) => {
       service.start();
       await flushAgentSessionSync();
-      for (let i = 1; i < FEA3425_ROUNDS; i += 1) {
-        advance(UNAUTHENTICATED_BACKOFF_MS + 1);
+      // ISS-8610 changed how far each round advances, not what this asserts.
+      for (let i = 1; i < ROUNDS_PAST_EVERY_FAILURE_BUDGET; i += 1) {
+        advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
         service.refresh();
         await flushAgentSessionSync();
       }
       // Every rejection deferred the batch with budgets intact: each elapsed
       // backoff window produced exactly one more attempt, and nothing
       // dead-lettered despite exceeding every per-reason budget.
-      assert.equal(attempts, FEA3425_ROUNDS);
+      assert.equal(attempts, ROUNDS_PAST_EVERY_FAILURE_BUDGET);
       assert.equal(service.getSyncProgress().deadLetteredSessions, 0);
 
       // Re-auth: the very next elapsed window drains the batch successfully —
       // a dead-lettered id could not retry for 24h.
       authenticated = true;
-      advance(UNAUTHENTICATED_BACKOFF_MS + 1);
+      advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
       service.refresh();
       await flushAgentSessionSync();
-      assert.equal(attempts, FEA3425_ROUNDS + 1);
+      assert.equal(attempts, ROUNDS_PAST_EVERY_FAILURE_BUDGET + 1);
       assert.equal(service.getSyncProgress().deadLetteredSessions, 0);
     });
   } finally {
@@ -3309,20 +3144,20 @@ test("FEA-3425: target-not-owned rejections defer with budgets intact and recove
     await runWithMockedNow(async ({ advance }) => {
       service.start();
       await flushAgentSessionSync();
-      for (let i = 1; i < FEA3425_ROUNDS; i += 1) {
-        advance(TARGET_NOT_OWNED_BACKOFF_MS + 1);
+      for (let i = 1; i < ROUNDS_PAST_EVERY_FAILURE_BUDGET; i += 1) {
+        advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
         service.refresh();
         await flushAgentSessionSync();
       }
-      assert.equal(attempts, FEA3425_ROUNDS);
+      assert.equal(attempts, ROUNDS_PAST_EVERY_FAILURE_BUDGET);
       assert.equal(service.getSyncProgress().deadLetteredSessions, 0);
 
       // Identity re-resolved (e.g. a fresh hello ack): the batch drains.
       targetOwned = true;
-      advance(TARGET_NOT_OWNED_BACKOFF_MS + 1);
+      advance(PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS);
       service.refresh();
       await flushAgentSessionSync();
-      assert.equal(attempts, FEA3425_ROUNDS + 1);
+      assert.equal(attempts, ROUNDS_PAST_EVERY_FAILURE_BUDGET + 1);
       assert.equal(service.getSyncProgress().deadLetteredSessions, 0);
     });
   } finally {

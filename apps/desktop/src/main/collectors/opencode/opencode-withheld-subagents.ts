@@ -48,7 +48,7 @@
  * record set is reconciled wholesale, so a root that starts parsing again drops
  * its record rather than leaving a stale claim behind.
  *
- * There is exactly ONE exception, and it is the upgrade path (ISS-5266, wongk
+ * There is exactly ONE exception, and it is the upgrade path (ISS-5266, whitlockk
  * review). An install that ran a pre-ISS-5266 release has an unchanged store, a
  * matching persisted fingerprint, and therefore no verdict — and no way to ever
  * acquire one, because the fingerprint gate suppresses the read that would

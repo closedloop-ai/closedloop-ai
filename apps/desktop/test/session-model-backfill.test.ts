@@ -18,8 +18,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { createNormalizedSession } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { NormalizedTokenRecord } from "../src/main/collectors/types.js";
 import {
   backfillSessionModel,

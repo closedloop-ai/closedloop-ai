@@ -4,16 +4,12 @@ import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
 import { AgentDetail } from "@repo/app/agents/components/workspace/agent-detail";
 import { PromoteModal } from "@repo/app/agents/components/workspace/promote-modal";
 import { TokenTrendChart } from "@repo/app/agents/components/workspace/token-trend-chart";
-import {
-  isLocallyInstallable,
-  isPromotableKind,
-} from "@repo/app/agents/lib/component-meta";
+import { isPromotableKind } from "@repo/app/agents/lib/component-meta";
 import { isAdminRole } from "@repo/app/shared/lib/role-utils";
 import { useOrganization } from "@repo/auth/client";
 import { Button } from "@repo/design-system/components/ui/button";
-import { DownloadIcon, RocketIcon } from "lucide-react";
+import { RocketIcon } from "lucide-react";
 import { useState } from "react";
-import { InstallLocallyModal } from "./install-locally-modal";
 
 /**
  * Web mount of the shared {@link AgentDetail} that adds the admin-gated
@@ -46,11 +42,7 @@ export function AgentDetailWithPromote({
       // (`/{orgSlug}/sessions/{id}`), so the Sessions-tab name navigates.
       getSessionHref={(row) => `/${orgSlug}/sessions/${row.id}`}
       headerAction={(component) => (
-        <HeaderActions
-          component={component}
-          isAdmin={isAdmin}
-          orgSlug={orgSlug}
-        />
+        <HeaderActions component={component} isAdmin={isAdmin} />
       )}
       slug={slug}
     />
@@ -58,69 +50,30 @@ export function AgentDetailWithPromote({
 }
 
 /**
- * Composes the component-detail header actions (FEA-4017):
- *  - "Install" — visible to ANY org member for pack-sourced components. The
- *    modal carries the "onto your machine" detail (matches the desktop label).
- *  - "Promote" — admin-only, hidden for non-distributable kinds (FEA-3048).
- *
- * Returns null when neither applies so the header shows no empty action slot.
+ * The component-detail header action: "Promote", admin-only and hidden for
+ * non-distributable kinds (FEA-3048). Returns null when it does not apply so
+ * the header shows no empty action slot.
  */
 function HeaderActions({
   component,
   isAdmin,
-  orgSlug,
 }: {
   component: AgentComponentDetail;
   isAdmin: boolean;
-  orgSlug: string;
 }) {
-  const showInstall = isLocallyInstallable(component);
   // FEA-3048: observable-only kinds (built-in Tool/Config) are not distributable
   // — hide Promote even for admins (the server-side guard in
   // agent-components/promote rejects them regardless).
   const showPromote = isAdmin && isPromotableKind(component.kind);
 
-  if (!(showInstall || showPromote)) {
+  if (!showPromote) {
     return null;
   }
 
   return (
     <div className="flex items-center gap-2">
-      {showInstall ? (
-        <InstallLocallyHeaderAction component={component} orgSlug={orgSlug} />
-      ) : null}
-      {showPromote ? <PromoteHeaderAction component={component} /> : null}
+      <PromoteHeaderAction component={component} />
     </div>
-  );
-}
-
-function InstallLocallyHeaderAction({
-  component,
-  orgSlug,
-}: {
-  component: AgentComponentDetail;
-  orgSlug: string;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <>
-      <Button
-        onClick={() => setOpen(true)}
-        size="sm"
-        type="button"
-        variant="outline"
-      >
-        <DownloadIcon className="mr-1 size-4" />
-        Install
-      </Button>
-      <InstallLocallyModal
-        component={component}
-        onOpenChange={setOpen}
-        open={open}
-        orgSlug={orgSlug}
-      />
-    </>
   );
 }
 
@@ -142,7 +95,7 @@ function TokenTrendSection({
 }) {
   return (
     <section className="flex flex-col gap-2.5">
-      <h3 className="font-semibold text-lg tracking-tight">Usage over time</h3>
+      <h2 className="font-semibold text-lg tracking-tight">Token trend</h2>
       <p className="text-muted-foreground text-sm">
         Per-model usage over time, bucketed by session start day. Toggle between
         tokens and spend, grouped by model or provider; vertical markers show

@@ -1,19 +1,17 @@
 import {
+  DesktopReleaseCandidateChannel,
   DesktopReleaseChannel,
-  type DesktopReleaseMetadata,
   DesktopReleaseMetadataAssetName,
   DesktopReleaseOwner,
   DesktopReleaseRepo,
   DesktopReleaseUpdaterMetadataAssetName,
+  getDesktopReleaseLegacyZipAssetName,
   getDesktopReleaseTag,
+  getDesktopReleaseZipAssetName,
   getPublicDesktopReleaseDownloadUrl,
 } from "@repo/api/src/types/desktop-release";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../index", () => ({
-  getAuthenticatedOctokit: vi.fn(),
-}));
-
+import { log } from "@repo/observability/log";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type DesktopRelease,
   parseDesktopReleaseMetadata,
@@ -22,16 +20,25 @@ import {
   selectLatestDesktopReleaseFromPages,
   selectLatestElectronUpdaterFeed,
 } from "../electron-release";
+import {
+  DMG_ASSET,
+  DOWNLOAD_URL,
+  FEED_TEXT,
+  makeAsset,
+  makeDesktopRelease,
+  makeDesktopReleaseForVersion,
+  makeMetadata,
+  SIGNED_REDIRECT_URL,
+  TAG,
+  VERSION,
+  ZIP_ASSET,
+} from "./electron-release-fixtures";
 
-const VERSION = "0.15.115";
-const TAG = getDesktopReleaseTag(VERSION);
-const DMG_ASSET = `Closedloop-${VERSION}-universal.dmg`;
-const ZIP_ASSET = `Closedloop-${VERSION}-universal-mac.zip`;
+vi.mock("@repo/observability/log", () => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 const STALE_ZIP_ASSET = "Closedloop-0.15.114-universal-mac.zip";
-const DOWNLOAD_URL = `https://github.com/${DesktopReleaseOwner}/${DesktopReleaseRepo}/releases/download/${TAG}/${DMG_ASSET}`;
-const FEED_TEXT = `version: ${VERSION}\nfiles:\n  - url: ${ZIP_ASSET}\n    sha512: abc\n    size: 123\npath: ${ZIP_ASSET}\nsha512: abc\nreleaseDate: "2026-06-16T00:00:00.000Z"\n`;
-const SIGNED_REDIRECT_URL =
-  "https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345?X-Amz-Signature=abc";
 // The login-free public mirror URL the release workflow writes into
 // downloadUrl once the DMG is mirrored (FEA-3372).
 const MIRROR_DOWNLOAD_URL = getPublicDesktopReleaseDownloadUrl(VERSION);
@@ -97,7 +104,7 @@ describe("selectLatestDesktopRelease public mirror (FEA-3372)", () => {
 });
 
 describe("selectLatestDesktopRelease", () => {
-  it("ignores newer non-Desktop symphony-alpha releases", async () => {
+  it("ignores newer non-Desktop closedloop-ai releases", async () => {
     const release = await selectLatestDesktopRelease(
       [makeNonDesktopRelease("deploy-2026-06-07"), makeDesktopRelease()],
       loadMetadata
@@ -128,6 +135,39 @@ describe("selectLatestDesktopRelease", () => {
       version: VERSION,
       releaseNotes: "Desktop release notes",
     });
+    expect(loadMetadataSpy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * ISS-9165 AC — the public download page never lists a candidate.
+   *
+   * The candidate release carries COMPLETE desktop metadata and is newer than
+   * the promoted one, so the only thing keeping it off the download page is that
+   * its tag is the rolling channel name rather than a `desktop-v*` version. That
+   * is the load-bearing half of "candidate assets live only on the rolling
+   * release", and it is asserted here rather than assumed.
+   */
+  it("skips the desktop-candidate release and picks the promoted versioned one", async () => {
+    const loadMetadataSpy = vi.fn(loadMetadata);
+
+    const release = await selectLatestDesktopRelease(
+      [
+        makeDesktopRelease({
+          tagName: DesktopReleaseCandidateChannel,
+          body: "Candidate build",
+        }),
+        makeDesktopRelease(),
+      ],
+      loadMetadataSpy
+    );
+
+    expect(release).toEqual({
+      downloadUrl: DOWNLOAD_URL,
+      version: VERSION,
+      releaseNotes: "Desktop release notes",
+    });
+    // The candidate's metadata is never even read, so a candidate cannot fail
+    // the release closed the way a malformed promoted release does.
     expect(loadMetadataSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -214,7 +254,7 @@ describe("selectLatestDesktopRelease", () => {
         JSON.stringify({
           ...makeMetadata(),
           downloadUrl:
-            "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-%E0%A4%A-universal.dmg",
+            "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/Closedloop-%E0%A4%A-universal.dmg",
         })
       )
     ).resolves.toBeNull();
@@ -281,6 +321,50 @@ describe("selectLatestDesktopRelease", () => {
       releaseNotes: "Desktop release notes",
     });
   });
+
+  it("returns null when the metadata asset is not JSON at all", async () => {
+    await expect(
+      selectLatestDesktopRelease(
+        [makeDesktopRelease()],
+        async () => "<html>502 Bad Gateway</html>"
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("returns empty release notes when the release has no body", async () => {
+    await expect(
+      selectLatestDesktopRelease(
+        [makeDesktopRelease({ body: null })],
+        loadMetadata
+      )
+    ).resolves.toEqual({
+      downloadUrl: DOWNLOAD_URL,
+      version: VERSION,
+      releaseNotes: "",
+    });
+  });
+
+  it("rejects a ZIP asset name published for another version", async () => {
+    // The stale ZIP is attached to the release, so the later asset-presence
+    // check cannot be what rejects this — only the name/version guard can.
+    await expect(
+      selectLatestDesktopRelease(
+        [
+          makeDesktopRelease({
+            assets: [
+              ...makeDesktopRelease().assets,
+              makeAsset(5, STALE_ZIP_ASSET),
+            ],
+          }),
+        ],
+        async () =>
+          JSON.stringify({
+            ...makeMetadata(),
+            assets: { ...makeMetadata().assets, zip: STALE_ZIP_ASSET },
+          })
+      )
+    ).resolves.toBeNull();
+  });
 });
 
 describe("selectLatestDesktopReleaseFromPages", () => {
@@ -305,6 +389,22 @@ describe("selectLatestDesktopReleaseFromPages", () => {
     expect(listReleasePage).toHaveBeenNthCalledWith(1, 1, 100);
     expect(listReleasePage).toHaveBeenNthCalledWith(2, 2, 100);
   });
+
+  it("stops paging on the first short page and returns null", async () => {
+    // A full first page must not end the walk (that is the page-size boundary);
+    // the short second page is what proves there is nothing left to read.
+    const fullPage = Array.from({ length: 100 }, (_, index) =>
+      makeNonDesktopRelease(`deploy-2026-06-07-${index}`)
+    );
+    const listReleasePage = vi.fn(async (page: number) =>
+      page === 1 ? fullPage : [makeNonDesktopRelease("deploy-2026-06-08")]
+    );
+
+    await expect(
+      selectLatestDesktopReleaseFromPages(listReleasePage, loadMetadata)
+    ).resolves.toBeNull();
+    expect(listReleasePage).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("selectLatestElectronUpdaterFeed", () => {
@@ -327,6 +427,21 @@ describe("selectLatestElectronUpdaterFeed", () => {
     );
 
     expect(feed).toBeNull();
+  });
+
+  it.each<[string, DesktopRelease | null]>([
+    ["the channel release is missing", null],
+    [
+      "the channel release is a draft",
+      makeDesktopRelease({ tagName: DesktopReleaseChannel, draft: true }),
+    ],
+  ])("returns null without reading assets when %s", async (_name, release) => {
+    const loadText = vi.fn(loadUpdaterAssetText);
+
+    await expect(
+      selectLatestElectronUpdaterFeed(release, loadText)
+    ).resolves.toBeNull();
+    expect(loadText).not.toHaveBeenCalled();
   });
 });
 
@@ -412,6 +527,191 @@ describe("resolveElectronUpdaterAssetRedirectUrl", () => {
     expect(loadRedirect).not.toHaveBeenCalled();
   });
 
+  it("resolves a stale semver ZIP from its matching versioned release", async () => {
+    const staleVersion = "0.15.114";
+    const staleZipAsset = getDesktopReleaseZipAssetName(staleVersion);
+    const loadVersionedRelease = vi.fn(async (tagName: string) =>
+      tagName === getDesktopReleaseTag(staleVersion)
+        ? makeDesktopReleaseForVersion(staleVersion)
+        : null
+    );
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        staleZipAsset,
+        loadUpdaterAssetText,
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBe(SIGNED_REDIRECT_URL);
+    expect(loadVersionedRelease).toHaveBeenCalledWith(
+      getDesktopReleaseTag(staleVersion)
+    );
+    expect(loadRedirect).toHaveBeenCalledWith(
+      expect.objectContaining({ name: staleZipAsset })
+    );
+  });
+
+  it("does not resolve a newer versioned ZIP before the channel points at it", async () => {
+    const futureVersion = "0.15.116";
+    const futureZipAsset = getDesktopReleaseZipAssetName(futureVersion);
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(futureVersion)
+    );
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        futureZipAsset,
+        loadUpdaterAssetText,
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBeNull();
+    expect(loadVersionedRelease).not.toHaveBeenCalled();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("resolves a stale ZIP when the current channel cannot name its ZIP", async () => {
+    const staleVersion = "0.15.114";
+    const staleZipAsset = getDesktopReleaseZipAssetName(staleVersion);
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(staleVersion)
+    );
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({
+          tagName: DesktopReleaseChannel,
+          assets: [makeAsset(4, DesktopReleaseUpdaterMetadataAssetName)],
+        }),
+        staleZipAsset,
+        async () => "version: 0.15.115\n",
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBe(SIGNED_REDIRECT_URL);
+    expect(loadVersionedRelease).toHaveBeenCalledWith(
+      getDesktopReleaseTag(staleVersion)
+    );
+    expect(loadRedirect).toHaveBeenCalledWith(
+      expect.objectContaining({ name: staleZipAsset })
+    );
+  });
+
+  it.each([
+    ["current", VERSION],
+    ["future", "0.15.116"],
+  ])(
+    "does not resolve a %s ZIP when the current channel can only name its version",
+    async (_name, requestedVersion) => {
+      const requestedZipAsset = getDesktopReleaseZipAssetName(requestedVersion);
+      const loadVersionedRelease = vi.fn(async () =>
+        makeDesktopReleaseForVersion(requestedVersion)
+      );
+      const loadRedirect = vi.fn(loadAllowedRedirect);
+
+      await expect(
+        resolveElectronUpdaterAssetRedirectUrl(
+          makeDesktopRelease({
+            tagName: DesktopReleaseChannel,
+            assets: [makeAsset(4, DesktopReleaseUpdaterMetadataAssetName)],
+          }),
+          requestedZipAsset,
+          async () => `version: ${VERSION}\n`,
+          loadRedirect,
+          loadVersionedRelease
+        )
+      ).resolves.toBeNull();
+      expect(loadVersionedRelease).not.toHaveBeenCalled();
+      expect(loadRedirect).not.toHaveBeenCalled();
+    }
+  );
+
+  it("returns null when the matching versioned release is missing", async () => {
+    const staleVersion = "0.15.114";
+    const staleZipAsset = getDesktopReleaseZipAssetName(staleVersion);
+    const loadVersionedRelease = vi.fn(async () => null);
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        staleZipAsset,
+        loadUpdaterAssetText,
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBeNull();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the matching versioned release is draft", async () => {
+    const staleVersion = "0.15.114";
+    const staleZipAsset = getDesktopReleaseZipAssetName(staleVersion);
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(staleVersion, { draft: true })
+    );
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        staleZipAsset,
+        loadUpdaterAssetText,
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBeNull();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the matching versioned release is missing the stale ZIP", async () => {
+    const staleVersion = "0.15.114";
+    const staleZipAsset = getDesktopReleaseZipAssetName(staleVersion);
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(staleVersion, {
+        zipAssetName: getDesktopReleaseZipAssetName("0.15.113"),
+      })
+    );
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        staleZipAsset,
+        loadUpdaterAssetText,
+        loadRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBeNull();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("keeps pre-rename ClosedLoop ZIP requests compatible through versioned fallback", async () => {
+    const legacyVersion = "0.15.114";
+    const legacyZipAsset = getDesktopReleaseLegacyZipAssetName(legacyVersion);
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(legacyVersion, {
+        zipAssetName: legacyZipAsset,
+      })
+    );
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        legacyZipAsset,
+        loadUpdaterAssetText,
+        loadAllowedRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBe(SIGNED_REDIRECT_URL);
+  });
+
   it.each([
     ["blockmap", `${ZIP_ASSET}.blockmap`],
     ["DMG", DMG_ASSET],
@@ -431,6 +731,10 @@ describe("resolveElectronUpdaterAssetRedirectUrl", () => {
   });
 
   it("returns null when the current ZIP asset is missing", async () => {
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion(VERSION)
+    );
+
     await expect(
       resolveElectronUpdaterAssetRedirectUrl(
         makeDesktopRelease({
@@ -442,9 +746,11 @@ describe("resolveElectronUpdaterAssetRedirectUrl", () => {
         }),
         ZIP_ASSET,
         loadUpdaterAssetText,
-        loadAllowedRedirect
+        loadAllowedRedirect,
+        loadVersionedRelease
       )
     ).resolves.toBeNull();
+    expect(loadVersionedRelease).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -456,34 +762,196 @@ describe("resolveElectronUpdaterAssetRedirectUrl", () => {
       "disallowed location host",
       { status: 302, headers: { location: "https://example.com/asset.zip" } },
     ],
-  ])("throws when GitHub returns %s for the current ZIP", async (_name, response) => {
+  ])(
+    "throws when GitHub returns %s for the current ZIP",
+    async (_name, response) => {
+      await expect(
+        resolveElectronUpdaterAssetRedirectUrl(
+          makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+          ZIP_ASSET,
+          loadUpdaterAssetText,
+          async () => response
+        )
+      ).rejects.toThrow("Desktop updater asset redirect unavailable");
+    }
+  );
+
+  it("returns null when neither the feed nor a metadata asset names a ZIP", async () => {
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({
+          tagName: DesktopReleaseChannel,
+          assets: [
+            makeAsset(3, ZIP_ASSET),
+            makeAsset(4, DesktopReleaseUpdaterMetadataAssetName),
+          ],
+        }),
+        ZIP_ASSET,
+        async () => "version: 0.15.115\n",
+        loadRedirect
+      )
+    ).resolves.toBeNull();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the metadata fallback asset is not JSON", async () => {
+    const loadRedirect = vi.fn(loadAllowedRedirect);
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        ZIP_ASSET,
+        async (asset) =>
+          asset.name === DesktopReleaseUpdaterMetadataAssetName
+            ? "version: 0.15.115\n"
+            : "<html>502 Bad Gateway</html>",
+        loadRedirect
+      )
+    ).resolves.toBeNull();
+    expect(loadRedirect).not.toHaveBeenCalled();
+  });
+
+  it("resolves the ZIP from metadata when the channel has no feed asset", async () => {
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({
+          tagName: DesktopReleaseChannel,
+          assets: [
+            makeAsset(1, DesktopReleaseMetadataAssetName),
+            makeAsset(3, ZIP_ASSET),
+          ],
+        }),
+        ZIP_ASSET,
+        loadMetadata,
+        loadAllowedRedirect
+      )
+    ).resolves.toBe(SIGNED_REDIRECT_URL);
+  });
+
+  it("accepts a single-valued location header array", async () => {
     await expect(
       resolveElectronUpdaterAssetRedirectUrl(
         makeDesktopRelease({ tagName: DesktopReleaseChannel }),
         ZIP_ASSET,
         loadUpdaterAssetText,
-        async () => response
+        async () => ({
+          status: 302,
+          headers: { location: [SIGNED_REDIRECT_URL] },
+        })
+      )
+    ).resolves.toBe(SIGNED_REDIRECT_URL);
+  });
+
+  it("throws when the location header carries more than one value", async () => {
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({ tagName: DesktopReleaseChannel }),
+        ZIP_ASSET,
+        loadUpdaterAssetText,
+        async () => ({
+          status: 302,
+          headers: { location: [SIGNED_REDIRECT_URL, SIGNED_REDIRECT_URL] },
+        })
       )
     ).rejects.toThrow("Desktop updater asset redirect unavailable");
   });
 });
 
-function makeDesktopRelease(
-  overrides: Partial<DesktopRelease> = {}
-): DesktopRelease {
-  return {
-    tagName: TAG,
-    body: "Desktop release notes",
-    draft: false,
-    assets: [
-      makeAsset(1, DesktopReleaseMetadataAssetName),
-      makeAsset(2, DMG_ASSET, DOWNLOAD_URL),
-      makeAsset(3, ZIP_ASSET),
-      makeAsset(4, DesktopReleaseUpdaterMetadataAssetName),
-    ],
-    ...overrides,
-  };
-}
+describe("selectLatestDesktopRelease skipped feeds", () => {
+  const SKIP_MESSAGE =
+    "[github/electron-release] Skipping non-versioned Desktop release feed";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("warns about an unversioned tag that is not a rolling channel and keeps looking", async () => {
+    const release = await selectLatestDesktopRelease(
+      [
+        makeDesktopRelease({ tagName: "desktop-unknown" }),
+        makeDesktopRelease(),
+      ],
+      loadMetadata
+    );
+
+    expect(release?.version).toBe(VERSION);
+    expect(log.warn).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      tag: "desktop-unknown",
+    });
+    expect(log.debug).not.toHaveBeenCalled();
+  });
+
+  it("logs a rolling channel skip at debug, never as a warning", async () => {
+    const release = await selectLatestDesktopRelease(
+      [
+        makeDesktopRelease({ tagName: DesktopReleaseCandidateChannel }),
+        makeDesktopRelease(),
+      ],
+      loadMetadata
+    );
+
+    expect(release?.version).toBe(VERSION);
+    expect(log.debug).toHaveBeenCalledWith(SKIP_MESSAGE, {
+      tag: DesktopReleaseCandidateChannel,
+    });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveElectronUpdaterAssetRedirectUrl staleness ordering", () => {
+  // The channel names only a version (no ZIP), so staleness is decided purely
+  // by comparing the requested ZIP's version against the feed version.
+  it.each([
+    ["major", "1.0.0", "0.15.114", true],
+    ["major", "0.15.115", "1.0.0", false],
+    ["minor", "0.16.0", "0.15.114", true],
+    ["minor", "0.15.115", "0.16.0", false],
+  ])(
+    "compares %s first: channel %s, requested %s, resolves versioned release: %s",
+    async (_part, channelVersion, requestedVersion, resolves) => {
+      const requestedZipAsset = getDesktopReleaseZipAssetName(requestedVersion);
+      const loadVersionedRelease = vi.fn(async () =>
+        makeDesktopReleaseForVersion(requestedVersion)
+      );
+
+      const result = await resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({
+          tagName: DesktopReleaseChannel,
+          assets: [makeAsset(4, DesktopReleaseUpdaterMetadataAssetName)],
+        }),
+        requestedZipAsset,
+        async () => `version: ${channelVersion}\n`,
+        loadAllowedRedirect,
+        loadVersionedRelease
+      );
+
+      expect(result).toBe(resolves ? SIGNED_REDIRECT_URL : null);
+      expect(loadVersionedRelease).toHaveBeenCalledTimes(resolves ? 1 : 0);
+    }
+  );
+
+  it("treats a requested ZIP as not stale when the channel exposes no version at all", async () => {
+    const loadVersionedRelease = vi.fn(async () =>
+      makeDesktopReleaseForVersion("0.15.114")
+    );
+
+    await expect(
+      resolveElectronUpdaterAssetRedirectUrl(
+        makeDesktopRelease({
+          tagName: DesktopReleaseChannel,
+          assets: [makeAsset(4, DesktopReleaseUpdaterMetadataAssetName)],
+        }),
+        getDesktopReleaseZipAssetName("0.15.114"),
+        async () => "files: []\n",
+        loadAllowedRedirect,
+        loadVersionedRelease
+      )
+    ).resolves.toBeNull();
+    expect(loadVersionedRelease).not.toHaveBeenCalled();
+  });
+});
 
 function makeNonDesktopRelease(tagName: string): DesktopRelease {
   return {
@@ -491,35 +959,6 @@ function makeNonDesktopRelease(tagName: string): DesktopRelease {
     body: "Deploy release",
     draft: false,
     assets: [makeAsset(10, "deployment.json")],
-  };
-}
-
-function makeAsset(
-  id: number,
-  name: string,
-  browserDownloadUrl = `https://github.com/${DesktopReleaseOwner}/${DesktopReleaseRepo}/releases/download/${TAG}/${name}`
-) {
-  return {
-    id,
-    name,
-    browserDownloadUrl,
-  };
-}
-
-function makeMetadata(): DesktopReleaseMetadata {
-  return {
-    owner: DesktopReleaseOwner,
-    repo: DesktopReleaseRepo,
-    version: VERSION,
-    tagName: TAG,
-    channel: DesktopReleaseChannel,
-    targetCommitish: "0123456789abcdef0123456789abcdef01234567",
-    assets: {
-      dmg: DMG_ASSET,
-      zip: ZIP_ASSET,
-      updaterMetadata: DesktopReleaseUpdaterMetadataAssetName,
-    },
-    downloadUrl: DOWNLOAD_URL,
   };
 }
 

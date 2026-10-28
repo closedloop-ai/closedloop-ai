@@ -63,7 +63,7 @@ export type HeadlineMetric = {
   // HEADLINE_METRIC_POLARITY below for the per-metric call.
   polarity: MetricPolarity;
   // Whether this metric is safe to show on the public/shareable page. Cost and
-  // absolute-spend figures are intentionally private (Parker's call, see the
+  // absolute-spend figures are intentionally private (Pascoe's call, see the
   // prototype notes on public-page exposure).
   public: boolean;
 };
@@ -217,7 +217,7 @@ function wobble(seed: number, amplitude: number): number {
   return (frac - 0.5) * 2 * amplitude;
 }
 
-// A single contribution grid: merged PRs per day over the past year. Parker's
+// A single contribution grid: merged PRs per day over the past year. Pascoe's
 // review cut the four trend charts (model usage / autonomy / spend over time)
 // and the second heatmap — a brag wall is one glanceable claim, and the
 // contribution graph is the artifact people actually read as one. Trend
@@ -377,7 +377,7 @@ export function tokenBreakdownFor(range: RangeDays): ModelSlice[] {
   return TOKEN_BREAKDOWN_BY_RANGE[range].map((slice) => ({ ...slice }));
 }
 
-export function totalTokensFor(range: RangeDays): number {
+function totalTokensFor(range: RangeDays): number {
   return tokenBreakdownFor(range).reduce((sum, slice) => sum + slice.value, 0);
 }
 
@@ -592,7 +592,7 @@ export function headlineMetricsFor(range: RangeDays): HeadlineMetric[] {
       polarity: HEADLINE_METRIC_POLARITY[HeadlineMetricKey.Efficiency],
       // In-app only. LOC/$ is cost-reverse-engineerable and reads as
       // inside-baseball externally, so it is kept off the public share card
-      // (Parker's call). Dollar spend is likewise never public.
+      // (Pascoe's call). Dollar spend is likewise never public.
       public: false,
     },
     {

@@ -27,7 +27,7 @@ vi.mock("@repo/collaboration/server/auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn(), info: vi.fn() },
+  log: { error: vi.fn(), flush: vi.fn(async () => undefined), info: vi.fn() },
 }));
 
 // Import after mocks are set up.
@@ -91,7 +91,7 @@ describe("POST /collaboration/auth", () => {
     expect(mockAuthenticate).not.toHaveBeenCalled();
   });
 
-  // ISS-5118 review (wongk): this boundary cannot use `withAuth`, and before the
+  // ISS-5118 review (whitlockk): this boundary cannot use `withAuth`, and before the
   // resolver carried a discriminated failure it mapped every outcome to the 401
   // above — so a Clerk membership outage arrived here looking like bad
   // credentials, and the web boundary latched its "session expired" card over a

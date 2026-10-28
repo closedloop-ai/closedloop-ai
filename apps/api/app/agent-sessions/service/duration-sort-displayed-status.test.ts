@@ -40,6 +40,8 @@ function candidate(testCase: DurationSortParityCase): DisplaySortCandidate {
   const sessionStartedAt = new Date(NOW.getTime() - testCase.startedBeforeMs);
   return {
     artifactId: testCase.id,
+    computeTargetId: "target-1",
+    externalSessionId: testCase.id,
     sessionStartedAt,
     sessionEndedAt:
       testCase.endedAfterStartMs === null
@@ -51,8 +53,21 @@ function candidate(testCase: DurationSortParityCase): DisplaySortCandidate {
         : new Date(NOW.getTime() - testCase.awaitingInputSinceBeforeMs),
     lastActivityAt: new Date(NOW.getTime() - testCase.silentForMs),
     updatedAt: RECORD_UPDATED_BASE,
-    artifact: { status: testCase.rawStatus, updatedAt: RECORD_UPDATED_BASE },
-    user: null,
+    endsWithError: null,
+    artifact: {
+      status: testCase.rawStatus,
+      priority: null,
+      updatedAt: RECORD_UPDATED_BASE,
+      assignee: null,
+    },
+    // ISS-8335: the DB-native sort columns the candidate select now carries.
+    // This suite asserts the DURATION order, which never reads them, so they are
+    // pinned to one non-differentiating value rather than varied.
+    autonomy: null,
+    estimatedCost: null,
+    harness: "claude",
+    model: null,
+    repositoryFullName: null,
   };
 }
 
@@ -110,25 +125,33 @@ describe("compareByDisplayDuration orders by the DISPLAYED duration (ISS-6270)",
     // the proof — it passed against the unfixed comparator, because the row that
     // led was a stale row that happened to carry an `endedAt` and so had a
     // non-null displayed span even while its KEY was a phantom 40h. The leader
-    // has to be the actual maximum.
-    const longest = DURATION_SORT_PARITY_CASES.reduce((best, current) =>
-      (current.displayedSpanMs ?? -1) > (best.displayedSpanMs ?? -1)
-        ? current
-        : best
-    );
+    // has to be the actual maximum, with ties resolved by the SAME id-desc
+    // tiebreak the production comparator applies — three rows tie at 40h
+    // (ISS-12430 added a third), so a reduce that ignored ties would silently
+    // stop proving anything about this comparator's actual tiebreak behavior.
+    const longest = DURATION_SORT_PARITY_CASES.reduce((best, current) => {
+      const bestSpan = best.displayedSpanMs ?? -1;
+      const currentSpan = current.displayedSpanMs ?? -1;
+      if (currentSpan !== bestSpan) {
+        return currentSpan > bestSpan ? current : best;
+      }
+      return tiebreakByIdDesc(current, best) < 0 ? current : best;
+    });
     expect(sortedIds("desc")[0]).toBe(longest.id);
   });
 
-  it("keeps the stale-folded row from outranking every measured row", () => {
-    // Named separately from the whole-order assertions so the failure message
-    // points at the population, not at a 7-element array diff.
+  it("ISS-10364: the once-stale-folded row no longer collects with the blanks — it now outranks a genuinely blank row", () => {
+    // Before this ticket `d-stale-40h` folded to Stale and rendered BLANK, so it
+    // had to sort behind every measured span (the case this replaces asserted
+    // exactly that). The operator ruling removed the fold, so the row now keeps
+    // timing like an ordinary running session. Named separately from the
+    // whole-order assertions, and pinned against a row that is STILL genuinely
+    // blank (`d-terminal-no-end`, a terminal session with no end instant), so a
+    // future change that quietly reintroduces a silence cutoff has to edit this
+    // assertion rather than just the oracle.
     const order = sortedIds("desc");
     const stalePosition = order.indexOf("d-stale-40h");
-    const measuredPositions = DURATION_SORT_PARITY_CASES.filter(
-      (c) => c.displayedSpanMs !== null
-    ).map((c) => order.indexOf(c.id));
-    for (const measured of measuredPositions) {
-      expect(stalePosition).toBeGreaterThan(measured);
-    }
+    const blankPosition = order.indexOf("d-terminal-no-end");
+    expect(stalePosition).toBeLessThan(blankPosition);
   });
 });

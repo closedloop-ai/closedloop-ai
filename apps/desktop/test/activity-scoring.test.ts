@@ -7,7 +7,8 @@
  * the scorer reads only abstract category counts.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
 import {
   EvidenceLayer,
   emptyCategoryMix,
@@ -17,7 +18,6 @@ import {
   ACTIVITY_CONFIDENCE_FLOOR,
   scoreWindow,
 } from "../src/main/collectors/parsing/activity-scoring.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 
 // Build a full category-count record, overriding only the categories a test
 // exercises (the rest stay zero-filled). No cast — undefined overrides are
@@ -74,11 +74,10 @@ test("human steering + declared PLAN with no mutation → plan", () => {
 });
 
 test("FEA-4184: a GENERIC declared signal (not plan-specific) never scores plan", () => {
-  // codex P2: a non-planning declaration — an MCP `get-document`, a `/code-review`
-  // skill, an `implement` trace phase — maps to the generic DeclaredIntent, NOT
-  // DeclaredPlan. With no code mutation such a window used to argmax to `plan`
-  // (planScore gated on any declared intent); the gate now keys on DeclaredPlan so
-  // a generic declaration cannot fabricate `plan`.
+  // codex P2: with no code mutation, a window carrying only a non-plan-specific
+  // declaration used to argmax to `plan` (planScore gated on any declared
+  // intent); the gate now keys on DeclaredPlan, so neither the generic
+  // DeclaredIntent nor the inert DeclaredUtility can fabricate `plan`.
   const genericOnly = scoreWindow(
     counts({ [ToolCategory.HumanTurn]: 2, [ToolCategory.DeclaredIntent]: 1 })
   );
@@ -243,7 +242,7 @@ test("AA-11: the LABEL gate is unchanged — a below-floor margin still falls to
 // These read only abstract counts, so they hold for any harness's vocabulary.
 
 test("AA-03: a utility-only window claims NO declared provenance", () => {
-  // The edac412f / 88afd667 / f9830b64 shape: the window's only declaration is an
+  // The eca0b151 / b03ada09 / a3226ea3 shape: the window's only declaration is an
   // unrecognized utility invocation (an auth, model-switch, or plugin command).
   // Before AA-03 it minted DeclaredIntent and stamped the FR-7 `declared` layer.
   const utilityOnly = scoreWindow(
@@ -277,8 +276,8 @@ test("AA-03: an inert declaration grants NO confidence boost and adds no evidenc
 });
 
 test("AA-03: a GENUINE declaration still earns provenance + boost (no over-correction)", () => {
-  // Guards against "fixing" AA-03 by muting the declared layer wholesale: a real
-  // declared signal (e.g. a trace phase declaring the work) keeps both.
+  // Guards against "fixing" AA-03 by muting the declared layer wholesale: a
+  // genuine declaration — one the core recognizes as naming the work — keeps both.
   const declared = scoreWindow(
     counts({ [ToolCategory.MutateCode]: 3, [ToolCategory.DeclaredIntent]: 2 })
   );

@@ -199,3 +199,95 @@ describe("unknown-frontmatter passthrough (FEA-3164)", () => {
     expect(reassembled.match(/^Color:/gm)?.length ?? 0).toBe(1);
   });
 });
+
+describe("quoting and edge parsing", () => {
+  it("JSON-quotes values containing YAML triggers or edge whitespace", () => {
+    const content = assembleComponentContent("command", {
+      name: "run: now",
+      description: "",
+      fields: { "argument-hint": "<file>", model: "opus" },
+      body: "  Go.  ",
+      unknownFields: [],
+    });
+    expect(content).toBe(
+      '---\nname: "run: now"\nargument-hint: "<file>"\nmodel: opus\n---\n\nGo.\n'
+    );
+  });
+
+  it("strips single quotes and treats missing name/description as empty", () => {
+    const parsed = parseComponentContent(
+      "agent",
+      "---\n# comment line\nno separator here\nmodel: 'opus'\ntools: ['Read', \"Write\"]\n---\nBody"
+    );
+    expect(parsed).toEqual({
+      name: "",
+      description: "",
+      fields: { model: "opus", tools: "Read, Write" },
+      body: "Body",
+      unknownFields: [],
+    });
+  });
+
+  it("treats content without frontmatter as the whole body", () => {
+    const parsed = parseComponentContent("skill", "  Just a prompt.\n");
+    expect(parsed).toEqual({
+      name: "",
+      description: "",
+      fields: {},
+      body: "Just a prompt.",
+      unknownFields: [],
+    });
+  });
+
+  it("skips an unknown frontmatter entry that shadows an emitted key", () => {
+    const content = assembleComponentContent("agent", {
+      name: "a",
+      description: "",
+      fields: { model: "opus" },
+      body: "b",
+      unknownFields: [
+        { key: "Model", raw: " sonnet" },
+        { key: "Name", raw: " other" },
+        { key: "extra", raw: " 1" },
+      ],
+    });
+    expect(content).toBe("---\nname: a\nmodel: opus\nextra: 1\n---\n\nb\n");
+  });
+
+  it("skips an unknown config key already set and keeps non-JSON remnants as strings", () => {
+    const content = assembleComponentContent("plugin", {
+      name: "p",
+      description: "d",
+      fields: { version: "1.0.0" },
+      body: "",
+      unknownFields: [
+        { key: "name", raw: '"shadow"' },
+        { key: "loose", raw: "not json" },
+      ],
+    });
+    expect(JSON.parse(content)).toEqual({
+      name: "p",
+      description: "d",
+      version: "1.0.0",
+      loose: "not json",
+    });
+  });
+
+  it("defaults non-string config name/description to empty", () => {
+    const parsed = parseComponentContent(
+      "hook",
+      JSON.stringify({ name: 5, description: null, event: "Stop", matcher: 3 })
+    );
+    expect(parsed.name).toBe("");
+    expect(parsed.description).toBe("");
+    expect(parsed.fields).toEqual({ event: "Stop", matcher: "3" });
+  });
+
+  it("reads an unbracketed list value as a single unquoted entry", () => {
+    const parsed = parseComponentContent(
+      "agent",
+      '---\nname: a\ntools: "Read"\n---\n'
+    );
+    expect(parsed.fields).toEqual({ tools: "Read" });
+  });
+});

@@ -1,5 +1,5 @@
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 import { describe, expect, it, vi } from "vitest";
@@ -37,9 +37,7 @@ describe("shouldReopenSession", () => {
 
   it("fires for an incoming waiting status", () => {
     expect(
-      shouldReopenSession(
-        input({ incomingStatus: DISPLAYED_SESSION_STATUS.WAITING })
-      )
+      shouldReopenSession(input({ incomingStatus: LEGACY_WAITING_WIRE_STATUS }))
     ).toBe(true);
   });
 
@@ -99,7 +97,7 @@ describe("shouldReopenSession", () => {
   });
 
   it("REOPENS a failed run when genuinely newer activity arrives", () => {
-    // Chris, 2026-08-16 — a deliberate behaviour change, and the expectation
+    // Cosimo, 2026-08-16 — a deliberate behaviour change, and the expectation
     // this file previously asserted the opposite of ("denies when persisted
     // status is error"). A run that ended in error and then produced work
     // beyond its recorded end has resumed, and pinning it terminal made the
@@ -203,9 +201,13 @@ describe("maybeReopenTerminalSession", () => {
       }
     );
 
+    // ISS-6274: both reopen writes discard their result, so each asks for its
+    // primary key alone — the narrowest `select` Prisma accepts — rather than
+    // the whole row. Widen either and this reddens.
     expect(tx.artifact.update).toHaveBeenCalledWith({
       where: { id: "art-1" },
       data: { status: SESSION_STATUS.ACTIVE },
+      select: { id: true },
     });
     expect(tx.sessionDetail.update).toHaveBeenCalledWith({
       where: { artifactId: "art-1" },
@@ -222,6 +224,7 @@ describe("maybeReopenTerminalSession", () => {
         endsWithError: null,
         awaitingInputSince: awaitingSince,
       },
+      select: { artifactId: true },
     });
   });
 
@@ -239,13 +242,13 @@ describe("maybeReopenTerminalSession", () => {
       tx as never,
       {
         persistedStatus: SESSION_STATUS.INACTIVE,
-        incomingStatus: DISPLAYED_SESSION_STATUS.WAITING,
+        incomingStatus: LEGACY_WAITING_WIRE_STATUS,
         maxEventCreatedAt: T2,
         persistedSessionEndedAt: T1,
       },
       {
         artifactId: "art-waiting",
-        incomingStatus: DISPLAYED_SESSION_STATUS.WAITING,
+        incomingStatus: LEGACY_WAITING_WIRE_STATUS,
         incomingAwaitingInputSince: awaitingSince,
       }
     );
@@ -253,6 +256,7 @@ describe("maybeReopenTerminalSession", () => {
     expect(tx.artifact.update).toHaveBeenCalledWith({
       where: { id: "art-waiting" },
       data: { status: SESSION_STATUS.ACTIVE },
+      select: { id: true },
     });
     // The awaiting-input signal survives the fold — nothing is lost.
     expect(tx.sessionDetail.update).toHaveBeenCalledWith({
@@ -262,6 +266,7 @@ describe("maybeReopenTerminalSession", () => {
         endsWithError: null,
         awaitingInputSince: awaitingSince,
       },
+      select: { artifactId: true },
     });
   });
 
@@ -294,7 +299,7 @@ describe("maybeReopenTerminalSession", () => {
     );
   });
 
-  // ISS-5974 (wongk, #4810): the wire schema declares `awaitingInputSince` as
+  // ISS-5974 (whitlockk, #4810): the wire schema declares `awaitingInputSince` as
   // `.nullable().optional()` (`desktop-agent-sessions-schema.ts`), so a
   // version-skewed desktop build can send `waiting` with NO timestamp at all —
   // and `toDate(undefined)` lands it here as null, indistinguishable from an
@@ -316,13 +321,13 @@ describe("maybeReopenTerminalSession", () => {
       tx as never,
       {
         persistedStatus: SESSION_STATUS.INACTIVE,
-        incomingStatus: DISPLAYED_SESSION_STATUS.WAITING,
+        incomingStatus: LEGACY_WAITING_WIRE_STATUS,
         maxEventCreatedAt: T2,
         persistedSessionEndedAt: T1,
       },
       {
         artifactId: "art-waiting-no-anchor",
-        incomingStatus: DISPLAYED_SESSION_STATUS.WAITING,
+        incomingStatus: LEGACY_WAITING_WIRE_STATUS,
         incomingAwaitingInputSince: null,
       }
     );
@@ -331,6 +336,7 @@ describe("maybeReopenTerminalSession", () => {
     expect(tx.artifact.update).toHaveBeenCalledWith({
       where: { id: "art-waiting-no-anchor" },
       data: { status: SESSION_STATUS.ACTIVE },
+      select: { id: true },
     });
     // ...and the awaiting-input signal survives it, anchored to the reopening
     // event rather than dropped.
@@ -341,10 +347,20 @@ describe("maybeReopenTerminalSession", () => {
         endsWithError: null,
         awaitingInputSince: T2,
       },
+      select: { artifactId: true },
     });
 
-    // End-to-end: the row that write produces still reads Waiting long past the
-    // staleness cutoff, because the Waiting branch precedes the staleness fold.
+    // ISS-10364 re-points the end-to-end half of this case at the FACT instead
+    // of the word. It used to assert that the row this write produces reads
+    // "Waiting" past the staleness cutoff, and that the pre-fix write reads
+    // "Stale" — both words the operator retired on 2026-09-23, so the projection
+    // now answers ACTIVE for either shape and could no longer tell them apart.
+    //
+    // The regression being guarded is unchanged and is stated above: the write
+    // must carry `awaitingInputSince: T2` rather than dropping it to null. That
+    // anchor is the awaiting-input signal's only durable form, which is exactly
+    // why the word being gone does not make this case vacuous — and why the
+    // assertion belongs on the write, not on a rendered status.
     expect(
       projectDisplayedSessionStatus(
         {
@@ -355,20 +371,7 @@ describe("maybeReopenTerminalSession", () => {
         },
         T_PAST_STALE_CUTOFF
       )
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
-    // The regression being guarded, stated as behavior: the pre-fix write
-    // (`active` + a null anchor) is reported by this same projection as Stale.
-    expect(
-      projectDisplayedSessionStatus(
-        {
-          status: SESSION_STATUS.ACTIVE,
-          awaitingInputSince: null,
-          sessionEndedAt: null,
-          lastActivityAt: T2,
-        },
-        T_PAST_STALE_CUTOFF
-      )
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("does not write when the predicate denies", async () => {

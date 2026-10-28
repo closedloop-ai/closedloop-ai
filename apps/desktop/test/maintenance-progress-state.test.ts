@@ -1,6 +1,6 @@
 /**
  * @file maintenance-progress-state.test.ts
- * @description ISS-6241 (shafty023 review) — the PRODUCER's honesty guard for
+ * @description ISS-6241 (davetho review) — the PRODUCER's honesty guard for
  * the post-boot maintenance counts.
  *
  * The defect these cover: `setPhaseProgress` used to clamp with
@@ -12,7 +12,7 @@
  * gateway's structured, monitored path rather than swallowed.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   createMaintenanceProgressState,
   type MaintenanceProgressState,
@@ -206,7 +206,7 @@ describe("createMaintenanceProgressState — uncountable reports (ISS-6241)", ()
 });
 
 /**
- * ISS-6241 (thadeusb review) — `setPhase` drops counts on EVERY publish, which
+ * ISS-6241 (tamsinb review) — `setPhase` drops counts on EVERY publish, which
  * is the guard behind two separate claims the module documents. Both were
  * reachable only through the re-drive integration suite, so removing the drop
  * left this module's own tests green.

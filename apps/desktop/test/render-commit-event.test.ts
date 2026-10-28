@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SpanKind } from "@closedloop-ai/telemetry-contract/span";
+import { test } from "vitest";
 import {
   buildRenderCommitBridgeRecord,
   clampCount,
@@ -80,6 +80,10 @@ test("a renderer-path render commit trace record keeps complete identity and env
 });
 
 test("renderCommitEventName carries the view as a stable name suffix", () => {
+  assert.equal(
+    renderCommitEventName(RendererRenderView.BranchesList),
+    "desktop.renderer.render_commit.branches_list"
+  );
   assert.equal(
     renderCommitEventName(RendererRenderView.SessionsList),
     "desktop.renderer.render_commit.sessions_list"

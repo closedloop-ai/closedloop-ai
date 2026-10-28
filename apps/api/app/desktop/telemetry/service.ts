@@ -13,14 +13,10 @@ type DesktopTelemetryReceiveInput = {
 };
 
 /**
- * FEA-3425 (PLN-1437 Phase 3): REST twin of the relay `desktop.telemetry`
- * socket event. Verifies compute-target ownership per request — standing in
- * for the socket path's per-connection `hello` binding, which is what made its
- * `authenticatedTargetId` trustworthy — then delegates to the same shared
+ * FEA-3425 (PLN-1437 Phase 3): verifies compute-target ownership per request,
+ * which is what makes `authenticatedTargetId` trustworthy, then delegates to
  * `handleTelemetryEvent` (validation, targetId match, sanitization, enriched
- * structured log) so telemetry semantics cannot drift between transports. The
- * socket path's `emits` back-channel instructions have no REST analogue; the
- * coded 400 envelope is the validation-failure signal here.
+ * structured log). A handler rejection maps to the coded 400 envelope.
  */
 export const desktopTelemetryService = {
   async receive(

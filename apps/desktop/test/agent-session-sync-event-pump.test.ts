@@ -21,7 +21,7 @@
  * the 5s timer remains only as the fallback sweep (its docstring says so).
  */
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import {
   flushAgentSessionSync,

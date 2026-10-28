@@ -1,19 +1,18 @@
 import {
-  DISPLAYED_SESSION_STATUS,
   resolveSessionDurationLifecycle,
   SessionDurationLifecycle,
 } from "@repo/api/src/types/session-status";
+import {
+  compareSessionSortIdentityDescending,
+  compareSessionSortIdsDescending,
+} from "@repo/api/src/types/session-status-root-order";
 import type { Prisma } from "@repo/database";
 import { displayUserName } from "@/lib/user-display-name";
-import {
-  displayedStatusRank,
-  isKnownDisplayedStatus,
-  projectDisplayedSessionStatus,
-} from "./session-status-projection";
+import { projectDisplayedSessionStatus } from "./session-status-projection";
 
 /**
- * FEA-4297/FEA-4300/FEA-4301: in-memory comparators for the Sessions sort columns
- * whose displayed value is a derivation, not a single trustworthy DB column.
+ * FEA-4297/FEA-4300: in-memory comparators for the Sessions sort columns whose
+ * displayed value is a derivation, not a single trustworthy DB column.
  *
  * Each derivation MIRRORS the client SSOTs so the server order can never diverge
  * from what the row renders:
@@ -24,37 +23,60 @@ import {
  *    status (ISS-6270), not the raw column. A session whose Duration cell
  *    renders blank sorts last in both directions.
  *  - Owner display name = the canonical backend `displayUserName`
- *    (`apps/api/lib/user-display-name.ts`): `"First Last"` trimmed, falling back
- *    to email — the SAME derivation the Owner cell projects, compared
+ *    (`apps/api/lib/user-display-name.ts`) of the session artifact's assignee
+ *    (ISS-12251 D-1): `"First Last"` trimmed, falling back to email, compared
  *    case-insensitively. A session with no owner sorts last.
- *  - Status = the PROJECTED displayed status (`projectDisplayedSessionStatus`):
- *    the raw persisted status, except a row awaiting input DISPLAYS as Waiting
- *    even though it stores `active` (FEA-4301). Ordering by the raw column put a
- *    displayed-Waiting row among the Active rows; ordering by the projection keeps
- *    it contiguous with the other Waiting rows.
+ *
+ * Status's old displayed-Waiting sort was retired under ISS-9939/ISS-10262.
+ * D5 preserves persisted-string order with its root flag off; with it on,
+ * the comparator ranks that raw field by the shared artifact-status mapping.
+ * This module's displayed-status fold still serves Duration, not Status.
  */
 
 /** The narrow candidate columns the display-value comparators read. */
 export const displaySortCandidateSelect = {
   artifactId: true,
+  computeTargetId: true,
+  externalSessionId: true,
   sessionStartedAt: true,
   sessionEndedAt: true,
   awaitingInputSince: true,
   // ISS-5366: the staleness anchor. The displayed-status projection folds a
-  // long-silent `active` run to `stale`, so the Status sort must read the same
+  // long-silent `active` run to `stale`, and Duration's comparator keys its
+  // staleness fold on that projection (ISS-6270) — it must read the same
   // timestamps the badge does or it ranks rows by a status nothing renders.
   lastActivityAt: true,
+  // Selected but no longer read by the projection (ISS-12430); dropping it
+  // from this select and type is a separate, call-site-touching cleanup.
+  endsWithError: true,
   // ISS-6005: the two DB-maintained `@updatedAt` columns behind the rendered
   // `recordUpdatedAt` (the `Updated` column). The displayed value is their MAX
   // — no single stored column — which is what routes `updated` through this
   // in-memory path rather than a Prisma orderBy.
   updatedAt: true,
-  artifact: { select: { status: true, updatedAt: true } },
-  user: {
+  // ISS-8335: the DB-NATIVE sort columns, carried so a rule chain containing one
+  // can be ordered here. A `[duration asc, repo asc]` chain is resolved wholly
+  // in memory — no `ORDER BY` can express its primary — so the secondary's
+  // column has to travel with the candidate or the rule silently decides
+  // nothing. `sessionStartedAt` and `lastActivityAt` are already selected
+  // above for the duration/staleness folds and serve the `started` /
+  // `lastActivity` rules too; `artifact.status` (below) serves `status` the
+  // same way since ISS-9939 / ISS-10262.
+  autonomy: true,
+  // ISS-7176: the cost the row DISPLAYS, carried for the same reason the other
+  // DB-native columns above are — a `[cost asc, user asc]` chain is resolved
+  // wholly in memory, so the cost rule's column has to travel with the candidate
+  // or that rule silently decides nothing.
+  estimatedCost: true,
+  harness: true,
+  model: true,
+  repositoryFullName: true,
+  artifact: {
     select: {
-      firstName: true,
-      lastName: true,
-      email: true,
+      status: true,
+      priority: true,
+      updatedAt: true,
+      assignee: { select: { firstName: true, lastName: true, email: true } },
     },
   },
 } satisfies Prisma.SessionDetailSelect;
@@ -144,6 +166,7 @@ type DurationSortCandidate = {
   artifact?: { status: string | null } | null;
   awaitingInputSince?: Date | null;
   lastActivityAt?: Date | null;
+  endsWithError?: boolean | null;
 } & Pick<DisplaySortCandidate, "sessionEndedAt">;
 
 /**
@@ -151,13 +174,20 @@ type DurationSortCandidate = {
  * the session is not known to be running and carries no end instant.
  *
  * ONE classifier ({@link resolveSessionDurationLifecycle}) rather than a local
- * list of status literals (wongk, #4409). Hand-listing them here is what let the
- * desktop's `failed` alias — written by `canonicalSharedStatus` before
- * `mapListItem`, and the SAME lifecycle as the raw `error` this server stores —
- * land on the opposite side of the branch from its twin: a row rendering a live,
- * growing duration while its comparator sorted it with the blanks. The shared
- * classifier folds `failed`/`running`/`completed`/`abandoned` for all three
- * copies at once.
+ * list of status literals (whitlockk, #4409). Hand-listing them here is what once
+ * let the desktop's `failed` alias — written by `canonicalSharedStatus` before
+ * `mapListItem`, and back then the SAME lifecycle as the raw `error` this server
+ * stores — land on the opposite side of the branch from its twin: a row
+ * rendering a live, growing duration while its comparator sorted it with the
+ * blanks.
+ *
+ * ISS-5592 removed that alias and the desktop rewrite that produced it, so the
+ * shared classifier has no ALIAS left to fold: it recognizes the fold map's own
+ * members and nothing else. `failed` is therefore an UNRECOGNIZED status now,
+ * and takes the `Indeterminate` branch described below rather than the branch
+ * its former twin `error` still takes. What the one classifier buys now is that
+ * all three copies answer an unrecognized status identically, and that a future
+ * alias cannot reopen the split.
  *
  * `Indeterminate` (an unrecognized status, or one this server does not
  * recognize) resolves by EVIDENCE and never reaches the clock: a
@@ -189,14 +219,14 @@ function resolveDisplayDurationEndMs(
 }
 
 /**
- * The owner display name used for sorting, lower-cased for case-insensitive
- * order, or `null` when the session has no owner. `"First Last"` trimmed, falling
- * back to email — mirrors `getUserDisplayName`.
+ * The owner (assignee) display name used for sorting, lower-cased for
+ * case-insensitive order, or `null` when the session has no owner. `"First
+ * Last"` trimmed, falling back to email — mirrors `getUserDisplayName`.
  */
-export function resolveOwnerSortKey(
-  candidate: Pick<DisplaySortCandidate, "user">
-): string | null {
-  const user = candidate.user;
+export function resolveOwnerSortKey(candidate: {
+  artifact: Pick<DisplaySortCandidate["artifact"], "assignee">;
+}): string | null {
+  const user = candidate.artifact.assignee;
   if (!user) {
     return null;
   }
@@ -216,6 +246,23 @@ export function compareByDisplayDuration(
   b: DisplaySortCandidate,
   dir: "asc" | "desc"
 ): number {
+  return compareDisplayDurationKeys(a, b, dir) || compareTiebreaker(a, b);
+}
+
+/**
+ * ISS-8335: {@link compareByDisplayDuration} WITHOUT the tiebreaker — `0` on a
+ * genuine tie so a later sort rule can decide it.
+ *
+ * The tiebreaker is unique, so a comparator that applies it can never return `0`
+ * for two different rows: chaining the public comparator would make every rule
+ * after the first unreachable, which is the exact defect a secondary sort
+ * exists to fix. The chain applies the tiebreaker ONCE, at the end.
+ */
+export function compareDisplayDurationKeys(
+  a: DisplaySortCandidate,
+  b: DisplaySortCandidate,
+  dir: "asc" | "desc"
+): number {
   const aMs = displayDurationSortKey(a);
   const bMs = displayDurationSortKey(b);
   const nullsLast = compareNullsLast(aMs, bMs);
@@ -226,7 +273,7 @@ export function compareByDisplayDuration(
     const delta = aMs - bMs;
     return dir === "asc" ? delta : -delta;
   }
-  return compareTiebreaker(a, b);
+  return 0;
 }
 
 /**
@@ -235,6 +282,15 @@ export function compareByDisplayDuration(
  * BOTH directions (FEA-4330 semantics).
  */
 export function compareByOwnerDisplayName(
+  a: DisplaySortCandidate,
+  b: DisplaySortCandidate,
+  dir: "asc" | "desc"
+): number {
+  return compareOwnerDisplayNameKeys(a, b, dir) || compareTiebreaker(a, b);
+}
+
+/** @see compareDisplayDurationKeys — the tiebreaker-free form, for the chain. */
+export function compareOwnerDisplayNameKeys(
   a: DisplaySortCandidate,
   b: DisplaySortCandidate,
   dir: "asc" | "desc"
@@ -249,52 +305,7 @@ export function compareByOwnerDisplayName(
     const cmp = aKey < bKey ? -1 : 1;
     return dir === "asc" ? cmp : -cmp;
   }
-  return compareTiebreaker(a, b);
-}
-
-/**
- * FEA-4301: order candidates by the DISPLAYED status, then the FEA-4329 unique
- * `artifactId` tiebreaker. The displayed status is `projectDisplayedSessionStatus`
- * (the raw persisted status, except an awaiting-input row projects to Waiting) so
- * a displayed-Waiting row (stored `active`) sorts as Waiting and stays contiguous
- * with the other Waiting rows — not scattered among the Active rows the way an
- * order-by on the raw `artifact.status` column did. Ranks are the lifecycle order
- * Active → Waiting → Completed → Error → Abandoned.
- *
- * An UNKNOWN status (a future/legacy value not in the vocabulary) degrades to the
- * END in BOTH directions — direction-independent, exactly like the nulls-last
- * placement duration/owner use (FEA-4330 semantics). Applying `dir` to the raw
- * rank delta instead would flip the largest (unknown) rank to the FRONT of a
- * descending page, letting version-skewed statuses dominate — so unknown-vs-known
- * ordering is resolved BEFORE `dir` is applied, and `dir` flips only the ordering
- * among the known lifecycle ranks. Every row has a resolvable status (the column
- * is non-null), so there is no nulls-last case here — unlike duration/owner.
- */
-export function compareByDisplayedStatus(
-  a: DisplaySortCandidate,
-  b: DisplaySortCandidate,
-  dir: "asc" | "desc"
-): number {
-  // ISS-5366/ISS-6051: ONE instant per CANDIDATE, pinned by
-  // {@link displayedStatusMemo} on first use. The displayed status folds a
-  // long-silent `active` row to `stale`, so a row must be judged against ONE
-  // cutoff for the whole sort — re-reading the clock per comparison let a row
-  // sitting on the cutoff be judged `active` in one comparison and `stale` in
-  // another, an inconsistent comparator whose output order is undefined.
-  const aStatus = displayedStatusSortKey(a);
-  const bStatus = displayedStatusSortKey(b);
-  // Unknown statuses sort last regardless of direction (mirrors compareNullsLast).
-  const unknownLast = compareUnknownStatusLast(aStatus, bStatus);
-  if (unknownLast !== 0) {
-    return unknownLast;
-  }
-  const aRank = displayedStatusRank(aStatus);
-  const bRank = displayedStatusRank(bStatus);
-  if (aRank !== bRank) {
-    const delta = aRank - bRank;
-    return dir === "asc" ? delta : -delta;
-  }
-  return compareTiebreaker(a, b);
+  return 0;
 }
 
 /**
@@ -302,11 +313,12 @@ export function compareByDisplayedStatus(
  * renders, the Status facet filters by, and the list response serves
  * (`projectDisplayedSessionStatus`).
  *
- * ISS-6270: ONE owner for every comparator that needs it. The Status comparator
- * has read it since FEA-4301; the Duration comparator now reads it too, so the
- * two columns and the served payload cannot disagree about what state a row is
- * in. `null` only where the candidate carries no status at all — a shape the
- * `DisplaySortCandidate` select cannot produce, but which the narrower
+ * ISS-6270: the Duration comparator's staleness fold reads it — the same
+ * projection the Status cell renders, so the two cannot disagree about what
+ * state a row is in even though Status itself no longer sorts on it (ISS-9939
+ * / ISS-10262 moved the Status SORT to the persisted `artifact.status`
+ * column). `null` only where the candidate carries no status at all — a shape
+ * the `DisplaySortCandidate` select cannot produce, but which the narrower
  * {@link DurationSortCandidate} type admits; an absent status asserts nothing
  * and resolves by evidence rather than being coerced into a real state.
  */
@@ -325,25 +337,10 @@ function resolveDisplayedStatus(
       sessionEndedAt: candidate.sessionEndedAt,
       lastActivityAt: candidate.lastActivityAt,
       sessionStartedAt: candidate.sessionStartedAt,
+      endsWithError: candidate.endsWithError,
     },
     now
   );
-}
-
-/**
- * Unknown-status-last ordering independent of direction (FEA-4330): a KNOWN
- * displayed status always precedes an unknown (future/legacy) one, regardless of
- * `dir`. Returns 0 when both are known (the caller compares ranks) or both unknown
- * (the caller falls to the tiebreaker), so a descending page cannot promote an
- * unknown status to the front the way a direction-flipped rank delta would.
- */
-function compareUnknownStatusLast(a: string, b: string): number {
-  const aUnknown = !isKnownDisplayedStatus(a);
-  const bUnknown = !isKnownDisplayedStatus(b);
-  if (aUnknown === bUnknown) {
-    return 0;
-  }
-  return aUnknown ? 1 : -1;
 }
 
 /**
@@ -365,14 +362,25 @@ function compareNullsLast(a: unknown, b: unknown): number {
  * `SESSION_UNIQUE_TIEBREAKER` on the DB path — so equal-value candidates paginate
  * deterministically.
  */
-function compareTiebreaker(
-  a: DisplaySortCandidate,
-  b: DisplaySortCandidate
+export function compareTiebreaker(
+  a: Pick<DisplaySortCandidate, "artifactId">,
+  b: Pick<DisplaySortCandidate, "artifactId">
 ): number {
-  if (a.artifactId === b.artifactId) {
-    return 0;
-  }
-  return a.artifactId < b.artifactId ? 1 : -1;
+  return compareSessionSortIdsDescending(a.artifactId, b.artifactId);
+}
+
+/** Status ties use the cross-host session identity before cloud's final PK guard. */
+export function compareStatusIdentityTiebreaker(
+  a: Pick<
+    DisplaySortCandidate,
+    "computeTargetId" | "externalSessionId" | "artifactId"
+  >,
+  b: Pick<
+    DisplaySortCandidate,
+    "computeTargetId" | "externalSessionId" | "artifactId"
+  >
+): number {
+  return compareSessionSortIdentityDescending(a, b) || compareTiebreaker(a, b);
 }
 
 /**
@@ -501,6 +509,15 @@ export function compareByRecordUpdatedAt(
   b: DisplaySortCandidate,
   dir: "asc" | "desc"
 ): number {
+  return compareRecordUpdatedAtKeys(a, b, dir) || compareTiebreaker(a, b);
+}
+
+/** @see compareDisplayDurationKeys — the tiebreaker-free form, for the chain. */
+export function compareRecordUpdatedAtKeys(
+  a: DisplaySortCandidate,
+  b: DisplaySortCandidate,
+  dir: "asc" | "desc"
+): number {
   const aMs = recordUpdatedAtSortKey(a);
   const bMs = recordUpdatedAtSortKey(b);
   const nullsLast = compareNullsLast(aMs, bMs);
@@ -511,7 +528,7 @@ export function compareByRecordUpdatedAt(
     const delta = aMs - bMs;
     return dir === "asc" ? delta : -delta;
   }
-  return compareTiebreaker(a, b);
+  return 0;
 }
 
 /**
@@ -585,25 +602,28 @@ function ownerSortKey(candidate: DisplaySortCandidate): string | null {
  * saying `stale` — trading a sub-millisecond divergence for a minute-long one,
  * which is the badge-vs-position mismatch ISS-5366 exists to prevent.
  */
-const displayedStatusMemo = new WeakMap<object, string>();
+const displayedStatusMemo = new WeakMap<object, string | null>();
 
 /**
- * The memoized {@link resolveDisplayedStatus} used by the Status AND (since
- * ISS-6270) the Duration comparator.
+ * The memoized {@link resolveDisplayedStatus} used by Duration's lifecycle comparator.
  *
- * The `?? UNKNOWN` covers the statusless shape {@link DurationSortCandidate}
- * admits and `displaySortCandidateSelect` cannot produce: a row this server has
- * no status for is displayed as Unknown, which is the same answer the shared
- * fold gives every value it cannot read, rather than a rank borrowed from a
- * state we have no evidence of.
+ * `null` is CARRIED, not coerced, and that is the ISS-10364 replacement for the
+ * `?? UNKNOWN` fallback this used to apply. It covers the statusless shape
+ * {@link DurationSortCandidate} admits and `displaySortCandidateSelect` cannot
+ * produce, and it is the key {@link resolveSessionDurationLifecycle} answers
+ * `Indeterminate` for — which is the SAME rank the `unknown` word used to buy,
+ * reached without a word the stack is retiring. Substituting a real status would
+ * instead have claimed the run was going.
+ *
+ * `null` is a resolved key and not the memo's miss sentinel — see
+ * {@link memoizedSortKey}, which uses `undefined` for that — so a statusless
+ * candidate is derived once per request like any other.
  */
-function displayedStatusSortKey(candidate: DisplaySortCandidate): string {
-  return memoizedSortKey(
-    displayedStatusMemo,
-    candidate,
-    (row) =>
-      resolveDisplayedStatus(row, new Date()) ??
-      DISPLAYED_SESSION_STATUS.UNKNOWN
+function displayedStatusSortKey(
+  candidate: DisplaySortCandidate
+): string | null {
+  return memoizedSortKey(displayedStatusMemo, candidate, (row) =>
+    resolveDisplayedStatus(row, new Date())
   );
 }
 

@@ -7,13 +7,7 @@
  */
 import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
 import { clamp } from "@repo/api/src/utils/math";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("@repo/database", async () => {
-  const { createDatabaseMock } = await import("../fixtures/database-mock");
-  return createDatabaseMock();
-});
-
+import { describe, expect, it } from "vitest";
 import {
   computeBimodalityCoefficient,
   computeCertaintyFraction,
@@ -22,7 +16,7 @@ import {
   computeSkewness,
   computeStdDev,
   deriveCharacteristicLabels,
-} from "@/app/judges-analytics/service";
+} from "@/app/judges-analytics/service/score-statistics";
 
 // ---------------------------------------------------------------------------
 // computeMean

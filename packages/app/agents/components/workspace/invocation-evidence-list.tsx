@@ -63,8 +63,7 @@ export function InvocationEvidenceList({
   // `hasMore` reports that the ROW LIST was bounded, never that the COUNT was:
   // both producers compute `total` with no limit — the cloud read sums an
   // uncapped `groupBy` COUNT (`invocation-read.ts`) and desktop a bare
-  // `COUNT(*)` (`shared-agent-components-api.ts`) — and then derive
-  // `hasMore: total > rows.length` from it. So whenever the 500-row read cap
+  // `COUNT(*)` (`local-invocation-read.ts`). So whenever the 500-row read cap
   // bound the list, marking the total a floor printed "Showing 50 of 1,218+
   // invocations" for a population known to be exactly 1,218, one line under a
   // stats strip stating that same 1,218 flatly. The `+` belongs to a total that
@@ -143,7 +142,7 @@ export function InvocationEvidenceList({
 /**
  * The population this panel claims, decided ONCE for every readout on it.
  *
- * ISS-5520 (wongk, codex review #4716): the stats strip and the truncation
+ * ISS-5520 (whitlockk, codex review #4716): the stats strip and the truncation
  * caption are two sentences about one number, so they must not be allowed to
  * compute it separately. The strip read `page.total` raw while the caption ran
  * the credibility test, and in the racy state the panel said "4 recorded" one
@@ -543,6 +542,13 @@ const EVIDENCE_LABELS = {
     "Collector snapshot",
   [AgentComponentInvocationEvidenceClass.RepositoryCommit]: "Repository commit",
   [AgentComponentInvocationEvidenceClass.PackMembership]: "Pack membership",
+  /* ISS-10720 (codex on #7731): the label is REUSED, not written here. The same
+     evidence class already renders as "OTel counter" in `packages/app` on the
+     sandbox trace inspector (`PREVIEW_EVIDENCE_LABEL`,
+     `detail/trace/preview/preview-traced-session.ts`), and the
+     sibling entries in this very map name the evidence ARTIFACT — "Repository
+     commit", "Pack membership" — rather than the actor behind it. */
+  [AgentComponentInvocationEvidenceClass.OtelCounter]: "OTel counter",
   [AgentComponentInvocationEvidenceClass.None]: "No exact evidence",
 } as const;
 

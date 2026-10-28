@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  containsLoneSurrogate,
+  containsNulCharacter,
+} from "./postgres-text.ts";
 
 /** Availability states for provider/source-record identity evidence. */
 export const TokenSourceIdentityAvailability = {
@@ -63,20 +67,18 @@ export const tokenEventTransportIdSchema = z
   .refine((value) => value === value.trim(), {
     message: "transport identity must already be trimmed",
   })
-  .refine((value) => !value.includes(NUL_CHAR), {
+  .refine((value) => !containsNulCharacter(value), {
     message: "transport identity must not contain NUL characters",
   })
-  .refine((value) => !LONE_SURROGATE_RE.test(value), {
+  .refine((value) => !containsLoneSurrogate(value), {
     message: "transport identity must not contain lone UTF-16 surrogates",
   });
 
-const TOKEN_SOURCE_IDENTITY_MAX_IDENTIFIERS = 64;
+/** Maximum ordered source-record ids one available identity may carry. */
+export const TOKEN_SOURCE_IDENTITY_MAX_IDENTIFIERS = 64;
 const TOKEN_SOURCE_IDENTITY_MAX_SCHEME_LENGTH = 256;
 const TOKEN_SOURCE_IDENTITY_MAX_IDENTIFIER_LENGTH = 2048;
 const COST_SUM_EPSILON = 1e-12;
-const NUL_CHAR = String.fromCharCode(0);
-const LONE_SURROGATE_RE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 const availableTokenSourceIdentitySchema = z
   .object({

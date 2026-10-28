@@ -10,6 +10,7 @@ import {
   type BranchKeyRow,
 } from "./branch-reads.js";
 import type { DesktopPrisma } from "./prisma-client.js";
+import { CANONICAL_UTC_TIMESTAMP_GLOB_SQL } from "./session-timestamp-form.js";
 
 export const BranchMetricOutsideEventSide = {
   Before: "before",
@@ -128,7 +129,7 @@ async function readBranchMetricEventEvidence(
          WHERE te.session_id IN (
            SELECT DISTINCT session_id FROM admitted_activity_segments
          )
-           AND te.created_at GLOB '${CANONICAL_INSTANT_GLOB}'
+           AND te.created_at GLOB ${CANONICAL_UTC_TIMESTAMP_GLOB_SQL}
            AND substr(te.created_at, 12, 2) <= '23'
            AND strftime('%Y-%m-%dT%H:%M:%fZ', te.created_at) IS te.created_at
            AND (
@@ -421,5 +422,3 @@ type CommonRawRow = {
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MAX_FINITE_REAL = Number.MAX_VALUE;
-const CANONICAL_INSTANT_GLOB =
-  "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";

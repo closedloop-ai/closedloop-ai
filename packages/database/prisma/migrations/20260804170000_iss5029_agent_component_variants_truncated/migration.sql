@@ -9,7 +9,7 @@
 -- AlterTable
 ALTER TABLE "agent_components" ADD COLUMN     "variants_truncated" BOOLEAN NOT NULL DEFAULT false;
 
--- ISS-5029 (wongk, #4391): record WHICH cap bound alongside the boolean. Only a
+-- ISS-5029 (whitlockk, #4391): record WHICH cap bound alongside the boolean. Only a
 -- per-family cap bounds how many revisions the device holds, so only it lets the
 -- detail read prove the cloud is short; a byte-budget stop proves nothing and
 -- must be distinguishable. Nullable and additive — existing rows and any API

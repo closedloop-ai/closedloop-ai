@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
 import { hasRecordedSyncConsent } from "../src/shared/sync-consent.js";
 

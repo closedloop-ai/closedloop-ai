@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import {
   CreateDocumentVersionErrorCode,
@@ -11,7 +12,7 @@ import {
   Result,
   type Result as ServiceResult,
 } from "@repo/api/src/types/result";
-import { ArtifactType, withDb } from "@repo/database";
+import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import {
   buildCreatedInlineImage,
@@ -21,9 +22,29 @@ import {
   validateInlineImagesBeforeSideEffects,
 } from "./document-inline-image-helpers";
 import { indexDocumentProjection } from "./document-service";
+import { withDocumentStatusMutation } from "./document-status-mutation-capability";
 import { documentIncludeWithUser, toDocument } from "./document-utils";
 import type { CreateInlineImageAttachmentError } from "./inline-image-attachment-contract";
 import { sanitizeAndLog } from "./sanitize-content";
+
+/**
+ * ISS-12552: what a version save did, handed to the caller inside the save's
+ * own transaction so an operation receipt commits with it. `contentChanged` is
+ * false when the stored content equals the previous version's, which makes the
+ * save a no-op for attribution; the version row is still created as before.
+ */
+export type VersionCreatedInfo = {
+  documentId: string;
+  versionNumber: number;
+  contentDigestBefore: string | null;
+  contentDigestAfter: string | null;
+  contentChanged: boolean;
+};
+
+export type RecordVersionCreated = (
+  tx: TransactionClient,
+  info: VersionCreatedInfo
+) => Promise<void>;
 
 /**
  * Document version service. Owns version-row CRUD plus the higher-level
@@ -76,16 +97,40 @@ export const documentVersionService = {
   },
 
   /**
-   * List all versions for a document (without content, for version picker UI).
+   * Fetch one version of a document by the version row's own id. Scoped to the
+   * document so an id belonging to another artifact cannot be read through it,
+   * and to the org so this method owns its own auth boundary rather than
+   * trusting a route precheck to have run.
+   *
+   * `DocumentVersion` reaches the org through its parent artifact
+   * (`documentDetail.artifact.organizationId`); it carries no denormalized
+   * organization column of its own.
    */
-  listVersions(
-    documentId: string
-  ): Promise<
-    Pick<
-      DocumentVersion,
-      "id" | "documentId" | "version" | "createdById" | "createdAt"
-    >[]
-  > {
+  getByVersionId(
+    documentId: string,
+    organizationId: string,
+    versionId: string
+  ): Promise<DocumentVersion | null> {
+    return withDb((db) =>
+      db.documentVersion.findFirst({
+        where: {
+          documentId,
+          id: versionId,
+          documentDetail: { artifact: { organizationId } },
+        },
+      })
+    );
+  },
+
+  /**
+   * List all versions for a document: METADATA ONLY, and deliberately without
+   * an opt-in for bodies. The list is unpaginated, and a saved body can run to
+   * ~1 MiB, so selecting content here would make one request fetch an unbounded
+   * multiple of that with no `take` to stop it. Bodies are served one at a time
+   * by `GET /documents/{id}/versions/{versionRef}`, which is bounded by
+   * construction.
+   */
+  listVersions(documentId: string): Promise<DocumentVersionListItem[]> {
     return withDb((db) =>
       db.documentVersion.findMany({
         where: { documentId },
@@ -114,7 +159,8 @@ export const documentVersionService = {
     documentId: string,
     organizationId: string,
     userId: string | null,
-    content: string | null
+    content: string | null,
+    recordVersion?: RecordVersionCreated
   ): Promise<DocumentVersion | null> {
     return withDb.tx(async (tx) => {
       const detail = await tx.documentDetail.findFirst({
@@ -149,7 +195,7 @@ export const documentVersionService = {
         },
       });
 
-      // FEA-1626 (wongk review): a content save writes DocumentDetail and
+      // FEA-1626 (whitlockk review): a content save writes DocumentDetail and
       // DocumentVersion, both of which hang off the artifact — so without this
       // the PARENT `Artifact.updatedAt` never moves, and a two-year-old document
       // edited this morning still reads as two years stale. That is wrong on its
@@ -165,6 +211,23 @@ export const documentVersionService = {
         select: { id: true },
       });
 
+      if (recordVersion) {
+        // Read only when a caller asked: browser saves pay nothing extra.
+        const previous = await tx.documentVersion.findFirst({
+          where: { documentId, version: nextVersion - 1 },
+          select: { content: true },
+        });
+        const contentDigestBefore = contentDigest(previous?.content ?? null);
+        const contentDigestAfter = contentDigest(sanitizedContent);
+        await recordVersion(tx, {
+          documentId,
+          versionNumber: nextVersion,
+          contentDigestBefore,
+          contentDigestAfter,
+          contentChanged: contentDigestBefore !== contentDigestAfter,
+        });
+      }
+
       return version;
     });
   },
@@ -179,14 +242,16 @@ export const documentVersionService = {
     id: string,
     organizationId: string,
     userId: string | null,
-    content: string
+    content: string,
+    recordVersion?: RecordVersionCreated
   ): Promise<DocumentDetail | null> {
     const detail = await withDb.tx(async (tx) => {
       const newVersion = await documentVersionService.createVersion(
         id,
         organizationId,
         userId,
-        content
+        content,
+        recordVersion
       );
 
       const artifact = await tx.artifact.findUnique({
@@ -197,11 +262,11 @@ export const documentVersionService = {
       if (artifact?.type !== ArtifactType.DOCUMENT || !newVersion) {
         return null;
       }
-      return {
+      return withDocumentStatusMutation({
         ...toDocument(artifact),
         latestVersionContent: newVersion.content,
         version: newVersion,
-      };
+      });
     });
 
     // FEA-3863 / Phase-2: content edits go through this save path, so refresh
@@ -227,7 +292,8 @@ export const documentVersionService = {
     organizationId: string,
     userId: string,
     content: string,
-    inlineImages: CreateDocumentVersionInlineImageInput[]
+    inlineImages: CreateDocumentVersionInlineImageInput[],
+    recordVersion?: RecordVersionCreated
   ): Promise<CreateDocumentVersionWithInlineImagesResult> {
     const placeholderValidation = validateInlineImagesBeforeSideEffects(
       content,
@@ -291,7 +357,8 @@ export const documentVersionService = {
         id,
         organizationId,
         userId,
-        versionContent
+        versionContent,
+        recordVersion
       );
       if (!document) {
         const cleanup = await cleanupCreatedInlineImages({
@@ -361,4 +428,20 @@ type CreateDocumentVersionWithInlineImagesResult = ServiceResult<
 
 function getSafeVersionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A row from `listVersions`. No `content`: the list endpoint is metadata-only
+ * by design, so the type cannot express a body the query never selects.
+ */
+export type DocumentVersionListItem = Pick<
+  DocumentVersion,
+  "id" | "documentId" | "version" | "createdById" | "createdAt"
+>;
+
+/** sha256 of stored version content; null content has no digest. */
+function contentDigest(content: string | null): string | null {
+  return content === null
+    ? null
+    : createHash("sha256").update(content, "utf8").digest("hex");
 }

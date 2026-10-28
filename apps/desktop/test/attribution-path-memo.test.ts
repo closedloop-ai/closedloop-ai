@@ -15,11 +15,11 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 import {
   type RepoFullNameOutcome,
   RepoFullNameStatus,
@@ -42,33 +42,17 @@ import {
   revalidateAttributionRepoFullName,
 } from "../src/main/agent-sync/attribution-path-memo.js";
 import { coldReadGate } from "../src/main/collectors/parsing/cold-read-gate.js";
-import { configureBinaryPathsResolver } from "../src/server/operations/symphony-loop.js";
+import { configureBinaryPathsResolver } from "../src/server/operations/binary-path-overrides.js";
 import {
   emptyAttributionCache,
   initGitRepoWithOrigin,
+  readShimCount,
+  writeCountingGitShim,
 } from "./attribution-test-helpers.js";
 
 const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], {
   encoding: "utf8",
 }).trim();
-
-/** Executable shim that records one line per invocation, then execs real git. */
-function writeCountingGitShim(dir: string, name: string): string {
-  const shimPath = path.join(dir, name);
-  const counterPath = `${shimPath}.count`;
-  writeFileSync(counterPath, "", "utf8");
-  writeFileSync(
-    shimPath,
-    `#!/bin/sh\nprintf 'x' >> '${counterPath}'\nexec '${REAL_GIT}' "$@"\n`,
-    "utf8"
-  );
-  chmodSync(shimPath, 0o755);
-  return shimPath;
-}
-
-function readShimCount(shimPath: string): number {
-  return readFileSync(`${shimPath}.count`, "utf8").length;
-}
 
 /** A loader that records its calls and answers from a scripted queue. */
 function scriptedLoader(outcomes: RepoFullNameOutcome[]): {

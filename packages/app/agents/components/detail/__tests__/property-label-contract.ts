@@ -1,3 +1,5 @@
+import { SESSION_TOKENS_PROPERTY_LABEL } from "../session-property-labels";
+
 /**
  * Canonical property labels expected across cloud and Desktop session detail
  * tests for the Claude Code session detail contract.
@@ -19,7 +21,7 @@ export const EXPECTED_CLAUDE_CODE_PROPERTY_LABELS = [
   "Session ID",
   "Repository",
   "Duration",
-  "Tokens",
+  SESSION_TOKENS_PROPERTY_LABEL,
   "Autonomy",
   "Model",
   "Branch",
@@ -27,7 +29,8 @@ export const EXPECTED_CLAUDE_CODE_PROPERTY_LABELS = [
   // FEA-4378: the session's lines-changed figure — its own labeled row (moved out
   // of the "Pull requests" pills row so a number after the pills is never misread
   // as "LOC for those PRs"). Shows the +added/-removed working-tree diff, or the
-  // summed authored-PR roll-up qualified "in PRs" when that is the larger figure.
+  // summed merged-authored-PR roll-up qualified "in merged PRs" when that is
+  // the larger figure.
   "Lines changed",
   "Cost",
   // FEA-3630: per-session LOC/$ cost-efficiency row, rendered next to Cost.

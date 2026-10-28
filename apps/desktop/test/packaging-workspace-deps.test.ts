@@ -12,28 +12,25 @@
  * a registry that has never heard of `@repo/*` — a packaged app that fails at
  * require time, not at build time.
  *
- * These tests drive all four exports: the runtime-closure SSOT, both spec
- * parsers, and the staged-directory resolver.
+ * These tests drive all three exports: the runtime-closure SSOT and both spec
+ * parsers.
  */
 import assert from "node:assert/strict";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript6";
+import { describe, test } from "vitest";
 import {
   DESKTOP_RUNTIME_CLOSURE,
   isWorkspaceProtocolSpec,
-  resolveStagedPackageRuntimeFile,
   resolveWorkspaceDependencyTarget,
 } from "../scripts/packaging-workspace-deps.mjs";
+import {
+  MAIN_VITE_CONFIG,
+  WORKSPACE_INLINE_BINDING,
+  workspaceInlinePackages,
+} from "./helpers/main-vite-workspace-inline.js";
 
 const REPO_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -41,51 +38,6 @@ const REPO_ROOT = join(
   "..",
   ".."
 );
-
-const createdStageDirs: string[] = [];
-
-/**
- * Build a staged app directory containing one resolvable package, the shape
- * `stage-packaging-app.mjs` hands to `resolveStagedPackageRuntimeFile`.
- */
-function makeStagedApp(packageName: string, relativeFile: string): string {
-  const stageAppDir = realpathSync(
-    mkdtempSync(join(tmpdir(), "packaging-workspace-deps-"))
-  );
-  createdStageDirs.push(stageAppDir);
-
-  writeFileSync(
-    join(stageAppDir, "package.json"),
-    JSON.stringify({ name: "staged-desktop", version: "0.0.0" })
-  );
-
-  const packageDir = join(
-    stageAppDir,
-    "node_modules",
-    ...packageName.split("/")
-  );
-  const runtimeFile = join(packageDir, ...relativeFile.split("/"));
-  mkdirSync(dirname(runtimeFile), { recursive: true });
-  writeFileSync(
-    join(packageDir, "package.json"),
-    JSON.stringify({ name: packageName, version: "0.0.0", main: relativeFile })
-  );
-  writeFileSync(
-    runtimeFile,
-    `export const stageAppDir = ${JSON.stringify(stageAppDir)};\n`
-  );
-
-  return stageAppDir;
-}
-
-afterEach(() => {
-  while (createdStageDirs.length > 0) {
-    const dir = createdStageDirs.pop();
-    if (dir) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-});
 
 describe("ISS-5303: the Desktop runtime closure SSOT", () => {
   test("names at least one member, so every consumer loop has something to do", () => {
@@ -173,7 +125,7 @@ describe("ISS-5303: resolveWorkspaceDependencyTarget", () => {
     assert.equal(
       resolveWorkspaceDependencyTarget(
         "shared",
-        "workspace:@closedloop-ai/shared-platform@*"
+        "workspace:@repo/shared-platform@*"
       ),
       "@repo/shared-platform"
     );
@@ -183,7 +135,7 @@ describe("ISS-5303: resolveWorkspaceDependencyTarget", () => {
     assert.equal(
       resolveWorkspaceDependencyTarget(
         "@repo/shared-platform",
-        "workspace:@closedloop-ai/shared-platform@^1.0.0"
+        "workspace:@repo/shared-platform@^1.0.0"
       ),
       "@repo/shared-platform"
     );
@@ -236,96 +188,266 @@ describe("ISS-5303: isWorkspaceProtocolSpec", () => {
   });
 });
 
-describe("ISS-5303: resolveStagedPackageRuntimeFile", () => {
-  test("resolves a runtime file out of the staged node_modules", () => {
-    const stageAppDir = makeStagedApp(
-      "staged-runtime-fixture",
-      "dist/index.js"
+/**
+ * FEA-1859 / ISS-7383 — the session-trace runtime-import contract, restored.
+ *
+ * FEA-1859 hit a packaged app that failed at require time: desktop main reached
+ * for the session-trace derivation helper through `@repo/api`'s BUILT output,
+ * which the packaged asar does not carry, because the main build inlines that
+ * package from source instead of packing it. Its guard lived in
+ * `packaging-workspace-dependencies.test.ts`; FEA-3568 (#3306) deleted that file
+ * and moved the helper to `packages/lib`, and `lint-staged.config.js` was then
+ * repointed at THIS file (ISS-7403) — which asserts the three packaging exports
+ * and nothing about that contract. The contract itself never went away, so per
+ * the AGENTS.md Re-homing Guardrail it follows its subject here rather than
+ * being dropped with the file that used to hold it.
+ *
+ * Three assertions, because the contract has three legs and each fails on its
+ * own: the helper's package must stay OUT of the packed closure, it must have no
+ * built output to reach for, and main must actually import it from source.
+ */
+describe("FEA-1859/ISS-7383: the session-trace runtime-import contract", () => {
+  test("the packages that carry the derivation helper stay out of the packed runtime closure", () => {
+    // Read from vite.main.config.ts, which is what actually decides
+    // (whitlockk review) — not from a second copy of the list kept here.
+    const inlined = workspaceInlinePackages(join(REPO_ROOT, "apps", "desktop"));
+
+    assert.ok(
+      inlined.length > 0,
+      `no ${WORKSPACE_INLINE_BINDING} array was parsed out of ${MAIN_VITE_CONFIG} — the config was renamed or restructured, and every assertion below would pass over an empty list`
     );
 
+    // The leg that catches a CONFIG-ONLY change: drop @repo/lib from
+    // WORKSPACE_INLINE and the main build externalizes it, so packaged main
+    // resolves a `.ts`-only, no-`exports` package at runtime and throws.
+    assert.ok(
+      inlined.includes(DERIVATION_HELPER_PACKAGE),
+      `${MAIN_VITE_CONFIG} no longer inlines ${DERIVATION_HELPER_PACKAGE}, which is the package ${SESSION_TRACE_DERIVATION_SPECIFIER} resolves to — it has no build output to externalize to, so packaged main fails at require time`
+    );
+
+    for (const packageName of inlined) {
+      assert.equal(
+        closureDirFor(packageName),
+        undefined,
+        `${packageName} is bundled from source by the main build, so packing it would ship a second copy whose files the asar's imports never resolve to`
+      );
+    }
+
+    // The control. Every lookup above returns `undefined` for a name the closure
+    // has never heard of too, so without a member that IS packed this passes on
+    // an empty closure and states nothing.
     assert.equal(
-      resolveStagedPackageRuntimeFile(
-        stageAppDir,
-        "staged-runtime-fixture",
-        "dist/index.js"
-      ),
-      join(
-        stageAppDir,
-        "node_modules",
-        "staged-runtime-fixture",
-        "dist",
-        "index.js"
-      )
+      closureDirFor(PACKED_CLOSURE_MEMBER),
+      "telemetry-contract",
+      "the closure no longer packs its one known member, so the assertions above are comparing against nothing"
     );
   });
 
-  test("resolves a scoped package at a nested runtime path", () => {
-    const stageAppDir = makeStagedApp(
-      "@iss5303/staged-runtime-fixture",
-      "dist/main/index.js"
-    );
+  test("the derivation helper's package ships no built entry point to reach into", () => {
+    const derivationPackage = readManifest("packages/lib/package.json");
 
+    for (const field of BUILT_ENTRY_POINT_FIELDS) {
+      assert.ok(
+        !(field in derivationPackage),
+        `packages/lib declares "${field}", so it now resolves to built output — desktop main imports it from source on the assumption there is none, and the packaging closure excludes it on the same assumption`
+      );
+    }
     assert.equal(
-      resolveStagedPackageRuntimeFile(
-        stageAppDir,
-        "@iss5303/staged-runtime-fixture",
-        "dist/main/index.js"
-      ),
-      join(
-        stageAppDir,
-        "node_modules",
-        "@iss5303",
-        "staged-runtime-fixture",
-        "dist",
-        "main",
-        "index.js"
-      )
+      derivationPackage.scripts?.build,
+      undefined,
+      "packages/lib gained a build script; a built artifact is exactly what the packaged app cannot resolve"
+    );
+
+    // The control: a workspace member that IS pre-built declares the field this
+    // test asserts absent, so the check distinguishes the two kinds of member
+    // rather than passing on any manifest at all.
+    const packedPackage = readManifest(
+      "packages/telemetry-contract/package.json"
+    );
+    assert.ok(
+      "exports" in packedPackage,
+      "the pre-built comparison member stopped declaring `exports`, so the absence asserted above no longer distinguishes anything"
     );
   });
 
-  test("resolves relative to the stage dir it was given, not the running process", () => {
-    // The `createRequire(join(stageAppDir, "package.json"))` seam is the whole
-    // point: the verifier must inspect the file that was STAGED, not a copy the
-    // build machine happens to have installed. Two stages carrying the same
-    // package name must resolve to their own copies.
-    const firstStage = makeStagedApp("staged-runtime-fixture", "dist/index.js");
-    const secondStage = makeStagedApp(
-      "staged-runtime-fixture",
-      "dist/index.js"
+  test("desktop main imports the derivation helper from source, with no built-output reach-in", () => {
+    const specifiers = importedModuleSpecifiers(
+      "src/main/database/session-trace.ts"
     );
 
-    const firstResolved = resolveStagedPackageRuntimeFile(
-      firstStage,
-      "staged-runtime-fixture",
-      "dist/index.js"
+    assert.ok(
+      specifiers.length > 0,
+      "no import was resolved out of session-trace.ts — the parse found nothing, so both assertions below would pass vacuously"
     );
-    const secondResolved = resolveStagedPackageRuntimeFile(
-      secondStage,
-      "staged-runtime-fixture",
-      "dist/index.js"
+    assert.ok(
+      specifiers.includes(SESSION_TRACE_DERIVATION_SPECIFIER),
+      `session-trace.ts no longer imports ${SESSION_TRACE_DERIVATION_SPECIFIER}; if the helper moved, this guard and lint-staged.config.js must follow it`
     );
-
-    assert.notEqual(firstResolved, secondResolved);
-    assert.ok(firstResolved.startsWith(firstStage));
-    assert.ok(secondResolved.startsWith(secondStage));
+    const reachIns = specifiers.filter((specifier) =>
+      specifier.includes(BUILT_OUTPUT_SEGMENT)
+    );
+    assert.deepEqual(
+      reachIns,
+      [],
+      `session-trace.ts imports ${reachIns.join(", ")} — built output the packaged asar does not carry, which fails at require time in the packaged app and nowhere else`
+    );
   });
 
-  test("throws when the staged closure is missing the package", () => {
-    // Fail loud. A silent miss here means electron-builder packages an asar
-    // whose runtime import has nothing to resolve to at launch.
-    const stageAppDir = makeStagedApp(
-      "staged-runtime-fixture",
-      "dist/index.js"
+  test("the derivation helper and its transitive imports actually LOAD", async () => {
+    // The leg the deleted guard had and the AST assertion above does not
+    // (whitlockk review). Naming a specifier proves the text; only evaluating it
+    // proves the module graph resolves. A change inside
+    // packages/lib/session-trace/derivation.ts that breaks a source-bundled
+    // import path leaves every assertion above green — the specifier string in
+    // session-trace.ts never moved — and fails at require time in the packaged
+    // app, which is the exact failure FEA-1859 shipped.
+    const derivation = await import(SESSION_TRACE_DERIVATION_SPECIFIER);
+
+    // Read the bindings desktop main actually destructures off the AST rather
+    // than listing them here, so this cannot drift out of agreement with the
+    // importer it is speaking for.
+    const required = namedValueImportsFrom(
+      "src/main/database/session-trace.ts",
+      SESSION_TRACE_DERIVATION_SPECIFIER
+    );
+    assert.ok(
+      required.length > 0,
+      `no named import of ${SESSION_TRACE_DERIVATION_SPECIFIER} was resolved out of session-trace.ts — the parse found nothing, so the assertion below would pass vacuously`
     );
 
-    assert.throws(
-      () =>
-        resolveStagedPackageRuntimeFile(
-          stageAppDir,
-          "staged-runtime-absent",
-          "dist/index.js"
-        ),
-      { code: "MODULE_NOT_FOUND" }
+    const unresolved = required.filter((name) => !(name in derivation));
+    assert.deepEqual(
+      unresolved,
+      [],
+      `${SESSION_TRACE_DERIVATION_SPECIFIER} loaded but exports no ${unresolved.join(", ")} — desktop main destructures those bindings at module scope, so the packaged app throws at require time`
+    );
+
+    // The load above cannot see THIS, and the difference matters: a `/dist/`
+    // specifier inside the helper resolves fine in a dev tree, because
+    // `packages/api/dist` is present locally after any build — and is absent
+    // from the packaged asar, so it fails at require time and nowhere else.
+    // That is the FEA-1859 crash exactly, one module further down the graph
+    // than the assertion on session-trace.ts covers.
+    const helperReachIns = importedModuleSpecifiersOf(
+      DERIVATION_HELPER_MODULE
+    ).filter((specifier) => specifier.includes(BUILT_OUTPUT_SEGMENT));
+    assert.deepEqual(
+      helperReachIns,
+      [],
+      `${DERIVATION_HELPER_MODULE} imports ${helperReachIns.join(", ")} — built output the packaged asar does not carry. It resolves here only because a dev tree has those directories built.`
     );
   });
 });
+
+/** The package `SESSION_TRACE_DERIVATION_SPECIFIER` resolves to. */
+const DERIVATION_HELPER_PACKAGE = "@repo/lib";
+
+/** That specifier's module, repo-relative, for the reach-in scan. */
+const DERIVATION_HELPER_MODULE = "packages/lib/session-trace/derivation.ts";
+
+/** The one member that IS packed, so an absence assertion has a control. */
+const PACKED_CLOSURE_MEMBER = "@closedloop-ai/telemetry-contract";
+
+/** Manifest fields that would make a workspace member resolve to built output. */
+const BUILT_ENTRY_POINT_FIELDS = ["main", "module", "exports", "bin"] as const;
+
+const SESSION_TRACE_DERIVATION_SPECIFIER = "@repo/lib/session-trace/derivation";
+
+/** Any specifier containing this reaches past a package's source entry point. */
+const BUILT_OUTPUT_SEGMENT = "/dist/";
+
+function closureDirFor(packageName: string): string | undefined {
+  return DESKTOP_RUNTIME_CLOSURE.find(
+    (entry: { packageName: string; packageDir: string }) =>
+      entry.packageName === packageName
+  )?.packageDir;
+}
+
+function readManifest(
+  repoRelativePath: string
+): Record<string, unknown> & { scripts?: Record<string, string> } {
+  return JSON.parse(readFileSync(join(REPO_ROOT, repoRelativePath), "utf8"));
+}
+
+/**
+ * Module specifiers of every static import in one desktop file, read off the
+ * parsed AST. The sanctioned mechanism (AGENTS.md → Test Practices): a raw-text
+ * scan of a `.ts` file is banned and would be satisfied by a comment.
+ */
+/**
+ * The VALUE bindings one desktop file imports by name from one specifier.
+ * Type-only imports are excluded — they are erased before runtime, so a missing
+ * one is a typecheck failure rather than the require-time crash this guards.
+ */
+function namedValueImportsFrom(
+  desktopRelativePath: string,
+  specifier: string
+): string[] {
+  const names: string[] = [];
+  for (const statement of parseDesktopFile(desktopRelativePath).statements) {
+    if (
+      !(
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteralLike(statement.moduleSpecifier) &&
+        statement.moduleSpecifier.text === specifier
+      )
+    ) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (!clause || clause.isTypeOnly || !clause.namedBindings) {
+      continue;
+    }
+    if (!ts.isNamedImports(clause.namedBindings)) {
+      continue;
+    }
+    for (const element of clause.namedBindings.elements) {
+      if (!element.isTypeOnly) {
+        names.push(element.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+function parseDesktopFile(desktopRelativePath: string): ts.SourceFile {
+  return parseRepoFile(join("apps", "desktop", desktopRelativePath));
+}
+
+function parseRepoFile(repoRelativePath: string): ts.SourceFile {
+  const absolute = join(REPO_ROOT, repoRelativePath);
+  return ts.createSourceFile(
+    absolute,
+    readFileSync(absolute, "utf8"),
+    ts.ScriptTarget.Latest,
+    true
+  );
+}
+
+/** {@link importedModuleSpecifiers} for any repo file, not just a desktop one. */
+function importedModuleSpecifiersOf(repoRelativePath: string): string[] {
+  const specifiers: string[] = [];
+  for (const statement of parseRepoFile(repoRelativePath).statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteralLike(statement.moduleSpecifier)
+    ) {
+      specifiers.push(statement.moduleSpecifier.text);
+    }
+  }
+  return specifiers;
+}
+
+function importedModuleSpecifiers(desktopRelativePath: string): string[] {
+  const sourceFile = parseDesktopFile(desktopRelativePath);
+  const specifiers: string[] = [];
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteralLike(statement.moduleSpecifier)
+    ) {
+      specifiers.push(statement.moduleSpecifier.text);
+    }
+  }
+  return specifiers;
+}

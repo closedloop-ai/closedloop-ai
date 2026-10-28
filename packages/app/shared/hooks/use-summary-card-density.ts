@@ -8,16 +8,16 @@ import {
   CardDensity,
   type CardDensity as CardDensityValue,
 } from "@repo/design-system/components/ui/card-density";
+import { useIsomorphicLayoutEffect } from "@repo/design-system/hooks/use-isomorphic-layout-effect";
 import type { RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 /**
  * Measure before paint so the first painted frame already carries the resolved
  * tier rather than flipping density a frame later as a visible reflow. React
  * never runs a layout effect on the server, so fall back to `useEffect` there.
  */
-const useMeasureEffect =
-  globalThis.window === undefined ? useEffect : useLayoutEffect;
+const useMeasureEffect = useIsomorphicLayoutEffect;
 
 /**
  * Whether `cardCount` cards fit on ONE rank at `cardMinWidth`, in a track of
@@ -190,9 +190,10 @@ export function resolveSummaryCardDensity({
  * renders. State churn is bounded by construction, since the value is one of two
  * and only a crossing writes it.
  *
- * Returns `null` until the row has been measured at least once. That is
- * "unknown", not "comfortable" — see the caller, which resolves an unmeasured
- * row to COMPACT so the strip never flashes the roomier card on the way in.
+ * Returns `null` until the row has been measured at least once, and for as long
+ * as `enabled` is `false`. That is "unknown", not "comfortable" — see the
+ * caller, which resolves an unmeasured row to COMPACT so the strip never
+ * flashes the roomier card on the way in.
  */
 export function useSummaryCardDensity(
   rowRef: RefObject<HTMLDivElement | null>,
@@ -200,6 +201,7 @@ export function useSummaryCardDensity(
     comfortableMinWidth,
     compactMinWidth,
     belowMdColumns,
+    enabled = true,
   }: {
     comfortableMinWidth: number;
     compactMinWidth: number;
@@ -210,6 +212,13 @@ export function useSummaryCardDensity(
      * fixed rank to reason about, and the one-rank question stays correct there.
      */
     belowMdColumns?: number;
+    /**
+     * Pass `false` on a row that has PINNED its tier (ISS-10540): the caller
+     * discards this answer, so the observers are never attached and the row
+     * stays `null`. Defaults to `true` — a caller that reads the tier measures
+     * it.
+     */
+    enabled?: boolean;
   }
 ): CardDensityValue | null {
   const [density, setDensity] = useState<CardDensityValue | null>(null);
@@ -251,9 +260,10 @@ export function useSummaryCardDensity(
 
   useMeasureEffect(() => {
     const row = rowRef.current;
-    if (!row) {
-      // Nothing to observe yet. Drop any tier a previous pass resolved rather
-      // than pinning the row to a measurement of an element it no longer has.
+    if (!(enabled && row)) {
+      // Nothing to observe — no element yet, or a caller that pinned its tier
+      // and will not read this one. Drop any tier a previous pass resolved
+      // rather than reporting a measurement of a state that is no longer live.
       setDensity(null);
       return;
     }
@@ -291,7 +301,7 @@ export function useSummaryCardDensity(
       mutationObserver?.disconnect();
       tierQuery?.removeEventListener("change", measure);
     };
-  }, [measure, rowRef]);
+  }, [enabled, measure, rowRef]);
 
   return density;
 }

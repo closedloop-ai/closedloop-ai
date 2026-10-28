@@ -8,6 +8,7 @@ import { BranchViewerScope } from "@repo/api/src/types/branch";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
 import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution";
 import { describe, expect, it, vi } from "vitest";
+import { LOCAL_BRANCH_READ } from "../../../shared/shared-branches-contract";
 import type { DesktopApi } from "../../types/desktop-api";
 import { createLocalBranchesDataSource } from "../local-branches-data-source";
 
@@ -26,6 +27,7 @@ describe("local Branch selected-PR version skew", () => {
 
     expect(api.branchesApi.detail).toHaveBeenCalledWith({
       id: BRANCH_ID,
+      ...LOCAL_BRANCH_READ,
       repositoryFullName: "owner/repo",
       pullRequestNumber: 2,
     });

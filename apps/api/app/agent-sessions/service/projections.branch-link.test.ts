@@ -47,7 +47,7 @@ function branchLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionBranch,
       branchName,
-      branchRepositoryFullName: "closedloop-ai/symphony-alpha",
+      branchRepositoryFullName: "closedloop-ai/closedloop-ai",
     },
     ...(branchParticipation ? { branchParticipation } : {}),
     target: {
@@ -55,7 +55,7 @@ function branchLink({
       name: branchName,
       type: ArtifactType.Branch,
       branch: {
-        repository: { fullName: "closedloop-ai/symphony-alpha" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: null,
       },
     },
@@ -79,7 +79,7 @@ function prLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionPr,
       relationTypes: [relation],
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       prNumber,
       source: "DETERMINISTIC",
       confidence: 1.0,
@@ -90,7 +90,7 @@ function prLink({
       name: branchName,
       type: ArtifactType.Branch,
       branch: {
-        repository: { fullName: "closedloop-ai/symphony-alpha" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: null,
       },
     },

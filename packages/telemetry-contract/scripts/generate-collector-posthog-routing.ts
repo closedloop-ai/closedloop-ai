@@ -7,23 +7,6 @@ import {
   writeGeneratedArtifact,
 } from "./collector-codegen-common";
 
-/**
- * Codegen (FEA-1991, PRD-481 C3): emit the keyless-telemetry Collector's
- * PostHog-routing `filter` fragment from the contract's product-signal marker
- * SSOT (via {@link CollectorProductSignalAttributeKeys}).
- *
- * Two committed artifacts are produced — a machine-readable JSON manifest and a
- * ready-to-vendor otelcol `filter/product_signals` processor fragment. The
- * cl-tofu collector config vendors the fragment into a `traces/posthog` pipeline
- * (`[resource, redaction, filter/product_signals, batch] -> [otlphttp/posthog]`)
- * so designated product signals (GenAI generations) fan out to PostHog alongside
- * the Datadog ops leg. The drift guard (`check-collector-posthog-routing.ts`)
- * re-runs this rendering in memory and fails the build if the committed copies
- * are stale or diverge from the contract. The rendering is a pure function of
- * the marker set, so the artifacts only change when the markers change — not on
- * unrelated package version bumps.
- */
-
 export const CollectorPosthogRoutingPath = {
   Manifest: "collector/posthog-product-signals.json",
   Fragment: "collector/keyless-telemetry-posthog-routing.yaml",
@@ -34,12 +17,6 @@ export const CollectorPosthogIdentityPath = {
   Fragment: "collector/keyless-telemetry-posthog-identity.yaml",
 } as const;
 
-/**
- * The otelcol processor name emitted by (and asserted against) the routing
- * fragment. Exported as the single source of truth so the drift guard and tests
- * reference the same literal the generator writes — the cl-tofu pipeline wires a
- * processor of this exact name into its `traces/posthog` leg.
- */
 export const POSTHOG_FILTER_PROCESSOR_NAME = "filter/product_signals";
 
 export const POSTHOG_IDENTITY_PROCESSOR_NAME = "transform/posthog_identity";
@@ -97,7 +74,7 @@ export function renderCollectorPosthogRoutingFragment(
     "# the Datadog ops leg; every other span is dropped from the PostHog pipeline.",
     "# `error_mode: ignore` keeps a span on a malformed condition rather than",
     "# dropping it — redaction has already run, so an over-send is harmless.",
-    "# Vendor this into the cl-tofu collector config (cross-repo) and regenerate",
+    "# Vendor this into the infrastructure collector config (cross-repo) and regenerate",
     "# from @closedloop-ai/telemetry-contract on any",
     "# CollectorProductSignalAttributeKeys change (FEA-1991):",
     `#   ${REGENERATE_COMMAND}`,
@@ -129,7 +106,7 @@ export function renderCollectorPosthogIdentityFragment(): string {
     "# PostHog's OTLP person key only after redaction and product-signal filtering.",
     "# Missing installation ids are left unset so older Desktop builds keep the",
     "# current PostHog fallback behavior.",
-    "# Vendor this into the cl-tofu collector config (cross-repo) after",
+    "# Vendor this into the infrastructure collector config (cross-repo) after",
     "# `redaction` and `filter/product_signals` in the `traces/posthog` pipeline",
     "# and regenerate from @closedloop-ai/telemetry-contract on any FEA-2184",
     "# identity mapping change:",

@@ -2,6 +2,7 @@ import {
   SESSION_STATUS,
   STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
 } from "@repo/api/src/types/session-status";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { SESSION_REPOSITORY_MALFORMED_TOOLTIP } from "@repo/app/agents/lib/session-repository-label";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { act } from "@testing-library/react";
@@ -29,7 +30,19 @@ function getStatusCell(sessionName: string): HTMLElement {
   return getGridCellForSessionName(sessionName, "Status");
 }
 
-describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
+/*
+ * ISS-10364 (operator ruling, Cosimo Corrigan, 2026-09-23) retired the two words
+ * this describe was built around. Verbatim: "Unparsable status are already
+ * converted to Active on import. Don't distinguish between active and stale."
+ *
+ * ISS-4997 and ISS-4998 answered a real defect — a row claiming "Active" on
+ * evidence that did not support it — with two honest non-claims. The ruling
+ * removes the non-claims rather than the defect, so these cases are KEPT as
+ * counterfactuals: same fixtures, same silence, same unreadable spelling, now
+ * asserting the Active the ruling requires. Anything that quietly reintroduces a
+ * silence cutoff has to edit them.
+ */
+describe("SyncedSessionsTable — ISS-10364 one status vocabulary", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -63,7 +76,7 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
     endedAt: null,
   });
 
-  it("ISS-4998: a session silent for 63 hours does not render Active", () => {
+  it("ISS-10364: a session silent for 63 hours renders Active", () => {
     renderWithFlags(
       <SyncedSessionsTable
         getSessionHref={(item) => `/sessions/${item.id}`}
@@ -72,13 +85,12 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
     );
 
     const statusCell = getStatusCell("Stale active session");
-    // #4324 review: a silent run reads "Stale", NOT "Unknown" — the two are
-    // different facts and only this one is actionable.
-    expect(statusCell).toHaveTextContent("Stale");
-    expect(statusCell).not.toHaveTextContent("Active");
+    expect(statusCell).toHaveTextContent(
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
+    );
   });
 
-  it("ISS-4997: an unrecognized status does not render Active", () => {
+  it("ISS-10364: an unrecognized status renders Active", () => {
     renderWithFlags(
       <SyncedSessionsTable
         getSessionHref={(item) => `/sessions/${item.id}`}
@@ -87,8 +99,9 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
     );
 
     const statusCell = getStatusCell("Version skewed session");
-    expect(statusCell).toHaveTextContent("Unknown");
-    expect(statusCell).not.toHaveTextContent("Active");
+    expect(statusCell).toHaveTextContent(
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
+    );
   });
 
   it("leaves a genuinely-live session reading Active", () => {
@@ -99,17 +112,21 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
       />
     );
 
-    expect(getStatusCell("Live active session")).toHaveTextContent("Active");
+    expect(getStatusCell("Live active session")).toHaveTextContent(
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
+    );
   });
 
-  it("re-evaluates staleness on its own clock, without an items change", async () => {
-    // ISS-4998: the fold reads the CURRENT time, but the row mapping is memoized
-    // on `items` — and TanStack's structural sharing keeps that array
-    // referentially stable across refetches that return an unchanged page. During
-    // an idle window (exactly when a session is going quiet) nothing would
-    // invalidate the memo, so a row that crossed the cutoff while on screen would
-    // keep claiming "Active". Mount just inside the threshold, advance the clock
-    // past it WITHOUT touching `items`, and the badge must correct itself.
+  it("ISS-10364: crossing the old staleness cutoff no longer changes the badge", async () => {
+    // ISS-4998 mounted a row just inside the threshold, advanced the clock past
+    // it WITHOUT touching `items`, and required the badge to correct itself —
+    // because the fold read the CURRENT time while the row mapping is memoized on
+    // an array TanStack keeps referentially stable across unchanged refetches.
+    //
+    // The fold no longer reads a clock, so there is nothing to correct. The case
+    // is kept because the SETUP is the falsifiable half: it still crosses the old
+    // cutoff on a stable `items` identity, so a change that reintroduced a
+    // time-dependent fold would flip this assertion rather than slip through.
     const justInsideCutoff = new Date(
       NOW.getTime() - (STALE_SESSION_DISPLAY_THRESHOLD_HOURS * 60 - 2) * 60_000
     );
@@ -129,7 +146,9 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
       />
     );
 
-    expect(getStatusCell("About to go stale")).toHaveTextContent("Active");
+    expect(getStatusCell("About to go stale")).toHaveTextContent(
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
+    );
 
     // Cross the threshold with the SAME items array identity.
     await act(async () => {
@@ -138,8 +157,9 @@ describe("SyncedSessionsTable — ISS-4997/4998 honest status", () => {
     });
 
     const statusCell = getStatusCell("About to go stale");
-    expect(statusCell).toHaveTextContent("Stale");
-    expect(statusCell).not.toHaveTextContent("Active");
+    expect(statusCell).toHaveTextContent(
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
+    );
   });
 });
 

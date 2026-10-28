@@ -87,25 +87,6 @@ describe.skipIf(!hasDatabase)("Users Service Integration", () => {
     });
   });
 
-  it("deactivates user (soft delete)", async () => {
-    await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-
-      const user = await usersService.create({
-        clerkId: "clerk_delete_test",
-        organizationId: testOrgId,
-        email: "delete@example.com",
-        firstName: "To",
-        lastName: "Delete",
-      });
-
-      expect(user.active).toBe(true);
-
-      const deactivated = await usersService.deactivate(user.id);
-      expect(deactivated.active).toBe(false);
-    });
-  });
-
   it("verifies transaction rollback", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();

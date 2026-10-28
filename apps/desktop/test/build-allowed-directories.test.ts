@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   buildAllowedDirectories,
   isRiskyAllowedDirectory,
@@ -54,13 +54,13 @@ test("risky allowed directories include broad user and system roots", () => {
 // TCC-protected folders).
 test("risky guard rejects ~ and /Users/<name> at every selection point", () => {
   assert.equal(isRiskyAllowedDirectory("~"), true);
-  assert.equal(isRiskyAllowedDirectory("/Users/andrew"), true);
+  assert.equal(isRiskyAllowedDirectory("/Users/ottilie"), true);
   assert.equal(isRiskyAllowedDirectory("/Users"), true);
-  assert.equal(isRiskyAllowedDirectory("/home/andrew"), true);
+  assert.equal(isRiskyAllowedDirectory("/home/ottilie"), true);
   // A trailing slash must not defeat the guard.
-  assert.equal(isRiskyAllowedDirectory("/Users/andrew/"), true);
+  assert.equal(isRiskyAllowedDirectory("/Users/ottilie/"), true);
   // A concrete workspace under home is accepted.
-  assert.equal(isRiskyAllowedDirectory("/Users/andrew/Source"), false);
+  assert.equal(isRiskyAllowedDirectory("/Users/ottilie/Source"), false);
 });
 
 test("risky guard rejects TCC-protected roots and descendants", () => {

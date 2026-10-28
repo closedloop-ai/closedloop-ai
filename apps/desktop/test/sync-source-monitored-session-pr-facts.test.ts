@@ -2,24 +2,23 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
 import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import { onTestFinished, test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
-// biome-ignore lint/style/noDoneCallback: node:test TestContext owns fixture cleanup.
-test("ISS-6060: a monitored PR keeps its bounded canonical facts", async (t) => {
+test("ISS-6060: a monitored PR keeps its bounded canonical facts", async () => {
   const dir = await mkdtemp(
     path.join(os.tmpdir(), "iss6060-activity-pr-sync-")
   );
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const db = await openSqliteAgentDatabase({
     dataDir: path.join(dir, "agent-dashboard.pgdata"),
     detectBillingMode: () => "metered_api",
     now: () => "2026-08-12T12:30:00.000Z",
   });
-  t.after(() => db.close());
+  onTestFinished(() => db.close());
   const carrier = {
     completeness: BranchActivityEvidenceCompleteness.Complete,
     events: [
@@ -35,10 +34,10 @@ test("ISS-6060: a monitored PR keeps its bounded canonical facts", async (t) => 
   await db.run(
     `INSERT INTO artifacts
        (id, identity_key, kind, repo_full_name, pr_number, branch_name, title,
-        pr_state, lines_added, lines_removed, files_changed, created_at, last_seen_at)
+        created_at, last_seen_at)
      VALUES
-       ('pr-1','pr:iss6060','pull_request','closedloop-ai/symphony-alpha',6060,
-        'feat/iss-6060','Monitor attributable Session activity','merged',12,3,2,'t1','t1')`
+       ('pr-1','pr:iss6060','pull_request','closedloop-ai/closedloop-ai',6060,
+        'feat/iss-6060','Monitor attributable Session activity','t1','t1')`
   );
   await db.run(
     `INSERT INTO session_artifact_links
@@ -49,21 +48,13 @@ test("ISS-6060: a monitored PR keeps its bounded canonical facts", async (t) => 
   );
   await db.run(
     `INSERT INTO pull_requests
-       (id, session_id, pr_url, pr_number, repo_full_name, branch_name, state,
-        merged_at, closed_at, observed_at, created_at)
+       (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
+        closed_at, observed_at, created_at)
      VALUES
-       ('pr-row','s-pr','https://github.com/closedloop-ai/symphony-alpha/pull/6060',
-        6060,'closedloop-ai/symphony-alpha','feat/iss-6060','merged',
-        '2026-08-12T12:15:00.000Z','2026-08-12T12:15:00.000Z',
+       ('pr-row','s-pr','https://github.com/closedloop-ai/closedloop-ai/pull/6060',
+        6060,'closedloop-ai/closedloop-ai','feat/iss-6060',
+        '2026-08-12T12:15:00.000Z',
         '2026-08-12T12:15:00.000Z','2026-08-12T12:15:00.000Z')`
-  );
-  await db.run(
-    `INSERT INTO pull_request_status_observations
-       (id, repo_full_name, pr_number, state, is_draft, source, observed_at,
-        last_checked_at)
-     VALUES
-       ('pr-observation','closedloop-ai/symphony-alpha',6060,'merged',0,
-        'persisted-test','2026-08-12T12:16:00.000Z','2026-08-12T12:16:00.000Z')`
   );
 
   const [session] = await db.syncSource.loadSyncedSessions(
@@ -80,27 +71,26 @@ test("ISS-6060: a monitored PR keeps its bounded canonical facts", async (t) => 
   assert.deepEqual(
     {
       title: pr.title,
-      state: pr.state,
-      isDraft: pr.isDraft,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      changedFiles: pr.changedFiles,
       branchName: pr.branchName,
-      mergedAt: pr.mergedAt,
       closedAt: pr.closedAt,
     },
     {
       title: "Monitor attributable Session activity",
-      state: "MERGED",
-      isDraft: false,
-      additions: 12,
-      deletions: 3,
-      changedFiles: 2,
       branchName: "feat/iss-6060",
-      mergedAt: "2026-08-12T12:15:00.000Z",
       closedAt: "2026-08-12T12:15:00.000Z",
     }
   );
+  // The removed facts are omitted from the wire, not sent as undefined/null.
+  for (const key of [
+    "state",
+    "isDraft",
+    "additions",
+    "deletions",
+    "changedFiles",
+    "mergedAt",
+  ]) {
+    assert.equal(key in pr, false, key);
+  }
 });
 
 function emptyAttributionCache() {

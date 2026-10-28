@@ -24,7 +24,7 @@ import {
   ConversionSupport,
   resolveConversionCapability,
 } from "@repo/api/src/types/harness-conversion";
-import { HarnessName } from "@repo/crewd/model";
+import { HarnessName } from "@repo/api/src/types/harness-name";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -44,6 +44,7 @@ const DONE_FROM_CURRENT_COPY = /converted from Codex and is ready to use/;
 const ARROW_CURRENT_HARNESS = /Codex/;
 const ARROW_TARGET_HARNESS = /OpenCode/;
 const ARROW_ORIGIN_HARNESS = /Claude/;
+const DONE_BUTTON_NAME = "Done";
 
 const HARNESS_LABEL: Record<HarnessName, string> = {
   [HarnessName.Claude]: "Claude",
@@ -105,7 +106,7 @@ const outcomeFor = (
 // A target whose CURRENT format differs from its origin provenance: authored for
 // Claude, already converted to Codex, now converting Codex → OpenCode. The
 // conversion label must name the CURRENT format (Codex), not the Claude
-// provenance — the exact case wongk flagged.
+// provenance — the exact case whitlockk flagged.
 const reconvertedTarget: ConvertInstallTarget = {
   packId: "pack-reconverted",
   name: "Reviewer agent",
@@ -281,7 +282,9 @@ describe("ConvertInstallSheet", () => {
     expect(screen.getByText("model")).toBeInTheDocument();
     expect(screen.getByText("allowedTools")).toBeInTheDocument();
     // Done offers a single accessible Done control.
-    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: DONE_BUTTON_NAME })
+    ).toBeInTheDocument();
   });
 
   it("renders the error state as retryable when the engine reports an error", async () => {
@@ -335,7 +338,7 @@ describe("ConvertInstallSheet", () => {
     // No premature success: neither the Done body nor its control appears.
     expect(screen.queryByText("Installed on Claude")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Done" })
+      screen.queryByRole("button", { name: DONE_BUTTON_NAME })
     ).not.toBeInTheDocument();
     // The dismiss surface stays sealed while the run streams.
     expect(
@@ -382,7 +385,7 @@ describe("ConvertInstallSheet", () => {
   });
 
   it("labels the conversion by the current format, not the origin provenance", () => {
-    // wongk: a Claude-authored component already in Codex format converts
+    // whitlockk: a Claude-authored component already in Codex format converts
     // Codex → OpenCode. The direction arrow must read "Codex → OpenCode" (the
     // real from-format the engine converts), while provenance stays "Claude".
     renderSheet(reconvertedTarget);
@@ -474,7 +477,7 @@ describe("ConvertInstallSheet", () => {
   });
 
   it("resets to a fresh preview when the same pack switches harness target", async () => {
-    // wongk: the stale-phase bug. Install pack-x → Claude to Done, then rerender
+    // whitlockk: the stale-phase bug. Install pack-x → Claude to Done, then rerender
     // the SAME packId targeting OpenCode. Keying by the full conversion identity
     // remounts a fresh Preview instead of carrying the stale Done state.
     const user = userEvent.setup();

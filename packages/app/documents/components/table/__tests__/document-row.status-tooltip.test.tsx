@@ -5,24 +5,17 @@ import {
   IssueStatus,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { DISPLAYED_SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { makeRawArtifact } from "@repo/app/shared/test-fixtures/documents";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 vi.mock(
   "@repo/app/documents/hooks/use-artifact-favorites",
   async () => await import("./__mocks__/use-artifact-favorites")
 );
-
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-}));
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -64,6 +57,18 @@ function hasTooltipText(text: string): boolean {
   return screen
     .getAllByTestId("tooltip-content")
     .some((node) => node.textContent?.includes(text));
+}
+
+/**
+ * The check glyph's own `d`, owned by `FilledCheckCircle` in
+ * `packages/design-system/components/ui/internal/status-icon-shared.tsx`. It is
+ * the one element only the complete mark draws, so it separates "the row shows
+ * the project as done" from "the row shows a ring" without asserting a colour.
+ */
+const COMPLETE_CHECK_PATH = 'path[d="M6.5 10.5L9.5 13.5L14 7.5"]';
+
+function hasCompleteCheck(container: HTMLElement): boolean {
+  return container.querySelector(COMPLETE_CHECK_PATH) !== null;
 }
 
 describe("NameCell status icon tooltip", () => {
@@ -159,20 +164,23 @@ describe("NameCell status icon tooltip", () => {
     expect(screen.getByRole("img", { name: "Merged" })).toBeInTheDocument();
   });
 
-  it("shows session status tooltip and matching accessible name", () => {
+  // ISS-10364 (operator ruling, 2026-09-23/24): a stored `waiting` row (legacy
+  // spelling — the member is retired) now folds to Active like any other
+  // non-terminal status, rather than rendering its own "Waiting" word.
+  it("folds a legacy stored `waiting` status to Active", () => {
     const item: DocumentRowItem = {
       kind: "session",
       data: makeRawArtifact(ArtifactType.Session, {
         id: "session-1",
         name: "Waiting session",
-        status: DISPLAYED_SESSION_STATUS.WAITING,
+        status: "waiting",
       }),
     };
 
     renderRow(item);
 
-    expect(hasTooltipText("Waiting")).toBe(true);
-    expect(screen.getByRole("img", { name: "Waiting" })).toBeInTheDocument();
+    expect(hasTooltipText("Active")).toBe(true);
+    expect(screen.getByRole("img", { name: "Active" })).toBeInTheDocument();
   });
 });
 
@@ -212,7 +220,11 @@ describe("NameCell project completion ring", () => {
     ).toBeInTheDocument();
   });
 
-  it("rounds the rendered percentage", () => {
+  it("leaves the mid-range on the value it has always rendered", () => {
+    // Per the 2026-09-18 ruling only 100 is reserved, so 2/3 stays 67. An
+    // earlier cut of this PR floored the whole range and moved this to 66,
+    // which is a rendered-number change on roughly half of all partial rows
+    // that the ticket never asked for.
     const item: DocumentRowItem = {
       kind: "project",
       data: makeProject({ completionPercentage: 66.6 }),
@@ -221,5 +233,84 @@ describe("NameCell project completion ring", () => {
     renderRow(item);
 
     expect(hasTooltipText("67% of documents and issues complete")).toBe(true);
+  });
+
+  it("does not claim 100% on the row while a document is outstanding (ISS-9922)", () => {
+    // THIS IS THE CLIENT'S OWN RESERVE, NOT THE SHIPPED WIRE PATH (tamsinb
+    // review). After this PR the API sends 99 for 199 of 200 and never 99.5, so
+    // no route produces the value below — it is fed here to prove the client
+    // refuses to promote it on its own, which is what protects the row against
+    // a producer that has not caught up (a stale API during a deploy, the
+    // desktop cache, a third-party client). Read it as the second line of
+    // defence; the wire path is covered in `apps/api/__tests__`.
+    //
+    // The ticket reports three channels — the filled check, the ring's
+    // accessible name and the tooltip — so all three are asserted.
+    // `completionPercentage` reaches the label and the mark by two separate
+    // expressions in `name-cell.tsx`, and pinning only the tooltip leaves a
+    // rounding reintroduced on the `value` side invisible.
+    const { container } = renderRow({
+      kind: "project",
+      data: makeProject({ completionPercentage: 99.5 }),
+    });
+
+    expect(hasCompleteCheck(container)).toBe(false);
+    expect(
+      screen.getByRole("img", {
+        name: "99% of documents and issues complete",
+      })
+    ).toBeInTheDocument();
+    expect(hasTooltipText("99% of documents and issues complete")).toBe(true);
+    expect(hasTooltipText("100% of documents and issues complete")).toBe(false);
+  });
+
+  it("still claims 100% on the row when the population really is complete", () => {
+    // The positive sibling of every locator above, so an absence at 99.5 proves
+    // the mark and the name are gone rather than that they match nothing.
+    const { container } = renderRow({
+      kind: "project",
+      data: makeProject({ completionPercentage: 100 }),
+    });
+
+    expect(hasCompleteCheck(container)).toBe(true);
+    expect(
+      screen.getByRole("img", {
+        name: "100% of documents and issues complete",
+      })
+    ).toBeInTheDocument();
+    expect(hasTooltipText("100% of documents and issues complete")).toBe(true);
+  });
+
+  it("states a sub-1% fraction as 0% rather than inventing a 1%", () => {
+    // 1 of 250 documents, and the same second-line-of-defence note as above:
+    // the API sends 0 for this, never 0.4.
+    //
+    // Per the 2026-09-18 ruling the low end is NOT reserved. An earlier cut
+    // floored this up to "1% complete", which is the same unmeasured claim the
+    // ticket is about pointed the other way — nobody counted 1% of anything
+    // here. The started-ness lives in the arc, which `arcOffsetOf` separates
+    // from a genuine zero in the design-system suite.
+    renderRow({
+      kind: "project",
+      data: makeProject({ completionPercentage: 0.4 }),
+    });
+
+    expect(
+      screen.getByRole("img", { name: "0% of documents and issues complete" })
+    ).toBeInTheDocument();
+    expect(hasTooltipText("0% of documents and issues complete")).toBe(true);
+    expect(hasTooltipText("1% of documents and issues complete")).toBe(false);
+  });
+
+  it("still says 0% on the row when nothing has started", () => {
+    renderRow({
+      kind: "project",
+      data: makeProject({ completionPercentage: 0 }),
+    });
+
+    expect(
+      screen.getByRole("img", { name: "0% of documents and issues complete" })
+    ).toBeInTheDocument();
+    expect(hasTooltipText("0% of documents and issues complete")).toBe(true);
   });
 });

@@ -47,7 +47,7 @@ describe("GET /branches/[id]/selected-pull-request/files", () => {
 
   it("requires read scope and forwards canonical selected-PR identity", async () => {
     const selectedRequest = request(
-      "repositoryFullName=%2FClosedLoop-AI%2FSymphony-Alpha.git%2F&pullRequestNumber=4471"
+      "repositoryFullName=%2FClosedLoop-AI%2FClosedLoop-AI.git%2F&pullRequestNumber=4471"
     );
     const response = await GET(selectedRequest, routeContext());
 
@@ -58,7 +58,7 @@ describe("GET /branches/[id]/selected-pull-request/files", () => {
       "user-1",
       BRANCH_ID,
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 4471,
       },
       selectedRequest.signal

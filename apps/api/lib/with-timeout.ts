@@ -72,7 +72,17 @@ export function isTimeoutError(error: unknown, label: string): boolean {
  */
 export type StageResult<T> =
   | { ok: true; value: T }
-  | { ok: false; reason: DesktopHelloNackReason; cause: unknown };
+  | {
+      ok: false;
+      reason: DesktopHelloNackReason;
+      cause: unknown;
+      /**
+       * The `withTimeout` label this stage ran under. Carried on the result so a
+       * caller can `isTimeoutError(cause, label)` without re-supplying the
+       * literal — which a caller that receives the result second-hand cannot do.
+       */
+      label: string;
+    };
 
 /**
  * Race `promise` against `timeoutMs` and convert any rejection into a typed
@@ -98,6 +108,6 @@ export async function runStage<T>(
     const reason = isTimeoutError(cause, label)
       ? timeoutReason
       : (failureReason ?? timeoutReason);
-    return { ok: false, reason, cause };
+    return { ok: false, reason, cause, label };
   }
 }

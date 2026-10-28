@@ -44,7 +44,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   ACK_OMITTED_BACKOFF_MS,
   MAX_CONSECUTIVE_ACK_OMITTED,
@@ -251,7 +251,7 @@ test("ISS-5085: a ready multi-batch incremental backlog drains without 30s pause
 });
 
 test("FEA-4375: the session-only self-continue drain does NOT re-enter the component lane per session batch", async () => {
-  // wongk: the immediate self-continue must advance the SESSION lane only. If it
+  // whitlockk: the immediate self-continue must advance the SESSION lane only. If it
   // re-entered the full syncOnce() (which also kicks syncComponentsOnce()), a
   // fast component-lane failure would be retried once per session batch during a
   // large backfill instead of on its documented 5s tick. This drives a 30-session
@@ -359,8 +359,8 @@ test("FEA-4375: a persistently-failing send is bounded-retried then dead-lettere
     getSyncComputeTargetId: () => COMPUTE_TARGET,
     sendBatch: async () => {
       attempts += 1;
-      // A persistent transport fault (socket drop): it must dead-letter after
-      // MAX_CONSECUTIVE_TRANSPORT_ERRORS consecutive throws, never loop forever.
+      // A persistent UNTYPED throw (a typed network one defers the lane,
+      // ISS-10602): it must dead-letter after MAX_CONSECUTIVE_TRANSPORT_ERRORS.
       throw new Error(`socket drop (attempt ${attempts})`);
     },
   });
@@ -478,7 +478,7 @@ test("FEA-4375: validation_failed dead-letters only the rejected row and keeps h
 });
 
 test("FEA-4375 / goal stage 2: rows the server keeps omitting from the ack echo dead-letter on a bounded budget while their neighbors drain", async () => {
-  // Originally (shafty023 P2 / wongk) this pinned the terminal-dead-letter
+  // Originally (davetho P2 / whitlockk) this pinned the terminal-dead-letter
   // self-continue with a POISON LEADING BATCH: pre-ISS-5988 envelopes carried 3
   // sessions, so the poison rows and the healthy rows travelled in separate
   // envelopes and an all-poison envelope could be rejected wholesale. With

@@ -28,14 +28,12 @@ vi.mock("@repo/observability/log", () => ({
 // module this value resolves against (a top-level value import of a factory-
 // mocked module trips Vitest 4's hoist guard).
 import { MilestoneKind } from "@repo/api/src/types/user";
-import { ArtifactType, GitHubPRState } from "@repo/database";
+import { ArtifactType } from "@repo/database";
 import {
   DOCUMENTS_THRESHOLDS,
-  LOOP_CONCURRENCY_SCAN_CAP,
   MILESTONE_SCAN_CAP,
   PR_LANDED_THRESHOLDS,
   STREAK_SCAN_DAYS,
-  TOKEN_THRESHOLDS,
   userProfileService,
 } from "./user-profile-service";
 
@@ -64,8 +62,7 @@ type RawQuery = { strings: string[]; values: unknown[] };
  */
 function makeFakeDb(
   contributionRows: { day: string; n: number }[],
-  rawQueries: RawQuery[],
-  loopFindMany: Mock = vi.fn().mockResolvedValue([])
+  rawQueries: RawQuery[]
 ) {
   return {
     artifact: {
@@ -73,13 +70,6 @@ function makeFakeDb(
       groupBy: vi.fn().mockResolvedValue([]),
     },
     comment: { count: vi.fn().mockResolvedValue(0) },
-    loop: {
-      count: vi.fn().mockResolvedValue(0),
-      findMany: loopFindMany,
-      aggregate: vi.fn().mockResolvedValue({
-        _sum: { tokensInput: null, tokensOutput: null, estimatedCost: null },
-      }),
-    },
     $queryRaw: (query: RawQuery) => {
       rawQueries.push(query);
       return Promise.resolve(contributionRows);
@@ -153,34 +143,6 @@ describe("userProfileService.getUserContributionHeatmap", () => {
   });
 });
 
-describe("userProfileService.getUserProfileHeadline loop concurrency read", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("bounds the concurrency read to the trailing year and a take cap", async () => {
-    const loopFindMany = vi.fn().mockResolvedValue([]);
-    databaseMocks.withDb.mockImplementation((fn) =>
-      fn(makeFakeDb([], [], loopFindMany))
-    );
-
-    await userProfileService.getUserProfileHeadline("user-1", "org-1");
-
-    // The concurrency read feeds an O(n²) interval-overlap scan, so loading a
-    // heavy user's entire loop history is a memory + CPU risk. It must be
-    // recency-windowed and row-capped like the contribution heatmap read.
-    expect(loopFindMany).toHaveBeenCalledTimes(1);
-    const args = loopFindMany.mock.calls[0][0];
-    expect(args.where).toMatchObject({
-      userId: "user-1",
-      organizationId: "org-1",
-      startedAt: { gte: expect.any(Date) },
-    });
-    expect(args.take).toBe(LOOP_CONCURRENCY_SCAN_CAP);
-    expect(args.orderBy).toEqual({ startedAt: "desc" });
-  });
-});
-
 describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -190,20 +152,10 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
     const artifactCount = vi.fn().mockResolvedValue(0);
     const artifactGroupBy = vi.fn().mockResolvedValue([]);
     const commentCount = vi.fn().mockResolvedValue(0);
-    const loopCount = vi.fn().mockResolvedValue(0);
-    const loopFindMany = vi.fn().mockResolvedValue([]);
-    const loopAggregate = vi.fn().mockResolvedValue({
-      _sum: { tokensInput: null, tokensOutput: null, estimatedCost: null },
-    });
     const rawQueries: RawQuery[] = [];
     const db = {
       artifact: { count: artifactCount, groupBy: artifactGroupBy },
       comment: { count: commentCount },
-      loop: {
-        count: loopCount,
-        findMany: loopFindMany,
-        aggregate: loopAggregate,
-      },
       $queryRaw: (query: RawQuery) => {
         rawQueries.push(query);
         return Promise.resolve([]);
@@ -214,22 +166,20 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
       artifactCount,
       artifactGroupBy,
       commentCount,
-      loopCount,
-      loopFindMany,
-      loopAggregate,
       rawQueries,
     };
   }
 
   /**
-   * The PRs-Landed count is the one `artifact.count` call whose where clause
-   * targets BRANCH artifacts with a `branch.currentPullRequestDetail` predicate.
-   * Isolating it lets the tests assert on the merge-time windowing distinct from
-   * the DOCUMENT-count call that shares the same mocked delegate.
+   * The PRs-Landed read is the one raw query on the projected-PR-identity
+   * basis (its CASE carries the `repo:` prefix); the heatmap read never
+   * mentions it.
    */
-  function findPrLandedCall(artifactCount: Mock) {
-    return artifactCount.mock.calls.find(
-      (call) => call[0]?.where?.branch?.currentPullRequestDetail !== undefined
+  function prLandedQueryOf(rawQueries: RawQuery[]) {
+    // The identity CASE arrives as a nested fragment, so flatten before
+    // matching.
+    return rawQueries.find((query) =>
+      flattenSqlText(query).includes("'repo:'")
     );
   }
 
@@ -245,7 +195,7 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
     );
 
     const gte = { createdAt: { gte: startDate } };
-    // Documents count + subtype groupBy, comments, loops count, token aggregate.
+    // Documents count + subtype groupBy, comments.
     expect(fake.artifactCount).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining(gte) })
     );
@@ -253,12 +203,6 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
       expect.objectContaining({ where: expect.objectContaining(gte) })
     );
     expect(fake.commentCount).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining(gte) })
-    );
-    expect(fake.loopCount).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining(gte) })
-    );
-    expect(fake.loopAggregate).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining(gte) })
     );
   });
@@ -272,8 +216,24 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
     // Omitted (not null) so the all-time behavior is byte-identical to before.
     expect(fake.artifactCount.mock.calls[0][0].where.createdAt).toBeUndefined();
     expect(fake.commentCount.mock.calls[0][0].where.createdAt).toBeUndefined();
-    expect(fake.loopCount.mock.calls[0][0].where.createdAt).toBeUndefined();
-    expect(fake.loopAggregate.mock.calls[0][0].where.createdAt).toBeUndefined();
+  });
+
+  it("keeps the five retired loop fields on the headline as 0 for bundles older than ISS-12435", async () => {
+    const fake = makeInspectableDb();
+    databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
+
+    const headline = await userProfileService.getUserProfileHeadline(
+      "user-1",
+      "org-1"
+    );
+
+    expect(headline).toMatchObject({
+      totalLoops: 0,
+      avgConcurrency: 0,
+      totalTokensInput: 0,
+      totalTokensOutput: 0,
+      totalEstimatedCost: 0,
+    });
   });
 
   it("never issues the trailing-year heatmap SQL from the ranged headline read (FEA-4064 split)", async () => {
@@ -287,10 +247,14 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
       startDate
     );
 
-    // The heatmap SQL lives in a SEPARATE, unranged read now. A range click that
-    // re-fetches the headline must NOT re-issue the trailing-year heatmap SQL,
-    // so the headline read fires no $queryRaw at all.
-    expect(fake.rawQueries).toHaveLength(0);
+    // The heatmap SQL lives in a SEPARATE, unranged read now. A range click
+    // that re-fetches the headline must NOT re-issue the trailing-year heatmap
+    // SQL; the ONE raw query the headline owns is the distinct-merged-PR count
+    // (cr on PR #6112).
+    expect(fake.rawQueries).toHaveLength(1);
+    const headlineSql = flattenSqlText(fake.rawQueries[0]);
+    expect(headlineSql).not.toContain("date_trunc('day'");
+    expect(headlineSql).toContain("'repo:'");
   });
 
   it("windows PRs Landed by the PR's merge time, not the branch createdAt", async () => {
@@ -305,16 +269,21 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
     );
 
     // A branch cut months before the window but merged inside it is a landing
-    // in that window, so the lower bound lives on currentPullRequestDetail
-    // .mergedAt — never on the branch artifact's own createdAt (FEA-4064).
-    const prLandedCall = findPrLandedCall(fake.artifactCount);
-    expect(prLandedCall).toBeDefined();
-    const where = prLandedCall?.[0].where;
-    expect(where.createdAt).toBeUndefined();
-    expect(where.branch.currentPullRequestDetail).toEqual({
-      prState: GitHubPRState.MERGED,
-      mergedAt: { gte: startDate },
-    });
+    // in that window, so the lower bound lives on the PR's merged_at — never
+    // on the branch artifact's own createdAt (FEA-4064). The count is the
+    // distinct-identity SQL (cr on PR #6112), org-merged membership included.
+    const landed = prLandedQueryOf(fake.rawQueries);
+    expect(landed).toBeDefined();
+    const text = flattenSqlText(landed as RawQuery);
+    expect(text).toContain("p.merged_at >=");
+    expect(text).not.toContain("a.created_at >=");
+    // Me scope: the profile counts PRs from branches the user authored.
+    expect(text).toContain("a.created_by_id");
+    expect(text).toContain("p.last_verified_at IS NOT NULL");
+    const values = flattenSqlValues((landed as RawQuery).values);
+    expect(values).toContain(startDate);
+    expect(values).toContain("user-1");
+    expect(values).toContain("org-1");
   });
 
   it("leaves PRs Landed unbounded (all merged PRs) when no startDate is given", async () => {
@@ -323,62 +292,12 @@ describe("userProfileService.getUserProfileHeadline range scoping (FEA-4064)", (
 
     await userProfileService.getUserProfileHeadline("user-1", "org-1");
 
-    const prLandedCall = findPrLandedCall(fake.artifactCount);
-    expect(prLandedCall).toBeDefined();
-    // Omitted, not null, so the all-time count stays byte-identical to before.
-    expect(
-      prLandedCall?.[0].where.branch.currentPullRequestDetail.mergedAt
-    ).toBeUndefined();
-  });
-
-  it("tightens the concurrency scan lower bound to the selected window", async () => {
-    const fake = makeInspectableDb();
-    databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
-    // A 30-day window is well inside the trailing year, so the concurrency scan
-    // must adopt this tighter bound rather than staying on oneYearAgo, or the
-    // Avg Loop Concurrency headline lies about the window its label claims.
-    const startDate = new Date(Date.now() - 30 * DAY_MS);
-
-    await userProfileService.getUserProfileHeadline(
-      "user-1",
-      "org-1",
-      startDate
-    );
-
-    expect(fake.loopFindMany).toHaveBeenCalledTimes(1);
-    const where = fake.loopFindMany.mock.calls[0][0].where;
-    expect(where.startedAt).toEqual({ gte: startDate });
-  });
-
-  it("keeps the concurrency scan on the trailing year for a 1y+ window (bounded scan)", async () => {
-    const fake = makeInspectableDb();
-    databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
-    // A window OLDER than a year must not widen the O(n²) scan past the trailing
-    // year — the year ceiling is what keeps the scan bounded for heavy users.
-    const twoYearsAgo = new Date(Date.now() - 2 * 365 * DAY_MS);
-
-    await userProfileService.getUserProfileHeadline(
-      "user-1",
-      "org-1",
-      twoYearsAgo
-    );
-
-    const floor = fake.loopFindMany.mock.calls[0][0].where.startedAt
-      .gte as Date;
-    // Floor is oneYearAgo, strictly newer than the 2-years-ago request.
-    expect(floor.getTime()).toBeGreaterThan(twoYearsAgo.getTime());
-  });
-
-  it("keeps the concurrency scan on the trailing year when no window is selected", async () => {
-    const fake = makeInspectableDb();
-    databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
-
-    await userProfileService.getUserProfileHeadline("user-1", "org-1");
-
-    // All-time headline totals still pair with a year-bounded concurrency scan.
-    expect(fake.loopFindMany.mock.calls[0][0].where.startedAt).toEqual({
-      gte: expect.any(Date),
-    });
+    const landed = prLandedQueryOf(fake.rawQueries);
+    expect(landed).toBeDefined();
+    const text = flattenSqlText(landed as RawQuery);
+    // All-time: merged rows only, no lower bound.
+    expect(text).toContain("p.merged_at IS NOT NULL");
+    expect(text).not.toContain("p.merged_at >=");
   });
 });
 
@@ -481,7 +400,7 @@ describe("userProfileService.getUserProfileStanding (FEA-4108 streak)", () => {
 });
 
 // FEA-4108: lifetime milestones. The service reads ordered per-user aggregates
-// (landed-PR merge times, document create times, per-day token totals) and emits
+// (landed-PR merge times, document create times) and emits
 // one milestone per crossed threshold, only for thresholds actually reached.
 describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
   beforeEach(() => {
@@ -489,52 +408,41 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
   });
 
   function makeMilestonesDb(opts: {
-    prMergedAts?: Date[];
     docCreatedAts?: Date[];
-    // The token-threshold crossings are now computed in SQL; the mock returns
-    // the already-resolved crossing rows (one per crossed threshold) that the
-    // real query would emit.
-    tokenThresholdRows?: { threshold: number | bigint; earned_at: Date }[];
+    // The PR-landed crossings are computed in SQL
+    // (cr-96292 moved the PR walk into the query; the crossing SEMANTICS —
+    // landing order, one landing per branch — are integration-covered in
+    // delivery-cross-surface-invariant.integration.test.ts). The mocks return
+    // the already-resolved crossing rows the real queries would emit, routed
+    // by each query's own SQL marker.
+    prLandedThresholdRows?: { threshold: number | bigint; earned_at: Date }[];
   }) {
-    // Both the landed-PR read and the document read go through
-    // artifact.findMany now (PRs are counted as merged BRANCH artifacts, the
-    // same dedupe identity the headline uses). Route by the query's `where`:
-    // a BRANCH+currentPullRequestDetail predicate is the PR-landed read; a
-    // DOCUMENT predicate is the document read.
-    const prLandedRows = (opts.prMergedAts ?? []).map((mergedAt) => ({
-      branch: { currentPullRequestDetail: { mergedAt } },
-    }));
     const documentRows = (opts.docCreatedAts ?? []).map((createdAt) => ({
       createdAt,
     }));
-    const artifactFindMany = vi.fn(
-      (args: { where?: Record<string, unknown> }) =>
-        Promise.resolve(
-          args?.where?.branch === undefined ? documentRows : prLandedRows
-        )
-    );
+    const artifactFindMany = vi.fn(() => Promise.resolve(documentRows));
     const rawQueries: RawQuery[] = [];
     const db = {
       artifact: { findMany: artifactFindMany },
       $queryRaw: (query: RawQuery) => {
         rawQueries.push(query);
-        return Promise.resolve(opts.tokenThresholdRows ?? []);
+        return Promise.resolve(opts.prLandedThresholdRows ?? []);
       },
     };
     return { db, artifactFindMany, rawQueries };
   }
 
-  /** The landed-PR artifact.findMany call (BRANCH + currentPullRequestDetail). */
-  function prLandedCall(artifactFindMany: Mock) {
-    return artifactFindMany.mock.calls.find(
-      (call) => call[0]?.where?.branch !== undefined
+  /** The PR-landed crossing SQL (the landings/ordered CTE query). */
+  function prLandedQuery(rawQueries: RawQuery[]) {
+    return rawQueries.find((query) =>
+      query.strings.join("?").includes("landed_at")
     );
   }
 
   /** The document artifact.findMany call (DOCUMENT type). */
   function documentCall(artifactFindMany: Mock) {
     return artifactFindMany.mock.calls.find(
-      (call) => call[0]?.where?.branch === undefined
+      (call) => call[0]?.where?.type === ArtifactType.DOCUMENT
     );
   }
 
@@ -549,10 +457,9 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
 
   it("returns no milestones when no threshold is crossed (no fake empty state)", async () => {
     const fake = makeMilestonesDb({
-      prMergedAts: nDates(3),
       docCreatedAts: nDates(2),
-      // No token threshold crossed, so the SQL crossing query returns no rows.
-      tokenThresholdRows: [],
+      // No threshold crossed, so the SQL crossing query returns no rows.
+      prLandedThresholdRows: [],
     });
     databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
 
@@ -563,11 +470,17 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
     expect(milestones).toEqual([]);
   });
 
-  it("emits a PRs-landed milestone only for each crossed threshold", async () => {
+  it("maps each SQL-computed PRs-landed crossing to a milestone", async () => {
     const firstThreshold = PR_LANDED_THRESHOLDS[0];
-    const secondThreshold = PR_LANDED_THRESHOLDS[1];
-    // Enough landed PRs to cross the first threshold but not the second.
-    const fake = makeMilestonesDb({ prMergedAts: nDates(secondThreshold - 1) });
+    const crossingAt = new Date("2026-04-01T00:00:00.000Z");
+    // The crossing walk itself runs in SQL (one row per crossed threshold);
+    // its landing-order/one-landing-per-branch semantics are pinned against
+    // real Postgres in delivery-cross-surface-invariant.integration.test.ts.
+    const fake = makeMilestonesDb({
+      prLandedThresholdRows: [
+        { threshold: firstThreshold, earned_at: crossingAt },
+      ],
+    });
     databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
 
     const { milestones } = await userProfileService.getUserProfileMilestones(
@@ -578,11 +491,14 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
     const prMilestones = milestones.filter(
       (m) => m.kind === MilestoneKind.PrsLanded
     );
-    expect(prMilestones).toHaveLength(1);
-    expect(prMilestones[0].threshold).toBe(firstThreshold);
-    // earnedAt is the merge time of the threshold-th (1-based) landed PR, a Date
-    // (the app's useApiClient revives the ISO wire string back to a Date).
-    expect(prMilestones[0].earnedAt).toBeInstanceOf(Date);
+    expect(prMilestones).toEqual([
+      {
+        kind: MilestoneKind.PrsLanded,
+        threshold: firstThreshold,
+        // A Date (the app's useApiClient revives the ISO wire string).
+        earnedAt: crossingAt,
+      },
+    ]);
   });
 
   it("emits document milestones from the ordered create times", async () => {
@@ -602,59 +518,38 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
     expect(docMilestones[0].threshold).toBe(threshold);
   });
 
-  it("maps each SQL-computed token-threshold crossing to a milestone at the crossing loop's completion time", async () => {
-    const firstThreshold = TOKEN_THRESHOLDS[0];
-    // The crossing timestamp is the loop's completion instant (not a day
-    // bucket): tokens accrue during a run, so completion is when the total was
-    // actually reached — this instant would be wrong if it used loop creation.
-    const crossingAt = new Date("2026-06-14T23:30:00.000Z");
-    const fake = makeMilestonesDb({
-      tokenThresholdRows: [
-        { threshold: firstThreshold, earned_at: crossingAt },
-      ],
-    });
-    databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
-
-    const { milestones } = await userProfileService.getUserProfileMilestones(
-      "user-1",
-      "org-1"
-    );
-
-    const tokenMilestones = milestones.filter(
-      (m) => m.kind === MilestoneKind.TokensUsed
-    );
-    expect(tokenMilestones).toHaveLength(1);
-    expect(tokenMilestones[0].threshold).toBe(firstThreshold);
-    expect(tokenMilestones[0].earnedAt).toBeInstanceOf(Date);
-    expect(tokenMilestones[0].earnedAt.getTime()).toBe(crossingAt.getTime());
-  });
-
   it("org- and user-scopes the landed-PR and document reads and bounds them", async () => {
     const fake = makeMilestonesDb({});
     databaseMocks.withDb.mockImplementation((fn) => fn(fake.db));
 
     await userProfileService.getUserProfileMilestones("user-1", "org-1");
 
-    // The landed-PR read counts merged BRANCH artifacts (same dedupe identity
-    // as the headline), org- and user-scoped, ordered by the current PR's merge
-    // time, and bounded by the scan cap.
-    const prArgs = prLandedCall(fake.artifactFindMany)?.[0];
-    expect(prArgs).toBeDefined();
-    expect(prArgs.where).toMatchObject({
-      organizationId: "org-1",
-      type: ArtifactType.BRANCH,
-      createdById: "user-1",
-      branch: {
-        currentPullRequestDetail: {
-          prState: GitHubPRState.MERGED,
-          mergedAt: { not: null },
-        },
-      },
-    });
-    expect(prArgs.orderBy).toEqual({
-      branch: { currentPullRequestDetail: { mergedAt: "asc" } },
-    });
-    expect(prArgs.take).toBe(MILESTONE_SCAN_CAP);
+    // The landed-PR crossing runs in SQL (cr-96292): one landing per branch
+    // (GROUP BY + MAX over the org-merged membership), ranked by LANDING
+    // instant — never branch creation — and joined to the fixed thresholds so
+    // the read returns at most one row per threshold, uncapped and exact.
+    const landedSql = prLandedQuery(fake.rawQueries);
+    expect(landedSql).toBeDefined();
+    const landedText = flattenSqlText(landedSql as RawQuery);
+    expect(landedText).toContain("MIN(p.merged_at)");
+    // One landing per DISTINCT projected identity (cr on PR #6112), never per
+    // row or per branch.
+    expect(landedText).toContain("'repo:'");
+    expect(landedText).toContain("GROUP BY 1");
+    expect(landedText).toContain("ROW_NUMBER() OVER (ORDER BY landed_at");
+    expect(landedText).toContain("o.n = t.threshold");
+    // The org-merged membership fragment is composed in, not restated: the
+    // session-link EXISTS and the verified stamp both bind here (as a nested
+    // Prisma.sql fragment, hence the recursive text flatten).
+    expect(landedText).toContain("p.last_verified_at IS NOT NULL");
+    expect(landedText).toContain("al.organization_id");
+    // Org- and user-scoped, with the fixed thresholds as the only list param.
+    const landedValues = flattenSqlValues((landedSql as RawQuery).values);
+    expect(landedValues).toContain("org-1");
+    expect(landedValues).toContain("user-1");
+    for (const threshold of PR_LANDED_THRESHOLDS) {
+      expect(landedValues).toContain(threshold);
+    }
 
     const docArgs = documentCall(fake.artifactFindMany)?.[0];
     expect(docArgs).toBeDefined();
@@ -666,30 +561,25 @@ describe("userProfileService.getUserProfileMilestones (FEA-4108)", () => {
     expect(docArgs.orderBy).toEqual({ createdAt: "asc" });
     expect(docArgs.take).toBe(MILESTONE_SCAN_CAP);
 
-    // The token-crossing read is org- and user-scoped in SQL, buckets the
-    // crossing at loop completion (COALESCE(completed_at, created_at)) rather
-    // than creation, and returns only the fixed thresholds via a windowed
-    // cumulative sum — so it never grows one row per active day.
     expect(fake.rawQueries).toHaveLength(1);
-    const tokenSql = fake.rawQueries[0].strings.join("?");
-    expect(tokenSql).toContain("COALESCE(completed_at, created_at)");
-    expect(tokenSql).toContain("OVER (");
-    expect(tokenSql).toContain("running_total >= t.threshold");
-    // user_id and organization_id are the first two bound params; the fixed
-    // TOKEN_THRESHOLDS follow, embedded as nested Prisma.sql/Prisma.join
-    // fragments for the UNNEST(ARRAY[...]) list. Prisma flattens those nested
-    // fragments' values into the final parameter list at execution time, so
-    // collect every leaf param and assert the exact bound-value set.
-    const values = fake.rawQueries[0].values;
-    expect(values[0]).toBe("user-1");
-    expect(values[1]).toBe("org-1");
-    expect(flattenSqlValues(values)).toEqual([
-      "user-1",
-      "org-1",
-      ...TOKEN_THRESHOLDS,
-    ]);
   });
 });
+
+/** Recursively concatenate a Prisma.sql template's text, descending into
+ * nested fragments bound as values, so composed-in predicates are visible. */
+function flattenSqlText(query: RawQuery): string {
+  let out = query.strings.join("?");
+  for (const value of query.values) {
+    if (
+      value &&
+      typeof value === "object" &&
+      Array.isArray((value as { strings?: unknown }).strings)
+    ) {
+      out += flattenSqlText(value as RawQuery);
+    }
+  }
+  return out;
+}
 
 /** Recursively flatten a Prisma.sql values array (nested fragments carry their
  * own `values`) into the flat, ordered list of leaf bound parameters. */

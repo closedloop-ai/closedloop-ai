@@ -4,7 +4,6 @@ import { env } from "@/env";
 export const GOOGLE_STATE_COOKIE = "google_oauth_state";
 export const GOOGLE_VERIFIER_COOKIE = "google_oauth_verifier";
 
-// Google OAuth URL
 export const GOOGLE_OAUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 
 /**

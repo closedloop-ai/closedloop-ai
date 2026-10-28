@@ -6,7 +6,7 @@
  * `agent-session-sync-backfill-fairness.test.ts` proves the FLOOR end-to-end
  * through the real service: an unbroken incremental lane no longer starves the
  * historical backfill. What it structurally cannot see is the other end of the
- * policy — the UNSPENT reservation (wongk on PR #4946). Its backfill corpus is
+ * policy — the UNSPENT reservation (whitlockk on PR #4946). Its backfill corpus is
  * always ready, so the reserved tick always finds backfill work and the
  * hand-back branch never executes; deleting that branch outright would leave it
  * green while every reserved tick on a real install — where backfill rows sit
@@ -21,8 +21,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import {
   advanceIncrementalPassCount,
   type DrainSelectionInput,

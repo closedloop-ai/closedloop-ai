@@ -2,31 +2,15 @@ import type { AgentMonitorRuntimeStatus } from "../../shared/agent-monitor-statu
 import type { CloudReadReadinessSnapshot } from "../../shared/cloud-read-readiness-contract.js";
 import type { ConnectionSecurityStatus } from "../../shared/connection-security.js";
 import { FEATURE_FLAGS } from "../../shared/feature-flags.js";
+import { RuntimeInfoIpcChannel } from "../../shared/runtime-info-ipc-channel.js";
 import type { AgentSessionSyncProgress } from "../agent-sync/agent-session-sync-service-options.js";
+import type { ComputeTargetLinkBlockState } from "../agent-sync/compute-target-link-block.js";
 import type { CloudSocketStatus } from "../cloud/cloud-protocol.js";
 import type { FileAccessBlock } from "../collectors/engine/file-access-probe.js";
-import type { AuthorizedCommandKeyStore } from "../command-signing/authorized-command-key-store.js";
 import type { AgentDashboardDesignSystemRuntime } from "../dashboard/agent-dashboard-design-system-runtime.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import type { TranscriptSyncStatusSnapshot } from "../transcript-sync/transcript-sync-options.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const RuntimeInfoIpcChannel = {
-  GetAppVersion: "desktop:get-app-version",
-  GetAllFlags: "desktop:get-all-flags",
-  GetTranscriptSyncStatus: "desktop:get-transcript-sync-status",
-  GetRuntimeStatus: "desktop:get-runtime-status",
-  /**
-   * ISS-5477: whether the desktop→cloud backlog has drained far enough for the
-   * renderer to move its read source to the cloud. A separate channel from
-   * `GetRuntimeStatus` because it is polled on its own (much shorter) cadence
-   * while the reader waits, and stops entirely once the cutover latches.
-   */
-  GetCloudReadReadiness: "desktop:get-cloud-read-readiness",
-} as const;
-
-export type RuntimeInfoIpcChannel =
-  (typeof RuntimeInfoIpcChannel)[keyof typeof RuntimeInfoIpcChannel];
 
 type IngestProgress = ReturnType<
   AgentDashboardDesignSystemRuntime["getIngestProgress"]
@@ -47,36 +31,58 @@ type IpcMainLike = {
 export type RuntimeInfoIpcDeps = {
   /** Reject IPC events whose sender is not the trusted renderer window. */
   isTrustedSender: (sender: unknown) => boolean;
+  /**
+   * ISS-8776 — is there no live renderer window left to verify against?
+   *
+   * Consulted only to LABEL a refusal `isTrustedSender` has already made, never
+   * to grant one. Wired on this registrar in particular because
+   * `desktop:get-runtime-status` is the health channel the renderer polls once a
+   * second: during a fatal `app.exit()` teardown every poll in flight was
+   * refused, and reporting those as `untrusted sender` made the app's own
+   * renderer look like an attacker in the crash log. Optional so an existing
+   * caller or test that does not wire it keeps today's behavior exactly.
+   */
+  isRendererWindowGone?: () => boolean;
   // Injected (rather than importing `electron`) so this registrar carries no
   // module-scope electron dependency and stays loadable under `test:node`.
   getAppVersion: () => string;
   getIsPackaged: () => boolean;
   settingsStore: SettingsStore;
-  authorizedCommandKeys: AuthorizedCommandKeyStore;
   getTranscriptSyncStatus: () => Promise<TranscriptSyncStatusSnapshot>;
   getActivePort: () => number;
   getCloudStatus: () => CloudSocketStatus;
   getCloudCommandsPaused: () => boolean;
   getCloudConnectionEnabled: () => boolean;
   getConnectionSecurityStatus: () => ConnectionSecurityStatus;
-  getServerCommandSigningSupported: () => boolean;
   isServerAlive: () => boolean;
   getGatewayHealthy: () => boolean;
   getIngestProgress: () => IngestProgress | null;
   getFileAccessBlocks: () => FileAccessBlock[];
   getMaintenanceProgress: () => MaintenanceProgress | null;
   getCloudSyncProgress: () => AgentSessionSyncProgress;
+  /**
+   * ISS-11426: the compute-target link block, or null when nothing is blocked.
+   * Optional so a caller that predates it — the harness and several test
+   * builders — keeps working and the field degrades to absent.
+   */
+  getComputeTargetLinkBlock?: () => ComputeTargetLinkBlockState | null;
   getDashboardReady: () => boolean;
   // ISS-4714: the first-class Agent Monitor runtime status. Drives the renderer
   // "update required — your data is newer than this app" degraded state when the
   // local DB is ahead of the app build, so the UI never pretends sync is healthy.
   getAgentMonitorStatus: () => AgentMonitorRuntimeStatus;
   /**
-   * ISS-5477: the burn-down-backed readiness the renderer's read-source gate
-   * reads. Returns an UNKNOWN snapshot (never a drained one) whenever the
-   * burn-down has no sample to report.
+   * The burn-down-backed readiness the Settings → History Sync cell and the
+   * startup panel read. Returns an UNKNOWN snapshot (never a drained one)
+   * whenever the burn-down has no sample to report.
    */
   getCloudReadReadiness: () => CloudReadReadinessSnapshot;
+  /**
+   * ISS-11838: the install's `node_uuid`, which the renderer's session-replay
+   * client sends as its distinct id. Undefined before the composition root
+   * publishes it; the renderer then does not record.
+   */
+  getNodeUuid: () => string | undefined;
 };
 
 export function registerRuntimeInfoIpcHandlers(
@@ -101,7 +107,17 @@ export function registerRuntimeInfoIpcHandlers(
     // FEA-3639: the payload now carries `fileAccessBlocks[].path` (harness
     // transcript roots), so restrict it to the trusted renderer like the
     // per-file-path `GetTranscriptSyncStatus` sibling above.
-    assertTrustedIpcSender(deps.isTrustedSender, event);
+    //
+    // ISS-8776: the third argument only LABELS a refusal already decided by
+    // `isTrustedSender`. This channel is polled once a second, so during a
+    // fatal `app.exit()` teardown every in-flight poll is refused with no
+    // window left to verify against — reported as `untrusted sender`, that read
+    // as an attack on the app's own renderer. It is a teardown, and it says so.
+    assertTrustedIpcSender(
+      deps.isTrustedSender,
+      event,
+      deps.isRendererWindowGone
+    );
     return {
       port: deps.getActivePort(),
       cloudStatus: deps.getCloudStatus(),
@@ -111,12 +127,6 @@ export function registerRuntimeInfoIpcHandlers(
       commandsPaused: deps.getCloudCommandsPaused(),
       connectionEnabled: deps.getCloudConnectionEnabled(),
       connectionSecurity: deps.getConnectionSecurityStatus(),
-      commandSigning: {
-        serverSupported: deps.getServerCommandSigningSupported(),
-        enforcementEnabled:
-          deps.settingsStore.getCommandSigningEnforcementEnabled(),
-        authorizedKeyCount: deps.authorizedCommandKeys.list().length,
-      },
       serverAlive: deps.isServerAlive(),
       gatewayHealthy: deps.getGatewayHealthy(),
       // Per-harness first-pass ingest progress for the dashboard FTUE loading
@@ -135,13 +145,19 @@ export function registerRuntimeInfoIpcHandlers(
       // "syncing your history" indicator (counts only, no ids/content). Drives
       // the History Sync status in Settings → Connection Status.
       cloudSync: deps.getCloudSyncProgress(),
+      // ISS-11426: the block object ONLY while the cloud is refusing this
+      // machine's compute target as not owned by the signed-in account, and
+      // `null` the rest of the time — including when the main process predates
+      // the getter. The key is always sent; `null` is the "nothing is blocked"
+      // value, and the renderer's Zod projection answers a missing or
+      // unreadable value the same way (tamsinb).
+      computeTargetLinkBlock: deps.getComputeTargetLinkBlock?.() ?? null,
       // ISS-5768: the WHOLE-APP backlog, on the same 1s cadence the indicator
       // already polls. `cloudSync.caughtUp` above is the session lane alone, so
       // an indicator built on it claimed "Up to date" while the component
-      // inventory still owed thousands of rows. Same counts-only projection the
-      // read-source gate reads via `GetCloudReadReadiness`, and the same
-      // in-memory read of the last burn-down sample (sampled once a minute), so
-      // adding it here costs a field copy, not a measurement.
+      // inventory still owed thousands of rows. A counts-only in-memory read of
+      // the last burn-down sample (sampled once a minute), so adding it here
+      // costs a field copy, not a measurement.
       cloudReadReadiness: deps.getCloudReadReadiness(),
       // Whether the initial collector import has completed, so the sidebar can
       // show the Dashboard nav item as "still preparing" (throbber) until the
@@ -157,13 +173,7 @@ export function registerRuntimeInfoIpcHandlers(
       // is identical packaged vs unpackaged, so this must come from the main
       // process — `import.meta.env` cannot distinguish them.
       isPackaged: deps.getIsPackaged(),
+      nodeUuid: deps.getNodeUuid(),
     };
-  });
-  // ISS-5477: per-lane drain state + queue depths only — counts, never content.
-  // Sender-gated like its siblings: the payload describes how far behind this
-  // machine's account is, which is not something an untrusted frame may sample.
-  ipcMainLike.handle(RuntimeInfoIpcChannel.GetCloudReadReadiness, (event) => {
-    assertTrustedIpcSender(deps.isTrustedSender, event);
-    return deps.getCloudReadReadiness();
   });
 }

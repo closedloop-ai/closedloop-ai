@@ -52,7 +52,8 @@ const meta: Meta<typeof SessionTimelineSummary> = {
       </div>
     ),
   ],
-  title: "App Core/Agents/Session Timeline Summary",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Summary",
+  tags: ["deprecated"],
 };
 
 export default meta;

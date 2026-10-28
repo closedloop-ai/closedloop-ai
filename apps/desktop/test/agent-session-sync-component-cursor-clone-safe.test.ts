@@ -30,7 +30,7 @@
  * below fail (wrong op + a non-cloneable arg).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";
 import type { AgentComponentCursorRow } from "../src/main/agent-sync/agent-session-sync-source.js";
@@ -106,7 +106,7 @@ test("component cursor persist dispatches a clone-safe advanceSyncState invoke t
   // forget component lane — it awaits the lane's load/send/advance (and thus the
   // persist dispatch under test) instead of guessing a fixed flush count, so this
   // stays deterministic even if another await is later added to the persist path
-  // (wongk review).
+  // (whitlockk review).
   await service.whenComponentSyncSettled();
   service.refresh();
   await service.whenComponentSyncSettled();
@@ -146,6 +146,9 @@ test("component cursor persist dispatches a clone-safe advanceSyncState invoke t
       observedTopUpdatedAt: "2026-07-31T03:06:00.000Z",
       observedIdsAtTopUpdatedAt: ["cmp-2"],
       deadLetteredIds: [],
+      // ISS-8593: the per-id bookkeeping rides the same clone-safe payload —
+      // plain objects only, so the structuredClone assertion above still holds.
+      deadLetterAttempts: [],
     });
   }
 });

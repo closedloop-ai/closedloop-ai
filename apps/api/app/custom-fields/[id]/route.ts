@@ -1,16 +1,30 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { CustomFieldWithOptions } from "@repo/api/src/types/custom-field";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
+  machineUpdateReceipt,
+  machineWriteReceipt,
+} from "@/lib/machine-write-receipt";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  badRequestResponse,
   conflictResponse,
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { customFieldsService, DuplicateNameError } from "../service";
+import { requireCustomFieldsAdmin } from "../custom-fields-admin-gate";
+import {
+  customFieldsService,
+  DuplicateNameError,
+  IncompatibleNumberFormatError,
+  IncompatibleReferenceSourcesError,
+} from "../service";
 import { ReservedNameError } from "../utils";
 import { updateCustomFieldValidator } from "../validators";
 
@@ -37,71 +51,107 @@ export const GET = withAnyAuth<CustomFieldWithOptions, "/custom-fields/[id]">(
 /**
  * PUT /custom-fields/:id - Update a custom field definition (org admins only)
  */
-export const PUT = withAnyAuth<CustomFieldWithOptions, "/custom-fields/[id]">(
-  async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-    try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
-      }
+export const PUT = withAnyAuth(
+  withOperationReceipts<CustomFieldWithOptions, "/custom-fields/[id]">(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, params, receipts) => {
+      try {
+        const denial = await requireCustomFieldsAdmin(clerkOrgId, clerkUserId);
+        if (denial) {
+          return denial;
+        }
 
-      const { id } = await params;
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        updateCustomFieldValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
+        const { id } = await params;
+        const { body, errorResponse: parseError } = await parseBody(
+          request,
+          updateCustomFieldValidator
+        );
+        if (parseError) {
+          return parseError;
+        }
 
-      const field = await customFieldsService.findById(id, user.organizationId);
-      if (!field) {
-        return notFoundResponse("Custom field");
-      }
+        const field = await customFieldsService.findById(
+          id,
+          user.organizationId
+        );
+        if (!field) {
+          return notFoundResponse("Custom field");
+        }
 
-      const updated = await customFieldsService.updateField(
-        id,
-        user.organizationId,
-        body
-      );
+        const updated = await customFieldsService.updateField(
+          id,
+          user.organizationId,
+          body,
+          receipts.whenRecording((tx, { changedFields }) =>
+            receipts.record(
+              tx,
+              machineUpdateReceipt(
+                OperationKind.OrganizationWrite,
+                changedFields
+              )
+            )
+          )
+        );
 
-      return successResponse(updated);
-    } catch (error) {
-      if (error instanceof DuplicateNameError) {
-        return conflictResponse("Custom field with this name already exists");
+        return successResponse(withOperationReceipt(updated, receipts));
+      } catch (error) {
+        if (error instanceof DuplicateNameError) {
+          return conflictResponse("Custom field with this name already exists");
+        }
+        if (error instanceof ReservedNameError) {
+          return conflictResponse(error.message);
+        }
+        if (error instanceof IncompatibleNumberFormatError) {
+          return badRequestResponse(error.message);
+        }
+        if (error instanceof IncompatibleReferenceSourcesError) {
+          return badRequestResponse(error.message);
+        }
+        return errorResponse("Failed to update custom field", error);
       }
-      if (error instanceof ReservedNameError) {
-        return conflictResponse(error.message);
-      }
-      return errorResponse("Failed to update custom field", error);
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );
 
 /**
  * DELETE /custom-fields/:id - Delete a custom field definition (org admins only)
  */
-export const DELETE = withAnyAuth<{ deleted: true }, "/custom-fields/[id]">(
-  async ({ user, clerkOrgId, clerkUserId }, _, params) => {
-    try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
+export const DELETE = withAnyAuth(
+  withOperationReceipts<{ deleted: true }, "/custom-fields/[id]">(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, _, params, receipts) => {
+      try {
+        const denial = await requireCustomFieldsAdmin(clerkOrgId, clerkUserId);
+        if (denial) {
+          return denial;
+        }
+
+        const { id } = await params;
+
+        const field = await customFieldsService.findById(
+          id,
+          user.organizationId
+        );
+        if (!field) {
+          return notFoundResponse("Custom field");
+        }
+
+        await customFieldsService.deleteField(
+          id,
+          user.organizationId,
+          receipts.whenRecording((tx) =>
+            receipts.record(
+              tx,
+              machineWriteReceipt(OperationKind.OrganizationWrite, true)
+            )
+          )
+        );
+        return deleteResponse(receipts.receipt);
+      } catch (error) {
+        return errorResponse("Failed to delete custom field", error);
       }
-
-      const { id } = await params;
-
-      const field = await customFieldsService.findById(id, user.organizationId);
-      if (!field) {
-        return notFoundResponse("Custom field");
-      }
-
-      await customFieldsService.deleteField(id, user.organizationId);
-      return deleteResponse();
-    } catch (error) {
-      return errorResponse("Failed to delete custom field", error);
     }
-  },
+  ),
   { requiredScopes: ["delete"] }
 );

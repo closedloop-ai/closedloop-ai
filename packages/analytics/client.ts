@@ -7,19 +7,29 @@ import {
 import type { FeatureFlagResult } from "posthog-js";
 import type { PostHog } from "posthog-js/react";
 import { useEffect, useState } from "react";
-import { z } from "zod";
+import { suppressesFeatureFlag, useCustomerViewState } from "./customer-view";
+import {
+  featureFlagValueRecordSchema,
+  useFeatureFlagOverride,
+} from "./feature-flag-overrides";
+import { isPostHogFlagValueEnabled } from "./feature-flag-value";
 import { keys } from "./keys";
+import { usePinnedFeatureFlag } from "./pinned-feature-flags";
 
 export type AnalyticsClient = Pick<
   PostHog,
   | "identify"
   | "capture"
   | "reset"
-  // Session-replay + runtime-config controls, used by the staff-gated
-  // frontend-capture controller (FEA-2400) to start/stop recording on demand.
+  // Session-replay + runtime-config controls, used through
+  // `./session-replay` by the web-app frontend-capture controller (FEA-2400,
+  // ISS-10650) and the marketing replay controller (ISS-12558).
   | "startSessionRecording"
   | "stopSessionRecording"
   | "set_config"
+  // Person-property writes for the FTUE analytics port (PRD-736:
+  // `first_org_user` set on the person at org-step resolution).
+  | "setPersonProperties"
 >;
 type RawFeatureFlagResult = FeatureFlagResult | boolean | string | undefined;
 
@@ -28,7 +38,30 @@ export function useAnalytics(): AnalyticsClient {
 }
 
 export function useFeatureFlag(flag: string): FeatureFlagResult | undefined {
+  const customerView = useCustomerViewState();
+  const override = useFeatureFlagOverride(flag);
+  const pinned = usePinnedFeatureFlag(flag);
   const result = normalizeFeatureFlagResult(flag, useFeatureFlagSafe(flag));
+  // ISS-7477: dev-mode-off. Suppression is decided AFTER every hook above has
+  // run (rules of hooks) and BEFORE the QA fail-open below, because customer
+  // view is an explicit, revocable choice by an internal user and a leftover
+  // localStorage opt-in must not quietly re-open the flags they just closed.
+  // The result is a settled `false`, never `undefined` — see `CustomerViewState`.
+  if (suppressesFeatureFlag(customerView, flag)) {
+    return settledFeatureFlagResult(flag, false);
+  }
+  // ISS-12048: a Dev Tools override wins over PostHog, the E2E fixture and the
+  // QA fail-open, and is `undefined` unless Dev Mode is on (operator decision,
+  // 2026-10-05). Dev Mode on means the customer view above is inactive, so the
+  // two never compete for one flag.
+  if (override !== undefined) {
+    return settledFeatureFlagResult(flag, override);
+  }
+  // ISS-12048: a `$vibe` preview's production snapshot, below a Dev Mode
+  // override and above PostHog, matching the precedence `apps/api` applies.
+  if (pinned !== undefined) {
+    return settledFeatureFlagResult(flag, pinned);
+  }
   // Fail open for automated QA. When PostHog IS configured (prod) but a flag
   // never resolves — posthog-js did not initialize, e.g. an automated VQA
   // browser — every `<FeatureFlagged>` surface would otherwise render its blank
@@ -45,12 +78,61 @@ export function useFeatureFlag(flag: string): FeatureFlagResult | undefined {
   return result;
 }
 
+/**
+ * ISS-12048: the flag's real value for the Dev Tools overlay: a `$vibe`
+ * preview's pinned snapshot value, else PostHog's own answer, with no Dev Mode
+ * override and no customer view applied. `undefined` while PostHog has not
+ * answered, and `false` for a flag PostHog does not return once it has (unset
+ * in production). It does not report the read, so the overlay listing every flag
+ * does not mark every flag as checked by the page.
+ */
+export function useFeatureFlagProductionValue(
+  flag: string
+): boolean | undefined {
+  const pinned = usePinnedFeatureFlag(flag);
+  const live = normalizeFeatureFlagResult(flag, useSilentFeatureFlagSafe(flag));
+  return pinned ?? live?.enabled;
+}
+
 const { NEXT_PUBLIC_POSTHOG_KEY } = keys();
 const posthogEnabled = !!NEXT_PUBLIC_POSTHOG_KEY;
 const usePostHogSafe = posthogEnabled ? usePostHogOriginal : () => noopClient;
 const useFeatureFlagSafe = posthogEnabled
   ? (flag: string) => useFeatureFlagOriginal(flag) as RawFeatureFlagResult
   : readFallbackFeatureFlag;
+const useSilentFeatureFlagSafe = posthogEnabled
+  ? useSilentPostHogFeatureFlag
+  : readFallbackFeatureFlag;
+
+/** Read the overlay's reference value without recording experiment exposure. */
+function useSilentPostHogFeatureFlag(flag: string): RawFeatureFlagResult {
+  const client = usePostHogOriginal();
+  const [result, setResult] = useState(() =>
+    readSilentPostHogFeatureFlag(client, flag)
+  );
+  useEffect(() => {
+    setResult(readSilentPostHogFeatureFlag(client, flag));
+    return client?.onFeatureFlags(() => {
+      setResult(readSilentPostHogFeatureFlag(client, flag));
+    });
+  }, [client, flag]);
+  return result;
+}
+
+/**
+ * PostHog answers `undefined` both before its flags load and for a flag it
+ * does not return; only the second is a settled `false` (ISS-12048).
+ */
+function readSilentPostHogFeatureFlag(
+  client: PostHog | undefined,
+  flag: string
+): RawFeatureFlagResult {
+  const result = client?.getFeatureFlagResult(flag, { send_event: false });
+  if (result === undefined && client?.featureFlags?.hasLoadedFlags) {
+    return false;
+  }
+  return result;
+}
 
 /**
  * Preserve the app-facing object contract even when the underlying PostHog hook
@@ -61,17 +143,17 @@ function normalizeFeatureFlagResult(
   result: RawFeatureFlagResult
 ): FeatureFlagResult | undefined {
   if (typeof result === "boolean") {
-    return {
-      key: flag,
-      enabled: result,
-      variant: undefined,
-      payload: undefined,
-    };
+    return settledFeatureFlagResult(flag, result);
   }
   if (typeof result === "string") {
     return {
       key: flag,
-      enabled: true,
+      // ISS-8024: the enabled/disabled rule is shared with the server-side
+      // whole-assignment read rather than re-stated here. The two had already
+      // drifted on the empty-string variant, which is the cross-surface
+      // disagreement that work exists to remove. Behavior is unchanged: a
+      // variant string is enabled, as it has always been on this path.
+      enabled: isPostHogFlagValueEnabled(result),
       variant: result,
       payload: undefined,
     };
@@ -86,6 +168,7 @@ const noopClient: AnalyticsClient = {
   startSessionRecording: () => {},
   stopSessionRecording: () => {},
   set_config: () => {},
+  setPersonProperties: () => {},
 };
 
 /**
@@ -105,12 +188,7 @@ const noopClient: AnalyticsClient = {
  */
 function readFallbackFeatureFlag(flag: string): FeatureFlagResult {
   return (
-    resolveTestingFeatureFlag(flag) ?? {
-      key: flag,
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    }
+    resolveTestingFeatureFlag(flag) ?? settledFeatureFlagResult(flag, false)
   );
 }
 
@@ -135,12 +213,10 @@ function resolveTestingFeatureFlag(
   if (!(blanketFailOpen || fixtureFlags)) {
     return undefined;
   }
-  return {
-    key: flag,
-    enabled: blanketFailOpen || fixtureFlags?.[flag] === true,
-    variant: undefined,
-    payload: undefined,
-  };
+  return settledFeatureFlagResult(
+    flag,
+    blanketFailOpen || fixtureFlags?.[flag] === true
+  );
 }
 
 function readFallbackFeatureFlagFixture(): Record<string, boolean> | undefined {
@@ -156,7 +232,7 @@ function readFallbackFeatureFlagFixture(): Record<string, boolean> | undefined {
       return undefined;
     }
 
-    const parsedFlags = fallbackFeatureFlagsSchema.safeParse(
+    const parsedFlags = featureFlagValueRecordSchema.safeParse(
       JSON.parse(rawFlags)
     );
     return parsedFlags.success ? parsedFlags.data : undefined;
@@ -273,7 +349,46 @@ export function usePostHogDistinctId(): string | undefined {
   return distinctId;
 }
 
+/**
+ * A flag result that is DECIDED — the caller can act on it — as opposed to the
+ * `undefined` PostHog returns while a value is still in flight.
+ */
+function settledFeatureFlagResult(
+  flag: string,
+  enabled: boolean
+): FeatureFlagResult {
+  return { key: flag, enabled, variant: undefined, payload: undefined };
+}
+
 const FALLBACK_FEATURE_FLAGS_STORAGE_KEY = "closedloop:e2e-feature-flags";
 const FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY =
   "closedloop:feature-flags-fail-open";
-const fallbackFeatureFlagsSchema = z.record(z.string(), z.boolean());
+
+/**
+ * ISS-12558: the flag's value from a `/flags` response this page load
+ * received, or `undefined` until one arrives. posthog-js otherwise answers from
+ * the flags it persisted on an earlier visit before `/flags` returns, and a
+ * failed `/flags` request leaves those in place too; `fresh: true` refuses both
+ * (posthog-js 1.359.1 `getFeatureFlagResult`). There is no Dev Mode override,
+ * pinned snapshot, E2E fixture or QA fail-open here, and it is `undefined`
+ * when PostHog is unconfigured, so a caller acting on it acts only on what
+ * PostHog just said. The read reports `$feature_flag_called` the way
+ * `useFeatureFlag` does, once per distinct value.
+ */
+export function useFeatureFlagFreshValue(flag: string): boolean | undefined {
+  const client = usePostHogOriginal();
+  const [enabled, setEnabled] = useState<boolean | undefined>(undefined);
+
+  useEffect(() => {
+    if (!(posthogEnabled && client)) {
+      return;
+    }
+    const read = () => {
+      setEnabled(client.getFeatureFlagResult(flag, { fresh: true })?.enabled);
+    };
+    read();
+    return client.onFeatureFlags(read);
+  }, [client, flag]);
+
+  return enabled;
+}

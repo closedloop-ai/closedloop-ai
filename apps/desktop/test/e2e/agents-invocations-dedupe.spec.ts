@@ -15,17 +15,18 @@
  *    `agent_component_session_usage` over the child rows whose `pack_id` matches
  *    the plugin's key. A web-only spec proves nothing about that path, and the
  *    double-count is a property of the rollup, not of the wire.
- *  - The FLAG. The packaged renderer has no PostHog wiring, so it resolves the
- *    byte-equal key from its own Labs registry
- *    (`DESKTOP_AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY`). A split key would
- *    land the fix on web and leave desktop dark forever.
+ *  - The FLAG. The renderer runs no PostHog SDK of its own, so it resolves the
+ *    byte-equal key (aliased as
+ *    `DESKTOP_AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY`) from the signed-in
+ *    account's PostHog assignment, delivered over the IPC bridge. A split key
+ *    would land the fix on web and leave desktop dark forever.
  *
  * The corpus is the production shape: a plugin that seeds NO usage of its own,
  * two children under its pack that between them carry 30 + 20 invocations, and a
  * fourth row — a subagent in no pack at all, carrying 15. The desktop reader
  * therefore projects the plugin at 50 (its children's sum) and emits each row's
  * `packIds`, so on the default "All" tab the card's flat sum is 115 while only 65
- * invocations really happened. The pack-less subagent is wongk's review case made
+ * invocations really happened. The pack-less subagent is whitlockk's review case made
  * executable: it is a plugin-CHILD kind that is nobody's child, so a reducer that
  * dropped every plugin the moment any child-kind row appeared would still be
  * wrong here in the general case. A childless plugin, or children with no usage,
@@ -42,7 +43,7 @@
  * running. `packages/app/AGENTS.md` requires a UI bug fix in a shared component to
  * carry a regression e2e on each shell that MOUNTS it, and the Agents workspace
  * mounts here (`src/renderer/components/agents/agents-view.tsx`) as well as on web
- * (wongk review on #5038) — so this arm is not a courtesy copy of the web spec.
+ * (whitlockk review on #5038) — so this arm is not a courtesy copy of the web spec.
  *
  * Prerequisites:
  *   - Build first: `pnpm -C apps/desktop prebuild && pnpm -C apps/desktop build`
@@ -53,19 +54,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
-// Explicit `.ts`, as the sibling `@repo/…` imports in
-// `activity-phase-label-parity.spec.ts` do: this Electron Playwright spec
-// resolves workspace packages through the pnpm symlink and neither `@repo/api`
-// nor `@repo/app` ships an `exports` map. Extension-less `@repo/api/src/…`
-// specifiers INSIDE an imported module still resolve fine — that sibling spec
-// imports `session-activity-phases.ts`, which reaches
-// `@repo/api/src/activity-phase-labels` and `@repo/api/src/utils/string` that
-// way — so this module's own extension-less
-// `@repo/api/src/types/agent-component` import is on the established shape. The
+// Explicit `.ts`, as the sibling `@repo/…` imports in these Electron specs do:
+// this Playwright spec resolves workspace packages through the pnpm symlink and
+// neither `@repo/api` nor `@repo/app` ships an `exports` map. Extension-less
+// `@repo/api/src/…` specifiers INSIDE an imported module still resolve fine, so
+// this module's own extension-less `@repo/api/src/types/agent-component` import
+// is on the established shape. The
 // explainer is therefore read from the gate that renders it rather than copied,
 // and a reworded sentence cannot leave this arm asserting a string the card
 // stopped saying.
-import { invocationsDerivation } from "@repo/app/agents/lib/agents-summary-aggregate.ts";
+import { invocationsDerivation } from "@repo/api/src/utils/agent-component-summary-aggregate.ts";
 import {
   gotoNav,
   launchDesktopApp,
@@ -118,7 +116,7 @@ const SKILL_COMPONENT_NAME = "iss-5534-review-skill";
 const COMMAND_COMPONENT_NAME = "iss-5534-commit-command";
 
 /**
- * A subagent in NO pack — a plugin-CHILD kind that is nobody's child (wongk
+ * A subagent in NO pack — a plugin-CHILD kind that is nobody's child (whitlockk
  * review on #4902). Its presence must not cause the plugin's rollup to be
  * dropped, so its invocations are added on BOTH sides of the gate.
  */
@@ -152,22 +150,16 @@ const SEEDED_CORPUS: AgentComponentUsageCorpus = {
   sessions: [
     {
       costUsd: 4,
-      linesAdded: 400,
-      linesRemoved: 40,
       name: "ISS-5534 review session",
       sessionId: "iss-5534-review-session",
     },
     {
       costUsd: 2,
-      linesAdded: 120,
-      linesRemoved: 10,
       name: "ISS-5534 commit session",
       sessionId: "iss-5534-commit-session",
     },
     {
       costUsd: 1,
-      linesAdded: 60,
-      linesRemoved: 5,
       name: "ISS-5534 standalone session",
       sessionId: "iss-5534-standalone-session",
     },
@@ -253,7 +245,7 @@ test.describe("Agents Invocations de-duplication, Labs gate ON (ISS-5534)", () =
         // the gate, so this popover promised a plain per-component sum beside
         // the deduped 65.
         await expect(await openInvocationsInfo(page)).toContainText(
-          invocationsDerivation(true).how
+          invocationsDerivation(true).explain(true).how
         );
       }
     );
@@ -288,8 +280,12 @@ test.describe("Agents Invocations de-duplication, Labs gate OFF (ISS-5534 dark-l
         // sentence. Without this arm a `toContainText` against a popover that
         // never opened would look identical to one that opened correctly.
         const info = await openInvocationsInfo(page);
-        await expect(info).toContainText(invocationsDerivation(false).how);
-        await expect(info).not.toContainText(invocationsDerivation(true).how);
+        await expect(info).toContainText(
+          invocationsDerivation(false).explain(true).how
+        );
+        await expect(info).not.toContainText(
+          invocationsDerivation(true).explain(true).how
+        );
       }
     );
   });

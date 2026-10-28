@@ -94,7 +94,7 @@ export function isSkillInvokedSlashKey(
 }
 
 /**
- * ISS-5260 (wongk review): does this invocation carry its OWN definition, making
+ * ISS-5260 (whitlockk review): does this invocation carry its OWN definition, making
  * it a genuine command whatever the inventory says?
  *
  * The per-row exclusion condition 2 above describes, hoisted so the collector

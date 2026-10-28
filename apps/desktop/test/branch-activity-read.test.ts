@@ -2,24 +2,30 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import {
+  MonitoredSessionActivityEventKind,
+  normalizeSyncedMonitoredSessionActivity,
+} from "@repo/api/src/types/session-monitored-activity";
+import { test } from "vitest";
+import { normalizeBranchActivityScopes } from "../src/main/database/branch-activity-identity.js";
+import { queryBranchActivityRows } from "../src/main/database/branch-activity-query.js";
 import type { BranchCanonicalActivityKey } from "../src/main/database/branch-activity-read.js";
 import type { SqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 
-const REPOSITORY = "closedloop-ai/symphony-alpha";
+const REPOSITORY = "closedloop-ai/closedloop-ai";
 const FIRST_BRANCH = "fix/first";
 const SECOND_BRANCH = "fix/second";
 const THIRD_BRANCH = "fix/third";
 const FIRST_AT = "2026-08-12T12:00:00.000Z";
 const SECOND_AT = "2026-08-12T12:05:00.000Z";
+const OVERSIZED_JSON_PADDING_LENGTH = 300_000;
 
 test("ISS-6061: reads regular and private carriers with exact Branch and PR attribution", async () => {
   await withActivityDatabase(async (db) => {
@@ -273,7 +279,7 @@ test("ISS-6061: invalid private ref envelopes cannot contribute a Complete insta
   });
 });
 
-test("ISS-6061: per-target 50/51 cap preserves the latest instant and downgrades truncation", async () => {
+test("ISS-9860: a 51-event carrier reads Complete with its newest instant now that the per-target cap is retired", async () => {
   await withActivityDatabase(async (db) => {
     await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
     await seedBranch(db, "branch-second", REPOSITORY, SECOND_BRANCH);
@@ -296,17 +302,12 @@ test("ISS-6061: per-target 50/51 cap preserves the latest instant and downgrades
 
     assert.deepEqual(await readActivity(db, [FIRST_BRANCH, SECOND_BRANCH]), [
       activityRow(FIRST_BRANCH, "fifty-49", timestamp(49)),
-      activityRow(
-        SECOND_BRANCH,
-        "fifty-one-50",
-        timestamp(150),
-        BranchActivityEvidenceCompleteness.Partial
-      ),
+      activityRow(SECOND_BRANCH, "fifty-one-50", timestamp(150)),
     ]);
   });
 });
 
-test("ISS-6061: combined Session 100/101 cap spans regular and private carriers", async () => {
+test("ISS-9860: 100 and 101 events across regular and private carriers in one Session read Complete now that the Session cap is retired", async () => {
   await withActivityDatabase(async (db) => {
     await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
     await seedBranch(db, "branch-second", REPOSITORY, SECOND_BRANCH);
@@ -370,30 +371,15 @@ test("ISS-6061: combined Session 100/101 cap spans regular and private carriers"
     assert.deepEqual(
       await readActivity(db, [FIRST_BRANCH, SECOND_BRANCH, THIRD_BRANCH]),
       [
-        activityRow(
-          FIRST_BRANCH,
-          "hundred-one-first-49",
-          timestamp(49),
-          BranchActivityEvidenceCompleteness.Partial
-        ),
-        activityRow(
-          SECOND_BRANCH,
-          "hundred-one-second-49",
-          timestamp(99),
-          BranchActivityEvidenceCompleteness.Partial
-        ),
-        activityRow(
-          THIRD_BRANCH,
-          "hundred-one-private-0",
-          timestamp(200),
-          BranchActivityEvidenceCompleteness.Partial
-        ),
+        activityRow(FIRST_BRANCH, "hundred-one-first-49", timestamp(49)),
+        activityRow(SECOND_BRANCH, "hundred-one-second-49", timestamp(99)),
+        activityRow(THIRD_BRANCH, "hundred-one-private-0", timestamp(200)),
       ]
     );
   });
 });
 
-test("ISS-6061: SQL bounds an oversized private ref array before projection", async () => {
+test("ISS-6061: the private ref overflow sentinel remains attributable", async () => {
   await withActivityDatabase(async (db) => {
     await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
     await seedSession(
@@ -404,7 +390,7 @@ test("ISS-6061: SQL bounds an oversized private ref array before projection", as
           activityRef({
             kind: ArtifactRefTargetKind.Branch,
             repositoryFullName: REPOSITORY,
-            branchName: FIRST_BRANCH,
+            branchName: index === 100 ? FIRST_BRANCH : SECOND_BRANCH,
             carrier: carrier(`overflow-${index}`, timestamp(index)),
           })
         )
@@ -422,11 +408,339 @@ test("ISS-6061: SQL bounds an oversized private ref array before projection", as
   });
 });
 
+test("ISS-6422: SQL validation drops strict-invalid siblings and degrades the survivor", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "mixed-validation-session", null);
+    await seedRegularCarrier(
+      db,
+      "mixed-validation-link",
+      "mixed-validation-session",
+      "branch-first",
+      {
+        completeness: BranchActivityEvidenceCompleteness.Complete,
+        events: [
+          {
+            kind: MonitoredSessionActivityEventKind.AgentAction,
+            sourceEventId: "valid-sibling",
+            occurredAt: FIRST_AT,
+            completeness: BranchActivityEvidenceCompleteness.Complete,
+          },
+          {
+            kind: MonitoredSessionActivityEventKind.AgentAction,
+            sourceEventId: "strict-invalid-sibling",
+            occurredAt: SECOND_AT,
+            completeness: BranchActivityEvidenceCompleteness.Complete,
+            additiveField: true,
+          },
+          {
+            kind: MonitoredSessionActivityEventKind.AgentRead,
+            sourceEventId: "invalid-calendar-date",
+            occurredAt: "2026-02-30T12:00:00.000Z",
+            completeness: BranchActivityEvidenceCompleteness.Complete,
+          },
+        ],
+      }
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(
+        FIRST_BRANCH,
+        "valid-sibling",
+        FIRST_AT,
+        BranchActivityEvidenceCompleteness.Partial
+      ),
+    ]);
+  });
+});
+
+test("ISS-6422: SQL latest-event ties use the stable source identity", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "tie-session", null);
+    await seedRegularCarrier(db, "tie-link", "tie-session", "branch-first", {
+      completeness: BranchActivityEvidenceCompleteness.Complete,
+      events: [
+        {
+          kind: MonitoredSessionActivityEventKind.AgentAction,
+          sourceEventId: "tie-zeta",
+          occurredAt: SECOND_AT,
+          completeness: BranchActivityEvidenceCompleteness.Complete,
+        },
+        {
+          kind: MonitoredSessionActivityEventKind.AgentRead,
+          sourceEventId: "tie-alpha",
+          occurredAt: SECOND_AT,
+          completeness: BranchActivityEvidenceCompleteness.Complete,
+        },
+      ],
+    });
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(FIRST_BRANCH, "tie-alpha", SECOND_AT),
+    ]);
+  });
+});
+
+test("ISS-6422: regular and private carrier IDs remain lane- and session-specific", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedBranch(db, "branch-second", REPOSITORY, SECOND_BRANCH);
+    await seedSession(db, "regular-session", null);
+    await seedRegularCarrier(
+      db,
+      "private-session:0",
+      "regular-session",
+      "branch-first",
+      carrier("regular-collision-event", FIRST_AT)
+    );
+    await seedSession(
+      db,
+      "private-session",
+      privateMetadata([
+        activityRef({
+          kind: ArtifactRefTargetKind.Branch,
+          repositoryFullName: REPOSITORY,
+          branchName: SECOND_BRANCH,
+          carrier: carrier("private-collision-event", SECOND_AT),
+        }),
+      ])
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH, SECOND_BRANCH]), [
+      activityRow(FIRST_BRANCH, "regular-collision-event", FIRST_AT),
+      activityRow(SECOND_BRANCH, "private-collision-event", SECOND_AT),
+    ]);
+  });
+});
+
+test("ISS-6422: SQL ranking truncates sub-milliseconds like Date.parse", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "sub-millisecond-session", null);
+    await seedRegularCarrier(
+      db,
+      "sub-millisecond-link",
+      "sub-millisecond-session",
+      "branch-first",
+      {
+        completeness: BranchActivityEvidenceCompleteness.Complete,
+        events: [
+          activityEvent("z-higher-fraction", "2026-08-12T12:05:00.0009Z"),
+          activityEvent("a-lower-fraction", "2026-08-12T12:05:00.0001Z"),
+        ],
+      }
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(
+        FIRST_BRANCH,
+        "a-lower-fraction",
+        "2026-08-12T12:05:00.0001Z"
+      ),
+    ]);
+  });
+});
+
+test("ISS-6422: SQL and shared normalization use Unicode code-point ties", async () => {
+  const events = [
+    activityEvent("z-lowercase", SECOND_AT),
+    activityEvent("Z-uppercase", SECOND_AT),
+    activityEvent("é-accent", SECOND_AT),
+    activityEvent("😀-supplementary", SECOND_AT),
+    activityEvent("!punctuation", SECOND_AT),
+  ];
+  const normalized = normalizeSyncedMonitoredSessionActivity({
+    completeness: BranchActivityEvidenceCompleteness.Complete,
+    events,
+  });
+  assert.equal(normalized?.events.at(0)?.sourceEventId, "!punctuation");
+
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "unicode-tie-session", null);
+    await seedRegularCarrier(
+      db,
+      "unicode-tie-link",
+      "unicode-tie-session",
+      "branch-first",
+      {
+        completeness: BranchActivityEvidenceCompleteness.Complete,
+        events,
+      }
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(FIRST_BRANCH, "!punctuation", SECOND_AT),
+    ]);
+  });
+});
+
+test("ISS-6422: final rows validate lookup identities and preserve persisted bytes", async () => {
+  const repository = `${"o".repeat(99)}/${"r".repeat(100)}`;
+  const branch = "b".repeat(300);
+  const persistedRepository = `//${repository}.git//`;
+  const persistedBranch = `\u3000${branch}\u2029`;
+  await withActivityDatabase(async (db) => {
+    await seedBranch(
+      db,
+      "unicode-whitespace-branch",
+      persistedRepository,
+      persistedBranch
+    );
+    await seedSession(
+      db,
+      "unicode-whitespace-session",
+      privateMetadata([
+        activityRef({
+          kind: ArtifactRefTargetKind.Branch,
+          repositoryFullName: repository,
+          branchName: branch,
+          carrier: carrier("\ufefftrimmed-source\t", SECOND_AT),
+        }),
+      ])
+    );
+
+    const rows = await queryBranchActivityRows(
+      db.prisma,
+      normalizeBranchActivityScopes([
+        { repoFullName: repository, branchName: branch },
+      ])
+    );
+    assert.deepEqual(rows, [
+      {
+        repoFullName: persistedRepository,
+        branchName: persistedBranch,
+        sourceEventId: "trimmed-source",
+        occurredAt: SECOND_AT,
+        completeness: BranchActivityEvidenceCompleteness.Complete,
+      },
+    ]);
+  });
+});
+
+test("ISS-6422: private timestamp validation survives large session metadata", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedBranch(db, "branch-second", REPOSITORY, SECOND_BRANCH);
+    await seedBranch(db, "branch-third", REPOSITORY, THIRD_BRANCH);
+    await seedSession(
+      db,
+      "timestamp-session",
+      privateMetadata(
+        [
+          {
+            ...activityRef({
+              kind: ArtifactRefTargetKind.Branch,
+              repositoryFullName: REPOSITORY,
+              branchName: FIRST_BRANCH,
+              carrier: carrier("basic-offset-event", FIRST_AT),
+            }),
+            observedAt: "2026-08-12T14:05:00+0200",
+          },
+          {
+            ...activityRef({
+              kind: ArtifactRefTargetKind.Branch,
+              repositoryFullName: REPOSITORY,
+              branchName: SECOND_BRANCH,
+              carrier: carrier("rfc-event", SECOND_AT),
+            }),
+            observedAt: "Wed, 12 Aug 2026 12:00:00 GMT",
+          },
+          {
+            ...activityRef({
+              kind: ArtifactRefTargetKind.Branch,
+              repositoryFullName: REPOSITORY,
+              branchName: THIRD_BRANCH,
+              carrier: carrier("sqlite-only-event", SECOND_AT),
+            }),
+            observedAt: "now",
+          },
+        ],
+        OVERSIZED_JSON_PADDING_LENGTH
+      )
+    );
+
+    assert.deepEqual(
+      await readRawActivity(db, [FIRST_BRANCH, SECOND_BRANCH, THIRD_BRANCH]),
+      [
+        activityRow(FIRST_BRANCH, "basic-offset-event", FIRST_AT),
+        activityRow(SECOND_BRANCH, "rfc-event", SECOND_AT),
+        {
+          repoFullName: REPOSITORY,
+          branchName: THIRD_BRANCH,
+          sourceEventId: "malformed-carrier:timestamp-session:2",
+          occurredAt: null,
+          completeness: BranchActivityEvidenceCompleteness.Partial,
+        },
+      ]
+    );
+  });
+});
+
+test("ISS-9860: a 500-event carrier reads its newest event Complete now that the first-200 raw scan is retired", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "oversized-events-session", null);
+    await seedRegularCarrier(
+      db,
+      "oversized-events-link",
+      "oversized-events-session",
+      "branch-first",
+      carrierWithEvents("oversized", 500, 0)
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(FIRST_BRANCH, "oversized-499", timestamp(499)),
+    ]);
+  });
+});
+
+test("ISS-9860: oversized attributable carrier JSON reads whole now that the 256 KiB guard is retired", async () => {
+  await withActivityDatabase(async (db) => {
+    await seedBranch(db, "branch-first", REPOSITORY, FIRST_BRANCH);
+    await seedSession(db, "oversized-json-session", null);
+    await seedRegularCarrier(
+      db,
+      "oversized-json-link",
+      "oversized-json-session",
+      "branch-first",
+      carrier("oversized-json-event", SECOND_AT)
+    );
+    await db.run(
+      "UPDATE session_artifact_links SET evidence = $1 WHERE id = $2",
+      JSON.stringify({
+        monitoredSessionActivity: carrier("oversized-json-event", SECOND_AT),
+        padding: "x".repeat(OVERSIZED_JSON_PADDING_LENGTH),
+      }),
+      "oversized-json-link"
+    );
+
+    assert.deepEqual(await readRawActivity(db, [FIRST_BRANCH]), [
+      activityRow(FIRST_BRANCH, "oversized-json-event", SECOND_AT),
+    ]);
+  });
+});
+
 function readActivity(db: SqliteAgentDatabase, branchNames: readonly string[]) {
   const branchKeys: BranchCanonicalActivityKey[] = branchNames.map(
     (branchName) => ({ repoFullName: REPOSITORY, branchName })
   );
   return db.readBranchCanonicalActivityRows({ branchKeys });
+}
+
+async function readRawActivity(
+  db: SqliteAgentDatabase,
+  branchNames: readonly string[]
+) {
+  const branchKeys: BranchCanonicalActivityKey[] = branchNames.map(
+    (branchName) => ({ repoFullName: REPOSITORY, branchName })
+  );
+  const directRows = await queryBranchActivityRows(
+    db.prisma,
+    normalizeBranchActivityScopes(branchKeys)
+  );
+  return directRows;
 }
 
 async function withActivityDatabase(
@@ -513,8 +827,11 @@ async function seedRegularCarrier(
   );
 }
 
-function privateMetadata(refs: readonly unknown[]): string {
-  return JSON.stringify({ __monitoredSessionActivityRefs: refs });
+function privateMetadata(refs: readonly unknown[], paddingLength = 0): string {
+  return JSON.stringify({
+    ...(paddingLength > 0 ? { padding: "x".repeat(paddingLength) } : {}),
+    __monitoredSessionActivityRefs: refs,
+  });
 }
 
 function activityRef(input: {
@@ -553,6 +870,15 @@ function carrier(
         completeness,
       },
     ],
+  };
+}
+
+function activityEvent(sourceEventId: string, occurredAt: string) {
+  return {
+    kind: MonitoredSessionActivityEventKind.AgentAction,
+    sourceEventId,
+    occurredAt,
+    completeness: BranchActivityEvidenceCompleteness.Complete,
   };
 }
 

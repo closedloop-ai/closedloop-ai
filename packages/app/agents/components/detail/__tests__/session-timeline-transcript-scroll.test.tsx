@@ -9,10 +9,11 @@ import {
   TRACE_SCROLL_OUTCOME_MESSAGE,
   TraceScrollOutcome,
 } from "@repo/app/agents/lib/trace-scroll-target";
+import { SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
 import type { FixtureRoute } from "@repo/app/shared/storybook/fixture-fetch";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -238,6 +239,8 @@ async function renderDivergentDetail() {
   );
   // Wait for the parsed cloud trace to render; the DB fallback never shows.
   await screen.findByText("steer past the first hour");
+  // ISS-10139: the strip goes live a commit after that text paints.
+  await findLiveBucketBars();
   stubRowRects();
 }
 
@@ -258,9 +261,7 @@ describe("Session Timeline → transcript scroll on a divergent web session (FEA
      * two bins are projected onto the window's 24 columns and the LAST jumpable
      * column — not `bars[1]` — is the one owned by the 90-minute turn.
      */
-    const bars = screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    });
+    const bars = await findJumpableBucketBars();
     const lastBar = bars.at(-1);
     if (!lastBar) {
       throw new Error("Expected the timeline to render jumpable columns");
@@ -288,9 +289,7 @@ describe("Session Timeline → transcript scroll on a divergent web session (FEA
     const user = userEvent.setup();
     await renderDivergentDetail();
 
-    const bars = screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    });
+    const bars = await findJumpableBucketBars();
     // Bucket 0 → DB _row 0 (opening turn) → nearest-time rendered row 1 — a
     // DISTINCT target from the 90m bar's row 3, proving the columns resolve
     // per-turn rather than both collapsing to the top of the transcript.
@@ -340,7 +339,7 @@ describe("Session Timeline → transcript scroll on a divergent web session (FEA
  * ISS-5479: three bars over the same 91-minute window. `alignBucketRowsToTranscript`
  * re-keys each bar's `tl0` to the first transcript row inside its own time slice
  * and forward-fills the empty ones, so bars 0 and 1 BOTH resolve to DB `_row` 0
- * — the collapse Mike reported ("only some of the columns actually scroll"). The
+ * — the collapse Marisol reported ("only some of the columns actually scroll"). The
  * third bar covers the 90-minute turn.
  */
 function collapsedBuckets(): ActivityBucket[] {
@@ -407,9 +406,7 @@ describe("Session Timeline bars that collapse onto one transcript anchor (ISS-54
     const user = userEvent.setup();
     const scroller = await renderCollapsedDetail();
 
-    const bars = screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    });
+    const bars = await findJumpableBucketBars(2);
     expect(bars.length).toBeGreaterThan(1);
 
     // First bar of the collapsed pair: resolves to rendered row 1 and moves.
@@ -451,9 +448,7 @@ describe("Session Timeline bars that collapse onto one transcript anchor (ISS-54
 
     // ISS-5999: the LAST jumpable column, which the 90-minute turn owns once the
     // producer's bins are projected onto the window's 24 columns.
-    const bars = screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    });
+    const bars = await findJumpableBucketBars();
     const lastBar = bars.at(-1);
     if (!lastBar) {
       throw new Error("Expected the timeline to render jumpable columns");
@@ -530,6 +525,9 @@ async function renderIdleBucketDetail() {
     </AppCoreStoryProviders>
   );
   await screen.findByText("steer past the first hour");
+  // ISS-10139: before the strip goes live every bar reads "Activity bucket …",
+  // so `firstIdleBar()` would pick a jumpable one.
+  await findLiveBucketBars();
 }
 
 /** The in-place answers on the bucket tooltip's meta row (`getBucketJumpHint`). */
@@ -571,9 +569,7 @@ describe("Session Timeline bar with no jump row at all (ISS-5479)", () => {
     const user = userEvent.setup();
     await renderIdleBucketDetail();
 
-    const jumpable = screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    })[0];
+    const jumpable = (await findJumpableBucketBars())[0];
     await user.hover(jumpable);
 
     expect(await screen.findByText(CLICK_TO_OPEN_HINT)).toBeInTheDocument();
@@ -588,9 +584,7 @@ describe("Session Timeline bar with no jump row at all (ISS-5479)", () => {
     // pointer affordance, and what the click does finally agree.
     expect(idleBar.className).toContain("no-jump");
     // The bars that CAN jump must not pick up either treatment.
-    for (const bar of screen.getAllByRole("button", {
-      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-    })) {
+    for (const bar of await findJumpableBucketBars()) {
       expect(bar).toHaveAttribute("aria-disabled", "false");
       expect(bar.className).not.toContain("no-jump");
     }
@@ -659,6 +653,9 @@ describe("Session Timeline jump that cannot land (ISS-5479)", () => {
       </AppCoreStoryProviders>
     );
     await screen.findByText("steer past the first hour");
+    // ISS-10139: these bars never jump, so the absence below is only
+    // meaningful once the strip is live.
+    await findLiveBucketBars();
     const scroller = document.querySelector<HTMLElement>(".sd3-scroll");
     if (!scroller) {
       throw new Error("Expected the transcript scroll container");
@@ -728,6 +725,7 @@ async function renderRowlessDotDetail() {
     </AppCoreStoryProviders>
   );
   await screen.findByText("steer past the first hour");
+  await findLiveBucketBars();
 }
 
 describe("Session Timeline dot whose marker carries no jump row (ISS-5479)", () => {
@@ -790,4 +788,115 @@ function firstIdleBar(): HTMLElement {
     throw new Error("Expected the timeline to render an idle column");
   }
   return bar;
+}
+
+/**
+ * Matches BOTH forms of a bucket button's accessible name — "Jump to activity
+ * bucket …" and the withdrawn "Activity bucket …" — so the blocked case below
+ * and its resolvable control are found by ONE locator at ONE index. A negative
+ * asserted through a query that only the blocked render satisfies proves
+ * nothing about the class it claims to withhold.
+ */
+const ANY_BUCKET_NAME = /activity bucket/i;
+
+async function renderForReach(
+  session: AgentSessionDetail,
+  enabledFlags: readonly string[]
+): Promise<HTMLElement> {
+  stubBytes();
+  render(
+    <AppCoreStoryProviders
+      apiRoutes={[transcriptRoute()]}
+      enabledFlags={enabledFlags}
+    >
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={session}
+      />
+    </AppCoreStoryProviders>
+  );
+  await screen.findByText("steer past the first hour");
+  const bar = (await findLiveBucketBars())[1];
+  if (!bar) {
+    throw new Error("Expected the timeline to render bucket columns");
+  }
+  return bar;
+}
+
+describe("Session Timeline reach target on an unresolvable jump (ISS-8727)", () => {
+  it("withholds the full-column target from a bar whose jump cannot land", async () => {
+    const user = userEvent.setup();
+    const bar = await renderForReach(untranslatableSession(), [
+      SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY,
+    ]);
+
+    // Pin WHICH block this bar carries. `.no-jump` alone would also match an
+    // anchorless slice, and that case was never the defect — this hint is only
+    // reachable for a bucket whose `tl0` is real and absent from the read
+    // transcript.
+    await user.hover(bar);
+    expect(await screen.findByText(NOT_IN_TRANSCRIPT_HINT)).toBeInTheDocument();
+
+    // The affordance is still withdrawn — nothing about the announced state
+    // changes, and the reader keeps the tooltip on the bar itself.
+    expect(bar).toHaveAttribute("aria-disabled", "true");
+    expect(bar.className).toContain("no-jump");
+    // …and the hit box no longer contradicts it. Before ISS-8727 this same bar
+    // wore a column-tall region that announced itself unavailable and did
+    // nothing when clicked.
+    expect(bar.className).not.toContain(REACH_CLASS);
+  });
+
+  it("keeps the full-column target on a bar whose jump lands", async () => {
+    const user = userEvent.setup();
+    const bar = await renderForReach(divergentWebSession(), [
+      SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY,
+    ]);
+
+    // Same locator, same index, same assertion as the negative above — so the
+    // withheld class is withheld for the BLOCK, not for the query.
+    await user.hover(bar);
+    expect(await screen.findByText(CLICK_TO_OPEN_HINT)).toBeInTheDocument();
+    expect(bar).toHaveAttribute("aria-disabled", "false");
+    expect(bar.className).toContain(REACH_CLASS);
+  });
+
+  it("leaves the unresolvable bar's target exactly as it is with the flag off", async () => {
+    const bar = await renderForReach(untranslatableSession(), []);
+
+    // ISS-4779 closed-by-default: flag off is today's render, enlarged target
+    // and withdrawn affordance both.
+    expect(bar.className).toContain("no-jump");
+    expect(bar.className).toContain(REACH_CLASS);
+  });
+});
+
+/** ISS-5548's column-height hit box, applied by `getBucketReachClass`. */
+const REACH_CLASS = "reach";
+
+function findJumpableBucketBars(minCount = 1): Promise<HTMLElement[]> {
+  return waitFor(() => {
+    const bars = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    expect(bars.length).toBeGreaterThanOrEqual(minCount);
+    return bars;
+  });
+}
+
+/**
+ * ISS-10139: every bucket bar, once the strip is live. The strip stays
+ * `disabled` until the trace publishes its rendered rows — a commit AFTER the
+ * transcript text paints. Waiting on `disabled` rather than a "Jump to …" name
+ * keeps the wait independent of whether the fixture has any jumpable bar.
+ */
+function findLiveBucketBars(): Promise<HTMLElement[]> {
+  return waitFor(() => {
+    const bars = screen.getAllByRole("button", { name: ANY_BUCKET_NAME });
+    for (const bar of bars) {
+      expect(bar).toBeEnabled();
+    }
+    return bars;
+  });
 }

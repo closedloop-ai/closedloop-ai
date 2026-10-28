@@ -172,7 +172,7 @@ describe("TimeSeriesAreaChart interactive legend (desktop renderer adapter)", ()
     fireEvent.click(legendButton("gpt-5"));
 
     // The hidden series' area is gone — the plot tracked the hide flag, not just
-    // the aria-pressed toggle (wongk review). Restore brings it back.
+    // the aria-pressed toggle (whitlockk review). Restore brings it back.
     expect(container.querySelectorAll(".recharts-area")).toHaveLength(1);
 
     fireEvent.click(legendButton("gpt-5"));
@@ -217,12 +217,12 @@ describe("TimeSeriesAreaChart interactive legend (desktop renderer adapter)", ()
       />
     );
 
-    // Data identity changed → toggle state resets (wongk review).
+    // Data identity changed → toggle state resets (whitlockk review).
     expect(ariaPressed("gpt-5")).toBe("true");
   });
 });
 
-// FEA-4264 (wongk review): the donut opts OUT of the interactive legend, so
+// FEA-4264 (whitlockk review): the donut opts OUT of the interactive legend, so
 // this is the DESKTOP renderer adapter's coverage that DonutChart mounts under
 // the renderer runtime and renders a STATIC legend — an entry per slice, none
 // of them toggle buttons.

@@ -22,6 +22,11 @@
  * consumers, not all of them — migrating `apps/app` remains open.
  */
 
+import {
+  createContainerWidthObserverShim,
+  DEFAULT_STUB_CONTAINER_WIDTH_PX,
+} from "./vitest-container-width-stub";
+
 // jsdom does not implement matchMedia, which `useMediaQuery` reads. Components
 // behind the responsive-modal hook (the shared confirmation / delete / rename
 // dialogs) mount it, so provide a global non-matching stub rather than per test.
@@ -65,44 +70,15 @@ if (typeof Element !== "undefined") {
 // reports a fixed non-zero size once, so the virtualizer measures a usable
 // viewport and renders the short fixtures these tests use. Test infrastructure
 // only — production windowing is unconditional.
+//
+// ISS-7432: the observer itself is no longer declared here. It is the same class
+// the parameterized helpers install, taken from the sibling module with no
+// registry — so this process-wide install reports once at `observe` and records
+// nothing, exactly as the copy it replaces did, while a suite that needs to VARY
+// the width calls `stubContainerWidthPx`/`stubResizableContainerWidthPx` and
+// gets one implementation rather than a second shim to keep in step.
 if (typeof globalThis.ResizeObserver === "undefined") {
-  const OBSERVED_WIDTH = 800;
-  const OBSERVED_HEIGHT = 600;
-
-  // Fully typed rather than cast into shape: `ResizeObserverEntry` needs
-  // contentBoxSize and devicePixelContentBoxSize alongside borderBoxSize, and
-  // the repo's no-double-cast gate (FEA-4114) exempts test *files* but not a
-  // shared setup module like this one.
-  class ResizeObserverShim implements ResizeObserver {
-    private readonly callback: ResizeObserverCallback;
-
-    constructor(callback: ResizeObserverCallback) {
-      this.callback = callback;
-    }
-
-    observe(target: Element, _options?: ResizeObserverOptions): void {
-      const size: ResizeObserverSize = {
-        inlineSize: OBSERVED_WIDTH,
-        blockSize: OBSERVED_HEIGHT,
-      };
-      const entry: ResizeObserverEntry = {
-        target,
-        contentRect: new DOMRect(0, 0, OBSERVED_WIDTH, OBSERVED_HEIGHT),
-        borderBoxSize: [size],
-        contentBoxSize: [size],
-        devicePixelContentBoxSize: [size],
-      };
-      this.callback([entry], this);
-    }
-
-    unobserve(): void {
-      // no-op
-    }
-
-    disconnect(): void {
-      // no-op
-    }
-  }
-
-  globalThis.ResizeObserver = ResizeObserverShim;
+  globalThis.ResizeObserver = createContainerWidthObserverShim(
+    () => DEFAULT_STUB_CONTAINER_WIDTH_PX
+  );
 }

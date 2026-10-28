@@ -10,18 +10,16 @@
  * recovery ladder in `transcript-sync-executor-missing-source.test.ts` (#4195).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { RedactedJsonlTranscriptLineTooLongError } from "@repo/lib/security/redacted-jsonl-transcript";
+import { test } from "vitest";
 import type { TranscriptUploadedInput } from "../src/main/database/transcript-sync-settle.js";
 import { createTranscriptSyncExecutor } from "../src/main/transcript-sync/transcript-sync-executor.js";
 import { redactedArchiveCursorTargetId } from "../src/main/transcript-sync/transcript-sync-types.js";
-// #4150 (shafty023 review): the executor fakes (recording store/client, fake fs
+// #4150 (davetho review): the executor fakes (recording store/client, fake fs
 // deps, fingerprint + temp-transcript builders) moved to a focused sibling so
-// this grandfathered test finishes below its pinned base rather than growing
+// this test file finishes smaller rather than growing
 // with the ISS-4647 source-recovery cluster. Shared with the parity suite.
 import {
   A32,
@@ -466,6 +464,7 @@ test("redaction line-length overflow is terminally skipped, not retried", async 
     kind: "skipped",
     reason: "redacted line too large",
     permanent: true,
+    permanentCause: TranscriptSkipReason.TooLarge,
   });
   assert.equal(store.dead.length, 1);
   assert.equal(store.failures.length, 0);
@@ -525,6 +524,7 @@ test("ISS-4621: a line-length overflow stays retryable when the cloud skip is NO
     kind: "skipped",
     reason: "redacted line too large",
     permanent: true,
+    permanentCause: TranscriptSkipReason.TooLarge,
   });
   assert.equal(store.dead.length, 1);
 });
@@ -545,12 +545,23 @@ test("ISS-4621/ISS-4695: notifyPermanentSkip reports the cloud ack + status (ack
 
   // ISS-4695: the ack now carries the server's authoritative terminal status
   // (the default recordingClient answers `skipped`).
+  //
+  // ISS-9884 (review): and its authoritative REASON. This assertion said
+  // `retries_exhausted` — the reason REQUESTED — while the fake answers
+  // `too_large`, and it passed only because the emit result echoed the request
+  // back. It reports what the server said it PERSISTED now, which is the value
+  // both callers write to the local column, so the desktop cannot render
+  // "Upload paused" for a row the cloud settled `failedPermanent`.
   assert.deepEqual(
     await executor.notifyPermanentSkip(
       fingerprint(),
       TranscriptSkipReason.RetriesExhausted
     ),
-    { acked: true, status: TranscriptUploadStatus.Skipped }
+    {
+      acked: true,
+      status: TranscriptUploadStatus.Skipped,
+      reason: TranscriptSkipReason.TooLarge,
+    }
   );
   assert.deepEqual(client.skipRequests[0], {
     computeTargetId: "ct-1",
@@ -562,19 +573,37 @@ test("ISS-4621/ISS-4695: notifyPermanentSkip reports the cloud ack + status (ack
 
   // A caller-pinned target (the one the failed attempt ran against) wins over
   // the live target, so a reconnect between attempt and skip cannot split the
-  // record across two target identities.
+  // record across two target identities. The reason is the fake server's
+  // `too_large` for the same ISS-9884 reason as above.
   assert.deepEqual(
     await executor.notifyPermanentSkip(
       fingerprint(),
       TranscriptSkipReason.RetriesExhausted,
       "ct-attempt"
     ),
-    { acked: true, status: TranscriptUploadStatus.Skipped }
+    {
+      acked: true,
+      status: TranscriptUploadStatus.Skipped,
+      reason: TranscriptSkipReason.TooLarge,
+    }
   );
   assert.deepEqual(
     (client.skipRequests[1] as { computeTargetId: string }).computeTargetId,
     "ct-attempt"
   );
+
+  // ISS-9884: a null snapshot pins too. The attempt ran under no target, so no
+  // cloud is told — never the live `ct-1`, whose acknowledgement the caller
+  // could not record against the row it dead-letters.
+  assert.deepEqual(
+    await executor.notifyPermanentSkip(
+      fingerprint(),
+      TranscriptSkipReason.EnvironmentUnavailable,
+      null
+    ),
+    { acked: false }
+  );
+  assert.equal(client.skipRequests.length, 2, "no skip request was sent");
 
   // ISS-4695: an `uploaded` answer is still acked, but carries the status the
   // drain-queue reads to AVOID dead-lettering (the cloud holds the bytes).
@@ -589,7 +618,11 @@ test("ISS-4621/ISS-4695: notifyPermanentSkip reports the cloud ack + status (ack
       fingerprint(),
       TranscriptSkipReason.RetriesExhausted
     ),
-    { acked: true, status: TranscriptUploadStatus.Uploaded }
+    {
+      acked: true,
+      status: TranscriptUploadStatus.Uploaded,
+      reason: TranscriptSkipReason.RetriesExhausted,
+    }
   );
 
   client.skip = () => Promise.reject(new Error("relay 502"));
@@ -626,7 +659,7 @@ test("marks the row uploading before any stat/checksum read (FEA-2827 race guard
   const store = recordingStore();
   store.markUploading = () => {
     order.push("markUploading");
-    return Promise.resolve();
+    return Promise.resolve(true);
   };
   const client = recordingClient(
     {

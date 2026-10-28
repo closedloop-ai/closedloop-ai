@@ -6,13 +6,13 @@ const spawnMock = vi.hoisted(() => vi.fn());
 const recoverMigrateDeployFailureMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
-vi.mock("./migrate-deploy-recovery", () => ({
+vi.mock("./migrate-deploy-recovery", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./migrate-deploy-recovery")>()),
   recoverMigrateDeployFailure: recoverMigrateDeployFailureMock,
 }));
 
-const { PRISMA_CLI_ENTRY_ENV, runMigrateWithRetry } = await import(
-  "./migration-pipeline"
-);
+const { runMigrateWithRetry } = await import("./migration-pipeline");
+const { PRISMA_CLI_ENTRY_ENV } = await import("./prisma-cli");
 
 /*
  * The two `prisma` CLI wrappers inside migration-pipeline.ts -- the migrate
@@ -397,7 +397,7 @@ describe("prisma CLI invocation — PRISMA_CLI_ENTRY", () => {
  * travels as the child's `cwd`.
  *
  * It arrives as a PER-INVOCATION option, not a `PRISMA_CLI_CWD` env var
- * (review: shafty023). An env var is the same process-global reach one
+ * (review: davetho). An env var is the same process-global reach one
  * indirection later: this pipeline is shared by every build and migrator
  * caller, so a stale inherited value would silently run Prisma from the wrong
  * config directory. The last case below is what makes that a behavior rather
@@ -549,7 +549,7 @@ describe("prisma CLI invocation — per-invocation ESM resolver preload", () => 
     // jobs run under a `NODE_OPTIONS` of their own (heap ceilings, dd-trace),
     // so an inherited value is SEEDED and asserted to reach the child unchanged
     // — asserting absence would go red there, and asserting "equal to the
-    // parent's" proves nothing when both are unset (review: wongk).
+    // parent's" proves nothing when both are unset (review: whitlockk).
     const inherited = "--max-old-space-size=4096";
     vi.stubEnv("NODE_OPTIONS", inherited);
     spawnReturns({ status: 0 });
@@ -659,7 +659,7 @@ describe("prisma CLI invocation — per-invocation ESM resolver preload", () => 
 });
 
 /*
- * ISS-6403, review: shafty023. `spawnSync` bounded its captured output with
+ * ISS-6403, review: davetho. `spawnSync` bounded its captured output with
  * `maxBuffer` and killed the child past it. The async drain that replaced it
  * accumulated into JS strings with no bound, so a verbose or runaway migration
  * could grow the SHARED api process heap until unrelated requests went down —

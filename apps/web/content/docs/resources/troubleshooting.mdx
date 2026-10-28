@@ -24,7 +24,6 @@ Most Closedloop.ai failures fall into one of a few categories. This page is the 
 
 - the session token is missing or expired, or the API key is invalid
 - check **Settings → API key** for a valid key
-- if the problem is an expired session, it will renew on next challenge-exchange
 - confirm `Origin` matches a registered origin (the web app origin)
 
 ## `403 directory not allowed`
@@ -46,7 +45,7 @@ Most Closedloop.ai failures fall into one of a few categories. This page is the 
 - the tray shows `Authentication failed — verify your API key in Settings`
 - re-paste the key; confirm it matches an active key in the Closedloop.ai web app
 
-## `claude`, `codex`, `gh`, `git`, or `python3` not found
+## `claude`, `codex`, `git`, or `python3` not found
 
 - the desktop spawns `$SHELL -ilc` to extract the real PATH; if your shell init does not export the binary, spawn will fail
 - telemetry emits `preflight.binary_not_found` or `preflight.spawn_failed`
@@ -85,7 +84,6 @@ Most Closedloop.ai failures fall into one of a few categories. This page is the 
 |---|---|
 | In-app ring buffer (500 entries) | `desktop:get-logs` IPC, shown in Logs tab |
 | Electron stdout/stderr | console, tagged `[tag][HH:MM:SS.fff]` |
-| Symphony loop subprocess | `logPath` and `jsonlPath` per job |
 | Activity Log | `desktop-activity-log.json` |
 | Port discovery | `~/.closedloop-ai/electron-port` |
 | Gateway identity UUID | `<userData>/gateway-identity.json` |
@@ -98,8 +96,6 @@ All under `app.getPath("userData")`:
 - `desktop-secrets.json`
 - `desktop-approvals.json`
 - `desktop-activity-log.json`
-- `desktop-job-store.json`
-- `desktop-loop-tokens.json`
 
 ## Debug modes (dev only)
 
@@ -110,10 +106,9 @@ All under `app.getPath("userData")`:
 
 ## When all else fails
 
-- quit and relaunch the desktop client; the `BootRecoveryService` reattaches live jobs and finalizes dead ones
 - check `./plugins/code/scripts/preflight-check.sh` under `plugins/self-learning/scripts/` (bundled with the plugin) for Python, jq, awk, git, and PyYAML presence
 - rerun the plugin install script to restore any missing plugin files
-- repair Closedloop plugins into user scope if System Check reports project-scoped or disabled plugins:
+- repair Closedloop plugins into user scope if `claude plugin list` reports project-scoped or disabled plugins:
 
 ```bash
 for plugin in bootstrap code code-review judges platform self-learning; do

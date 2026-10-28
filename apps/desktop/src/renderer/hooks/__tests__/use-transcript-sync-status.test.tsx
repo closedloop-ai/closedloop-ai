@@ -21,6 +21,7 @@ const SNAPSHOT: TranscriptSyncStatusSnapshot = {
   online: true,
   tierGate: TranscriptEgressGate.Allowed,
   storeReady: true,
+  computeTargetId: null,
   statusCounts: emptyTranscriptStatusCounts(),
 };
 

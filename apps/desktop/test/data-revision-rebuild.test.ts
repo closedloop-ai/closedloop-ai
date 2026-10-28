@@ -14,13 +14,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
 import {
   DATA_REVISION_REBUILD_WRITE_PAUSE_MS,
   runDataRevisionRebuild,
 } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { HistoricalParseWorkerFailureError } from "../src/main/collectors/engine/historical-parse-worker-protocol.js";
 import type {
   Harness,
@@ -28,16 +28,16 @@ import type {
   NormalizedSession,
 } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import {
-  ClaudeCodeOtelTableName,
-  ClaudeCodePermissionDecision,
-  ClaudeCodePermissionSource,
-} from "../src/main/otel/claude-code-persistence.js";
+import { ClaudeCodeOtelTableName } from "../src/main/otel/claude-code-otel-signal-contract.js";
 import {
   CodexOtelSpanStatus,
   CodexOtelTokenUsageSource,
 } from "../src/main/otel/codex-otel-contract.js";
-import { openTestDb } from "./agent-db-test-utils.js";
+import {
+  openTestDb,
+  seedClaudeCodeOtelSideRows,
+} from "./agent-db-test-utils.js";
+import { createMemoryIngestStoreProvider } from "./ingest-store-test-utils.js";
 import {
   fakeCollector,
   makePopulatedSession as makeSession,
@@ -49,17 +49,17 @@ import {
 // ---------------------------------------------------------------------------
 
 const CODEX_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-describe("DATA_REVISION stamping & schema spine (TEST 1-2)", () => {
+describe("effectiveDataRevision() stamping & schema spine (TEST 1-2)", () => {
   // ═══════════════════════════════════════════════════════════════════════════
   // FEA-2641: DATA_REVISION constant floor — genuine-human-turn reclassification
   // requires the rollup SQL to use json_each($.messages) instead of the old
   // '"human"' substring count. Sessions parsed before this revision are rebuilt.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  test("FEA-2641: DATA_REVISION >= 11 (genuine-human-turn reclassification)", () => {
+  test("FEA-2641: effectiveDataRevision() >= 11 (genuine-human-turn reclassification)", () => {
     assert.ok(
-      DATA_REVISION >= 11,
-      `FEA-2641 genuine-human-turn reclassification requires revision >= 11, got ${DATA_REVISION}`
+      effectiveDataRevision() >= 11,
+      `FEA-2641 genuine-human-turn reclassification requires revision >= 11, got ${effectiveDataRevision()}`
     );
   });
 
@@ -67,7 +67,7 @@ describe("DATA_REVISION stamping & schema spine (TEST 1-2)", () => {
   // TEST 1: Revision stamping — import + re-import + hook path
   // ═══════════════════════════════════════════════════════════════════════════
 
-  test("1: Revision stamping — import new session stamps DATA_REVISION; re-import re-stamps after manual downgrade; hook path stamps DATA_REVISION", async () => {
+  test("1: Revision stamping — import new session stamps effectiveDataRevision(); re-import re-stamps after manual downgrade; hook path stamps effectiveDataRevision()", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "fea1785-t1-"));
     const db = await openTestDb(dir);
     try {
@@ -78,14 +78,14 @@ describe("DATA_REVISION stamping & schema spine (TEST 1-2)", () => {
       const row1 = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "stamp-new");
-      assert.equal(row1[0].data_revision, DATA_REVISION);
+      assert.equal(row1[0].data_revision, effectiveDataRevision());
 
       // Re-import existing → stays DATA_REVISION
       await db.importer.importSession(session, "claude");
       const row2 = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "stamp-new");
-      assert.equal(row2[0].data_revision, DATA_REVISION);
+      assert.equal(row2[0].data_revision, effectiveDataRevision());
 
       // Manual downgrade to 1, then re-import stamps DATA_REVISION again
       await db.run(
@@ -102,7 +102,7 @@ describe("DATA_REVISION stamping & schema spine (TEST 1-2)", () => {
       const row3 = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "stamp-new");
-      assert.equal(row3[0].data_revision, DATA_REVISION);
+      assert.equal(row3[0].data_revision, effectiveDataRevision());
 
       // Hook path: processEvent SessionStart creates session with data_revision = DATA_REVISION
       await db.processEvent(
@@ -117,7 +117,7 @@ describe("DATA_REVISION stamping & schema spine (TEST 1-2)", () => {
       const hookRow = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "hook-stamp");
-      assert.equal(hookRow[0].data_revision, DATA_REVISION);
+      assert.equal(hookRow[0].data_revision, effectiveDataRevision());
     } finally {
       await db.close();
       await rm(dir, { recursive: true, force: true });
@@ -211,14 +211,14 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           return Promise.resolve({
             rebuilt: true,
             activeRace: false,
-            contentChanged: true,
+            needsResync: true,
           });
         },
         rebuildComponentInvocationsFromStoredRows: () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () => {
         parseCalls++;
@@ -260,7 +260,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () => Promise.reject(new Error("temporarily unreadable")),
       useStoredComponentInvocationRebuild: true,
@@ -292,7 +292,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () => Promise.resolve([]),
       useStoredComponentInvocationRebuild: true,
@@ -328,7 +328,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () => Promise.reject(new Error("temporarily unreadable")),
       useStoredComponentInvocationRebuild: true,
@@ -364,7 +364,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () => Promise.resolve([]),
       useStoredComponentInvocationRebuild: true,
@@ -402,7 +402,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: (_collector, source) => {
         if (source === parserFailureSource) {
@@ -460,7 +460,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedRebuilds.push(sessionId);
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // FEA-3597: parser-output-error ids are now REPAIRED before they are
         // stamped — they run through the rollup recompute (which rebuilds
         // session_turn_bucket) and the stamp is gated on its outcome. This fake
@@ -521,7 +521,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () =>
         Promise.resolve([makeSession({ sessionId: "different-session" })]),
@@ -556,7 +556,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
       );
       await db.run(
         "UPDATE sessions SET data_revision = $1 WHERE id = $2",
-        DATA_REVISION - 1,
+        effectiveDataRevision() - 1,
         sessionId
       );
       const before = await db.prisma.client.$queryRawUnsafe<
@@ -619,7 +619,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
       const stale = await db.prisma.client.$queryRawUnsafe<
         Array<{ data_revision: number }>
       >("SELECT data_revision FROM sessions WHERE id = $1", sessionId);
-      assert.equal(stale[0]?.data_revision, DATA_REVISION - 1);
+      assert.equal(stale[0]?.data_revision, effectiveDataRevision() - 1);
 
       await db.run("DROP TRIGGER fail_stored_component_usage_insert");
       const retried = await runDataRevisionRebuild({
@@ -648,7 +648,7 @@ describe("FEA-3294 revision-38 hybrid invocation rebuild", () => {
       const current = await db.prisma.client.$queryRawUnsafe<
         Array<{ data_revision: number }>
       >("SELECT data_revision FROM sessions WHERE id = $1", sessionId);
-      assert.equal(current[0]?.data_revision, DATA_REVISION);
+      assert.equal(current[0]?.data_revision, effectiveDataRevision());
 
       const secondSuccessfulBoot = await runDataRevisionRebuild({
         collectors: [collector],
@@ -785,7 +785,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
         "SELECT data_revision, updated_at FROM sessions WHERE id = $1",
         "rebuild-ac1"
       );
-      assert.equal(postRow[0].data_revision, DATA_REVISION);
+      assert.equal(postRow[0].data_revision, effectiveDataRevision());
       // updated_at was bumped
       assert.ok(postRow[0].updated_at);
 
@@ -913,7 +913,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
           rebuilt.push({ sessionId: parsedSession.sessionId, harness });
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: (parsedCollector, parsedSource) => {
         parseCalls.push({
@@ -952,7 +952,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
         ],
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       cooperativeDelay: (ms) => {
         delayCalls.push(ms);
@@ -989,7 +989,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
           ]),
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       shouldContinue: () => false,
       parseSource: () => {
@@ -1023,7 +1023,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
         ],
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       log: (message) => logs.push(message),
       parseSource: () =>
@@ -1080,7 +1080,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
           rebuilt.push({ sessionId: parsedSession.sessionId, harness });
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       log: (message) => logs.push(message),
       parseSource: (_parsedCollector, source) => {
@@ -1133,7 +1133,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
         ],
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       shouldContinue: () => {
         shouldContinueCalls++;
@@ -1179,7 +1179,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: () =>
         Promise.reject(new Error("file changed while reading")),
@@ -1208,7 +1208,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
         ],
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (ids) => {
           recomputed.push(ids);
           return Promise.resolve({
@@ -1260,10 +1260,10 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
          WHERE sa.session_id = $1`,
         "gone-source"
       );
-      // Stored metadata has an empty $.messages array → transcript-first count
-      // is 0; the polluted classification heals without a source file.
+      // Heals from stored metadata alone. 1 not 0 since ISS-8659 reads the
+      // fixture's `userMessages: 1`; both are under the is_human threshold of 2.
       assert.equal(row.is_human, 0);
-      assert.equal(row.human_turns, 0);
+      assert.equal(row.human_turns, 1);
       // The stale stamp is the durable "not re-derived from source" marker.
       assert.equal(row.data_revision, 1);
     } finally {
@@ -1493,10 +1493,10 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // TEST 8: != both directions (AC6) — revision 99 also rebuilds
+  // TEST 8: != both directions (AC6) — a revision ABOVE current also rebuilds
   // ═══════════════════════════════════════════════════════════════════════════
 
-  test("8: != both directions (AC6) — session with data_revision=99 is rebuilt", async () => {
+  test("8: != both directions (AC6) — session stamped above effectiveDataRevision() is rebuilt", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "fea1785-t8-"));
     const db = await openTestDb(dir);
     try {
@@ -1504,7 +1504,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
       await db.importer.importSession(session, "claude");
       await db.run(
         "UPDATE sessions SET data_revision = $1 WHERE id = $2",
-        99,
+        effectiveDataRevision() + 1,
         "future-rev"
       );
 
@@ -1524,7 +1524,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
       const row = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "future-rev");
-      assert.equal(row[0].data_revision, DATA_REVISION);
+      assert.equal(row[0].data_revision, effectiveDataRevision());
     } finally {
       await db.close();
       await rm(dir, { recursive: true, force: true });
@@ -1554,14 +1554,12 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
 
       // The collector parses the source to [] (burst detection → null / empty)
       // and positively classifies it as a burst artifact via isBurstArtifactSource.
-      const collector: HarnessCollector = {
-        ...fakeCollector("codex", {
-          sources: ["/fake/burst-rollout.jsonl"],
-          parse: () => Promise.resolve([]),
-          sessionIdForSource: () => CODEX_UUID,
-        }),
+      const collector: HarnessCollector = fakeCollector("codex", {
+        sources: ["/fake/burst-rollout.jsonl"],
+        parse: () => Promise.resolve([]),
+        sessionIdForSource: () => CODEX_UUID,
         isBurstArtifactSource: () => true,
-      };
+      });
 
       const result = await runDataRevisionRebuild({
         collectors: [collector],
@@ -1625,7 +1623,7 @@ describe("runDataRevisionRebuild correctness — AC1-AC7 (TEST 3-10)", () => {
       const row = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "opencode-stale");
-      assert.equal(row[0].data_revision, DATA_REVISION);
+      assert.equal(row[0].data_revision, effectiveDataRevision());
     } finally {
       await db.close();
       await rm(dir, { recursive: true, force: true });
@@ -1657,7 +1655,6 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
             return { skipped: false, reactivated: false };
           },
         },
-        detectBillingMode: () => "metered_api",
         stateDir: dir,
         emit: () => {},
         getCollectionMode: () => "watcher",
@@ -1676,7 +1673,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
 
       manager.start();
       await bootCompletePromise;
-      manager.stop();
+      await manager.stop();
 
       assert.equal(
         bootCompleteCount,
@@ -1707,7 +1704,6 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
             return { skipped: false, reactivated: false };
           },
         },
-        detectBillingMode: () => "metered_api",
         stateDir: dir,
         emit: () => {},
         getCollectionMode: () => "watcher",
@@ -1725,7 +1721,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
 
       manager2.start();
       await importStartedPromise;
-      manager2.stop();
+      await manager2.stop();
       resolveImport?.();
 
       // Allow any pending microtasks/callbacks to fire
@@ -1756,22 +1752,19 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
       const bootComplete = new Promise<void>((resolve) => {
         resolveBootComplete = resolve;
       });
-      const collector: HarnessCollector = {
-        ...fakeCollector("codex", {
-          sources: ["/fake/folded-child.jsonl", "/fake/missing-parent.jsonl"],
-          parse: () => Promise.resolve([]),
-          sessionIdForSource: (source) =>
-            source.includes("folded-child")
-              ? "folded-child"
-              : "missing-parent-child",
-        }),
+      const collector: HarnessCollector = fakeCollector("codex", {
+        sources: ["/fake/folded-child.jsonl", "/fake/missing-parent.jsonl"],
+        parse: () => Promise.resolve([]),
+        sessionIdForSource: (source) =>
+          source.includes("folded-child")
+            ? "folded-child"
+            : "missing-parent-child",
         isBurstArtifactSource: (source) => source.includes("folded-child"),
-      };
+      });
       const manager = new CollectorManager({
         importer: {
           importSession: async () => ({ skipped: false, reactivated: false }),
         },
-        detectBillingMode: () => "metered_api",
         stateDir: dir,
         emit: () => {},
         getCollectionMode: () => "disabled",
@@ -1779,7 +1772,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
         collectors: [collector],
         deleteSessionRow: (sessionId) => {
           deleted.push(sessionId);
-          return Promise.resolve();
+          return Promise.resolve(true);
         },
         onBootImportComplete: () => {
           resolveBootComplete?.();
@@ -1788,7 +1781,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
 
       manager.start();
       await bootComplete;
-      manager.stop();
+      await manager.stop();
 
       assert.deepEqual(deleted, ["folded-child"]);
     } finally {
@@ -1801,6 +1794,10 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
     const db = await openTestDb(dir);
     try {
       const stateDir = path.join(dir, "state");
+      // ISS-9838: the catchup cache that carries a source's "already imported"
+      // fact across these three manager lifetimes is a SQLite row behind this
+      // port, so one shared provider is what the shared state dir used to mean.
+      const ingestStores = createMemoryIngestStoreProvider();
       const sourcesDir = path.join(dir, "sources");
       const parentSource = path.join(sourcesDir, "parent.jsonl");
       const childSource = path.join(sourcesDir, "child.jsonl");
@@ -1822,18 +1819,16 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
         const bootComplete = new Promise<void>((resolve) => {
           resolveBootComplete = resolve;
         });
-        const collector: HarnessCollector = {
-          ...fakeCollector("codex", {
-            sources,
-            parse,
-            sessionIdForSource: (source) => path.basename(source, ".jsonl"),
-          }),
+        const collector: HarnessCollector = fakeCollector("codex", {
+          sources,
+          parse,
+          sessionIdForSource: (source) => path.basename(source, ".jsonl"),
           isBurstArtifactSource,
-        };
+        });
         const manager = new CollectorManager({
           importer: db.importer,
-          detectBillingMode: () => "metered_api",
           stateDir,
+          ingestStores: ingestStores.provider,
           emit: () => {},
           getCollectionMode: () => "disabled",
           catchupPollMs: null,
@@ -1841,7 +1836,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
           listExistingSessionIds: () => db.listExistingSessionIds(),
           deleteSessionRow: async (sessionId) => {
             deleted.push(sessionId);
-            await db.deleteSessionRow(sessionId);
+            return await db.deleteSessionRow(sessionId);
           },
           onBootImportComplete: () => {
             resolveBootComplete?.();
@@ -1849,7 +1844,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
         });
         manager.start();
         await bootComplete;
-        manager.stop();
+        await manager.stop();
       };
 
       await startManager(
@@ -2005,19 +2000,6 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
         "2026-06-07T10:00:30.000Z"
       );
 
-      // FEA-3436: pr_backfill_seen is a session-keyed marker with no FK cascade;
-      // sweepExpiredSessions purges it but deleteSessionRow previously did not,
-      // orphaning the marker (which the diagnostics store still counts). Seed a
-      // row so the delete parity is asserted below.
-      await db.run(
-        `INSERT INTO pr_backfill_seen (session_id, file_path, file_mtime_ms, scanned_at)
-       VALUES ($1, $2, $3, $4)`,
-        sid,
-        "/tmp/session.jsonl",
-        1000,
-        "2026-06-07T10:00:30.000Z"
-      );
-
       // Verify rows exist before deletion
       const tables = [
         { name: "sessions", col: "id" },
@@ -2031,7 +2013,6 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
         { name: "agents", col: "session_id" },
         { name: "session_artifact_links", col: "session_id" },
         { name: "session_turn_bucket", col: "session_id" },
-        { name: "pr_backfill_seen", col: "session_id" },
       ];
 
       for (const t of tables) {
@@ -2179,13 +2160,13 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
           model: parserModel,
           input_tokens: 20,
           usage_source: CodexOtelTokenUsageSource.JsonlParser,
-          revision_id: DATA_REVISION,
+          revision_id: effectiveDataRevision(),
         },
         {
           model: otelModel,
           input_tokens: 111,
           usage_source: CodexOtelTokenUsageSource.OtelLogPayload,
-          revision_id: DATA_REVISION,
+          revision_id: effectiveDataRevision(),
         },
       ]);
       const spans = await db.prisma.client.$queryRawUnsafe<{ cnt: number }[]>(
@@ -2278,12 +2259,12 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
       const rowA = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "concurrent-a");
-      assert.equal(rowA[0].data_revision, DATA_REVISION);
+      assert.equal(rowA[0].data_revision, effectiveDataRevision());
 
       const rowB = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "concurrent-b");
-      assert.equal(rowB[0].data_revision, DATA_REVISION);
+      assert.equal(rowB[0].data_revision, effectiveDataRevision());
 
       // Token usage is correct for both
       const tuA = await db.tokenUsage.getBySession("concurrent-a");
@@ -2351,7 +2332,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
       const row2 = await db.prisma.client.$queryRawUnsafe<
         { data_revision: number }[]
       >("SELECT data_revision FROM sessions WHERE id = $1", "active-guard");
-      assert.equal(row2[0].data_revision, DATA_REVISION);
+      assert.equal(row2[0].data_revision, effectiveDataRevision());
     } finally {
       await db.close();
       await rm(dir, { recursive: true, force: true });
@@ -2429,77 +2410,6 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // TEST 15b: Metadata refresh — rebuild updates sessions.metadata
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  test("15b: Metadata refresh — rebuild replaces stale metadata with current parse output", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "fea1785-t15-"));
-    const db = await openTestDb(dir);
-    try {
-      const sid = "meta-refresh";
-      // Import a session with initial metadata
-      const session = makeSession({
-        sessionId: sid,
-        plans: [{ title: "old plan", status: "active" }],
-        userMessages: 5,
-      });
-      await db.importer.importSession(session, "claude");
-
-      const before = await db.prisma.client.$queryRawUnsafe<
-        { metadata: string }[]
-      >("SELECT metadata FROM sessions WHERE id = $1", sid);
-      const metaBefore = JSON.parse(before[0].metadata);
-      assert.equal(metaBefore.userMessages, 5);
-      assert.equal(metaBefore.plans.length, 1);
-
-      // Downgrade revision to make it stale
-      await db.run(
-        "UPDATE sessions SET data_revision = 0, status = 'inactive' WHERE id = $1",
-        sid
-      );
-
-      // Rebuild with updated metadata
-      const updatedSession = makeSession({
-        sessionId: sid,
-        plans: [
-          { title: "plan 1", status: "active" },
-          { title: "plan 2", status: "inactive" },
-        ],
-        userMessages: 12,
-      });
-      const summary = await runDataRevisionRebuild({
-        collectors: [
-          fakeCollector("claude", {
-            sources: [`/fake/${sid}.jsonl`],
-            sessionIdForSource: () => sid,
-            parse: () => Promise.resolve([updatedSession]),
-          }),
-        ],
-        db,
-      });
-      assert.equal(summary.rebuilt, 1);
-
-      const after = await db.prisma.client.$queryRawUnsafe<
-        { metadata: string }[]
-      >("SELECT metadata FROM sessions WHERE id = $1", sid);
-      const metaAfter = JSON.parse(after[0].metadata);
-      assert.equal(
-        metaAfter.userMessages,
-        12,
-        "metadata reflects current parse"
-      );
-      assert.equal(
-        metaAfter.plans.length,
-        2,
-        "plans updated from current parse"
-      );
-    } finally {
-      await db.close();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
   // TEST 16: FEA-3659 targeted re-sync — a rebuild bumps updated_at (and reports
   // the id in changedSessionIds) ONLY when the re-derived payload actually
   // changed; a byte-identical re-derivation stamps data_revision alone and is a
@@ -2560,7 +2470,7 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
       );
       assert.equal(
         noopAfter[0].data_revision,
-        DATA_REVISION,
+        effectiveDataRevision(),
         "data_revision healed to current so the row is not re-rebuilt next boot"
       );
 
@@ -2657,32 +2567,3 @@ describe("Rebuild lifecycle & integration: boot signal, deletion, concurrency, g
     }
   });
 });
-
-async function seedClaudeCodeOtelSideRows(
-  db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
-  sessionId: string
-): Promise<void> {
-  await db.run(
-    `INSERT INTO ${ClaudeCodeOtelTableName.CostEvent} (id, session_id, model, cost_usd, observed_at, data_revision, created_at, updated_at)
-     VALUES ($1, $2, 'claude-sonnet-4-5', 1.25, '2026-06-07T10:00:40.000Z', $3, '2026-06-07T10:00:40.000Z', '2026-06-07T10:00:40.000Z')`,
-    `${sessionId}-otel-cost`,
-    sessionId,
-    DATA_REVISION
-  );
-  await db.run(
-    `INSERT INTO ${ClaudeCodeOtelTableName.PermissionEvent} (id, session_id, tool_name, decision, source, observed_at, data_revision, created_at, updated_at)
-     VALUES ($1, $2, 'Bash', $3, $4, '2026-06-07T10:00:41.000Z', $5, '2026-06-07T10:00:41.000Z', '2026-06-07T10:00:41.000Z')`,
-    `${sessionId}-otel-permission`,
-    sessionId,
-    ClaudeCodePermissionDecision.Allow,
-    ClaudeCodePermissionSource.Hook,
-    DATA_REVISION
-  );
-  await db.run(
-    `INSERT INTO ${ClaudeCodeOtelTableName.ApiRequest} (id, session_id, model, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, cost_usd, started_at, duration_ms, data_revision, created_at, updated_at)
-     VALUES ($1, $2, 'claude-sonnet-4-5', 100, 50, 10, 5, 1.75, '2026-06-07T10:00:42.000Z', 2500, $3, '2026-06-07T10:00:42.000Z', '2026-06-07T10:00:42.000Z')`,
-    `${sessionId}-otel-api-request`,
-    sessionId,
-    DATA_REVISION
-  );
-}

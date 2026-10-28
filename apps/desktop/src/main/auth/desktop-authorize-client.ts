@@ -1,6 +1,10 @@
 import {
+  DESKTOP_AUTHORIZE_PATHNAME,
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
-  type DesktopSignInProvider,
+  DESKTOP_BOOTSTRAP_SUPPORTED_TRUE,
+  type DesktopSignInFraming,
+  type DesktopSignInMethod,
+  encodeDesktopEmailHint,
   encodeDesktopGatewayPublicKey,
 } from "@repo/api/src/types/desktop-authorize-url";
 import {
@@ -21,8 +25,6 @@ import type { DesktopPopSigner } from "./desktop-pop.js";
  * {@link parseSessionTokens} rather than reimplementing the transport.
  */
 
-/** Bare web authorize route; Clerk middleware rewrites it to the org-scoped page. */
-const DESKTOP_AUTHORIZE_PATH = "/settings/integrations/desktop/authorize";
 const TOKEN_PATH = "/desktop/authorize/token";
 
 export type BuildDesktopAuthorizeUrlInput = {
@@ -39,12 +41,26 @@ export type BuildDesktopAuthorizeUrlInput = {
   deviceName: string;
   platform: string;
   /**
-   * ISS-5112: the social provider picked in the desktop UI, forwarded so a
-   * signed-out person is not asked to choose a second time. Omitted entirely
-   * when absent — never serialized as an empty or `null` value, per the
-   * cross-repo rule that an absent optional field stays absent.
+   * ISS-5112 / ISS-5954: the sign-in method picked in the desktop UI, forwarded
+   * so a signed-out person is not asked to choose a second time. Rides the
+   * `provider` query key — the wire name predates the email value and renaming
+   * it would orphan installed builds. Omitted entirely when absent — never
+   * serialized as an empty or `null` value, per the cross-repo rule that an
+   * absent optional field stays absent.
    */
-  provider?: DesktopSignInProvider;
+  method?: DesktopSignInMethod;
+  /**
+   * ISS-5954 M5: the typed address, so the email form opens prefilled.
+   * base64url-encoded on the URL (plus-addressing survives Clerk's re-decode
+   * hop); an implausible value is omitted entirely, never serialized mangled.
+   */
+  emailHint?: string;
+  /**
+   * ISS-5954: the desktop door's framing, so the email landing branch renders
+   * the matching Clerk embed (the sign-IN embed for a returning-user door).
+   * Omitted entirely when absent, same posture as `method`.
+   */
+  framing?: DesktopSignInFraming;
 };
 
 /**
@@ -57,7 +73,7 @@ export type BuildDesktopAuthorizeUrlInput = {
 export function buildDesktopAuthorizeUrl(
   input: BuildDesktopAuthorizeUrlInput
 ): string {
-  const url = new URL(DESKTOP_AUTHORIZE_PATH, input.webAppOrigin);
+  const url = new URL(DESKTOP_AUTHORIZE_PATHNAME, input.webAppOrigin);
   const params = url.searchParams;
   params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.codeChallenge, input.codeChallenge);
   params.set(
@@ -73,8 +89,21 @@ export function buildDesktopAuthorizeUrl(
   );
   params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.deviceName, input.deviceName);
   params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.platform, input.platform);
-  if (input.provider) {
-    params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider, input.provider);
+  params.set(
+    DESKTOP_AUTHORIZE_QUERY_PARAMS.bootstrapSupported,
+    DESKTOP_BOOTSTRAP_SUPPORTED_TRUE
+  );
+  if (input.method) {
+    params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider, input.method);
+  }
+  const encodedEmailHint = input.emailHint
+    ? encodeDesktopEmailHint(input.emailHint)
+    : null;
+  if (encodedEmailHint) {
+    params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint, encodedEmailHint);
+  }
+  if (input.framing) {
+    params.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.framing, input.framing);
   }
   return url.toString();
 }

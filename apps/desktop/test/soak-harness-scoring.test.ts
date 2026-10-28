@@ -11,18 +11,28 @@
  */
 
 import assert from "node:assert/strict";
-import { after, describe, test } from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "@repo/api/src/types/agent-session";
+import { afterAll, describe, test } from "vitest";
 import type { MockCloudServer } from "./soak/mock-cloud-server.js";
 import { startMockCloudServer } from "./soak/mock-cloud-server.js";
 import type { ReadBackResponse } from "./soak/soak-cloud-content.js";
-import { quiesceThenReadBack, sampleDrainState } from "./soak/soak-cycle.js";
+import {
+  type CyclePhases,
+  quiesceThenReadBack,
+  runCycle,
+  sampleDrainState,
+} from "./soak/soak-cycle.js";
 import { buildCycleRecord } from "./soak/soak-cycle-record.js";
 import { newPageReadStats } from "./soak/soak-page-read.js";
 import type {
+  AuthBlobs,
   CycleContext,
   CycleRecord,
   CycleState,
+  CycleWorkspace,
   LaunchedSoakApp,
   Mode,
   OutboxDepths,
@@ -35,7 +45,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 const startedServers: MockCloudServer[] = [];
 
-after(async () => {
+afterAll(async () => {
   for (const server of startedServers.splice(0)) {
     await server.close().catch(() => undefined);
   }
@@ -92,6 +102,33 @@ function makeState(overrides: Partial<CycleState> = {}): CycleState {
   };
 }
 
+function makeWorkspace(
+  baseline: string[],
+  overrides: { localSessionIds?: string[]; userDataDir?: string } = {}
+): CycleWorkspace {
+  const userDataDir = overrides.userDataDir ?? "/dev/null";
+  return {
+    userDataDir,
+    dbPath: "/dev/null",
+    artifactsDir: "/dev/null",
+    stdioLogPath: "/dev/null",
+    baseline,
+    // ISS-6098: the population an id must belong to for delivery to be
+    // legitimate is baseline ∪ local corpus. Defaulting the corpus to the
+    // baseline keeps `rogue` below in NEITHER set, which is what still makes
+    // it a fail.
+    localSessionIds: overrides.localSessionIds ?? baseline,
+    // ISS-6099: no session in these fixtures is claimed to have events, so
+    // the one-directional relation cross-check has nothing to assert.
+    localSessionsWithEvents: [],
+    startDepths: {
+      pending: baseline.length,
+      deadLettered: 0,
+      invocationPending: 0,
+    },
+  };
+}
+
 function makeContext(
   mock: MockCloudServer,
   baseline: string[],
@@ -102,26 +139,7 @@ function makeContext(
     options: makeOptions({ mode: overrides.mode ?? "clean" }),
     mock,
     homes: {},
-    workspace: {
-      userDataDir: "/dev/null",
-      dbPath: "/dev/null",
-      artifactsDir: "/dev/null",
-      stdioLogPath: "/dev/null",
-      baseline,
-      // ISS-6098: the population an id must belong to for delivery to be
-      // legitimate is baseline ∪ local corpus. Defaulting the corpus to the
-      // baseline keeps `rogue` below in NEITHER set, which is what still makes
-      // it a fail.
-      localSessionIds: overrides.localSessionIds ?? baseline,
-      // ISS-6099: no session in these fixtures is claimed to have events, so
-      // the one-directional relation cross-check has nothing to assert.
-      localSessionsWithEvents: [],
-      startDepths: {
-        pending: baseline.length,
-        deadLettered: 0,
-        invocationPending: 0,
-      },
-    },
+    workspace: makeWorkspace(baseline, overrides),
     startMs: Date.now() - 1000,
   };
 }
@@ -757,6 +775,105 @@ describe("ISS-6099: the read-back and the stats snapshot describe one moment", (
 
     assert.equal(record.invariants.readBackComplete, true);
     assert.deepEqual(record.failReasons, []);
+  });
+
+  test("ISS-6203: runCycle itself quiesces the sender before the read-back starts", async () => {
+    // The case above proves `quiesceThenReadBack`'s own two lines. That helper
+    // is not where the race lives: `runCycle` is the CALL SITE, and bypassing
+    // the helper — or handing it its two callbacks the other way round —
+    // restores the ISS-6099 window with the case above still green. This drives
+    // the real sequencer with every out-of-process phase injected, so the
+    // ordering it actually performs is what gets asserted.
+    const mock = await startServer();
+    mock.resetStats();
+    await postSyncBatch(mock, [{ externalSessionId: "s1" }], "b1");
+
+    const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "soak-run-cycle-"));
+    const order: string[] = [];
+    const corpus = mock.readBack();
+    const phases: CyclePhases = {
+      loadGate: () => {
+        order.push("loadGate");
+        return Promise.resolve(1);
+      },
+      prepareWorkspace: () => {
+        order.push("prepareWorkspace");
+        return Promise.resolve(
+          makeWorkspace(["s1"], {
+            userDataDir: path.join(workRoot, "cycle-1"),
+          })
+        );
+      },
+      launch: () => {
+        order.push("launch");
+        return Promise.resolve(makeLaunched(null));
+      },
+      drain: () => {
+        order.push("drain");
+        return Promise.resolve();
+      },
+      settle: () => {
+        order.push("settle");
+        return Promise.resolve();
+      },
+      readFinalDepths: () => {
+        order.push("readFinalDepths");
+        return Promise.resolve(ZERO_DEPTHS);
+      },
+      shutdown: async () => {
+        order.push("shutdown:start");
+        // A real macrotask boundary, so an ordering that merely STARTS the
+        // shutdown before the read-back — a `Promise.all`, or a dropped await —
+        // is caught as well as a plain swap.
+        await new Promise((resolve) => setImmediate(resolve));
+        order.push("shutdown:resolved");
+      },
+      readBack: () => {
+        order.push("readBack");
+        return Promise.resolve(corpus);
+      },
+    };
+
+    try {
+      // Only `prepareWorkspace` reads the auth blobs, and it is injected here.
+      const auth: AuthBlobs = {
+        sessionFile: "/dev/null",
+        signingKeysFile: "/dev/null",
+      };
+      const record = await runCycle(
+        1,
+        makeOptions({ workRoot }),
+        mock,
+        auth,
+        {},
+        phases
+      );
+
+      assert.deepEqual(order, [
+        "loadGate",
+        "prepareWorkspace",
+        "launch",
+        "drain",
+        "settle",
+        "readFinalDepths",
+        "shutdown:start",
+        "shutdown:resolved",
+        "readBack",
+      ]);
+      assert.equal(
+        record.invariants.readBackComplete,
+        true,
+        "and the corpus taken after the quiesce is the one the cycle is scored from"
+      );
+      assert.ok(
+        !record.failReasons.some((reason) =>
+          reason.startsWith("read_back_incomplete")
+        ),
+        JSON.stringify(record.failReasons)
+      );
+    } finally {
+      fs.rmSync(workRoot, { force: true, recursive: true });
+    }
   });
 
   test("a session genuinely missing from the corpus is still an incomplete read-back", async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -25,12 +25,19 @@ import {
   createMockDb,
   makeBranchRow,
   makeSessionLink,
+  mockBranchCandidateIds,
   mockBranchCandidatePage,
+  mockCandidateSnapshotRow,
   now,
   organizationId,
+  renderSql,
 } from "@/__tests__/support/branches/branch-read-service.test-helpers";
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * FEA-4331 — a session linked to N branches must NOT charge its full cost to
@@ -41,7 +48,7 @@ import { branchReadService } from "./branch-read-service";
  * desktop producer's per-branch list projection. The raw `estimatedCostUsd` field
  * stays the STABLE replicated total (a shared session's whole cost on every
  * branch) so pre-FEA-4331 clients (desktop ≤ v0.16.627 cloud mode) that infer
- * filtered spend from it are not skewed (review: wongk).
+ * filtered spend from it are not skewed (review: whitlockk).
  *
  * These cases were split out of `branch-read-service.test.ts` (shrink-only
  * grandfathered) into this focused sibling so editing the oversized file does not
@@ -102,6 +109,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
       makeSessionLink(branchId, "s-onlyA", "10.00"),
     ];
     mockBranchCandidatePage(mockDb, [branchId, branchIdB]);
+    mockBranchCandidateIds(mockDb, [branchId, branchIdB]);
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow(),
       makeBranchRow({ id: branchIdB, branchName: "feature-b" }),
@@ -114,7 +122,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -130,7 +138,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     expect(sharedContribution).toBeCloseTo(90, 5);
     // And the shared session's per-branch total can never exceed its real cost.
     expect(sharedContribution).toBeLessThanOrEqual(90 + 1e-6);
-    // COMPAT (FEA-4331 review, wongk): the STABLE `estimatedCostUsd` field is NOT
+    // COMPAT (FEA-4331 review, whitlockk): the STABLE `estimatedCostUsd` field is NOT
     // switched to the even-split — it stays the raw replicated per-branch total so
     // a pre-`attributedCostUsd` client (desktop ≤ v0.16.627 cloud mode) that infers
     // filtered spend from it reads the same value it did before this change. Branch
@@ -149,6 +157,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
       makeSessionLink(branchId, "s-onlyA", "10.00"),
     ];
     mockBranchCandidatePage(mockDb, [branchId, branchIdB]);
+    mockBranchCandidateIds(mockDb, [branchId, branchIdB]);
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow(),
       makeBranchRow({ id: branchIdB, branchName: "feature-b" }),
@@ -158,7 +167,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -175,6 +184,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     // even-split share is its whole cost — the fix must not deflate single-branch
     // spend.
     mockBranchCandidatePage(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makeSessionLink(branchId, "s-solo", "12.50"),
@@ -183,7 +193,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -199,6 +209,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
   // one of the three emits all three, and a page that emits none emits none.
   it("emits sessionCostUsd, lifetimeSessionCostUsd and sessionBranchCount together", async () => {
     mockBranchCandidatePage(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makeSessionLink(branchId, "s-solo", "12.50"),
@@ -207,7 +218,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -243,6 +254,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
       makeSessionLink(branchId, "s-onlyA", "10.00"),
     ];
     mockBranchCandidatePage(mockDb, [branchId, branchIdB]);
+    mockBranchCandidateIds(mockDb, [branchId, branchIdB]);
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow(),
       makeBranchRow({ id: branchIdB, branchName: "feature-b" }),
@@ -252,7 +264,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -282,7 +294,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -292,7 +304,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
   });
 
   it("uses the GLOBAL divisor: a branch NOT on the page still divides the visible branch's cost", async () => {
-    // Thread #4 (wongk) — prove the divisor is GLOBAL, not page-local, by feeding
+    // Thread #4 (whitlockk) — prove the divisor is GLOBAL, not page-local, by feeding
     // the two reads DIFFERENT link sets. The page-scoped usage read
     // (getSessionUsageByBranch, 1st artifactLink.findMany) sees ONLY branch A's
     // link, so the page/usage knows of one branch. The global divisor read
@@ -301,6 +313,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     // and A would get the full $90; because it is global (2), A gets $45 — proving
     // the count came from the divisor read, not the mocked page rows.
     mockBranchCandidatePage(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, [branchId, branchIdB]);
     mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
     mockDb.artifactLink.findMany
       // 1st call — page usage read: branch A only.
@@ -314,7 +327,7 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
@@ -324,19 +337,17 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     expect(rawRowCost(response, branchId)).toBeCloseTo(90, 5);
   });
 
-  it("scopes the even-split divisor query to corpus-member (session-linked) target branches, not push-qualified ones (FEA-4311)", async () => {
-    // FEA-4331 + FEA-4311 — the global branch-count divisor must count exactly the
-    // branches that are CORPUS MEMBERS (visible on the Branches list), so the 1/N
-    // denominator matches the set of branches the session cost is actually split
-    // across. FEA-4331 originally push-gated the divisor targets (an owned current
-    // PR OR `firstPushedAt` set); FEA-4311 widened corpus membership to any
-    // session-linked branch — a session-observed branch surfaces on the list BEFORE
-    // any push/PR — so the divisor target is now the plain non-deleted BRANCH
-    // corpus scope, NOT the push-evidence OR gate. The unit mock ignores the
+  it("keeps the divisor's link scan free of a redundant push-evidence gate", async () => {
+    // ISS-8148 (PRD-683 D7, superseding PRD-600 COMMON-023): divisor
+    // eligibility is enforced ONCE, by the candidate set
+    // (`cloudBranchMetricDenominatorEligibilitySql`, publication-gated) that
+    // feeds `eligibleBranchIds` — the link scan itself must NOT repeat the
+    // gate, or the two predicates could drift. The unit mock ignores the
     // `where`, so assert the QUERY SHAPE the service issues: the divisor
-    // `artifactLink.findMany` scopes its target as a non-deleted BRANCH
-    // (`type: BRANCH`, `branch: { deletedAt: null }`) and carries NO push-evidence
-    // OR gate, while the plain usage read scopes only `type: BRANCH`.
+    // `artifactLink.findMany` scopes its target as a BRANCH
+    // (`type: BRANCH`, `branch: { isNot: null }`) and carries NO
+    // push-evidence OR gate, while the plain usage read scopes only
+    // `type: BRANCH`.
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
     mockDb.artifactLink.findMany.mockResolvedValue([
@@ -346,26 +357,22 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/symphony-alpha"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: [BranchStatus.Open],
     });
 
     const membershipScopedCalls =
       mockDb.artifactLink.findMany.mock.calls.filter((call) => {
         const target = call[0]?.where?.target;
-        // The divisor query scopes the target to the non-deleted BRANCH corpus:
-        // no push-evidence OR gate (that would UNDER-count the widened corpus and
-        // over-attribute a priced session's full cost to each session-only branch).
+        // The divisor query scopes the target to Branches, deleted or not, and carries
+        // no publication gate that would under-count Session work.
         return (
-          target?.branch?.deletedAt === null &&
+          target?.branch?.isNot === null &&
           target?.AND === undefined &&
           target?.OR === undefined
         );
       });
-    // Exactly the divisor query carries the corpus-membership target scope
-    // (non-deleted branch, no push gate) — proving the denominator counts every
-    // session-linked branch the widened corpus admits, so a priced session over N
-    // session-only branches divides by N, not 1.
+    // Exactly the divisor query carries this attribution scope.
     expect(membershipScopedCalls.length).toBe(1);
   });
 
@@ -380,15 +387,28 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
   // `sessionBranchCount` on the wire and overrides the server's own value on both
   // surfaces. It was previously pinned on `getBranchAnalytics`, but that producer
   // no longer takes a global divisor — a corpus-wide divisor read there was an
-  // unbounded sequential artifactLink scan (wongk review) that could not change a
+  // unbounded sequential artifactLink scan (whitlockk review) that could not change a
   // rendered number, since the only consumer of the server-side `locPerDollar` is
   // the branch-detail baseline and it queries UNWINDOWED. Asserting the wire map
   // here keeps the worked example on the path where it is load-bearing.
   it("puts the shared session's GLOBAL branch count on the wire when its other branch falls outside the window", async () => {
-    const agedBranchId = "branch-aged";
+    const agedBranchId = "22222222-2222-4222-8222-222222222222";
     // Both branches carry 1000 churn; ONE session (session-1, $100 lifetime)
     // worked both. Only `branchId` is in-window, so only it enters the page.
-    mockBranchCandidatePage(mockDb, [branchId]);
+    mockDb.$queryRaw.mockImplementation((query) => {
+      const sql = renderSql(query);
+      if (sql.includes("WITH requested_sessions AS MATERIALIZED")) {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        sql.includes("candidate_count.count")
+          ? [mockCandidateSnapshotRow(branchId, 1)]
+          : [
+              mockCandidateSnapshotRow(branchId, 0),
+              mockCandidateSnapshotRow(agedBranchId, 0),
+            ]
+      );
+    });
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow({
         fileChanges: [{ additions: 600, deletions: 400, path: "a.ts" }],
@@ -397,23 +417,19 @@ describe("multi-branch session cost is even-split, not replicated (FEA-4331)", (
     // The usage read is scoped to the in-window branch (it selects `source`);
     // `getSessionBranchCounts` is org-wide by session id (it does not), so it
     // still sees the aged branch's link — exactly the production asymmetry.
-    mockDb.artifactLink.findMany.mockImplementation(
-      (args: { select?: { source?: unknown } }) =>
-        Promise.resolve(
-          args?.select?.source
-            ? [makeSessionLink(branchId, "session-1", "100.00")]
-            : [
-                makeSessionLink(branchId, "session-1", "100.00"),
-                makeSessionLink(agedBranchId, "session-1", "100.00"),
-              ]
-        )
-    );
+    mockDb.artifactLink.findMany
+      .mockResolvedValueOnce([makeSessionLink(branchId, "session-1", "100.00")])
+      .mockResolvedValueOnce([
+        makeSessionLink(branchId, "session-1", "100.00"),
+        makeSessionLink(agedBranchId, "session-1", "100.00"),
+      ]);
 
     const response = await branchReadService.listBranches(organizationId, {
       limit: 10,
       offset: 0,
       startDate: new Date("2026-07-30T00:00:00.000Z"),
     });
+    expect(mockDb.artifactLink.findMany).toHaveBeenCalledTimes(2);
 
     // 2, not 1: the aged branch is outside the window and absent from `items`,
     // but it still divides the session's spend. The client then computes

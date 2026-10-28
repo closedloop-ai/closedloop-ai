@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import {
   cleanupTempDirs,
@@ -161,7 +161,7 @@ describe("Claude parser sidechain + sidecar subagents", () => {
               type: "tool_use",
               id: "toolu_duplicate",
               name: "Read",
-              input: { file_path: "sidecar.ts" },
+              input: { file_path: "inline.ts" },
             },
           ],
         },
@@ -180,6 +180,168 @@ describe("Claude parser sidechain + sidecar subagents", () => {
     assert.deepEqual(subagent?.toolUses?.[0]?.input, {
       file_path: "inline.ts",
     });
+  });
+
+  test("sidecar conflicts remove the matching inline invocation everywhere", async () => {
+    const dir = makeTempDir("claude-sidechain-conflict-");
+    const sessionId = "claude-sidechain-conflict";
+    const nativeSubagentId = "agent-conflict";
+    const toolUseId = "toolu_sidecar_conflict";
+    const filePath = path.join(dir, `${sessionId}.jsonl`);
+    const subagentsDir = path.join(dir, sessionId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeJsonl(dir, `${sessionId}.jsonl`, [
+      {
+        type: "assistant",
+        timestamp: "2024-03-09T16:00:00.000Z",
+        uuid: nativeSubagentId,
+        isSidechain: true,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: toolUseId,
+              name: "Read",
+              input: { file_path: "inline.ts" },
+            },
+          ],
+        },
+      },
+    ]);
+    writeFileSync(
+      path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
+      [
+        {
+          type: "assistant",
+          timestamp: "2024-03-09T16:00:00.000Z",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: toolUseId,
+                name: "Read",
+                input: { file_path: "inline.ts" },
+              },
+            ],
+          },
+        },
+        {
+          type: "user",
+          timestamp: "2024-03-09T16:00:01.000Z",
+          message: {
+            content: [
+              { type: "tool_result", tool_use_id: toolUseId, content: "first" },
+            ],
+          },
+        },
+        {
+          type: "user",
+          timestamp: "2024-03-09T16:00:02.000Z",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolUseId,
+                content: "second",
+              },
+            ],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8"
+    );
+
+    const parsed = await parseClaudeFile(filePath);
+
+    assert.ok(parsed, "expected a parsed Claude transcript");
+    assert.equal(JSON.stringify(parsed).includes(toolUseId), false);
+  });
+
+  test("Claude one-read sidecar fold preserves completion alongside an oversized input", async () => {
+    const dir = makeTempDir("claude-sidecar-result-");
+    const sessionId = "claude-sidecar-result";
+    const nativeSubagentId = "agent-result";
+    const filePath = writeJsonl(dir, `${sessionId}.jsonl`, [
+      {
+        type: "user",
+        timestamp: "2026-08-17T20:00:00.000Z",
+        message: { role: "user", content: "work" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-08-17T20:00:02.000Z",
+        message: {
+          role: "assistant",
+          model: "claude-opus-4-5",
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          content: [{ type: "text", text: "done" }],
+        },
+      },
+    ]);
+    const subagentsDir = path.join(dir, sessionId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    const oversizedInput = {
+      file_path: "src/large.ts",
+      content: "x".repeat(5000),
+    };
+    writeFileSync(
+      path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
+      `${[
+        {
+          type: "user",
+          timestamp: "2026-08-17T20:00:01.000Z",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_one_read",
+                content: "finished",
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-08-17T20:00:00.500Z",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_one_read",
+                name: "Write",
+                input: oversizedInput,
+              },
+            ],
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+      "utf8"
+    );
+
+    const parsed = await parseClaudeFile(filePath);
+
+    assert.ok(parsed);
+    const toolUse = parsed.subagents?.find(
+      (subagent) => subagent.id === nativeSubagentId
+    )?.toolUses?.[0];
+    assert.equal(toolUse?.id, "toolu_one_read");
+    // ISS-6480 retired the drop this used to pin. The contract under test is
+    // the fold itself: completion evidence survives for a tool use whose input
+    // exceeds the old bound — which now also survives.
+    assert.deepEqual(toolUse?.input, oversizedInput);
+    assert.equal(toolUse?.output, "finished");
+    assert.equal(toolUse?.resultTimestamp, "2026-08-17T20:00:01.000Z");
+    assert.equal(toolUse?.isError, undefined);
   });
 
   test("Claude parser ignores symlinked subagent sidecars outside the session directory", async () => {

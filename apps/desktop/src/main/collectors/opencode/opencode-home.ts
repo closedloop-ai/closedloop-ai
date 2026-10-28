@@ -30,12 +30,38 @@ export function getOpenCodeHome(): string {
   return path.join(home, ".local", "share", "opencode");
 }
 
-export function getOpenCodeDbPath(): string {
-  return path.join(getOpenCodeHome(), "opencode.db");
+export function getOpenCodeDbPath(home = getOpenCodeHome()): string {
+  return path.join(home, "opencode.db");
 }
 
 export function getOpenCodeDbWatchFiles(): string[] {
   return ["opencode.db", "opencode.db-wal", "opencode.db-shm"];
+}
+
+/**
+ * The store files that exist under `home` right now — the db and whichever of
+ * its WAL/SHM siblings SQLite currently has on disk.
+ *
+ * This is what the collector's parse actually reads, so it is the parse-lane
+ * byte source for OpenCode (ISS-8506). ENOENT is the ordinary state for the
+ * siblings and is not reported; any other stat failure keeps the path in the
+ * listing so the caller's own `lstat` can classify it as unreadable rather than
+ * silently omit it.
+ */
+export function listOpenCodeStoreFiles(home = getOpenCodeHome()): string[] {
+  return getOpenCodeDbWatchFiles()
+    .map((name) => path.join(home, name))
+    .filter((filePath) => {
+      try {
+        statSync(filePath);
+        return true;
+      } catch (error) {
+        // Only a genuinely missing sibling is omitted. ENOTDIR (a home that is
+        // a file), EACCES and the rest are kept so the caller's own lstat can
+        // say why the store could not be measured.
+        return (error as NodeJS.ErrnoException).code !== "ENOENT";
+      }
+    });
 }
 
 /**

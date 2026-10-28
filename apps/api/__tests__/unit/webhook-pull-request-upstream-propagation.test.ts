@@ -8,7 +8,6 @@
  * is created in the first place.
  */
 
-import type { PullRequestClosedEvent } from "@octokit/webhooks-types";
 import {
   afterEach,
   beforeEach,
@@ -19,10 +18,24 @@ import {
   vi,
 } from "vitest";
 
+const { mockWithDbTx } = vi.hoisted(() => ({ mockWithDbTx: vi.fn() }));
+
 // Mock modules before importing
+vi.mock("@/app/branches/branch-detail-signal", () => ({
+  emitBranchDetailChanged: vi.fn(),
+}));
+
+// ISS-12463: the branch-owner seed is raw SQL this stubbed transaction does not
+// model; its wiring is pinned by the real-Postgres seed-wiring suite.
+vi.mock(
+  "@/app/webhooks/github/handlers/pull-request-branch-owner-seed",
+  () => ({
+    seedPullRequestBranchOwner: vi.fn().mockResolvedValue(undefined),
+  })
+);
+
 vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
+  const mockWithDb = Object.assign(vi.fn(), { tx: mockWithDbTx });
   return {
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
@@ -58,7 +71,10 @@ vi.mock("@/lib/slug-generator", () => ({
 }));
 
 vi.mock("@/lib/artifact-adapters", () => ({
-  documentWhere: (where: any) => ({ ...where, type: "DOCUMENT" }),
+  documentWhere: (where: Record<string, unknown>) => ({
+    ...where,
+    type: "DOCUMENT",
+  }),
 }));
 
 vi.mock("@/app/branches/branch-service", () => ({
@@ -70,6 +86,10 @@ vi.mock("@/app/branches/branch-service", () => ({
   },
   // PLN-1034: PR-lifecycle actions bump branch_detail.last_activity_at.
   bumpBranchActivity: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/app/branches/pull-request-author-identity", () => ({
+  ensurePullRequestAuthorIdentity: vi.fn(),
 }));
 
 // ISS-4664: the handler calls this AFTER the transaction commits. Mocked so a
@@ -93,26 +113,25 @@ vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
 import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { IssueStatus } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
-import { createPullRequestWebhookTx } from "@/__tests__/support/webhooks/github/pull-request-handler.test-mocks";
+import {
+  createPullRequestWebhookTx,
+  type PullRequestWebhookTx,
+} from "@/__tests__/support/webhooks/github/pull-request-handler.test-mocks";
 import { branchService } from "@/app/branches/branch-service";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 import {
   createPullRequest,
+  createPullRequestClosedEvent,
   createRepository,
-  createSender,
 } from "../fixtures/github-webhook-fixtures";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 const mockParseArtifactReferences = parseArtifactReferences as Mock;
 const mockUpsertBranchArtifact = branchService.upsertBranchArtifact as Mock;
 
-// Type aliases for mocked functions
-const mockWithDbTx = withDb.tx as unknown as Mock;
-
 // Mock database transaction client
-let mockTx: any;
+let mockTx: PullRequestWebhookTx;
 
 describe("handlePullRequest", () => {
   beforeEach(() => {
@@ -126,7 +145,9 @@ describe("handlePullRequest", () => {
 
     mockTx = createPullRequestWebhookTx();
 
-    mockWithDbTx.mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx.mockImplementation(
+      (callback: (tx: PullRequestWebhookTx) => unknown) => callback(mockTx)
+    );
   });
 
   afterEach(() => {
@@ -144,6 +165,24 @@ describe("handlePullRequest", () => {
         id: REPO_ID,
         installation: { organizationId: ORG_ID },
       });
+      mockTx.branchDetail.findFirst.mockImplementation(
+        async ({ where }: { where: Record<string, unknown> }) => {
+          if (where.artifactId) {
+            return { artifactId: where.artifactId, headSha: null };
+          }
+          const latestPullRequest =
+            mockTx.pullRequestDetail.findUnique.mock.results.at(-1)?.value;
+          const resolvedPullRequest = latestPullRequest
+            ? await Promise.resolve(latestPullRequest)
+            : null;
+          return resolvedPullRequest?.branchArtifactId
+            ? {
+                artifactId: resolvedPullRequest.branchArtifactId,
+                headSha: resolvedPullRequest.headSha ?? null,
+              }
+            : null;
+        }
+      );
     }
 
     it("PR merge with a linked plan does not change the plan status", async () => {
@@ -159,10 +198,8 @@ describe("handlePullRequest", () => {
       );
       mockTx.artifact.update.mockResolvedValue({});
 
-      const event: PullRequestClosedEvent = {
-        action: "closed",
-        number: 106,
-        pull_request: createPullRequest({
+      const event = createPullRequestClosedEvent(
+        createPullRequest({
           id: 9007,
           number: 106,
           title: "PLN-42: Feature",
@@ -172,10 +209,8 @@ describe("handlePullRequest", () => {
           merged_at: "2026-03-01T12:00:00Z",
           merge_commit_sha: "merge-sha",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       await handlePullRequest(event);
 
@@ -211,13 +246,10 @@ describe("handlePullRequest", () => {
         status: IssueStatus.InProgress,
       });
       // ...with no other open PR left on it. It must still not advance.
-      mockTx.pullRequestDetail.findFirst.mockResolvedValue(null);
       mockTx.artifact.update.mockResolvedValue({});
 
-      const event: PullRequestClosedEvent = {
-        action: "closed",
-        number: 203,
-        pull_request: createPullRequest({
+      const event = createPullRequestClosedEvent(
+        createPullRequest({
           id: 9011,
           number: 203,
           title: "FEA-42: fix login timeout",
@@ -227,10 +259,8 @@ describe("handlePullRequest", () => {
           merged_at: "2026-03-01T12:00:00Z",
           merge_commit_sha: "merge-sha-feature",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       await handlePullRequest(event);
 
@@ -250,8 +280,14 @@ describe("handlePullRequest", () => {
       expect(mockTx.artifact.updateMany).not.toHaveBeenCalled();
       // The linked feature is never read, so it cannot be written.
       expect(mockTx.artifact.findFirst).not.toHaveBeenCalled();
-      // And no per-document advisory lock is taken on the merge path.
-      expect(mockTx.$executeRaw).not.toHaveBeenCalled();
+      // Provider and PR-activity locks are allowed; the retired per-document
+      // status-propagation lock remains absent.
+      expect(mockTx.$executeRaw).toHaveBeenCalled();
+      expect(
+        mockTx.$executeRaw.mock.calls.some((call: unknown[]) =>
+          call.some((value: unknown) => String(value).includes("document"))
+        )
+      ).toBe(false);
     });
 
     it("closing a FEA-linked PR without merging settles only the PR record", async () => {
@@ -269,10 +305,8 @@ describe("handlePullRequest", () => {
       );
       mockTx.artifact.update.mockResolvedValue({});
 
-      const event: PullRequestClosedEvent = {
-        action: "closed",
-        number: 213,
-        pull_request: createPullRequest({
+      const event = createPullRequestClosedEvent(
+        createPullRequest({
           id: 9024,
           number: 213,
           title: "FEA-99: abandoned",
@@ -282,10 +316,8 @@ describe("handlePullRequest", () => {
           merged_at: null,
           merge_commit_sha: null,
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       await handlePullRequest(event);
 
@@ -314,10 +346,8 @@ describe("handlePullRequest", () => {
       );
       mockTx.artifact.update.mockResolvedValue({});
 
-      const event: PullRequestClosedEvent = {
-        action: "closed",
-        number: 204,
-        pull_request: createPullRequest({
+      const event = createPullRequestClosedEvent(
+        createPullRequest({
           id: 9012,
           number: 204,
           title: "PLN-17: ship feature bundle",
@@ -327,10 +357,8 @@ describe("handlePullRequest", () => {
           merged_at: "2026-03-01T12:00:00Z",
           merge_commit_sha: "merge-sha-cascade",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       await handlePullRequest(event);
 

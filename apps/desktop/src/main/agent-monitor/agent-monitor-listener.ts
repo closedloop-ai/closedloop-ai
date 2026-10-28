@@ -7,6 +7,7 @@ import type {
   HookData,
   HookHarness,
 } from "../dashboard/agent-dashboard-db-types.js";
+import type { SessionMeshHookSink } from "../session-mesh/session-mesh-hook-contract.js";
 
 // CLOSEDLOOP-TICKET FEA-1500: remove legacy HTTP hook listener on 4820 after
 // transport migration (FEA-1497 breaking-change discipline contract #1). The hook
@@ -17,8 +18,12 @@ import type {
 // lighter transport.
 
 const HOST = "127.0.0.1";
+/** The variable the hook handlers in `resources/hooks` read for this port. */
+export const AGENT_MONITOR_PORT_ENV = "CLAUDE_DASHBOARD_PORT";
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // hook payloads (incl. large tool_input) cap
 const CLAUDE_HOOK_EVENT_PATH = "/api/hooks/event";
+const SESSION_MESH_HOOK_EVENT_PATH = "/api/session-mesh/hook";
+const CODEX_SESSION_MESH_HOOK_EVENT_PATH = "/api/session-mesh/codex-hook";
 const PROVIDER_HINT_FIELD = "__provider";
 // `HookHarness` (the route-owned "claude" attribution) is the canonical hook
 // contract; it now lives beside `HookData` in agent-dashboard-db-types.ts so the
@@ -35,15 +40,27 @@ export type AgentHookLifecycle = {
   ): boolean | Promise<boolean>;
 };
 
+export type { SessionMeshHookEvent } from "../session-mesh/session-mesh-hook-contract.js";
+
 /** The `{ hook_type, data }` envelope every hook handler POSTs. */
 const HookEnvelopeSchema = z.object({
   hook_type: z.string(),
   data: z.record(z.string(), z.unknown()).optional(),
 });
 
+const SessionMeshHookEnvelopeSchema = HookEnvelopeSchema.extend({
+  harness: z.enum(["claude", "codex"]),
+});
+
 export type AgentHookListenerOptions = {
   /** The lifecycle processor that owns all DB writes. */
   lifecycle: AgentHookLifecycle;
+  /**
+   * Session Mesh receives a distinct route so its always-on coordination hooks
+   * never opt a user into Agent Monitor capture. The consumer must resolve
+   * canonical IDs from the provider payload; aliases are intentionally absent.
+   */
+  onSessionMeshHookEvent?: SessionMeshHookSink;
   /** Key-free diagnostic sink (gatewayLog). */
   log?: (message: string) => void;
   /**
@@ -126,6 +143,25 @@ export class AgentHookListener {
     });
   }
 
+  /**
+   * ISS-12135: after an ephemeral bind (`loopback-port-isolation.ts`), put the
+   * bound port in `env` as {@link AGENT_MONITOR_PORT_ENV}. The agents this app
+   * spawns inherit it, so the hooks it installed for them post here rather than
+   * to the installed app holding `AGENT_MONITOR_PORT`. A listener on its fixed
+   * port, or one that never bound, changes nothing.
+   */
+  publishEphemeralPort(env: NodeJS.ProcessEnv = process.env): void {
+    if (
+      !this.ready ||
+      this.boundPort === null ||
+      this.boundPort === AGENT_MONITOR_PORT
+    ) {
+      return;
+    }
+    env[AGENT_MONITOR_PORT_ENV] = String(this.boundPort);
+    this.log(`${AGENT_MONITOR_PORT_ENV}=${this.boundPort} for spawned agents`);
+  }
+
   stop(): Promise<void> {
     const server = this.server;
     this.server = null;
@@ -149,6 +185,18 @@ export class AgentHookListener {
     }
     if (req.method === "POST" && req.url === CLAUDE_HOOK_EVENT_PATH) {
       this.handleHookEvent(req, res);
+      return;
+    }
+    if (
+      req.method === "POST" &&
+      (req.url === SESSION_MESH_HOOK_EVENT_PATH ||
+        req.url === CODEX_SESSION_MESH_HOOK_EVENT_PATH)
+    ) {
+      if (req.headers.origin || req.headers["sec-fetch-site"]) {
+        this.json(res, 403, { ok: false });
+        return;
+      }
+      this.handleSessionMeshHookEvent(req, res);
       return;
     }
     this.json(res, 404, { ok: false, error: "not found" });
@@ -196,6 +244,54 @@ export class AgentHookListener {
       .catch(() => {
         this.json(res, 200, { ok: false });
       });
+  }
+
+  private handleSessionMeshHookEvent(
+    req: IncomingMessage,
+    res: ServerResponse
+  ): void {
+    readBody(req, MAX_BODY_BYTES)
+      .then((body) => {
+        const parsed = SessionMeshHookEnvelopeSchema.safeParse(
+          JSON.parse(body)
+        );
+        const harness =
+          req.url === CODEX_SESSION_MESH_HOOK_EVENT_PATH ? "codex" : "claude";
+        if (
+          !parsed.success ||
+          parsed.data.harness !== harness ||
+          !this.options.onSessionMeshHookEvent
+        ) {
+          this.json(res, 200, { ok: true, skipped: "unavailable" });
+          return;
+        }
+        const data = (parsed.data.data ?? {}) as HookData;
+        // A provider payload cannot choose an attribution source. Session Mesh
+        // owns canonical identity resolution from session_id/agent_id upstream.
+        if (Object.hasOwn(data, PROVIDER_HINT_FIELD)) {
+          this.json(res, 200, { ok: true, skipped: "invalid-provider-hint" });
+          return;
+        }
+        Promise.resolve(
+          this.options.onSessionMeshHookEvent({
+            harness,
+            hookType: parsed.data.hook_type,
+            data,
+            localToken:
+              typeof req.headers["x-session-mesh-token"] === "string"
+                ? req.headers["x-session-mesh-token"]
+                : undefined,
+          })
+        )
+          .then((result) => this.json(res, 200, { ok: true, ...result }))
+          .catch((error: unknown) => {
+            this.log(
+              `session mesh hook listener: failed to process event: ${error instanceof Error ? error.message : String(error)}`
+            );
+            this.json(res, 200, { ok: false });
+          });
+      })
+      .catch(() => this.json(res, 200, { ok: false }));
   }
 
   private json(res: ServerResponse, status: number, payload: unknown): void {

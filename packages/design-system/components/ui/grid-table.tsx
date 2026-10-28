@@ -10,9 +10,18 @@ import {
 } from "@closedloop-ai/design-system/lib/column-order";
 import {
   FIRST_COLUMN_INDEX,
-  getColumnCount,
-  getDataColumnIndex,
+  resolveGridColumnTracks,
 } from "@closedloop-ai/design-system/lib/grid-table-aria";
+import { handleGridCellEntryKeyDown } from "@closedloop-ai/design-system/lib/grid-cell-keyboard";
+import {
+  PINNED_LEAD_CELL_CLASS,
+  PINNED_LEAD_EDGE_CLASS,
+  PINNED_LEAD_HOVER_TINT_CLASS,
+  PINNED_LEAD_SELECTED_TINT_CLASS,
+  PINNED_LEAD_TINT_CLASS,
+  ROW_HOVER_TINT_CLASS,
+  ROW_SELECTED_TINT_CLASS,
+} from "@closedloop-ai/design-system/lib/grid-table-pin";
 import {
   focusCellFromRowClick,
   GRID_NAV_CELL_ROLE,
@@ -160,6 +169,8 @@ export type GridTableGroup<T> = {
   key: string;
   label: string;
   items: T[];
+  /** Optional value-specific icon that overrides the dimension-level icon. */
+  icon?: ReactNode;
 };
 
 type GridTableProps<T> = {
@@ -343,6 +354,19 @@ type GridTableProps<T> = {
    * `TableGridHeaderProps.enhancedHeaderInteractions`.
    */
   enhancedHeaderInteractions?: boolean;
+  /**
+   * ISS-6959 — pin the leading identity column so it stays visible at every
+   * horizontal scroll position, instead of scrolling away and leaving rows with
+   * no identifier. Opt-in: absent leaves the table byte-identical, and at
+   * `scrollLeft: 0` a pinned table lays out exactly as an unpinned one.
+   *
+   * Ignored when `renderLeadingUtility` is set. The utility cell takes the FIRST
+   * track, so pinning the identity cell at `left: 0` would park it on top of the
+   * checkbox/grip rather than beside it; pinning both is a wider change than any
+   * caller has asked for, so this stays a single-track pin and the combination
+   * is a no-op rather than a broken overlay. See `lib/grid-table-pin.ts`.
+   */
+  pinLeadColumn?: boolean;
 };
 
 export function GridTable<T>({
@@ -375,6 +399,7 @@ export function GridTable<T>({
   leadingUtilityHeader,
   headerActions,
   enhancedHeaderInteractions = false,
+  pinLeadColumn = false,
 }: GridTableProps<T>) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     () => new Set()
@@ -473,16 +498,29 @@ export function GridTable<T>({
   const tableRole = navigationEnabled ? GRID_NAV_TABLE_ROLE : "table";
   const bodyCellRole = navigationEnabled ? GRID_NAV_CELL_ROLE : "cell";
 
-  // A leading utility column (checkbox / grip) takes the FIRST track, pushing
-  // the identity cell to the second. Deriving both indexes from one base keeps
-  // the header's and body's `aria-colindex` numbering paired — they desync
-  // silently if only one side accounts for the utility track.
-  const leadingUtilityColumnIndex = renderLeadingUtility
-    ? FIRST_COLUMN_INDEX
-    : undefined;
-  const leadColumnIndex = renderLeadingUtility
-    ? FIRST_COLUMN_INDEX + 1
-    : FIRST_COLUMN_INDEX;
+  // Narrower than whether the utility TRACK exists: only `renderLeadingUtility`
+  // can fill that cell, while a header-only utility track still gets a
+  // placeholder body cell so paint and ARIA numbering agree.
+  const bodyPaintsUtilityCell = renderLeadingUtility != null;
+  const headerPaintsUtilityCell = Boolean(leadingUtilityHeader);
+  const hasLeadingUtilityTrack = bodyPaintsUtilityCell || headerPaintsUtilityCell;
+
+  // ISS-9564: the ONE resolution of the grid's leading tracks. The track exists
+  // when EITHER half declares it, and the header is handed this same answer
+  // rather than re-deriving it from the prop it happens to hold.
+  const tracks = resolveGridColumnTracks({
+    hasLeadingUtility: hasLeadingUtilityTrack,
+    dataColumnCount: orderedColumns.length,
+  });
+  const resolvedLeadingUtilityHeader =
+    leadingUtilityHeader ||
+    (bodyPaintsUtilityCell ? (
+      <span className="sr-only">{DEFAULT_LEADING_UTILITY_LABEL}</span>
+    ) : undefined);
+
+  // ISS-6959. A leading utility track owns `left: 0`, so a lead cell pinned
+  // there would sit ON the checkbox rather than beside it — see the prop doc.
+  const leadColumnPinned = pinLeadColumn && !bodyPaintsUtilityCell;
 
   /**
    * Per-cell navigation attributes. Off → `{}`, so a non-navigable table emits
@@ -505,6 +543,12 @@ export function GridTable<T>({
   };
 
   const handleCellKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // The APG grid pattern's cell-entry keys come first: `Enter`/`F2` move focus
+    // into the cell's control, `Escape` brings it back. Shared with `GridTableV2`
+    // so the two grids answer the same keys the same way.
+    if (handleGridCellEntryKeyDown(event)) {
+      return;
+    }
     if (
       shouldSkipGridNavigation(event.key, event.target, {
         altKey: event.altKey,
@@ -514,23 +558,24 @@ export function GridTable<T>({
     ) {
       return;
     }
-    const nextCell = resolveNextGridCell(event.currentTarget, event.key);
+    const nextCell = resolveNextGridCell(event.currentTarget, event.key, {
+      ctrlKey: event.ctrlKey,
+    });
     if (!nextCell) {
       // At an edge: leave the key alone so it keeps its native meaning (e.g.
       // scrolling the page) rather than being silently swallowed.
       return;
     }
-    // `preventDefault` stops the arrow key from ALSO scrolling the table's
-    // scroll container, which would make the grid lurch on every keypress.
+    // `preventDefault` stops the key from ALSO scrolling the table's scroll
+    // container, which would make the grid lurch on every keypress. Claimed even
+    // when the move resolves to the cell already focused (`Home` on a row's
+    // first cell), for the same reason.
     event.preventDefault();
+    if (nextCell === event.currentTarget) {
+      return;
+    }
     nextCell.focus();
   };
-  // Total grid tracks a row occupies: the leading cell plus one per data column.
-  // Published on the table as `aria-colcount` and used as the group header row's
-  // `aria-colspan`, so both stay derived from the rendered columns. `leadColumnIndex`
-  // already absorbs the optional leading-utility track, so the count follows it.
-  const columnCount = getColumnCount(leadColumnIndex, orderedColumns.length);
-
   // The rows the grid actually paints this render: in grouped mode a COLLAPSED
   // group renders none of its items, so it contributes no focusable cell.
   const renderedItems = groups
@@ -539,15 +584,20 @@ export function GridTable<T>({
       )
     : items;
 
-  // The grid's keyboard entry point before any cell has been focused: the lead
-  // cell of the first row that is actually rendered.
+  // The grid's keyboard entry point before any cell has been focused: the FIRST
+  // cell of the first rendered row, which is the utility cell when the caller
+  // renders one and the lead cell otherwise. Entering at the lead while a
+  // utility cell sits to its left would drop the user into the middle of a row.
   const firstRenderedItem = renderedItems[0];
+  const firstColumnKey = hasLeadingUtilityTrack
+    ? UTILITY_CELL_KEY
+    : LEAD_CELL_KEY;
   const firstCellKey =
     firstRenderedItem === undefined
       ? null
-      : `${getRowId(firstRenderedItem)}::__lead__`;
+      : `${getRowId(firstRenderedItem)}::${firstColumnKey}`;
 
-  // wongk review: the roving tabindex must never point at a cell that is no
+  // whitlockk review: the roving tabindex must never point at a cell that is no
   // longer on screen. A data change (a page/filter change dropping the focused
   // row) or a group collapse leaves `activeCellKey` naming a row nothing renders
   // — and because every OTHER cell then compares unequal, the whole grid goes
@@ -559,10 +609,14 @@ export function GridTable<T>({
     ? new Set(
         renderedItems.flatMap((item) => {
           const rowId = getRowId(item);
-          return [
-            `${rowId}::__lead__`,
+          const rowKeys = [
+            `${rowId}::${LEAD_CELL_KEY}`,
             ...orderedColumns.map((column) => `${rowId}::${column.id}`),
           ];
+          if (hasLeadingUtilityTrack) {
+            rowKeys.unshift(`${rowId}::${UTILITY_CELL_KEY}`);
+          }
+          return rowKeys;
         })
       )
     : null;
@@ -605,11 +659,11 @@ export function GridTable<T>({
           // the hover slot is deliberate: without it the row flips to the
           // neutral hover grey as the pointer crosses it, so a selected row
           // appears to deselect itself on mouseover.
-          selected
-            ? "bg-primary/10 hover:bg-primary/10"
-            : "hover:bg-muted/40",
+          selected ? ROW_SELECTED_TINT_CLASS : ROW_HOVER_TINT_CLASS,
           handleRowClick && "cursor-pointer"
         )}
+        data-analytics-action={handleRowClick ? "true" : undefined}
+        data-analytics-label={handleRowClick ? "Select row" : undefined}
         data-grid-row=""
         data-state={selected ? "selected" : undefined}
         key={rowId}
@@ -617,24 +671,42 @@ export function GridTable<T>({
         role="row"
         style={{ gridTemplateColumns: renderedGridTemplateColumns }}
       >
-        {renderLeadingUtility ? (
+        {hasLeadingUtilityTrack ? (
+          // A real leading track always gets a body cell, so CSS placement and
+          // ARIA numbering describe the same grid even when a caller supplies
+          // only the header half.
           <div
-            aria-colindex={leadingUtilityColumnIndex}
-            className="flex h-full min-w-0 items-center justify-center"
+            aria-colindex={tracks.leadingUtilityColumnIndex}
+            className={cn(
+              "flex h-full min-w-0 items-center justify-center",
+              navigationEnabled &&
+                "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            )}
             role={bodyCellRole}
+            {...buildCellNavigationProps(`${rowId}::${UTILITY_CELL_KEY}`)}
           >
-            {renderLeadingUtility(item)}
+            {renderLeadingUtility?.(item)}
           </div>
         ) : null}
         <div
-          aria-colindex={leadColumnIndex}
+          aria-colindex={tracks.leadColumnIndex}
           className={cn(
             "flex min-w-0 flex-col justify-center py-1 pr-3 pl-4",
             navigationEnabled &&
-              "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+              "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+            leadColumnPinned && [
+              PINNED_LEAD_CELL_CLASS,
+              PINNED_LEAD_EDGE_CLASS,
+              PINNED_LEAD_TINT_CLASS,
+              // Mirrors the row's own tint ternary above, so the pinned cell and
+              // the rest of its row can never read as two different states.
+              selected
+                ? PINNED_LEAD_SELECTED_TINT_CLASS
+                : PINNED_LEAD_HOVER_TINT_CLASS,
+            ]
           )}
           role={bodyCellRole}
-          {...buildCellNavigationProps(`${rowId}::__lead__`)}
+          {...buildCellNavigationProps(`${rowId}::${LEAD_CELL_KEY}`)}
         >
           {renderLead(item)}
         </div>
@@ -645,7 +717,7 @@ export function GridTable<T>({
         {orderedColumns.map((column, index) => (
           <GridTableCell
             cellRole={bodyCellRole}
-            colIndex={getDataColumnIndex(leadColumnIndex, index)}
+            colIndex={tracks.dataColumnIndex(index)}
             columnId={column.id}
             key={column.id}
             {...buildCellNavigationProps(`${rowId}::${column.id}`)}
@@ -670,7 +742,7 @@ export function GridTable<T>({
               <div className="flex flex-col gap-3" key={group.key}>
                 <GroupSectionHeader
                   count={showGroupCount ? group.items.length : undefined}
-                  icon={groupIcon}
+                  icon={group.icon ?? groupIcon}
                   isOpen={isOpen}
                   label={group.label}
                   onToggle={() => toggleGroup(group.key)}
@@ -683,17 +755,18 @@ export function GridTable<T>({
     </div>
   );
 
+  // `min-w-fit` keeps the header/rows sized to the columns so the host scrolls
+  // horizontally when the columns exceed the container.
   const grid = (
-    // `min-w-fit` keeps the header/rows sized to the columns so the host scrolls
-    // horizontally when the columns exceed the container.
     <div
-      aria-colcount={columnCount}
+      aria-colcount={tracks.columnCount}
       className="min-w-fit border-t"
       data-grid-body=""
       role={tableRole}
     >
       <TableGridHeader
         actions={headerActions}
+        columnTracks={tracks}
         columns={orderedColumns.map((column) => ({
           id: column.id,
           label: column.label,
@@ -710,9 +783,10 @@ export function GridTable<T>({
         gridTemplateColumns={renderedGridTemplateColumns}
         insideAriaTable
         leadingLabel={leadingLabel}
-        leadingUtilityHeader={leadingUtilityHeader}
+        leadingUtilityHeader={resolvedLeadingUtilityHeader}
         leadingSortKey={onSort ? leadingSortKey : undefined}
         onSort={onSort ?? noopSort}
+        pinLeadColumn={leadColumnPinned}
         reorder={
           onColumnOrderChange
             ? { columnOrder: fullColumnOrder, onReorder: onColumnOrderChange }
@@ -725,23 +799,28 @@ export function GridTable<T>({
       {groups
         ? groups.map((group) => {
             const isOpen = !collapsedGroups.has(group.key);
+            // A `role="table"` may only own rows and rowgroups, so the group
+            // (its section header + its rows) is a rowgroup and the section
+            // header itself is a row holding one cell spanning every column —
+            // the same shape a native `<tbody>` + full-width `<td colspan>`
+            // group header takes. The header keeps its own `aria-expanded`
+            // button, so collapsing still reads as a disclosure.
             return (
-              // A `role="table"` may only own rows and rowgroups, so the group
-              // (its section header + its rows) is a rowgroup and the section
-              // header itself is a row holding one cell spanning every column —
-              // the same shape a native `<tbody>` + full-width `<td colspan>`
-              // group header takes. The header keeps its own `aria-expanded`
-              // button, so collapsing still reads as a disclosure.
               <div key={group.key} role="rowgroup">
                 <div role="row">
                   <div
-                    aria-colindex={leadColumnIndex}
-                    aria-colspan={columnCount}
+                    // A cell spanning EVERY track starts at the first one.
+                    // Starting at the identity track while spanning the whole
+                    // count reaches one track past the table's own
+                    // `aria-colcount` whenever a utility track shifts the lead
+                    // — `GridTableV2SectionHeaderRow` spans from the first.
+                    aria-colindex={FIRST_COLUMN_INDEX}
+                    aria-colspan={tracks.columnCount}
                     role="cell"
                   >
                     <GroupSectionHeader
                       count={showGroupCount ? group.items.length : undefined}
-                      icon={groupIcon}
+                      icon={group.icon ?? groupIcon}
                       isOpen={isOpen}
                       label={group.label}
                       onToggle={() => toggleGroup(group.key)}
@@ -834,7 +913,17 @@ export function GridTableCell({
         // onto every data cell so the label stayed above its own data; removing
         // the lane from the header removes the reason for it here too, and with
         // it the 24px indent every cell of every grid was carrying.
-        "flex h-full min-w-0 items-center gap-2 border-l pr-3 pl-3",
+        //
+        // ISS-8422: `relative` makes the cell the containing block for anything
+        // absolutely positioned inside it — which `sr-only` content is. Without
+        // it such a box resolves its containing block to the page shell's
+        // positioned ancestor, the host's `overflow-auto` scroll container is
+        // then not in that chain and cannot clip it, and it lands at its static
+        // position out in the horizontally-scrolled track and widens the PAGE.
+        // That is structural to a scrolling grid rather than particular to one
+        // cell, so it belongs here: the header cells (`table-grid-header.tsx`)
+        // have always been `relative` and the data cells simply were not.
+        "relative flex h-full min-w-0 items-center gap-2 border-l pr-3 pl-3",
         // Only a navigable cell is focusable, so only it needs a focus ring —
         // and it needs one, or keyboard navigation moves an invisible cursor
         // (WCAG 2.4.7 Focus Visible).
@@ -856,15 +945,23 @@ export function GridTableCell({
 // unchanged — this is a split, not a contract change.
 export {
   buildGridTableCardFields,
+  buildGridTableCardHeaderFields,
   GridEmptyValue,
   type GridTableCardField,
   GridTableCard,
+  GridTableCardHeaderFields,
   isEmptyCellValue,
 } from "./grid-table-card";
 
 function noopSort() {
   // Column sorting is not wired in this view yet.
 }
+
+/** Column-key stand-in for the fixed leading identity cell. */
+const LEAD_CELL_KEY = "__lead__";
+/** Column-key stand-in for the optional leading utility cell before it. */
+const UTILITY_CELL_KEY = "__utility__";
+const DEFAULT_LEADING_UTILITY_LABEL = "Utility";
 
 /** Column id of the trailing row-actions column. */
 export const ROW_ACTIONS_COLUMN_ID = "actions";
@@ -889,4 +986,3 @@ export const ROW_ACTIONS_COLUMN: GridTableColumn = {
   ariaLabel: "Actions",
   sortable: false,
 };
-

@@ -6,7 +6,11 @@
  * and RNG, sharing nothing with the CustomField seeding beyond the seed context.
  */
 
-import { ThreadSource, ThreadStatus } from "../../generated/client";
+import {
+  CommentBodyFormat,
+  ThreadSource,
+  ThreadStatus,
+} from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
 import { pickRequired } from "./allocations";
 import type { CoreSeedResult } from "./core";
@@ -153,6 +157,7 @@ export async function seedComments(
           id: nativeComment1Id,
           threadId: nativeThreadId,
           authorId: userId,
+          bodyFormat: CommentBodyFormat.RICH_V1,
           body: proseMirrorDoc("Initial feedback on this document."),
           plainText: "Initial feedback on this document.",
         },
@@ -176,6 +181,7 @@ export async function seedComments(
           id: nativeComment2Id,
           threadId: nativeThreadId,
           authorId: userId,
+          bodyFormat: CommentBodyFormat.RICH_V1,
           body: proseMirrorDoc("Follow-up: looks good after review."),
           plainText: "Follow-up: looks good after review.",
           parentCommentId: nativeComment1Id,
@@ -290,6 +296,7 @@ export async function seedComments(
           id: liveblocksComment1Id,
           threadId: liveblocksThreadId,
           authorId: userId,
+          bodyFormat: CommentBodyFormat.RICH_V1,
           body: proseMirrorDoc("Liveblocks collaborative comment."),
           plainText: "Liveblocks collaborative comment.",
         },
@@ -315,6 +322,7 @@ export async function seedComments(
           id: liveblocksComment2Id,
           threadId: liveblocksThreadId,
           authorId: userId,
+          bodyFormat: CommentBodyFormat.RICH_V1,
           body: proseMirrorDoc("Resolved the concern mentioned above."),
           plainText: "Resolved the concern mentioned above.",
           parentCommentId: liveblocksComment1Id,
@@ -427,6 +435,7 @@ export async function seedComments(
           id: githubComment1Id,
           threadId: githubThreadId,
           authorId: userId,
+          bodyFormat: CommentBodyFormat.RICH_V1,
           body: proseMirrorDoc(
             "GitHub PR review comment — please address the naming convention."
           ),
@@ -577,6 +586,7 @@ export async function seedComments(
                 id: commentId,
                 threadId,
                 authorId: userId,
+                bodyFormat: CommentBodyFormat.RICH_V1,
                 body: proseMirrorDoc(`Scaled seed comment ${commentIndex}.`),
                 plainText: `Scaled seed comment ${commentIndex}.`,
                 parentCommentId,

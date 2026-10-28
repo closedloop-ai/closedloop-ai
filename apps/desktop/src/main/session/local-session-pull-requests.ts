@@ -40,7 +40,7 @@ function resolvedBranchRepositoryFullName(
 }
 
 /**
- * ISS-4922 (wongk review): dedup and the admission gate MUST key a PR the same
+ * ISS-4922 (whitlockk review): dedup and the admission gate MUST key a PR the same
  * way, so this lane has no identity helper of its own — it calls the shared
  * {@link sessionPrIdentityKey}. The removed local copy trimmed+lowercased the
  * repo, while `sessionPrIdentityKey` runs it through `normalizeRepoFullName`, so
@@ -213,7 +213,7 @@ export function localSessionPullRequests(
       continue;
     }
     // Repo-scoped dedup so repo-a#42 and repo-b#42 stay distinct rows and a
-    // duplicate artifact-link for one repo folds once (FEA-4188 / wongk reviewer;
+    // duplicate artifact-link for one repo folds once (FEA-4188 / whitlockk reviewer;
     // `apps/desktop/AGENTS.md` "Agent Monitor Inputs").
     const identity = sessionPrIdentityKey(ref.repositoryFullName, ref.prNumber);
     if (seenIdentities.has(identity)) {

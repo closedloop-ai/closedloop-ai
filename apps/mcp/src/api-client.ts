@@ -1,3 +1,8 @@
+import {
+  MCP_CLIENT_HEADER_VALUE,
+  OperationEvidenceHeader,
+} from "@repo/api/src/types/attribution-evidence.js";
+import { operationReceiptSchema } from "@repo/api/src/types/attribution-evidence-schema.js";
 import type { JsonObject } from "@repo/api/src/types/common.js";
 import { API_KEY_SCOPES_UNRESOLVABLE_CODE } from "@repo/api/src/utils/api-key-scope-resolution.js";
 import { McpApiError } from "./api-error.js";
@@ -6,6 +11,7 @@ import type {
   VerifiedApiKeyContext,
 } from "./api-key-contract.js";
 import { ApiKeyVerificationStatus } from "./api-key-contract.js";
+import { currentToolCallContext } from "./tool-call-context.js";
 import { asRecord } from "./tools/tool-utils.js";
 
 const CLOSEDLOOP_API_URL =
@@ -119,11 +125,22 @@ export class ApiClient {
     this.plaintextKey = plaintextKey;
   }
 
-  private buildHeaders(): Record<string, string> {
+  private async buildHeaders(): Promise<Record<string, string>> {
+    const call = currentToolCallContext();
+    const requestFingerprint = await call?.requestFingerprint;
     return {
       Authorization: `Bearer ${this.plaintextKey}`,
       "Content-Type": "application/json",
       "X-Internal-Secret": INTERNAL_API_SECRET,
+      // ISS-12552: apps/api honors the call id and fingerprint only alongside
+      // the internal secret AND this marker, which only this server sends.
+      [OperationEvidenceHeader.McpClient]: MCP_CLIENT_HEADER_VALUE,
+      ...(call?.clientCallId
+        ? { [OperationEvidenceHeader.ClientCallId]: call.clientCallId }
+        : {}),
+      ...(requestFingerprint
+        ? { [OperationEvidenceHeader.RequestFingerprint]: requestFingerprint }
+        : {}),
     };
   }
 
@@ -145,7 +162,7 @@ export class ApiClient {
     }
     const response = await fetch(url.toString(), {
       method: "GET",
-      headers: this.buildHeaders(),
+      headers: await this.buildHeaders(),
       signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -159,7 +176,7 @@ export class ApiClient {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {
       method: "POST",
-      headers: this.buildHeaders(),
+      headers: await this.buildHeaders(),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
@@ -167,14 +184,14 @@ export class ApiClient {
       throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
-    return unwrapApiResult<T>(responseBody);
+    return captureOperationReceipt(unwrapApiResult<T>(responseBody));
   }
 
   async put<T>(path: string, body: unknown): Promise<T> {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {
       method: "PUT",
-      headers: this.buildHeaders(),
+      headers: await this.buildHeaders(),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
@@ -182,14 +199,14 @@ export class ApiClient {
       throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
-    return unwrapApiResult<T>(responseBody);
+    return captureOperationReceipt(unwrapApiResult<T>(responseBody));
   }
 
   async patch<T>(path: string, body: unknown): Promise<T> {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {
       method: "PATCH",
-      headers: this.buildHeaders(),
+      headers: await this.buildHeaders(),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
@@ -197,21 +214,21 @@ export class ApiClient {
       throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
-    return unwrapApiResult<T>(responseBody);
+    return captureOperationReceipt(unwrapApiResult<T>(responseBody));
   }
 
   async delete<T>(path: string): Promise<T> {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {
       method: "DELETE",
-      headers: this.buildHeaders(),
+      headers: await this.buildHeaders(),
       signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw await getResponseError(response);
     }
     const body = (await response.json()) as unknown;
-    return unwrapApiResult<T>(body);
+    return captureOperationReceipt(unwrapApiResult<T>(body));
   }
 }
 
@@ -364,4 +381,22 @@ export async function checkApiReachable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * ISS-12552: keep the receipt a write returned on the current tool call, so
+ * `withToolCallEvidence` can put it in the tool's JSON body. A response
+ * without a well-formed receipt leaves the call context untouched.
+ */
+function captureOperationReceipt<T>(data: T): T {
+  const call = currentToolCallContext();
+  if (call) {
+    const parsed = operationReceiptSchema.safeParse(
+      asRecord(data).operationReceipt
+    );
+    if (parsed.success) {
+      call.operationReceipt = parsed.data;
+    }
+  }
+  return data;
 }

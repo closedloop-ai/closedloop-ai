@@ -44,7 +44,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         artifactCount,
         documentVersionCount,
         slugCounterCount,
-        loopCount,
         gitHubInstallationCount,
         gitHubRepositoryCount,
         gitHubUserConnectionCount,
@@ -66,7 +65,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         artifactLinkCount,
         artifactRatingCount,
         fileAttachmentCount,
-        loopEventCount,
         promptCount,
       ] = await Promise.all([
         prisma.team.count({ where: { organizationId: orgId } }),
@@ -79,7 +77,6 @@ describe.skipIf(!DATABASE_URL_SET)(
           where: { documentDetail: { artifact: { organizationId: orgId } } },
         }),
         prisma.slugCounter.count({ where: { organizationId: orgId } }),
-        prisma.loop.count({ where: { organizationId: orgId } }),
         prisma.gitHubInstallation.count({ where: { organizationId: orgId } }),
         prisma.gitHubInstallationRepository.count({
           where: { installation: { organizationId: orgId } },
@@ -121,9 +118,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         prisma.fileAttachment.count({
           where: { artifact: { organizationId: orgId } },
         }),
-        prisma.loopEvent.count({
-          where: { loop: { organizationId: orgId } },
-        }),
         prisma.prompt.count({ where: { organizationId: orgId } }),
       ]);
 
@@ -134,7 +128,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         artifactCount,
         documentVersionCount,
         slugCounterCount,
-        loopCount,
         gitHubInstallationCount,
         gitHubRepositoryCount,
         gitHubUserConnectionCount,
@@ -156,7 +149,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         artifactLinkCount,
         artifactRatingCount,
         fileAttachmentCount,
-        loopEventCount,
         promptCount,
       };
     }
@@ -170,7 +162,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         expect(countsBefore.teamCount).toBeGreaterThan(0);
         expect(countsBefore.projectCount).toBeGreaterThan(0);
         expect(countsBefore.artifactCount).toBeGreaterThan(0);
-        expect(countsBefore.loopCount).toBeGreaterThan(0);
         expect(countsBefore.documentVersionCount).toBeGreaterThan(0);
         expect(countsBefore.customFieldCount).toBeGreaterThan(0);
         expect(countsBefore.commentThreadCount).toBeGreaterThan(0);

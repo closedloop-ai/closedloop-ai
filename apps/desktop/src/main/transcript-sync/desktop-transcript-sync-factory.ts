@@ -1,7 +1,9 @@
+import { TelemetryHarnessName } from "@closedloop-ai/telemetry-contract/resource";
 import type { TranscriptEgressGate } from "../../shared/transcript-sync-status-contract.js";
 import type { AgentDashboardDesignSystemRuntime } from "../dashboard/agent-dashboard-design-system-runtime.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { createDesktopTranscriptsClient } from "../transcript/desktop-transcripts-client.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
 import {
   createTranscriptSyncExecutor,
   statTranscriptFile,
@@ -25,6 +27,7 @@ import { createUtilityProcessOpencodeMaterializeRunner } from "./utility-process
 export type DesktopTranscriptSyncDeps = {
   getAccessToken: () => Promise<string | null>;
   getApiOrigin: () => string;
+  invalidateAccessToken?: (rejectedToken: string) => void;
   /**
    * The collector/materializer state directory — the same
    * `<userData>/agent-dashboard-ingest` the dashboard runtime's CollectorManager
@@ -44,6 +47,8 @@ export type DesktopTranscriptSyncDeps = {
    */
   getTranscriptSyncTierGate: () => TranscriptEgressGate;
   hasDesktopSessionAuth: () => boolean;
+  /** ISS-7096: the signed-in identity pair for the observe ownership gate. */
+  getSyncIdentity?: () => SignedInUserIdentity | null;
 };
 
 /**
@@ -65,6 +70,7 @@ export function createDesktopTranscriptSyncService(
   const transcriptsClient = createDesktopTranscriptsClient({
     getAccessToken: () => deps.getAccessToken(),
     getApiOrigin: () => deps.getApiOrigin(),
+    onUnauthorized: deps.invalidateAccessToken,
   });
   const stateDir = deps.stateDir;
   // ISS-5337: the OpenCode materialize pass runs in its own utilityProcess, so
@@ -133,6 +139,20 @@ export function createDesktopTranscriptSyncService(
     // imports live in the worker entry, which nothing statically imports.
     materialize: () => opencodeMaterializeRunner.materialize(),
     stopMaterialize: () => opencodeMaterializeRunner.stop(),
+    // ISS-8600: read off the SAME accessor the store and `emitSyncBatch` come
+    // from, so no `app.ts` edit is needed and the seam resolves lazily — the
+    // dashboard runtime does not exist when this factory runs.
+    //
+    // The harness is named HERE, at the only hop that knows it: the pass this
+    // reports on is `opencodeMaterializeRunner`'s, constructed a few lines
+    // above. The sweep below calls `materialize()` without knowing whose store
+    // it regenerates, so a seam that let the label default would be guessing.
+    // A second `batch: true` collector brings its own runner and names itself
+    // here — `batch-harness-materialize-wiring.test.ts` fails until it does.
+    noteMaterializeOutcome: (kind) =>
+      deps
+        .getAgentDashboardRuntime()
+        ?.noteMaterializeOutcome?.(TelemetryHarnessName.OpenCode, kind),
     // FEA-3932: one-shot OpenCode dead-letter redrive on service start so
     // sessions dead-lettered under a prior build (before materialization
     // existed) get one automatic retry once re-materialized. OpenCode-scoped —
@@ -162,11 +182,19 @@ export function createDesktopTranscriptSyncService(
     isOnline: () =>
       deps.getComputeTargetId() !== null && deps.hasDesktopSessionAuth(),
     getComputeTargetId: () => deps.getComputeTargetId(),
+    getSyncIdentity: () => deps.getSyncIdentity?.() ?? null,
     resolveTrustedTranscriptPath: (candidate) =>
       resolveTrustedClaudeTranscriptPath(candidate),
     isPendingTrustedTranscriptPath: (candidate) =>
       isPendingTrustedTranscriptPath(candidate),
     statFile: statTranscriptFile,
     log: (message) => gatewayLog.info("transcript-sync", message),
+    // ISS-6338: this lane's cloud batch health, read off the SAME accessor its
+    // store comes from (line 85). The drain cannot run without that runtime, so
+    // the emitter is present exactly when there is a batch to report — and it
+    // resolves to the OTel runtime's keyless relay exporter, which carries no
+    // Bearer token and therefore survives the auth loss that silences the lane.
+    emitSyncBatch: (event) =>
+      deps.getAgentDashboardRuntime()?.emitSyncBatch?.(event),
   });
 }

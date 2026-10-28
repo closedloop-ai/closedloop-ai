@@ -4,6 +4,12 @@ import type {
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
 import type { AgentSessionRepositoryBreakdown } from "@repo/api/src/types/agent-session-usage-breakdown";
+import { resolveCappedTotalPages } from "@repo/api/src/utils/math";
+import {
+  resolveSessionsListReadModel,
+  SessionsListReadState,
+  sessionsListReadModelFromState,
+} from "@repo/app/agents/lib/sessions-list-read-state";
 import type { SessionsDisplayState } from "./sessions-summary-cards-state";
 
 /**
@@ -19,7 +25,12 @@ import type { SessionsDisplayState } from "./sessions-summary-cards-state";
  * silently starve a surface of data it does render.
  */
 
-/** Fixed page size for the desktop Sessions table (mirrors the list request). */
+/**
+ * Default page size for the desktop Sessions table.
+ *
+ * ISS-8756: a DEFAULT now, not a fixed size. Desktop v1 keeps 25 fixed; v2
+ * resolves the URL-owned choice and passes the size the read actually used.
+ */
 export const PAGE_SIZE = 25;
 
 /**
@@ -31,33 +42,80 @@ export const PAGE_SIZE = 25;
  * render, so the facet options match the rendered repos. The analytics
  * breakdown is only a legacy fallback for a usage summary that predates that
  * rollup and reports NO repositories — never an overwrite. Using `??` here would
- * let a successful analytics read (or its empty-array catch fallback) clobber
- * the usage-owned options, dropping every Repository option (shafty023).
+ * let a successful analytics read clobber the usage-owned options, dropping
+ * every Repository option (davetho).
  */
 export function buildSessionsRenderModel({
+  canReadSessions,
   displayState,
+  maxOffset,
+  isListError = false,
+  isListLoading = false,
+  isListLoadingError = false,
+  isPlaceholderData = false,
+  isPaginationTotalKnown = true,
+  isPopulationComplete = true,
   sessionsData,
   facetUsage,
   repositoryBreakdown,
+  pageSize = PAGE_SIZE,
 }: {
+  canReadSessions?: boolean;
   displayState: SessionsDisplayState;
+  maxOffset?: number;
+  isListError?: boolean;
+  isListLoading?: boolean;
+  isListLoadingError?: boolean;
+  isPlaceholderData?: boolean;
+  /** False when reconciliation cannot establish the total for page navigation. */
+  isPaginationTotalKnown?: boolean;
+  /** False when the rows are usable evidence but do not establish the full scope. */
+  isPopulationComplete?: boolean;
+  /** ISS-9692: the size the list read actually used. */
+  pageSize?: number;
   sessionsData: AgentSessionListResponse | undefined;
   facetUsage: AgentSessionUsageSummary | undefined;
   repositoryBreakdown: AgentSessionRepositoryBreakdown[] | undefined;
 }) {
-  if (displayState === "starting" || displayState === "unavailable") {
+  const sourceUnavailable = displayState === "unavailable";
+  const sourceBlocksRows = displayState === "starting" || sourceUnavailable;
+  const sessions = sourceBlocksRows ? [] : (sessionsData?.items ?? []);
+  const resolvedReadModel = resolveSessionsListReadModel({
+    canRead: canReadSessions ?? !sourceBlocksRows,
+    hasData: sessionsData !== undefined && !sourceBlocksRows,
+    isError: isListError,
+    isLoading: isListLoading,
+    isLoadingError: isListLoadingError,
+    isPlaceholderData: !sourceBlocksRows && isPlaceholderData,
+    isSyncing: displayState === "starting" || sourceUnavailable,
+    knownTotal:
+      sourceBlocksRows || !isPaginationTotalKnown
+        ? undefined
+        : sessionsData?.total,
+    rowCount: sessions.length,
+  });
+  const readModel =
+    !isPopulationComplete && sessionsData && !isPlaceholderData
+      ? sessionsListReadModelFromState(
+          SessionsListReadState.Partial,
+          resolvedReadModel.totalRows
+        )
+      : resolvedReadModel;
+  const total = readModel.totalRows ?? 0;
+  const totalPages = resolveCappedTotalPages(total, pageSize, maxOffset);
+
+  if (sourceBlocksRows) {
     return {
       hasRenderableData: false,
+      knownTotal: readModel.totalRows,
+      readState: readModel.state,
       sessions: [] as AgentSessionListItem[],
-      total: 0,
-      totalPages: 1,
+      total,
+      totalPages,
+      totalRowsKnown: readModel.hasKnownTotal,
       usage: undefined as AgentSessionUsageSummary | undefined,
     };
   }
-
-  const sessions = sessionsData?.items ?? [];
-  const total = sessionsData?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const usage = facetUsage
     ? {
@@ -70,9 +128,12 @@ export function buildSessionsRenderModel({
 
   return {
     hasRenderableData: Boolean(sessionsData),
+    knownTotal: readModel.totalRows,
+    readState: readModel.state,
     sessions,
     total,
     totalPages,
+    totalRowsKnown: readModel.hasKnownTotal,
     usage,
   };
 }

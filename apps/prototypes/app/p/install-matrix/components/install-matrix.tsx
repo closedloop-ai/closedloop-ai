@@ -17,7 +17,7 @@ import {
 import { MatrixCell } from "./matrix-cell";
 
 // Rows = compute targets, columns = harnesses. The GridTable carries the grid
-// structure (Parker: let the grid carry it, don't box every cell). The leading
+// structure (Pascoe: let the grid carry it, don't box every cell). The leading
 // column is the target (machine name, platform, online dot); one data column per
 // harness. Each data cell renders exactly one status via MatrixCell.
 type InstallMatrixProps = {

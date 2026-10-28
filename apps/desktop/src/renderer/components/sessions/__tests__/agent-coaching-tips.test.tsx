@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type React from "react";
 import { describe, expect, it, vi } from "vitest";
+import {
+  IPC_WRAPPER_PHRASE,
+  ipcWrappedError,
+  LEAKY_IPC_CHANNEL,
+} from "../../../__tests__/ipc-wrapper-error-fixture";
 import { AgentCoachingTips } from "../agent-coaching-tips";
 import type {
   AgentCoachingApi,
@@ -284,15 +289,21 @@ describe("AgentCoachingTips", () => {
     await screen.findByText("Move repeated shell probes into a reusable skill");
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
-    await screen.findByText("Drafted artifact");
+    const draftPanel = await screen.findByText("Drafted artifact");
+    const draftText = draftPanel.parentElement?.querySelector("pre")
+      ?.textContent as string;
+    expect(draftText).toContain(
+      "Move repeated shell probes into a reusable skill"
+    );
     fireEvent.click(
       await screen.findByRole("button", { name: "Install (Apply skill)" })
     );
 
     await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
-    // draft, harness(undefined), kind
+    // draft, harness(undefined), kind — the draft must be the EXACT text the
+    // user reviewed, not merely some string.
     expect(installArtifact).toHaveBeenCalledWith(
-      expect.any(String),
+      draftText,
       undefined,
       "create-new-file"
     );
@@ -310,6 +321,44 @@ describe("AgentCoachingTips", () => {
     await screen.findByText("Move repeated shell probes into a reusable skill");
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    const draftPanel = await screen.findByText("Drafted artifact");
+    const draftText = draftPanel.parentElement?.querySelector("pre")
+      ?.textContent as string;
+    expect(draftText).toContain(
+      "Move repeated shell probes into a reusable skill"
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
+    expect(installArtifact).toHaveBeenCalledWith(
+      draftText,
+      undefined,
+      "create-new-file"
+    );
+  });
+
+  it("passes the edit-existing kind through resolveApplyKind to installArtifact", async () => {
+    const installArtifact = vi.fn(() =>
+      Promise.resolve("Edited file at src/lib/helper.ts")
+    );
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() =>
+        loaded([
+          makeTip({
+            actions: [{ ...applyAction(), kind: "edit-existing" as const }],
+          }),
+        ])
+      ),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
     await screen.findByText("Drafted artifact");
     fireEvent.click(
       await screen.findByRole("button", { name: "Install (Apply skill)" })
@@ -319,7 +368,7 @@ describe("AgentCoachingTips", () => {
     expect(installArtifact).toHaveBeenCalledWith(
       expect.any(String),
       undefined,
-      "create-new-file"
+      "edit-existing"
     );
   });
 
@@ -878,3 +927,65 @@ function makeTip(overrides: Partial<AgentCoachingTip> = {}): AgentCoachingTip {
     ...overrides,
   };
 }
+
+/**
+ * ISS-7599: `installArtifact` resolves over the `installCoachingArtifact` IPC,
+ * so a broken bridge rejects with Electron's wrapper rather than the clean
+ * `!result.ok` message the api layer re-throws. `formatInstallError` prefixes
+ * whatever it is handed, which would splice the private channel name into the
+ * middle of a user-facing "Install failed: …" line.
+ */
+describe("AgentCoachingTips — Electron IPC wrapper never reaches the user", () => {
+  it("cleans a wrapped install rejection before prefixing it", async () => {
+    const installArtifact = vi.fn(() =>
+      Promise.reject(ipcWrappedError("harness offline"))
+    );
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() => loaded([makeTip({ actions: [applyAction()] })])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    await screen.findByText("Drafted artifact");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    const message = await screen.findByText("Install failed: harness offline");
+    expect(message.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(message.textContent).not.toContain(IPC_WRAPPER_PHRASE);
+  });
+
+  it("still reports the generic failure when the wrapper carries no reason", async () => {
+    // A wrapper-only message cleans to empty; the line must stay "Install
+    // failed." rather than becoming a dangling "Install failed: ".
+    const installArtifact = vi.fn(() =>
+      Promise.reject(
+        new Error(`Error invoking remote method '${LEAKY_IPC_CHANNEL}': `)
+      )
+    );
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() => loaded([makeTip({ actions: [applyAction()] })])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    await screen.findByText("Drafted artifact");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    await screen.findByText("Install failed.");
+    expect(screen.queryByText(new RegExp(LEAKY_IPC_CHANNEL))).toBeNull();
+  });
+});

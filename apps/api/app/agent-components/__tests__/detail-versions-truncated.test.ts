@@ -62,7 +62,7 @@ const DETAIL_VERSION_ROWS_CAP = 20;
 const MAX_REVISIONS_PER_FAMILY_PER_SYNC = SYNCED_COMPONENT_VARIANTS_MAX + 1;
 
 /**
- * ISS-5029 (wongk, #4391): the only cap reason that bounds how many revisions a
+ * ISS-5029 (whitlockk, #4391): the only cap reason that bounds how many revisions a
  * device holds, and therefore the only one the cloud can reconcile into a proof.
  */
 const FAMILY_CAP = SyncedComponentVariantsTruncatedReason.FamilyCap;
@@ -413,7 +413,7 @@ describe("getDetailForOrg — ISS-5029 versionsTruncated", () => {
   });
 
   it("STAYS SILENT when the device only hit its BYTE BUDGET, whose stop proves nothing", async () => {
-    // wongk, #4391. The gap in the ceiling argument. It is derived from a
+    // whitlockk, #4391. The gap in the ceiling argument. It is derived from a
     // per-FAMILY cap, which cannot bind unless the family holds more revisions
     // than one sync can carry — that is the lower bound the ceiling compares
     // against. The per-component BYTE BUDGET has no such property: a component

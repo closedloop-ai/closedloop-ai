@@ -15,7 +15,7 @@
  * `normalized-session-test-utils` fixture rather than being duplicated here.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   DATA_REVISION_REBUILD_IDLE_PAUSE_MS,
   DATA_REVISION_REBUILD_WRITE_PAUSE_MS,
@@ -47,7 +47,7 @@ describe("ISS-4711 adaptive write pause (memory-pressure / renderer-read gate)",
         ],
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       cooperativeDelay: (ms) => {
         delayCalls.push(ms);

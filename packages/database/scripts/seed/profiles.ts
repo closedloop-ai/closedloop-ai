@@ -38,7 +38,6 @@ export type SeedProfileTargets = {
   projects: number;
   artifacts: number;
   comments: number;
-  loops: number;
 };
 
 export type SeedProfileTargetRanges = {
@@ -97,35 +96,30 @@ export const SEED_PROFILES: Record<SeedProfileName, SeedProfileTargets> = {
     projects: 1,
     artifacts: 10,
     comments: 20,
-    loops: 5,
   },
   [SeedProfileName.Local]: {
     projects: 8,
     artifacts: 60,
     comments: 150,
-    loops: 45,
   },
   // Small, fast, deterministic dataset for the containerized E2E target
-  // (FEA-2091): enough projects/artifacts/comments/loops for data-dependent
+  // (FEA-2091): enough projects/artifacts/comments for data-dependent
   // specs to render real content, sized to seed quickly on every CI run. Uses
   // the fixed-RNG, single-transaction strategy like the other non-perf profiles.
   [SeedProfileName.E2e]: {
     projects: 3,
     artifacts: 24,
     comments: 48,
-    loops: 12,
   },
   [SeedProfileName.CiPreview]: {
     projects: 10,
     artifacts: 100,
     comments: 500,
-    loops: 75,
   },
   [SeedProfileName.Perf]: {
     projects: 100,
     artifacts: 8000,
     comments: 75_000,
-    loops: 1500,
   },
 } as const;
 
@@ -145,7 +139,6 @@ export function scaleSeedTargets(
     projects: scaleTarget(targets.projects, multiplier),
     artifacts: scaleTarget(targets.artifacts, multiplier),
     comments: scaleTarget(targets.comments, multiplier),
-    loops: scaleTarget(targets.loops, multiplier),
   };
 }
 
@@ -156,7 +149,6 @@ export function getSeedTargetRanges(
     projects: getRange(targets.projects),
     artifacts: getRange(targets.artifacts),
     comments: getRange(targets.comments),
-    loops: getRange(targets.loops),
   };
 }
 
@@ -230,4 +222,74 @@ function getRange(target: number): { min: number; max: number } {
     min: Math.max(1, Math.floor(target * 0.8)),
     max: Math.ceil(target * 1.2),
   };
+}
+
+/**
+ * ISS-9846 (PRD-707 R1): the profiles whose seed MAY mint a programmatic API key.
+ *
+ * Only the containerized E2E target. `ci-preview` and `perf` can be pointed at a
+ * shared stage database, and a full-access bearer token is not something a
+ * throughput or preview seed should leave behind; `local` and `minimal` have a
+ * signed-in browser session and need no programmatic key.
+ *
+ * A Set of the const members, not a widened `string[]` — a profile added to
+ * `SeedProfileName` cannot silently be assumed excluded, because naming it here
+ * is the only way it joins.
+ *
+ * MAY, not WILL, and this list is NOT the security boundary. The `e2e` profile
+ * clears the CLI's remote-target checks with `SEED_ALLOW_REMOTE=1` like any
+ * other, and the shared-stage tripwire in `evaluateSeedGuards` is scoped to
+ * `perf` alone — so an allow-list of profiles would put nothing at all between
+ * `--profile e2e` and a deployed database. `seedApiKeys` enforces the boundary
+ * itself: a caller-supplied secret AND a localhost target, each checked there.
+ */
+export const SEED_API_KEY_PROFILES: ReadonlySet<SeedProfileName> =
+  new Set<SeedProfileName>([SeedProfileName.E2e]);
+
+/** Whether this profile's seed mints an API key. */
+export function mintsSeedApiKey(profile: SeedProfileName): boolean {
+  return SEED_API_KEY_PROFILES.has(profile);
+}
+
+/**
+ * Where the E2E seed reads its API-key plaintext from.
+ *
+ * REQUIRED for the key to be minted at all. The seed neither generates nor logs
+ * a secret: the containerized lane captures the seed container's stdout into an
+ * uploaded CI artifact, so a printed key would be a credential with a retention
+ * policy.
+ */
+export const E2E_SEED_API_KEY_ENV = "SEED_E2E_API_KEY";
+
+/**
+ * The live API-key prefix. `withAnyAuth` routes a bearer token to API-key
+ * authentication by exactly this prefix, so a seeded key that does not carry it
+ * authenticates nothing.
+ */
+export const API_KEY_PREFIX = "sk_live_";
+
+/**
+ * The shape `apps/api`'s key generator emits: the prefix followed by
+ * `randomBytes(32).toString("hex")`. Restated here because `packages/database`
+ * cannot import from `apps/api` — the same restatement this module already
+ * makes for `API_KEY_PREFIX` and that `api-keys.ts` makes for `hashToken`.
+ *
+ * A supplied secret must satisfy this WHOLE pattern, not merely start with the
+ * prefix. `SEED_E2E_API_KEY=sk_live_` is prefix-valid, hashes fine, and would
+ * mint a non-expiring read/write/delete credential whose plaintext anyone can
+ * guess — so prefix-only validation is not validation.
+ *
+ * The restatement is pinned against the REAL generator by the contract-replay
+ * integration suite, which feeds `apiKeysService.generate`'s own plaintext
+ * through `resolveSeedApiKeyDecision`: if the generator's shape ever moves, that
+ * case reds rather than this constant silently drifting.
+ */
+export const API_KEY_PLAINTEXT_ENTROPY_HEX_CHARS = 64;
+const API_KEY_PLAINTEXT_PATTERN = new RegExp(
+  `^${API_KEY_PREFIX}[0-9a-f]{${API_KEY_PLAINTEXT_ENTROPY_HEX_CHARS}}$`
+);
+
+/** Whether `value` is shaped like a key the API's own generator would emit. */
+export function isApiKeyPlaintext(value: string): boolean {
+  return API_KEY_PLAINTEXT_PATTERN.test(value);
 }

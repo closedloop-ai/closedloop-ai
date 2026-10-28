@@ -15,12 +15,9 @@ vi.mock(
   })
 );
 
-vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal",
-  () => ({
-    CreateIssueModal: () => <div data-testid="create-issue-modal" />,
-  })
-);
+vi.mock("@repo/app/issues/components/create-issue-modal", () => ({
+  CreateIssueModal: () => <div data-testid="create-issue-modal" />,
+}));
 
 vi.mock("@/app/(authenticated)/[orgSlug]/teams/components/team-modal", () => ({
   TeamModal: ({ trigger }: { trigger: ReactNode }) => (
@@ -117,7 +114,9 @@ describe("MyTasksEmptyState — no project context", () => {
 
     // Both of this page's views render this component, so this markup is what
     // the list view AND the card board land on.
-    expect(container.querySelector('[data-slot="empty"]')).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-slot="empty-state"]')
+    ).toBeInTheDocument();
     expect(
       container.querySelector('[data-slot="empty-icon"]')
     ).toBeInTheDocument();
@@ -134,7 +133,9 @@ describe("MyTasksEmptyState — no project context", () => {
     // Both branches of this one zero-state slot must be the same component, or
     // removing/re-adding the recency chip moves the state and changes its type
     // scale and icon.
-    expect(container.querySelector('[data-slot="empty"]')).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-slot="empty-state"]')
+    ).toBeInTheDocument();
     expect(
       container.querySelector('[data-slot="empty-icon"]')
     ).toBeInTheDocument();
@@ -147,19 +148,22 @@ describe("MyTasksEmptyState — no project context", () => {
     ["queue clear", undefined],
     ["no team", undefined],
     ["recency window", { onShowAll: () => undefined }],
-  ] as const)("uses theme tokens, never raw Tailwind palette colors (%s)", (label, recencyWindow) => {
-    const { container } = render(
-      <MyTasksEmptyState
-        projects={label === "no team" ? [] : [makeProject()]}
-        recencyWindow={recencyWindow}
-      />
-    );
+  ] as const)(
+    "uses theme tokens, never raw Tailwind palette colors (%s)",
+    (label, recencyWindow) => {
+      const { container } = render(
+        <MyTasksEmptyState
+          projects={label === "no team" ? [] : [makeProject()]}
+          recencyWindow={recencyWindow}
+        />
+      );
 
-    // Regression guard: the icons used to sit in raw-palette tinted chips
-    // (bg-blue-500/10 + text-blue-500, bg-amber-500/10 + text-amber-500),
-    // which ignore the theme tokens every other surface reads from.
-    for (const element of container.querySelectorAll("[class]")) {
-      expect(element.getAttribute("class")).not.toMatch(RAW_PALETTE_CLASS);
+      // Regression guard: the icons used to sit in raw-palette tinted chips
+      // (bg-blue-500/10 + text-blue-500, bg-amber-500/10 + text-amber-500),
+      // which ignore the theme tokens every other surface reads from.
+      for (const element of container.querySelectorAll("[class]")) {
+        expect(element.getAttribute("class")).not.toMatch(RAW_PALETTE_CLASS);
+      }
     }
-  });
+  );
 });

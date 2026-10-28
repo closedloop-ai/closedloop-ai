@@ -1,3 +1,4 @@
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
 import { type TransactionClient, withDb } from "@repo/database";
 import { getInstallationOctokit } from "@repo/github/installation-auth";
 import {
@@ -7,15 +8,20 @@ import {
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { resolveExternalGitHubAuthorInTransaction } from "@/app/comments/external-authors";
+import { commentsService } from "@/app/comments/service";
+import {
+  GitHubExternalEventKind,
+  type GitHubThreadStatusEvent,
+} from "@/app/comments/service/github/apply-external-events";
+import { withGitHubCommentWriteRetry } from "@/app/comments/service/github/github-comment-write-retry";
 import {
   findGitHubReviewThreadResolutionProjection,
   GitHubReviewThreadResolutionProjectionStatus,
-} from "@/app/comments/github-projection";
+} from "@/app/comments/service/github/github-projection-review-thread-read";
 import {
-  commentsService,
   type GitHubReviewThreadResolutionAttribution,
   GitHubReviewThreadResolutionAttributionKind,
-} from "@/app/comments/service";
+} from "@/app/comments/service/thread-resolution";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
 import {
@@ -284,43 +290,57 @@ async function writeReviewThreadResolution(
     | "written"
     | typeof PullRequestReviewThreadEligibilityStatus.RevalidationFailed;
 }> {
-  return await withDb.tx(async (tx) => {
-    const revalidated = await loadReviewThreadEligibility(payload, action);
-    if (
-      revalidated.status !==
-        PullRequestReviewThreadEligibilityStatus.Eligible ||
-      !sameEligibleReviewThreadScope(revalidated, eligible)
-    ) {
-      return {
-        status: PullRequestReviewThreadEligibilityStatus.RevalidationFailed,
-      };
-    }
-    const activeEligibility = revalidated;
+  return await withGitHubCommentWriteRetry(() =>
+    withDb.tx(async (tx) => {
+      const revalidated = await loadReviewThreadEligibility(payload, action);
+      if (
+        revalidated.status !==
+          PullRequestReviewThreadEligibilityStatus.Eligible ||
+        !sameEligibleReviewThreadScope(revalidated, eligible)
+      ) {
+        return {
+          status: PullRequestReviewThreadEligibilityStatus.RevalidationFailed,
+        };
+      }
+      const activeEligibility = revalidated;
 
-    if (action === PullRequestReviewThreadAction.Resolved) {
-      await resolveLocalReviewThread(
-        tx,
-        payload,
-        activeEligibility,
-        receivedAt
-      );
-    } else {
-      await commentsService.unresolveThread(
-        activeEligibility.organizationId,
-        activeEligibility.threadExternalId
-      );
-    }
+      await commentsService.applyExternal({
+        provider: CommentSyncProvider.Github,
+        organizationId: activeEligibility.organizationId,
+        branchArtifactId: activeEligibility.branchArtifactId,
+        pullRequestDetailId: activeEligibility.pullRequestDetailId,
+        events: [
+          action === PullRequestReviewThreadAction.Resolved
+            ? await resolvedThreadEvent(
+                tx,
+                payload,
+                activeEligibility,
+                receivedAt
+              )
+            : {
+                kind: GitHubExternalEventKind.ThreadStatus,
+                threadExternalId: activeEligibility.threadExternalId,
+                resolved: false,
+                resolvedAt: receivedAt,
+              },
+        ],
+      });
 
-    return { status: "written" };
-  });
+      return { status: "written" };
+    })
+  );
 }
 
-async function resolveLocalReviewThread(
+/**
+ * The provider-confirmed resolution, applied through `applyExternal` as-is: a
+ * thread-status event carries no ordering key (campaign ruling, PLN-2122).
+ */
+async function resolvedThreadEvent(
   tx: TransactionClient,
   payload: PullRequestReviewThreadPayload,
   activeEligibility: EligibleReviewThread,
   receivedAt: Date
-) {
+): Promise<GitHubThreadStatusEvent> {
   const author = await resolveExternalGitHubAuthorInTransaction(tx, {
     organizationId: activeEligibility.organizationId,
     author: payload.sender ?? null,
@@ -330,17 +350,15 @@ async function resolveLocalReviewThread(
       pullNumber: payload.pull_request.number,
     },
   });
-  const attribution = resolutionAttribution(payload, author.source, receivedAt);
-  return await commentsService.resolveThread(
-    activeEligibility.organizationId,
-    activeEligibility.threadExternalId,
-    receivedAt,
-    {
-      resolvedById:
-        author.source === "github_user_connection" ? author.user.id : null,
-      attribution,
-    }
-  );
+  return {
+    kind: GitHubExternalEventKind.ThreadStatus,
+    threadExternalId: activeEligibility.threadExternalId,
+    resolved: true,
+    resolvedAt: receivedAt,
+    resolvedById:
+      author.source === "github_user_connection" ? author.user.id : null,
+    attribution: resolutionAttribution(payload, author.source, receivedAt),
+  };
 }
 
 function resolutionAttribution(

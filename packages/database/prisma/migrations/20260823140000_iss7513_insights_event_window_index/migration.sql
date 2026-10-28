@@ -1,0 +1,62 @@
+-- ISS-7513 (dashboard insights SQL profile) — time-leading index on
+-- agent_session_events, built CONCURRENTLY for a zero-write-lock prod apply.
+--
+-- WHY. The utilization and agents sections issue four reads against this table
+-- (countEvents, fetchEventTypeBuckets, fetchToolUsageBuckets, fetchEventVolume)
+-- and every one of them filters `event_created_at` BETWEEN start AND end, then
+-- joins out to session_detail → artifacts for the org scope. The only index
+-- that existed is `(agent_session_id, event_created_at)`, which is
+-- SESSION-leading: the planner could use it only by driving a nested loop over
+-- every session in the org and probing once per session. Measured on a
+-- 112k-event corpus whose 90-day window selects ~12% of rows, that plan ran one
+-- index probe per session — 1500 loops — for fetchEventVolume at 25.6ms
+-- execution. With the time-leading index the same statement collapses to a
+-- single index-only scan of the window at 13.9ms.
+--
+-- EXPLAIN CONFIRMED IT IS USED FOR THE SCOPED PREDICATE before this migration
+-- was written (ISS-7513 acceptance criterion) — the plan shows
+--   Index Only Scan using agent_session_events_event_created_at_agent_session_id_idx
+--     Index Cond: ((event_created_at >= …) AND (event_created_at <= …))
+-- rather than the planner ignoring it.
+--
+-- THE SIBLING INDEX IS KEPT, NOT REPLACED. The per-session focus reads (one
+-- session's event timeline) are still session-leading, and the planner picks
+-- between the two on statistics — a narrow org on a huge table is still better
+-- served by driving from its sessions. Adding an option is the change here;
+-- removing one would be a different, riskier change.
+--
+-- NON-TRANSACTIONAL BY DESIGN. `CREATE INDEX CONCURRENTLY` cannot run inside a
+-- transaction block (SQLSTATE 25001), and Prisma's statement splitter wraps the
+-- WHOLE file in one transaction the moment a statement carries embedded
+-- semicolons or dollar-quoting. So this file holds exactly one bare top-level
+-- statement. Do NOT add a BEGIN/COMMIT, a `DO $$ … $$` block, or a
+-- `DROP INDEX CONCURRENTLY` here — any of them re-triggers the whole-file
+-- transaction wrap and breaks the apply. See
+-- 20260721160000_fea3638_insights_perf_indexes_concurrent for the full history
+-- of that failure.
+--
+-- NO `IF NOT EXISTS`, DELIBERATELY, and note that the FEA-3638 migration above
+-- still carries one — `check-destructive-migrations` has since tightened the
+-- rule, so that file is precedent for the CONCURRENTLY shape but NOT for this
+-- clause. A cancelled or crashed CONCURRENTLY build leaves a same-named INVALID
+-- index behind, which Postgres ignores for planning; `IF NOT EXISTS` would then
+-- silently skip the rebuild on retry and record the migration as applied while
+-- the index stays permanently unusable. Without the clause the retry fails
+-- closed, and an operator drops the remnant once before re-running
+-- `prisma migrate deploy`:
+--       DROP INDEX IF EXISTS "agent_session_events_event_created_at_agent_session_id_idx";
+--
+-- PREVIEW SCHEMAS PRE-STAMP THIS MIGRATION. It is a pure non-unique concurrent
+-- index build, so it is registered in
+-- PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) and the preview
+-- drift guard stays aligned. Nothing references a non-unique index, so skipping
+-- the build on a preview schema is safe.
+--
+-- Purely additive: index-only, no data mutation, no result change (an index
+-- alters plan choice only). The name and columns match the schema.prisma
+-- `@@index([eventCreatedAt, agentSessionId])` declaration so the Prisma drift
+-- check stays green.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "agent_session_events_event_created_at_agent_session_id_idx" ON "agent_session_events"("event_created_at", "agent_session_id");

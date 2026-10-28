@@ -1,7 +1,6 @@
-import { parseHistoricalSource } from "./historical-parse-source.js";
+import { handleHistoricalParseRequest } from "./historical-parse-source.js";
 import {
   createHistoricalParseWorkerFailedResponse,
-  createHistoricalParseWorkerParsedResponse,
   historicalParseWorkerRequestSchema,
   requestIdFromWorkerMessage,
 } from "./historical-parse-worker-protocol.js";
@@ -40,29 +39,9 @@ async function handleWorkerMessage(message: unknown): Promise<void> {
     }
     return;
   }
-  const request = parsedRequest.data;
-  try {
-    const parsed = await parseHistoricalSource(
-      request.collectorKey,
-      request.source
-    );
-    process.parentPort.postMessage(
-      // ISS-5266: the side-report rides the SAME response as the sessions it was
-      // derived from, so it cannot arrive without them or be lost while they land.
-      createHistoricalParseWorkerParsedResponse(
-        request.requestId,
-        parsed.sessions,
-        parsed.withheldOpencodeSubagents
-      )
-    );
-  } catch (error) {
-    process.parentPort.postMessage(
-      createHistoricalParseWorkerFailedResponse(
-        request.requestId,
-        workerErrorMessage(error)
-      )
-    );
-  }
+  process.parentPort.postMessage(
+    await handleHistoricalParseRequest(parsedRequest.data)
+  );
 }
 
 function requestIdFromMalformedRequest(message: unknown): string | null {

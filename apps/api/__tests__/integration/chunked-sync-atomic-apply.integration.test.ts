@@ -23,18 +23,18 @@
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
-  createTestUser,
-} from "@/__tests__/utils/db-helpers";
-import {
   buildSessionChunk,
   type ChunkMeta,
   type ChunkSyncContext,
   createComputeTarget,
   ingestChunk,
   readPersistedChunkState,
-} from "@/app/agent-sessions/chunked-sync-test-helpers";
+} from "@/__tests__/utils/chunked-sync-test-helpers";
+import {
+  createTestOrganization,
+  createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
+} from "@/__tests__/utils/db-helpers";
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
@@ -45,11 +45,15 @@ const BATCH_ID = "00000000-0000-4000-8000-000000000474";
 const REVISION_A = 10;
 const REVISION_B = 11;
 
-function chunk(params: {
+type SessionPayloadParams = {
   eventIds: string[];
-  chunk: ChunkMeta;
-  dataRevision: number;
-}): Record<string, unknown> {
+  /** Omit for an unchunked whole-session payload. */
+  chunk?: ChunkMeta | null;
+  /** Omit for a payload carrying no `dataRevision`. */
+  dataRevision?: number | null;
+};
+
+function chunk(params: SessionPayloadParams): Record<string, unknown> {
   return buildSessionChunk({
     externalSessionId: EXTERNAL_SESSION_ID,
     name: SESSION_NAME,
@@ -60,9 +64,13 @@ function chunk(params: {
 /** Resolves to the batch's ack echo (`persistedSessionIds`). */
 function apply(
   context: ChunkSyncContext,
-  params: { eventIds: string[]; chunk: ChunkMeta; dataRevision: number }
+  params: SessionPayloadParams,
+  // ISS-8131: OMITTED by default, the pre-#4862 wire shape every case in this
+  // file sent before this parameter existed. Pass `wantsAcceptedSessionIds` to
+  // drive the modern client — the cloud's HOLD arms are unreachable without it.
+  envelope: { wantsAcceptedSessionIds?: boolean } = {}
 ): Promise<string[]> {
-  return ingestChunk(context, BATCH_ID, chunk(params));
+  return ingestChunk(context, BATCH_ID, chunk(params), envelope);
 }
 
 function readState(context: ChunkSyncContext) {
@@ -82,7 +90,7 @@ async function setup(): Promise<ChunkSyncContext> {
 
 describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   it("does not commit the revision until the last chunk of the SAME sequence lands (partial sequence persists nothing final)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // Chunk 0 of a 3-chunk sequence lands, then the process dies.
@@ -105,7 +113,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("no-ops a stale LAST chunk from a superseded revision — its events never contaminate the in-progress sequence", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // A NEW revision B sequence opens (chunk 0 delete-replaces, stages B).
@@ -154,7 +162,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("no-ops a lone LAST chunk that arrives before its own chunk 0 (nothing is persisted)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // The LAST chunk of a fresh session arrives first (reordered delivery). No
@@ -190,7 +198,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("does NOT commit the revision when an interior chunk was dropped (completeness gap)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // Chunk 0 opens a 3-chunk sequence (staged received=1).
@@ -236,7 +244,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("commits atomically and clears the marker when the full sequence lands in order", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       await apply(context, {
@@ -262,7 +270,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("ISS-6167: a chunked RE-SEND at the committed revision acks every chunk, keeps the committed snapshot whole, and clears the marker", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // A COMPLETE session is already committed at REVISION_A.
@@ -326,7 +334,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("ISS-6166 review: a re-send RE-CHUNKED at a smaller total cannot close the staged sequence", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // Committed at REVISION_A, then re-sent chunked as a 4-chunk sequence of
@@ -385,7 +393,7 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
   });
 
   it("commits an unchunked whole session directly and never stages a marker", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       await apply(context, {
@@ -398,6 +406,227 @@ describeIfDb("atomic chunked-session apply (FEA-3474, PRD-536 D3)", () => {
       expect(persisted?.eventIds).toEqual(["e0", "e1", "e2"]);
       expect(persisted?.dataRevision).toBe(REVISION_A);
       expect(persisted?.pendingChunkRevision).toBeNull();
+    });
+  });
+
+  // ISS-8131 BUG 2, proven by the STORE. The unit test pins the pure gate; these
+  // pin the two client shapes the cloud must serve, because the outcome DIFFERS
+  // between them and only one of them is reachable by a modern desktop.
+  //
+  // Before any fix: the sentinel-0 apply nulled all three marker columns, chunks
+  // 1..2 came back FOREIGN, and the session held only chunk 0's events at the
+  // OLD revision until the desktop re-sent from chunk 0.
+  //
+  // Now: the marker survives in BOTH shapes, so the sequence always finishes.
+  // What differs is whether the stray payload's children land. An echo-capable
+  // client is HELD (nothing written, id withheld, re-sent later), so the commit
+  // is the staged derivation alone. A pre-#4862 client cannot be held — it reads
+  // an omitted id as delivered — so it degrades to the additive apply and still
+  // commits a union. That is deliberate: a union is recoverable, whereas acking
+  // a payload we refused to write is silent, permanent loss.
+  describe("a revision-less payload must not end an assembling sequence (ISS-8131)", () => {
+    it("holds the revision-less payload for an echo-capable client, so the sequence commits its OWN derivation alone", async () => {
+      await joinAmbientTransactionForSessionSyncWrites(async () => {
+        const context = await setup();
+        const echo = { wantsAcceptedSessionIds: true };
+
+        await apply(
+          context,
+          {
+            eventIds: ["a0", "a1"],
+            chunk: { index: 0, total: 1 },
+            dataRevision: REVISION_A,
+          },
+          echo
+        );
+        await apply(
+          context,
+          {
+            eventIds: ["b0"],
+            chunk: { index: 0, total: 3 },
+            dataRevision: REVISION_B,
+          },
+          echo
+        );
+
+        // The same maintenance park as the case below, to the same gate — the
+        // ONLY difference is that this client echoes accepted ids, so the hold
+        // is expressible.
+        const heldAck = await apply(
+          context,
+          { eventIds: ["a0"], chunk: null, dataRevision: 0 },
+          echo
+        );
+        // HELD: withheld from the echo, so the desktop keeps the row and
+        // re-sends under its bounded ack_omitted budget rather than clearing it.
+        expect(heldAck).toEqual([]);
+
+        const afterHold = await readState(context);
+        expect(afterHold?.pendingChunkRevision).toBe(REVISION_B);
+        expect(afterHold?.pendingChunkTotal).toBe(3);
+        expect(afterHold?.pendingChunkReceived).toBe(1);
+        // Nothing was written: `a0` never reached the row, which is the whole
+        // point. The union below is what this prevents.
+        expect(afterHold?.eventIds).toEqual(["b0"]);
+        expect(afterHold?.dataRevision).toBe(REVISION_A);
+
+        await apply(
+          context,
+          {
+            eventIds: ["b1"],
+            chunk: { index: 1, total: 3 },
+            dataRevision: REVISION_B,
+          },
+          echo
+        );
+        const tailAck = await apply(
+          context,
+          {
+            eventIds: ["b2"],
+            chunk: { index: 2, total: 3 },
+            dataRevision: REVISION_B,
+          },
+          echo
+        );
+        expect(tailAck).toEqual([EXTERNAL_SESSION_ID]);
+
+        const committed = await readState(context);
+        expect(committed?.dataRevision).toBe(REVISION_B);
+        expect(committed?.pendingChunkRevision).toBeNull();
+        expect(committed?.pendingChunkTotal).toBeNull();
+        expect(committed?.pendingChunkReceived).toBeNull();
+        // The committed rev-B snapshot is EXACTLY the rev-B derivation. No `a0`.
+        expect(committed?.eventIds).toEqual(["b0", "b1", "b2"]);
+      });
+    });
+
+    // davetho (#6271): the case above drives the MAINTENANCE-SENTINEL zero,
+    // which `wire-data-revision` folds to "no revision". The ticket is about
+    // OMISSION semantics, so the genuinely absent key — an older desktop's wire
+    // shape — is driven end to end here rather than inferred from the fold's
+    // unit tests. `buildSessionChunk` leaves the key off the object entirely.
+    it("holds an OMITTED dataRevision, not just the folded sentinel, and lets the sequence commit clean", async () => {
+      await joinAmbientTransactionForSessionSyncWrites(async () => {
+        const context = await setup();
+        const echo = { wantsAcceptedSessionIds: true };
+
+        await apply(
+          context,
+          {
+            eventIds: ["b0"],
+            chunk: { index: 0, total: 2 },
+            dataRevision: REVISION_B,
+          },
+          echo
+        );
+
+        const heldAck = await apply(
+          context,
+          // No `dataRevision` key at all.
+          { eventIds: ["a0"], chunk: null, dataRevision: null },
+          echo
+        );
+        expect(heldAck).toEqual([]);
+
+        const afterHold = await readState(context);
+        expect(afterHold?.pendingChunkRevision).toBe(REVISION_B);
+        expect(afterHold?.pendingChunkReceived).toBe(1);
+        expect(afterHold?.eventIds).toEqual(["b0"]);
+
+        const tailAck = await apply(
+          context,
+          {
+            eventIds: ["b1"],
+            chunk: { index: 1, total: 2 },
+            dataRevision: REVISION_B,
+          },
+          echo
+        );
+        expect(tailAck).toEqual([EXTERNAL_SESSION_ID]);
+
+        const committed = await readState(context);
+        expect(committed?.dataRevision).toBe(REVISION_B);
+        expect(committed?.pendingChunkRevision).toBeNull();
+        expect(committed?.eventIds).toEqual(["b0", "b1"]);
+      });
+    });
+
+    it("cannot hold for a PRE-ECHO client, so its sentinel-0 apply still commits the union — degraded, but never stranded", async () => {
+      await joinAmbientTransactionForSessionSyncWrites(async () => {
+        const context = await setup();
+
+        // A sealed session at REVISION_A, then chunk 0 of a NEW higher sequence,
+        // whose delete-replace drops the rev-A events.
+        await apply(context, {
+          eventIds: ["a0", "a1"],
+          chunk: { index: 0, total: 1 },
+          dataRevision: REVISION_A,
+        });
+        await apply(context, {
+          eventIds: ["b0"],
+          chunk: { index: 0, total: 3 },
+          dataRevision: REVISION_B,
+        });
+
+        const staged = await readState(context);
+        expect(staged?.eventIds).toEqual(["b0"]);
+        expect(staged?.pendingChunkRevision).toBe(REVISION_B);
+        expect(staged?.pendingChunkTotal).toBe(3);
+        expect(staged?.pendingChunkReceived).toBe(1);
+
+        // The maintenance park: `dataRevision: 0`, unchunked. `wire-data-revision`
+        // folds the sentinel to "no revision", which is exactly the BUG-2 input.
+        // It carries a DISJOINT event the rev-B derivation dropped, so the
+        // additive apply below is visible rather than an upsert onto itself.
+        const foldedAck = await apply(context, {
+          eventIds: ["a0"],
+          chunk: null,
+          dataRevision: 0,
+        });
+        expect(foldedAck).toEqual([EXTERNAL_SESSION_ID]);
+
+        const afterFold = await readState(context);
+        // THE FIX: all three marker columns survive.
+        expect(afterFold?.pendingChunkRevision).toBe(REVISION_B);
+        expect(afterFold?.pendingChunkTotal).toBe(3);
+        expect(afterFold?.pendingChunkReceived).toBe(1);
+        // The fold is additive and commits no revision of its own.
+        expect(afterFold?.dataRevision).toBe(REVISION_A);
+        expect(afterFold?.eventIds).toEqual(["a0", "b0"]);
+
+        // The marker survived, so the tail is still in-sequence and completes.
+        await apply(context, {
+          eventIds: ["b1"],
+          chunk: { index: 1, total: 3 },
+          dataRevision: REVISION_B,
+        });
+        const tailAck = await apply(context, {
+          eventIds: ["b2"],
+          chunk: { index: 2, total: 3 },
+          dataRevision: REVISION_B,
+        });
+        expect(tailAck).toEqual([EXTERNAL_SESSION_ID]);
+
+        const committed = await readState(context);
+        expect(committed?.dataRevision).toBe(REVISION_B);
+        expect(committed?.pendingChunkRevision).toBeNull();
+        expect(committed?.pendingChunkTotal).toBeNull();
+        expect(committed?.pendingChunkReceived).toBeNull();
+        // The pre-echo fallback, pinned deliberately: this client gets the
+        // UNION of the rev-B chunks and the revision-less payload's `a0`, which
+        // the rev-B derivation had dropped. The contamination is pre-existing —
+        // a revision-less payload has always applied additively (`shouldReplace`
+        // is false for it, so `persistSessionChildren` skips the delete) — and
+        // the hold above is what removes it for every client that can express
+        // one. This arm cannot: omitting the id would read as delivered and the
+        // desktop would durably clear a row we never wrote.
+        //
+        // The population is a compat dead-end, not a live path: chunk-drain
+        // detection READS the echo, so a client that chunks at all already
+        // sends it. Kept and asserted so the degraded shape is a decision on
+        // the record rather than an accident.
+        expect(committed?.eventIds).toEqual(["a0", "b0", "b1", "b2"]);
+      });
     });
   });
 });

@@ -7,7 +7,7 @@ import {
 } from "../../shared/api/api-timeout";
 import { PacksLoadFailed } from "./packs-load-failed";
 
-// wongk (PR #4321): the loading half of this event is already in Storybook as
+// whitlockk (PR #4321): the loading half of this event is already in Storybook as
 // `packs-workspace-skeleton.stories.tsx`; this is the "it didn't load" half, so
 // the two read side by side. The timeout branch in particular needs a client
 // deadline to actually fire in the running app, which makes it exactly the
@@ -20,8 +20,9 @@ const timeoutError = new ApiError(
 );
 
 const meta = {
-  title: "App Core/Packs/Packs Load Failed",
+  title: "Composites v1.0/Packs/Packs Load Failed",
   component: PacksLoadFailed,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

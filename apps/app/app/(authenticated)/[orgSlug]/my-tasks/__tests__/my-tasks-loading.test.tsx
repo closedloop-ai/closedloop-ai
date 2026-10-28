@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,16 +7,12 @@ const mocks = vi.hoisted(() => ({
   useDocumentsPage: vi.fn(),
   useUpdateDocument: vi.fn(),
   useProjects: vi.fn(),
-  useBranchList: vi.fn(),
-  useMergedProjectTrees: vi.fn(),
   useAssignedArtifactTree: vi.fn(),
   useFeatureFlagEnabled: vi.fn(),
   useFeatureFlagsLoaded: vi.fn(),
   usePostHogDistinctId: vi.fn(),
   useUser: vi.fn(),
   refetchCurrentUser: vi.fn(),
-  refetchContributorBranches: vi.fn(),
-  refetchMergedProjectTrees: vi.fn(),
   refetchAssignedArtifactTree: vi.fn(),
   useFavoriteArtifacts: vi.fn(),
   useProjectFilters: vi.fn(),
@@ -31,29 +27,24 @@ const mocks = vi.hoisted(() => ({
   isDocumentRowItem: vi.fn(),
   enabledFeatureFlags: new Set<string>(),
   isFeatureFlagGateReady: true,
+  apiGet: vi.fn(),
 }));
 
 // Presentational markers so the test asserts branch selection, not child guts.
-vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view",
-  () => ({
-    DocumentsView: ({ isLoading }: { isLoading?: boolean }) => (
-      <div
-        data-loading={isLoading ? "true" : "false"}
-        data-testid="documents-view"
-      />
-    ),
-  })
-);
+vi.mock("@repo/app/documents/components/table/documents-view", () => ({
+  DocumentsView: ({ isLoading }: { isLoading?: boolean }) => (
+    <div
+      data-loading={isLoading ? "true" : "false"}
+      data-testid="documents-view"
+    />
+  ),
+}));
 vi.mock("@/app/(authenticated)/components/header", () => ({
   Header: () => <div data-testid="header" />,
 }));
 // vi.mock paths resolve relative to this test file, which sits one directory
 // deeper (__tests__/) than page.tsx — so add one extra "../" to each relative
 // specifier the page uses.
-vi.mock("../../../components/agent-onboarding-card", () => ({
-  AgentOnboardingCard: () => null,
-}));
 vi.mock("../../../components/onboarding-checklist", () => ({
   OnboardingChecklist: () => null,
 }));
@@ -72,9 +63,16 @@ vi.mock("../components/my-tasks-kanban", () => ({
 vi.mock("@repo/app/documents/components/table/document-table-toolbar", () => ({
   DocumentTableToolbar: ({
     activeFiltersBarProps,
+    leadingContent,
   }: {
     activeFiltersBarProps?: { extraChips?: ReactNode };
-  }) => <div data-testid="toolbar">{activeFiltersBarProps?.extraChips}</div>,
+    leadingContent?: ReactNode;
+  }) => (
+    <div data-testid="toolbar">
+      {activeFiltersBarProps?.extraChips}
+      {leadingContent}
+    </div>
+  ),
 }));
 
 vi.mock("@repo/app/users/hooks/use-users", () => ({
@@ -90,11 +88,8 @@ vi.mock("@repo/app/documents/hooks/use-documents", () => ({
 vi.mock("@repo/app/projects/hooks/use-projects", () => ({
   useProjects: mocks.useProjects,
 }));
-vi.mock("@repo/app/branches/hooks/use-branches", () => ({
-  useBranchList: mocks.useBranchList,
-}));
-vi.mock("@repo/app/projects/hooks/use-merged-project-trees", () => ({
-  useMergedProjectTrees: mocks.useMergedProjectTrees,
+vi.mock("@repo/app/shared/api/use-api-client", () => ({
+  useApiClient: () => ({ get: mocks.apiGet }),
 }));
 vi.mock("@repo/app/projects/hooks/use-assigned-artifact-tree", () => ({
   useAssignedArtifactTree: mocks.useAssignedArtifactTree,
@@ -161,6 +156,10 @@ vi.mock("@repo/navigation/use-search-params-value", () => ({
 // gates require.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: mocks.useFeatureFlagEnabled,
+  // ISS-9665: the board reads `artifact-priority-unset` through the OPTIONAL
+  // hook. Backed by the same key-driven spy so it obeys the closed default and
+  // a case can still turn it on by adding the key to `enabledFeatureFlags`.
+  useFeatureFlagEnabledOptional: mocks.useFeatureFlagEnabled,
   // FEA-1626: the board holds its documents read until the recency flag
   // resolves. `isReady` is driven per-test so the unresolved window — where the
   // query must NOT fire — is reachable, rather than being permanently true.
@@ -168,9 +167,16 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
     enabled: mocks.useFeatureFlagEnabled(key),
     isReady: mocks.isFeatureFlagGateReady,
   }),
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port, so this exhaustive module mock owes it an entry
+  // too. Same answer as the required gate above.
+  useFeatureFlagGateOptional: (key: string) => ({
+    enabled: mocks.useFeatureFlagEnabled(key),
+    isReady: mocks.isFeatureFlagGateReady,
+  }),
 }));
 // The tree source withholds BOTH reads until PostHog's flags have resolved for
-// the identified user (FEA-1651, wongk). These stubs put the suite in the
+// the identified user (FEA-1651, whitlockk). These stubs put the suite in the
 // settled/identified state so existing cases exercise the steady state; the
 // transition case drives them directly.
 vi.mock("@repo/analytics/client", () => ({
@@ -190,6 +196,7 @@ import {
   DOCUMENT_LIST_DEFAULT_RECENCY_DAYS,
   type DocumentListPage,
   DocumentListRecency,
+  DocumentType,
 } from "@repo/api/src/types/document";
 import { MY_TASKS_RECENCY_CHIP_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
 import { MY_TASKS_RECENCY_WINDOW_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
@@ -197,6 +204,7 @@ import MyTasksPage from "../page";
 import {
   buildDocumentListPage,
   docsResult,
+  serverPagedTreeResult,
   setBaseMocks,
 } from "./my-tasks-page-test-harness";
 
@@ -299,76 +307,63 @@ describe("MyTasksPage list-view loading treatment (FEA-3938)", () => {
     expect(screen.queryByTestId("empty-state")).toBeNull();
   });
 
-  it("renders the table (not the empty state) for a branch-only user: zero documents but the merged tree has branch rows", () => {
+  it("renders the empty state (not the table) for a branch-only user: zero documents and a tree holding only a branch and its sessions (ISS-12463)", () => {
     mocks.useCurrentUser.mockReturnValue({
       data: { id: "user-1" },
       isLoading: false,
     });
     mocks.useDocumentsPage.mockReturnValue(docsResult());
-    // No documents, but a branch task lives in the merged project tree.
-    mocks.useMergedProjectTrees.mockReturnValue({
+    // Seeded on the read the page actually makes, so `pruneBranchSubtrees` runs
+    // on this tree: the branch and its two sessions are the ONLY nodes, so an
+    // unpruned source would hand the table three rows and fail the empty-state
+    // assertion below.
+    mocks.useAssignedArtifactTree.mockReturnValue({
       data: {
         nodes: [
-          { root: { id: "b-1", type: ArtifactType.Branch }, children: [] },
+          {
+            root: { id: "b-1", type: ArtifactType.Branch },
+            children: [
+              { id: "s-1", type: ArtifactType.Session, parentId: "b-1" },
+              { id: "s-2", type: ArtifactType.Session, parentId: "b-1" },
+            ],
+          },
         ],
         externalParents: [],
       },
       isLoading: false,
       isError: false,
-      refetch: mocks.refetchMergedProjectTrees,
+      refetch: mocks.refetchAssignedArtifactTree,
     });
 
     render(<MyTasksPage />);
 
-    // The table view mounts (branch tasks exist); the empty state must not show.
-    expect(screen.getByTestId("documents-view")).toBeTruthy();
-    expect(screen.queryByTestId("empty-state")).toBeNull();
-  });
-
-  it("renders a degraded error state (not a partial total) when the merged-tree read fails", () => {
-    mocks.useCurrentUser.mockReturnValue({
-      data: { id: "user-1" },
-      isLoading: false,
-    });
-    // Documents succeeded, but the branch/tree stream failed. Folding that into
-    // isTasksError means the second stream's failure surfaces the Try-again
-    // state instead of a footer publishing a total missing a whole stream
-    // (ISS-4466, shafty023).
-    mocks.useDocumentsPage.mockReturnValue(
-      docsResult({ data: [{ id: "doc-1" }] })
-    );
-    mocks.useMergedProjectTrees.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      refetch: mocks.refetchMergedProjectTrees,
-    });
-
-    render(<MyTasksPage />);
-
-    expect(screen.getByText("Couldn't load your tasks")).toBeTruthy();
-    expect(screen.queryByTestId("empty-state")).toBeNull();
+    expect(screen.getByTestId("empty-state")).toBeTruthy();
     expect(screen.queryByTestId("documents-view")).toBeNull();
   });
 
-  it("renders a degraded error state when the contributor-branch read fails", () => {
+  it("renders a degraded error state (not a partial total) when the tree read fails", () => {
     mocks.useCurrentUser.mockReturnValue({
       data: { id: "user-1" },
       isLoading: false,
     });
+    // Documents succeeded, but the tree stream failed. Folding that into
+    // isTasksError means the second stream's failure surfaces the Try-again
+    // state instead of a footer publishing a total missing a whole stream
+    // (ISS-4466, davetho).
     mocks.useDocumentsPage.mockReturnValue(
       docsResult({ data: [{ id: "doc-1" }] })
     );
-    mocks.useBranchList.mockReturnValue({
+    mocks.useAssignedArtifactTree.mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
-      refetch: mocks.refetchContributorBranches,
+      refetch: mocks.refetchAssignedArtifactTree,
     });
 
     render(<MyTasksPage />);
 
     expect(screen.getByText("Couldn't load your tasks")).toBeTruthy();
+    expect(screen.queryByTestId("empty-state")).toBeNull();
     expect(screen.queryByTestId("documents-view")).toBeNull();
   });
 
@@ -387,6 +382,33 @@ describe("MyTasksPage list-view loading treatment (FEA-3938)", () => {
     expect(screen.getByText("Couldn't load your tasks")).toBeTruthy();
     expect(screen.queryByTestId("empty-state")).toBeNull();
     expect(screen.queryByTestId("documents-view")).toBeNull();
+  });
+
+  it("card Try again refetches its failed documents exactly once without automatic tree recovery", async () => {
+    const refetchCurrentUser = vi.fn();
+    const refetchArtifacts = vi.fn().mockResolvedValue({
+      isSuccess: true,
+      data: buildDocumentListPage({ items: [] }),
+    });
+    mocks.useLocalStorageState.mockReturnValue(["card", vi.fn()]);
+    mocks.useCurrentUser.mockReturnValue({
+      data: { id: "user-1" },
+      isLoading: false,
+      refetch: refetchCurrentUser,
+    });
+    mocks.useDocumentsPage.mockReturnValue(
+      docsResult({ isError: true, refetch: refetchArtifacts })
+    );
+
+    render(<MyTasksPage />);
+    expect(refetchArtifacts).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await Promise.resolve();
+    });
+
+    expect(refetchCurrentUser).toHaveBeenCalledTimes(1);
+    expect(refetchArtifacts).toHaveBeenCalledTimes(1);
   });
 
   it("retry refetches both the user AND the artifacts read when a valid assignee exists (artifacts failure)", () => {
@@ -423,29 +445,33 @@ describe("MyTasksPage list-view loading treatment (FEA-3938)", () => {
     expect(screen.queryByTestId("documents-view")).toBeNull();
   });
 
-  it("retry routes to the failed user query and does NOT refetch documents while the assignee is null (codex P2)", () => {
-    // When /me fails, assigneeId is null and the artifacts query is disabled.
-    // Refetching it would run the queryFn with a null assignee, requesting
-    // /documents WITHOUT the My Tasks assignee filter. The retry must refetch
-    // the user query and leave the disabled artifacts query alone.
-    const refetchCurrentUser = vi.fn();
-    const refetchArtifacts = vi.fn();
-    mocks.useCurrentUser.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      refetch: refetchCurrentUser,
-    });
-    mocks.useDocumentsPage.mockReturnValue(
-      docsResult({ refetch: refetchArtifacts })
-    );
+  it.each(["list", "card"])(
+    "retry in %s routes to the failed user query and does NOT refetch documents while the assignee is null (codex P2)",
+    (view) => {
+      mocks.useLocalStorageState.mockReturnValue([view, vi.fn()]);
+      // When /me fails, assigneeId is null and the artifacts query is disabled.
+      // Refetching it would run the queryFn with a null assignee, requesting
+      // /documents WITHOUT the My Tasks assignee filter. The retry must refetch
+      // the user query and leave the disabled artifacts query alone.
+      const refetchCurrentUser = vi.fn();
+      const refetchArtifacts = vi.fn();
+      mocks.useCurrentUser.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: refetchCurrentUser,
+      });
+      mocks.useDocumentsPage.mockReturnValue(
+        docsResult({ refetch: refetchArtifacts })
+      );
 
-    render(<MyTasksPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      render(<MyTasksPage />);
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(refetchCurrentUser).toHaveBeenCalledTimes(1);
-    expect(refetchArtifacts).not.toHaveBeenCalled();
-  });
+      expect(refetchCurrentUser).toHaveBeenCalledTimes(1);
+      expect(refetchArtifacts).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("MyTasksPage pagination footer (ISS-4466)", () => {
@@ -466,8 +492,24 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
     return Array.from({ length: count }, (_u, i) => ({ id: `doc-${i}` }));
   }
 
+  /**
+   * Rows that survive a FLAT tab. Those tabs narrow by document type, so a row
+   * with no `type` is filtered out of every one of them — which the All tab,
+   * narrowing by nothing, never revealed.
+   */
+  function issuePageOf(count: number) {
+    return Array.from({ length: count }, (_u, i) => ({
+      id: `doc-${i}`,
+      type: DocumentType.Feature,
+    }));
+  }
+
   it("shows an honest range readout of the full task total for a single page", () => {
+    // ISS-10472: the All tab's rows and total come from the SERVER-paged tree,
+    // so that is what this seeds. The contract is unchanged — the footer states
+    // a range that covers every row and a total that matches it.
     mocks.useDocumentsPage.mockReturnValue(docsResult({ data: pageOf(30) }));
+    mocks.useAssignedArtifactTree.mockReturnValue(serverPagedTreeResult(30));
 
     render(<MyTasksPage />);
 
@@ -480,9 +522,13 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
   });
 
   it("caps the visible range at the page size and exposes page controls when the total exceeds one page", () => {
-    // 51 root documents → total 51, page 1 shows 1–50, a second page exists.
+    // 51 root groups behind the predicate; the server returns one page of 50
+    // and counts 51, so a second page exists.
     mocks.useDocumentsPage.mockReturnValue(
       docsResult({ data: pageOf(PAGE_SIZE + 1) })
+    );
+    mocks.useAssignedArtifactTree.mockReturnValue(
+      serverPagedTreeResult(PAGE_SIZE, { total: PAGE_SIZE + 1 })
     );
 
     render(<MyTasksPage />);
@@ -508,14 +554,21 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
     ).toBeNull();
   });
 
+  // ISS-10472 moved this case to a FLAT tab, where its premise still holds. The
+  // All tab's total is now the server's exact count over the predicate the page
+  // was drawn from, so it has no floor to mark; the flat tabs keep the bounded
+  // `GET /documents` read and therefore keep the marker (operator ruling
+  // 2026-10-20). Kept as a counterfactual rather than deleted, because the
+  // marker is still live — on a different tab.
   it("marks the total a floor and names what was left out when the server reports rows beyond the fetched window (ISS-4576)", () => {
     // The bounded list read returned 500 rows but the server counts 1204
     // assigned artifacts. A bare "of 500" would read as the whole queue.
     mocks.useDocumentsPage.mockReturnValue(
-      docsResult({ data: pageOf(500), total: 1204, hasMore: true })
+      docsResult({ data: issuePageOf(500), total: 1204, hasMore: true })
     );
 
     render(<MyTasksPage />);
+    fireEvent.click(screen.getByText("Issues"));
 
     expect(
       screen.getByText((content) =>
@@ -542,6 +595,9 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
   it("states a plain total (no floor marker or note) when the whole assigned set was loaded", () => {
     mocks.useDocumentsPage.mockReturnValue(
       docsResult({ data: pageOf(PAGE_SIZE + 1), total: PAGE_SIZE + 1 })
+    );
+    mocks.useAssignedArtifactTree.mockReturnValue(
+      serverPagedTreeResult(PAGE_SIZE, { total: PAGE_SIZE + 1 })
     );
 
     render(<MyTasksPage />);
@@ -576,7 +632,7 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
 
   it("keeps a same-size previous page mounted (control does not vanish) but drops a wider page across a view switch (crash guard)", () => {
     // The board passes a SCOPED placeholder, not unconditional keepPreviousData
-    // (shafty023): reusing the wide list page across a list → card switch would
+    // (davetho): reusing the wide list page across a list → card switch would
     // transiently mount all 500 draggable cards. Assert the placeholder function
     // holds a same-`limit` previous page (an offset-only page turn) and drops a
     // different-`limit` one (the view switch).
@@ -586,7 +642,11 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
 
     render(<MyTasksPage />);
 
-    const options = mocks.useDocumentsPage.mock.calls.at(-1)?.[1];
+    const lastCall = mocks.useDocumentsPage.mock.calls.at(-1);
+    if (!lastCall) {
+      throw new Error("useDocumentsPage was never called");
+    }
+    const options = lastCall[1];
     expect(options).toBeDefined();
     const placeholderData = options?.placeholderData as
       | ((
@@ -595,9 +655,7 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
       | undefined;
     expect(typeof placeholderData).toBe("function");
 
-    const requestedLimit = (
-      mocks.useDocumentsPage.mock.calls.at(-1)?.[0] as { limit?: number }
-    ).limit;
+    const requestedLimit = (lastCall[0] as { limit?: number }).limit;
     expect(requestedLimit).toBeDefined();
 
     const sameSizePrevious = buildDocumentListPage({ limit: requestedLimit });
@@ -609,18 +667,18 @@ describe("MyTasksPage pagination footer (ISS-4466)", () => {
     expect(placeholderData?.(widerPrevious)).toBeUndefined();
   });
 
-  it("withholds the honest 'of N' total while the branch/tree stream is still loading (no partial count)", () => {
+  it("withholds the honest 'of N' total while the tree stream is still loading (no partial count)", () => {
     // Documents have landed (a page-worth), but the second task stream is still
     // loading — so the total does not yet cover every stream. The footer must
-    // not publish a partial "of N" until both streams settle (shafty023).
+    // not publish a partial "of N" until both streams settle (davetho).
     mocks.useDocumentsPage.mockReturnValue(
       docsResult({ data: pageOf(PAGE_SIZE + 1) })
     );
-    mocks.useMergedProjectTrees.mockReturnValue({
+    mocks.useAssignedArtifactTree.mockReturnValue({
       data: undefined,
       isLoading: true,
       isError: false,
-      refetch: mocks.refetchMergedProjectTrees,
+      refetch: mocks.refetchAssignedArtifactTree,
     });
 
     render(<MyTasksPage />);
@@ -720,7 +778,7 @@ describe("My Tasks recency window wiring (FEA-1626)", () => {
     render(<MyTasksPage />);
 
     // Otherwise an enabled user issues the unbounded request first and refetches
-    // once the flag lands, so first paint still pays the cost (wongk).
+    // once the flag lands, so first paint still pays the cost (whitlockk).
     expect(mocks.useDocumentsPage).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ enabled: false })

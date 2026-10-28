@@ -1,8 +1,10 @@
+import { sanitizeOperatorMessageFragment } from "@repo/database/scripts/migrate-deploy-recovery";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { PreviewSchemaSourceRepo } from "@/app/preview-schemas/constants";
 import { previewSchemaCleanupService } from "@/app/preview-schemas/service";
+import { isRetainedEnvironmentBranch } from "@/app/preview-schemas/service/vibe-environment-retention";
 import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
 
 type MaybeDropParams = {
@@ -13,9 +15,11 @@ type MaybeDropParams = {
 
 /**
  * Fires a background schema-drop when a PR is closed on the Symphony source
- * repo. All other repos and non-`closed` actions are no-ops.
+ * repo. `vibe/`, `prototype/` and `functional-prototype/` branches require
+ * explicit cleanup (ISS-12135, ISS-12214); other repos and non-`closed`
+ * actions are no-ops.
  *
- * Uses `waitUntil` so the webhook response returns immediately — GitHub's
+ * Uses `waitUntil` so the webhook response returns immediately; GitHub's
  * delivery timeout is short and the DROP operation can be slow.
  */
 export function maybeDropPreviewSchemaOnClose({
@@ -28,6 +32,10 @@ export function maybeDropPreviewSchemaOnClose({
   }
 
   if (!branch) {
+    return;
+  }
+
+  if (isRetainedEnvironmentBranch(branch)) {
     return;
   }
 
@@ -44,17 +52,21 @@ export function maybeDropPreviewSchemaOnClose({
       .dropSchemaForBranch(branch)
       .then((result) => {
         if (result.error !== null) {
+          // Slack is at least as widely readable as the Actions log the
+          // cleanup route protects, and this is the SAME raw Prisma text
+          // (ISS-7567).
+          const detail = sanitizeOperatorMessageFragment(result.error);
           log.error(
             "[webhook/github] dropSchemaForBranch returned error for closed PR",
             {
               branch,
               schemaName: result.schemaName,
-              error: result.error,
+              error: detail,
             }
           );
           return notifySlack({
             route: "cleanup-preview-schemas:pr-close",
-            message: `dropSchemaForBranch failed for branch \`${branch}\` (schema: \`${result.schemaName}\`): ${result.error}`,
+            message: `dropSchemaForBranch failed for branch \`${branch}\` (schema: \`${result.schemaName}\`): ${detail}`,
             correlationId: buildCorrelationId(),
           }).catch(() => {
             // Notification failed, but don't block the webhook handler
@@ -62,7 +74,7 @@ export function maybeDropPreviewSchemaOnClose({
         }
       })
       .catch((err) => {
-        const errorMessage = parseError(err);
+        const errorMessage = sanitizeOperatorMessageFragment(parseError(err));
         log.error(
           "[webhook/github] Failed to drop preview schema for closed PR",
           { branch, error: errorMessage }

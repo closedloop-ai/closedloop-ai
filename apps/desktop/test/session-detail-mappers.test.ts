@@ -1,38 +1,62 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createClient } from "@libsql/client";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, test } from "vitest";
 import {
   detailRowsToList,
   sessionDetailsCtes,
 } from "../src/main/database/session-detail-mappers.js";
 
 describe("sessionDetailsCtes", () => {
-  const sql = sessionDetailsCtes();
-
-  test("token_totals CTE folds baseline_input into total_tokens", () => {
-    assert.ok(
-      sql.includes("baseline_input"),
-      "token_totals CTE must include baseline_input"
-    );
-  });
-
-  test("token_totals CTE folds baseline_output into total_tokens", () => {
-    assert.ok(
-      sql.includes("baseline_output"),
-      "token_totals CTE must include baseline_output"
-    );
-  });
-
-  test("token_totals CTE COALESCE-guards all four token columns", () => {
-    for (const col of [
-      "input_tokens",
-      "baseline_input",
-      "output_tokens",
-      "baseline_output",
-    ]) {
-      assert.ok(
-        sql.includes(`COALESCE(${col}, 0)`),
-        `token_totals CTE must COALESCE(${col}, 0)`
+  test("folds current and baseline tokens while flooring nullable terms", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "session-details-cte-"));
+    const client = createClient({
+      url: `file:${path.join(dir, "session-details.sqlite")}`,
+      intMode: "number",
+    });
+    try {
+      // A nullable minimal schema keeps each defensive COALESCE observable.
+      await client.executeMultiple(`
+        CREATE TABLE agents (session_id TEXT);
+        CREATE TABLE events (session_id TEXT);
+        CREATE TABLE token_usage (
+          session_id TEXT NOT NULL,
+          input_tokens INTEGER,
+          baseline_input INTEGER,
+          output_tokens INTEGER,
+          baseline_output INTEGER
+        );
+        INSERT INTO token_usage VALUES
+          ('populated-terms', 100, 50, 200, 25),
+          ('nullable-terms', NULL, 50, 200, 25),
+          ('nullable-terms', 100, NULL, 200, 25),
+          ('nullable-terms', 100, 50, NULL, 25),
+          ('nullable-terms', 100, 50, 200, NULL);
+      `);
+      const result = await client.execute({
+        sql: `${sessionDetailsCtes()}
+          SELECT session_id AS id, $1 AS status, total_tokens
+          FROM token_totals
+          ORDER BY session_id`,
+        args: [SESSION_STATUS.ACTIVE],
+      });
+      const details = detailRowsToList(
+        result.rows as unknown as Record<string, unknown>[]
       );
+
+      assert.deepEqual(
+        details.map(({ id, totalTokens }) => ({ id, totalTokens })),
+        [
+          { id: "nullable-terms", totalTokens: 1125 },
+          { id: "populated-terms", totalTokens: 375 },
+        ]
+      );
+    } finally {
+      client.close();
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

@@ -28,18 +28,18 @@ const HEAD_REF_MIGRATION_PATH = resolve(
   "../../packages/database/prisma/migrations/20260814173000_iss6541_pull_request_head_ref_name/migration.sql"
 );
 
-const { createMany, findFirst, logError, logWarn, updateMany } = vi.hoisted(
-  () => ({
+const { createMany, findFirst, logError, logInfo, logWarn, updateMany } =
+  vi.hoisted(() => ({
     createMany: vi.fn(),
     findFirst: vi.fn(),
     logError: vi.fn(),
+    logInfo: vi.fn(),
     logWarn: vi.fn(),
     updateMany: vi.fn(),
-  })
-);
+  }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: logError, warn: logWarn },
+  log: { error: logError, info: logInfo, warn: logWarn },
 }));
 
 const db = {
@@ -305,21 +305,24 @@ describe("persistPullRequestHeadRepositoryAuthority", () => {
     { name: "", oid: "a".repeat(40) },
     { name: "feature/published", oid: "   " },
     { name: "feature/published", oid: null },
-  ])("rejects available authority with an incomplete head pair", async (headRef) => {
-    findFirst.mockResolvedValue(storedAuthority());
+  ])(
+    "rejects available authority with an incomplete head pair",
+    async (headRef) => {
+      findFirst.mockResolvedValue(storedAuthority());
 
-    const changed = await persistPullRequestHeadRepositoryAuthority(
-      db,
-      scope,
-      availableObservation("delivery-2", laterObservedAt, "main"),
-      headRef
-    );
+      const changed = await persistPullRequestHeadRepositoryAuthority(
+        db,
+        scope,
+        availableObservation("delivery-2", laterObservedAt, "main"),
+        headRef
+      );
 
-    expect(changed).toBe(false);
-    expect(findFirst).toHaveBeenCalledOnce();
-    expect(createMany).not.toHaveBeenCalled();
-    expect(updateMany).not.toHaveBeenCalled();
-  });
+      expect(changed).toBe(false);
+      expect(findFirst).toHaveBeenCalledOnce();
+      expect(createMany).not.toHaveBeenCalled();
+      expect(updateMany).not.toHaveBeenCalled();
+    }
+  );
 
   it("accepts a newer live REST snapshot after an older webhook event", async () => {
     findFirst.mockResolvedValue(
@@ -492,13 +495,14 @@ describe("persistPullRequestHeadRepositoryAuthority", () => {
 
     expect(changed).toBe(false);
     expect(updateMany).not.toHaveBeenCalled();
-    expect(logError).toHaveBeenCalledWith(
+    expect(logInfo).toHaveBeenCalledWith(
       "github_repository_default_authority_stale_rejected",
       expect.objectContaining({
         organizationId: scope.organizationId,
         reason: "stale_observation",
       })
     );
+    expect(logError).not.toHaveBeenCalled();
     expect(logWarn).not.toHaveBeenCalled();
   });
 
@@ -536,39 +540,39 @@ describe("persistPullRequestHeadRepositoryAuthority", () => {
       mechanism: GitHubFetchMechanism.Graphql,
       source: RepositoryDefaultSource.PullRequestGraphql,
     },
-  ])("rejects a delayed webhook behind a newer $mechanism snapshot", async ({
-    mechanism,
-    source,
-  }) => {
-    findFirst.mockResolvedValue(
-      storedAuthority({
-        source,
-        mechanism,
-        observationKey: "live-snapshot-b",
-        observedAt: new Date(laterObservedAt),
-        headRefName: "feature/two",
-        headRefOid: "b".repeat(40),
-      })
-    );
-    const delayed = availableObservation(
-      "delivery-delayed-a",
-      "2026-08-10T20:10:00.000Z",
-      "trunk",
-      firstObservedAt
-    );
+  ])(
+    "rejects a delayed webhook behind a newer $mechanism snapshot",
+    async ({ mechanism, source }) => {
+      findFirst.mockResolvedValue(
+        storedAuthority({
+          source,
+          mechanism,
+          observationKey: "live-snapshot-b",
+          observedAt: new Date(laterObservedAt),
+          headRefName: "feature/two",
+          headRefOid: "b".repeat(40),
+        })
+      );
+      const delayed = availableObservation(
+        "delivery-delayed-a",
+        "2026-08-10T20:10:00.000Z",
+        "trunk",
+        firstObservedAt
+      );
 
-    const changed = await persistPullRequestHeadRepositoryAuthority(
-      db,
-      scope,
-      delayed,
-      { name: "feature/one", oid: "a".repeat(40) }
-    );
+      const changed = await persistPullRequestHeadRepositoryAuthority(
+        db,
+        scope,
+        delayed,
+        { name: "feature/one", oid: "a".repeat(40) }
+      );
 
-    expect(changed).toBe(false);
-    expect(updateMany).not.toHaveBeenCalled();
-  });
+      expect(changed).toBe(false);
+      expect(updateMany).not.toHaveBeenCalled();
+    }
+  );
 
-  it("emits the monitored stale event when compare-and-swap is exhausted", async () => {
+  it("emits the monitored compare-and-swap-exhausted event, not the benign stale one", async () => {
     findFirst.mockResolvedValue(storedAuthority());
     updateMany.mockResolvedValue({ count: 0 });
 
@@ -584,13 +588,42 @@ describe("persistPullRequestHeadRepositoryAuthority", () => {
     );
 
     expect(logError).toHaveBeenCalledWith(
-      "github_repository_default_authority_stale_rejected",
+      "github_repository_default_authority_cas_exhausted",
       expect.objectContaining({
         organizationId: scope.organizationId,
         reason: "compare_and_swap_exhausted",
       })
     );
+    expect(logInfo).not.toHaveBeenCalledWith(
+      "github_repository_default_authority_stale_rejected",
+      expect.anything()
+    );
     expect(logWarn).not.toHaveBeenCalled();
+  });
+
+  it("returns false instead of throwing when a non-webhook observation exhausts compare-and-swap", async () => {
+    // A REST/GraphQL refresh claims no receipt, so it has nothing for a caller's
+    // transaction to roll back. Throwing here backs its whole repo off on a
+    // fetch that actually succeeded (ISS-8140).
+    findFirst.mockResolvedValue(storedAuthority());
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const changed = await persistPullRequestHeadRepositoryAuthority(
+      db,
+      scope,
+      restAvailableObservation("rest-1", laterObservedAt, "main"),
+      { name: "feature/retry", oid: "a".repeat(40) }
+    );
+
+    expect(changed).toBe(false);
+    expect(createMany).not.toHaveBeenCalled();
+    expect(logError).toHaveBeenCalledWith(
+      "github_repository_default_authority_cas_exhausted",
+      expect.objectContaining({
+        organizationId: scope.organizationId,
+        reason: "compare_and_swap_exhausted",
+      })
+    );
   });
 
   it("retries the accepted pair with one webhook receipt claim", async () => {

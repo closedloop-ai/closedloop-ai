@@ -19,6 +19,7 @@ import {
   DEFAULT_DD_SITE,
   isAllowedDatadogSite,
 } from "@repo/api/src/types/datadog-sites";
+import { isRetryableDatadogStatus } from "../datadog-retry";
 import { keys } from "../keys";
 import { log } from "../log";
 
@@ -62,9 +63,6 @@ const SERIES_TIMEOUT_MS = 10_000;
  */
 const SERIES_MAX_RETRIES = 2;
 const SERIES_RETRY_BACKOFF_MS = 200;
-
-/** Statuses worth a second attempt; everything else is a terminal rejection. */
-const RETRYABLE_STATUSES = new Set([408, 429]);
 
 /** Internal per-attempt outcome: a terminal status, or "this may succeed later". */
 const RETRY_ATTEMPT = "retry" as const;
@@ -143,10 +141,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isRetryableStatus(status: number): boolean {
-  return RETRYABLE_STATUSES.has(status) || status >= 500;
-}
-
 async function attemptSubmit(
   series: readonly DatadogSeries[],
   site: string,
@@ -173,7 +167,7 @@ async function attemptSubmit(
       return SeriesSubmitStatus.Ok;
     }
 
-    if (isRetryableStatus(response.status)) {
+    if (isRetryableDatadogStatus(response.status)) {
       return RETRY_ATTEMPT;
     }
 

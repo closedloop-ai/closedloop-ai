@@ -3,6 +3,13 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import {
+  DESKTOP_ACCOUNT_CREATED_QUERY_PARAM,
+  DESKTOP_BOOTSTRAP_QUERY_PARAM,
+  isDesktopAccountCreatedValue,
+  isDesktopBootstrapValue,
+} from "@repo/api/src/types/desktop-authorize-url";
+import { DESKTOP_HANDOFF_HTML } from "./desktop-handoff-page.js";
 
 /**
  * Ephemeral loopback callback listener for the desktop loopback OAuth flow
@@ -21,11 +28,6 @@ import {
 
 const LOOPBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/cb";
-const CALLBACK_HTML =
-  '<!doctype html><meta charset="utf-8"><title>Closedloop</title>' +
-  '<body style="font-family:system-ui;padding:2rem">' +
-  "<p>You can close this tab and return to the Closedloop desktop app.</p>";
-
 /** The query params delivered to the callback path (any may be absent). */
 export type LoopbackCallback = {
   code: string | null;
@@ -41,6 +43,20 @@ export type LoopbackCallback = {
    * listener has always produced.
    */
   error: string | null;
+  /**
+   * ISS-10913: whether the web auth return that produced this callback CREATED
+   * a new account, as the web authorize page derived it on the server from
+   * the run and the account's creation time (ISS-11395) — never the desktop
+   * door's framing, which says only which door the person chose.
+   *
+   * Additive and present-only-when-true. `false` therefore means "no creation
+   * was observed", which covers an older web app that never sends the param as
+   * well as a genuine sign-in; it is deliberately NOT the claim "an existing
+   * account signed in", and the analytics fold keeps the two apart.
+   */
+  accountCreated: boolean;
+  /** Selects the pending-user bootstrap redeem instead of normal session redeem. */
+  desktopBootstrap?: boolean;
 };
 
 export type DesktopLoopbackListener = {
@@ -146,12 +162,22 @@ function handleRequest(
   res
     .writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; frame-ancestors 'none'",
       Connection: "close",
     })
-    .end(CALLBACK_HTML);
+    .end(DESKTOP_HANDOFF_HTML);
   return {
     code: url.searchParams.get("code"),
     state: url.searchParams.get("state"),
     error: url.searchParams.get("error"),
+    accountCreated: isDesktopAccountCreatedValue(
+      url.searchParams.get(DESKTOP_ACCOUNT_CREATED_QUERY_PARAM)
+    ),
+    desktopBootstrap: isDesktopBootstrapValue(
+      url.searchParams.get(DESKTOP_BOOTSTRAP_QUERY_PARAM)
+    ),
   };
 }

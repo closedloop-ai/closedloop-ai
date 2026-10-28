@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import type { LocalSessionStore } from "../src/main/auth/local-session-store.js";
-import {
-  DebugIpcChannel,
-  registerDebugIpcHandlers,
-} from "../src/main/ipc/debug-ipc.js";
+import { registerDebugIpcHandlers } from "../src/main/ipc/debug-ipc.js";
+import { DebugIpcChannel } from "../src/shared/debug-ipc-channel.js";
 
 type IpcHandler = (event: { sender?: unknown }, ...args: unknown[]) => unknown;
 

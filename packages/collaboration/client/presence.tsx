@@ -1,26 +1,46 @@
 "use client";
 
 import { useOthers, useSelf } from "@liveblocks/react/suspense";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
+import { avatarInitial } from "@repo/design-system/components/ui/avatar";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
-import { filterLiveOthers } from "../shared/presence-utils";
+import {
+  ANONYMOUS_USER_NAME,
+  filterLiveOthers,
+} from "../shared/presence-utils";
+import { useDocSyncPeers } from "./doc-sync-peers";
+import { useIsOnDocSync } from "./doc-sync-room";
+
+/**
+ * The room's peers: doc-sync awareness under a `DocSyncRoom` (PLN-2189 T-2.5),
+ * Liveblocks otherwise. Both sources are read unconditionally; the Liveblocks
+ * `RoomProvider` stays mounted for threads either way.
+ */
+function usePeers(): {
+  others: readonly PresencePeer[];
+  self: Pick<PresencePeer, "info"> | null;
+} {
+  const liveblocksOthers = useOthers();
+  const liveblocksSelf = useSelf();
+  const docSyncPeers = useDocSyncPeers();
+  const isOnDocSync = useIsOnDocSync();
+  if (isOnDocSync) {
+    return docSyncPeers;
+  }
+  return { others: liveblocksOthers, self: liveblocksSelf };
+}
 
 /**
  * Displays an avatar stack of active users in the current room.
  * Shows up to 3 avatars with a "+N" indicator for additional users.
  */
 export function Presence() {
-  const others = useOthers();
-  const currentUser = useSelf();
+  const { others, self: currentUser } = usePeers();
 
   const liveOthers = filterLiveOthers(others);
   const hasMoreUsers = liveOthers.length > 3;
@@ -48,7 +68,7 @@ export function Presence() {
               avatar={info.avatar}
               color={info.color}
               key={connectionId}
-              name={info.name || "Anonymous"}
+              name={info.name || ANONYMOUS_USER_NAME}
             />
           ))}
 
@@ -79,27 +99,22 @@ function UserAvatar({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Avatar
+        {/* The presence colour rings the avatar (`style` reaches the root);
+            the initial sits on the shared avatar colours (Nerys,
+            2026-10-22). */}
+        <PersonAvatar
+          avatarUrl={avatar}
           className={cn(
             "size-8 border-2",
             isCurrentUser
               ? ""
               : "transition-transform hover:z-10 hover:scale-110"
           )}
-          style={{
-            borderColor: color,
-          }}
-        >
-          {avatar && <AvatarImage alt={name} src={avatar} />}
-          <AvatarFallback
-            style={{
-              backgroundColor: color,
-              color: "white",
-            }}
-          >
-            {getInitials(name)}
-          </AvatarFallback>
-        </Avatar>
+          imageAlt={name}
+          initials={avatarInitial(name, "?")}
+          name={name}
+          style={{ borderColor: color }}
+        />
       </TooltipTrigger>
       <TooltipContent>{name}</TooltipContent>
     </Tooltip>
@@ -107,32 +122,11 @@ function UserAvatar({
 }
 
 /**
- * Extracts initials from a name (max 2 characters).
- * Examples: "John Doe" -> "JD", "Jane" -> "JA", "?" -> "?"
- */
-function getInitials(name: string): string {
-  if (!name || name === "?") {
-    return "?";
-  }
-
-  const parts = name.trim().split(whitespaceRegex);
-
-  if (parts.length >= 2) {
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-
-  return name.slice(0, 2).toUpperCase();
-}
-
-const whitespaceRegex = /\s+/;
-
-/**
  * Inline avatar stack for use in toolbars. No border/padding wrapper.
  * Returns null when no other users are present.
  */
 export function InlinePresence() {
-  const others = useOthers();
-  const currentUser = useSelf();
+  const { others, self: currentUser } = usePeers();
 
   const liveOthers = filterLiveOthers(others);
 
@@ -160,7 +154,7 @@ export function InlinePresence() {
             avatar={info.avatar}
             color={info.color}
             key={connectionId}
-            name={info.name || "Anonymous"}
+            name={info.name || ANONYMOUS_USER_NAME}
           />
         ))}
 
@@ -173,3 +167,9 @@ export function InlinePresence() {
     </div>
   );
 }
+
+type PresencePeer = {
+  connectionId: number;
+  info: { name?: string; avatar?: string; color: string };
+  presence: { readOnly?: boolean };
+};

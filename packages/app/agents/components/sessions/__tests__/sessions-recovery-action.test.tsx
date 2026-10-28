@@ -1,6 +1,6 @@
 /**
  * @file sessions-recovery-action.test.tsx
- * @description ISS-4534 (wongk) regression coverage for the shared Sessions
+ * @description ISS-4534 (whitlockk) regression coverage for the shared Sessions
  * error-recovery affordance. A PLAIN primary click clears the host's filters (the
  * honest "reload") and navigates to the clean list root; a MODIFIED / non-primary
  * click (Cmd/Ctrl/Shift/Alt or middle-button — the browser opening the href in a
@@ -54,7 +54,7 @@ describe("SessionsRecoveryAction (ISS-4534)", () => {
     expect(onClearFilters).toHaveBeenCalledTimes(1);
   });
 
-  // wongk: a Cmd/Ctrl-click opens the clean URL in a NEW tab — it must not also
+  // whitlockk: a Cmd/Ctrl-click opens the clean URL in a NEW tab — it must not also
   // wipe the filters in the tab the user meant to keep.
   it.each([
     ["metaKey", { metaKey: true }],
@@ -62,16 +62,19 @@ describe("SessionsRecoveryAction (ISS-4534)", () => {
     ["shiftKey", { shiftKey: true }],
     ["altKey", { altKey: true }],
     ["middle button", { button: 1 }],
-  ])("a modified/non-primary click (%s) does NOT clear filters — the current tab's scope is preserved", (_label, eventInit) => {
-    const onClearFilters = vi.fn();
-    render(
-      <SessionsRecoveryAction href={HREF} onClearFilters={onClearFilters} />
-    );
+  ])(
+    "a modified/non-primary click (%s) does NOT clear filters — the current tab's scope is preserved",
+    (_label, eventInit) => {
+      const onClearFilters = vi.fn();
+      render(
+        <SessionsRecoveryAction href={HREF} onClearFilters={onClearFilters} />
+      );
 
-    fireEvent.click(
-      screen.getByRole("link", { name: "Clear filters and reload" }),
-      eventInit
-    );
-    expect(onClearFilters).not.toHaveBeenCalled();
-  });
+      fireEvent.click(
+        screen.getByRole("link", { name: "Clear filters and reload" }),
+        eventInit
+      );
+      expect(onClearFilters).not.toHaveBeenCalled();
+    }
+  );
 });

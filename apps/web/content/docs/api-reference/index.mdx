@@ -1,10 +1,10 @@
 ---
 title: "API Reference"
-description: "The Closedloop REST API — manage projects, documents, threads, links, and loops over HTTPS."
+description: "The Closedloop REST API — manage projects, documents, threads, and links over HTTPS."
 ---
 
-The Closedloop REST API lets you manage projects, documents, artifacts, comment
-threads, and loops programmatically. Every endpoint on this page is generated
+The Closedloop REST API lets you manage projects, documents, artifacts, and comment
+threads programmatically. Every endpoint on this page is generated
 from the OpenAPI specification, so the request and response shapes stay in sync
 with the live API.
 
@@ -19,7 +19,10 @@ https://api.closedloop.ai
 ## Authentication
 
 Every request must include a Bearer token in the `Authorization` header. API
-keys use the format `sk_live_*`.
+keys use the format `sk_live_*`. Most endpoints take a key; some also accept a
+signed-in Closedloop session token in the same header, and a few accept only
+that and refuse a key. Each endpoint publishes the credentials it takes, so read
+its page rather than assuming a key works everywhere.
 
 ```bash
 curl https://api.closedloop.ai/documents \

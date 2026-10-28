@@ -75,3 +75,13 @@ export function getAuthorizeMintErrorCopy(
     retryable: true,
   };
 }
+
+/**
+ * Whether a failed mint ends the pending desktop authorize run. Not the same as
+ * "no retry": a 400 or 403 will fail the same way on any later attempt, but a
+ * 401 ends only the session — the user signs in again and the run must still
+ * bounce them back to consent.
+ */
+export function mintFailureEndsRun(status: number | undefined): boolean {
+  return status === BAD_REQUEST_STATUS || status === FORBIDDEN_STATUS;
+}

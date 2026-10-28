@@ -20,34 +20,68 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ElectronApplication, Locator, Page } from "@playwright/test";
 import { _electron as electron, expect } from "@playwright/test";
+// Extension-qualified: a `@repo/*` TS subpath resolves without one in the app
+// but NOT under the Playwright spec loader, where the whole suite aborts at load
+// with `Cannot find module`, reports "No tests found", and still exits 0.
+import { ONBOARDING_STATE_VERSION } from "@repo/api/src/types/onboarding-persistence.ts";
+import { OnboardingPhase } from "@repo/api/src/types/onboarding-phase.ts";
 import { E2E_EPHEMERAL_LOOPBACK_PORTS_ARG } from "../../../src/main/lifecycle/loopback-port-isolation.js";
 import { E2E_NO_REVEAL_ARG } from "../../../src/main/lifecycle/window-reveal-suppression.js";
+import { DEV_UPDATE_CHECK_DISABLED_ENV } from "../../../src/main/update/dev-update-check-gate.js";
+import { desktopGuestGuidedOnboardingStorageKey } from "../../../src/renderer/components/dashboard/dashboard-storage-keys";
 import type { CloudReadReadinessSnapshot } from "../../../src/shared/cloud-read-readiness-contract.js";
+import { E2E_FEATURE_FLAG_ASSIGNMENT_ARG } from "../../../src/shared/e2e-feature-flag-assignment-contract.js";
 import {
   SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
 } from "../../../src/shared/sync-burndown-contract.js";
 import {
-  localSessionSourceGateEnv,
-  localSessionSourceGateLaunchArgs,
-} from "./local-session-source-gate";
+  ambientHarnessHomes,
+  isolatedHarnessHomes,
+} from "../../helpers/isolated-harness-homes";
 import {
-  sessionsPageDataGateEnv,
-  sessionsPageDataGateLaunchArgs,
-} from "./sessions-page-data-gate";
+  E2E_DESKTOP_FEATURE_FLAG_SEED,
+  E2E_DESKTOP_SETTINGS_SEED,
+} from "./e2e-desktop-settings-seed";
+import { mergeE2eFeatureFlagAssignment } from "./e2e-feature-flag-assignment-seed";
+import {
+  firstWindowOrExplainExit,
+  launchElectronOrExplain,
+} from "./electron-launch-attribution";
+import {
+  DESKTOP_MAIN_BUNDLE,
+  E2E_REVEAL_WINDOW_OPT_IN_ARG,
+} from "./electron-launch-preflight";
+import {
+  type PreloadGateOptions,
+  preloadGateEnv,
+  preloadGateLaunchArgs,
+} from "./preload-gates";
+import { captureProcessGroupId, killProcessGroup } from "./process-group-kill";
+import {
+  assertReturningInstallSeed,
+  returningInstallSeedEnv,
+  returningInstallSeedLaunchArgs,
+} from "./returning-install-seed";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** apps/desktop — helpers live at apps/desktop/test/e2e/helpers. */
 export const DESKTOP_ROOT = path.resolve(__dirname, "../../..");
-export const MAIN_JS = path.join(DESKTOP_ROOT, "dist/main/index.js");
+export const MAIN_JS = DESKTOP_MAIN_BUNDLE;
 /** This directory — the only place the test-only `-r` preloads may come from. */
 const E2E_HELPERS_DIR = __dirname;
 const APP_CLOSE_TIMEOUT_MS = 5000;
 const APP_KILL_TIMEOUT_MS = 5000;
-const DESKTOP_SETTINGS_FILE = "desktop-settings.json";
+/**
+ * The launch profile's settings file. Exported so a suite grading what a
+ * launcher wrote into its profile names the same file the writer does, rather
+ * than retyping it.
+ */
+export const DESKTOP_SETTINGS_FILE = "desktop-settings.json";
 
-export type LaunchOptions = {
+export type LaunchOptions = PreloadGateOptions & {
   /** Prefix for the per-test temp user-data dir (defaults to "desktop-e2e-"). */
   userDataPrefix?: string;
   /**
@@ -64,7 +98,17 @@ export type LaunchOptions = {
    * and remove it itself at the end.
    */
   keepUserDataDir?: boolean;
-  /** Extra env vars layered on top of the standard test env. */
+  harnessHomesRoot?: string;
+  /**
+   * Extra env vars layered on top of the standard test env.
+   *
+   * ISS-7731: this layers OVER the default collector-home isolation, which is
+   * what makes the seeded-corpus pattern work — spread nothing, or spread
+   * `isolatedHarnessHomes(root)`, and then name the ONE home that should point
+   * at a seeded corpus. The override is honored; the other six stay isolated.
+   * There is no way to make a launch read the operator's real history except by
+   * naming a real directory here, which is visible in a diff.
+   */
   env?: Record<string, string>;
   /**
    * Called with the freshly-created temp user-data dir *before* the app
@@ -73,27 +117,54 @@ export type LaunchOptions = {
    */
   beforeLaunch?: (userDataDir: string) => void;
   /**
-   * ISS-5714: pin the desktop→cloud readiness snapshot the read-source cutover
-   * consults, so a launched app has a DETERMINISTIC answer to "does the cloud
-   * hold this machine's history?". See {@link cloudReadReadinessLaunchArgs} for
-   * why the production sampler cannot supply one inside a spec's lifetime.
+   * Leave this profile looking like a FIRST RUN instead of an install that has
+   * run before.
+   *
+   * ISS-10195 gave a signed-out reader the guided onboarding run, which arms on
+   * a first run — and a virgin e2e profile is one, so every launch opened a
+   * blocking modal over the shell and the specs beneath it could not click
+   * anything. Marking the profile settles that once here rather than in each of
+   * 160 specs, the same reasoning ISS-7731 applied to collector-home isolation.
+   *
+   * Set this only in a spec whose SUBJECT is first-run behaviour. Such a launch
+   * skips the returning-install preload seed and returns as soon as the first
+   * window has loaded.
+   */
+  keepFirstRunState?: boolean;
+  /**
+   * ISS-5768: pin the desktop→cloud readiness snapshot the runtime-status
+   * payload carries, so the Settings → History Sync cell and the startup panel
+   * have a DETERMINISTIC backlog to render. See
+   * {@link cloudReadReadinessLaunchArgs} for why the production sampler cannot
+   * supply one inside a spec's lifetime.
+   *
+   * ISS-6972: this no longer influences which store a surface reads — the read
+   * source is authenticated + online + permitted to sync.
    */
   cloudReadReadiness?: CloudReadReadinessSnapshot;
+  /**
+   * ISS-11426: pin the `computeTargetLinkBlock` field of the runtime-status
+   * payload, so a spec can assert the Settings relink alert. The production
+   * latch needs a real cloud refusing a real target, which no launch stands up.
+   * See `compute-target-link-block-preload.cjs`.
+   */
+  computeTargetLinkBlock?: {
+    refusedComputeTargetId: string | null;
+    refusedBatchCount: number;
+    firstRefusedAt: string;
+  };
   /**
    * ISS-5768: pin the `cloudSync` half of the runtime-status payload. Requires
    * `cloudReadReadiness` — it rides the same preload. See
    * {@link identifiedCloudSyncProgress} for why a spec asserting the History
    * Sync cell needs it.
+   *
+   * ISS-9184: the FIRST sample, not a fixed one. A spec whose subject is a
+   * CHANGE in this field replaces it mid-run with `pushCloudSyncProgress`
+   * (`cloud-sync-progress-control.ts`); one that never pushes keeps this sample
+   * for the whole launch.
    */
   cloudSyncProgress?: E2eCloudSyncProgress;
-  /**
-   * ISS-4561: install the Sessions combined `pageData` IPC gate. It is INERT
-   * until the spec arms it; armed, it forces the best-effort usage half into the
-   * transient failure the recovery hook exists for and holds each response until
-   * the spec releases it. See `sessions-page-data-gate-preload.cjs` for what that
-   * substitutes, and what it deliberately leaves as the real thing.
-   */
-  sessionsPageDataGate?: boolean;
   /**
    * ISS-5987: put this launch's window ON SCREEN. Defaults to false — every spec
    * runs off screen so the whole suite is runnable on an operator's Mac without
@@ -104,18 +175,21 @@ export type LaunchOptions = {
    */
   revealWindow?: boolean;
   /**
-   * ISS-6002: hold the LOCAL SESSION SOURCE down (`starting`, with no observed
-   * boot import) while the session read keeps answering — the cold-boot window
-   * in which a successful `{ total: 0 }` says nothing about what the store
-   * holds. Held from launch; `releaseLocalSessionSource` lets the real source
-   * through. See `local-session-source-gate-preload.cjs`.
+   * ISS-6929: the Electron launcher. Defaults to Playwright's
+   * `_electron.launch`, and no spec overrides it — the seam exists so
+   * `desktop-app-partial-launch.test.ts` can drive the teardown in
+   * {@link launchGuardedElectronApp} against a REAL spawned process without a
+   * real Electron build, which is the only way to assert an exited process
+   * handle rather than the absence of a warning.
    */
-  localSessionSourceGate?: boolean;
+  launchElectron?: ElectronLauncher;
 };
 
 /**
- * The app-level argument that keeps a launch off screen, or nothing when the
- * caller asked to watch it. App-level, so it goes AFTER `MAIN_JS`.
+ * The app-level argument that keeps a launch off screen, or the reveal opt-in
+ * when the caller asked to watch it (ISS-12135: without the opt-in the launch
+ * preflight puts the window back off screen). App-level, so it goes AFTER
+ * `MAIN_JS`.
  *
  * `playwright test --debug` counts as asking. Electron headedness is the APP's
  * decision, not Playwright's, so `--debug` cannot reveal this window on its own
@@ -133,7 +207,7 @@ export type LaunchOptions = {
  */
 export function windowRevealLaunchArgs(revealWindow: boolean): string[] {
   const watching = revealWindow || Boolean(process.env.PWDEBUG);
-  return watching ? [] : [E2E_NO_REVEAL_ARG];
+  return watching ? [E2E_REVEAL_WINDOW_OPT_IN_ARG] : [E2E_NO_REVEAL_ARG];
 }
 
 /**
@@ -147,11 +221,20 @@ export function windowRevealLaunchArgs(revealWindow: boolean): string[] {
  * makes `workers > 1` deterministic rather than a coin flip over which worker's
  * app won the bind — see that module for why it is a launch argument and not an
  * env var.
+ *
+ * {@link E2E_FEATURE_FLAG_ASSIGNMENT_ARG} (ISS-8753) is unconditional for the
+ * same reason: desktop flag resolution is moving to the signed-in user's PostHog
+ * assignment, an E2E launch has no account, and a launch that did not opt into
+ * being served the seeded assignment would silently run with EVERY gate closed —
+ * including the ones the standard profile seed opens for all specs. Passing it
+ * from one place is what stops the authenticated launcher and this one
+ * disagreeing about which of them has flags at all.
  */
 export function e2eAppLaunchArgs(revealWindow: boolean): string[] {
   return [
     ...windowRevealLaunchArgs(revealWindow),
     E2E_EPHEMERAL_LOOPBACK_PORTS_ARG,
+    E2E_FEATURE_FLAG_ASSIGNMENT_ARG,
   ];
 }
 
@@ -177,14 +260,13 @@ export type LaunchedApp = {
  * The Electron switches that install the readiness fixture preload, or nothing
  * when a spec did not ask for one (in which case the app uses its real sampler).
  *
- * ISS-5714: `SyncBurndownReporter.start()` schedules its FIRST sample a full
- * 60s out, so `getCloudReadReadiness()` answers UNKNOWN for the first minute of
- * every launch and the cutover holds every surface on Local. No spec can wait
- * that out, and waiting would not make the state deterministic anyway — the real
- * lane states depend on what the collectors found in the fixture home dirs. Only
- * the readiness INPUT is substituted; the IPC handler, the preload bridge,
- * `resolveCloudReadCutover`, the providers and both read sources are the shipped
- * ones. See `cloud-read-readiness-preload.cjs`.
+ * `SyncBurndownReporter.start()` schedules its FIRST sample a full 60s out, so
+ * the runtime-status payload carries UNKNOWN readiness for the first minute of
+ * every launch. No spec can wait that out, and waiting would not make the state
+ * deterministic anyway — the real lane states depend on what the collectors
+ * found in the fixture home dirs. Only the readiness INPUT is substituted; the
+ * runtime-status handler, the preload bridge and every surface that renders the
+ * backlog are the shipped ones. See `cloud-read-readiness-preload.cjs`.
  */
 export function cloudReadReadinessLaunchArgs(
   snapshot: CloudReadReadinessSnapshot | undefined
@@ -203,14 +285,35 @@ export function cloudReadReadinessEnv(
     : {};
 }
 
+/** ISS-11426: the link-block preload, loaded only when a spec asked for one. */
+export function computeTargetLinkBlockLaunchArgs(
+  block: LaunchOptions["computeTargetLinkBlock"]
+): string[] {
+  return block
+    ? [
+        "-r",
+        path.join(E2E_HELPERS_DIR, "compute-target-link-block-preload.cjs"),
+      ]
+    : [];
+}
+
+/** The fixture that preload reads. */
+export function computeTargetLinkBlockEnv(
+  block: LaunchOptions["computeTargetLinkBlock"]
+): Record<string, string> {
+  return block
+    ? { CL_E2E_COMPUTE_TARGET_LINK_BLOCK: JSON.stringify(block) }
+    : {};
+}
+
 type E2eLaneReadiness = CloudReadReadinessSnapshot["lanes"][number];
 
 /**
  * A readiness snapshot carrying EVERY lane the burn-down reports, drained
  * except where overridden.
  *
- * `SyncBurndownReporter` builds all five lanes on every sample, and since
- * ISS-6206 the renderer's IPC boundary requires exactly that set — a fixture
+ * `SyncBurndownReporter` builds every lane on every sample, and since
+ * ISS-6206 the renderer's IPC boundary requires every one of them — a fixture
  * naming one lane is not a smaller real snapshot, it is one the app would
  * reject, and a launched-app assertion built on it would be measuring the
  * rejection rather than the behavior under test.
@@ -224,9 +327,11 @@ function readinessWithLanes(
     lanes: SYNC_LANE_IDS.map((lane) => ({
       lane,
       state: SyncLaneDrainState.Drained,
+      resumeBlocked: false,
       itemsRemaining: 0,
       itemsRemainingIsLowerBound: false,
       deadLetteredCount: 0,
+      deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
       unmeasuredRows: 0,
       ...overrides[lane],
     })),
@@ -292,6 +397,28 @@ export function mixedLaneCloudReadReadiness(): CloudReadReadinessSnapshot {
 }
 
 /**
+ * ISS-9823: the wedged device — the session lane's once-per-identity resume read
+ * is failing, so every pass aborts before it can enqueue anything, beside four
+ * genuinely drained lanes.
+ *
+ * The condition is self-reinforcing, which is what makes it invisible to every
+ * count: the abort is the reason the outbox stays empty, so on a device that was
+ * already caught up the lane reports a measured, honest zero and the pre-ISS-9823
+ * aggregate rounded the whole app up to "Up to date" while local data never left
+ * the machine. `remaining_unknown` with a clean zero is reproducible ONLY from
+ * `resumeBlocked`, which is why the flag rides the payload — see
+ * `parse-cloud-read-readiness.ts`.
+ */
+export function resumeBlockedCloudReadReadiness(): CloudReadReadinessSnapshot {
+  return readinessWithLanes({
+    [SyncLaneId.SessionMetadata]: {
+      resumeBlocked: true,
+      state: SyncLaneDrainState.RemainingUnknown,
+    },
+  });
+}
+
+/**
  * The `cloudSync` half of the runtime-status payload, declared structurally
  * rather than imported: `AgentSessionSyncProgress` lives in `src/main/`, and one
  * main-process import aborts the WHOLE Electron E2E run at load time.
@@ -304,6 +431,17 @@ export type E2eCloudSyncProgress = {
   caughtUp: boolean;
   deadLetteredSessions: number;
   deadLetteredComponents?: number;
+  /**
+   * ISS-7099: the lane's own progress pair — sessions it verified an ack for,
+   * over the total it has had in flight.
+   *
+   * A fixture that omits these drives the banner's COMPATIBILITY fallback (the
+   * derived pair an older main process gets), so it stays green even if the real
+   * fields never traverse runtime-status → preload → poller. A spec asserting
+   * the delivered/ready counter has to seed them.
+   */
+  deliveredSessions?: number;
+  inFlightTotalSessions?: number;
 };
 
 /**
@@ -329,7 +467,10 @@ export function identifiedCloudSyncProgress(): E2eCloudSyncProgress {
   };
 }
 
-/** The fixture the preload reads for the runtime-status `cloudSync` field. */
+/**
+ * The fixture the preload reads as its FIRST runtime-status `cloudSync` sample.
+ * Later samples come from the spec (ISS-9184) — see `cloudSyncProgress`.
+ */
 export function cloudSyncProgressEnv(
   progress: E2eCloudSyncProgress | undefined
 ): Record<string, string> {
@@ -366,30 +507,37 @@ export async function launchDesktopApp(
       path.join(os.tmpdir(), options.userDataPrefix ?? "desktop-e2e-")
     );
   fs.mkdirSync(userDataDir, { recursive: true });
+  // ISS-7731: isolation is the DEFAULT, not something 89 specs each had to
+  // remember. Owned here (not by the caller) so a spec that says nothing about
+  // collector homes is safe, and so the temp roots are removed by the same
+  // teardown that removes the profile.
+  const harnessHomesRoot =
+    options.harnessHomesRoot ??
+    fs.mkdtempSync(path.join(os.tmpdir(), "desktop-e2e-homes-"));
 
-  seedE2eDesktopSettings(userDataDir);
-  options.beforeLaunch?.(userDataDir);
-
-  const app = await electron.launch({
+  const launched = await launchGuardedElectronApp({
     // Chromium/Electron switches must precede the app entrypoint; after MAIN_JS
     // they are application arguments and `-r` would never load.
     args: [
+      ...returningInstallSeedLaunchArgs(options.keepFirstRunState),
       ...cloudReadReadinessLaunchArgs(options.cloudReadReadiness),
-      ...sessionsPageDataGateLaunchArgs(options.sessionsPageDataGate === true),
-      ...localSessionSourceGateLaunchArgs(
-        options.localSessionSourceGate === true
-      ),
+      ...computeTargetLinkBlockLaunchArgs(options.computeTargetLinkBlock),
+      ...preloadGateLaunchArgs(options),
       MAIN_JS,
-      `--user-data-dir=${userDataDir}`,
+      `${USER_DATA_DIR_ARG}${userDataDir}`,
       ...e2eAppLaunchArgs(options.revealWindow === true),
     ],
     env: {
       ...process.env,
       ...cloudReadReadinessEnv(options.cloudReadReadiness),
+      ...computeTargetLinkBlockEnv(options.computeTargetLinkBlock),
       ...cloudSyncProgressEnv(options.cloudSyncProgress),
-      ...sessionsPageDataGateEnv(options.sessionsPageDataGate === true),
-      ...localSessionSourceGateEnv(options.localSessionSourceGate === true),
+      ...preloadGateEnv(options, userDataDir),
       CLOSEDLOOP_DISABLE_AUTO_UPDATE: "1",
+      // ISS-12843: the unpackaged build's boot git probe raises the update
+      // banner whenever origin/main is past the built commit, shifting the
+      // page under a spec's measured geometry at an arbitrary moment.
+      [DEV_UPDATE_CHECK_DISABLED_ENV]: "1",
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
       // FEA-2199: hard-disable the OTel SDK for E2E. The egress gate
       // (resolveDesktopTelemetryEgressEnabled) already stops the unpackaged app
@@ -400,31 +548,74 @@ export async function launchDesktopApp(
       // the harness flooded prod Datadog/PostHog with `version=0.0` start/shutdown
       // pairs. A spec may still opt back in via options.env if it asserts OTel.
       OTEL_SDK_DISABLED: "1",
+      // ISS-12787: blank, so a key exported in the runner's shell cannot reach a
+      // seeded launch and send fake sessions to the default API origin. Before
+      // `...options.env`, so a spec that needs an identity still passes its own.
+      CLOSEDLOOP_API_KEY: "",
+      // ISS-7731 — ABOVE `...process.env`, BELOW `...options.env`, and both
+      // positions are load-bearing.
+      //
+      // Above the inherited environment: a launch that merely FAILS to pin a
+      // home resolves it under `os.homedir()`, so the boot collectors read the
+      // operator's real Cursor/Copilot/OpenCode history into this launch's
+      // SQLite store. That is not hypothetical — a real local Copilot session
+      // was found in a seeded Sessions population on PR #5639 (ISS-7697). Being
+      // above also overrides a real value the operator happens to export.
+      //
+      // Below `options.env`: a spec that deliberately seeds a harness home must
+      // still win. The established pattern (historical-import-utility-worker.spec.ts)
+      // spreads this set and overrides one key back to a seeded corpus — that
+      // override lands in `options.env` and is neither broken nor silently
+      // ignored. OpenCode matters most: `opencode.db` is a BATCH source, one
+      // file holding an unbounded number of sessions.
+      ...isolatedHarnessHomes(harnessHomesRoot),
       ...options.env,
+      ...returningInstallSeedEnv(
+        options.keepFirstRunState,
+        RETURNING_INSTALL_LOCAL_STORAGE_SEED
+      ),
+    },
+    launchElectron: options.launchElectron,
+    // ISS-8955: BEFORE the spawn, and that was load-bearing rather than merely
+    // conventional. `--user-data-dir` redirects `userData` but not `appData`, so
+    // an EMPTY launch profile used to be the main process's cue to rename the
+    // operator's installed profile into it. The redirect guard in
+    // `userdata-migration.ts` is what actually closes that now — this ordering
+    // is no longer a safety property, and never was one for
+    // `launchAuthenticatedDesktopApp`, which seeds nothing of its own. It is
+    // still pinned, by `desktop-e2e-profile-seed-ordering.test.ts`, because the
+    // per-spec `beforeLaunch` below layers onto what this wrote.
+    beforeLaunch: () => {
+      seedE2eDesktopSettings(userDataDir);
+      options.beforeLaunch?.(userDataDir);
+    },
+    // The profile this launcher created is its own to remove, so it goes on the
+    // wrapper's teardown alongside closing the app. `launchAuthenticatedDesktopApp`
+    // passes nothing here: its caller made the dir and removes it.
+    afterClose: () => {
+      // The harness homes are ALWAYS this launcher's to remove — unlike the
+      // profile, no caller can own them, so `keepUserDataDir` does not apply.
+      fs.rmSync(harnessHomesRoot, { recursive: true, force: true });
+      if (!options.keepUserDataDir) {
+        fs.rmSync(userDataDir, { recursive: true, force: true });
+      }
     },
   });
 
-  const page = await app.firstWindow();
-  const pageErrors: Error[] = [];
-  page.on("pageerror", (error) => {
-    pageErrors.push(error);
-  });
-  const consoleErrors: string[] = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleErrors.push(message.text());
+  try {
+    if (options.keepFirstRunState !== true) {
+      await assertReturningInstallSeed(
+        launched.page,
+        RETURNING_INSTALL_LOCAL_STORAGE_SEED,
+        SHELL_SETTLE_MS,
+        launched.app
+      );
     }
-  });
-  await page.waitForLoadState("domcontentloaded");
-
-  const cleanup = async (): Promise<void> => {
-    await closeElectronApp(app);
-    if (!options.keepUserDataDir) {
-      fs.rmSync(userDataDir, { recursive: true, force: true });
-    }
-  };
-
-  return { app, page, userDataDir, pageErrors, consoleErrors, cleanup };
+    return { ...launched, userDataDir };
+  } catch (error) {
+    await discardPartialLaunch(launched.cleanup);
+    throw error;
+  }
 }
 
 /**
@@ -435,6 +626,47 @@ export async function launchDesktopApp(
  */
 export async function gotoNav(page: Page, navId: string): Promise<void> {
   await gotoHash(page, `/${navId}`);
+}
+
+/**
+ * The nav view the shell has actually COMMITTED to — scope every page-global
+ * query that a sibling view could also answer.
+ *
+ * Keep-alive leaves every visited view mounted (`App.tsx`), so `page.getByText`,
+ * `page.locator`, and `.first()` all range over views the user is not looking
+ * at. Since Dashboard became the canonical landing it is the FIRST view mounted
+ * and therefore first in DOM order, and its Recent Sessions grid renders session
+ * links, branch names, `data-column-id` headers, a Date range group, and cost
+ * values — so an unscoped query on a Sessions or Branches surface now tends to
+ * resolve Dashboard's copy first.
+ *
+ * `:visible` is NOT the fix. The body commits on a DEFERRED render while the
+ * Topbar follows the immediate nav id, so visibility is a property that changes
+ * under you mid-navigation: a `:visible` filter samples one instant, and an
+ * `expect(...).toBeVisible()` that passes can be invalidated by the very next
+ * frame — which then strands `click()` on a 0×0 box for its whole timeout. This
+ * keys off `data-nav-panel-state` instead, so a control in a transitioning or
+ * hidden sibling is not selectable in the first place.
+ *
+ * For a NEGATIVE assertion (`toHaveCount(0)`), scope to this AND keep a positive
+ * anchor before it — an absent panel also yields zero.
+ */
+export function activeNavPanel(page: Page, navId: string): Locator {
+  return page.locator(
+    `[data-nav-panel="${navId}"][data-nav-panel-state="active"]`
+  );
+}
+
+/** {@link gotoNav}, then wait for the shell to actually commit that view. */
+export async function gotoNavSettled(
+  page: Page,
+  navId: string,
+  timeoutMs = 30_000
+): Promise<Locator> {
+  await gotoNav(page, navId);
+  const panel = activeNavPanel(page, navId);
+  await expect(panel).toBeVisible({ timeout: timeoutMs });
+  return panel;
 }
 
 /**
@@ -449,89 +681,37 @@ export async function gotoHash(page: Page, hashPath: string): Promise<void> {
   }, hashPath);
 }
 
-/**
- * The first-launch onboarding overlay (PRD-532 / FEA-3999). Since the unified
- * GitHub-first account graduated to always-on, the Dashboard layers this modal
- * sign-in dialog over the (fully mounted) dashboard whenever the device is
- * signed out — which every E2E profile is. It intercepts pointer events, so any
- * spec that clicks a Dashboard control (e.g. the "All time" date-range toggle)
- * must first clear it. There is no in-flow skip (sign-in is required and E2E has
- * no Clerk), so — like seeding the tour-seen storage key to skip the first-run
- * reveal — the overlay is dismissed here for tests whose subject is the
- * dashboard underneath, not the onboarding gate.
- */
-export const ONBOARDING_OVERLAY_LABEL = "Set up your Closedloop account";
+/** How long a launch waits for the reloaded renderer to mount the shell. */
+const SHELL_SETTLE_MS = 60_000;
 
 /**
- * Dismiss the signed-out first-launch onboarding overlay so a spec can interact
- * with the Dashboard mounted behind it.
+ * The `localStorage` a profile needs to be past the guided onboarding takeover,
+ * holding a guest guided-onboarding run already at rest.
  *
- * The overlay is a React-rendered, auth-state-driven `<div role="dialog">` (see
- * `DashboardPage`): it mounts only once the renderer's auth pull resolves to
- * signed-out, which happens ASYNCHRONOUSLY after the Dashboard heading paints.
- * A one-shot `node.remove()` was racy on two fronts: it no-oped when the auth
- * pull had not resolved yet (overlay not mounted at call time, then mounted
- * later to intercept the click), and React re-inserted the node on any
- * subsequent re-render because the component's own dismissed-state was never
- * flipped. Either way the "All time" click hit the overlay and timed out.
+ * Production's own settled shape (`snapshot-service.ts` `settledOnboardingState`):
+ * `Ready` is non-blocking so the dialog never opens, and the history is
+ * load-bearing — `Ready` with an empty one restores as an unreachable state and
+ * recovers to a fresh `Welcome`, putting the takeover straight back up.
  *
- * Instead of fighting React's ownership of that node, inject a persistent
- * stylesheet that removes the overlay from the pointer-event/visibility layer
- * by `aria-label`. A `<style>` in `<head>` survives every React re-render, so
- * even if the overlay mounts (or re-mounts) after this call the Dashboard
- * controls behind it stay clickable. Idempotent and safe to call unconditionally
- * before driving Dashboard controls (a no-op for an already-onboarded profile,
- * which never mounts the overlay).
+ * Shared by the app's returning-install launch and the unprivileged sidecar
+ * tab (ISS-10943). Both apply the same guest record before renderer scripts,
+ * while leaving the dashboard first-run latch untouched.
  */
-export async function dismissDesktopOnboardingOverlay(
-  page: Page
-): Promise<void> {
-  await page.addStyleTag({
-    content: `[role="dialog"][aria-label="${ONBOARDING_OVERLAY_LABEL}"]{display:none !important;pointer-events:none !important;}`,
-  });
-  // Assert the neutralization held: an overlay already mounted at call time is
-  // now hidden, and an absent one (auth still resolving, or an already-onboarded
-  // profile) is trivially hidden — either way the style rule keeps it out of the
-  // pointer-event layer for the rest of the test, so a later mount cannot
-  // intercept Dashboard clicks.
-  const overlay = page.locator(
-    `[role="dialog"][aria-label="${ONBOARDING_OVERLAY_LABEL}"]`
-  );
-  await expect(overlay).toBeHidden();
-}
-
-/** The first-run landing's headline, and the CTA that enters the app past it. */
-export const GUEST_LANDING_HEADING = /Stop\s+burning\s+tokens\./;
-export const GUEST_LANDING_CTA = "Get Started";
-
-/**
- * Click through the first-run landing into the app.
- *
- * ISS-5112 Step F: with the `guest-onboarding` flag ON, a profile that has never
- * completed a first launch gets a full-window landing that REPLACES the app
- * shell — so a spec that seeds the flag against a fresh user-data dir sees no
- * Dashboard, no sidebar and no topbar until this runs. Profiles seeded through
- * a prior boot (the `seedOnboardedProfile` pattern) carry the onboarded storage
- * key and never see it.
- *
- * Deliberately STRICT rather than tolerant: it waits for the landing and fails
- * if it never arrives. The overlay helper above can afford to no-op on absence
- * because it only neutralizes something in the way; this one is the only route
- * into the app for the profiles that call it, so silently skipping would leave
- * the caller asserting against a screen that never loaded and blame the wrong
- * thing.
- */
-export async function enterFromGuestLanding(
-  page: Page,
-  timeoutMs: number
-): Promise<void> {
-  const cta = page.getByRole("button", { name: GUEST_LANDING_CTA });
-  await expect(cta).toBeVisible({ timeout: timeoutMs });
-  await cta.click();
-  // The landing unmounts on click; waiting for that here means a caller's next
-  // assertion cannot race the takeover still being on screen.
-  await expect(cta).toBeHidden({ timeout: timeoutMs });
-}
+export const RETURNING_INSTALL_LOCAL_STORAGE_SEED: Readonly<
+  Record<string, string>
+> = {
+  [desktopGuestGuidedOnboardingStorageKey]: JSON.stringify({
+    revision: 1,
+    state: {
+      accountProvider: null,
+      history: [OnboardingPhase.DashboardAvailable],
+      organizationEstablished: true,
+      phase: OnboardingPhase.Ready,
+      resuming: false,
+      version: ONBOARDING_STATE_VERSION,
+    },
+  }),
+};
 
 /**
  * Close Electron and ensure its child process exits before test teardown.
@@ -539,22 +719,68 @@ export async function enterFromGuestLanding(
  * Playwright can resolve `app.close()` while the spawned Electron process is
  * still alive. Leaving that child attached keeps the worker open until
  * Playwright's teardown timeout, even though every test assertion passed.
+ *
+ * REJECTS when the child outlives the bounded kill wait. `kill()` is a request
+ * and not a guarantee — an unreachable or already-reaped handle takes it and
+ * nothing dies — and `waitForProcessExit` resolves on its own timeout either
+ * way. Returning there would report a clean teardown over a surviving orphan,
+ * which is the silence {@link discardPartialLaunch} exists to break: its catch
+ * is unreachable while this resolves unconditionally.
+ *
+ * ISS-7654: `child` is the handle taken at LAUNCH, and re-reading it here via
+ * `app.process()` is what this parameter exists to prevent. That accessor
+ * round-trips Playwright's in-process dispatcher registry, whose `toImpl` does a
+ * bare `_dispatcherByGuid.get(guid)._object` — so against an app that already
+ * exited, and therefore has a disposed dispatcher, it throws `TypeError: Cannot
+ * read properties of undefined (reading '_object')` AFTER a passing body. Node
+ * keeps the launch-time handle and moves its `exitCode`/`signalCode` on exit, so
+ * grading the saved handle is what lets this tell "already exited" (resolve)
+ * from "failed to exit" (reject below) rather than dying before either verdict.
+ * `test/soak/soak-types.ts` holds the same handle against the same accessor.
+ *
+ * `groupId` is the launch-time {@link captureProcessGroupId} reading, for the
+ * same reason: by the time teardown runs, the leader may already be reaped and
+ * its group only knowable from what was recorded while it was alive.
  */
 export async function closeElectronApp(
-  app: ElectronApplication
+  app: ElectronApplication,
+  child: ChildProcess | undefined,
+  groupId: number | undefined
 ): Promise<void> {
-  const child = app.process();
   const closePromise = app.close();
   closePromise.catch(() => {});
 
   const closed = await resolvesWithin(closePromise, APP_CLOSE_TIMEOUT_MS);
   if (!(closed && hasProcessExited(child))) {
-    child?.kill("SIGKILL");
+    // The GROUP, not the leader alone — see `killProcessGroup` for why an
+    // orphaned Electron helper is what hangs Playwright's worker teardown.
+    //
+    // ISS-7683: the ELSE branch needs no reap, and that is an argument rather
+    // than an omission. `app.close()` resolving means Playwright's launcher
+    // finished its own `gracefullyClose`, which awaits the child's `"close"`
+    // event — and Node emits `"close"` only once the process has exited AND its
+    // stdio streams are closed. A surviving helper is only reachable here
+    // BECAUSE it still holds those inherited pipes, so a settled close is
+    // positive evidence that no such helper is left. Consistent with what was
+    // measured: the leaking spec never settled its close (`processClosed=false`
+    // through teardown), and a spec whose close settled exited clean.
+    killProcessGroup(child, groupId);
   }
   await waitForProcessExit(child, APP_KILL_TIMEOUT_MS);
+  if (!hasProcessExited(child)) {
+    throw new Error(
+      `[desktop-e2e] Electron process ${child?.pid ?? "unknown"} was still running ${APP_KILL_TIMEOUT_MS}ms after SIGKILL`
+    );
+  }
 }
 
-function hasProcessExited(child: ChildProcess | undefined): boolean {
+/**
+ * Whether Node has seen this child terminate. An absent child counts as exited.
+ *
+ * Exported so a suite asserting on teardown grades against the SAME notion of
+ * "exited" the harness itself acts on, rather than a second copy of the rule.
+ */
+export function hasProcessExited(child: ChildProcess | undefined): boolean {
   return !child || child.exitCode !== null || child.signalCode !== null;
 }
 
@@ -605,37 +831,20 @@ async function waitForProcessExit(
  * by focused main-process tests; these Electron flows assert renderer and local
  * database behavior and should not depend on external Socket.IO handshakes.
  *
- * Seed `agents: true` so specs that navigate to the Agents workspace keep
- * exercising real content. FEA-2923 registered the shared `"agents"` UI flag in
- * the desktop registry with a product default of OFF (opt-in Labs toggle). Once
- * a flag is in the registry, `DesktopFeatureFlagProvider` resolves it from the
- * persisted setting/registry default instead of the unpackaged-dev fallback, so
- * without this seed a fresh E2E profile hides AgentsView and specs such as
- * `agents.spec.ts` / `distribution-flow.spec.ts` time out. Kept in the E2E seed
- * (not the product default) so releases stay opt-in.
+ * The patch itself lives in {@link E2E_DESKTOP_SETTINGS_SEED} — see that module
+ * for why, and for the per-key rationale.
+ *
+ * ISS-8753: the FLAG subset of that patch is seeded a second time, as an
+ * ASSIGNMENT, and only that write reaches a renderer gate:
+ * `DesktopFeatureFlagProvider` resolves every key from the PostHog assignment
+ * and fails closed in every build, dev included, so an unseeded gate is closed.
+ * The `desktop-settings.json` write survives for main-process
+ * `SettingsStore.getFlag` readers. Both writes come off the one
+ * {@link E2E_DESKTOP_FEATURE_FLAG_SEED} literal, so they cannot drift.
  */
 function seedE2eDesktopSettings(userDataDir: string): void {
-  mergeDesktopSettings(userDataDir, {
-    agents: true,
-    // ISS-5310 (ISS-4779 closed-by-default): `agentsNav` is the per-item gate
-    // over the Agents destination, which moved back into Labs and ships OFF.
-    // Distinct from the `agents` flag above — that one gates the workspace's
-    // CONTENT, this one gates whether the nav entry and `#/agents` exist at all.
-    // Seeded for the same reason as `labsNav` below: these specs assert the
-    // views, and the gate itself is covered by
-    // `navigation/__tests__/agents-labs-gate.test.tsx`.
-    agentsNav: true,
-    cloudConnectionEnabled: false,
-    // ISS-5037 (ISS-4779 closed-by-default): `labsNav` is the container gate
-    // over the whole Labs sidebar section, and it ships OFF. Every Labs
-    // DESTINATION — Insights, Packs, Plans, Audit, Help, and everything
-    // FOCUS_MODE folds in — is unreachable until a user opts in from the
-    // application menu, so a harness that did not opt in could only ever smoke
-    // the "turned off" panel. Opt in here, once, for the same reason `agents`
-    // is seeded: these specs assert the VIEWS, and the gate itself is covered by
-    // `app-shell-routing.test.tsx` + `feature-flags-shared-ui.test.ts`.
-    labsNav: true,
-  });
+  mergeDesktopSettings(userDataDir, E2E_DESKTOP_SETTINGS_SEED);
+  mergeE2eFeatureFlagAssignment(userDataDir, E2E_DESKTOP_FEATURE_FLAG_SEED);
 }
 
 /**
@@ -650,35 +859,52 @@ function mergeDesktopSettings(
   patch: Record<string, unknown>
 ): void {
   const settingsPath = path.join(userDataDir, DESKTOP_SETTINGS_FILE);
-  const raw = fs.existsSync(settingsPath)
-    ? JSON.parse(fs.readFileSync(settingsPath, "utf8"))
-    : {};
   fs.writeFileSync(
     settingsPath,
-    JSON.stringify({ ...raw, ...patch }, null, 2),
+    JSON.stringify({ ...readDesktopSettings(userDataDir), ...patch }, null, 2),
     "utf8"
   );
 }
 
+/** The launch profile's persisted settings, or `{}` when it has none yet. */
+function readDesktopSettings(userDataDir: string): Record<string, unknown> {
+  const settingsPath = path.join(userDataDir, DESKTOP_SETTINGS_FILE);
+  return fs.existsSync(settingsPath)
+    ? JSON.parse(fs.readFileSync(settingsPath, "utf8"))
+    : {};
+}
+
 /**
- * Enable registered desktop Labs flags for ONE spec.
+ * Open desktop feature gates for ONE spec.
  *
- * Same mechanism as {@link seedE2eDesktopSettings} — a registered flag resolves
- * from the persisted setting, so a fresh E2E profile sees its product default
- * (usually OFF) unless it is persisted here. This variant is per-spec: call it
- * from `launchDesktopApp`'s `beforeLaunch`, which runs AFTER the standard seed,
- * so `cloudConnectionEnabled` / `agents` are preserved and only the named flags
- * are added.
+ * A fresh E2E profile sees every gate at its product default (usually OFF)
+ * unless it is seeded here. Per-spec by design: call it from
+ * `launchDesktopApp`'s `beforeLaunch`, which runs AFTER the standard seed, so
+ * `cloudConnectionEnabled` / `agentsNav` are preserved and only the named flags
+ * are added. Deliberately NOT folded into `seedE2eDesktopSettings`: a flag
+ * seeded there flips for all specs, whereas this lets a single spec opt a named
+ * flag ON without changing the product default every other spec receives.
  *
- * Deliberately NOT folded into `seedE2eDesktopSettings`: a flag seeded there
- * flips for all specs, whereas this per-spec variant lets a single spec opt a
- * named flag ON without changing the product default every other spec receives.
+ * ISS-8753: TWO WRITES, ONE CALL, and ONLY ONE OF THEM REACHES THE RENDERER.
+ * `mergeE2eFeatureFlagAssignment` is the write that opens a renderer gate —
+ * `DesktopFeatureFlagProvider` resolves every key from the signed-in user's
+ * PostHog assignment, which an E2E launch has no account for, and the harness
+ * seed is what stands in. The `mergeDesktopSettings` write no longer feeds any
+ * renderer gate at all; it survives because MAIN still reads
+ * `SettingsStore.getFlag` for its own decisions (the collectors), so a spec
+ * that needs one of those needs the
+ * persisted value too. A spec asserting a RENDERED gate is asserting the
+ * assignment half; see `labs-flag-seeding-contract.spec.ts`, which pins that
+ * half on its own so a regression to the retired registry path cannot pass.
+ *
+ * The signature is unchanged, so every calling spec keeps working untouched.
  */
 export function seedDesktopFeatureFlags(
   userDataDir: string,
   flags: Record<string, boolean>
 ): void {
   mergeDesktopSettings(userDataDir, flags);
+  mergeE2eFeatureFlagAssignment(userDataDir, flags);
 }
 
 /**
@@ -693,6 +919,13 @@ export function seedDesktopFeatureFlags(
  * writes as `false`), treats the profile as legacy, derives a level from those
  * flags, and re-persists the derived booleans — silently undoing a partial seed
  * such as `transcriptSyncEnabled: true` on its own.
+ *
+ * That hazard covers the four values the migration WRITES — `dataSyncLevel` and
+ * the three connectivity booleans. `syncObservabilityTier` is not one of them: a
+ * persisted tier survives the re-derivation untouched, because the migration
+ * guards its only tier write on the key being ABSENT. Seeding a tier alone is
+ * therefore coherent (the standard E2E seed does exactly that), while seeding a
+ * derived boolean alone is not.
  */
 export function seedDesktopSyncSettings(
   userDataDir: string,
@@ -706,13 +939,45 @@ export function seedDesktopSyncSettings(
  * `webAppOrigin`, to launch the app pointed at a stage profile. Same
  * read-merge-write as {@link seedDesktopFeatureFlags}; call it from
  * `launchDesktopApp`'s `beforeLaunch` so the standard seed's
- * `cloudConnectionEnabled` / `agents` are preserved.
+ * `cloudConnectionEnabled` / `agentsNav` are preserved.
  */
 export function seedDesktopSettings(
   userDataDir: string,
   patch: Record<string, unknown>
 ): void {
   mergeDesktopSettings(userDataDir, patch);
+}
+
+/**
+ * Seed `patch` as a DEFAULT: write only the keys the profile does not already
+ * carry, and leave every key it does carry exactly as it is.
+ *
+ * ISS-10554. The launcher-level seed it exists for answers a question a FRESH
+ * profile has never been asked, and a settings key's ABSENCE is what the
+ * production boot migrations read as "never chose" — so seeding on absence is
+ * the same predicate the app itself uses, not a harness special case. An
+ * unconditional {@link seedDesktopSettings} would overwrite the answer a launch
+ * RECORDED, which is the state a relaunching spec is usually asserting survived:
+ * `guided-onboarding-settings-sync.spec.ts` saves Off (`syncObservabilityTier:
+ * "local"`, which `legacyFlagsToDataSyncLevel` pins to Off against the cloud
+ * profile's `cloudConnectionEnabled: true`) and relaunches WITHOUT restating it,
+ * so a clobbered `"full"` reconciles that same profile to Redacted instead.
+ *
+ * Not a substitute for {@link seedDesktopSettings}: a caller stating what a
+ * launch must observe still overrides, which is how a spec's own `beforeLaunch`
+ * keeps winning over a launcher default.
+ */
+export function seedDesktopSettingsDefaults(
+  userDataDir: string,
+  patch: Record<string, unknown>
+): void {
+  const existing = readDesktopSettings(userDataDir);
+  const absent = Object.fromEntries(
+    Object.entries(patch).filter(([key]) => !(key in existing))
+  );
+  if (Object.keys(absent).length > 0) {
+    mergeDesktopSettings(userDataDir, absent);
+  }
 }
 
 /** The Topbar breadcrumb nav. Scope breadcrumb queries to it so the sidebar's
@@ -742,7 +1007,37 @@ export async function openDetailFromList(
 ): Promise<void> {
   const targetRow = rowLink.first();
   await expect(targetRow).toBeVisible({ timeout: 30_000 });
-  await targetRow.click();
+  // Narrow list pages have fixed-height bands above and below the row scroller.
+  // Center the link within the grid's own scroll band so Playwright does not
+  // align it under the metric or pagination band while satisfying "in view".
+  await targetRow.evaluate((element) => {
+    const scroller = element.closest('[data-testid="grid-table-scroll-band"]');
+    if (!(scroller instanceof HTMLElement)) {
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+      return;
+    }
+    const elementRect = element.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    scroller.scrollTop +=
+      elementRect.top -
+      scrollerRect.top -
+      scrollerRect.height / 2 +
+      elementRect.height / 2;
+  });
+  try {
+    await targetRow.click({ timeout: 5000 });
+  } catch (error) {
+    const href = await targetRow.getAttribute("href");
+    if (!href?.startsWith("#/")) {
+      throw error;
+    }
+    await targetRow.evaluate((element) => {
+      if (!(element instanceof HTMLElement)) {
+        throw new Error("list detail link is not an HTML element");
+      }
+      element.click();
+    });
+  }
   await expect(breadcrumbParentLink(page, breadcrumbParentName)).toBeVisible({
     timeout: 30_000,
   });
@@ -805,7 +1100,7 @@ export async function waitForLocalAgentComponentList(
  * Widen the current surface's `DateRangeFilter` to "All time" so a past-dated
  * seed is in range independent of the run clock.
  *
- * Promoted here from `all-views-smoke-seeded.spec.ts` (wongk, #5099 review) —
+ * Promoted here from `all-views-smoke-seeded.spec.ts` (whitlockk, #5099 review) —
  * every seeded spec that widens the range needs the hardened form, and a copy of
  * the bare click is the flake this docstring describes.
  *
@@ -813,22 +1108,320 @@ export async function waitForLocalAgentComponentList(
  * their range to the SAME persisted store (`useSharedDateRange("desktop")` →
  * localStorage `shared:date-range:desktop`). Once the Dashboard iteration widens
  * it, the Sessions and Branches toolbars mount with "All time" ALREADY active
- * (`aria-checked="true"`). A blind `.click()` on that already-selected toggle is
- * a no-op for the range but still races the surface's first paint — that is what
- * timed out on Branches: the toggle resolved but was not yet visible/stable, and
- * the redundant click waited out the full 30s. So: wait for the toggle to be
- * visible, then click it ONLY when it is not already the selected range. When it
- * is already "All time" this returns after the visibility wait without a click,
- * removing the race entirely.
+ * (`aria-checked="true"`), and this returns without a click.
  */
 export async function widenToAllTime(page: Page): Promise<void> {
-  const allTime = page.locator('[aria-label="All time"]:visible').first();
-  await expect(allTime).toBeVisible({ timeout: 15_000 });
-  if ((await allTime.getAttribute("aria-checked")) === "true") {
+  await selectDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
+}
+
+/**
+ * The Electron switch that points a launch at its isolated profile. Shared so
+ * a reader of the emitted argv parses the same spelling the launchers emit.
+ */
+export const USER_DATA_DIR_ARG = "--user-data-dir=";
+
+/** How a launcher spawns Electron. See {@link LaunchOptions.launchElectron}. */
+export type ElectronLauncher = typeof electron.launch;
+
+/**
+ * ISS-6875: wrapped, never bare — a launch death carries no stderr and no exit
+ * code, so without the marker the intake blames whichever spec was running.
+ *
+ * ISS-6929 collapsed both launchers onto {@link launchGuardedElectronApp}, so
+ * this is the ONE place either of them reaches Playwright. The marker sits here
+ * rather than at each launcher for the same reason the guard does: a second copy
+ * is what lets one of them go unwrapped.
+ */
+const defaultElectronLauncher: ElectronLauncher = (launchOptions = {}) =>
+  launchElectronOrExplain(launchOptions, (prepared) =>
+    electron.launch(prepared)
+  );
+
+/**
+ * ISS-6929: tear down a launch that came up but never produced a usable window.
+ *
+ * `electron.launch` resolving means the Electron process — and, for
+ * `launchDesktopApp`, the `mkdtemp` profile it was pointed at — already exist.
+ * A rejection anywhere between there and a usable page therefore orphans both
+ * for the rest of the run, and the suite runs `workers: 2` against fixed
+ * loopback ports, so an orphan is not merely untidy.
+ *
+ * Runs the launcher's OWN `cleanup`, which is already bounded at 5s close + 5s
+ * kill — a second teardown would be a second thing to keep bounded.
+ *
+ * A teardown failure must not REPLACE the launch failure — the caller re-throws
+ * what actually killed the launch, and that error is the whole diagnosis
+ * (ISS-6875 hangs the `harness_launch_failure` marker and Playwright's own
+ * message on it). But it must not vanish either: a close/kill that failed means
+ * the orphan this function exists to prevent is still running, which is the one
+ * thing a reader of the run needs to know. So it is reported and not re-thrown.
+ */
+export async function discardPartialLaunch(
+  cleanup: () => Promise<void>
+): Promise<void> {
+  await cleanup().catch((teardownError: unknown) => {
+    console.warn(
+      "[desktop-e2e] partial-launch teardown failed; an Electron process or temp profile may have survived:",
+      teardownError
+    );
+  });
+}
+
+/**
+ * What a caller hands {@link launchGuardedElectronApp}.
+ *
+ * `args`/`env` are taken from the launcher's OWN parameter type rather than
+ * restated, so a launch option cannot mean one thing here and another to
+ * Playwright.
+ */
+export type GuardedLaunchOptions = Pick<
+  NonNullable<Parameters<ElectronLauncher>[0]>,
+  "args" | "env"
+> & {
+  /** Injected only by tests — see {@link LaunchOptions.launchElectron}. */
+  launchElectron?: ElectronLauncher;
+  /** Seeding that must happen before the spawn, inside the guard. */
+  beforeLaunch?: () => void;
+  /** Teardown the caller owns beyond closing the app, e.g. its temp profile. */
+  afterClose?: () => void;
+};
+
+/** A launched app with its first window and the teardown that owns both. */
+export type GuardedLaunch = {
+  app: ElectronApplication;
+  page: Page;
+  pageErrors: Error[];
+  consoleErrors: string[];
+  cleanup: () => Promise<void>;
+};
+
+/**
+ * ISS-6929: spawn Electron and take its first window with ONE teardown spanning
+ * both steps — the only path either desktop-e2e launcher takes to a page.
+ *
+ * The window between the two is where the leak lived: `electron.launch`
+ * resolving means a real Electron process exists, so a rejection before a usable
+ * page orphans it for the rest of the run, on a suite at `workers: 2`. Both
+ * launchers route through here rather than carrying a copy of the guard, because
+ * two copies is what let one of them go unguarded in the first place — and the
+ * `launchElectron` seam is what lets the node lane drive this against a real
+ * spawned process, so the invariant is covered by behavior rather than by a
+ * structural claim about where a `try` sits.
+ *
+ * `cleanup` is what the caller gets back, so its own `finally` and this guard
+ * tear down exactly the same things.
+ */
+export async function launchGuardedElectronApp(
+  options: GuardedLaunchOptions
+): Promise<GuardedLaunch> {
+  let app: ElectronApplication | undefined;
+  let child: ChildProcess | undefined;
+  let groupId: number | undefined;
+  // ISS-7731 backstop. Both shipped launchers apply the isolation themselves,
+  // which is what handles the seeded-corpus override correctly; this is the
+  // choke point every path to Electron passes through, so it closes the hole a
+  // THIRD launcher — or a caller reaching this directly — would otherwise open.
+  // It only fills homes left AMBIENT, so it can never clobber a home a caller
+  // deliberately pointed at a seeded corpus, and it creates nothing when the
+  // caller already isolated everything.
+  const ambient = ambientHarnessHomes(options.env);
+  const backstopRoot =
+    ambient.length > 0
+      ? fs.mkdtempSync(path.join(os.tmpdir(), "desktop-e2e-homes-backstop-"))
+      : undefined;
+  const backstopHomes =
+    backstopRoot === undefined
+      ? {}
+      : Object.fromEntries(
+          Object.entries(isolatedHarnessHomes(backstopRoot)).filter(([key]) =>
+            ambient.includes(key)
+          )
+        );
+  const cleanup = async (): Promise<void> => {
+    try {
+      if (app) {
+        await closeElectronApp(app, child, groupId);
+        if (!child) {
+          // ISS-7654: the launch-time capture is the ONLY handle teardown gets,
+          // and `hasProcessExited` grades an absent child as exited — so
+          // resolving here would claim an exit nobody observed. Reaching this
+          // means `app.process()` threw on a just-launched app; the app was
+          // still closed above, but whether it died is unknown, and
+          // `discardPartialLaunch` turns this into the surviving-orphan warning
+          // rather than a silent clean teardown.
+          throw new Error(
+            "[desktop-e2e] no Electron child handle was captured at launch; exit could not be verified"
+          );
+        }
+      }
+    } finally {
+      // In a `finally` so a close/kill failure cannot strand whatever the caller
+      // owns; `closeElectronApp` is already bounded at 5s close + 5s kill.
+      if (backstopRoot !== undefined) {
+        fs.rmSync(backstopRoot, { recursive: true, force: true });
+      }
+      options.afterClose?.();
+    }
+  };
+
+  try {
+    options.beforeLaunch?.();
+    app = await (options.launchElectron ?? defaultElectronLauncher)({
+      args: options.args,
+      env: { ...options.env, ...backstopHomes },
+    });
+    // ISS-7654: the ONE moment the app is known to still have a live dispatcher.
+    // Teardown runs after the body, by which time the app may already have gone,
+    // and asking for the handle then throws instead of returning it.
+    child = app.process();
+    // ISS-7697: and the same moment is the only one that can answer the group
+    // question — teardown may run against a leader the OS has already reaped,
+    // whose surviving helper is exactly what teardown has to reach.
+    groupId = captureProcessGroupId(child);
+
+    const page = await firstWindowOrExplainExit(app.firstWindow(), child);
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (error) => {
+      pageErrors.push(error);
+    });
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    await page.waitForLoadState("domcontentloaded");
+
+    return { app, page, pageErrors, consoleErrors, cleanup };
+  } catch (error) {
+    await discardPartialLaunch(cleanup);
+    throw error;
+  }
+}
+
+/**
+ * The `DateRangeFilter` options these specs drive, by accessible name. Every
+ * desktop surface renders the same toggle group, so the label IS the contract
+ * a spec selects on.
+ */
+export const DesktopDateRangeLabel = {
+  AllTime: "All time",
+  Last7Days: "Last 7 days",
+  Last30Days: "Last 30 days",
+} as const;
+export type DesktopDateRangeLabel =
+  (typeof DesktopDateRangeLabel)[keyof typeof DesktopDateRangeLabel];
+
+/** How long the toggle gets to survive a route commit before we give up. */
+const DATE_RANGE_SETTLE_MS = 15_000;
+
+/**
+ * Click a `DateRangeFilter` option on whichever surface is on screen.
+ *
+ * The drop-in replacement for a bare
+ * `page.locator('[aria-label="…"]:visible').click()`, and the reason none of
+ * those survive in this suite. Locator resolution and actionability are two
+ * separate steps, and the keep-alive route body commits on a DEFERRED render
+ * (`useDeferredValue` in `App.tsx`, whose non-active branch is `hidden h-full`)
+ * while the Topbar breadcrumb follows the IMMEDIATE nav id. So a spec that
+ * navigates and then drives a control can resolve the OUTGOING view's copy while
+ * it is still visible, and hold that handle while the deferred commit gives it
+ * `display:none`. Playwright re-resolves on detach but not on "element is not
+ * visible", so the handle then sits at a 0×0 box for the whole 30s action
+ * timeout — the failure ISS-7995 hit on ten specs across two CI runs.
+ *
+ * Choosing and clicking inside ONE browser task is what closes that window;
+ * `responsive-pages.spec.ts` documents the same technique.
+ *
+ * The cost of that trade: landing on the OUTGOING view's copy is harmless for
+ * the resulting RANGE — every surface binds the one `useSharedDateRange`
+ * ("desktop") store — but not for the reads that range change provokes, because
+ * the outgoing view refetches too. So a spec whose subject is the request COUNT
+ * across a range transition drives the control itself instead;
+ * `branches-placeholder-data.spec.ts` is the one that does.
+ *
+ * That exclusion is NOT what makes such a spec sound, and ISS-8044 is the
+ * correction: it fails with this helper or without it whenever a
+ * `desktop:db:changed` flush lands mid-count, because the flush invalidates the
+ * range cache the count is pinning. Driving the control directly removes one
+ * source of extra reads; `waitForLiveBridgeQuiescence` removes the other, and a
+ * request-count spec needs both.
+ */
+export async function clickDesktopDateRange(
+  page: Page,
+  label: DesktopDateRangeLabel
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.locator(`[aria-label="${label}"]`).evaluateAll((elements) => {
+          const onScreen = elements.find(
+            (element) => element.getClientRects().length > 0
+          );
+          if (!(onScreen instanceof HTMLElement)) {
+            return false;
+          }
+          onScreen.click();
+          return true;
+        }),
+      { timeout: DATE_RANGE_SETTLE_MS }
+    )
+    .toBe(true);
+}
+
+/**
+ * {@link clickDesktopDateRange} plus the idempotence and the proof: skip the
+ * click when the option is already the selected range, and assert it is selected
+ * afterwards when it was not.
+ */
+export async function selectDesktopDateRange(
+  page: Page,
+  label: DesktopDateRangeLabel
+): Promise<void> {
+  const option = page.locator(`[aria-label="${label}"]:visible`).first();
+  await expect(option).toBeVisible({ timeout: DATE_RANGE_SETTLE_MS });
+  if ((await option.getAttribute("aria-checked")) === "true") {
     return;
   }
-  await allTime.click();
-  await expect(allTime).toHaveAttribute("aria-checked", "true", {
-    timeout: 15_000,
+  await clickDesktopDateRange(page, label);
+  await expect(
+    page.locator(`[aria-label="${label}"]:visible`).first()
+  ).toHaveAttribute("aria-checked", "true", {
+    timeout: DATE_RANGE_SETTLE_MS,
   });
+}
+
+/** The Settings v2 shell's own handle — the modal Settings is on desktop. */
+export const SETTINGS_SHELL_TEST_ID = "settings-shell";
+
+/**
+ * Open Settings and wait for the modal to mount, returning the shell.
+ *
+ * ISS-10195: Settings stopped being a nav PAGE when the workspace-experience
+ * gate retired. It is the modal `DesktopSettingsModalHost` presents over the
+ * last nav page, so there is no Settings breadcrumb in the Topbar, no
+ * `[data-nav-panel="settings"]`, and no tab strip — `gotoNav(page, "settings")`
+ * followed by `locator('header').getByText('Settings')` resolves nothing. Every
+ * spec that needs Settings comes through here instead of re-deriving that.
+ *
+ * `panel` and `intent` are the `SettingsPanelId` / `SettingsPanelIntent` wire
+ * values, taken as plain strings so this module keeps its `@repo/api` import
+ * surface — specs pass the imported consts.
+ */
+export async function openSettingsPanel(
+  page: Page,
+  options: { panel?: string; intent?: string; timeoutMs?: number } = {}
+): Promise<Locator> {
+  const params = new URLSearchParams();
+  if (options.panel !== undefined) {
+    params.set("panel", options.panel);
+  }
+  if (options.intent !== undefined) {
+    params.set("intent", options.intent);
+  }
+  const query = params.toString();
+  await gotoHash(page, query.length === 0 ? "/settings" : `/settings?${query}`);
+  const shell = page.getByTestId(SETTINGS_SHELL_TEST_ID);
+  await expect(shell).toBeVisible({ timeout: options.timeoutMs ?? 30_000 });
+  return shell;
 }

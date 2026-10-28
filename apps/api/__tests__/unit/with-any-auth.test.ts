@@ -1,3 +1,4 @@
+import { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -32,6 +33,7 @@ vi.mock("@repo/auth/desktop-session-jwt", () => ({
   isDesktopSessionToken: isDesktopSessionTokenMock,
 }));
 
+import type { RequiredApiKeyScopes } from "@/lib/auth/api-key-scopes";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 
 function createRequest(method: string, authorization?: string) {
@@ -104,6 +106,80 @@ describe("withAnyAuth", () => {
 
     expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
       requiredScopes: ["write"],
+    });
+  });
+
+  // ISS-11792: the method default is a per-field fallback. An options object
+  // that carries no `requiredScopes` must not drop it and check no scope.
+  it("falls back to the method default when options carry no requiredScopes", async () => {
+    const wrapped = withAnyAuth(async () => ({}) as never, {});
+    await wrapped(
+      createRequest("POST", "Bearer sk_live_test") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
+      requiredScopes: [ApiKeyScope.Write],
+    });
+  });
+
+  it.each([
+    ["GET", ApiKeyScope.Read],
+    ["HEAD", ApiKeyScope.Read],
+    ["DELETE", ApiKeyScope.Delete],
+    ["PATCH", ApiKeyScope.Write],
+  ])(
+    "falls back to the method default for %s when requiredScopes is undefined",
+    async (method, expectedScope) => {
+      const wrapped = withAnyAuth(async () => ({}) as never, {
+        requiredScopes: undefined,
+      });
+      await wrapped(
+        createRequest(method, "Bearer sk_live_test") as never,
+        { params: Promise.resolve({}) } as never
+      );
+
+      expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
+        requiredScopes: [expectedScope],
+      });
+    }
+  );
+
+  it("refuses an empty requiredScopes when the wrapper is built", () => {
+    // An untyped caller: parsed JSON is `any`, so the compile-time check
+    // cannot see it and the runtime guard has to.
+    const untypedOptions = JSON.parse('{"requiredScopes":[]}');
+
+    expect(() =>
+      withAnyAuth(async () => ({}) as never, untypedOptions)
+    ).toThrow("requiredScopes must not be empty");
+    expect(withApiKeyAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty requiredScopes literal at compile time and at runtime", () => {
+    const build = () =>
+      withAnyAuth(async () => ({}) as never, {
+        // @ts-expect-error ISS-11792: an empty scope list must not type-check.
+        requiredScopes: [],
+      });
+
+    expect(build).toThrow("requiredScopes must not be empty");
+  });
+
+  it("keeps the scopes it was built with when the caller empties its array later", async () => {
+    const routeScopes: RequiredApiKeyScopes = [ApiKeyScope.Write];
+    const wrapped = withAnyAuth(async () => ({}) as never, {
+      requiredScopes: routeScopes,
+    });
+    routeScopes.pop();
+
+    await wrapped(
+      createRequest("POST", "Bearer sk_live_test") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
+      requiredScopes: [ApiKeyScope.Write],
     });
   });
 

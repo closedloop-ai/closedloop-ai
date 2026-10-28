@@ -5,8 +5,9 @@
  */
 
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { test } from "node:test";
+import { ImportHealthEvent } from "@closedloop-ai/telemetry-contract/app";
+import { test } from "vitest";
+import { importHealthEventForMaterializeRejection } from "../src/main/transcript-sync/opencode-materialize-outcome.js";
 import { runOpencodeMaterializePass } from "../src/main/transcript-sync/opencode-materialize-pass.js";
 import {
   createBoundedWorkerLogBuffer,
@@ -21,6 +22,7 @@ import {
   createUtilityProcessOpencodeMaterializeRunner,
   type OpencodeMaterializeWorkerProcess,
 } from "../src/main/transcript-sync/utility-process-opencode-materialize-runner.js";
+import { fakeOpencodeMaterializeWorkerFork } from "./helpers/opencode-materialize-worker-fixtures.js";
 
 const STATE_DIR = "/state";
 const MATERIALIZE_BLEW_UP = /materialize blew up/;
@@ -29,35 +31,25 @@ const EXITED_CODE_1 = /exited with code 1/;
 const TIMED_OUT = /timed out/;
 const FATAL_ERROR = /FatalError at somewhere/;
 const WORKER_STOPPED = /worker stopped/;
+const FORK_FAILED = /fork failed/;
+const POST_MESSAGE_FAILED = /post failed/;
 
 const MATERIALIZED = OpencodeMaterializeWorkerResponseType.Materialized;
 const FAILED = OpencodeMaterializeWorkerResponseType.Failed;
 
-class FakeUtilityProcess extends EventEmitter {
-  readonly messages: Array<{ type: string; stateDir: string }> = [];
-  killed = false;
-  postMessage(message: { type: string; stateDir: string }): void {
-    this.messages.push(message);
-  }
-  kill(): void {
-    this.killed = true;
-  }
-}
-
 function makeRunner(options?: {
   log?: (message: string) => void;
   materializeTimeoutMs?: number;
+  postMessageError?: unknown;
 }) {
-  const children: FakeUtilityProcess[] = [];
+  const { children, forkWorker } = fakeOpencodeMaterializeWorkerFork(
+    options?.postMessageError
+  );
   const runner = createUtilityProcessOpencodeMaterializeRunner({
     stateDir: STATE_DIR,
     log: options?.log,
     materializeTimeoutMs: options?.materializeTimeoutMs,
-    forkWorker: (): OpencodeMaterializeWorkerProcess => {
-      const child = new FakeUtilityProcess();
-      children.push(child);
-      return child;
-    },
+    forkWorker,
   });
   return { runner, children };
 }
@@ -99,6 +91,39 @@ test("runner single-flights overlapping passes onto one worker", async () => {
   assert.equal(children.length, 2);
   children[1]!.emit("message", { type: MATERIALIZED, logs: [] });
   await third;
+});
+
+test("runner clears the single-flight latch after a synchronous fork failure", async () => {
+  const { children, forkWorker } = fakeOpencodeMaterializeWorkerFork();
+  let forkAttempts = 0;
+  const runner = createUtilityProcessOpencodeMaterializeRunner({
+    stateDir: STATE_DIR,
+    forkWorker: (
+      modulePath: string,
+      args: string[],
+      forkOptions: { serviceName: string }
+    ): OpencodeMaterializeWorkerProcess => {
+      forkAttempts += 1;
+      if (forkAttempts === 1) {
+        throw new Error("fork failed");
+      }
+      return forkWorker(modulePath, args, forkOptions);
+    },
+  });
+
+  await assert.rejects(runner.materialize(), FORK_FAILED);
+
+  const retry = runner.materialize();
+  assert.equal(forkAttempts, 2);
+  children[0]!.emit("message", { type: MATERIALIZED, logs: [] });
+  await retry;
+});
+
+test("runner rejects and kills the child when postMessage throws", async () => {
+  const { runner, children } = makeRunner({ postMessageError: "post failed" });
+
+  await assert.rejects(runner.materialize(), POST_MESSAGE_FAILED);
+  assert.equal(children[0]!.killed, true);
 });
 
 test("runner rejects on a worker failure response and still replays its logs", async () => {
@@ -286,4 +311,79 @@ test("bounded log buffer adds no notice when nothing was dropped", () => {
   const buffer = createBoundedWorkerLogBuffer();
   buffer.push("only line");
   assert.deepEqual(buffer.drain(), ["only line"]);
+});
+
+/** The value a pass rejected with, so its classification can be asserted. */
+async function rejectionOf(pass: Promise<void>): Promise<unknown> {
+  try {
+    await pass;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the materialize pass to reject");
+}
+
+test("ISS-8600: a timeout and a worker failure classify differently, and stop() classifies as nothing", async () => {
+  const timeoutRunner = makeRunner({ materializeTimeoutMs: 20 });
+  assert.equal(
+    importHealthEventForMaterializeRejection(
+      await rejectionOf(timeoutRunner.runner.materialize())
+    ),
+    ImportHealthEvent.MaterializeTimedOut,
+    "a pass that outran its budget is not the same fleet problem as a broken one"
+  );
+
+  const exitRunner = makeRunner();
+  const exitPass = exitRunner.runner.materialize();
+  exitRunner.children[0]?.emit("exit", 1);
+  assert.equal(
+    importHealthEventForMaterializeRejection(await rejectionOf(exitPass)),
+    ImportHealthEvent.MaterializeFailed
+  );
+
+  const errorRunner = makeRunner();
+  const errorPass = errorRunner.runner.materialize();
+  errorRunner.children[0]?.emit("error", "FatalError", "somewhere", "report");
+  assert.equal(
+    importHealthEventForMaterializeRejection(await rejectionOf(errorPass)),
+    ImportHealthEvent.MaterializeFailed
+  );
+
+  const failedRunner = makeRunner();
+  const failedPass = failedRunner.runner.materialize();
+  failedRunner.children[0]?.emit("message", {
+    type: FAILED,
+    logs: [],
+    message: "materialize blew up",
+  });
+  assert.equal(
+    importHealthEventForMaterializeRejection(await rejectionOf(failedPass)),
+    ImportHealthEvent.MaterializeFailed
+  );
+
+  // THE ONE THAT CARRIES THIS TICKET. `stopMaterialize` runs on the ISS-4903
+  // shutdown path, so a clean quit with a pass in flight settles through the
+  // very same rejection path every case above does. A classifier that read the
+  // rejection alone -- or matched on its message -- would emit
+  // `materialize_failed` on every desktop quit, a fleet-wide false alarm on the
+  // exact liveness signal this ticket buys.
+  const stopRunner = makeRunner();
+  const stopPass = stopRunner.runner.materialize();
+  stopRunner.runner.stop();
+  assert.equal(
+    importHealthEventForMaterializeRejection(await rejectionOf(stopPass)),
+    undefined,
+    "a deliberate teardown is not a failure and must report nothing"
+  );
+});
+
+test("ISS-8600: an unreasoned rejection is classified as a failure, not silence", () => {
+  // Fail-safe, and not a guess: `stop()` is the only producer of the silent
+  // arm and it always constructs a reasoned error, so a bare rejection is a
+  // pass that genuinely ended without fresh projections. Defaulting the other
+  // way would let any future throw silently mute the signal.
+  assert.equal(
+    importHealthEventForMaterializeRejection(new Error("something else")),
+    ImportHealthEvent.MaterializeFailed
+  );
 });

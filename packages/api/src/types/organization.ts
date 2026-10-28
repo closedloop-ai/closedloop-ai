@@ -22,21 +22,6 @@ export type Organization = {
    * current API always sends an explicit boolean; it never sends `null`.
    */
   searchIncludeTranscripts?: boolean;
-  /**
-   * Org-wide privacy gate for local agent-session sync (FEA-4169, ISS-4537).
-   * Default false — this org's locally-captured agent-session data (metadata
-   * batches, transcripts, trace-comment sync) is only allowed to sync to the
-   * ClosedLoop cloud when an org admin opts in. The server fail-closed-enforces
-   * the same denial at every ingest boundary (`isOrgSessionSyncPolicyEnabled`);
-   * this field exposes the current state so the admin toggle can reflect it.
-   *
-   * Optional for deploy skew (ISS-4624), on the same terms as
-   * `searchIncludeTranscripts` above: absent means "unknown", never `false`.
-   * Server-side enforcement does not read this field — it reads the column
-   * directly — so an absent field only ever degrades the admin UI to an
-   * honest unavailable state, never the fail-closed ingest denial.
-   */
-  sessionSyncPolicyEnabled?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -55,6 +40,4 @@ export type UpdateOrganizationInput = {
   active?: boolean;
   /** Toggle the transcript-content search gate (FEA-3930). Admin-only. */
   searchIncludeTranscripts?: boolean;
-  /** Toggle the org session-sync privacy policy (FEA-4169). Admin-only. */
-  sessionSyncPolicyEnabled?: boolean;
 };

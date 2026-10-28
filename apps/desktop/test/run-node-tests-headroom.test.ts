@@ -23,8 +23,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { test } from "vitest";
 import {
   appendStepSummary,
   classifyRunnerOutcome,
@@ -119,7 +119,7 @@ test("a run at the threshold does not warn", () => {
 });
 
 test("the printed percentage never contradicts the warn decision at the boundary", () => {
-  // wongk review: the decision used to run off the unrounded fraction while the
+  // whitlockk review: the decision used to run off the unrounded fraction while the
   // human read a rounded percent, so a warning run and a silent run could both
   // print "75%". Both now derive from the same whole percent, which makes that
   // pair impossible — the silent side shows 75%, the warning side shows 76%.
@@ -156,16 +156,22 @@ test("the threshold sits above real runtime and below a genuinely drifted suite"
   // while the warning moved past the point where it is still actionable, so
   // these two cases are stated in measured seconds instead:
   //
-  //   596s — above every `test:node` run measured on either unsharded lane
-  //          (ISS-5969: linux_4_core_arm max 314.2s, macos-latest max green
-  //          510.4s). Real runtime must stay QUIET.
-  //   700s — ~100s of growth on top of that. Must WARN, with the cap still
+  //   671.3s — the HIGHEST real green measured on either unsharded lane
+  //          (ISS-8326, re-measured 2026-08-28: macos-latest `release` run
+  //          32974379535; linux_4_core_arm `validate-tests` max 489.9s the same
+  //          day). Real runtime must stay QUIET. Raised from 596s, which was
+  //          written as "above every measured run" against ISS-5969's
+  //          314.2s/510.4s maxima and stopped being true once the suite grew.
+  //   700s — ~29s of growth on top of that. Must WARN, with the cap still
   //          200s away, i.e. while there is room to act rather than at the cliff.
+  //          That band is narrow now, and deliberately left narrow: it is the
+  //          measurement saying the suite is close to a legitimate annotation,
+  //          which is a fact about the suite and not a reason to move the line.
   const aboveEveryMeasuredRun = classifyRunnerOutcome({
     error: undefined,
     signal: null,
     status: 0,
-    elapsedMs: 596_000,
+    elapsedMs: 671_300,
     runnerTimeoutMs: RUNNER_TIMEOUT_MS,
   });
   assert.deepEqual(
@@ -343,7 +349,7 @@ test("the runner itself emits the headroom line and the step-summary row", {
     // exits, so the declared timeout cannot interrupt it — the repo pins exactly
     // that behavior in scripts/deploy/sync-spawn-deadline.test.ts.
     //
-    // NODE_TEST_RUNNER_TIMEOUT_MS is stripped, not inherited (wongk review): an
+    // NODE_TEST_RUNNER_TIMEOUT_MS is stripped, not inherited (whitlockk review): an
     // operator with it exported would otherwise choose the cap this asserts,
     // making the DEFAULT_RUNNER_TIMEOUT_MS wiring below unpinned on their machine.
     const result = spawnSync(process.execPath, [runnerPath], {
@@ -372,7 +378,7 @@ test("the runner itself emits the headroom line and the step-summary row", {
       HEADROOM_LINE_PATTERN,
       "the runner must append the same line to $GITHUB_STEP_SUMMARY"
     );
-    // The cap the entrypoint actually shipped, not just "some cap" (wongk
+    // The cap the entrypoint actually shipped, not just "some cap" (whitlockk
     // review): wiring the default back to 720s would print `720.0s` here.
     assert.match(
       result.stdout,
@@ -392,7 +398,7 @@ test("the runner itself emits the drift annotation once it crosses the threshold
   timeout: 60_000,
 }, () => {
   // The sibling case above always lands at ~0% of a 900s cap, so it can never
-  // reach the annotation loop — deleting that loop would leave it green (wongk
+  // reach the annotation loop — deleting that loop would leave it green (whitlockk
   // review). Shrinking the cap to 1ms puts the same launch-failure run far past
   // the threshold, so the loop runs for real. PATH is still empty, so no suite
   // starts and no orphan is possible.

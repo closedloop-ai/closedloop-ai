@@ -10,6 +10,7 @@ import { usersService } from "@/app/users/service";
 import { env } from "@/env";
 import { ApiKeyVerificationStatus } from "@/lib/auth/api-key-verification";
 import { getDesktopManagedPopRequestFailure } from "@/lib/auth/desktop-managed-pop";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import {
   errorResponse,
   parseBody,
@@ -22,7 +23,7 @@ const verifyApiKeyValidator = z.object({
   desktopPopRequired: z.boolean().optional(),
 });
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   // Reject requests when INTERNAL_API_SECRET is not configured or header does not match
   const internalSecret = env.INTERNAL_API_SECRET;
   const headerSecret = request.headers.get("X-Internal-Secret");
@@ -107,3 +108,5 @@ function shouldApplyDesktopManagedPop(
     )
   );
 }
+
+export const POST = withRequestCompleted(handlePost);

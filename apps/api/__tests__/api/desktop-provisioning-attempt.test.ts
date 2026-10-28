@@ -4,7 +4,13 @@ import {
   DesktopProvisioningReadinessStatus,
 } from "@repo/api/src/types/electron";
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  stubTrustedOriginEnv,
+  TRUSTED_APP_ORIGIN,
+  TRUSTED_WEB_ORIGIN,
+  UNTRUSTED_ORIGIN,
+} from "@/__tests__/utils/trusted-origin.test-helpers";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
 import { GET as GET_STATUS } from "@/app/desktop/provisioning-attempt/[attemptId]/route";
 import { POST } from "@/app/desktop/provisioning-attempt/route";
@@ -21,20 +27,19 @@ import {
 let authContext = createTestAuthContext();
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(authContext, request, context?.params ?? Promise.resolve({})),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(authContext, request, context?.params ?? Promise.resolve({})),
 }));
 
 vi.mock("@/app/desktop/onboarding-attempt/service");
 vi.mock("@/lib/desktop-managed-pop-provisioning");
-vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
-  canonicalizeTrustedOrigin: (origin: string) =>
-    origin.startsWith("https://") ? origin : null,
-}));
 
 describe("POST /desktop/provisioning-attempt", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubTrustedOriginEnv();
     authContext = createTestAuthContext();
     vi.mocked(isDesktopManagedPopPlatformSupported).mockImplementation(
       (platform) => platform === DesktopProvisioningPlatform.Darwin
@@ -46,14 +51,18 @@ describe("POST /desktop/provisioning-attempt", () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("creates an attempt only when the provisioning gate is enabled", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       }),
       { params: Promise.resolve({}) }
@@ -70,7 +79,7 @@ describe("POST /desktop/provisioning-attempt", () => {
     expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
       organizationId: authContext.user.organizationId,
       userId: authContext.user.id,
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
     });
   });
 
@@ -80,10 +89,10 @@ describe("POST /desktop/provisioning-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       }),
       { params: Promise.resolve({}) }
@@ -97,10 +106,10 @@ describe("POST /desktop/provisioning-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Linux,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       }),
       { params: Promise.resolve({}) }
@@ -112,13 +121,14 @@ describe("POST /desktop/provisioning-attempt", () => {
   });
 
   it("rejects browser requests when Origin does not match webAppOrigin", async () => {
+    // Both origins are allowlisted, so only the mismatch branch can 403 here.
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://admin.closedloop.ai" },
+        headers: { origin: TRUSTED_WEB_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       }),
       { params: Promise.resolve({}) }
@@ -129,13 +139,34 @@ describe("POST /desktop/provisioning-attempt", () => {
     expect(isDesktopManagedPopProvisioningEnabled).not.toHaveBeenCalled();
   });
 
+  it("rejects browser requests carrying a self-consistent non-allowlisted origin", async () => {
+    // Origin header and webAppOrigin are identical, so the mismatch branch
+    // cannot fire: only the allowlist can reject this.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        headers: { origin: UNTRUSTED_ORIGIN },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: UNTRUSTED_ORIGIN,
+        },
+      }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(desktopOnboardingAttemptsService.create).not.toHaveBeenCalled();
+    expect(isDesktopManagedPopProvisioningEnabled).not.toHaveBeenCalled();
+    expect(isDesktopManagedPopPlatformSupported).not.toHaveBeenCalled();
+  });
+
   it("allows authenticated non-browser callers without an Origin header", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       }),
       { params: Promise.resolve({}) }
@@ -145,8 +176,31 @@ describe("POST /desktop/provisioning-attempt", () => {
     expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
       organizationId: authContext.user.organizationId,
       userId: authContext.user.id,
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
     });
+  });
+
+  it("rejects a non-allowlisted webAppOrigin from a caller sending no Origin header", async () => {
+    // The route skips its mismatch comparison entirely when no Origin header is
+    // present, so on this path the allowlist is the only thing standing between
+    // an attacker-supplied webAppOrigin and persistence. Drop the
+    // canonicalizeTrustedOrigin calls and this returns 200 and persists
+    // `https://evil.example.com`.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: UNTRUSTED_ORIGIN,
+        },
+      }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(403);
+    expect(desktopOnboardingAttemptsService.create).not.toHaveBeenCalled();
+    expect(isDesktopManagedPopProvisioningEnabled).not.toHaveBeenCalled();
+    expect(isDesktopManagedPopPlatformSupported).not.toHaveBeenCalled();
   });
 
   it("uses standard body parsing for malformed JSON", async () => {
@@ -157,7 +211,7 @@ describe("POST /desktop/provisioning-attempt", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            origin: "https://app.closedloop.ai",
+            origin: TRUSTED_APP_ORIGIN,
           },
           body: "{",
         }

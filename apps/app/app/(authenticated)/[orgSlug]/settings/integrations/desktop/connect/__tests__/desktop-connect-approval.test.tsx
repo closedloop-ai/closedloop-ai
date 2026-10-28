@@ -1,3 +1,4 @@
+import { DESKTOP_DEEP_LINK_URL } from "@repo/api/src/types/desktop-deep-link";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,7 @@ const RETURN_TO_DESKTOP = /return to desktop/i;
 function pendingDetail() {
   return {
     userCode: "ABCD1234",
-    machineName: "Daniel-MBP",
+    machineName: "Daveth-MBP",
     platform: "darwin",
     webAppOrigin: "https://app.closedloop.ai",
     status: "pending",
@@ -58,7 +59,7 @@ describe("DesktopConnectApproval error feedback", () => {
 
   it("renders the pending request metadata", () => {
     renderPending();
-    expect(screen.getByText("Daniel-MBP")).toBeInTheDocument();
+    expect(screen.getByText("Daveth-MBP")).toBeInTheDocument();
     expect(screen.getByText("acme")).toBeInTheDocument();
   });
 
@@ -97,9 +98,12 @@ describe("DesktopConnectApproval error feedback", () => {
     clickApprove();
 
     expect(screen.getByText("Desktop connected")).toBeInTheDocument();
+    // ISS-10412: this case only asserted that the link EXISTED, which is how it
+    // stayed green for the whole life of a button pointing at a scheme no
+    // desktop build registers. The destination is the contract.
     expect(
       screen.getByRole("link", { name: RETURN_TO_DESKTOP })
-    ).toBeInTheDocument();
+    ).toHaveAttribute("href", DESKTOP_DEEP_LINK_URL);
     expect(mockToastError).not.toHaveBeenCalled();
   });
 });

@@ -56,7 +56,7 @@ const PLUGIN_KEY = "rtk";
 const HOOK_KEY = "pre-commit-hook";
 const CONFIG_KEY = "settings.json";
 
-// ISS-4635 (wongk): a DURABLE orphan-only identity — usage rows exist with a
+// ISS-4635 (whitlockk): a DURABLE orphan-only identity — usage rows exist with a
 // NULL `agentComponentId` FK (usage synced before any inventory row, or never
 // linked) and NO agent_components row is ever seeded for it. Kept through the
 // whole suite (unlike the transient orphan the detail test creates+deletes) so
@@ -121,7 +121,6 @@ beforeAll(async () => {
       await db.sessionDetail.create({
         data: {
           artifactId,
-          userId: USER_ID,
           computeTargetId: COMPUTE_TARGET_ID,
           externalSessionId: extSession,
           harness: "claude",
@@ -269,7 +268,7 @@ beforeAll(async () => {
 
     // ---- Usage rows (agent_component_session_usage) ----
     // Skill: session A (3 invocations) + session B (2 invocations) => 5 inv / 2 sessions.
-    // FEA-3982 (wongk) / FEA-4098: the usage rows carry the SAME version identity
+    // FEA-3982 (whitlockk) / FEA-4098: the usage rows carry the SAME version identity
     // the inventory row resolves to (`componentVersionHash` = the coarse
     // contentHash, `definitionVersionId` = the linked DefinitionVersion). Version
     // attribution folds usage into the bucket matching its OWN carried hash, so a
@@ -335,7 +334,7 @@ beforeAll(async () => {
     });
     // => plugin: 4 + 6 = 10 child invocations rolled up across 2 sessions.
 
-    // ISS-4635 (wongk): DURABLE orphan-only usage — a skill USED but never
+    // ISS-4635 (whitlockk): DURABLE orphan-only usage — a skill USED but never
     // inventory-linked (`agentComponentId` NULL), across two distinct sessions
     // (6 + 3 = 9 invocations, 2 errors). No agent_components row exists for it, so
     // it only surfaces if the orphan lane is folded in — the exact defect this PR
@@ -408,7 +407,7 @@ describe("FEA-2923 cloud read path against REAL Postgres", () => {
     expect(skill?.invocations).toBe(5); // 3 + 2
     expect(skill?.sessions).toBe(2);
 
-    // ISS-4635 (wongk): the orphan-only skill (NULL FK usage, no inventory row)
+    // ISS-4635 (whitlockk): the orphan-only skill (NULL FK usage, no inventory row)
     // surfaces on the list with its real totals — reconciling the same orphan lane
     // ranking now folds in. 6 + 3 = 9 invocations across 2 sessions.
     const orphanSkill = bySlug.get(`skill::${ORPHAN_SKILL_KEY}`);
@@ -529,7 +528,7 @@ describe("FEA-2923 cloud read path against REAL Postgres", () => {
     expect(detail).toBeNull();
   });
 
-  it("wongk (contentHash collision, real DB): a skill and a command with identical bytes keep DISTINCT authors", async () => {
+  it("whitlockk (contentHash collision, real DB): a skill and a command with identical bytes keep DISTINCT authors", async () => {
     // Byte-identical content ⇒ ONE shared contentHash, but definitionHash folds
     // in the kind, so each kind links its own DefinitionVersion with its own
     // lineage. A contentHash-only resolution would mis-assign both to whichever
@@ -690,7 +689,7 @@ describe("FEA-2923 cloud read path against REAL Postgres", () => {
     // errorRate = totalErrors / totalInvocations for skill: 1 / 5.
     expect(skill?.errorRate).toBeCloseTo(0.2, 5);
 
-    // ISS-4635 (wongk): the durable orphan-only skill (NULL FK usage, no inventory
+    // ISS-4635 (whitlockk): the durable orphan-only skill (NULL FK usage, no inventory
     // row) is folded into the ranking too — reconciling the SAME orphan lane and
     // the SAME real totals the listForOrg test asserts (9 invocations / 2 sessions
     // / 2 errors), not the pre-fix `invocations: 0`.

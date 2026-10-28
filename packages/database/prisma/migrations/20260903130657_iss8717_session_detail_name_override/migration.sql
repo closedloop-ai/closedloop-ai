@@ -1,0 +1,13 @@
+-- ISS-8717: the owner-authored session name.
+--
+-- `artifacts.name` already holds a session's display name, but it is the
+-- COLLECTOR's derivation: `upsertSessionSlice` rewrites it from the incoming
+-- payload on every sync, so a rename written into that column is silently
+-- reverted by the next re-import. This column is the override the read
+-- projection prefers, which leaves `artifacts.name` free to keep tracking the
+-- collector — so the placeholder a rename replaced is still recoverable.
+--
+-- Nullable with no default and no backfill: NULL is "never renamed", which is
+-- every existing row, and is the value ingest must leave alone when a payload
+-- carries no override.
+ALTER TABLE "session_detail" ADD COLUMN "name_override" TEXT;

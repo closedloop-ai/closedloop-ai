@@ -1,6 +1,6 @@
 /**
  * @file session-turn-bucket-folded-child-dedup.test.ts
- * @description ISS-5395 (wongk + closedloop-ai-stage review) — the ONE bucket row
+ * @description ISS-5395 (whitlockk + closedloop-ai-stage review) — the ONE bucket row
  * per round-trip invariant on a PRE-FOLD OpenCode install.
  *
  * Revision 69 counts a folded subagent's `$.tokenSeries` round-trips on the ROOT.
@@ -22,7 +22,7 @@
  * path.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
 import { deriveSessionTurnBuckets } from "../src/main/database/turn-buckets.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
@@ -73,7 +73,12 @@ function preFoldChildMetadata(): string {
 function agentTurnsAcrossStore(store: ReadonlyMap<string, string>): number {
   let total = 0;
   for (const [sessionId, metadata] of store) {
-    for (const row of deriveSessionTurnBuckets(sessionId, metadata)) {
+    // Both rows here carry a real round-trip series, and the importer writes one
+    // `token_events` row per series entry — so `true` is the value the
+    // production caller passes for them. ISS-8259 made the agent half an if/else
+    // on this flag; passing `false` would model a partial store and read the
+    // sessions' `$.messages` instead of the round-trips this suite is about.
+    for (const row of deriveSessionTurnBuckets(sessionId, metadata, true)) {
       if (row.turnKind === "agent") {
         total += row.turnCount;
       }
@@ -134,7 +139,7 @@ describe("pre-fold OpenCode child rows and the sub-agent round-trip roll-up", ()
           Promise.resolve({ rebuilt: true, activeRace: false }),
         deleteSessionRow: (sessionId) => {
           store.delete(sessionId);
-          return Promise.resolve();
+          return Promise.resolve(true);
         },
       },
     });
@@ -175,7 +180,7 @@ describe("pre-fold OpenCode child rows and the sub-agent round-trip roll-up", ()
           Promise.resolve({ rebuilt: true, activeRace: false }),
         deleteSessionRow: (sessionId) => {
           deleted.push(sessionId);
-          return Promise.resolve();
+          return Promise.resolve(true);
         },
       },
     });
@@ -209,13 +214,90 @@ describe("pre-fold OpenCode child rows and the sub-agent round-trip roll-up", ()
           Promise.resolve({ rebuilt: true, activeRace: false }),
         deleteSessionRow: (sessionId) => {
           deleted.push(sessionId);
-          return Promise.resolve();
+          return Promise.resolve(true);
         },
       },
     });
 
     assert.deepEqual(deleted, []);
     assert.equal(summary.skippedActive, 1);
+  });
+
+  test("ISS-8601: a WEDGED folded child is admitted, refused at the delete, and left stale", async () => {
+    // The case above keeps passing only because its double omits `lastActivityAt`
+    // and so fails closed. Once the age bound exists, a folded child CAN be
+    // non-terminal AND in `pending` — the exact state the prune's docblock used to
+    // rule out — so the guarantee it asserts needs a case that actually reaches it.
+    //
+    // What must hold: the store refuses the delete (a wedged row may be rebuilt,
+    // never purged), the refusal is NOT counted as a deletion, and the row does
+    // not fall through to the repair tail, whose stored-invocation bridge stamps
+    // `data_revision` unconditionally and would seal the duplicate in place.
+    const now = new Date("2026-06-07T12:00:00.000Z");
+    const wedged = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+    const deleteAttempts: string[] = [];
+    const logged: string[] = [];
+    const summary = await runDataRevisionRebuild({
+      log: (message) => logged.push(message),
+      collectors: [
+        fakeCollector("opencode", {
+          batch: true,
+          sources: [BATCH_SOURCE],
+          sessions: [foldedRootParse()],
+        }),
+      ],
+      db: {
+        now: () => now.toISOString(),
+        listStaleRevisionSessions: () =>
+          Promise.resolve([
+            {
+              id: ROOT_ID,
+              harness: "opencode",
+              status: "inactive",
+              lastActivityAt: wedged,
+            },
+            {
+              id: CHILD_ID,
+              harness: "opencode",
+              status: "running",
+              lastActivityAt: wedged,
+            },
+          ]),
+        rebuildSessionFromParse: () =>
+          Promise.resolve({ rebuilt: true, activeRace: false }),
+        deleteSessionRow: (sessionId) => {
+          deleteAttempts.push(sessionId);
+          // What the real store does for a non-terminal row: refuse, and say so.
+          return Promise.resolve(sessionId !== CHILD_ID);
+        },
+      },
+    });
+
+    assert.equal(
+      summary.wedgedActiveAdmitted,
+      1,
+      "the wedged child is admitted by the bound"
+    );
+    assert.deepEqual(
+      deleteAttempts,
+      [CHILD_ID],
+      "and it does reach the prune's delete"
+    );
+    assert.equal(
+      summary.deleted,
+      0,
+      "but a refusal is never counted as a deletion"
+    );
+    assert.equal(
+      logged.filter((m) => m.includes("deleted pre-fold subagent row")).length,
+      0,
+      "nor logged as one"
+    );
+    assert.equal(
+      summary.missingSource,
+      0,
+      "and it is not stranded into the repair tail, which would stamp it current"
+    );
   });
 
   test("a failed delete is counted and left stale so a later boot retries it", async () => {

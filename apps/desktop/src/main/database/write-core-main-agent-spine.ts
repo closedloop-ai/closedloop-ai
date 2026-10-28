@@ -2,7 +2,7 @@
  * @file write-core-main-agent-spine.ts
  * @description ISS-4476: the new-session import path's canonical `<sessionId>-main`
  * agent recovery, extracted from `write-core.ts` as its own responsibility (and to
- * keep the grandfathered `write-core.ts` shrinking, not growing).
+ * keep `write-core.ts` shrinking, not growing).
  *
  * `importPhaseSessionAndMainAgent` (in `write-core.ts`) calls
  * {@link upsertImportedMainAgentSpine} on the branch where `getImportSession`
@@ -40,6 +40,8 @@ export function getImportSession(
       // content change when it upgrades a previously-stored `/model` fallback
       // label (which would otherwise be COALESCE-sticky and never re-sync).
       model: true,
+      // ISS-12251: the stored side of the `created_at` fill-or-min merge.
+      createdAt: true,
     },
   });
 }
@@ -84,7 +86,7 @@ export type ImportedMainAgentSpine = {
  *
  * An `agents.id` collision does NOT prove the row is this session's main agent:
  * two different session ids can derive the same `${id}-main` string (e.g. a parser
- * subagent id of one session colliding with the main id of another — wongk
+ * subagent id of one session colliding with the main id of another — whitlockk
  * ISS-4476 review). Reparenting such a row via `ON CONFLICT DO UPDATE SET
  * session_id = excluded.session_id` would silently steal another session's agent
  * (and orphan its events / component invocations under the stolen id). So:
@@ -92,7 +94,7 @@ export type ImportedMainAgentSpine = {
  *   - colliding row is same-session AND `type = 'main'` → legitimate recovery:
  *     rewrite the FULL canonical main-agent shape (name/type/subagent_type/task/
  *     parent/metadata reset, `current_tool` cleared to match the reactivation
- *     path — wongk ISS-4476 review — so a row left mid-tool cannot publish a
+ *     path — whitlockk ISS-4476 review — so a row left mid-tool cannot publish a
  *     waiting/completed status while a stale tool stays visible on the Agent card
  *     and in the sync payload), preserving only the earliest `started_at`;
  *   - anything else (different `session_id`, or not `type = 'main'`) → fail closed

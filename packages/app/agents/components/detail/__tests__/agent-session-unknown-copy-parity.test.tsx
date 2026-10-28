@@ -1,13 +1,16 @@
 import type { AgentSessionDetail } from "@repo/api/src/types/agent-session";
-import { DISPLAYED_SESSION_STATUS } from "@repo/api/src/types/session-status";
-import { SESSION_UNKNOWN_TOOLTIP } from "@repo/api/src/types/session-status-display";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
+import { agentSessionToSessionTableRow } from "../../../lib/session-table-row";
 import { SessionStatusBadge } from "../../session-status-badges";
+import { createAgentSessionListItemFixture } from "../../sessions/session-list-fixtures";
 import {
   populatedAgentSessionDetailFixture,
+  UNRECOGNIZED_AGENT_SESSION_STATUS,
   unknownStateAgentSessionDetailFixture,
 } from "../agent-session-detail-fixtures";
 import { AgentSessionDetailView } from "../agent-session-detail-view";
@@ -16,49 +19,20 @@ import { AgentSessionDetailView } from "../agent-session-detail-view";
  * ISS-4654 (PR #4630 review): the Sessions LIST and the session DETAIL must say
  * the SAME thing about a status neither of them can interpret.
  *
- * The terminal labels in `STATUS_DISPLAY_BY_STATE` were deliberately wired to
- * read out of the canonical `SESSION_STATUS_LABELS` so the two surfaces could
- * not drift; the Unknown fallback was not, and it carried no disclosure at all
- * while the list pill has carried one since ISS-4997. The result under version
- * skew was one session reading explained-unknown in the list and unexplained
- * "Unknown" on its own detail page.
- *
- * This test makes that drift a FAILURE rather than a review finding. It
- * REPLACES the canonical unknown label with a sentinel and then renders both
- * surfaces: a hardcoded `label: "Unknown"` on either side keeps rendering the
- * literal word and no longer matches its sibling, and a missing disclosure drops
- * the canonical sentence out of the accessible name. Asserting the two rendered
- * names are EQUAL is the pin — it cannot be satisfied by two independent
- * hardcoded copies of today's identical word.
+ * ISS-10364 (operator ruling, 2026-09-23) changed what "the same thing" is for
+ * an unparsable status: `resolveDisplayedSessionStatus` no longer folds it to
+ * `unknown` — it fails open to `active`, the same fail-open every other
+ * unrecognized spelling takes. This test still pins parity, just against the
+ * new answer. Each surface is driven through its OWN production entry point on
+ * the same raw wire value — the list through `agentSessionToSessionTableRow`,
+ * the detail through a rendered `AgentSessionDetailView` — so a change that
+ * touches only one side's derivation reddens here instead of shipping a silent
+ * split. The ISS-4997 sentinel-swap mock this file used to run (substituting
+ * the Unknown label so two hardcoded copies of it couldn't drift) went with
+ * the disclosure it was defending — neither surface renders that disclosure
+ * for this input any more, so there is no hardcoded copy left to catch
+ * drifting.
  */
-const { UNKNOWN_LABEL_SENTINEL } = vi.hoisted(() => ({
-  UNKNOWN_LABEL_SENTINEL: "Unrecognized-ISS4654-sentinel",
-}));
-
-// ISS-5592 split the labels into `session-status-display`, so the label map is
-// mocked there while the KEY still comes from the values module. Both are read
-// inside the factory rather than from a top-level import: a `vi.mock` factory is
-// hoisted above the import block, so a top-level binding is not initialized yet
-// when it runs.
-vi.mock(
-  "@repo/api/src/types/session-status-display",
-  async (importOriginal) => {
-    const actual =
-      await importOriginal<
-        typeof import("@repo/api/src/types/session-status-display")
-      >();
-    const { DISPLAYED_SESSION_STATUS } = await import(
-      "@repo/api/src/types/session-status"
-    );
-    return {
-      ...actual,
-      SESSION_STATUS_LABELS: {
-        ...actual.SESSION_STATUS_LABELS,
-        [DISPLAYED_SESSION_STATUS.UNKNOWN]: UNKNOWN_LABEL_SENTINEL,
-      },
-    };
-  }
-);
 
 const WHITESPACE_RUN = /\s+/g;
 
@@ -82,47 +56,54 @@ async function renderDetailStatusRowName(
   // expanded body, so open it the way a user does rather than reaching past it.
   await userEvent.click(screen.getByText("Properties"));
   const statusRow = screen.getByText("Status").closest(".prd-prop");
-  // The whole value — the visible word plus the `sr-only` sentence — IS the
-  // accessible name of the explained value, so its text content is the name.
-  return normalize(statusRow?.querySelector("button")?.textContent);
+  // `.prd-prop-value` is the one wrapper both value treatments share — a plain
+  // `<span>` for an unexplained status, a `<button>` (with the `sr-only`
+  // disclosure tail) for an explained one — so this reads the rendered name
+  // whichever branch a given status takes, rather than assuming a button that
+  // only the explained treatment renders.
+  return normalize(statusRow?.querySelector(".prd-prop-value")?.textContent);
 }
 
 describe("unknown session-status copy parity, list vs detail (ISS-4654)", () => {
-  it("gives the detail Status row the same explained name the list pill has", async () => {
+  it("gives the detail Status row the same plain name the list pill folds an unparsable status to", async () => {
     const detailName = await renderDetailStatusRowName(
       unknownStateAgentSessionDetailFixture
     );
 
+    // tamsinb review (#7820): the list side is built by the LIST MAPPER, not
+    // by calling the shared fold directly. The pill reads
+    // `agentSessionToSessionTableRow`, which routes through
+    // `resolveDisplayedSessionStatusWithWaiting` — so a fold invoked here in
+    // isolation stayed green under exactly the mapper-side drift this case
+    // claims to catch.
+    const listDisplayedStatus = agentSessionToSessionTableRow(
+      createAgentSessionListItemFixture({
+        status: UNRECOGNIZED_AGENT_SESSION_STATUS,
+      }),
+      "owner/repo"
+    ).status;
+    expect(listDisplayedStatus).toBe(SESSION_STATUS.ACTIVE);
     const { container } = render(
-      <SessionStatusBadge status={DISPLAYED_SESSION_STATUS.UNKNOWN} />
+      <SessionStatusBadge status={listDisplayedStatus} />
     );
-    const listName = normalize(
-      container.querySelector("[aria-label]")?.getAttribute("aria-label")
-    );
+    const listName = normalize(container.textContent);
 
-    // Both surfaces read the label from the canonical vocabulary — a hardcoded
-    // "Unknown" on either side fails here even though the word is identical in
-    // production today.
-    expect(listName).toContain(UNKNOWN_LABEL_SENTINEL);
-    expect(detailName).toContain(UNKNOWN_LABEL_SENTINEL);
-    // Both carry the canonical ISS-4997 disclosure, and it is a TAIL: the name
-    // leads with the visible word (WCAG 2.5.3 Label in Name).
-    expect(listName).toContain(SESSION_UNKNOWN_TOOLTIP);
-    expect(detailName).toContain(SESSION_UNKNOWN_TOOLTIP);
-    expect(detailName.startsWith(UNKNOWN_LABEL_SENTINEL)).toBe(true);
-    // The pin itself: one sentence, one word, one accessible name, both screens.
+    expect(listName).toContain(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]);
+    expect(detailName).toContain(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]);
+    // The pin itself: one word, one fold, both screens.
     expect(detailName).toBe(listName);
   });
 
   it("leaves a recognized state's Status row plain, with no borrowed disclosure", async () => {
-    // Guards the disclosure from leaking onto every row: the fixture is
-    // Completed, a state this build knows, so its Status row must stay the bare
-    // word it has always been.
+    // Guards the disclosure from leaking onto every row: the fixture's status
+    // is a state this build knows, so its Status row must stay the bare word
+    // it has always been.
     const detailName = await renderDetailStatusRowName(
       populatedAgentSessionDetailFixture
     );
 
-    expect(detailName).not.toContain(SESSION_UNKNOWN_TOOLTIP);
-    expect(detailName).not.toContain(UNKNOWN_LABEL_SENTINEL);
+    expect(detailName).toContain(
+      SESSION_STATUS_LABELS[SESSION_STATUS.INACTIVE]
+    );
   });
 });

@@ -14,7 +14,7 @@
  *
  * But the dominant real shape has NOTHING to pair with. When Claude Code expands
  * a slash-invoked skill it records the `<command-name>` entry and no `Skill`
- * tool_use at all — golden session `3b820c31` invokes `/code-review:deep` with
+ * tool_use at all — golden session `56f2ab4a` invokes `/code-review:deep` with
  * four unrelated `Skill` tool_uses and none for `code-review:deep`. Correlation
  * finds no partner, keeps the Command candidate, and `ensureInvocationComponents`
  * mints an `agent_components` row `(command, /code-review:deep)` beside the
@@ -37,7 +37,7 @@
  * therefore becomes a modest per-skill OVERCOUNT rather than a stray command
  * row, and the transcript cannot distinguish it from the unlogged expansion that
  * dominates. The full reasoning for accepting that lives in the revision-68 note
- * in `collectors/engine/data-revision.ts`.
+ * in `docs/desktop-data-revision-history.md`.
  *
  * ## Why it runs here rather than in the candidate derivation
  *
@@ -73,7 +73,7 @@ type InventoryRow = {
 };
 
 /**
- * ISS-5260 (wongk review): bare names per inventory read.
+ * ISS-5260 (whitlockk review): bare names per inventory read.
  *
  * {@link loadSkillShadowEvidence} binds each name TWICE — once bare for the
  * skill arm, once slash-prefixed for the command arm — plus three fixed
@@ -173,7 +173,7 @@ export async function repointSkillInvokedCommandCandidates(
  * stored-row rebuild, whose candidates carry no snapshot of their own but have
  * exact evidence restored onto them by `preserveStrongerEvidence`. That second
  * gate is `carriesOwnDefinitionEvidence`, the SHARED floor the cloud's staged-row
- * lane applies too (ISS-5260 / wongk review), so neither side can hold a row's
+ * lane applies too (ISS-5260 / whitlockk review), so neither side can hold a row's
  * own definition and still fold it.
  */
 function repointableBareName(
@@ -203,7 +203,7 @@ function repointableBareName(
  * vouches for itself before resolution promotes it, which is the same widening
  * the cloud predicate took in ISS-4923.
  *
- * Chunked because the bind count grows with the name count (ISS-5260 / wongk
+ * Chunked because the bind count grows with the name count (ISS-5260 / whitlockk
  * review) — see {@link SKILL_SHADOW_NAMES_PER_READ}. Evidence is a pure union of
  * per-chunk facts (a name's inventory row is found by exactly the chunk that
  * carries it), so splitting the read cannot change the decision.

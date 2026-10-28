@@ -14,7 +14,7 @@
  * depends on the wall clock (FEA-2399 `test:node` determinism).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   BackgroundTaskTracker,
   QuiesceOutcome,

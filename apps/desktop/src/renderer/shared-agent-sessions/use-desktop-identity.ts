@@ -8,11 +8,15 @@ import type { DesktopAuthStatus, DesktopIdentity } from "../types/desktop-api";
  * ISS-5366 review: the two are not the same question, and collapsing them to a
  * bare `DesktopIdentity | null` is what let a consumer read "still loading" as
  * "definitively unavailable". `identity: null` with `isResolved: false` means
- * "not known YET"; `identity: null` with `isResolved: true` means "there is no
- * identity" (signed out, no bridge, or a failed fetch). A caller that gates a
- * navigable affordance on the identity has to be able to tell those apart, or it
- * renders its unavailable state during the load window and asserts something
- * false about data that is on its way.
+ * "not known YET"; `identity: null` with `isResolved: true` means the read
+ * finished without one (signed out, no bridge, or a failed fetch). A caller that
+ * gates a navigable affordance on the identity has to be able to tell those
+ * apart, or it renders its unavailable state during the load window and asserts
+ * something false about data that is on its way.
+ *
+ * `isResolved` is about THIS mount's read, not about the account: a failed read
+ * settles the mount and is not cached, so the next mount starts pending again.
+ * See {@link settledIdentities}.
  */
 export type DesktopIdentityResolution = Readonly<{
   identity: DesktopIdentity | null;
@@ -20,24 +24,46 @@ export type DesktopIdentityResolution = Readonly<{
 }>;
 
 /**
- * Settled identities, keyed by the authenticated user id.
+ * The outcome of one identity read, which is two questions rather than one: did
+ * the read ANSWER, and if so what did it say.
+ *
+ * ISS-11145 review (tamsinb): a bare `DesktopIdentity | null` collapsed a read
+ * that FAILED into a read that answered "no identity", and the failure was then
+ * cached as settled — see {@link settledIdentities}.
+ */
+type DesktopIdentityReadOutcome =
+  | Readonly<{ answered: true; identity: DesktopIdentity | null }>
+  | Readonly<{ answered: false }>;
+
+/**
+ * Identities from a read that ANSWERED, keyed by the authenticated user id.
  *
  * Every mount used to run its own `GET /desktop/identity` (one IPC round trip
- * per hook INSTANCE — the Sidebar's AccountMenu, the Settings Account tab and
- * every session-detail mount each paid for their own), and every one of them
+ * per hook INSTANCE — the Sidebar's AccountMenu and every session-detail mount
+ * each paid for their own), and every one of them
  * started from `null` and flipped once it landed. Caching the settled payload
  * here means a mount that happens after any earlier resolution seeds its state
  * SYNCHRONOUSLY on first render, so there is no window in which it reports a
  * false `null` at all.
+ *
+ * A read that FAILED is deliberately NOT written here (ISS-11145 review,
+ * tamsinb). It used to be, as a `null` indistinguishable from a read that
+ * answered "no identity" — so one transport blip pinned the absence for the life
+ * of the process, and a consumer that renders "checking…" while the identity is
+ * unknown announced a check that had finished and would never run again. The
+ * fetch is retried by the next mount instead; only an ANSWER is cached.
  */
 const settledIdentities = new Map<string, DesktopIdentity | null>();
 
 /** In-flight fetches, keyed the same way, so concurrent mounts share one IPC. */
-const inFlightIdentities = new Map<string, Promise<DesktopIdentity | null>>();
+const inFlightIdentities = new Map<
+  string,
+  Promise<DesktopIdentityReadOutcome>
+>();
 
 function fetchIdentityOnce(
   authedUserId: string
-): Promise<DesktopIdentity | null> {
+): Promise<DesktopIdentityReadOutcome> {
   const existing = inFlightIdentities.get(authedUserId);
   if (existing) {
     return existing;
@@ -45,20 +71,22 @@ function fetchIdentityOnce(
   const fetchIdentity = window.desktopApi?.getDesktopIdentity;
   if (!fetchIdentity) {
     // No bridge (a partial test stub, or a renderer mounted outside Electron).
-    // This is SETTLED, not pending: it will never resolve, and reporting it as
-    // pending forever would strand callers in their loading state.
+    // This is an ANSWER, not a pending read and not a failure: there is nothing
+    // that could ever resolve it, so caching the absence is correct and
+    // reporting it as pending forever would strand callers in their loading
+    // state.
     settledIdentities.set(authedUserId, null);
-    return Promise.resolve(null);
+    return Promise.resolve({ answered: true, identity: null });
   }
   const pending = fetchIdentity()
-    .then((result) => {
+    .then<DesktopIdentityReadOutcome>((result) => {
       settledIdentities.set(authedUserId, result);
-      return result;
+      return { answered: true, identity: result };
     })
-    .catch(() => {
-      // A failed fetch is a settled "no identity", same as before.
-      settledIdentities.set(authedUserId, null);
-      return null;
+    .catch<DesktopIdentityReadOutcome>(() => {
+      // A failed read answers nothing, so nothing is cached: the next mount
+      // re-reads rather than seeding from a stale failure.
+      return { answered: false };
     })
     .finally(() => {
       inFlightIdentities.delete(authedUserId);
@@ -82,8 +110,12 @@ export function resetDesktopIdentityCacheForTests(): void {
  * bridge-absent test stub) leaves callers to fall back to their id/label so a
  * consuming surface is never blanked.
  *
- * Shared by the Settings → Account tab, the sidebar footer AccountMenu and the
- * session-detail view so they read one identity source rather than duplicating
+ * A read that FAILED settles the mount that made it — the read finished, and a
+ * caller must not hold a loading state on it — but is NOT cached, so the next
+ * mount issues a fresh read instead of inheriting the failure for the life of
+ * the process (ISS-11145 review, tamsinb).
+ *
+ * Shared by the sidebar footer AccountMenu and the session-detail view so they read one identity source rather than duplicating
  * the fetch effect — and, as of ISS-5366, one identity FETCH: the payload is
  * cached per user id and concurrent mounts share a single in-flight request.
  *
@@ -113,16 +145,23 @@ export function useDesktopIdentity(
     // earlier resolution never renders a transient `null`.
     setResolution(initialIdentityResolution(authedUserId));
     fetchIdentityOnce(authedUserId)
-      .then((identity) => {
+      .then((outcome) => {
         if (!cancelled) {
-          setResolution({ identity, isResolved: true });
+          // A read that FAILED settles THIS mount — the read did complete, and a
+          // caller gating an affordance on `isResolved` must not hold its
+          // loading state forever. What the failure does NOT do is settle the
+          // CACHE, so the next mount re-reads (ISS-11145 review, tamsinb).
+          setResolution({
+            identity: outcome.answered ? outcome.identity : null,
+            isResolved: true,
+          });
         }
       })
-      // `fetchIdentityOnce` settles its own fetch failures to `null`, so this
-      // arm is unreachable in practice. It is still the honest handler: a
-      // rejection that somehow escaped would leave the resolution PENDING
-      // forever, and a caller waiting on `isResolved` would hold its loading
-      // state for the life of the view.
+      // `fetchIdentityOnce` folds its own fetch failures into an `answered:
+      // false` outcome, so this arm is unreachable in practice. It is still the
+      // honest handler: a rejection that somehow escaped would leave the
+      // resolution PENDING forever, and a caller waiting on `isResolved` would
+      // hold its loading state for the life of the view.
       .catch(() => {
         if (!cancelled) {
           setResolution({ identity: null, isResolved: true });

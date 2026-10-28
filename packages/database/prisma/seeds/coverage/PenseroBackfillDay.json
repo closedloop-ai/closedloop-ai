@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Per-day attempt ledger for the Pensero delivery backfill cron (ISS-8761)."
+}

@@ -1,5 +1,12 @@
+import {
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+} from "@repo/database/generated/enums";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+
+const mockScheduleLogFlush = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/collaboration/server/webhook", () => ({
   createWebhookHandler: vi.fn(),
@@ -20,6 +27,12 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+vi.mock("@/lib/route-utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/route-utils")>()),
+  logRequestCompleted: vi.fn(), // emit + its one flush: webhook-body-caps
+  scheduleLogFlush: mockScheduleLogFlush, // the receiver must schedule none
+}));
+
 vi.mock("@repo/collaboration/shared/room-utils", () => {
   const parseArtifactRoomId = vi.fn();
   // service.ts and webhook handlers import parseDocumentRoomId; tests stub
@@ -33,6 +46,10 @@ vi.mock("@repo/collaboration/shared/room-utils", () => {
 });
 
 vi.mock("@repo/database", () => ({
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: {
     JsonNull: "DbNull",
@@ -41,6 +58,10 @@ vi.mock("@repo/database", () => ({
       values,
     }),
   },
+}));
+
+vi.mock("@/app/comments/service/comment-store-switch", () => ({
+  isDocumentCommentsSwitchLatched: vi.fn(),
 }));
 
 import {
@@ -53,8 +74,8 @@ import {
 } from "@repo/collaboration/server/webhook";
 import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
 import { log } from "@repo/observability/log";
+import { isDocumentCommentsSwitchLatched } from "@/app/comments/service/comment-store-switch";
 import {
-  handleCommentCreated,
   handleCommentDeleted,
   handleThreadCreated,
   handleThreadResolved,
@@ -64,6 +85,7 @@ import { POST } from "@/app/webhooks/liveblocks/route";
 
 const ORG_ID = "org-123";
 const ROOM_ID = `${ORG_ID}:artifact:my-artifact`;
+const ROOM_ARTIFACT = { id: "artifact-1", document: null };
 // The resolve/unresolve fixtures fire events at this instant. The provider
 // thread's `updatedAt` is pinned to the same instant for the legitimate
 // (non-superseded) cases so the handler's staleness guard
@@ -88,6 +110,7 @@ function makeRequest(body: string, headers?: Record<string, string>): Request {
 describe("Liveblocks webhook route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(isDocumentCommentsSwitchLatched).mockResolvedValue(false);
   });
 
   it("returns 200 when webhook not configured", async () => {
@@ -163,6 +186,34 @@ describe("Liveblocks webhook route", () => {
     );
   });
 
+  it("returns a generic 500 and flushes logs when a handler rejects", async () => {
+    const event = {
+      type: "threadCreated" as const,
+      data: {
+        projectId: "proj-1",
+        roomId: ROOM_ID,
+        threadId: "th_1",
+        createdAt: "2025-01-01T00:00:00Z",
+        createdBy: "user-1",
+      },
+    };
+    const mockHandler = { verifyRequest: vi.fn().mockReturnValue(event) };
+    vi.mocked(createWebhookHandler).mockReturnValue(mockHandler as never);
+    vi.mocked(parseArtifactRoomId).mockReturnValue({
+      organizationId: ORG_ID,
+      slug: "my-artifact",
+    });
+    vi.mocked(getLiveblocksApiClient).mockReturnValue(null);
+
+    const response = await POST(makeRequest(JSON.stringify(event)));
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      message: "Something went wrong",
+      ok: false,
+    });
+    expect(mockScheduleLogFlush).not.toHaveBeenCalled();
+  });
+
   it("returns 200 for unhandled event types", async () => {
     const event = { type: "storageUpdated", data: { roomId: "room-1" } };
     const mockHandler = { verifyRequest: vi.fn().mockReturnValue(event) };
@@ -190,6 +241,7 @@ describe("Liveblocks webhook handlers", () => {
     // resetAllMocks (vs clearAllMocks) also clears mockImplementations so
     // mockWithDbCall set up by one test doesn't leak into siblings.
     vi.resetAllMocks();
+    vi.mocked(isDocumentCommentsSwitchLatched).mockResolvedValue(false);
   });
 
   describe("handleThreadCreated", () => {
@@ -262,65 +314,6 @@ describe("Liveblocks webhook handlers", () => {
     });
   });
 
-  describe("handleCommentCreated", () => {
-    it("fetches thread first then comment (thread-first upsert)", async () => {
-      vi.mocked(parseArtifactRoomId).mockReturnValue({
-        organizationId: ORG_ID,
-        slug: "my-artifact",
-      });
-
-      const mockThread = {
-        id: "th_1",
-        roomId: ROOM_ID,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        resolved: false,
-        metadata: {},
-        comments: [],
-      };
-      const mockComment = {
-        id: "cm_1",
-        threadId: "th_1",
-        roomId: ROOM_ID,
-        userId: "user-1",
-        createdAt: new Date(),
-        body: { version: 1, content: [] },
-        reactions: [],
-        attachments: [],
-      };
-
-      const mockClient = {
-        getThread: vi.fn().mockResolvedValue(mockThread),
-        getComment: vi.fn().mockResolvedValue(mockComment),
-      };
-      vi.mocked(getLiveblocksApiClient).mockReturnValue(mockClient as never);
-
-      await handleCommentCreated({
-        type: "commentCreated",
-        data: {
-          projectId: "proj-1",
-          roomId: ROOM_ID,
-          threadId: "th_1",
-          commentId: "cm_1",
-          createdAt: "2025-01-01T00:00:00Z",
-          createdBy: "user-1",
-        },
-      });
-
-      // Thread fetched first
-      expect(mockClient.getThread).toHaveBeenCalledWith({
-        roomId: ROOM_ID,
-        threadId: "th_1",
-      });
-      // Then comment
-      expect(mockClient.getComment).toHaveBeenCalledWith({
-        roomId: ROOM_ID,
-        threadId: "th_1",
-        commentId: "cm_1",
-      });
-    });
-  });
-
   describe("handleCommentDeleted", () => {
     it("skips non-artifact rooms", async () => {
       vi.mocked(parseArtifactRoomId).mockImplementation(() => {
@@ -386,9 +379,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       // resolveThread now runs its read-mutate-write inside withDb.tx, so the
@@ -462,9 +453,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -534,9 +523,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -603,7 +590,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -669,7 +656,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -737,7 +724,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -805,7 +792,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -869,7 +856,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);
@@ -935,7 +922,7 @@ describe("Liveblocks webhook handlers", () => {
           update: updateSpy,
         },
         $queryRaw: vi.fn().mockResolvedValue([]),
-        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: { findUnique: vi.fn().mockResolvedValue(ROOM_ARTIFACT) },
       };
       mockWithDbCall(mockDb);
       mockWithDbTx(mockDb);

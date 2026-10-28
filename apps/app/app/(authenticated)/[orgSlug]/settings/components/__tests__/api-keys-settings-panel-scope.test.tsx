@@ -1,6 +1,7 @@
 import type { ApiKey } from "@repo/api/src/types/api-key";
 import { API_KEY_SCOPES, ApiKeyScope } from "@repo/api/src/types/api-key";
 import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiKeysSettingsPanel } from "../api-keys-settings-panel";
 
@@ -36,6 +37,11 @@ class MockResizeObserver {
 }
 
 const CREATED_AT = new Date("2026-01-02T03:04:05.000Z");
+
+// Shaped like a real minted key so a leak is detectable, and never asserted
+// with a containment matcher — Vitest renders the received value into the
+// reporter on failure, which would publish it to stdout and the JSON report.
+const MINTED_SECRET = "sk_live_testonlyf00dfacecafebabe0123456789abcdef";
 
 /** Column order of the API-keys table; the Scope cell is the third. */
 const SCOPE_CELL_INDEX = 2;
@@ -342,5 +348,47 @@ describe("ApiKeysSettingsPanel scope badge", () => {
       expect(hasScopePill()).toBe(expectedPill);
       cleanup();
     }
+  });
+});
+
+describe("ApiKeysSettingsPanel created-secret lifetime", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    vi.clearAllMocks();
+    mocks.useRevokePlatformApiKey.mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
+  });
+
+  it("drops the mutation cache's copy of a new key's secret once the dialog owns it", async () => {
+    const user = userEvent.setup();
+    const reset = vi.fn();
+    mocks.usePlatformApiKeys.mockReturnValue({ data: [], isLoading: false });
+    mocks.useCreatePlatformApiKey.mockReturnValue({
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValue({ ...makeKey([]), plaintext: MINTED_SECRET }),
+      reset,
+    });
+
+    render(<ApiKeysSettingsPanel />);
+    await user.click(screen.getByRole("button", { name: "Create Key" }));
+    await user.type(screen.getByLabelText("Name"), "CI pipeline");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // The disclosure is up, so the panel's own state now holds the plaintext.
+    await screen.findByLabelText("API key");
+
+    // The create dialog is mounted for the LIFE of this panel, so without this
+    // the mutation's cached response outlives the one-time disclosure and every
+    // later dismissal of it. Asserted on the call, not on the cache, because the
+    // hook is mocked here: this pins that the panel ASKS for the drop.
+    expect(reset).toHaveBeenCalledTimes(1);
   });
 });

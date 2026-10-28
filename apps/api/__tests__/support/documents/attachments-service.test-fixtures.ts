@@ -3,9 +3,10 @@
  * attachments-service suites.
  *
  * They live here rather than inside one suite because the attachment tests are
- * split by concern — `attachments-service.test.ts` owns upload, inline images,
- * listing, delete and download, and `attachments-service-signed-urls.test.ts`
- * owns the signed-URL context-pack listing — and both drive the same row shape.
+ * split by concern — `attachments-service.test.ts` owns upload, listing and
+ * delete, its `-inline-images` and `-download-url` siblings own those paths,
+ * and `attachments-service-org-scope.test.ts` owns the cross-organization
+ * guard — and all of them drive the same row shape.
  */
 
 import { AttachmentPurpose } from "@repo/api/src/types/attachment";

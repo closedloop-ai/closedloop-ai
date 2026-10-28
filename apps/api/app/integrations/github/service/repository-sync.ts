@@ -39,7 +39,7 @@ export const REPO_UPSERT_CHUNK_SIZE = 3000;
 // unbounded `in`/`notIn` list overflows the same 65,535 Bind ceiling as the
 // upsert. These carry ~1 param/row, so they can run much wider than the 19-bind
 // upsert rows — 20,000 ids = ~20,001 params, comfortably under the ceiling
-// (ISS-4618 CR: shafty023).
+// (ISS-4618 CR: davetho).
 const REPO_ID_FILTER_CHUNK_SIZE = 20_000;
 
 /**
@@ -607,7 +607,10 @@ async function emitRepositoryAuthorityWriteDiagnostics(
     }
     const incomingObservedAt = new Date(authority.provenance.observedAt);
     if (row.defaultBranchObservedAt > incomingObservedAt) {
-      log.error("github_repository_default_authority_stale_rejected", {
+      // `observedAt` is our own receipt clock, so concurrent deliveries for one
+      // repository make this ordinary: the later-received one legitimately won
+      // and this write was correctly rejected. Not an integrity failure.
+      log.info("github_repository_default_authority_stale_rejected", {
         githubRepoId: repository.githubRepoId,
         repositoryFullName: repository.fullName,
         source: authority.provenance.source,

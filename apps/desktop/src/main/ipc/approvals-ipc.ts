@@ -1,23 +1,11 @@
+import { ApprovalsIpcChannel } from "../../shared/approvals-ipc-channel.js";
+import { isAlwaysAllowRule } from "../approvals/always-allow-rules.js";
 import type {
   ApprovalStore,
   PendingApproval,
 } from "../approvals/approval-store.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const ApprovalsIpcChannel = {
-  GetPendingApprovals: "desktop:get-pending-approvals",
-  GetResolvedApprovals: "desktop:get-resolved-approvals",
-  ClearResolvedApprovals: "desktop:clear-resolved-approvals",
-  ApproveApproval: "desktop:approve-approval",
-  DenyApproval: "desktop:deny-approval",
-  AlwaysAllowApproval: "desktop:always-allow-approval",
-  RemoveAlwaysAllowRule: "desktop:remove-always-allow-rule",
-  ClearPendingApprovals: "desktop:clear-pending-approvals",
-} as const;
-
-export type ApprovalsIpcChannel =
-  (typeof ApprovalsIpcChannel)[keyof typeof ApprovalsIpcChannel];
 
 type IpcMainLike = {
   handle: (
@@ -97,8 +85,8 @@ export function registerApprovalsIpcHandlers(
         throw new Error("ruleId is required");
       }
       const settings = deps.settingsStore.getAll();
-      const updated = (settings.alwaysAllowRules ?? []).filter(
-        (r) => r.id !== ruleId.trim()
+      const updated = settings.alwaysAllowRules.filter(
+        (r) => isAlwaysAllowRule(r) && r.id !== ruleId.trim()
       );
       deps.settingsStore.setAlwaysAllowRules(updated);
       return { alwaysAllowRules: updated };

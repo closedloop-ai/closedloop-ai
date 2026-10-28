@@ -11,7 +11,6 @@ import type {
   BrowserKeyApprovalRequestCommandBody,
   BrowserKeyRevocationCommandBody,
   CreateDesktopCommandInput,
-  RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
 import {
   BROWSER_KEY_APPROVAL_REQUEST_OPERATION_ID,
@@ -21,7 +20,6 @@ import {
   BROWSER_KEY_REVOCATION_RESERVED_ERROR_CODE,
 } from "@repo/api/src/types/compute-target";
 import { NextResponse } from "next/server";
-import { parseJsonObject } from "@/lib/json-schema";
 
 type BrowserKeyCommandInput = {
   publicKeyId: string;
@@ -60,28 +58,6 @@ export function isReservedBrowserKeyRevocationCommand(
   return (
     RESERVED_BROWSER_KEY_OPERATION_IDS.has(input.operationId) ||
     isReservedBrowserKeyRevocationPath(input.path)
-  );
-}
-
-/**
- * Returns true when a public relay operation attempts to dispatch the internal
- * browser-key operation id or request path.
- */
-export function isReservedBrowserKeyRevocationRelayOperation(
-  operation: RelayOperationDispatchRequest
-): boolean {
-  if (
-    RESERVED_BROWSER_KEY_OPERATION_IDS.has(operation.operationId) ||
-    RESERVED_BROWSER_KEY_OPERATION_IDS.has(operation.operation)
-  ) {
-    return true;
-  }
-
-  const params = parseJsonObject(operation.params);
-  const request = params ? parseJsonObject(params.request) : null;
-  return (
-    typeof request?.path === "string" &&
-    isReservedBrowserKeyRevocationPath(request.path)
   );
 }
 

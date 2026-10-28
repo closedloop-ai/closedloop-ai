@@ -1,9 +1,9 @@
 "use client";
 
+import { isStaffEmail } from "@repo/api/src/types/staff-email";
 import { ParsingBugFlagProvider } from "@repo/app/agents/data-source/parsing-bug-flag-provider";
-import { isStaffEmail } from "@repo/app/shared/auth/staff-email";
-import { useUser } from "@repo/auth/client";
 import type { ReactNode } from "react";
+import { useActorEmail } from "@/hooks/use-actor-email";
 
 /**
  * FEA-4347: web surface adapter that resolves whether the signed-in user is
@@ -12,15 +12,17 @@ import type { ReactNode } from "react";
  * bug" affordance in the session-trace comment composer. Customers resolve to
  * `false` and never see it. Until identity loads, staff-ness is treated as
  * `false` so the affordance stays hidden by default.
+ *
+ * The email comes from {@link useActorEmail} rather than Clerk directly, so this
+ * gate and the dev-mode one answer from one identity on every lane (ISS-10335).
  */
 export default function StaffParsingBugFlagProvider({
   children,
 }: {
   readonly children: ReactNode;
 }) {
-  const { user, isLoaded } = useUser();
-  const canFlagParsingBug =
-    isLoaded && isStaffEmail(user?.primaryEmailAddress?.emailAddress);
+  const { email, isLoaded } = useActorEmail();
+  const canFlagParsingBug = isLoaded && isStaffEmail(email);
 
   return (
     <ParsingBugFlagProvider canFlagParsingBug={canFlagParsingBug}>

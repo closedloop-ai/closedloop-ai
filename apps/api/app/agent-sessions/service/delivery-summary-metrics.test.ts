@@ -1,4 +1,5 @@
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgentSessionDbMock,
@@ -54,8 +55,8 @@ describe("agentSessionsService delivery summary metrics", () => {
               additions,
               deletions,
               isCurrent: true,
-              repositoryFullName: "closedloop-ai/symphony-alpha",
-              repository: { fullName: "closedloop-ai/symphony-alpha" },
+              repositoryFullName: "closedloop-ai/closedloop-ai",
+              repository: { fullName: "closedloop-ai/closedloop-ai" },
             },
           },
         },
@@ -98,17 +99,16 @@ describe("agentSessionsService delivery summary metrics", () => {
           .fn()
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          // Fourth call: headline cost split. All $2 of matched-session cost is
+          // Third call: headline cost split. All $2 of matched-session cost is
           // API-billed (DESKTOP_SYNC, api billingMode).
           .mockResolvedValueOnce([
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: "api",
               _sum: { estimatedCost: 2 },
             },
           ])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
         // The matched sessions themselves (cost + attribution lenses); each
@@ -143,11 +143,10 @@ describe("agentSessionsService delivery summary metrics", () => {
       // The delivery adapter probes for session→PR links before reading merged
       // PRs (so a broad no-PR-link dashboard never scans rows); this matched set
       // carries links, so the probe must resolve truthy.
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
+      artifactLink: deliveryArtifactLinkMock(),
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -166,12 +165,7 @@ describe("agentSessionsService delivery summary metrics", () => {
     // field still gets the value instead of falling to a neutral dash.
     expect(summary.mergedKlocPerDollar).toBe(2);
   });
-  it("excludes subscription-covered cost from the KLOC-per-$ denominator", async () => {
-    // FEA-3156 (Codex P1): a subscription-billed session must NOT contribute to
-    // the delivery Cost KPI (billing-mode contract). Here ALL $2 of matched
-    // cost is subscription-covered, so the KLOC/$ denominator is $0 → the metric
-    // is unavailable (null) even though a merged PR exists — the raw aggregate
-    // total ($2) must never leak in as spend.
+  it("uses total estimated cost for LOC/$ when all cost is subscription-covered", async () => {
     installDb({
       sessionDetail: buildAgentSessionDbMock({
         aggregate: vi.fn().mockResolvedValue({
@@ -191,17 +185,16 @@ describe("agentSessionsService delivery summary metrics", () => {
           .fn()
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
           // Headline cost split: the whole $2 is DESKTOP_SYNC on a
           // subscription/seat billingMode → subscription cost, $0 API cost.
           .mockResolvedValueOnce([
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: "max_20x",
               _sum: { estimatedCost: 2 },
             },
           ])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
         // The matched session, linking the merged PR read below.
@@ -227,9 +220,9 @@ describe("agentSessionsService delivery summary metrics", () => {
                         additions: 600,
                         deletions: 400,
                         isCurrent: true,
-                        repositoryFullName: "closedloop-ai/symphony-alpha",
+                        repositoryFullName: "closedloop-ai/closedloop-ai",
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -240,8 +233,6 @@ describe("agentSessionsService delivery summary metrics", () => {
           },
         ]),
       }),
-      // A merged PR is linked, so mergedPrCount/medianPrSize still resolve —
-      // only LOC/$ is null because the API-billed denominator is $0.
       pullRequestDetail: {
         findMany: vi
           .fn()
@@ -249,11 +240,10 @@ describe("agentSessionsService delivery summary metrics", () => {
             mergedPrRow({ number: 1, branchArtifactId: "branch-1" }, 600, 400),
           ]),
       },
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
+      artifactLink: deliveryArtifactLinkMock(),
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -261,17 +251,13 @@ describe("agentSessionsService delivery summary metrics", () => {
       filters: {},
     });
 
-    // The subscription session's $2 is reported as subscription spend, never as
-    // API spend, and the LOC/$ card is unavailable because the denominator
-    // (API-billed cost) is $0 — the merged PR alone cannot fabricate a ratio.
     expect(summary.subscriptionEstimatedCost).toBe(2);
     expect(summary.apiEstimatedCost).toBe(0);
+    expect(summary.totalEstimatedCost).toBe(2);
     expect(summary.mergedPrCount).toBe(1);
     expect(summary.medianPrSize).toBe(1000);
-    expect(summary.mergedLocPerDollar).toBeNull();
-    // ISS-4667 EMIT: an unavailable LOC/$ must NOT be scaled into a fabricated
-    // legacy number — the deprecated alias stays null, not 0.
-    expect(summary.mergedKlocPerDollar).toBeNull();
+    expect(summary.mergedLocPerDollar).toBe(500);
+    expect(summary.mergedKlocPerDollar).toBe(0.5);
   });
   it("nulls all three delivery metrics (incl. mergedPrCount) when no merged PRs are linked", async () => {
     installDb({
@@ -293,14 +279,13 @@ describe("agentSessionsService delivery summary metrics", () => {
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
         // A matched session with an OPEN (not merged) linked PR — no merged PR
         // to count, so all three delivery metrics (count, size, efficiency) are
         // genuinely unavailable (null). `mergedPrCount` must NOT be a fabricated
-        // `0` here (data-honesty, FEA-3574 / wongk): the PRs Shipped card would
+        // `0` here (data-honesty, FEA-3574 / whitlockk): the PRs Shipped card would
         // otherwise render a real "0" while its sibling cards dash on the same
         // absent data.
         findMany: vi.fn().mockResolvedValue([
@@ -325,9 +310,9 @@ describe("agentSessionsService delivery summary metrics", () => {
                         additions: 100,
                         deletions: 50,
                         isCurrent: true,
-                        repositoryFullName: "closedloop-ai/symphony-alpha",
+                        repositoryFullName: "closedloop-ai/closedloop-ai",
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -344,11 +329,10 @@ describe("agentSessionsService delivery summary metrics", () => {
       pullRequestDetail: { findMany: vi.fn().mockResolvedValue([]) },
       // A session→PR link exists (an OPEN PR), so the delivery adapter's probe
       // passes and it reads the linked merged PRs — of which there are none.
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
+      artifactLink: deliveryArtifactLinkMock(),
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -409,15 +393,14 @@ describe("agentSessionsService delivery summary metrics", () => {
           .fn()
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: "api",
               _sum: { estimatedCost: 2 },
             },
           ])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
         // Two matched sessions, each linking a distinct null-repo PR #42 on its
@@ -468,11 +451,10 @@ describe("agentSessionsService delivery summary metrics", () => {
             ),
           ]),
       },
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
+      artifactLink: deliveryArtifactLinkMock(),
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -510,49 +492,40 @@ describe("ISS-6398 — LOC/$ (merged) divides by in-window cost", () => {
 
   const WINDOW_START = "2026-03-01T00:00:00.000Z";
   const WINDOW_END = "2026-03-31T23:59:59.000Z";
-  /** In-window spend on a CONFIRMED metered billing mode (ISS-4773 metered ledger). */
+  const IN_WINDOW_SUBSCRIPTION_COST = 5;
   const IN_WINDOW_METERED_COST = 1;
-  /**
-   * In-window spend whose billing mode could not be determined (ISS-4773 unknown
-   * ledger). Seeded non-zero, and deliberately NOT equal to the metered figure: the
-   * LOC/$ divisor is the not-subscription-covered bucket (`metered + unknown`), so
-   * an all-metered (or symmetric) fixture would make `meteredEstimatedCost` and
-   * `apiEstimatedCost` numerically indistinguishable and a divisor silently read
-   * from the narrower bucket would still pass.
-   */
   const IN_WINDOW_UNKNOWN_COST = 3;
-  /** What the divisor must be: metered + unknown, i.e. `apiEstimatedCost`. */
-  const IN_WINDOW_API_COST = IN_WINDOW_METERED_COST + IN_WINDOW_UNKNOWN_COST;
-  /** API-billed spend of the same facet scope with the date window stripped. */
+  const IN_WINDOW_TOTAL_COST =
+    IN_WINDOW_SUBSCRIPTION_COST +
+    IN_WINDOW_METERED_COST +
+    IN_WINDOW_UNKNOWN_COST;
+  /** Spend of the same facet scope with the date window stripped. */
   const ALL_TIME_COST = 2000;
 
   /**
    * True when `where` carries the Sessions date window. `applyDateFilter` writes
-   * it as an `OR` over `lastActivityAt` (with the pre-backfill
-   * `sessionStartedAt` fallback), so its presence is what distinguishes the
-   * windowed summary scope from the date-window-stripped delivery scope.
+   * it as a plain `lastActivityAt` key (ISS-6463 collapsed the old `OR` of an
+   * activity comparison and a `sessionStartedAt` fallback, once the column
+   * became NOT NULL), so its presence is what distinguishes the windowed summary
+   * scope from the date-window-stripped delivery scope.
    */
   function isDateWindowed(where: unknown): boolean {
-    const clauses = (where as { OR?: unknown }).OR;
-    return (
-      Array.isArray(clauses) &&
-      clauses.some((clause) => "lastActivityAt" in (clause as object))
-    );
+    return (where as { lastActivityAt?: unknown }).lastActivityAt !== undefined;
   }
 
-  it("divides merged lines by the in-window spend, not the all-time spend", async () => {
+  it("divides merged lines by the in-window total estimated cost, not the all-time spend", async () => {
     // One `sessionDetail.groupBy` mock for every call, answering from the `where`
-    // rather than from call order: the cost split reports $2 for the windowed
-    // scope and $2,000 for the stripped one. A denominator taken from the wrong
+    // rather than from call order: the cost split reports total spend for the
+    // windowed scope and $2,000 for the stripped one. A denominator taken from the wrong
     // scope therefore changes the ASSERTED RATIO, not just a call count.
     const groupBy = vi.fn((args: { by: string[]; where?: unknown }) => {
-      if (!args.by.includes("sourceLoopId")) {
+      if (!args.by.includes("legacyLoopCostLedger")) {
         return Promise.resolve([]);
       }
       if (!isDateWindowed(args.where)) {
         return Promise.resolve([
           {
-            sourceLoopId: null,
+            legacyLoopCostLedger: null,
             billingMode: "api",
             _sum: { estimatedCost: ALL_TIME_COST },
           },
@@ -560,13 +533,18 @@ describe("ISS-6398 — LOC/$ (merged) divides by in-window cost", () => {
       }
       return Promise.resolve([
         {
-          sourceLoopId: null,
+          legacyLoopCostLedger: null,
+          billingMode: "max_20x",
+          _sum: { estimatedCost: IN_WINDOW_SUBSCRIPTION_COST },
+        },
+        {
+          legacyLoopCostLedger: null,
           billingMode: "api",
           _sum: { estimatedCost: IN_WINDOW_METERED_COST },
         },
         // A legacy-null billing mode → the ISS-4773 UNKNOWN ledger.
         {
-          sourceLoopId: null,
+          legacyLoopCostLedger: null,
           billingMode: null,
           _sum: { estimatedCost: IN_WINDOW_UNKNOWN_COST },
         },
@@ -582,7 +560,7 @@ describe("ISS-6398 — LOC/$ (merged) divides by in-window cost", () => {
             outputTokens: 50,
             cacheReadTokens: 10,
             cacheWriteTokens: 5,
-            estimatedCost: IN_WINDOW_API_COST,
+            estimatedCost: IN_WINDOW_TOTAL_COST,
           },
           _min: { sessionStartedAt: new Date(WINDOW_START) },
           _max: { sessionStartedAt: new Date(WINDOW_START) },
@@ -606,11 +584,10 @@ describe("ISS-6398 — LOC/$ (merged) divides by in-window cost", () => {
             ),
           ]),
       },
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
+      artifactLink: deliveryArtifactLinkMock(),
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
       user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -618,24 +595,20 @@ describe("ISS-6398 — LOC/$ (merged) divides by in-window cost", () => {
       filters: { startDate: WINDOW_START, endDate: WINDOW_END },
     });
 
-    // 4000 gross lines ÷ $4 in-window API-billed = 1000 LOC/$. Dividing by the
-    // $2,000 all-time spend instead yields 2 — the reported defect.
-    expect(summary.mergedLocPerDollar).toBe(1000);
-    // …and the denominator is the SAME in-window figure the summary publishes as
-    // `apiEstimatedCost`. Reading the narrower `meteredEstimatedCost` bucket
-    // instead would drop the unknown ledger — which ISS-4900 records as the
-    // dominant share on subscription-heavy accounts — and inflate the ratio to
-    // 4000. (`apiEstimatedCost` is what the Cost card headlines only with the
-    // ISS-4773 honesty flag OFF; with it on the card shows the metered half, so
-    // the two tiles are not expected to multiply out.)
-    expect(summary.apiEstimatedCost).toBe(IN_WINDOW_API_COST);
+    // 4000 gross lines divided by the in-window total estimated cost.
+    expect(summary.mergedLocPerDollar).toBeCloseTo(4000 / IN_WINDOW_TOTAL_COST);
+    // The denominator is the same total-cost figure the summary publishes.
+    expect(summary.totalEstimatedCost).toBe(IN_WINDOW_TOTAL_COST);
+    expect(summary.apiEstimatedCost).toBe(
+      IN_WINDOW_METERED_COST + IN_WINDOW_UNKNOWN_COST
+    );
     expect(summary.meteredEstimatedCost).toBe(IN_WINDOW_METERED_COST);
     // No cost aggregate ran over a date-window-stripped scope at all: the
     // all-time $2,000 snapshot above is unreachable, so the ratio cannot fall
     // back to it. (The stripped delivery scope still drives the merged-PR
     // NUMERATOR — that read is `pullRequestDetail.findMany`, not a cost groupBy.)
     const costCalls = groupBy.mock.calls.filter(([args]) =>
-      args.by.includes("sourceLoopId")
+      args.by.includes("legacyLoopCostLedger")
     );
     expect(costCalls.length).toBeGreaterThan(0);
     expect(costCalls.every(([args]) => isDateWindowed(args.where))).toBe(true);
@@ -654,7 +627,7 @@ function mergedPrRow(
   deletions: number
 ) {
   const repositoryFullName =
-    pr.repo === undefined ? "closedloop-ai/symphony-alpha" : pr.repo;
+    pr.repo === undefined ? "closedloop-ai/closedloop-ai" : pr.repo;
   return {
     number: pr.number,
     prState: GitHubPRState.Merged,
@@ -664,6 +637,34 @@ function mergedPrRow(
     isCurrent: true,
     repositoryFullName,
     repository: repositoryFullName ? { fullName: repositoryFullName } : null,
-    currentForBranches: [{ artifactId: pr.branchArtifactId }],
+    branchArtifact: {
+      id: pr.branchArtifactId,
+      _count: { pullRequestDetails: 1 },
+      targetLinks: [
+        {
+          metadata: repositoryFullName
+            ? {
+                linkKind: SessionArtifactLinkKind.SessionPr,
+                repositoryFullName,
+                prNumber: pr.number,
+              }
+            : { linkKind: SessionArtifactLinkKind.SessionPr },
+        },
+      ],
+    },
+  };
+}
+
+function deliveryArtifactLinkMock() {
+  return {
+    findFirst: vi.fn().mockResolvedValue({ id: "link-1" }),
+    findMany: vi.fn().mockImplementation((args) =>
+      Promise.resolve(
+        (args.where.targetId?.in ?? []).map((targetId: string) => ({
+          targetId,
+          metadata: { linkKind: SessionArtifactLinkKind.SessionPr },
+        }))
+      )
+    ),
   };
 }

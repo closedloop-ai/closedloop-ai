@@ -6,13 +6,8 @@ import {
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
-import {
-  desktopTelemetryEventSchema,
-  KNOWN_LOOP_PERF_EVENTS,
-  TelemetryCategory,
-} from "@repo/observability/telemetry/schema";
-
-export type TelemetryEmitInstruction = { event: string; payload: unknown };
+import { desktopTelemetryEventSchema } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 
 export type TelemetryHandlerContext = {
   /**
@@ -21,43 +16,32 @@ export type TelemetryHandlerContext = {
    */
   authenticatedTargetId: string;
   /**
-   * pluginVersion from the hello payload (direct-connect) or relay-forwarded body.
-   * Not fetched from DB.
+   * pluginVersion as the caller received it. Not fetched from DB.
    */
   pluginVersion?: string;
   /**
-   * gatewaySessionId forwarded by relay or from SocketConnectionContext.
-   */
-  gatewaySessionId?: string;
-  /**
-   * Server-enriched organizationId from the authenticated socket context.
+   * Server-enriched organizationId from the authenticated request.
    * NOT trusted from the desktop payload.
    */
   organizationId?: string;
   /**
-   * Server-enriched userId from the authenticated socket context.
+   * Server-enriched userId from the authenticated request.
    * NOT trusted from the desktop payload.
    */
   userId?: string;
 };
 
-export type TelemetryHandlerResult =
-  | { ok: true }
-  | { ok: false; validationFailed: true; emits: TelemetryEmitInstruction[] };
+export type TelemetryHandlerResult = { ok: true } | { ok: false };
 
 /**
- * Shared handler for desktop.telemetry events.
+ * Handler for Desktop telemetry events posted to `POST /desktop/telemetry`.
  *
  * Validates the raw payload against desktopTelemetryEventSchema, verifies
  * trace.computeTargetId matches the authenticated targetId, sanitizes
  * diagnostics, then emits an enriched structured log.
  *
- * On validation failure, returns emits for telemetry.validation_failed with
- * only ZodIssue path/code/expected (no received values).
- *
- * Used by both:
- * - apps/api/app/internal/relay/socket-event/route.ts (relay path)
- * - apps/api/lib/desktop-gateway-socket-server.ts (direct-connect path)
+ * On validation failure, logs telemetry.validation_failed with only ZodIssue
+ * path/code/expected (no received values) and returns `ok: false`.
  */
 export function handleTelemetryEvent(
   payload: unknown,
@@ -82,71 +66,20 @@ export function handleTelemetryEvent(
       issues: safeIssues,
     });
 
-    return {
-      ok: false,
-      validationFailed: true,
-      emits: [
-        {
-          event: "telemetry.validation_failed",
-          payload: { issues: safeIssues },
-        },
-      ],
-    };
+    return { ok: false };
   }
 
   const event = parseResult.data;
 
   // Verify trace.computeTargetId matches authenticated targetId
   if (event.trace.computeTargetId !== context.authenticatedTargetId) {
-    const safeIssues = [
-      {
-        path: ["trace", "computeTargetId"],
-        code: "custom",
-        expected: context.authenticatedTargetId,
-      },
-    ];
-
     log.warn("Desktop telemetry computeTargetId mismatch", {
       category: TelemetryCategory.TelemetryValidationFailed,
       authenticatedTargetId: context.authenticatedTargetId,
       traceComputeTargetId: event.trace.computeTargetId,
     });
 
-    return {
-      ok: false,
-      validationFailed: true,
-      emits: [
-        {
-          event: "telemetry.validation_failed",
-          payload: { issues: safeIssues },
-        },
-      ],
-    };
-  }
-
-  // Drift detection: warn when the desktop emits a loopPerf payload whose
-  // event variant we don't recognize OR is missing entirely, while still
-  // forwarding the payload to Datadog. Producer additivity (PRD-254 §FR-6)
-  // requires unknown/skewed variants to flow through rather than be rejected;
-  // the warning makes desktop-version skew observable. Missing `event` is
-  // surfaced as `loopPerfEvent: null` so a Datadog query can isolate it.
-  const loopPerf = event.diagnostics?.loopPerf;
-  if (loopPerf !== undefined) {
-    const loopPerfEvent = loopPerf.event;
-    if (
-      loopPerfEvent === undefined ||
-      !KNOWN_LOOP_PERF_EVENTS.has(loopPerfEvent)
-    ) {
-      log.warn("Desktop telemetry loopPerf event variant unknown", {
-        category: TelemetryCategory.LoopPerfUnknownEventVariant,
-        eventCategory: event.category,
-        loopPerfEvent: loopPerfEvent ?? null,
-        commandId: event.trace.commandId,
-        gatewaySessionIdHash: redactGatewaySessionId(
-          event.trace.gatewaySessionId
-        ),
-      });
-    }
+    return { ok: false };
   }
 
   try {
@@ -156,13 +89,11 @@ export function handleTelemetryEvent(
     );
 
     // Enrich trace with server-side context via buildTelemetryTraceContext.
-    // pluginVersion comes from hello payload (not DB).
+    // pluginVersion comes from the caller (not DB).
     // serverVersion and environment come from process env (resolved by the builder).
     const enrichedTrace = buildTelemetryTraceContext({
       ...event.trace,
       pluginVersion: context.pluginVersion,
-      gatewaySessionId:
-        context.gatewaySessionId ?? event.trace.gatewaySessionId,
     });
 
     log.info("Desktop telemetry event received", {

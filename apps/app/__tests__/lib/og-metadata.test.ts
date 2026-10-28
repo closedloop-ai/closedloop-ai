@@ -31,7 +31,7 @@ describe("resolveOgMetadata", () => {
     vi.restoreAllMocks();
   });
 
-  describe("document handlers (prds, implementation-plans, documents)", () => {
+  describe("document paths (documents and the legacy prds, implementation-plans)", () => {
     it("fetches metadata for prds/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
         Response.json({ title: "My PRD", type: "PRD" })
@@ -67,7 +67,7 @@ describe("resolveOgMetadata", () => {
       expect(metadata.description).toBe("Plan");
     });
 
-    it("fetches metadata for documents/<slug> (fallback redirect)", async () => {
+    it("fetches metadata for documents/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
         Response.json({ title: "Some Document", type: "PRD" })
       );
@@ -82,10 +82,59 @@ describe("resolveOgMetadata", () => {
     });
   });
 
-  describe("feature handler", () => {
+  describe("ISS-12855: /documents/<slug> serves every document's unfurl", () => {
+    it("describes an issue at documents/<slug> as Issue, <status>", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({
+          title: "Fix login bug",
+          type: "FEATURE",
+          status: "IN_PROGRESS",
+        })
+      );
+
+      const metadata = await resolveOgMetadata("acme/documents/ISS-42");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/ISS-42/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("Fix login bug | Closedloop.ai");
+      expect(metadata.description).toBe("Issue, In Progress");
+    });
+
+    it("returns the fallback for a Template, which has no detail page", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "PRD template", type: "TEMPLATE" })
+      );
+
+      const metadata = await resolveOgMetadata("acme/documents/TPL-1");
+
+      expect(metadata.title).toBe("Closedloop.ai");
+    });
+
+    it("describes a PRD at documents/<slug> by its type badge", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "My PRD", type: "PRD", status: "DRAFT" })
+      );
+
+      const metadata = await resolveOgMetadata("acme/documents/PRD-1");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/PRD-1/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.description).toBe("PRD");
+    });
+  });
+
+  describe("legacy issue paths (issues, features)", () => {
     it("fetches metadata for features/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-        Response.json({ title: "Fix login bug", status: "IN_PROGRESS" })
+        Response.json({
+          title: "Fix login bug",
+          type: "FEATURE",
+          status: "IN_PROGRESS",
+        })
       );
 
       const metadata = await resolveOgMetadata("features/fix-login-bug");
@@ -98,11 +147,15 @@ describe("resolveOgMetadata", () => {
       expect(metadata.description).toBe("Issue, In Progress");
     });
 
-    // FEA-4137: Issues live at /issues/; the OG handler resolves the same
-    // metadata for the canonical path as for the retired /features/ alias.
+    // The legacy /issues/ and /features/ paths still unfurl (Clerk's
+    // redirect_url and the Slackbot rewrite carry them).
     it("fetches metadata for issues/<slug>", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-        Response.json({ title: "Fix login bug", status: "IN_PROGRESS" })
+        Response.json({
+          title: "Fix login bug",
+          type: "FEATURE",
+          status: "IN_PROGRESS",
+        })
       );
 
       const metadata = await resolveOgMetadata("acme/issues/ISS-42");
@@ -114,6 +167,28 @@ describe("resolveOgMetadata", () => {
       expect(metadata.title).toBe("Fix login bug | Closedloop.ai");
       expect(metadata.description).toBe("Issue, In Progress");
     });
+
+    // ISS-9560. This unfurl ships to Slack and Linear for every /issues/ link,
+    // and its old fallback chain printed the raw wire token and then fell
+    // through to the artifact TYPE label — so a status-less issue previewed as
+    // "Issue, Issue": the type stated twice, and nothing about the status.
+    // UNGATED, unlike the in-app surfaces: server module, no flag seam, and a
+    // broken fallback restored is a bug fix.
+    it.each([
+      ["a status the build does not recognize", "BRANCH_MERGED"],
+      ["no status at all", undefined],
+    ])(
+      "describes %s as Unknown rather than restating the type",
+      async (_case, status) => {
+        vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+          Response.json({ title: "Fix login bug", type: "FEATURE", status })
+        );
+
+        const metadata = await resolveOgMetadata("issues/ISS-42");
+
+        expect(metadata.description).toBe("Issue, Unknown");
+      }
+    );
   });
 
   describe("fallback behavior", () => {
@@ -169,7 +244,11 @@ describe("resolveOgMetadata", () => {
 
     it("fetches metadata for org-scoped features path", async () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-        Response.json({ title: "Auth Feature", status: "DRAFT" })
+        Response.json({
+          title: "Auth Feature",
+          type: "FEATURE",
+          status: "DRAFT",
+        })
       );
 
       const metadata = await resolveOgMetadata("acme/features/FEA-42");
@@ -308,7 +387,11 @@ describe("resolveOgMetadataFromRedirectUrl", () => {
 
   it("resolves document metadata for a same-host absolute redirect_url", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      Response.json({ title: "My Feature", status: "IN_PROGRESS" })
+      Response.json({
+        title: "My Feature",
+        type: "FEATURE",
+        status: "IN_PROGRESS",
+      })
     );
 
     const metadata = await resolveOgMetadataFromRedirectUrl(

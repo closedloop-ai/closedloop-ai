@@ -12,9 +12,9 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { RuntimeInfoIpcChannel } from "../src/main/ipc/runtime-info-ipc.js";
+import { describe, test } from "vitest";
 import { createDesktopApi } from "../src/main/preload-common.js";
+import { RuntimeInfoIpcChannel } from "../src/shared/runtime-info-ipc-channel.js";
 import {
   emptyTranscriptStatusCounts,
   TranscriptEgressGate,
@@ -47,6 +47,7 @@ describe("transcript-sync status preload bridge (ISS-4719)", () => {
       online: false,
       tierGate: TranscriptEgressGate.Denied,
       storeReady: false,
+      computeTargetId: null,
       statusCounts: emptyTranscriptStatusCounts(),
     };
     const { ipc, invokes } = makeFakeIpc(snapshot);
@@ -65,6 +66,7 @@ describe("transcript-sync status preload bridge (ISS-4719)", () => {
       online: true,
       tierGate: TranscriptEgressGate.Allowed,
       storeReady: true,
+      computeTargetId: null,
       statusCounts: {
         ...emptyTranscriptStatusCounts(),
         [TranscriptSyncStatus.Uploading]: 2,

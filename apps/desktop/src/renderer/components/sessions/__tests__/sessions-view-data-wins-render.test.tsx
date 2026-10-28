@@ -1,3 +1,6 @@
+import { isGridChromeRowId } from "@closedloop-ai/design-system/lib/grid-table-v2-chrome-rows";
+import { SESSIONS_LIST_LOADING_LABEL } from "@repo/app/agents/components/sessions/sessions-list-loading-labels";
+import { SESSIONS_HISTORY_LIST_TEST_ID } from "@repo/app/agents/components/sessions/sessions-list-surface-v2";
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -19,15 +22,36 @@ const sessionsViewHooks = sessionsViewHookMocks();
  * "starting" then blanked the whole list to an infinite spinner even though the
  * rows were in hand. These render SessionsView in LOCAL mode with the local
  * source status wedged on "starting" (the probe never resolves ready) and assert
- * that held data — or an observed-complete boot import — collapses the effective
- * display state to "ready" so the rows render instead of the spinner. The
- * genuinely-still-starting case (no data, no complete import) still spins.
+ * that a current settled read — even an empty one — collapses the effective
+ * display state to "ready" so the table or empty state renders instead of the
+ * spinner. The genuinely-still-starting case (no data, no complete import) still
+ * spins.
  *
  * ISS-4837: the module mocks, hook baseline, `window.desktopApi` descriptor
  * handling and the render/flush helper live in the shared
  * `./fixtures/sessions-view-render-fixture` module, shared with
  * `sessions-view-status-self-heal`. Only this suite's own overrides stay here.
+ *
+ * ISS-8909: the v1 list content the fixture used to stand in for is no longer
+ * mounted, so the rendered v2 surface IS what these cases read — the rows it
+ * paints, or the honest empty state where there are none. Both halves of each
+ * claim survive the move: the spinner is absent AND the row count is what the
+ * settled read carried.
  */
+
+/** Body rows the v2 grid painted, excluding its header row. */
+function renderedRowCount(): number {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[data-grid-row][data-grid-row-id]")
+  ).filter((row) => !isGridChromeRowId(row.dataset.gridRowId ?? "")).length;
+}
+
+/**
+ * The neutral genuinely-empty title (local mode always reports a connected
+ * agent, so this is the zero-row copy, never the onboarding ask). A literal
+ * rather than a read off the component, so it cannot agree with itself.
+ */
+const NEUTRAL_EMPTY_TITLE = "No sessions yet";
 
 describe("SessionsView data-wins render while status latched starting (ISS-4772)", () => {
   beforeEach(() => {
@@ -58,46 +82,33 @@ describe("SessionsView data-wins render while status latched starting (ISS-4772)
 
     await renderSessionsView();
 
-    // The full-body "Loading sessions..." spinner must NOT be showing — held data
+    // The full-body SESSIONS_LIST_LOADING_LABEL spinner must NOT be showing — held data
     // collapsed the latched "starting" to "ready".
-    expect(screen.queryByText("Loading sessions...")).toBeNull();
-    const body = screen.getByTestId("sessions-table-body");
-    expect(body.getAttribute("data-is-loading")).toBe("false");
-    expect(body.getAttribute("data-item-count")).toBe("2");
+    expect(screen.queryByText(SESSIONS_LIST_LOADING_LABEL)).toBeNull();
+    expect(screen.getByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy();
+    // The held rows themselves, not merely a list region: a surface that swapped
+    // the rows for a skeleton would satisfy the absence above.
+    expect(renderedRowCount()).toBe(2);
   });
 
-  it("collapses starting via the import arm (not the held-data arm) when the boot import is observed complete with no held rows", async () => {
-    // ISS-4772 review (wongk/logical-QA): exercise the INGEST arm specifically —
-    // the query holds no rows (`data` undefined, the fixture default), but the
-    // boot import has settled complete, so the local source is genuinely up. The
-    // latched "starting" label must collapse to "ready" off the import signal
-    // alone and stop blanking the body to the infinite spinner.
-    sessionsViewHooks.useIngestProgress.mockReturnValue({
-      total: 10,
-      processed: 10,
-      preparing: false,
-      complete: true,
-    });
-
+  it("renders the honest empty state when the page-data query settles empty while status is latched starting", async () => {
     await renderSessionsView();
 
-    // The infinite full-body spinner must NOT show — the settled import collapsed
-    // the latched "starting". With no rows the body lands on the honest empty
-    // surface, which is correct here because the read gate was promoted alongside
-    // the display state, so this "empty" reflects a read that actually ran.
-    expect(screen.queryByText("Loading sessions...")).toBeNull();
-    const body = screen.getByTestId("sessions-table-body");
-    expect(body.getAttribute("data-is-loading")).toBe("false");
-    expect(body.getAttribute("data-item-count")).toBe("0");
+    expect(screen.queryByText(SESSIONS_LIST_LOADING_LABEL)).toBeNull();
+    expect(screen.getByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy();
+    // Settled empty is SAID, not left blank: the honest zero-row copy with no
+    // rows behind it.
+    expect(screen.getByText(NEUTRAL_EMPTY_TITLE)).toBeTruthy();
+    expect(renderedRowCount()).toBe(0);
   });
 
   it("does NOT collapse starting on keepPreviousData rows from a stale query key", async () => {
-    // ISS-4772 review (wongk cid 3696061970): `keepPreviousData` keeps the prior
+    // ISS-4772 review (whitlockk cid 3696061970): `keepPreviousData` keeps the prior
     // key's rows on screen as `isPlaceholderData` while a filter/page change
     // loads. Those rows describe a scope the active query has not read yet, so
     // they must NOT promote the latched "starting" to "ready" — that would let
-    // the table lie about the active scope. `hasHeldListData` requires rows from
-    // the ACTIVE key, so the honest loading state holds until the real read lands.
+    // the table lie about the active scope. `hasCurrentListData` requires a read
+    // from the ACTIVE key, so the honest loading state holds until it lands.
     sessionsViewHooks.useAgentSessionsPageData.mockReturnValue({
       data: { list: listWith([{ id: "stale1" }, { id: "stale2" }]) },
       isLoading: false,
@@ -111,7 +122,7 @@ describe("SessionsView data-wins render while status latched starting (ISS-4772)
 
     // Placeholder rows do not count as held data → the view stays honestly
     // loading rather than claiming "ready" over an unread scope.
-    expect(screen.getByText("Loading sessions...")).toBeTruthy();
+    expect(screen.getByText(SESSIONS_LIST_LOADING_LABEL)).toBeTruthy();
   });
 
   it("still shows the loading spinner when genuinely starting with no data and no complete import", async () => {
@@ -128,6 +139,6 @@ describe("SessionsView data-wins render while status latched starting (ISS-4772)
 
     // The unresolved starting state (no held data, no complete import) keeps the
     // honest full-body loading state — the fix must not mask a genuine cold start.
-    expect(screen.getByText("Loading sessions...")).toBeTruthy();
+    expect(screen.getByText(SESSIONS_LIST_LOADING_LABEL)).toBeTruthy();
   });
 });

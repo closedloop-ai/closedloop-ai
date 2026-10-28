@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
-import {
-  MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS_PER_SESSION,
-  type SyncedMonitoredSessionActivity,
-} from "@repo/api/src/types/session-monitored-activity";
+import type { SyncedMonitoredSessionActivity } from "@repo/api/src/types/session-monitored-activity";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import { GitHubMonitoredActivityTool } from "../src/main/collectors/parsing/monitored-session-github-mcp.js";
 import {
@@ -19,6 +16,9 @@ import {
   MONITORED_ACTIVITY_TEST_READ_AT as READ_AT,
   MONITORED_ACTIVITY_TEST_REPOSITORY as REPOSITORY,
 } from "./support/monitored-session-activity-fixtures.js";
+
+/** ISS-9860 retired the Session-wide carrier cap; the case below exceeds it. */
+const RETIRED_SESSION_EVENT_CAP = 100;
 
 describe("ISS-6060 monitored Session activity hardening", () => {
   test("shares one concrete completion predicate across activity producers", () => {
@@ -66,7 +66,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6060,
               method: "get",
             },
@@ -77,7 +77,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6060,
             },
           },
@@ -100,7 +100,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6061,
               method: "get",
             },
@@ -113,7 +113,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6062,
               method: "get",
             },
@@ -125,7 +125,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
             },
             output: `https://github.com/${REPOSITORY}/pull/6063`,
           },
@@ -159,7 +159,7 @@ describe("ISS-6060 monitored Session activity hardening", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6060,
               commentId: 42,
             },
@@ -188,9 +188,8 @@ describe("ISS-6060 monitored Session activity hardening", () => {
     assert.equal(refs.some(refHasMonitoredActivity), false);
   });
 
-  test("caps aggregate Session evidence latest-first across distinct targets", () => {
-    const eventCount =
-      MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS_PER_SESSION + 1;
+  test("ISS-9860: keeps every target past the retired Session-wide cap, each Complete", () => {
+    const eventCount = RETIRED_SESSION_EVENT_CAP + 1;
     const refs = extractArtifactRefs(
       makeSession({
         messages: Array.from({ length: eventCount }, (_, index) => ({
@@ -202,26 +201,17 @@ describe("ISS-6060 monitored Session activity hardening", () => {
     );
     const retained = refs.filter(refHasMonitoredActivity);
 
-    assert.equal(
-      retained.length,
-      MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS_PER_SESSION
-    );
+    assert.equal(retained.length, eventCount);
     assert.equal(
       retained.some((ref) => ref.targetIdentity === `${REPOSITORY}#7000`),
-      false,
-      "the oldest target falls outside the Session-wide cap"
-    );
-    assert.equal(
-      retained.some(
-        (ref) => ref.targetIdentity === `${REPOSITORY}#${7000 + eventCount - 1}`
-      ),
-      true
+      true,
+      "the oldest target survives without a Session-wide cap"
     );
     assert.ok(
       retained.every(
         (ref) =>
           monitoredActivityFor(ref)?.completeness ===
-          BranchActivityEvidenceCompleteness.Partial
+          BranchActivityEvidenceCompleteness.Complete
       )
     );
   });

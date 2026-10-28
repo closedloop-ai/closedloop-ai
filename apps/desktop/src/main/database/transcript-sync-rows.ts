@@ -1,7 +1,8 @@
 /**
  * @file transcript-sync-rows.ts
- * @description The persisted `TranscriptSyncState` row shape and the pure
- * functions over it — the BigInt coercion the writer needs, the row → domain
+ * @description The `TranscriptSyncState` columns the fingerprint path reads —
+ * a PROJECTION of the persisted row, not the whole of it (ISS-6326) — and the
+ * pure functions over it: the BigInt coercion the writer needs, the row → domain
  * {@link TranscriptFingerprint} mapper, and the pincer interleave that builds a
  * ready batch out of two row orderings.
  *
@@ -23,6 +24,13 @@ import {
   transcriptQueueKey,
 } from "../transcript-sync/transcript-sync-types.js";
 
+/**
+ * ISS-6326: the `TranscriptSyncState` columns the fingerprint path reads, and
+ * ONLY those. Not the whole persisted row: `createdAt`/`updatedAt` are never
+ * mapped, and `cloudUploadedAt`/`cloudUploadedComputeTargetId` belong to the
+ * `listMainBlobStates` projection, which carries its own `select` and its own
+ * return type rather than passing through {@link toFingerprint}.
+ */
 export type TranscriptRow = {
   externalSessionId: string;
   fileKey: string;
@@ -41,9 +49,43 @@ export type TranscriptRow = {
   missingSourceCount: number;
   nextAttemptAt: string | null;
   lastError: string | null;
-  cloudUploadedAt: string | null;
-  cloudUploadedComputeTargetId: string | null;
+  laneStalledSince: string | null;
 };
+
+/**
+ * The `select` every read feeding {@link toFingerprint} passes, so the query
+ * asks for exactly what the mapper consumes.
+ *
+ * The `satisfies` is the guard that matters: widening a `select` never fails
+ * `tsc` on its own, so without it a column could be added back here — or a new
+ * {@link TranscriptRow} field left unselected — and nothing would complain until
+ * production handed the mapper an `undefined`. Both directions are checked:
+ * excess-property checking rejects a key that is not on `TranscriptRow`, and the
+ * `Record` rejects a `TranscriptRow` key that is missing.
+ */
+export const TRANSCRIPT_FINGERPRINT_SELECT = {
+  externalSessionId: true,
+  fileKey: true,
+  sourceHarness: true,
+  sourcePath: true,
+  sourcePathHash: true,
+  lastMtimeMs: true,
+  lastSize: true,
+  syncedByteOffset: true,
+  syncedSha256: true,
+  storedEtag: true,
+  syncedComputeTargetId: true,
+  status: true,
+  syncClass: true,
+  retryCount: true,
+  missingSourceCount: true,
+  nextAttemptAt: true,
+  lastError: true,
+  // ISS-7097: read by the drain's lane-wide ceiling. `uploadingSince` is
+  // deliberately NOT here — only the reclaim's own `updateMany` predicate reads
+  // the lease, so adding it would widen this projection (ISS-6326) for nothing.
+  laneStalledSince: true,
+} as const satisfies Record<keyof TranscriptRow, true>;
 
 export function toBigInt(value: number | null): bigint | null {
   return value == null ? null : BigInt(Math.trunc(value));
@@ -115,5 +157,6 @@ export function toFingerprint(row: TranscriptRow): TranscriptFingerprint {
     missingSourceCount: row.missingSourceCount,
     nextAttemptAt: row.nextAttemptAt,
     lastError: row.lastError,
+    laneStalledSince: row.laneStalledSince,
   };
 }

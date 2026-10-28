@@ -1,0 +1,21 @@
+{
+  "name": "@repo/vitest-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "typescript": "^7.0.2"
+  }
+}

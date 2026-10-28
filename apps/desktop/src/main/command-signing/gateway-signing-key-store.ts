@@ -42,11 +42,36 @@ export type GatewaySigningKeyResult =
  *   bytes can never be recovered, so the only path forward is a fresh key.
  * - `key_import_failed`: decryption succeeded but the plaintext is not a valid
  *   private key (corrupt material) — equally unusable.
- * Deliberately excluded: `safe_storage_unavailable` (transient/environmental —
- * regenerating would churn keys) and `gateway_id_missing` (a caller error).
+ * Every other member is deliberately excluded, and the map below is the
+ * enforceable record of that — a new reason fails `tsc` there, not here:
+ * - `safe_storage_unavailable`: transient/environmental, so regenerating would
+ *   churn keys.
+ * - `gateway_id_missing`: a caller error.
+ * - `key_generation_failed`: emitted only by `create` itself, so regenerating
+ *   in response to it would just re-run the step that already failed.
  */
+const REGENERABLE_REASON_MAP: Record<
+  GatewaySigningKeyUnavailableReason,
+  boolean
+> = {
+  key_missing: true,
+  decrypt_failed: true,
+  key_import_failed: true,
+  safe_storage_unavailable: false,
+  gateway_id_missing: false,
+  key_generation_failed: false,
+};
 const REGENERABLE_REASONS: ReadonlySet<GatewaySigningKeyUnavailableReason> =
-  new Set(["key_missing", "decrypt_failed", "key_import_failed"]);
+  new Set(
+    (
+      Object.entries(REGENERABLE_REASON_MAP) as [
+        GatewaySigningKeyUnavailableReason,
+        boolean,
+      ][]
+    )
+      .filter(([, v]) => v)
+      .map(([k]) => k)
+  );
 
 export type GatewaySigningKeyStoreOptions = {
   cwd?: string;

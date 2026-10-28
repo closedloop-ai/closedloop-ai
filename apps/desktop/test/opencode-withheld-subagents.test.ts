@@ -20,7 +20,7 @@
  */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import type { OpencodeWithheldSubagentReport } from "../src/main/collectors/opencode/opencode-withheld-subagents.js";
 import { buildWithheldSubagentRoot } from "../src/main/collectors/opencode/opencode-withheld-subagents.js";
@@ -566,7 +566,7 @@ test("ISS-5266: a failed withhold-record write REFUSES the fingerprint seal, so 
   );
 });
 
-test("ISS-5266 (thadeusb review): resetIngestState clears the withhold-write failure too, so a reset collector is not wedged by the PREVIOUS run's failed record", async () => {
+test("ISS-5266 (tamsinb review): resetIngestState clears the withhold-write failure too, so a reset collector is not wedged by the PREVIOUS run's failed record", async () => {
   // `resetIngestState` is the "start from a clean slate" seam in the collector
   // interface. It used to clear the fingerprint and the seeded marker but leave
   // `withheldRecordFailed` set, so a reset that followed a failed record

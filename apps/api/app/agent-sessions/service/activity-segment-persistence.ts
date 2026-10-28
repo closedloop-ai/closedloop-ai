@@ -1,11 +1,24 @@
 import type { SyncedAgentSession } from "@repo/api/src/types/agent-session";
 import { log } from "@repo/observability/log";
 import type { AgentSessionUpsertTx } from "./records";
+import { bindParameterChunkSize } from "./write-chunking";
+
+/**
+ * ISS-8185: bind parameters `agentSessionActivitySegment.createMany` emits per
+ * row. Eleven: the nine mapped columns below, plus the `id` and `createdAt`
+ * Prisma materializes client-side from their `@default(...)`s. Hand-maintained
+ * against the model — widen it in the same change that adds a column, or the
+ * derived chunk size stops bounding the statement.
+ */
+export const ACTIVITY_SEGMENT_BIND_PARAMETERS_PER_ROW = 11;
+
+/** `createMany` binds nothing outside its per-row `VALUES` tuples. */
+export const ACTIVITY_SEGMENT_FIXED_BIND_PARAMETERS = 0;
 
 /**
  * ISS-4541 / ISS-4578: chunk-aware persistence of a session's raw
  * activity-segment tiling (`session_activity_segments`), extracted from
- * `persist-session-children.ts` (shafty023 P3) so that file stays under the
+ * `persist-session-children.ts` (davetho P3) so that file stays under the
  * size ceiling and this cohesive concern — validation + replace/append
  * orchestration + row mapping for the activity lane — owns its own module. The
  * only route-facing entry point is `persistSessionActivitySegments`, called from
@@ -77,8 +90,10 @@ function validateActivityTiling(
  *     never delete. `skipDuplicates` on the unique `(agentSessionId, startMs)`
  *     key makes re-send + chunk overlap an idempotent no-op, mirroring the
  *     `agent_session_token_events` append lane. The whole per-session apply is
- *     skipped upstream for a FOREIGN chunk (see `service.ts`), so an append only
- *     ever runs for a chunk that belongs to the sequence chunk 0 opened.
+ *     skipped upstream for a FOREIGN chunk (`resolveGateRefusal` in
+ *     `session-slice-gating.ts`), so an append only ever runs for a chunk that
+ *     belongs to the sequence chunk 0 opened — which is what lets the append
+ *     lane admit a slice with nothing stored yet (ISS-10259).
  *
  * Backward compatibility (version skew, both directions):
  *   - OLD desktop replicates the FULL tiling into every chunk (it rode
@@ -104,8 +119,19 @@ export async function persistSessionActivitySegments(
   // ISS-4541: chunk-0-of-an-advancing-revision signal from `resolveChunkGating`.
   // Optional/defaulted so the pre-ISS-4541 whole-session callers (and tests) keep
   // the REPLACE-ALL behavior: an unchunked whole session is `shouldReplace = true`.
-  shouldReplace = true
-): Promise<void> {
+  shouldReplace = true,
+  // ISS-8603: the append lane's refusal is REPORTED here rather than through
+  // the return value, which already conflates all three no-write paths and so
+  // cannot name the one — or, with the reason, the arm — the counter describes.
+  // Optional so every caller that only wants the persisted/not answer stays
+  // unchanged.
+  skips?: ActivityTilingSkipReport
+  // ISS-7265: `true` only when segment rows were actually WRITTEN. Three paths
+  // below carry rows on the wire and persist none of them (sanity reject, stale
+  // classifier replace, append-lane version mismatch), and the tiling-strip
+  // column may not read "the tiling arrived" off a payload whose rows this
+  // module then threw away.
+): Promise<boolean> {
   // Org isolation (apps/api/AGENTS.md "Org scoping"). JOIN-REACHED child table —
   // org lives on the parent `artifacts` row via `session -> artifact`. The
   // stale-version `findFirst` read and the replace-all `deleteMany` both scope
@@ -140,7 +166,7 @@ export async function persistSessionActivitySegments(
   const isMultiPartOpening =
     shouldReplace && tilingFieldPresent && (session.chunk?.total ?? 1) > 1;
   if (rows.length === 0 && !isMultiPartOpening) {
-    return;
+    return false;
   }
 
   if (rows.length > 0) {
@@ -154,7 +180,7 @@ export async function persistSessionActivitySegments(
           rowCount: rows.length,
         }
       );
-      return;
+      return false;
     }
   }
 
@@ -172,18 +198,28 @@ export async function persistSessionActivitySegments(
   // own `classifierVersion` guard, not in the events-lane revision decision.
   const isLaterChunk = (session.chunk?.index ?? 0) > 0;
   if (!isLaterChunk) {
-    await replaceStoredActivityTiling(tx, artifactId, organizationId, rows);
-    return;
+    return await replaceStoredActivityTiling(
+      tx,
+      artifactId,
+      organizationId,
+      rows
+    );
   }
 
   // A later chunk of a paginated tiling: append this disjoint slice only.
   // `skipDuplicates` on the unique `(agentSessionId, startMs)` key makes a
   // re-send / overlapping chunk an idempotent no-op.
-  await appendActivityTilingSlice(tx, artifactId, organizationId, rows);
+  return await appendActivityTilingSlice(
+    tx,
+    artifactId,
+    organizationId,
+    rows,
+    skips
+  );
 }
 
 /**
- * ISS-4578 (codex P1 / shafty023 P1): append one later-chunk slice, gated on the
+ * ISS-4578 (codex P1 / davetho P1): append one later-chunk slice, gated on the
  * stored tiling's classifier version so the append lane cannot mix versions.
  *
  * The chunk-sequence gate (`resolveChunkGating`) keys on `dataRevision`, but the
@@ -198,18 +234,23 @@ export async function persistSessionActivitySegments(
  *   - a slice from a DIFFERENT classifier version than the one chunk 0 opened
  *     (a re-tile that raced the sequence) would interleave two tilings.
  *
- * So a later slice appends ONLY when its version matches the stored tiling's
- * version (what chunk 0 established). A version MISMATCH — older (superseded
- * re-delivery) or newer (a re-tile that never opened its own sequence) — is
- * skipped and logged; the session stays dirty on the desktop and the next
- * in-order chunk 0 of the correct version re-opens and repairs the tiling.
+ * So a later slice is REFUSED exactly when a STORED tiling disagrees with
+ * it. A version MISMATCH — older (superseded re-delivery) or newer (a
+ * re-tile that never opened its own sequence) — is skipped and logged; the
+ * session stays dirty on the desktop and the next in-order chunk 0 of the
+ * correct version re-opens and repairs the tiling.
+ *
+ * ISS-10259: an EMPTY stored tiling is not a third failure mode, it is the
+ * ordinary shape of a paginated sequence mid-flight, and refusing it dropped
+ * every such tiling permanently. See the guard below.
  */
 async function appendActivityTilingSlice(
   tx: AgentSessionUpsertTx,
   artifactId: string,
   organizationId: string,
-  rows: NonNullable<SyncedAgentSession["activitySegmentRows"]>
-): Promise<void> {
+  rows: NonNullable<SyncedAgentSession["activitySegmentRows"]>,
+  skips?: ActivityTilingSkipReport
+): Promise<boolean> {
   const stored = await tx.agentSessionActivitySegment.findFirst({
     where: {
       agentSessionId: artifactId,
@@ -220,27 +261,87 @@ async function appendActivityTilingSlice(
     select: { classifierVersion: true },
     orderBy: { classifierVersion: "desc" },
   });
-  const incomingVersion = Math.max(...rows.map((row) => row.version));
-  // If chunk 0 was never staged (no stored tiling), or the slice's version does
-  // not match the stored tiling's version, this slice does not belong to the
-  // sequence that owns the currently-stored rows — skip it rather than mixing
-  // versions. (A missing stored tiling means chunk 0 hasn't landed yet; the
-  // sequence self-repairs when it does.)
-  if (!stored || incomingVersion !== stored.classifierVersion) {
+  const incomingVersion = maxClassifierVersion(rows);
+  // A slice whose version disagrees with the STORED tiling belongs to a
+  // different sequence than the one that owns the currently-stored rows — skip
+  // it rather than mixing versions.
+  //
+  // ISS-10259: NO stored tiling is not that case, and refusing it was a
+  // permanent data-loss defect. A later chunk reaches this lane only after
+  // `resolveChunkGating` matched it against the marker chunk 0 STAGED — one
+  // arriving with no sequence staged is FOREIGN and `resolveGateRefusal`
+  // returns before any write (`chunk-revision-gating.test.ts`, "flags a
+  // non-first chunk when no sequence is staged"). Precisely: reaching here
+  // proves chunk 0 staged a marker on the row the PRE-UPSERT READ saw — not
+  // that chunk 0's rows are on the artifact being written. So the ORDINARY
+  // reading of an empty stored tiling here is not "chunk 0 is still in flight"
+  // but "chunk 0 opened the sequence and stored nothing": when the desktop
+  // paginates the
+  // tiling the other streams pack first (`appendRequiredStreamChunks`) and
+  // `createChunkBuilders.baseFor` stamps an explicit `activitySegmentRows: []`
+  // on every non-tiling chunk, so chunk 0 clears and inserts none. Every one of
+  // the tiling's own slices then found nothing to attest against and was
+  // dropped, and the redelivery meant to repair it reproduced the same empty
+  // chunk 0 — 78 of 85 affected sessions still had zero stored segments a
+  // fortnight on. This slice IS the sequence's first tiling rows; the ones
+  // behind it attest against the version it establishes here.
+  //
+  // TWO narrower shapes also land here with nothing stored, and both are
+  // ADMITTED deliberately.
+  //
+  // The FIRST is a slice of this sequence that `validateActivityTiling` rejected
+  // (its own `log.warn`): the ones after it append without it, so the tiling is
+  // short by that slice. Refusing them would cost the whole tiling to protect
+  // one slice.
+  //
+  // The SECOND is the ISS-8604 create-arm race — a sweep commits between the
+  // gate's read and the upsert, so `writeSessionDetail` mints a fresh artifact
+  // and chunk 0's rows stay on the swept one. This one is NOT "short by a
+  // slice" (review, davetho): the arriving chunk is the only one that ever
+  // reaches the new artifact, so the stored tiling can be as little as the
+  // final slice. Admitted anyway, because refusing here protects nothing and
+  // heals nothing:
+  //   - the SAME race already gives that artifact only this chunk's EVENTS, so
+  //     a refusal buys a tiling-less row beside a one-chunk event set rather
+  //     than a correct session;
+  //   - it cannot make the desktop re-prepare. `upsertSessionSlice` returns
+  //     `persisted: true` whatever this lane decides — nothing reads
+  //     `ActivityTilingSkipReport` but the ISS-8603 metric — so the session is
+  //     echoed in `persistedSessionIds` and the outbox row clears either way;
+  //   - and the row is born honest about it: `resolveCreateArmChunkColumns`
+  //     re-gates the chunk against no stored sequence, so it commits no
+  //     `dataRevision` and stages no marker.
+  // Withholding the ACK is what would make that path retry from chunk 0, and
+  // that is ISS-8604's contract over every column the race touches, not this
+  // lane's to decide one column at a time. Pinned end to end against real
+  // Postgres in `session-create-arm-race.integration.test.ts`.
+  //
+  // One property this DOES spend: the `findFirst` above is org-scoped while the
+  // `createMany` below is not (it rests on the caller's ownership proof — see
+  // the note on `persistSessionActivitySegments`). A null from that scoped read
+  // used to fail CLOSED; it now falls through to the write. Unreachable today,
+  // since `artifactId` arrives already proven owned, but it is no longer a
+  // second line of defence and should not be counted as one.
+  if (stored && incomingVersion !== stored.classifierVersion) {
+    // ISS-8603: set INSIDE the refused branch, so the counter measures slices
+    // this lane actually threw away rather than appends it merely considered.
+    if (skips) {
+      skips.refusalReason = ActivityTilingSkipReason.VersionMismatch;
+    }
     log.warn(
       "activity-segment append slice does not match the stored tiling classifier version; skipping to avoid a mixed-version tiling",
       {
         agentSessionId: artifactId,
         incomingVersion,
-        storedVersion: stored?.classifierVersion ?? null,
+        storedVersion: stored.classifierVersion,
       }
     );
-    return;
+    return false;
   }
-  await tx.agentSessionActivitySegment.createMany({
-    data: rows.map((row) => toActivitySegmentCreateRow(artifactId, row)),
+  await createActivitySegmentRows(tx, artifactId, rows, {
     skipDuplicates: true,
   });
+  return true;
 }
 
 /**
@@ -255,9 +356,9 @@ async function replaceStoredActivityTiling(
   artifactId: string,
   organizationId: string,
   rows: NonNullable<SyncedAgentSession["activitySegmentRows"]>
-): Promise<void> {
+): Promise<boolean> {
   if (rows.length > 0) {
-    const incomingVersion = Math.max(...rows.map((row) => row.version));
+    const incomingVersion = maxClassifierVersion(rows);
     const stored = await tx.agentSessionActivitySegment.findFirst({
       where: {
         agentSessionId: artifactId,
@@ -277,7 +378,7 @@ async function replaceStoredActivityTiling(
           storedVersion: stored.classifierVersion,
         }
       );
-      return;
+      return false;
     }
   }
 
@@ -290,11 +391,48 @@ async function replaceStoredActivityTiling(
     },
   });
   if (rows.length === 0) {
-    return;
+    return false;
   }
-  await tx.agentSessionActivitySegment.createMany({
-    data: rows.map((row) => toActivitySegmentCreateRow(artifactId, row)),
-  });
+  await createActivitySegmentRows(tx, artifactId, rows, {});
+  return true;
+}
+
+/**
+ * ISS-8185: insert a tiling across as many statements as PostgreSQL's
+ * bind-parameter ceiling allows, instead of one statement whose width is the
+ * payload's. ISS-8051 removed the receive-side `.max()` that used to bound
+ * `activitySegmentRows`, and an over-wide statement is rejected outright — the
+ * session transaction rolls back and the desktop retries the identical payload
+ * forever. Every row still lands, and the loop runs inside the caller's
+ * session-upsert transaction, so a chunk that fails rolls the whole tiling back
+ * rather than leaving a partial one visible — the property
+ * `replaceStoredActivityTiling`'s delete-then-insert already depends on.
+ *
+ * Chunking is otherwise semantically free here: the rows are non-overlapping by
+ * `validateActivityTiling`, so their `(agentSessionId, startMs)` unique keys are
+ * distinct and no chunk can collide with another's.
+ */
+async function createActivitySegmentRows(
+  tx: AgentSessionUpsertTx,
+  artifactId: string,
+  rows: NonNullable<SyncedAgentSession["activitySegmentRows"]>,
+  // Spread rather than always passed: the replace lane omits the flag entirely
+  // and only the append lane sets it, which is the distinction the suites
+  // pinning these two writes read off the call.
+  options: { skipDuplicates?: true }
+): Promise<void> {
+  const chunkSize = bindParameterChunkSize(
+    ACTIVITY_SEGMENT_BIND_PARAMETERS_PER_ROW,
+    ACTIVITY_SEGMENT_FIXED_BIND_PARAMETERS
+  );
+  for (let start = 0; start < rows.length; start += chunkSize) {
+    await tx.agentSessionActivitySegment.createMany({
+      data: rows
+        .slice(start, start + chunkSize)
+        .map((row) => toActivitySegmentCreateRow(artifactId, row)),
+      ...options,
+    });
+  }
 }
 
 /** Map one wire activity-segment row to its persisted create shape. */
@@ -314,3 +452,77 @@ function toActivitySegmentCreateRow(
     subagentId: row.subagentId ?? null,
   };
 }
+
+/**
+ * The highest `classifierVersion` across a wire tiling slice.
+ *
+ * ISS-8330: this was `Math.max(...rows.map((row) => row.version))`. The spread
+ * passes one argument per row, and the request byte ceiling
+ * (`SYNC_DECOMPRESSED_BYTE_CEILING`) admits ~180k near-identical rows — well
+ * past the argument limit, where the spread throws `RangeError: Maximum call
+ * stack size exceeded`. That throw escapes `withDb.tx`, and because it is
+ * deterministic the session re-throws it on every retry. ISS-8051 removed the
+ * `.max()` on this array on purpose, so the bound belongs here, at the fold.
+ *
+ * Seeded at `-Infinity` to match `Math.max()` exactly on an empty array. No
+ * caller reaches either site with an empty `rows` today — `shouldReplace`
+ * implies chunk 0, which routes to the replace lane, whose own call is inside
+ * `rows.length > 0` — so this is parity kept deliberately rather than a
+ * reachable case.
+ */
+function maxClassifierVersion(
+  rows: NonNullable<SyncedAgentSession["activitySegmentRows"]>
+): number {
+  let max = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    if (row.version > max) {
+      max = row.version;
+    }
+  }
+  return max;
+}
+
+/**
+ * ISS-8603: why the append lane refused a later chunk's tiling slice.
+ *
+ * ONE arm: a stored tiling EXISTS at another version — a re-tile raced the
+ * sequence, or chunk 0 was refused as stale and its later slices arrived
+ * anyway.
+ *
+ * ISS-10259 retired the second, `no_stored_tiling`. It read an EMPTY stored
+ * tiling as "chunk 0 has not landed", which the sequence gate makes
+ * unreachable; what it actually caught was the ordinary shape of a paginated
+ * tiling between its opening chunk and its first slice, and refusing that
+ * dropped the whole tiling. The append lane admits it now, so no producer of
+ * that reason is left and a facet nothing can emit is one a monitor would read
+ * as a clean signal.
+ *
+ * A reason facet rather than a second metric, on the `SentinelRevisionHeld`
+ * precedent — one member, one emission per reason per batch, each carrying a
+ * scalar `count` a generator can read.
+ */
+export const ActivityTilingSkipReason = {
+  VersionMismatch: "version_mismatch",
+} as const;
+
+export type ActivityTilingSkipReason =
+  (typeof ActivityTilingSkipReason)[keyof typeof ActivityTilingSkipReason];
+
+/**
+ * ISS-8603: one slice's activity-tiling refusal, filled in by the persistence
+ * lane and read by its caller.
+ *
+ * Mutable and passed down rather than returned, on the
+ * `persistSessionAnalytics(..., unstorableCounterFields)` precedent in the same
+ * call chain: the boolean this module returns answers "were rows written", and
+ * widening it into a result object would rewrite that contract for every caller
+ * that only ever wanted the write answer.
+ *
+ * ONE reason, not a list: exactly one append lane runs per slice, so a second
+ * refusal for the same session is not reachable. The batch sums one per session
+ * per reason.
+ */
+export type ActivityTilingSkipReport = {
+  /** `null` until the append lane refuses this slice. */
+  refusalReason: ActivityTilingSkipReason | null;
+};

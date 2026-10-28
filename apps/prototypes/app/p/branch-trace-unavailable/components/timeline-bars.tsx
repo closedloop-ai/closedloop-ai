@@ -7,18 +7,24 @@
 // is the empty-read guard in TimelineBars (zero columns = the failed trace
 // read this prototype is about).
 
+import {
+  eventDotClusterLabel,
+  positionEventDots,
+} from "@repo/app/branches/components/prototype-preview/components/event-dot-position";
+import type {
+  BranchDetail,
+  EventDot,
+} from "@repo/app/branches/components/prototype-preview/mock";
+import {
+  timelineColumnHeightPct,
+  timelineTokenTotal,
+} from "@repo/app/branches/components/prototype-preview/timeline-fixtures";
 import { chartColorPairForTokenIndex } from "@repo/design-system/components/ui/chart-colors";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
-import { positionEventDots } from "@/app/p/branches/components/event-dot-position";
-import type { BranchDetail, EventDot } from "@/app/p/branches/mock";
-import {
-  timelineColumnHeightPct,
-  timelineTokenTotal,
-} from "@/app/p/branches/timeline-fixtures";
 
 const DOT_COLOR: Record<EventDot["kind"], string> = {
   blue: "var(--primary)",
@@ -315,46 +321,93 @@ function EventDotRail({
   return (
     <div className="relative mt-1">
       <div className="relative" style={{ height: `${stackRows * 24}px` }}>
-        {positionedDots.map(({ dot, leftPct, stackIndex }) => (
-          <Tooltip key={`${dot.at}-${dot.label}`}>
-            <TooltipTrigger asChild>
-              <button
-                aria-label={`Jump to ${DOT_LABEL[dot.kind]}: ${dot.label}`}
-                className="group absolute flex size-6 -translate-x-1/2 items-center justify-center rounded-full p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => onJumpToTurn(dot.targetTurnId)}
-                style={{
-                  left: `${leftPct}%`,
-                  top: `${stackIndex * 24}px`,
-                }}
-                type="button"
+        {positionedDots.map((entry) => {
+          if (entry.type === "cluster") {
+            const firstDot = entry.dots[0];
+            if (!firstDot) {
+              return null;
+            }
+            return (
+              <Tooltip key={`cluster-${entry.leftPct}-${entry.stackIndex}`}>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={eventDotClusterLabel(entry.dots)}
+                    className="group absolute flex size-6 -translate-x-1/2 items-center justify-center rounded-full bg-muted p-0 font-medium text-[10px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => onJumpToTurn(firstDot.targetTurnId)}
+                    style={{
+                      left: `${entry.leftPct}%`,
+                      top: `${entry.stackIndex * 24}px`,
+                    }}
+                    type="button"
+                  >
+                    +{entry.dots.length}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  className="flex w-auto max-w-72 flex-col gap-1 p-3 [&>[data-radix-popper-arrow]]:hidden [&>svg]:hidden"
+                  side="top"
+                >
+                  <span className="font-medium text-xs">
+                    {eventDotClusterLabel(entry.dots)}
+                  </span>
+                  {entry.dots.map((dot) => (
+                    <span
+                      className="inline-flex items-center gap-1.5 text-xs"
+                      key={`${dot.at}-${dot.label}`}
+                    >
+                      <span
+                        className="size-2 rounded-full"
+                        style={{ background: DOT_COLOR[dot.kind] }}
+                      />
+                      {dot.label}
+                    </span>
+                  ))}
+                </TooltipContent>
+              </Tooltip>
+            );
+          }
+          const { dot, leftPct, stackIndex } = entry;
+          return (
+            <Tooltip key={`${dot.at}-${dot.label}`}>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label={`Jump to ${DOT_LABEL[dot.kind]}: ${dot.label}`}
+                  className="group absolute flex size-6 -translate-x-1/2 items-center justify-center rounded-full p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => onJumpToTurn(dot.targetTurnId)}
+                  style={{
+                    left: `${leftPct}%`,
+                    top: `${stackIndex * 24}px`,
+                  }}
+                  type="button"
+                >
+                  <span
+                    className="size-3 rounded-full ring-2 ring-background transition-transform duration-100 group-hover:scale-125"
+                    style={{ background: DOT_COLOR[dot.kind] }}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                className="flex w-auto max-w-72 flex-col gap-1 p-3 [&>[data-radix-popper-arrow]]:hidden [&>svg]:hidden"
+                side="top"
               >
                 <span
-                  className="size-3 rounded-full ring-2 ring-background transition-transform duration-100 group-hover:scale-125"
-                  style={{ background: DOT_COLOR[dot.kind] }}
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent
-              className="flex w-auto max-w-72 flex-col gap-1 p-3 [&>[data-radix-popper-arrow]]:hidden [&>svg]:hidden"
-              side="top"
-            >
-              <span
-                className="inline-flex items-center gap-1.5 font-medium text-xs"
-                style={{ color: DOT_TEXT_COLOR[dot.kind] }}
-              >
-                <span
-                  className="size-2 rounded-full"
-                  style={{ background: DOT_COLOR[dot.kind] }}
-                />
-                {DOT_LABEL[dot.kind]}
-              </span>
-              <span className="font-mono text-[11px] text-muted-foreground">
-                {dot.at}
-              </span>
-              <span className="text-xs">{dot.label}</span>
-            </TooltipContent>
-          </Tooltip>
-        ))}
+                  className="inline-flex items-center gap-1.5 font-medium text-xs"
+                  style={{ color: DOT_TEXT_COLOR[dot.kind] }}
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ background: DOT_COLOR[dot.kind] }}
+                  />
+                  {DOT_LABEL[dot.kind]}
+                </span>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  {dot.at}
+                </span>
+                <span className="text-xs">{dot.label}</span>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
       </div>
     </div>
   );

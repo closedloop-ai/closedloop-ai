@@ -1,5 +1,5 @@
 /**
- * ISS-5363 (wongk review): the component-detail Sessions tab must not deny
+ * ISS-5363 (whitlockk review): the component-detail Sessions tab must not deny
  * sessions the payload never measured.
  *
  * `AgentComponentDetail.sessions` is nullable on the wire, and `componentMetrics`

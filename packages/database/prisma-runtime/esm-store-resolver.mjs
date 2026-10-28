@@ -1,5 +1,6 @@
-import { register } from "node:module";
+import { registerHooks } from "node:module";
 import path from "node:path";
+import { initialize, resolve } from "./esm-store-resolver-hooks.mjs";
 
 /**
  * ISS-6781: the `--import` preload for the Prisma CLI when it is SPAWNED out of
@@ -21,7 +22,10 @@ import path from "node:path";
  * place `applyMigrateRuntimeLayout` already publishes them, so the two module
  * systems cannot disagree about which store the bundle carries. Non-store
  * entries — the Lambda runtime's own — are dropped here rather than in the
- * hook, so the hook thread receives only what it can use.
+ * hook, so the hook receives only what it can use.
+ *
+ * `registerHooks`, not `register`: Node 26 deprecates `module.register()`
+ * (DEP0205) and prints the warning on every CLI spawn.
  *
  * Dependency-free on purpose, like the sibling `prisma.config.mjs`: this file
  * runs inside the spawned CLI, where Next's file tracing cannot see it, so it
@@ -34,6 +38,5 @@ const storeDirs = (process.env.NODE_PATH ?? "")
   .split(path.delimiter)
   .filter((entry) => STORE_MODULE_DIR.test(entry));
 
-register("./esm-store-resolver-hooks.mjs", import.meta.url, {
-  data: { storeDirs },
-});
+initialize({ storeDirs });
+registerHooks({ resolve });

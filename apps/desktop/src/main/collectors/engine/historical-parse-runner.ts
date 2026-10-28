@@ -1,5 +1,7 @@
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
 import type { Harness } from "../types.js";
 import type { HistoricalParseResult } from "./historical-parse-source.js";
+import type { HistoricalParseWorkerResumePoint } from "./historical-parse-worker-protocol.js";
 
 /** Off-main-process parser used for automatic historical maintenance sweeps. */
 export type HistoricalParseRunner = {
@@ -23,7 +25,21 @@ export type HistoricalParseRunner = {
   parseSource(
     collectorKey: Harness,
     source: string,
-    onDispatch?: () => void
+    onDispatch?: () => void,
+    /**
+     * ISS-7696 (optional): where a previous, COMPLETED pass left this source, so
+     * the worker sends the sessions the response budget could not carry then
+     * instead of the same prefix again. The runner holds no continuation of its
+     * own — the caller does, because only the caller knows whether the last
+     * window was actually consumed. Absent means "parse from the beginning",
+     * which is what every pre-ISS-7696 caller asks for.
+     */
+    resumeAfter?: HistoricalParseWorkerResumePoint,
+    /**
+     * ISS-12552 (PRD-800 "Rollout"): the policy to parse under, carried on
+     * the request as data. Absent, the worker parses under the base policy.
+     */
+    parsePolicy?: ParsePolicy
   ): Promise<HistoricalParseResult>;
   /**
    * Stop any active worker and reject in-flight parser jobs. The runner remains

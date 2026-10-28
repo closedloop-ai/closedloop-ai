@@ -7,13 +7,20 @@
  * dependency, and degrade to the pre-existing behaviour when it is absent or
  * fails, rather than failing the pass — so they live together here.
  *
- * Extracted from `collector-manager.ts` (ISS-5161) so that grandfathered file
- * keeps travelling DOWN rather than growing with each change; the manager still
+ * Extracted from `collector-manager.ts` (ISS-5161) so that file keeps
+ * travelling DOWN rather than growing with each change; the manager still
  * owns the pass itself and simply calls these with its own collector/options.
  */
-import { type HarnessCollector, narrowHarness } from "../types.js";
+import type { ImportIngestFailure } from "@closedloop-ai/telemetry-contract/app";
+import type { NormalizedParseQuality } from "@repo/lib/harness/parse-quality";
+import {
+  CollectorParseScope,
+  type HarnessCollector,
+  narrowHarness,
+} from "../types.js";
 import type { BoundedParseInvoker } from "./bounded-parse.js";
 import type { CatchupCache } from "./catchup-cache.js";
+import { createUnreadableParseReporter } from "./collector-ingest-failure.js";
 import type { HistoricalParseRunner } from "./historical-parse-runner.js";
 import type { HistoricalParseResult } from "./historical-parse-source.js";
 
@@ -36,20 +43,54 @@ export type ExistingSessionIdsInput = {
  * own deadline. The in-process fallback has no dispatch tail — the parse begins
  * the instant it is invoked — so it fires `onDispatch` immediately, matching the
  * runner path's contract.
+ *
+ * ISS-7625: the live-watcher default invoker resolves through here too, with no
+ * runner (so it still parses in-process), purely so the unreadable-parse drain
+ * cannot be present on the historical path and absent on the live one.
  */
 export function parseHistoricalSource(
   collector: HarnessCollector,
-  runner: HistoricalParseRunner | undefined
+  runner: HistoricalParseRunner | undefined,
+  // ISS-7625: the two primitives the unreadable-parse report needs, rather than
+  // a prebuilt sink, so the manager keeps no reporter of its own.
+  onIngestFailure?: (reason: ImportIngestFailure) => void,
+  isImportActive: () => boolean = () => true
 ): BoundedParseInvoker {
+  const onUnreadableParse = createUnreadableParseReporter(
+    onIngestFailure,
+    isImportActive
+  );
   if (!runner) {
-    return (source, onDispatch) => {
+    return async (source, onDispatch) => {
       onDispatch();
-      return collector.parse(source);
+      const sessions = await collector.parse(source);
+      // ISS-7625: drained straight off the collector, because in-process THIS
+      // instance is the one that parsed. The runner branch below has to take the
+      // same value off the wire instead — that asymmetry is the whole reason the
+      // worker needed a field rather than a shared sink.
+      reportUnreadableParse(
+        collector.takeUnreadableParseQuality?.(),
+        onUnreadableParse
+      );
+      return sessions;
     };
   }
-  return async (source, onDispatch) => {
-    const result = await runner.parseSource(collector.key, source, onDispatch);
-    // ISS-5266 (wongk review): replay the out-of-process parse's SIDE-REPORT on
+  return async (source, onDispatch, parsePolicy) => {
+    // ISS-7696: the continuation comes from the collector that owns the
+    // fingerprint, and only ever holds one a COMPLETED pass earned — see
+    // `BatchHarnessCollector.resumeAfterForSource`. Reading it here, on the seam
+    // that already replays the side-report, is what keeps "how far the worker
+    // got" and "how far the import got" a single answer.
+    const resumeAfter =
+      narrowHarness(collector).batchCollector?.resumeAfterForSource?.(source);
+    const result = await runner.parseSource(
+      collector.key,
+      source,
+      onDispatch,
+      resumeAfter,
+      parsePolicy
+    );
+    // ISS-5266 (whitlockk review): replay the out-of-process parse's SIDE-REPORT on
     // the main-process collector before handing the sessions back.
     //
     // This `await` is the whole ordering guarantee, and it is structural rather
@@ -60,9 +101,31 @@ export function parseHistoricalSource(
     // exactly as it does on the in-process path, instead of the worker's
     // throwaway instance latching a failure nobody ever reads while the real
     // instance seals the store over a record that never landed.
-    await applyParseSideReport(collector, result);
+    await applyParseSideReport(
+      collector,
+      result,
+      CollectorParseScope.Import,
+      source
+    );
+    reportUnreadableParse(result.unreadableParseQuality, onUnreadableParse);
     return result.sessions;
   };
+}
+
+/**
+ * Hand one no-timestamp parse's quality to the pass's sink, when there was one.
+ *
+ * Extracted so the in-process and worker branches cannot drift: they read the
+ * value from different places by necessity, and this is the single point that
+ * decides what counts as "there was something to report".
+ */
+function reportUnreadableParse(
+  quality: NormalizedParseQuality | undefined,
+  onUnreadableParse: ((quality: NormalizedParseQuality) => void) | undefined
+): void {
+  if (quality) {
+    onUnreadableParse?.(quality);
+  }
 }
 
 /**
@@ -76,14 +139,38 @@ export function parseHistoricalSource(
  */
 export async function applyParseSideReport(
   collector: HarnessCollector,
-  result: HistoricalParseResult
+  result: HistoricalParseResult,
+  // ISS-7696: which caller this report speaks for. Defaulted so every existing
+  // call site keeps the import reading; only the DATA_REVISION rebuild, which
+  // never seals, passes anything else.
+  scope: CollectorParseScope = CollectorParseScope.Import,
+  // ISS-8561: the source this report describes. Every PRODUCTION caller passes
+  // it — a batch collector may own several stores, and the seal gate is a
+  // per-store answer. Optional only so a caller predating the multi-store
+  // collector still compiles; a collector that owns one store infers it, and
+  // one that owns several refuses every seal rather than guess.
+  sourcePath?: string
 ): Promise<void> {
-  if (!result.withheldOpencodeSubagents) {
-    return;
-  }
+  // ISS-5854: called for EVERY parse, not only one that reported something. The
+  // truncation latch below describes the LAST load, so a clean load has to be
+  // able to clear it — an early return on "nothing to report" would leave a
+  // once-truncated source refusing its seal forever.
   const { batchCollector } = narrowHarness(collector);
   await batchCollector?.applyParseSideReport?.({
-    withheldOpencodeSubagents: result.withheldOpencodeSubagents,
+    ...(result.withheldOpencodeSubagents
+      ? { withheldOpencodeSubagents: result.withheldOpencodeSubagents }
+      : {}),
+    // ISS-5854: a budget-truncated load must reach the instance that owns the
+    // fingerprint, for exactly the reason the withheld report does — this is the
+    // same seal gate, not a second one.
+    ...(result.droppedSessions
+      ? { droppedSessions: result.droppedSessions }
+      : {}),
+    // ISS-7696: parked as PENDING by the collector; it becomes the next
+    // request's continuation only if this pass reaches the seal gate.
+    ...(result.resumeAfter ? { resumeAfter: result.resumeAfter } : {}),
+    ...(sourcePath ? { sourcePath } : {}),
+    scope,
   });
 }
 
@@ -95,7 +182,7 @@ export async function applyParseSideReport(
  * - Non-batch collectors: self-heal cache/DB divergence, a cache-"unchanged"
  *   source whose row was dropped. Needs a persistent catchup cache AND a path
  *   → session id (`sessionIdForSource`).
- * - ISS-5161 (wongk review), BATCH collectors on the low-duty pass: verify
+ * - ISS-5161 (whitlockk review), BATCH collectors on the low-duty pass: verify
  *   that a session the resume cursor wants to fast-forward past is still IN
  *   the sink. The store fingerprint proves only that the SOURCE has not moved;
  *   `agent-dashboard.sqlite` is a sibling path that can be rebuilt underneath

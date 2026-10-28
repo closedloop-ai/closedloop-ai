@@ -6,6 +6,7 @@ import {
 } from "@repo/api/src/types/agent-component";
 import { ComponentScope } from "@repo/api/src/types/component-scope";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY } from "../../../../shared/lib/feature-flags";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
@@ -220,13 +221,12 @@ describe("Agents Source column — provenance honesty (ISS-5009)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Detail page — the Properties "Source" row
-// ---------------------------------------------------------------------------
 
 function detailSource(detail: ReturnType<typeof makeDetail>) {
   const source: AgentComponentsDataSource = {
     scope: "test-iss-5009-detail",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in detail tests")),
     detail: () => Promise.resolve(detail),
   };
@@ -258,6 +258,7 @@ function renderDetail({
  * would include the literal word "Source" and mask an empty value.
  */
 async function propertiesSourceValue(): Promise<HTMLElement> {
+  await userEvent.click(await screen.findByRole("tab", { name: "Details" }));
   const label = await screen.findByText("Source");
   const value = label.parentElement?.children[1];
   if (!(value instanceof HTMLElement)) {

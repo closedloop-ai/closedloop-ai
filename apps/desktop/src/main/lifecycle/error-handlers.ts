@@ -36,6 +36,19 @@ type ProcessErrorHandlerDeps = Partial<CrashDialogDeps> & {
   exit: (code: number) => void;
   emitException?: (error: unknown) => void;
   /**
+   * ISS-8776 — announce the imminent teardown to the in-process supervisors
+   * before anything else on a fatal branch.
+   *
+   * `exit` here is `app.exit()`, which skips `before-quit` and therefore skips
+   * the whole graceful shutdown ordering. Without this call the db-host
+   * supervisor never learns the app is going away, sees the teardown's own
+   * child exit as a crash, and re-forks into a dying process. Invoked FIRST —
+   * ahead of the telemetry emit, the modal crash dialog, and the bounded
+   * telemetry flush — because those are seconds of wall time during which the
+   * supervisor is otherwise fighting the shutdown.
+   */
+  beginShutdown?: () => void;
+  /**
    * Drain the telemetry emitted by {@link ProcessErrorHandlerDeps.emitException}
    * before exit (ISS-6328). Production ships exceptions through Batch
    * processors with a ~5s delay, and `app.exit()` skips `before-quit`, so
@@ -97,6 +110,7 @@ export async function handleUncaughtException(
     );
     return;
   }
+  beginShutdownSafely(deps);
   emitExceptionSafely(deps, error);
   deps.log(
     `[error-handler] uncaught exception: ${error.message}${error.stack ? `\n${error.stack}` : ""}`
@@ -143,6 +157,7 @@ export async function handleUnhandledRejection(
     return;
   }
 
+  beginShutdownSafely(deps);
   emitExceptionSafely(deps, reason);
   deps.log(
     `[error-handler] unhandled rejection: ${reason.message}${reason.stack ? `\n${reason.stack}` : ""}`
@@ -159,8 +174,17 @@ export async function handleUnhandledRejection(
   deps.exit(1);
 }
 
+function beginShutdownSafely(deps: { beginShutdown?: () => void }): void {
+  try {
+    deps.beginShutdown?.();
+  } catch {
+    // A supervisor teardown cannot interfere with the existing crash path —
+    // same contract as the dialog and telemetry helpers below.
+  }
+}
+
 function emitExceptionSafely(
-  deps: ProcessErrorHandlerDeps,
+  deps: { emitException?: (error: unknown) => void },
   error: unknown
 ): void {
   try {
@@ -229,4 +253,123 @@ export function showStartupCrashDialog(
   } catch {
     // Dialog unavailable — exit path must not be blocked.
   }
+}
+
+export type BootstrapErrorHandlerDeps = {
+  /**
+   * Route the failure to the pre-init telemetry queue. Shares
+   * {@link emitExceptionSafely} with the full-featured pair above, so a throw
+   * from the bridge cannot reach the bootstrap crash path.
+   */
+  emitException: (error: unknown) => void;
+  showDialog: (message: string) => void;
+  exit: (code: number) => void;
+};
+
+/**
+ * The bootstrap `uncaughtException` handler `index.ts` registers before the
+ * application module graph is evaluated, and removes once `startup.ts` installs
+ * the full-featured pair above.
+ *
+ * Lives here rather than inline in `index.ts` so the capture decision is driven
+ * by a test without booting Electron — `index.ts` supplies the electron dialog,
+ * `app.exit`, and the telemetry bridge.
+ *
+ * It captures but cannot deliver: there is no runtime and no transport yet, and
+ * `deps.exit` is `app.exit`, which terminates immediately. The queued record
+ * reaches the wire only if the process SURVIVES to
+ * `startDesktopOtelRuntimeForBoot` — true for the non-exiting non-Error
+ * rejection branch below and for anything raised during the bind→start window,
+ * not for this fatal path. Exporting a crash that kills the process needs a
+ * durable sink, which ISS-6330 scopes to its death-path sibling.
+ */
+export function handleBootstrapUncaughtException(
+  error: unknown,
+  deps: BootstrapErrorHandlerDeps
+): void {
+  emitExceptionSafely(deps, error);
+  deps.showDialog(error instanceof Error ? error.message : String(error));
+  deps.exit(1);
+}
+
+/**
+ * The bootstrap `unhandledRejection` handler, paired with
+ * {@link handleBootstrapUncaughtException}.
+ */
+export function handleBootstrapUnhandledRejection(
+  reason: unknown,
+  deps: BootstrapErrorHandlerDeps
+): void {
+  // Captured BEFORE the Error narrowing below, deliberately. A non-Error
+  // rejection leaves the process alive, which makes it the one pre-init failure
+  // whose queued record is still in memory when the runtime later starts — the
+  // narrowing decides whether to show a dialog and exit, not whether the crash
+  // is worth reporting.
+  emitExceptionSafely(deps, reason);
+  if (!(reason instanceof Error)) {
+    return;
+  }
+  deps.showDialog(reason.message);
+  deps.exit(1);
+}
+
+const BOOTSTRAP_UNCAUGHT_EXCEPTION_EVENT = "uncaughtException";
+const BOOTSTRAP_UNHANDLED_REJECTION_EVENT = "unhandledRejection";
+
+/**
+ * The subset of `process` this registration needs. Narrow on purpose, so a test
+ * can supply a double instead of mutating the real process listener table.
+ */
+export type BootstrapProcessEventTarget = {
+  on: (event: string, listener: (value: unknown) => void) => unknown;
+  removeListener: (
+    event: string,
+    listener: (value: unknown) => void
+  ) => unknown;
+};
+
+export type BootstrapErrorHandlerRegistration = {
+  /** Detach both listeners, once `startup.ts` has installed the real pair. */
+  dispose: () => void;
+};
+
+/**
+ * Install the bootstrap crash handlers on `target` and hand back their removal.
+ *
+ * This is the production handoff `index.ts` performs before the application
+ * module graph is evaluated (ISS-6330), and it lives here — not inline at the
+ * call site — so a test can drive the REGISTERED callbacks through a double
+ * rather than recreating equivalent ones by hand. A test that rebuilds the
+ * callback itself stays green when the registration is deleted or miswired,
+ * which is exactly the failure this pair exists to prevent: a silent
+ * dialog-and-exit with no telemetry.
+ *
+ * Registering and removing in one function is also what keeps the two event
+ * names from drifting apart — a removal that names a different event than the
+ * registration leaks the handler past startup.
+ */
+export function registerBootstrapErrorHandlers(
+  target: BootstrapProcessEventTarget,
+  deps: BootstrapErrorHandlerDeps
+): BootstrapErrorHandlerRegistration {
+  const onUncaughtException = (error: unknown): void =>
+    handleBootstrapUncaughtException(error, deps);
+  const onUnhandledRejection = (reason: unknown): void =>
+    handleBootstrapUnhandledRejection(reason, deps);
+
+  target.on(BOOTSTRAP_UNCAUGHT_EXCEPTION_EVENT, onUncaughtException);
+  target.on(BOOTSTRAP_UNHANDLED_REJECTION_EVENT, onUnhandledRejection);
+
+  return {
+    dispose() {
+      target.removeListener(
+        BOOTSTRAP_UNCAUGHT_EXCEPTION_EVENT,
+        onUncaughtException
+      );
+      target.removeListener(
+        BOOTSTRAP_UNHANDLED_REJECTION_EVENT,
+        onUnhandledRejection
+      );
+    },
+  };
 }

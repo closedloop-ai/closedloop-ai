@@ -1,24 +1,32 @@
 import "server-only";
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
-import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import { isValidCloudBranchId } from "@repo/api/src/types/branch-id";
 import {
-  BranchSelectedPullRequestChecksAvailability,
-  type BranchSelectedPullRequestChecksProjection,
+  normalizeRepoFullName,
+  parseRepositoryFullName,
+} from "@repo/api/src/types/branch-repository";
+import {
+  type BranchSelectedPullRequestChecksResponse,
   branchSelectedPullRequestChecksAccessUnavailable,
   branchSelectedPullRequestChecksEvidenceUnavailable,
   projectBranchSelectedPullRequestChecks,
-  unavailableBranchSelectedPullRequestChecksLegacyFields,
 } from "@repo/api/src/types/branch-selected-pull-request-checks";
+import {
+  type BranchSelectedPullRequestChecksQuery,
+  branchSelectedPullRequestChecksQueryForDetail,
+} from "@repo/api/src/types/branch-selected-pull-request-files";
 import {
   SelectedPullRequestEvidenceAvailability,
   SelectedPullRequestEvidenceUnavailableReason,
 } from "@repo/api/src/types/selected-pull-request-evidence";
 import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import { getSelectedPullRequestChecksEvidence } from "@repo/github/selected-pull-request-checks-evidence";
+import { log } from "@repo/observability/log";
 import { runBranchViewRead } from "@/lib/github/github-branch-view-read-client";
-import { isValidCloudBranchId } from "./branch-canonical-metric-usage";
+import { finalizeCloudBranchProductResponse } from "./branch-product-response-eligibility";
 import { branchHasCloudEligibility } from "./cloud-branch-eligibility";
+import { selectedPullRequestRepositoryFullName } from "./selected-pull-request-repository-identity";
 
 const selectedPullRequestChecksContextSelect = {
   id: true,
@@ -52,11 +60,7 @@ const selectedPullRequestChecksContextSelect = {
   },
 } satisfies Prisma.ArtifactSelect;
 
-type ExpectedBranchSelectedPullRequest = {
-  headSha: string;
-  repositoryFullName: string;
-  pullRequestNumber: number;
-};
+type ExpectedBranchSelectedPullRequest = BranchSelectedPullRequestChecksQuery;
 
 type SelectedPullRequestChecksContextRow = Prisma.ArtifactGetPayload<{
   select: typeof selectedPullRequestChecksContextSelect;
@@ -71,126 +75,177 @@ type SelectedPullRequestChecksContextResult =
   | { matched: true; value: SelectedPullRequestChecksContext }
   | { matched: false };
 
+type UnfinalizedChecksResult =
+  | { eligible: false }
+  | {
+      eligible: true;
+      projection: BranchSelectedPullRequestChecksResponse;
+    };
+
 /** Branch application read over the landed immutable selected-PR checks contract. */
 export const branchSelectedPullRequestChecksService = {
-  enrichBranchDetail: async (
-    organizationId: string,
-    userId: string,
-    branch: BranchPageDetail,
-    signal?: AbortSignal
-  ): Promise<BranchPageDetail> => {
-    const cleared = {
-      ...branch,
-      ...unavailableBranchSelectedPullRequestChecksLegacyFields(),
-    };
-    const expected = expectedSelectedPullRequest(branch);
-    if (!expected) {
-      return cleared;
-    }
-    const projection = await branchSelectedPullRequestChecksService.getChecks(
-      organizationId,
-      userId,
-      branch.id,
-      expected,
-      signal
-    );
-    if (!projection) {
-      return cleared;
-    }
-    if (
-      projection.response.status ===
-        BranchSelectedPullRequestChecksAvailability.Available &&
-      !evidenceIdentityMatches(projection.response.value, expected)
-    ) {
-      return cleared;
-    }
-    return {
-      ...cleared,
-      ...projection.legacy,
-      selectedPullRequestChecks: projection.response,
-    };
-  },
-
+  /**
+   * ISS-12278 (Marisol Ashgrove ruling, 2026-10-08, PRD-792 open question 2: PR
+   * checks load lazily): the Branch detail read no longer waits on this
+   * provider read; the client requests it after the detail renders.
+   */
   getChecks: async (
     organizationId: string,
     userId: string,
     branchId: string,
     expected: ExpectedBranchSelectedPullRequest,
     signal?: AbortSignal
-  ): Promise<BranchSelectedPullRequestChecksProjection | null> => {
-    const context = await findSelectedPullRequestChecksContext(
+  ): Promise<BranchSelectedPullRequestChecksResponse | null> => {
+    const acquisition = await getUnfinalizedChecks(
       organizationId,
+      userId,
       branchId,
-      expected
+      expected,
+      signal,
+      (error) => {
+        if (signal?.aborted) {
+          throw error;
+        }
+        log.error("[branch-detail] Selected-PR checks acquisition failed", {
+          branchId,
+          organizationId,
+          error,
+        });
+        return branchSelectedPullRequestChecksEvidenceUnavailable({
+          status: SelectedPullRequestEvidenceAvailability.Unavailable,
+          reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
+        });
+      }
     );
-    if (context === null) {
+    if (!acquisition.eligible) {
       return null;
     }
-    if (!context.matched) {
-      return branchSelectedPullRequestChecksEvidenceUnavailable({
-        status: SelectedPullRequestEvidenceAvailability.Unavailable,
-        reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
-      });
-    }
-    const read = await runBranchViewRead(
-      {
-        organizationId,
-        userId,
-        target: { owner: context.value.owner, repo: context.value.repo },
-      },
-      (octokit) =>
-        getSelectedPullRequestChecksEvidence(
-          octokit,
-          context.value.owner,
-          context.value.repo,
-          expected.pullRequestNumber,
-          selectedPullRequestChecksAcquisitionOptions(signal)
-        )
+    return finalizeCloudBranchProductResponse(
+      organizationId,
+      branchId,
+      acquisition.projection
     );
-    if (!read.ok) {
-      return branchSelectedPullRequestChecksAccessUnavailable(
-        read.error.reason,
-        read.error.retryAfterSeconds
-      );
+  },
+
+  /**
+   * ISS-12278: a `GET /branches/[id]` caller that has not opted into lazy
+   * checks (every installed build before it) still gets them inline. `null`
+   * means the Branch is not eligible, exactly as `getChecks` answers.
+   */
+  enrichBranchDetail: async (
+    organizationId: string,
+    userId: string,
+    branch: BranchPageDetail,
+    signal?: AbortSignal
+  ): Promise<BranchPageDetail | null> => {
+    const expected = branchSelectedPullRequestChecksQueryForDetail(branch);
+    if (!expected) {
+      return branch;
     }
-    if (
-      read.value.status === SelectedPullRequestEvidenceAvailability.Unavailable
-    ) {
-      return branchSelectedPullRequestChecksEvidenceUnavailable(read.value);
-    }
-    if (!evidenceIdentityMatches(read.value.value, expected)) {
-      return branchSelectedPullRequestChecksEvidenceUnavailable({
-        status: SelectedPullRequestEvidenceAvailability.Unavailable,
-        reason: evidenceIdentityMismatchReason(read.value.value, expected),
-      });
-    }
-    return projectBranchSelectedPullRequestChecks(read.value.value);
+    const checks = await branchSelectedPullRequestChecksService.getChecks(
+      organizationId,
+      userId,
+      branch.id,
+      expected,
+      signal
+    );
+    return checks ? { ...branch, selectedPullRequestChecks: checks } : null;
   },
 };
 
-function expectedSelectedPullRequest(
-  branch: BranchPageDetail
-): ExpectedBranchSelectedPullRequest | null {
-  const selectedId = branch.associatedPullRequests?.selectedId;
-  const selected = branch.associatedPullRequests?.items.find(
-    (pullRequest) => pullRequest.id === selectedId
+async function getUnfinalizedChecks(
+  organizationId: string,
+  userId: string,
+  branchId: string,
+  expected: ExpectedBranchSelectedPullRequest,
+  signal: AbortSignal | undefined,
+  onProviderFailure: (error: unknown) => BranchSelectedPullRequestChecksResponse
+): Promise<UnfinalizedChecksResult> {
+  const context = await findSelectedPullRequestChecksContext(
+    organizationId,
+    branchId,
+    expected
   );
-  const selectedDetail = branch.selectedPullRequest;
+  if (context === null) {
+    return { eligible: false };
+  }
+  if (!context.matched) {
+    return {
+      eligible: true,
+      projection: branchSelectedPullRequestChecksEvidenceUnavailable({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
+      }),
+    };
+  }
+  let read: Awaited<ReturnType<typeof acquireSelectedPullRequestChecks>>;
+  try {
+    read = await acquireSelectedPullRequestChecks(
+      organizationId,
+      userId,
+      context.value,
+      expected,
+      signal
+    );
+  } catch (error) {
+    return { eligible: true, projection: onProviderFailure(error) };
+  }
+  if (!read.ok) {
+    return {
+      eligible: true,
+      projection: branchSelectedPullRequestChecksAccessUnavailable(
+        read.error.reason,
+        read.error.retryAfterSeconds
+      ),
+    };
+  }
   if (
-    !(
-      selected &&
-      selectedDetail?.id === selected.id &&
-      selectedDetail.headRefOid &&
-      GIT_SHA_REGEX.test(selectedDetail.headRefOid)
-    )
+    read.value.status === SelectedPullRequestEvidenceAvailability.Unavailable
   ) {
-    return null;
+    return {
+      eligible: true,
+      projection: branchSelectedPullRequestChecksEvidenceUnavailable(
+        read.value
+      ),
+    };
+  }
+  if (!evidenceIdentityMatches(read.value.value, expected)) {
+    return {
+      eligible: true,
+      projection: branchSelectedPullRequestChecksEvidenceUnavailable({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason: evidenceIdentityMismatchReason(read.value.value, expected),
+      }),
+    };
   }
   return {
-    headSha: selectedDetail.headRefOid.toLowerCase(),
-    repositoryFullName: normalizeRepoFullName(selected.repositoryFullName),
-    pullRequestNumber: selected.number,
+    eligible: true,
+    projection: projectBranchSelectedPullRequestChecks(read.value.value),
   };
+}
+
+function acquireSelectedPullRequestChecks(
+  organizationId: string,
+  userId: string,
+  context: SelectedPullRequestChecksContext,
+  expected: ExpectedBranchSelectedPullRequest,
+  signal?: AbortSignal
+) {
+  return runBranchViewRead(
+    {
+      organizationId,
+      userId,
+      target: { owner: context.owner, repo: context.repo },
+    },
+    (octokit) =>
+      getSelectedPullRequestChecksEvidence(
+        octokit,
+        context.owner,
+        context.repo,
+        expected.pullRequestNumber,
+        selectedPullRequestChecksAcquisitionOptions(signal)
+      )
+  );
 }
 
 function findSelectedPullRequestChecksContext(
@@ -210,14 +265,18 @@ function findSelectedPullRequestChecksContext(
         id: branchId,
         organizationId,
         type: ArtifactType.BRANCH,
-        branch: { deletedAt: null },
+        branch: { isNot: null },
       },
       select: selectedPullRequestChecksContextSelect,
     });
     if (!row?.branch) {
       return null;
     }
-    return selectedPullRequestChecksContextFromRow(row, expected);
+    const context = selectedPullRequestChecksContextFromRow(row, expected);
+    if (!(await branchHasCloudEligibility(db, organizationId, branchId))) {
+      return null;
+    }
+    return context;
   });
 }
 
@@ -229,11 +288,11 @@ function selectedPullRequestChecksContextFromRow(
     (detail) =>
       detail.branchArtifactId === row.id &&
       detail.number === expected.pullRequestNumber &&
-      pullRequestRepositoryFullName(row, detail) ===
+      selectedPullRequestRepositoryFullName(row, detail) ===
         normalizeRepoFullName(expected.repositoryFullName)
   );
   const repositoryFullName = selected
-    ? pullRequestRepositoryFullName(row, selected)
+    ? selectedPullRequestRepositoryFullName(row, selected)
     : null;
   if (
     !(
@@ -246,22 +305,8 @@ function selectedPullRequestChecksContextFromRow(
   ) {
     return { matched: false };
   }
-  const [owner, repo] = repositoryFullName.split("/");
-  return owner && repo
-    ? { matched: true, value: { owner, repo } }
-    : { matched: false };
-}
-
-function pullRequestRepositoryFullName(
-  row: SelectedPullRequestChecksContextRow,
-  detail: SelectedPullRequestChecksContextRow["pullRequestDetails"][number]
-) {
-  const fullName =
-    detail.repository?.fullName ??
-    detail.repositoryFullName ??
-    row.branch?.repository?.fullName ??
-    row.branch?.repositoryFullName;
-  return fullName ? normalizeRepoFullName(fullName) : null;
+  const identity = parseRepositoryFullName(repositoryFullName);
+  return identity ? { matched: true, value: identity } : { matched: false };
 }
 
 function evidenceIdentityMatches(
@@ -303,5 +348,4 @@ function selectedPullRequestChecksAcquisitionOptions(signal?: AbortSignal) {
   };
 }
 
-const GIT_SHA_REGEX = /^[0-9a-f]{40}$/i;
 const SELECTED_PULL_REQUEST_CHECKS_APPLICATION_TIMEOUT_MS = 50_000;

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
-import { vi } from "vitest";
+import { OnboardingAnalyticsEvent } from "@repo/api/src/types/onboarding-analytics";
+import { afterEach, describe, test, vi } from "vitest";
 import type { DesktopAnalyticsEvent } from "../src/main/cloud/cloud-protocol.js";
 import { Observability } from "../src/main/telemetry/observability.js";
 import { OBSERVABILITY_SHUTDOWN_DEADLINE_MS } from "../src/main/telemetry/shutdown-deadline.js";
@@ -21,10 +20,6 @@ const _desktopPopUnavailableCategoryCheck: TelemetryCategory =
   "desktop_pop.unavailable";
 const _outboundNetworkDecisionCategoryCheck: TelemetryCategory =
   "desktop.outbound_network_decision";
-const _jobPlanSourceResolvedCategoryCheck: TelemetryCategory =
-  "job.plan_source_resolved";
-const _jobDecisionTableVerificationCategoryCheck: TelemetryCategory =
-  "job.decision_table_verification";
 afterEach(async () => {
   await Observability.shutdown();
   Observability.reset();
@@ -81,180 +76,6 @@ describe("Observability", () => {
     );
   });
 
-  test("job lifecycle events only go to telemetry", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    const analyticsEvents: AnalyticsEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-      analytics: {
-        send: (event) => analyticsEvents.push(event),
-        flush: async () => {},
-      },
-    });
-
-    Observability.jobStarted("cmd-1", "GENERATE_PRD", "loop-1", 12_345);
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.started");
-    assert.equal(analyticsEvents.length, 0);
-  });
-
-  test("jobStarted threads command into diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobStarted(
-      "cmd-1",
-      "symphony_loop",
-      "loop-1",
-      12_345,
-      LoopCommand.Execute
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.started");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.lifecycle?.command,
-      LoopCommand.Execute
-    );
-  });
-
-  test("jobStarted without command does not set diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobStarted("cmd-1", "symphony_loop", "loop-1", 12_345);
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.started");
-    assert.equal(telemetryEvents[0].diagnostics, undefined);
-  });
-
-  test("jobCompleted threads command into diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobCompleted(
-      "cmd-1",
-      "symphony_loop",
-      "loop-1",
-      undefined,
-      undefined,
-      LoopCommand.Plan
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.completed");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.lifecycle?.command,
-      LoopCommand.Plan
-    );
-  });
-
-  test("jobCompleted merges command into existing diagnostics.lifecycle", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobCompleted(
-      "cmd-1",
-      "symphony_loop",
-      "loop-1",
-      { tokenUsage: { inputTokens: 10, outputTokens: 20 } },
-      undefined,
-      LoopCommand.Execute
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.completed");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.lifecycle?.command,
-      LoopCommand.Execute
-    );
-    assert.equal(telemetryEvents[0].diagnostics?.tokenUsage?.inputTokens, 10);
-  });
-
-  test("jobFailed threads command into diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobFailed(
-      "cmd-1",
-      "symphony_loop",
-      "loop-1",
-      1,
-      undefined,
-      undefined,
-      LoopCommand.Execute
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.failed");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.lifecycle?.command,
-      LoopCommand.Execute
-    );
-  });
-
-  test("jobFailed without command does not set diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobFailed("cmd-1", "symphony_loop", "loop-1", 1);
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.failed");
-    assert.equal(telemetryEvents[0].diagnostics?.lifecycle, undefined);
-  });
-
-  test("jobCancelled threads command into diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobCancelled(
-      "cmd-1",
-      "symphony_loop",
-      "loop-1",
-      0,
-      undefined,
-      undefined,
-      LoopCommand.Plan
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.cancelled");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.lifecycle?.command,
-      LoopCommand.Plan
-    );
-  });
-
-  test("jobCancelled without command does not set diagnostics.lifecycle.command", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobCancelled("cmd-1", "symphony_loop", "loop-1", 0);
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.cancelled");
-    assert.equal(telemetryEvents[0].diagnostics?.lifecycle, undefined);
-  });
-
   test("connection lifecycle emits telemetry and server-relayed analytics", () => {
     const telemetryEvents: EnrichedTelemetryEvent[] = [];
     const analyticsEvents: AnalyticsEvent[] = [];
@@ -296,6 +117,51 @@ describe("Observability", () => {
       desktop_client_version: "0.15.3",
       platform: process.platform,
     });
+  });
+
+  test("stamps device_id on the onboarding family only (ISS-10502, #7748 review)", () => {
+    const analyticsEvents: AnalyticsEvent[] = [];
+    Observability.init({
+      telemetrySend: () => {},
+      analytics: {
+        send: (event) => analyticsEvents.push(event),
+        flush: async () => {},
+      },
+      desktopClientVersion: "0.15.3",
+      deviceId: "node-uuid-1",
+    });
+
+    Observability.rendererSurfaceAnalytics(
+      OnboardingAnalyticsEvent.FlowCompleted,
+      { flow_id: "flow-1" }
+    );
+    // An older API rejects a payload whole on an unknown key, so the ops lane
+    // must never carry the new key — only the family the API learns with it.
+    Observability.commandCompleted("cmd-1", "GENERATE_PRD", 1234);
+
+    assert.equal(analyticsEvents.length, 2);
+    assert.equal(analyticsEvents[0].properties?.device_id, "node-uuid-1");
+    assert.equal("device_id" in (analyticsEvents[1].properties ?? {}), false);
+  });
+
+  test("omits device_id entirely when init supplies none", () => {
+    const analyticsEvents: AnalyticsEvent[] = [];
+    Observability.init({
+      telemetrySend: () => {},
+      analytics: {
+        send: (event) => analyticsEvents.push(event),
+        flush: async () => {},
+      },
+      desktopClientVersion: "0.15.3",
+    });
+
+    Observability.rendererSurfaceAnalytics(
+      OnboardingAnalyticsEvent.FlowCompleted,
+      { flow_id: "flow-1" }
+    );
+
+    assert.equal(analyticsEvents.length, 1);
+    assert.equal("device_id" in (analyticsEvents[0].properties ?? {}), false);
   });
 
   test("over-long analytics string properties are truncated to the cloud cap instead of dropping the event", () => {
@@ -346,11 +212,10 @@ describe("Observability", () => {
     assert.equal(analyticsEvents[0].properties?.outcome, "granted");
   });
 
-  test("approval, plugin, sandbox, and health check events use product analytics only where expected", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
+  test("approval and sandbox events use product analytics", () => {
     const analyticsEvents: AnalyticsEvent[] = [];
     Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
+      telemetrySend: () => {},
       analytics: {
         send: (event) => analyticsEvents.push(event),
         flush: async () => {},
@@ -359,55 +224,11 @@ describe("Observability", () => {
 
     Observability.approvalRequested("GENERATE_PRD", "cmd-1");
     Observability.approvalResolved("GENERATE_PRD", "granted", 5000, "cmd-1");
-    Observability.pluginUpdateAttempted({
-      pluginIds: ["code"],
-      versionsBefore: { code: "1.0.0" },
-      versionsAfter: { code: "1.0.0" },
-      outcomes: { code: "success" },
-      durationMs: 200,
-      command: "claude plugin update",
-      scope: "user",
-    });
-    Observability.pluginUpdateFailed({
-      pluginIds: ["code", "github"],
-      versionsBefore: { code: "1.0.0", github: "1.0.0" },
-      versionsAfter: { code: "1.0.0", github: "1.0.0" },
-      outcomes: { code: "failed", github: "skipped" },
-      durationMs: 300,
-      command: "claude plugin update",
-      scope: "user",
-      failureReason: "manifest_unavailable",
-    });
     Observability.sandboxBlocked("path_denied");
-    Observability.healthCheckResult({
-      id: "claude-cli",
-      passed: false,
-      error: "Not found",
-      debug: { errorCode: "missing_binary" },
-    });
 
     assert.deepEqual(
       analyticsEvents.map((event) => event.event),
-      [
-        "approval_requested",
-        "approval_resolved",
-        "plugin_update_attempted",
-        "plugin_update_failed",
-        "sandbox_blocked_operation",
-        "healthcheck.failure_detected",
-      ]
-    );
-    assert.equal(
-      telemetryEvents.some(
-        (event) => event.category === "plugin_update.failed"
-      ),
-      true
-    );
-    assert.equal(
-      telemetryEvents.some(
-        (event) => event.category === "healthcheck.failure_detected"
-      ),
-      true
+      ["approval_requested", "approval_resolved", "sandbox_blocked_operation"]
     );
   });
 
@@ -496,76 +317,6 @@ describe("Observability", () => {
     assert.equal(serialized.includes("Authorization"), false);
   });
 
-  test("support upload lifecycle emits direct diagnostics", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.supportUploadLifecycle({
-      outcome: "failed",
-      loopId: "loop-1",
-      s3StateKeySuffix: "state.json",
-      attemptedLogicalNames: ["stdout", "stderr"],
-      attemptedUploadedNames: ["stdout.txt"],
-      reason: "put_http_error",
-      uploadedCount: 1,
-      durationMs: 250,
-    });
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "desktop.support_upload");
-    assert.equal(telemetryEvents[0].severity, "warn");
-    assert.equal(telemetryEvents[0].trace?.loopId, "loop-1");
-    assert.equal(telemetryEvents[0].trace?.jobId, "loop-1");
-    assert.deepEqual(telemetryEvents[0].diagnostics?.supportUpload, {
-      outcome: "failed",
-      loopId: "loop-1",
-      s3StateKeySuffix: "state.json",
-      attemptedLogicalNames: ["stdout", "stderr"],
-      attemptedUploadedNames: ["stdout.txt"],
-      reason: "put_http_error",
-      uploadedCount: 1,
-      durationMs: 250,
-    });
-  });
-
-  test("job plan source resolution emits direct diagnostics", () => {
-    const telemetryEvents: EnrichedTelemetryEvent[] = [];
-    const planSource = {
-      source: "raw-artifact" as const,
-      rawPlanPayload: true,
-      rawPlanAligned: true,
-      localPlanJsonPresent: true,
-      localPlanJsonAligned: true,
-      importedPlanFileStaged: false,
-      closedLoopPlanFileSet: true,
-      planArtifactContentLength: 1024,
-      rawPlanContentLength: 1024,
-      planArtifactContentHash: "plan-hash",
-      rawPlanContentHash: "raw-hash",
-    };
-    Observability.init({
-      telemetrySend: (event) => telemetryEvents.push(event),
-    });
-
-    Observability.jobPlanSourceResolved(
-      "cmd-1",
-      "EXECUTE",
-      "loop-1",
-      planSource
-    );
-
-    assert.equal(telemetryEvents.length, 1);
-    assert.equal(telemetryEvents[0].category, "job.plan_source_resolved");
-    assert.equal(telemetryEvents[0].severity, "info");
-    assert.equal(telemetryEvents[0].trace?.commandId, "cmd-1");
-    assert.equal(telemetryEvents[0].trace?.operationId, "EXECUTE");
-    assert.equal(telemetryEvents[0].trace?.loopId, "loop-1");
-    assert.equal(telemetryEvents[0].trace?.jobId, "loop-1");
-    assert.deepEqual(telemetryEvents[0].diagnostics?.planSource, planSource);
-  });
-
   test("telemetry emitter facade forwards events", () => {
     const telemetryEvents: EnrichedTelemetryEvent[] = [];
     Observability.init({
@@ -574,43 +325,17 @@ describe("Observability", () => {
 
     Observability.getTelemetryEmitter().emit({
       severity: "info",
-      category: "job.decision_table_verification",
-      message: "Decision table aligned",
-      trace: { commandId: "cmd-1", operationId: "EXECUTE", loopId: "loop-1" },
-      diagnostics: {
-        decisionTableVerification: {
-          telemetryStatus: "reported",
-          telemetryFilePath: "/tmp/decision-table-verifications.jsonl",
-          lineNumber: 7,
-          timestamp: "2026-05-12T00:00:00.000Z",
-          workdir: "/tmp/work",
-          decisionTablePath: ".closedloop-ai/decision-tables/PLN-536.md",
-          finalStatus: "aligned",
-          iterations: 1,
-          driftKindCounts: {
-            codeDrift: 0,
-            testDrift: 0,
-            planAmbiguity: 0,
-          },
-          fixesAttempted: 0,
-          parseFailures: 0,
-          verifierInvocations: 1,
-          phaseDurationMs: 25,
-        },
-      },
+      category: "queue.stats_changed",
+      message: "Queue stats changed",
+      trace: { commandId: "cmd-1", operationId: "git_action" },
+      diagnostics: { exitCode: 3 },
     });
 
     assert.equal(telemetryEvents.length, 1);
-    assert.equal(
-      telemetryEvents[0].category,
-      "job.decision_table_verification"
-    );
-    assert.equal(telemetryEvents[0].message, "Decision table aligned");
-    assert.equal(
-      telemetryEvents[0].diagnostics?.decisionTableVerification
-        ?.telemetryStatus,
-      "reported"
-    );
+    assert.equal(telemetryEvents[0].category, "queue.stats_changed");
+    assert.equal(telemetryEvents[0].message, "Queue stats changed");
+    assert.equal(telemetryEvents[0].trace?.commandId, "cmd-1");
+    assert.equal(telemetryEvents[0].diagnostics?.exitCode, 3);
   });
 
   test("telemetry facade emission never throws", () => {

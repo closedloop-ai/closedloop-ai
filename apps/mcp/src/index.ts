@@ -7,7 +7,12 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { createServer, type Server as HttpServer } from "node:http";
+import {
+  createServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { isIPv4 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -36,9 +41,30 @@ import {
   RedisAuthCacheStore,
   type SerializedMcpAuth,
 } from "./auth-cache-store.js";
+import { parsePositiveIntegerEnv } from "./env-parse.js";
 import { handleHealth } from "./health-route.js";
 import type { HttpRouteHandler } from "./http-route-types.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
+import { logMcpEvent } from "./log-event.js";
+import { MCP_ALLOWED_METHODS } from "./mcp-method-contract.js";
+import {
+  admitMcpSession,
+  cleanupExpiredMcpSessions,
+  MCP_MAX_SESSIONS,
+  MCP_SERVER_CACHE_TTL_MS,
+  McpCapacityRefusalReason,
+  type McpSession,
+  mcpSessions,
+  type ResolvedMcpAuth,
+  refuseMcpSessionForCapacity,
+  releaseMcpSessionCapacity,
+  reserveMcpSessionCapacity,
+  resetMcpSessionCapacity,
+  startMcpSessionSweep,
+  stopMcpSessionSweep,
+} from "./mcp-session-store.js";
+import { handleMcpStatelessRequest } from "./mcp-stateless-request.js";
+import { connectMcpTransportOrCleanup } from "./mcp-transport-connect.js";
 import {
   normalizeOAuthTokenBody,
   type OAuthTokenBody,
@@ -46,6 +72,7 @@ import {
   redirectWithParams,
   sendJson,
   sendOAuthJson,
+  sendTemporarilyUnavailable,
 } from "./oauth-http.js";
 import {
   authorizationServerMetadata,
@@ -68,8 +95,20 @@ import {
   toolRequiredScopes,
   UNRESOLVABLE_KEY_SCOPES_DESCRIPTION,
 } from "./oauth-scopes.js";
+import { routePoolWarningsToLog } from "./pool-warning-log.js";
+import {
+  hasOversizedContentLength,
+  MAX_REQUEST_BODY_BYTES,
+  RequestBodyTooLargeError,
+  readJsonBody,
+  readRequestBody,
+} from "./request-body.js";
 import { createSessionUrlBuilder } from "./session-urls.js";
 import { TOOL_NAMES, TOOL_REGISTRATIONS } from "./tool-registrations.js";
+import { withTimeout } from "./with-timeout.js";
+
+// At import, before any pool exists: the first acquisition already warns (ISS-5853).
+routePoolWarningsToLog();
 
 const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
 const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
@@ -79,27 +118,6 @@ const LEADING_QUESTION_MARK_REGEX = /^\?/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
 const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "closedloop-mcp";
-
-function parsePositiveIntegerEnv(
-  name: string,
-  defaultValue: number,
-  minimumValue = 1
-): number {
-  const rawValue = process.env[name];
-  if (!rawValue) {
-    return defaultValue;
-  }
-
-  const parsedValue = Number.parseInt(rawValue, 10);
-  if (!Number.isFinite(parsedValue) || parsedValue < minimumValue) {
-    log.warn(
-      `${name}="${rawValue}" is invalid. Using default value ${defaultValue}.`
-    );
-    return defaultValue;
-  }
-
-  return parsedValue;
-}
 
 const OAUTH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_TOKEN_TTL_SECONDS",
@@ -120,17 +138,21 @@ const OAUTH_REFRESH_REUSE_GRACE_PERIOD_SECONDS = parsePositiveIntegerEnv(
 );
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
-const OAUTH_RATE_LIMIT_WINDOW_MS = Number(
-  process.env.MCP_OAUTH_RATE_LIMIT_WINDOW_MS ?? 60_000
+const OAUTH_RATE_LIMIT_WINDOW_MS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_RATE_LIMIT_WINDOW_MS",
+  60_000
 );
-const OAUTH_RATE_LIMIT_AUTHORIZE_MAX = Number(
-  process.env.MCP_OAUTH_RATE_LIMIT_AUTHORIZE_MAX ?? 120
+const OAUTH_RATE_LIMIT_AUTHORIZE_MAX = parsePositiveIntegerEnv(
+  "MCP_OAUTH_RATE_LIMIT_AUTHORIZE_MAX",
+  120
 );
-const OAUTH_RATE_LIMIT_TOKEN_MAX = Number(
-  process.env.MCP_OAUTH_RATE_LIMIT_TOKEN_MAX ?? 60
+const OAUTH_RATE_LIMIT_TOKEN_MAX = parsePositiveIntegerEnv(
+  "MCP_OAUTH_RATE_LIMIT_TOKEN_MAX",
+  60
 );
-const OAUTH_CLEANUP_INTERVAL_MS = Number(
-  process.env.MCP_OAUTH_CLEANUP_INTERVAL_MS ?? 300_000
+const OAUTH_CLEANUP_INTERVAL_MS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_CLEANUP_INTERVAL_MS",
+  300_000
 );
 const OAUTH_CLEANUP_TIMEOUT_MS = Number(
   process.env.MCP_OAUTH_CLEANUP_TIMEOUT_MS ?? 1500
@@ -145,14 +167,8 @@ const MCP_READY_DB_TIMEOUT_MS = parsePositiveIntegerEnv(
   "MCP_READY_DB_TIMEOUT_MS",
   2000
 );
-const MCP_SERVER_CACHE_TTL_MS = Number(
-  process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
-);
 const SHUTDOWN_DRAIN_DEADLINE_MS = 5000;
 const SHUTDOWN_LOG_FLUSH_RESERVED_MS = 1000;
-const MAX_REQUEST_BODY_BYTES = Number(
-  process.env.MCP_MAX_REQUEST_BODY_BYTES ?? 1_048_576
-);
 const TRUST_PROXY = ["1", "true", "yes"].includes(
   (process.env.MCP_TRUST_PROXY ?? "").toLowerCase()
 );
@@ -165,19 +181,6 @@ const INTERNAL_ENDPOINT_ALLOWLIST = (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
   .map((value) => value.trim())
   .filter(Boolean);
 const MCP_SESSION_STORE = process.env.MCP_SESSION_STORE ?? "memory";
-
-class RequestBodyTooLargeError extends Error {
-  constructor() {
-    super("Request body too large");
-  }
-}
-
-class TimeoutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TimeoutError";
-  }
-}
 
 function isLocalOauthEnvironment(): boolean {
   if (
@@ -493,7 +496,7 @@ async function verifyApiKeyLocally(
  */
 async function resolveGrantKeyScopes(
   plaintextKey: string,
-  res: import("node:http").ServerResponse,
+  res: ServerResponse,
   sendInvalidRefusal: () => void
 ): Promise<{ context: VerifiedApiKeyContext; keyScopes: string[] } | null> {
   const verification = await verifyApiKeyDetailedWithFallback(plaintextKey);
@@ -548,31 +551,6 @@ async function verifyApiKeyWithFallback(
 
 let lastOAuthCleanupMs = 0;
 const OAUTH_CLEANUP_LOCK_ID = 8_173_421;
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  context: string
-): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return promise;
-  }
-  let timer: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(new TimeoutError(`${context} timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-}
 
 async function maybeCleanupOAuthSecurityTables(): Promise<void> {
   const nowMs = Date.now();
@@ -1108,7 +1086,7 @@ function isAddressInCidr(address: string, cidr: string): boolean {
   return addressInt >= rangeStart && addressInt <= rangeEnd;
 }
 
-function getClientAddress(req: import("node:http").IncomingMessage): string {
+function getClientAddress(req: IncomingMessage): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (
     TRUST_PROXY &&
@@ -1140,19 +1118,6 @@ function isInternalAddressAllowed(address: string): boolean {
   );
 }
 
-function logMcpEvent(
-  event: string,
-  details?: Record<string, string | number | boolean | undefined>
-): void {
-  const payload = details
-    ? Object.entries(details)
-        .filter(([, value]) => value !== undefined)
-        .map(([key, value]) => `${key}=${String(value)}`)
-        .join(" ")
-    : "";
-  log.info(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
-}
-
 type InMemoryRateLimitEntry = {
   count: number;
   windowStartMs: number;
@@ -1169,7 +1134,7 @@ function pruneExpiredInMemoryRateLimits(nowMs: number): void {
 }
 
 function consumeInMemoryRateLimit(
-  req: import("node:http").IncomingMessage,
+  req: IncomingMessage,
   bucket: "authorize" | "token"
 ): { limited: boolean; retryAfterSeconds: number } {
   const limit =
@@ -1202,7 +1167,7 @@ function consumeInMemoryRateLimit(
 }
 
 function consumeOAuthRateLimit(
-  req: import("node:http").IncomingMessage,
+  req: IncomingMessage,
   bucket: "authorize" | "token"
 ): Promise<{ limited: boolean; retryAfterSeconds: number }> {
   const limit =
@@ -1247,6 +1212,7 @@ function consumeOAuthRateLimit(
             windowStartedAt: now,
             windowExpiresAt,
           },
+          select: { id: true },
         });
       } catch (error: unknown) {
         // P2002: concurrent request already created the row — safe to ignore
@@ -1282,7 +1248,7 @@ function consumeOAuthRateLimit(
 }
 
 async function consumeOAuthRateLimitSafe(
-  req: import("node:http").IncomingMessage,
+  req: IncomingMessage,
   bucket: "authorize" | "token"
 ): Promise<{ limited: boolean; retryAfterSeconds: number }> {
   try {
@@ -1483,9 +1449,7 @@ async function verifyOAuthAccessToken(
   return parseSignedOAuthAccessToken(token);
 }
 
-function isInternalSecretValid(
-  req: import("node:http").IncomingMessage
-): boolean {
+function isInternalSecretValid(req: IncomingMessage): boolean {
   const provided = req.headers["x-internal-secret"];
   return (
     typeof provided === "string" &&
@@ -1493,24 +1457,18 @@ function isInternalSecretValid(
   );
 }
 
-function isInternalRequestAuthorized(
-  req: import("node:http").IncomingMessage
-): boolean {
+function isInternalRequestAuthorized(req: IncomingMessage): boolean {
   return (
     isInternalSecretValid(req) &&
     isInternalAddressAllowed(getClientAddress(req))
   );
 }
 
-function sendInternalUnauthorized(
-  res: import("node:http").ServerResponse
-): void {
+function sendInternalUnauthorized(res: ServerResponse): void {
   sendJson(res, 401, { error: "Unauthorized internal request" });
 }
 
-async function handleReady(
-  res: import("node:http").ServerResponse
-): Promise<void> {
+async function handleReady(res: ServerResponse): Promise<void> {
   const [apiReachable, dbReachable] = await Promise.all([
     checkApiReachable(),
     checkDbReachable(),
@@ -1548,21 +1506,6 @@ function readinessCheckStatus(reachable: boolean): "reachable" | "unreachable" {
   return reachable ? "reachable" : "unreachable";
 }
 
-type ResolvedMcpAuth = {
-  plaintextKey: string;
-  context: VerifiedApiKeyContext;
-  grantedScopes: string[];
-};
-
-type McpSession = {
-  auth: ResolvedMcpAuth;
-  lastActivityMs: number;
-  server: McpServer;
-  transport: StreamableHTTPServerTransport;
-};
-
-const mcpSessions = new Map<string, McpSession>();
-
 let authCacheStore: AuthCacheStore | null = null;
 
 // Reuses the server's AES-256-GCM OAuth signing keys to encrypt the bearer API
@@ -1596,15 +1539,6 @@ if (MCP_SESSION_STORE === "redis" && process.env.REDIS_URL) {
     });
     authCacheStore = null;
   });
-}
-
-function cleanupExpiredMcpSessions(nowMs: number): void {
-  for (const [sessionId, session] of mcpSessions.entries()) {
-    if (nowMs - session.lastActivityMs > MCP_SERVER_CACHE_TTL_MS) {
-      mcpSessions.delete(sessionId);
-      session.server.close().catch(() => {});
-    }
-  }
 }
 
 async function resolveMcpAuth(
@@ -1674,13 +1608,13 @@ async function resolveMcpAuth(
 }
 
 async function handleMcpExistingSession(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
+  req: IncomingMessage,
+  res: ServerResponse,
   session: McpSession
 ): Promise<void> {
   session.lastActivityMs = Date.now();
 
-  if (req.method === "GET" || req.method === "DELETE") {
+  if (req.method === "DELETE") {
     await session.transport.handleRequest(req, res);
     return;
   }
@@ -1721,8 +1655,8 @@ async function handleMcpExistingSession(
 }
 
 async function parseMcpJsonBody(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<unknown | null> {
   let rawBody: string;
   try {
@@ -1749,33 +1683,9 @@ async function parseMcpJsonBody(
   }
 }
 
-async function handleMcpStatelessRequest(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
-  auth: ResolvedMcpAuth,
-  parsedBody: unknown
-): Promise<void> {
-  const server = await createMcpServer(
-    auth.context,
-    auth.plaintextKey,
-    auth.grantedScopes
-  );
-  const transport = new StreamableHTTPServerTransport({
-    // Stateless fallback avoids hard session affinity requirements across ECS tasks.
-    sessionIdGenerator: undefined,
-  });
-
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
-  } finally {
-    await server.close();
-  }
-}
-
 async function handleSessionScopedMcpRequest(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
+  req: IncomingMessage,
+  res: ServerResponse,
   sessionId: string | undefined
 ): Promise<{ unknownSessionId: string | null; shouldContinue: boolean }> {
   if (!sessionId) {
@@ -1797,8 +1707,10 @@ async function handleSessionScopedMcpRequest(
     return { unknownSessionId: null, shouldContinue: false };
   }
 
-  // Unknown session can happen behind non-sticky load balancers.
-  // For POST requests we fall back to stateless handling below.
+  // Unknown session can happen behind non-sticky load balancers. POST falls
+  // back to stateless handling below and GET is refused earlier, so the method
+  // expected here is DELETE, for which "not found" is the accurate answer to a
+  // request to terminate a session this task does not hold.
   if (req.method !== "POST") {
     if (req.method === "DELETE" && authCacheStore && sessionId) {
       await authCacheStore.delete(sessionId);
@@ -1813,7 +1725,7 @@ async function handleSessionScopedMcpRequest(
   return { unknownSessionId: sessionId, shouldContinue: true };
 }
 
-function sendMcpAuthChallenge(res: import("node:http").ServerResponse): void {
+function sendMcpAuthChallenge(res: ServerResponse): void {
   sendOAuthJson(
     res,
     401,
@@ -1827,19 +1739,9 @@ function sendMcpAuthChallenge(res: import("node:http").ServerResponse): void {
   );
 }
 
-function hasOversizedContentLength(
-  req: import("node:http").IncomingMessage
-): boolean {
-  const contentLengthHeader = req.headers["content-length"];
-  const contentLength = Number(contentLengthHeader ?? 0);
-  return (
-    Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES
-  );
-}
-
 function handleUnauthenticatedMcpProbe(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
+  req: IncomingMessage,
+  res: ServerResponse,
   sessionId: string | undefined,
   hasAuthorizationHeader: boolean
 ): boolean {
@@ -1862,34 +1764,43 @@ function handleUnauthenticatedMcpProbe(
   return true;
 }
 
-// Connect a freshly-created (not yet session-registered) server/transport and
-// handle the request. On failure, close the server before rethrowing: init
-// failed before the session was registered in mcpSessions, so
-// cleanupExpiredMcpSessions can never reap it — closing here avoids leaking one
-// McpServer + transport per error, mirroring handleMcpStatelessRequest.
-async function connectMcpTransportOrCleanup(
-  server: McpServer,
-  transport: StreamableHTTPServerTransport,
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
-  parsedBody: unknown
-): Promise<void> {
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
-  } catch (error) {
-    try {
-      await server.close();
-    } catch {
-      // best-effort cleanup — original error is more important
-    }
-    throw error;
+// Whatever reaches here has no live session to answer it — either an
+// `initialize`, or a POST whose session id this task does not hold and which
+// falls through to the stateless path. Both must still be a JSON POST that
+// fits the size ceiling.
+function rejectUnusableMcpPostRequest(
+  req: IncomingMessage,
+  res: ServerResponse
+): boolean {
+  if (req.method !== "POST") {
+    sendJson(
+      res,
+      400,
+      { error: "Missing Mcp-Session-Id header" },
+      { Allow: "POST" }
+    );
+    return true;
   }
+  const contentType = req.headers["content-type"] ?? "";
+  if (!contentType.includes("application/json")) {
+    sendJson(res, 415, {
+      error: "Unsupported Media Type. Expected: application/json",
+    });
+    return true;
+  }
+  if (hasOversizedContentLength(req)) {
+    sendJson(res, 413, {
+      error: "payload_too_large",
+      error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+    });
+    return true;
+  }
+  return false;
 }
 
 async function handleMcp(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   const nowMs = Date.now();
   cleanupExpiredMcpSessions(nowMs);
@@ -1902,34 +1813,28 @@ async function handleMcp(
     return;
   }
 
+  // The standalone GET stream carries nothing: the only messages the SDK routes
+  // to it are ones sent without a related request id, and this server sends
+  // none. 405 is the spec's "no SSE offered" refusal, which the SDK client
+  // accepts silently, where the 404 it replaces raised on the client — and that
+  // 404 is what every session-missing GET would get behind more than one task.
+  if (req.method === "GET") {
+    logMcpEvent("get-stream-refused", { sessionId });
+    sendJson(
+      res,
+      405,
+      { error: "This server does not offer an SSE stream at GET /mcp." },
+      { Allow: MCP_ALLOWED_METHODS }
+    );
+    return;
+  }
+
   const sessionState = await handleSessionScopedMcpRequest(req, res, sessionId);
   if (!sessionState.shouldContinue) {
     return;
   }
 
-  // New session — only POST is valid (must be an initialize request)
-  if (req.method !== "POST") {
-    sendJson(
-      res,
-      400,
-      { error: "Missing Mcp-Session-Id header" },
-      { Allow: "POST" }
-    );
-    return;
-  }
-
-  const contentType = req.headers["content-type"] ?? "";
-  if (!contentType.includes("application/json")) {
-    sendJson(res, 415, {
-      error: "Unsupported Media Type. Expected: application/json",
-    });
-    return;
-  }
-  if (hasOversizedContentLength(req)) {
-    sendJson(res, 413, {
-      error: "payload_too_large",
-      error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
-    });
+  if (rejectUnusableMcpPostRequest(req, res)) {
     return;
   }
 
@@ -1960,88 +1865,72 @@ async function handleMcp(
       method: req.method,
       sessionId: sessionState.unknownSessionId,
     });
-    await handleMcpStatelessRequest(req, res, auth, parsedBody);
+    await handleMcpStatelessRequest(req, res, parsedBody, () =>
+      createMcpServer(auth.context, auth.plaintextKey, auth.grantedScopes)
+    );
     return;
   }
 
   logMcpEvent("session-initialize", { method: req.method });
-  const server = await createMcpServer(
-    auth.context,
-    auth.plaintextKey,
-    auth.grantedScopes
-  );
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomBytes(16).toString("hex"),
-  });
-
-  await connectMcpTransportOrCleanup(server, transport, req, res, parsedBody);
-
-  // Store session for subsequent requests
-  const newSessionId = transport.sessionId;
-  if (newSessionId) {
-    mcpSessions.set(newSessionId, {
-      server,
-      transport,
-      auth,
-      lastActivityMs: Date.now(),
-    });
-    logMcpEvent("session-created", { sessionId: newSessionId });
-    if (authCacheStore) {
-      const serializedAuth: SerializedMcpAuth = {
-        plaintextKey: auth.plaintextKey,
-        context: auth.context,
-        grantedScopes: auth.grantedScopes,
-        createdAt: Date.now(),
-      };
-      authCacheStore
-        .set(newSessionId, serializedAuth, MCP_SERVER_CACHE_TTL_MS)
-        .catch(() => {});
-    }
-  } else {
-    // No session created — clean up
-    await server.close();
-    logMcpEvent("session-none");
-  }
-}
-
-async function readRequestBody(
-  req: import("node:http").IncomingMessage
-): Promise<string> {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of req) {
-    const bufferChunk = Buffer.isBuffer(chunk)
-      ? chunk
-      : Buffer.from(String(chunk));
-    totalBytes += bufferChunk.length;
-    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
-      throw new RequestBodyTooLargeError();
-    }
-    chunks.push(bufferChunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function readJsonBody<T>(
-  req: import("node:http").IncomingMessage
-): Promise<T | null> {
-  const contentType = req.headers["content-type"] ?? "";
-  if (!contentType.includes("application/json")) {
-    return null;
-  }
-  const raw = await readRequestBody(req);
-  if (!raw.trim()) {
-    return null;
+  // Claim, refusal, and `finally` release: see `reserveMcpSessionCapacity`.
+  const reservation = reserveMcpSessionCapacity();
+  if (!reservation) {
+    refuseMcpSessionForCapacity(
+      res,
+      req.method,
+      McpCapacityRefusalReason.Initialize
+    );
+    return;
   }
   try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
+    const server = await createMcpServer(
+      auth.context,
+      auth.plaintextKey,
+      auth.grantedScopes
+    );
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomBytes(16).toString("hex"),
+    });
+
+    await connectMcpTransportOrCleanup(server, transport, req, res, parsedBody);
+
+    // Store session for subsequent requests
+    const newSessionId = transport.sessionId;
+    if (newSessionId) {
+      admitMcpSession(
+        newSessionId,
+        {
+          server,
+          transport,
+          auth,
+          lastActivityMs: Date.now(),
+        },
+        reservation
+      );
+      logMcpEvent("session-created", { sessionId: newSessionId });
+      if (authCacheStore) {
+        const serializedAuth: SerializedMcpAuth = {
+          plaintextKey: auth.plaintextKey,
+          context: auth.context,
+          grantedScopes: auth.grantedScopes,
+          createdAt: Date.now(),
+        };
+        authCacheStore
+          .set(newSessionId, serializedAuth, MCP_SERVER_CACHE_TTL_MS)
+          .catch(() => {});
+      }
+    } else {
+      // No session created — clean up
+      await server.close();
+      logMcpEvent("session-none");
+    }
+  } finally {
+    releaseMcpSessionCapacity(reservation);
   }
 }
 
 async function readFormBody(
-  req: import("node:http").IncomingMessage
+  req: IncomingMessage
 ): Promise<Record<string, string>> {
   const raw = await readRequestBody(req);
   const params = new URLSearchParams(raw);
@@ -2088,8 +1977,8 @@ function isValidRedirectUri(uri: string): boolean {
  * We accept any registration since auth is enforced at the authorize step.
  */
 async function handleOAuthRegister(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
@@ -2239,7 +2128,7 @@ function buildAuthorizeHtml(queryString: string, error?: string): string {
 }
 
 function sendAuthorizeHtmlForm(
-  res: import("node:http").ServerResponse,
+  res: ServerResponse,
   url: URL,
   error?: string
 ): void {
@@ -2250,7 +2139,7 @@ function sendAuthorizeHtmlForm(
 }
 
 async function extractApiKeyFromRequest(
-  req: import("node:http").IncomingMessage
+  req: IncomingMessage
 ): Promise<string | null> {
   const headerKey = extractApiKey(req.headers.authorization ?? null);
   if (headerKey) {
@@ -2280,8 +2169,8 @@ type AuthorizeContextResult = {
 };
 
 async function resolveAuthorizeContext(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
+  req: IncomingMessage,
+  res: ServerResponse,
   url: URL
 ): Promise<AuthorizeContextResult | null> {
   const apiKey = await extractApiKeyFromRequest(req);
@@ -2322,17 +2211,17 @@ async function resolveAuthorizeContext(
       );
       return null;
     }
-    sendJson(res, 503, {
-      error: "temporarily_unavailable",
-      error_description: "API key verification is temporarily unavailable",
-    });
+    sendTemporarilyUnavailable(
+      res,
+      "API key verification is temporarily unavailable"
+    );
     return null;
   }
 }
 
 async function handleOAuthAuthorize(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   if (req.method !== "GET" && req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" }, { Allow: "GET, POST" });
@@ -2442,10 +2331,7 @@ async function handleOAuthAuthorize(
   redirectWithParams(res, redirectUri, { code, state });
 }
 
-function sendInvalidClient(
-  res: import("node:http").ServerResponse,
-  description: string
-): void {
+function sendInvalidClient(res: ServerResponse, description: string): void {
   sendOAuthJson(res, 401, {
     error: "invalid_client",
     error_description: description,
@@ -2454,7 +2340,7 @@ function sendInvalidClient(
 
 async function handleClientCredentialsGrant(
   body: OAuthTokenBody,
-  res: import("node:http").ServerResponse
+  res: ServerResponse
 ): Promise<void> {
   if (
     !body.client_id ||
@@ -2499,7 +2385,7 @@ async function handleClientCredentialsGrant(
 
 async function handleAuthorizationCodeGrant(
   body: OAuthTokenBody,
-  res: import("node:http").ServerResponse
+  res: ServerResponse
 ): Promise<void> {
   if (!(body.code && body.code_verifier)) {
     sendOAuthJson(res, 400, {
@@ -2843,7 +2729,7 @@ async function tryRefreshGracePeriod(
 
 async function handleRevokedRefreshToken(
   refreshRecord: RefreshTokenRecord,
-  res: import("node:http").ServerResponse,
+  res: ServerResponse,
   requestedScope?: string
 ): Promise<void> {
   const msSinceRevocation =
@@ -2973,7 +2859,7 @@ async function verifyApiKeyForRefresh(
 
 async function handleRefreshTokenGrant(
   body: OAuthTokenBody,
-  res: import("node:http").ServerResponse
+  res: ServerResponse
 ): Promise<void> {
   if (!body.refresh_token?.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)) {
     logRefreshFailure({ reason: RefreshFailureReason.Unknown });
@@ -3214,8 +3100,8 @@ async function handleRefreshTokenGrant(
 }
 
 async function handleOAuthToken(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
     sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
@@ -3302,8 +3188,8 @@ type InternalTokenBody = {
 };
 
 async function handleOAuthIntrospect(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
     sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
@@ -3367,8 +3253,8 @@ async function handleOAuthIntrospect(
 }
 
 async function handleOAuthRevoke(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
     sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
@@ -3455,9 +3341,14 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
 };
 
 async function dispatchHttpRequest(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ): Promise<boolean> {
+  if (!URL.canParse(req.url ?? "/", MCP_SERVER_URL)) {
+    log.warn("[mcp] unparseable-request-target", { path: req.url ?? "" });
+    sendJson(res, 400, { error: "invalid_request" });
+    return true;
+  }
   const parsedUrl = new URL(req.url ?? "/", MCP_SERVER_URL);
   const pathname = parsedUrl.pathname;
   if (
@@ -3527,9 +3418,7 @@ const CORS_ALLOWED_ORIGINS = (process.env.MCP_CORS_ORIGINS ?? "")
   .map((v) => v.trim())
   .filter(Boolean);
 
-function getCorsOrigin(
-  req: import("node:http").IncomingMessage
-): string | null {
+function getCorsOrigin(req: IncomingMessage): string | null {
   const origin = req.headers.origin;
   if (!origin) {
     return null;
@@ -3552,10 +3441,7 @@ function getCorsOrigin(
   return null;
 }
 
-function setCorsHeaders(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
-): boolean {
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse): boolean {
   const allowedOrigin = getCorsOrigin(req);
   res.setHeader("Vary", "Origin");
   if (!allowedOrigin) {
@@ -3572,7 +3458,7 @@ function setCorsHeaders(
   return true;
 }
 
-export function createHttpServer(): import("node:http").Server {
+export function createHttpServer(): HttpServer {
   return createServer(async (req, res) => {
     // CORS: set headers on every response, handle preflight
     const corsAllowed = setCorsHeaders(req, res);
@@ -3612,8 +3498,8 @@ export function createHttpServer(): import("node:http").Server {
 }
 
 async function handleCachedAuthRequest(
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse,
+  req: IncomingMessage,
+  res: ServerResponse,
   sessionId: string
 ): Promise<boolean> {
   if (!authCacheStore) {
@@ -3643,20 +3529,18 @@ async function handleCachedAuthRequest(
   if (cachedParsedBody === null) {
     return true;
   }
-  await handleMcpStatelessRequest(
-    req,
-    res,
-    { plaintextKey, context, grantedScopes: revalidatedScopes },
-    cachedParsedBody
+  await handleMcpStatelessRequest(req, res, cachedParsedBody, () =>
+    createMcpServer(context, plaintextKey, revalidatedScopes)
   );
   authCacheStore.touch(sessionId, MCP_SERVER_CACHE_TTL_MS).catch(() => {});
   return true;
 }
 
-export function startHttpServer(port = PORT): import("node:http").Server {
+export function startHttpServer(port = PORT): HttpServer {
   requireRedirectAllowlistForEnvironment();
   requireInternalAllowlistForEnvironment();
   const httpServer = createHttpServer();
+  startMcpSessionSweep();
   httpServer.listen(port, () => {
     log.info(`Closedloop MCP server running on port ${port}`);
     log.info(`MCP endpoint: http://localhost:${port}/mcp`);
@@ -3696,6 +3580,7 @@ async function runShutdownAndExit({
   drainDeadlineMs = SHUTDOWN_DRAIN_DEADLINE_MS,
 }: ShutdownOptions = {}): Promise<void> {
   const drainDeadlineAtMs = Date.now() + drainDeadlineMs;
+  stopMcpSessionSweep();
   await closeHttpServerWithDeadline(
     httpServer,
     getPreFlushShutdownDeadlineMs(drainDeadlineAtMs)
@@ -3738,11 +3623,21 @@ export const __testables = {
   handleCachedAuthRequest,
   shutdownAndExit,
   installShutdownHandlers,
+  admitMcpSession,
+  cleanupExpiredMcpSessions,
+  startMcpSessionSweep,
+  stopMcpSessionSweep,
+  reserveMcpSessionCapacity,
+  releaseMcpSessionCapacity,
+  mcpSessions,
+  MCP_MAX_SESSIONS,
   get authCacheStore() {
     return authCacheStore;
   },
   resetInMemorySecurityState: () => {
     lastOAuthCleanupMs = 0;
+    stopMcpSessionSweep();
+    resetMcpSessionCapacity();
     mcpSessions.clear();
     inMemoryRateLimits.clear();
   },

@@ -7,6 +7,7 @@ import {
   isBroadScopeRoot,
   tccProtectedDirectories,
 } from "../shared/sandbox-policy.js";
+import { isUnderDir } from "./path-containment.js";
 
 export class DirectoryNotAllowedError extends Error {
   readonly targetPath: string;
@@ -45,15 +46,7 @@ export function isPathAllowed(
     if (isBroadScopeRoot(resolvedAllowedDirectory)) {
       continue;
     }
-    if (resolvedTarget === resolvedAllowedDirectory) {
-      return true;
-    }
-
-    const prefix = resolvedAllowedDirectory.endsWith(path.sep)
-      ? resolvedAllowedDirectory
-      : `${resolvedAllowedDirectory}${path.sep}`;
-
-    if (resolvedTarget.startsWith(prefix)) {
+    if (isUnderDir(resolvedTarget, resolvedAllowedDirectory)) {
       return true;
     }
   }
@@ -107,29 +100,15 @@ function isSensitiveDeniedPath(targetPath: string): boolean {
   const lowerTarget = targetPath.toLowerCase();
   return SENSITIVE_DENY_PATHS.some((blockedPath) => {
     // Check both the original blocked path and its canonical form
-    // This catches direct matches and symlinked paths
-    const lowerBlockedOriginal = blockedPath.toLowerCase();
-    const isMatchOriginal =
-      lowerTarget === lowerBlockedOriginal ||
-      lowerTarget.startsWith(
-        lowerBlockedOriginal.endsWith(path.sep)
-          ? lowerBlockedOriginal
-          : `${lowerBlockedOriginal}${path.sep}`
-      );
-
-    if (isMatchOriginal) {
+    // This catches direct matches and symlinked paths. Both sides are
+    // lower-cased before the comparison because `isUnderDir` is case-sensitive.
+    if (isUnderDir(lowerTarget, blockedPath.toLowerCase())) {
       return true;
     }
 
-    const canonicalBlocked = canonicalizePathForPolicy(blockedPath);
-    const lowerBlocked = canonicalBlocked.toLowerCase();
-    return (
-      lowerTarget === lowerBlocked ||
-      lowerTarget.startsWith(
-        lowerBlocked.endsWith(path.sep)
-          ? lowerBlocked
-          : `${lowerBlocked}${path.sep}`
-      )
+    return isUnderDir(
+      lowerTarget,
+      canonicalizePathForPolicy(blockedPath).toLowerCase()
     );
   });
 }

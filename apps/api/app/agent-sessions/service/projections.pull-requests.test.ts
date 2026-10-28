@@ -4,6 +4,8 @@
 // of `projections.test.ts` (FEA-3297) to keep that file under the size ceiling;
 // the sibling owns the session→PR link fixture shape.
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { BranchParticipationKind } from "@repo/api/src/types/branch";
 import { PullRequestState } from "@repo/api/src/types/document";
 import {
   SessionArtifactLinkKind,
@@ -53,7 +55,7 @@ function prHeadRefSourceLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionPr,
       relationTypes: [relationType],
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       prNumber,
       source: "DETERMINISTIC",
       confidence: 1.0,
@@ -62,10 +64,10 @@ function prHeadRefSourceLink({
     target: {
       // The BRANCH artifact's name is the PR's head branch.
       name: headRef,
-      type: "BRANCH",
+      type: ArtifactType.Branch,
       branch: {
         repository: {
-          fullName: "closedloop-ai/symphony-alpha",
+          fullName: "closedloop-ai/closedloop-ai",
         },
         currentPullRequestDetail: {
           number: prNumber,
@@ -76,9 +78,31 @@ function prHeadRefSourceLink({
           lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
           isCurrent: true,
           repository: {
-            fullName: "closedloop-ai/symphony-alpha",
+            fullName: "closedloop-ai/closedloop-ai",
           },
         },
+      },
+    },
+  };
+}
+
+function sessionBranchSourceLink(branchName: string) {
+  return {
+    branchParticipation: BranchParticipationKind.Wrote,
+    metadata: {
+      linkKind: SessionArtifactLinkKind.SessionBranch,
+      branchName,
+      branchRepositoryFullName: "closedloop-ai/closedloop-ai",
+    },
+    target: {
+      id: `branch-${branchName}`,
+      name: branchName,
+      type: ArtifactType.Branch,
+      branch: {
+        repository: {
+          fullName: "closedloop-ai/closedloop-ai",
+        },
+        currentPullRequestDetail: null,
       },
     },
   };
@@ -109,7 +133,7 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Referenced],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 2897,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
@@ -118,7 +142,7 @@ describe("agentSessionsService pull request projection", () => {
                   target: {
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 2897,
@@ -129,7 +153,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -170,7 +194,7 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Referenced],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 3200,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
@@ -179,7 +203,7 @@ describe("agentSessionsService pull request projection", () => {
                   target: {
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 3200,
@@ -190,7 +214,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -200,7 +224,7 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 3200,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
@@ -213,7 +237,7 @@ describe("agentSessionsService pull request projection", () => {
                     name: "authoring-session/head-ref",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 3200,
@@ -224,7 +248,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -252,15 +276,14 @@ describe("agentSessionsService pull request projection", () => {
     ]);
     expect(result.items[0]?.prsMerged).toBe(1);
   });
-  // FEA-3562: a session with a linked (authored) PR but no synced local branch —
-  // both `branch` and `baseBranch` null — must show the PR's HEAD branch rather
-  // than "None". The head ref is the linked BRANCH artifact's `name`.
-  it("back-fills the session branch from a linked PR's head ref when branch/baseBranch are null", async () => {
+  // FEA-3562: a session with a linked authored PR but no base fallback still
+  // shows the PR's HEAD branch rather than "None". The head ref is the linked
+  // BRANCH artifact's `name`.
+  it("back-fills the session branch from a linked PR's head ref when baseBranch is null", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [],
             artifact: {
@@ -270,7 +293,7 @@ describe("agentSessionsService pull request projection", () => {
               project: null,
               sourceLinks: [
                 prHeadRefSourceLink({
-                  headRef: "mikeangstadt/fea-3562-head-ref",
+                  headRef: "marisolashgrove/fea-3562-head-ref",
                   prNumber: 3143,
                 }),
               ],
@@ -295,11 +318,11 @@ describe("agentSessionsService pull request projection", () => {
       },
     ]);
     // ...and so does its head branch — not "None".
-    expect(result.items[0]?.branch).toBe("mikeangstadt/fea-3562-head-ref");
+    expect(result.items[0]?.branch).toBe("marisolashgrove/fea-3562-head-ref");
   });
-  // FEA-3562: a REAL synced local branch always wins over the PR head-ref
-  // fallback — the back-fill only fills the gap, it never overrides.
-  it("prefers the synced local branch over the linked PR head ref", async () => {
+  // ISS-4742: the retired synced scalar branch must not override relationship
+  // evidence; cloud display now uses the linked PR head ref.
+  it("ignores the legacy synced branch when a linked PR head ref resolves", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
@@ -314,7 +337,7 @@ describe("agentSessionsService pull request projection", () => {
               project: null,
               sourceLinks: [
                 prHeadRefSourceLink({
-                  headRef: "mikeangstadt/pr-head-ref",
+                  headRef: "marisolashgrove/pr-head-ref",
                   prNumber: 3144,
                 }),
               ],
@@ -330,18 +353,17 @@ describe("agentSessionsService pull request projection", () => {
       filters: {},
     });
 
-    expect(result.items[0]?.branch).toBe("feature/local-synced");
+    expect(result.items[0]?.branch).toBe("marisolashgrove/pr-head-ref");
   });
   // FEA-3562: `baseBranch` is the base/target ref, not the head; when a session
-  // has no synced local `branch` but does have a `baseBranch` AND an authored PR
+  // has no relationship branch but does have a `baseBranch` AND an authored PR
   // link, the linked PR's HEAD ref wins over `baseBranch` so the chip shows the
   // branch the session worked on, not its base (e.g. `main`).
-  it("prefers the linked PR head ref over baseBranch when the local branch is null", async () => {
+  it("prefers the linked PR head ref over baseBranch", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: "main",
             pullRequests: [],
             artifact: {
@@ -351,7 +373,7 @@ describe("agentSessionsService pull request projection", () => {
               project: null,
               sourceLinks: [
                 prHeadRefSourceLink({
-                  headRef: "mikeangstadt/fea-3562-over-base",
+                  headRef: "marisolashgrove/fea-3562-over-base",
                   prNumber: 3146,
                 }),
               ],
@@ -367,17 +389,16 @@ describe("agentSessionsService pull request projection", () => {
       filters: {},
     });
 
-    expect(result.items[0]?.branch).toBe("mikeangstadt/fea-3562-over-base");
+    expect(result.items[0]?.branch).toBe("marisolashgrove/fea-3562-over-base");
   });
-  // FEA-3562: with no synced local branch and no authored PR head ref, the
+  // FEA-3562: with no relationship branch and no authored PR head ref, the
   // display still degrades to `baseBranch` — the head-ref back-fill only fills
   // the gap, it never suppresses a real base branch.
-  it("degrades to baseBranch when the local branch is null and no PR head ref resolves", async () => {
+  it("degrades to baseBranch when no PR head ref resolves", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: "main",
             pullRequests: [],
             artifact: {
@@ -407,7 +428,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [],
             artifact: {
@@ -442,9 +462,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            // Synced local head branch → the PR resolves a branch and is not
-            // orphaned by the PR⇒Branch invariant (FEA-4188).
-            branch: "dedup-session/head",
             pullRequests: [
               {
                 num: 17,
@@ -462,16 +479,17 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 17,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
                     extractorVersion: 1,
                   },
                   target: {
+                    name: "dedup-session/head",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 17,
@@ -482,7 +500,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: new Date("2026-05-20T17:09:00.000Z"),
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -515,10 +533,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            // Synced local head branch → the legacy PR is not orphaned by the
-            // PR⇒Branch invariant (FEA-4188); this test exercises the legacy
-            // merged→unknown downgrade, not the invariant.
-            branch: "legacy-session/head",
             pullRequests: [
               {
                 num: 17,
@@ -526,6 +540,13 @@ describe("agentSessionsService pull request projection", () => {
                 status: SessionPrLifecycleStatus.Merged,
               },
             ],
+            artifact: {
+              name: "Session One",
+              status: "completed",
+              slug: "SES-1",
+              project: null,
+              sourceLinks: [sessionBranchSourceLink("legacy-session/head")],
+            },
           }),
         ]),
         count: vi.fn().mockResolvedValue(1),
@@ -556,8 +577,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            // Synced local head branch → the PR is not orphaned (FEA-4188).
-            branch: "repoless-trusted-session/head",
             repositoryFullName: null,
             pullRequests: [
               {
@@ -576,16 +595,17 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 17,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
                     extractorVersion: 1,
                   },
                   target: {
+                    name: "repoless-trusted-session/head",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 17,
@@ -596,7 +616,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: new Date("2026-05-20T17:09:00.000Z"),
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -639,7 +659,7 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 17,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
@@ -651,7 +671,7 @@ describe("agentSessionsService pull request projection", () => {
                     name: "unverified-fresh-session/head-ref",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 17,
@@ -662,7 +682,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: null,
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -695,8 +715,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            // Synced local head branch → the PR is not orphaned (FEA-4188).
-            branch: "legacy-unverified-session/head",
             pullRequests: [
               {
                 num: 17,
@@ -714,16 +732,17 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 17,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
                     extractorVersion: 1,
                   },
                   target: {
+                    name: "legacy-unverified-session/head",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 17,
@@ -734,7 +753,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: null,
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },
@@ -766,7 +785,7 @@ describe("agentSessionsService pull request projection", () => {
   // above, but only in isolation — a null `repositoryFullName` was always paired
   // with a TRUSTED detail, and an unverified detail always with a repo-qualified
   // session. Their intersection is the one case that keys the same PR twice
-  // (`legacy#17` from the seed, `closedloop-ai/symphony-alpha#17` from the link),
+  // (`legacy#17` from the seed, `closedloop-ai/closedloop-ai#17` from the link),
   // so it is the case that regresses if the legacy delete is ever re-gated on
   // `trustedDetail`.
   it("deduplicates repository-less legacy pull request JSON when the linked session PR detail is unverified", async () => {
@@ -774,8 +793,6 @@ describe("agentSessionsService pull request projection", () => {
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            // Synced local head branch → the PR is not orphaned (FEA-4188).
-            branch: "repoless-unverified-session/head",
             repositoryFullName: null,
             pullRequests: [
               {
@@ -794,16 +811,17 @@ describe("agentSessionsService pull request projection", () => {
                   metadata: {
                     linkKind: SessionArtifactLinkKind.SessionPr,
                     relationTypes: [SessionPrRelationType.Created],
-                    repositoryFullName: "closedloop-ai/symphony-alpha",
+                    repositoryFullName: "closedloop-ai/closedloop-ai",
                     prNumber: 17,
                     source: "DETERMINISTIC",
                     confidence: 1.0,
                     extractorVersion: 1,
                   },
                   target: {
+                    name: "repoless-unverified-session/head",
                     branch: {
                       repository: {
-                        fullName: "closedloop-ai/symphony-alpha",
+                        fullName: "closedloop-ai/closedloop-ai",
                       },
                       currentPullRequestDetail: {
                         number: 17,
@@ -814,7 +832,7 @@ describe("agentSessionsService pull request projection", () => {
                         lastVerifiedAt: null,
                         isCurrent: true,
                         repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
+                          fullName: "closedloop-ai/closedloop-ai",
                         },
                       },
                     },

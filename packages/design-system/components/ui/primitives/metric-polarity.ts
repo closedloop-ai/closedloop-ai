@@ -51,17 +51,22 @@ export type DeltaSentiment =
  * dashboard and the desktop first-launch dashboard. Changing their delta
  * presentation unconditionally would land the new look on every one of those
  * surfaces at once, on web AND desktop — which is exactly what the reviews on
- * #4823 (wongk, codex) rejected: `sessions-cost-billing-honesty` gates Sessions
- * COST SEMANTICS and never reaches Insights or Branches, so it cannot stand in
- * as the gate for a shared presentation change.
+ * #4823 (whitlockk, codex) rejected: the Sessions cost flag of the day gated Sessions
+ * COST SEMANTICS and never reached Insights or Branches, so it could not stand
+ * in as the gate for a shared presentation change. (That flag was
+ * `sessions-cost-billing-honesty`, retired by ISS-8791; the reasoning is about
+ * flag SCOPE and does not depend on which flag it was.)
  *
  * So the primitive stays dumb and the CONSUMER decides. Each `packages/app`
- * surface resolves `useMetricDeltaTreatment()` (the
- * `metric-delta-unified-pill` flag: a PostHog flag on the web app, the
- * byte-equal Labs toggle on the packaged desktop renderer, default OFF on both)
- * and passes the result down. A consumer that passes nothing — including every
- * `apps/prototypes` sandbox page — keeps {@link MetricDeltaTreatment.Legacy},
- * so the default render is byte-for-byte what shipped before ISS-5842.
+ * surface resolves `useMetricDeltaTreatment()` — which reads TWO gates, each a
+ * PostHog flag on the web app and a byte-equal Labs toggle on the packaged
+ * desktop renderer, default OFF on both: `metric-delta-neutral-pill` yields
+ * {@link MetricDeltaTreatment.NeutralPill} and `metric-delta-unified-pill`
+ * yields {@link MetricDeltaTreatment.UnifiedPill}, which wins when both are on
+ * because it is a strict superset. A consumer that passes nothing — including
+ * every `apps/prototypes` sandbox page — keeps
+ * {@link MetricDeltaTreatment.Legacy}, so the default render is byte-for-byte
+ * what shipped before ISS-5842.
  */
 export const MetricDeltaTreatment = {
   /**
@@ -72,8 +77,21 @@ export const MetricDeltaTreatment = {
    */
   Legacy: "legacy",
   /**
+   * ISS-6493. One pill geometry for every tone, and the verdict word KEPT.
+   *
+   * ISS-5842 built the neutral pill and the verdict-word removal as one
+   * treatment, so the neutral pill inherited a blocker that is not about it: the
+   * #4823 question is whether hue alone may carry the good/bad reading once
+   * "better"/"worse" is gone (see {@link deltaVerdictCaption}). A neutral delta
+   * makes no good/bad claim, so it has no hue-alone problem and does not need
+   * that answer. This treatment is the neutral pill on its own — the caption
+   * still leads with the verdict word, exactly as under {@link Legacy}.
+   */
+  NeutralPill: "neutral-pill",
+  /**
    * ISS-5842. One pill geometry for every tone — same shape, same padding, same
-   * type, only the COLOUR varies — and no verdict word in the caption.
+   * type, only the COLOUR varies — and no verdict word in the caption. A strict
+   * superset of {@link NeutralPill}, which is why it wins when both gates are on.
    */
   UnifiedPill: "unified-pill",
 } as const;
@@ -113,20 +131,27 @@ export const DELTA_SENTIMENT_PILL_CLASS: Record<DeltaSentiment, string> = {
 };
 
 /**
- * ISS-5842 pill-chip colouring, used only under
- * {@link MetricDeltaTreatment.UnifiedPill}.
+ * ISS-5842 pill-chip colouring, spent by every treatment that pills each tone —
+ * {@link MetricDeltaTreatment.NeutralPill} and
+ * {@link MetricDeltaTreatment.UnifiedPill}. Both reach for this ONE map rather
+ * than a copy apiece: they differ on the verdict word, never on the colours.
  *
  * All three sentiments carry the SAME geometry — rounded pill, same padding,
- * same type — and only the COLOUR varies. Product (Mike, 2026-08-10): "neutral
+ * same type — and only the COLOUR varies. Product (Marisol, 2026-08-10): "neutral
  * pills should still be pill on trendiness … neutral should still have a pill
  * like red or green." The delta chip is one component in three tonal states; it
  * previously rendered as three different-looking things in one row, which is a
  * component boundary the reader has to re-learn per card.
  *
- * The original neutral-is-bare concern is answered rather than discarded:
- * neutral takes `bg-foreground/5`, NOT the placeholder's flat `bg-muted`, so
- * the two remain separable by fill as well as by their own visible text ("0%"
- * versus the literal words "No comparison").
+ * The original neutral-is-bare concern is answered rather than discarded — but
+ * by TEXT, not by fill, and the difference matters to anyone citing this later.
+ * `bg-foreground/5` and `KpiDeltaPlaceholder`'s `bg-muted` are different tokens
+ * that composite to the same pixel over `bg-card` (measured: 0.1/255 apart in
+ * light, 1.4/255 in dark), so the neutral pill and the "No comparison" chip
+ * deliberately read at the SAME visual weight. What tells them apart is what
+ * each one says: a real movement ("0%", "-52%") against the literal words "No
+ * comparison". That is the strong channel and the one the #4148 review actually
+ * needed; the distinct token only keeps the two from drifting onto one literal.
  */
 export const DELTA_SENTIMENT_UNIFIED_PILL_CLASS: Record<
   DeltaSentiment,
@@ -151,7 +176,7 @@ export const DELTA_PILL_GEOMETRY_CLASS = "rounded-full px-2 py-0.5";
  * own finite guard can pass `NaN` or `±Infinity` (e.g. a `x/0` percent-change
  * with no prior base). `NaN > 0` is false, so a raw non-finite value would slip
  * through `deltaSentiment` as a false "down" and render a bogus chip — on a
- * lower-is-better card, a down-arrow + "NaN%" + a green "better" (shafty023
+ * lower-is-better card, a down-arrow + "NaN%" + a green "better" (davetho
  * review on #4148). A non-finite delta is really "no comparison", so the render
  * boundary must reject it here and fall to the no-comparison placeholder instead
  * of grading a number that does not exist.
@@ -202,19 +227,39 @@ function assertUnreachablePolarity(polarity: never): never {
  * Whether a sentiment gets the filled rounded pill chrome under
  * {@link MetricDeltaTreatment.Legacy}. Only scored movements do; a neutral delta
  * renders bare so it is distinct from the muted "No comparison" placeholder pill
- * (review on #4148). Under {@link MetricDeltaTreatment.UnifiedPill} every tone
- * is a pill and this predicate does not apply.
+ * (review on #4148). Under every other treatment each tone is a pill and this
+ * predicate does not apply — see {@link TREATMENT_PILLS_EVERY_TONE}.
  */
 export function isScoredSentiment(sentiment: DeltaSentiment): boolean {
   return sentiment !== DeltaSentiment.Neutral;
 }
+
+/**
+ * Whether a treatment pills EVERY tone, or only the scored ones. The pill and
+ * the verdict word were one decision under ISS-5842 and are two under ISS-6493,
+ * so the geometry/colour question is asked here and the caption question is
+ * asked separately by {@link deltaVerdictCaption} — a treatment can answer them
+ * differently, which is the whole point of
+ * {@link MetricDeltaTreatment.NeutralPill}.
+ *
+ * A `Record` rather than the obvious `treatment !== Legacy` predicate. Written
+ * by exclusion, a fourth treatment added tomorrow would silently opt IN to
+ * pilling every tone without anyone choosing that — and this axis is exactly the
+ * one a new treatment would exist to decide. Spelled out, `tsc` fails here until
+ * it states an answer.
+ */
+const TREATMENT_PILLS_EVERY_TONE: Record<MetricDeltaTreatment, boolean> = {
+  [MetricDeltaTreatment.Legacy]: false,
+  [MetricDeltaTreatment.NeutralPill]: true,
+  [MetricDeltaTreatment.UnifiedPill]: true,
+};
 
 /** The chip's colour classes for a sentiment under the consumer's treatment. */
 export function deltaPillClass(
   sentiment: DeltaSentiment,
   treatment: MetricDeltaTreatment
 ): string {
-  if (treatment === MetricDeltaTreatment.UnifiedPill) {
+  if (TREATMENT_PILLS_EVERY_TONE[treatment]) {
     return DELTA_SENTIMENT_UNIFIED_PILL_CLASS[sentiment];
   }
   return DELTA_SENTIMENT_PILL_CLASS[sentiment];
@@ -230,7 +275,7 @@ export function deltaPillGeometryClass(
   sentiment: DeltaSentiment,
   treatment: MetricDeltaTreatment
 ): string {
-  if (treatment === MetricDeltaTreatment.UnifiedPill) {
+  if (TREATMENT_PILLS_EVERY_TONE[treatment]) {
     return DELTA_PILL_GEOMETRY_CLASS;
   }
   return isScoredSentiment(sentiment) ? DELTA_PILL_GEOMETRY_CLASS : "";
@@ -240,7 +285,7 @@ export function deltaPillGeometryClass(
  * The verdict word to render beside the chip, or `null` for none.
  *
  * Under {@link MetricDeltaTreatment.UnifiedPill} this is ALWAYS `null`. Product
- * (Mike, 2026-08-10): "remove 'better' or 'worse' from positive / negative trend
+ * (Marisol, 2026-08-10): "remove 'better' or 'worse' from positive / negative trend
  * line" — the card was asserting a value judgement it cannot always justify, on
  * every metric, on every render.
  *
@@ -252,7 +297,7 @@ export function deltaPillGeometryClass(
  * the DIRECTION channel, which is not colour: the chip's leading glyph is a
  * distinct SHAPE per state (up arrow / down arrow / minus). What is lost is the
  * good/bad overlay on top of that direction, so a `+38%` higher-is-better and a
- * `+38%` lower-is-better become distinguishable by hue alone (wongk, codex on
+ * `+38%` lower-is-better become distinguishable by hue alone (whitlockk, codex on
  * #4823) — and the sparkline variant, which replaces the glyph, loses even the
  * direction shape.
  *
@@ -263,6 +308,12 @@ export function deltaPillGeometryClass(
  * sr-only verdict text), so it needs a product + design decision, not a
  * unilateral code choice. **Do not graduate the `metric-delta-unified-pill` flag
  * until that decision is recorded.**
+ *
+ * ISS-6493 narrowed WHAT that blocker holds back, and nothing else. The neutral
+ * pill used to ride this same flag and is now
+ * {@link MetricDeltaTreatment.NeutralPill}'s own gate, because a neutral delta
+ * asserts no good/bad reading and so cannot be the thing hue is left carrying.
+ * The verdict word, the trade above and the instruction are untouched.
  */
 export function deltaVerdictCaption(
   sentiment: DeltaSentiment,

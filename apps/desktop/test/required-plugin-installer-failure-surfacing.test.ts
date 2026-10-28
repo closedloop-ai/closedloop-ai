@@ -20,8 +20,8 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { CatalogItemSource } from "@repo/api/src/types/distribution";
+import { describe, test } from "vitest";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { RequiredPluginInstaller } from "../src/main/packs/required-plugin-installer.js";
 import {

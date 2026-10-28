@@ -1,13 +1,13 @@
 "use client";
 
+import {
+  type DataSyncLevel,
+  RECOMMENDED_DATA_SYNC_LEVEL,
+} from "@repo/api/src/types/data-sync-level";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
 import type { ReactNode } from "react";
-import {
-  DATA_SYNC_LEVEL_COPY,
-  type DataSyncLevelValue,
-  ELEVATED_DATA_SYNC_LEVEL_VALUE,
-} from "../lib/data-sync-copy";
+import { DATA_SYNC_LEVEL_COPY } from "../lib/data-sync-copy";
 import { DataLineRow } from "./data-line-row";
 
 /**
@@ -36,8 +36,9 @@ export function DataSyncLevelCard({
   control,
   htmlFor,
   className,
+  visual,
 }: {
-  level: DataSyncLevelValue;
+  level: DataSyncLevel;
   /** Whether this level is the host's current selection — drives the tint + ring. */
   selected: boolean;
   /** The radio input this card labels, rendered by the host. */
@@ -45,6 +46,18 @@ export function DataSyncLevelCard({
   /** Set when `control` carries an `id` rather than being wrapped by the label. */
   htmlFor?: string;
   className?: string;
+  /**
+   * What this level does with each data category, drawn between the
+   * description and the per-line rows (ISS-12522) — `DataSyncLevelVisual`.
+   * Opt-in: omitted, the card renders exactly as before, which is what every
+   * shipped host does today (the policy-choice screen's new visual treatment is
+   * deferred). Must be phrasing content: the card is a `<label>`.
+   *
+   * Do not pass it from a production host yet: the first production opt-in is
+   * blocked until ISS-7775 and ISS-7777 settle the Metadata tier's open claims
+   * (see the consent gate on `DataSyncLevelVisual`).
+   */
+  visual?: ReactNode;
 }) {
   const copy = DATA_SYNC_LEVEL_COPY[level];
 
@@ -72,6 +85,7 @@ export function DataSyncLevelCard({
         <span className="text-foreground/80 text-sm leading-relaxed">
           {copy.description}
         </span>
+        {visual ? <span className="mt-3 flex">{visual}</span> : null}
         <span className="mt-3 flex flex-col gap-1.5">
           {copy.dataLines.map((line) => (
             <DataLineRow
@@ -101,8 +115,8 @@ export function DataSyncLevelCard({
  * host or surface argument: a per-surface override is what let "Recommended"
  * mean two different levels depending on which screen you were looking at.
  */
-export function dataSyncLevelBadge(level: DataSyncLevelValue): ReactNode {
-  if (level === ELEVATED_DATA_SYNC_LEVEL_VALUE) {
+export function dataSyncLevelBadge(level: DataSyncLevel): ReactNode {
+  if (level === RECOMMENDED_DATA_SYNC_LEVEL) {
     return <Badge variant="success">Recommended</Badge>;
   }
   return null;

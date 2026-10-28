@@ -8,11 +8,16 @@
  * test files.
  */
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
+import {
+  ALL_SEARCH_BACKFILL_SOURCES,
+  SearchBackfillSource,
+} from "./search-backfill-sources";
 import type {
   ProjectionRow,
   SearchBackfillClient,
-} from "./backfill-search-documents";
+} from "./search-backfill-types";
 
 export const ORG_A = "00000000-0000-0000-0000-00000000000a";
 export const ORG_B = "00000000-0000-0000-0000-00000000000b";
@@ -48,18 +53,6 @@ export type ProjectRecord = {
   // Owning team ids; the backfill reads the first via `teams[0].teamId`.
   teamIds: string[];
 };
-export type LoopRecord = {
-  id: string;
-  organizationId: string;
-  command: string;
-  prompt: string | null;
-  status: string | null;
-  // The loop's target artifact carries the visibility project id (null when the
-  // loop has no artifact, or its artifact has no project).
-  artifact: { projectId: string | null } | null;
-  userId: string;
-  updatedAt: Date;
-};
 export type CommentRecord = {
   id: string;
   plainText: string | null;
@@ -69,8 +62,8 @@ export type CommentRecord = {
   // The owning thread carries the org SSOT and the anchored artifact (id + type).
   thread: {
     organizationId: string;
-    artifactId: string | null;
-    artifactType: string | null;
+    artifactId: string;
+    artifactType: string;
   };
 };
 export type PullRequestRecord = {
@@ -89,6 +82,8 @@ export type BranchRecord = {
   branchName: string;
   baseBranch: string | null;
   repositoryFullName: string;
+  /** The parent artifact's priority, exposed through the nested `artifact` select. */
+  priority: string | null;
   updatedAt: Date;
   deletedAt: Date | null;
 };
@@ -108,15 +103,29 @@ export type AgentComponentRecord = {
   contentHash?: string | null;
 };
 
+/** Per-corpus tally of `findMany` calls the sweep issued against the fake. */
+export type SourceReadCalls = Record<SearchBackfillSource, number>;
+
+function zeroReadCalls(): SourceReadCalls {
+  return Object.fromEntries(
+    ALL_SEARCH_BACKFILL_SOURCES.map((source) => [source, 0])
+  ) as SourceReadCalls;
+}
+
 /**
  * In-memory fake that mimics keyset pagination and an atomic upsert keyed on
  * `(organizationId, entityType, entityId)`. The projection store is a Map so a
  * conflicting insert overwrites in place — exactly like `ON CONFLICT DO UPDATE`.
+ *
+ * Every read delegate tallies into {@link SourceReadCalls}. A `findMany` on this
+ * fake is side-effect-free, so "the store was not written" does NOT distinguish
+ * a corpus that was skipped from one that was read and then discarded — only the
+ * tally does, and a run that reads a corpus it was not asked for is exactly the
+ * cost `--only` exists to avoid.
  */
 export function makeFakeClient(seed: {
   artifacts: ArtifactRecord[];
   projects: ProjectRecord[];
-  loops: LoopRecord[];
   comments?: CommentRecord[];
   pullRequests?: PullRequestRecord[];
   branches?: BranchRecord[];
@@ -125,8 +134,10 @@ export function makeFakeClient(seed: {
   client: SearchBackfillClient;
   store: Map<string, ProjectionRow>;
   upsertCalls: number;
+  readCalls: SourceReadCalls;
 } {
   const store = new Map<string, ProjectionRow>();
+  const readCalls = zeroReadCalls();
   let upsertCalls = 0;
 
   function pageById<T extends { id: string }>(
@@ -162,6 +173,7 @@ export function makeFakeClient(seed: {
   const client: SearchBackfillClient = {
     artifact: {
       findMany: (args) => {
+        readCalls[SearchBackfillSource.Documents] += 1;
         const matched = seed.artifacts.filter(
           (a) => a.type === (args.where as { type?: string }).type
         );
@@ -186,8 +198,9 @@ export function makeFakeClient(seed: {
       },
     },
     project: {
-      findMany: (args) =>
-        Promise.resolve(
+      findMany: (args) => {
+        readCalls[SearchBackfillSource.Projects] += 1;
+        return Promise.resolve(
           pageById(seed.projects, args).map((p) => ({
             id: p.id,
             organizationId: p.organizationId,
@@ -200,25 +213,12 @@ export function makeFakeClient(seed: {
             updatedAt: p.updatedAt,
             teams: p.teamIds.map((teamId) => ({ teamId })),
           }))
-        ),
-    },
-    loop: {
-      findMany: (args) =>
-        Promise.resolve(
-          pageById(seed.loops, args).map((l) => ({
-            id: l.id,
-            organizationId: l.organizationId,
-            command: l.command,
-            prompt: l.prompt,
-            status: l.status,
-            artifact: l.artifact,
-            userId: l.userId,
-            updatedAt: l.updatedAt,
-          }))
-        ),
+        );
+      },
     },
     comment: {
       findMany: (args) => {
+        readCalls[SearchBackfillSource.Comments] += 1;
         // Mirror the production `where: { deletedAt: null }` filter.
         const live = (seed.comments ?? []).filter((c) => c.deletedAt === null);
         return Promise.resolve(
@@ -230,18 +230,16 @@ export function makeFakeClient(seed: {
             thread: {
               organizationId: c.thread.organizationId,
               artifactId: c.thread.artifactId,
-              artifact:
-                c.thread.artifactType === null
-                  ? null
-                  : { type: c.thread.artifactType },
+              artifact: { type: c.thread.artifactType },
             },
           }))
         );
       },
     },
     pullRequestDetail: {
-      findMany: (args) =>
-        Promise.resolve(
+      findMany: (args) => {
+        readCalls[SearchBackfillSource.PullRequests] += 1;
+        return Promise.resolve(
           pageById(seed.pullRequests ?? [], args).map((pr) => ({
             id: pr.id,
             organizationId: pr.organizationId,
@@ -250,10 +248,12 @@ export function makeFakeClient(seed: {
             branchArtifactId: pr.branchArtifactId,
             branchArtifact: { updatedAt: pr.branchUpdatedAt },
           }))
-        ),
+        );
+      },
     },
     branchDetail: {
       findMany: (args) => {
+        readCalls[SearchBackfillSource.Branches] += 1;
         const live = (seed.branches ?? []).filter((b) => b.deletedAt === null);
         return Promise.resolve(
           pageByArtifactId(live, args).map((b) => ({
@@ -263,12 +263,14 @@ export function makeFakeClient(seed: {
             baseBranch: b.baseBranch,
             repositoryFullName: b.repositoryFullName,
             updatedAt: b.updatedAt,
+            artifact: { priority: b.priority },
           }))
         );
       },
     },
     agentComponent: {
       findMany: (args) => {
+        readCalls[SearchBackfillSource.AgentComponents] += 1;
         // Mirror the production `where: { uninstalledAt: null }` filter.
         const live = (seed.agentComponents ?? []).filter(
           (c) => c.uninstalledAt === null
@@ -325,6 +327,7 @@ export function makeFakeClient(seed: {
   return {
     client,
     store,
+    readCalls,
     get upsertCalls() {
       return upsertCalls;
     },
@@ -332,6 +335,7 @@ export function makeFakeClient(seed: {
     client: SearchBackfillClient;
     store: Map<string, ProjectionRow>;
     upsertCalls: number;
+    readCalls: SourceReadCalls;
   };
 }
 
@@ -369,18 +373,6 @@ export function project(
     ...over,
   };
 }
-export function loop(over: Partial<LoopRecord> & { id: string }): LoopRecord {
-  return {
-    organizationId: ORG_A,
-    command: "plan",
-    prompt: null,
-    status: null,
-    artifact: null,
-    userId: "user-1",
-    updatedAt: AT,
-    ...over,
-  };
-}
 export function comment(
   over: Partial<CommentRecord> & { id: string }
 ): CommentRecord {
@@ -391,8 +383,8 @@ export function comment(
     deletedAt: null,
     thread: {
       organizationId: ORG_A,
-      artifactId: null,
-      artifactType: null,
+      artifactId: "session-artifact-0",
+      artifactType: ArtifactType.Session,
     },
     ...over,
   };
@@ -417,6 +409,7 @@ export function branch(
     branchName: "feature/x",
     baseBranch: null,
     repositoryFullName: "acme/repo",
+    priority: null,
     updatedAt: AT,
     deletedAt: null,
     ...over,

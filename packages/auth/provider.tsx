@@ -5,6 +5,7 @@ import type { Appearance } from "@clerk/ui";
 import { dark } from "@clerk/ui/themes";
 import { useTheme } from "next-themes";
 import type { ComponentProps } from "react";
+import { authLocalization } from "./components/localization";
 import { keys } from "./keys";
 
 type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
@@ -69,21 +70,7 @@ export const AuthProvider = ({
       {...properties}
       appearance={{ options, theme, elements, variables }}
       dynamic
-      localization={{
-        signIn: {
-          start: {
-            title: "Welcome to Closedloop",
-          },
-        },
-        signUp: {
-          start: {
-            title: "Create your account",
-          },
-        },
-        userButton: {
-          action__manageAccount: "Settings",
-        },
-      }}
+      localization={authLocalization}
       nonce={nonce}
     />
   );

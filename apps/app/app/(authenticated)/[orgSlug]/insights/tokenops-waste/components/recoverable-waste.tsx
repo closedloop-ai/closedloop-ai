@@ -33,7 +33,7 @@ import { WidgetState } from "./widget-state";
  *      screen, because an estimate a reader cannot audit is just a number with
  *      confidence attached.
  *
- * The excluded row matters most: outcome-unknown spend never enters the
+ * The excluded row matters most: outcome-unknown cost never enters the
  * estimate, because we cannot claim a session wasted money when we never
  * observed that it failed.
  *
@@ -45,7 +45,7 @@ import { WidgetState } from "./widget-state";
 const PERCENT = 100;
 
 const UNAVAILABLE_REASON =
-  "The session-spend read did not return for this range, so the recoverable share cannot be estimated.";
+  "The session-cost read did not return for this range, so the recoverable share cannot be estimated.";
 
 export function RecoverableWaste({
   state,
@@ -57,7 +57,7 @@ export function RecoverableWaste({
   return (
     <Section
       actions={<Badge variant="outline">Estimate</Badge>}
-      description="Not a measurement. How much of the error-outcome spend would not have been spent again if the failure had been prevented."
+      description="Not a measurement. How much of the error-outcome cost would not have been spent again if the failure had been prevented."
       title="Recoverable waste"
     >
       {renderEstimate({ state, waste })}
@@ -139,11 +139,11 @@ function ReadyEstimate({
         />
         <BasisRow
           term="Assumption"
-          value={`Between ${formatPercent(waste.lowRate * PERCENT)} and ${formatPercent(waste.highRate * PERCENT)} of that spend would not have been re-spent. The rest is context the run would have paid for regardless.`}
+          value={`Between ${formatPercent(waste.lowRate * PERCENT)} and ${formatPercent(waste.highRate * PERCENT)} of that cost would not have been re-spent. The rest is context the run would have paid for regardless.`}
         />
         <BasisRow
           term="Excluded"
-          value={`${formatUsd(waste.excludedUnknownUsd)} of outcome-unknown spend. We never observed that those sessions failed, so none of it is counted as waste.`}
+          value={`${formatUsd(waste.excludedUnknownUsd)} of outcome-unknown cost. We never observed that those sessions failed, so none of it is counted as waste.`}
         />
       </dl>
       <Alert>

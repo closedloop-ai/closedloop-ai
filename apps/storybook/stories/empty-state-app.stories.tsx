@@ -4,9 +4,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { FolderSearchIcon } from "lucide-react";
 
 const meta = {
-  title: "Design System/Primitives/Empty State App Example",
+  title: "Primitives v1.0/Feedback & Status/Empty State App Example",
   component: EmptyState,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     icon: FolderSearchIcon,
     title: "No related artifacts yet",

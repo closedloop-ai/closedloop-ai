@@ -16,9 +16,9 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test } from "node:test";
 import { parseOpenCodeTranscript } from "@repo/lib/harness/opencode/parse-opencode";
 import { InvalidTokenCountError } from "@repo/lib/harness/token-counts";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import { resolveOpencodeDiffStats } from "../src/main/collectors/opencode/opencode-diff-stats.js";
 import {
@@ -596,7 +596,7 @@ test("ISS-5238: a WHOLE-DATABASE corruption verdict aborts the load instead of d
   const dbPath = writeDb(dir, [{ id: "ses_ok" }, { id: "ses_corrupt" }]);
   // A REAL `SQLITE_NOTADB` (errcode 26), raised by pointing `node:sqlite` at a
   // file that is not a database at all. Captured once, then re-raised from the
-  // per-session read — the message/part boundary wongk described.
+  // per-session read — the message/part boundary whitlockk described.
   const notADbPath = path.join(dir, "not-a-database.db");
   writeFileSync(notADbPath, "this file is emphatically not a SQLite database");
   const corruptError = captureSqliteError(notADbPath, (db) => {

@@ -1,4 +1,5 @@
 import { AGENT_COMPONENT_INVENTORY_CAP } from "@repo/api/src/types/agent-component";
+import { AGENT_COMPONENT_PAGE_SIZE } from "@repo/api/src/utils/agent-component-page-data";
 import { getStartIsoForDays } from "../../shared/lib/format-utils";
 
 /**
@@ -16,16 +17,24 @@ import { getStartIsoForDays } from "../../shared/lib/format-utils";
  */
 
 /**
- * Max rows the Agents workspace requests in a single list call. The shared
- * `AGENT_COMPONENT_INVENTORY_CAP` — the same value the service-side
- * `MAX_ORG_INVENTORY_ROWS` DB read cap and the desktop local clamp use — so this
- * pulls the entire bounded inventory the server will ever return in one page and
- * the client then paginates locally.
+ * Rows the Agents workspace requests per list PAGE — the shared
+ * `AGENT_COMPONENT_INVENTORY_CAP`, the same value the desktop local clamp uses
+ * and the largest page the route admits.
+ *
+ * ISS-6891: this is no longer "the entire inventory the server will ever
+ * return". The server caps no population, so the workspace follows the pages
+ * (`useCompleteAgentComponents`) and this only decides how few round trips that
+ * takes.
  */
 export const AGENT_INVENTORY_FETCH_LIMIT = AGENT_COMPONENT_INVENTORY_CAP;
 
-/** How many inventory rows render per client-side page. */
-export const AGENTS_PAGE_SIZE = 50;
+/**
+ * How many inventory rows render per page. Aliases the shared
+ * `AGENT_COMPONENT_PAGE_SIZE` (ISS-6822) rather than redeclaring the literal, so
+ * this surface, the API route's default, and the desktop main process's
+ * fallback cannot drift into three different "pages".
+ */
+export const AGENTS_PAGE_SIZE = AGENT_COMPONENT_PAGE_SIZE;
 
 /**
  * The Agents workspace time-window options. Defined as a const object (never a

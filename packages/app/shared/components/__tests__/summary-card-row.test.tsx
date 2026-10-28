@@ -1,5 +1,7 @@
 import {
+  partialStripCardClass,
   SUMMARY_CARD_CLASS,
+  SUMMARY_CARD_STRETCH_CLASS,
   SummaryCardRow,
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
@@ -34,6 +36,9 @@ const AUTO_FIT_TRACKS_CLASS =
  * is owned by `summary-card-row-density-tier.test.tsx`.
  */
 const UNMEASURED_CARD_MIN_WIDTH = "192px";
+
+/** A bare `grow`, not `grow-0` — the flex rule the stretch arm adds. */
+const FLEX_GROW_UTILITY_PATTERN = /(?:^|\s)grow(?:\s|$)/;
 
 // FEA-3865: SummaryCardRow trades the fixed `w-[260px]` card for a `minWidth`
 // prop (published as `--summary-card-min`) and a `wrapBelow` flag that swaps the
@@ -171,5 +176,41 @@ describe("the wrapBelow grid host (ISS-4787 follow-up)", () => {
     ).toBe(true);
     // The grid host replaces the default flex line rather than stacking on it.
     expect(row.classList.contains("flex")).toBe(false);
+  });
+});
+
+// #7544 review (tamsinb): a stretching BAND composes its card class
+// through `partialStripCardClass`, so the two have to be checked TOGETHER — a
+// stretching card in a strip that is missing cards would divide the band between
+// the survivors and inflate them to widths nobody designed, which is the case
+// that function exists to hold back. The hold-back is a `tailwind-merge`
+// override, and an override only lands if the class it overrides is actually
+// declared: `SUMMARY_CARD_CLASS` states `grow-0 basis-auto` explicitly for this
+// reason, and without them the merge keeps the stretch arm's `grow` and
+// `basis-[…]` and the partial strip stretches after all.
+describe("a stretching band's partial strip (#7544)", () => {
+  it("stretches while every card is present", () => {
+    expect(
+      partialStripCardClass({
+        anyCardHidden: false,
+        cardClassName: SUMMARY_CARD_STRETCH_CLASS,
+        wrapBelow: false,
+      })
+    ).toBe(SUMMARY_CARD_STRETCH_CLASS);
+  });
+
+  it("falls back to the non-stretching floor once a card is hidden", () => {
+    const resolved = partialStripCardClass({
+      anyCardHidden: true,
+      cardClassName: SUMMARY_CARD_STRETCH_CLASS,
+      wrapBelow: false,
+    });
+    // Byte-identical to the class this arm rendered before #7544, so a partial
+    // strip is unchanged by the stretch rather than inflated by it.
+    expect(resolved).toBe(SUMMARY_CARD_CLASS);
+    // Stated separately because `toBe` above would still pass if BOTH constants
+    // grew a `grow`: these are the two declarations the override depends on.
+    expect(resolved).not.toMatch(FLEX_GROW_UTILITY_PATTERN);
+    expect(resolved).not.toContain("basis-[");
   });
 });

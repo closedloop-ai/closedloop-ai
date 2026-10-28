@@ -250,7 +250,17 @@ export type HeapWatchdog = {
   stop(): void;
 };
 
-/** Log the heap-pressure line (rising edge of a warn-threshold crossing). */
+/**
+ * Log the heap-pressure line (rising edge of a warn-threshold crossing).
+ *
+ * ISS-8246 M1 — `heapUsed` may come from ANOTHER isolate. The db-host dispatcher
+ * feeds this watchdog `max(dispatcher, store)`, because `heapUsed` is
+ * per-isolate and the dispatcher's own is near-empty by design after the store
+ * moved to its own thread. But `heapSpaceSummary()` and `heap_size_limit` read
+ * V8's CURRENT isolate and cannot do otherwise, so the breakdown is always this
+ * thread's. Attributing the two halves is what stops the line reading
+ * `heapUsed=3800MB … old_space=8MB` as though both described one heap.
+ */
 function reportHeapPressure(
   log: Logger,
   heapUsed: number,
@@ -260,22 +270,33 @@ function reportHeapPressure(
   log(
     `db-host HEAP PRESSURE: heapUsed=${mib(heapUsed)} rss=${mib(
       rss
-    )} (warn≥${mib(warn)}, ceiling ${mib(
+    )} (warn≥${mib(warn)}) | this isolate: ceiling ${mib(
       getHeapStatistics().heap_size_limit
-    )}) | ${heapSpaceSummary()}`
+    )}, ${heapSpaceSummary()}`
   );
 }
 
-/** Best-effort one-shot heap snapshot; failures are logged, never thrown. */
+/**
+ * Best-effort one-shot heap snapshot; failures are logged, never thrown.
+ *
+ * `writeHeapSnapshot` dumps the CURRENT isolate, which since ISS-8246 M1 is not
+ * necessarily the one whose `heapUsed` tripped the threshold — see
+ * {@link reportHeapPressure}. The filename therefore names the isolate it really
+ * captured rather than the byte count that triggered it, so the artifact cannot
+ * be mistaken for a snapshot of the store thread. Capturing the store's isolate
+ * needs the store thread to write its own, which is a follow-up.
+ */
 function writeHeapSnapshotSafely(
   log: Logger,
   dir: string,
   heapUsed: number
 ): void {
   try {
-    const path = `${dir}/db-host-${heapUsed}.heapsnapshot`;
+    const path = `${dir}/db-host-local-isolate-${heapUsed}.heapsnapshot`;
     writeHeapSnapshot(path);
-    log(`db-host wrote heap snapshot: ${path}`);
+    log(
+      `db-host wrote heap snapshot of THIS isolate (the sample that tripped the threshold may be another thread's): ${path}`
+    );
   } catch (error) {
     log(
       `db-host heap snapshot failed: ${
@@ -380,10 +401,12 @@ export async function measureOp<T>(
   const heapWarn = opts?.warnHeapBytes ?? DEFAULT_WARN_HEAP_BYTES;
   const profiling = opts?.profiling;
   const clock = profiling?.clock ?? defaultProfilingClock;
+  const readMemoryUsage =
+    opts?.readMemoryUsage ?? (() => process.memoryUsage());
   // `null` both when profiling is off and when the clock itself failed, so the
   // record step below has exactly one "no usable start stamp" condition.
   const startedAt = profiling ? readMonotonicMs(clock) : null;
-  const before = process.memoryUsage().heapUsed;
+  const before = readMemoryUsage().heapUsed;
   try {
     return await run();
   } finally {
@@ -394,7 +417,7 @@ export async function measureOp<T>(
     }
     // Single post-op snapshot reused for heapUsed + rss (review: avoid a 3rd
     // memoryUsage() call on the per-invoke hot path).
-    const after = process.memoryUsage();
+    const after = readMemoryUsage();
     const delta = after.heapUsed - before;
     if (delta >= deltaWarn || after.heapUsed >= heapWarn) {
       log(
@@ -422,6 +445,16 @@ export type MeasureOpOptions = {
   warnHeapBytes?: number;
   /** Absent in production; present only under `CLOSEDLOOP_PROFILE_DIR`. */
   profiling?: MeasureOpProfiling;
+  /**
+   * ISS-8246 M1 — where the heap figures come from. Same option name and shape
+   * as {@link HeapWatchdogOptions.readMemoryUsage}, and it exists for a reason
+   * the watchdog now shares: `heapUsed` is PER-ISOLATE, and the db-host
+   * dispatcher no longer runs the op it is measuring. Left at its default it
+   * would report the dispatcher's near-flat heap and never name the op that
+   * actually allocated — which is the whole job of this wrapper (FEA-3072).
+   * The dispatcher passes a reader that folds in the store thread's own sample.
+   */
+  readMemoryUsage?: () => { heapUsed: number; rss: number };
 };
 
 function recordOpDuration(

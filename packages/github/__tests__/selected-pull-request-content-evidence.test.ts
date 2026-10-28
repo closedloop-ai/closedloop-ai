@@ -253,47 +253,47 @@ describe("getSelectedPullRequestFileContentEvidence", () => {
       reason:
         SelectedPullRequestContentUnavailableReason.ContentClassificationUnknown,
     },
-  ])("propagates $classification classification without decoded content", async ({
-    classification,
-    reason,
-  }) => {
-    const file = makeFile();
-    mockGetClassifiedBoundedFileContentAtRef.mockResolvedValue({
-      status: "found",
-      classification,
-    });
+  ])(
+    "propagates $classification classification without decoded content",
+    async ({ classification, reason }) => {
+      const file = makeFile();
+      mockGetClassifiedBoundedFileContentAtRef.mockResolvedValue({
+        status: "found",
+        classification,
+      });
 
-    const result = await getSelectedPullRequestFileContentEvidence(
-      octokit,
-      makeEvidence(file),
-      file.path,
-      1024
-    );
+      const result = await getSelectedPullRequestFileContentEvidence(
+        octokit,
+        makeEvidence(file),
+        file.path,
+        1024
+      );
 
-    expect(result).toMatchObject({
-      status: SelectedPullRequestFileContentEvidenceAvailability.Available,
-      value: {
-        base: {
-          availability: SelectedPullRequestContentAvailability.Unavailable,
-          classification,
-          reason,
+      expect(result).toMatchObject({
+        status: SelectedPullRequestFileContentEvidenceAvailability.Available,
+        value: {
+          base: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            classification,
+            reason,
+          },
+          head: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            classification,
+            reason,
+          },
         },
-        head: {
-          availability: SelectedPullRequestContentAvailability.Unavailable,
-          classification,
-          reason,
-        },
-      },
-    });
-    if (
-      result.status !==
-      SelectedPullRequestFileContentEvidenceAvailability.Available
-    ) {
-      throw new Error("Expected content-side evidence");
+      });
+      if (
+        result.status !==
+        SelectedPullRequestFileContentEvidenceAvailability.Available
+      ) {
+        throw new Error("Expected content-side evidence");
+      }
+      expect(result.value.base).not.toHaveProperty("content");
+      expect(result.value.head).not.toHaveProperty("content");
     }
-    expect(result.value.base).not.toHaveProperty("content");
-    expect(result.value.head).not.toHaveProperty("content");
-  });
+  );
 
   it.each([
     {
@@ -324,38 +324,37 @@ describe("getSelectedPullRequestFileContentEvidence", () => {
       error: new Error("socket closed"),
       reason: SelectedPullRequestContentUnavailableReason.ProviderFailure,
     },
-  ])("classifies $name for both requested content sides", async ({
-    error,
-    reason,
-    retryAfterSeconds,
-  }) => {
-    const file = makeFile();
-    mockGetClassifiedBoundedFileContentAtRef.mockRejectedValue(error);
+  ])(
+    "classifies $name for both requested content sides",
+    async ({ error, reason, retryAfterSeconds }) => {
+      const file = makeFile();
+      mockGetClassifiedBoundedFileContentAtRef.mockRejectedValue(error);
 
-    const result = await getSelectedPullRequestFileContentEvidence(
-      octokit,
-      makeEvidence(file),
-      file.path,
-      1024
-    );
+      const result = await getSelectedPullRequestFileContentEvidence(
+        octokit,
+        makeEvidence(file),
+        file.path,
+        1024
+      );
 
-    expect(result).toMatchObject({
-      status: SelectedPullRequestFileContentEvidenceAvailability.Available,
-      value: {
-        base: {
-          availability: SelectedPullRequestContentAvailability.Unavailable,
-          reason,
-          ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+      expect(result).toMatchObject({
+        status: SelectedPullRequestFileContentEvidenceAvailability.Available,
+        value: {
+          base: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            reason,
+            ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+          },
+          head: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            reason,
+            ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+          },
         },
-        head: {
-          availability: SelectedPullRequestContentAvailability.Unavailable,
-          reason,
-          ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-        },
-      },
-    });
-    expect(mockGetClassifiedBoundedFileContentAtRef).toHaveBeenCalledTimes(2);
-  });
+      });
+      expect(mockGetClassifiedBoundedFileContentAtRef).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it("passes one caller signal to both content sides and rejects cancellation", async () => {
     const file = makeFile();
@@ -441,6 +440,44 @@ describe("getSelectedPullRequestFileContentEvidence", () => {
     });
     expect(mockGetClassifiedBoundedFileContentAtRef).not.toHaveBeenCalled();
   });
+
+  it.each(["acme/widgets/extra", "acme/widgets/", "acme", "/widgets"])(
+    "refuses to read content for the structurally invalid identity %s (ISS-7548)",
+    async (repositoryFullName) => {
+      // Defensive in practice — the only producer of SelectedPullRequestEvidence
+      // strict-parses this name before setting it. The branch is pinned anyway,
+      // because nothing in the type stops a future producer from handing over a
+      // name whose first two segments address a DIFFERENT repository's file.
+      const evidence = makeEvidence(makeFile());
+      evidence.identity.repositoryFullName = repositoryFullName;
+
+      const result = await getSelectedPullRequestFileContentEvidence(
+        octokit,
+        evidence,
+        "src/file.ts",
+        1024
+      );
+
+      // The identity parse guards each content reference, so an unaddressable
+      // name surfaces per side rather than failing the whole evidence read.
+      expect(result).toMatchObject({
+        status: SelectedPullRequestFileContentEvidenceAvailability.Available,
+        value: {
+          base: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            reason:
+              SelectedPullRequestContentUnavailableReason.MalformedRequest,
+          },
+          head: {
+            availability: SelectedPullRequestContentAvailability.Unavailable,
+            reason:
+              SelectedPullRequestContentUnavailableReason.MalformedRequest,
+          },
+        },
+      });
+      expect(mockGetClassifiedBoundedFileContentAtRef).not.toHaveBeenCalled();
+    }
+  );
 
   it("does not claim a path is absent when file membership is partial", async () => {
     const evidence = makeEvidence(makeFile());

@@ -1,5 +1,4 @@
 /**
- * @file optimization-analytics-panel.test.tsx
  * @description Unit tests for the desktop OptimizationAnalyticsPanel
  * (FEA-2923 / AC-022 / §E).
  *

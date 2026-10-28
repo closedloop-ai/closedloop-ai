@@ -1,7 +1,8 @@
 /**
  * The OS-level custom URI scheme the Desktop app registers as a protocol client
- * (ISS-6109). The web "Launch Desktop App" control navigates to it; the OS hands
- * it to `apps/desktop/src/main/lifecycle/deep-link.ts`.
+ * (ISS-6109). The web onboarding download step and Desktop handback navigate to
+ * it (`packages/app/onboarding`); the OS hands it to
+ * `apps/desktop/src/main/lifecycle/deep-link.ts`.
  *
  * This is a cross-process, version-skewed wire contract: the browser cannot see
  * which Desktop build (if any) will receive the URL, and an already-installed

@@ -33,7 +33,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  isDisplayOnlySessionStatus,
   normalizeSessionStatus,
   RECOGNIZED_SESSION_STATUS_VALUES,
   SESSION_STATUS,
@@ -48,30 +47,41 @@ const sessionsDocPath = path.join(
 const sessionsDoc = readFileSync(sessionsDocPath, "utf8");
 
 /**
- * ISS-5981 (wongk, #5018): every spelling a PRODUCER can send that the persist
+ * ISS-5981 (whitlockk, #5018): every spelling a PRODUCER can send that the persist
  * fold rewrites — not just the retired pair. Scoping the two predicates below to
  * the retired pair alone left the page free to drop its `waiting` /
  * `running` / `failed` mappings with the guard still green, which is the same
  * silent-publication failure ISS-6037 added this file to stop.
  *
  * DERIVED from the SSOT rather than restated, so a new spelling is covered the
- * moment the fold learns it. Display-only members are excluded:
- * `unknown`/`stale` are read-time derivations no producer sends, so the write
- * contract has nothing to say about them.
+ * moment the fold learns it. ISS-10364 retired the display-only members
+ * (`unknown`/`stale`/`waiting`) this used to also filter out —
+ * `RECOGNIZED_SESSION_STATUS_VALUES` is now exactly the three lifecycle
+ * values, none of which the fold rewrites, so there is nothing left to
+ * exclude.
  */
 const PRODUCER_FOLDED_SPELLINGS = RECOGNIZED_SESSION_STATUS_VALUES.filter(
-  (status) =>
-    normalizeSessionStatus(status) !== status &&
-    !isDisplayOnlySessionStatus(status)
+  (status) => normalizeSessionStatus(status) !== status
 );
 
 /**
  * Spellings this build has retired. Held EXPLICITLY, not derived from the fold:
  * the whole point is to catch a page still advertising one of these, and a set
  * derived from the fold would shrink out from under the check exactly when a
- * spelling is retired (wongk/#5120 — how `failed -> error` stayed published).
+ * spelling is retired (whitlockk/#5120 — how `failed -> error` stayed published).
+ *
+ * ISS-10364 added `waiting`: it is no longer a RECOGNIZED member of
+ * `DISPLAYED_SESSION_STATUS` (see the file header above), so it left
+ * {@link PRODUCER_FOLDED_SPELLINGS} and belongs here instead, same as
+ * `running`/`failed`/`completed`/`abandoned` before it.
  */
-const RETIRED_SPELLINGS = ["running", "failed", "completed", "abandoned"];
+const RETIRED_SPELLINGS = [
+  "running",
+  "failed",
+  "completed",
+  "abandoned",
+  "waiting",
+];
 
 /** The bolded lead of the paragraph that owns the retired pair. */
 const RETIRED_PARAGRAPH_LEAD = "were retired.";
@@ -120,21 +130,20 @@ describe("sessions.mdx retired-status persistence contract (ISS-6037)", () => {
     expect(retiredParagraphs).toHaveLength(1);
   });
 
-  it("names every spelling the persist fold rewrites", () => {
-    // ISS-5592 emptied the aliases, so the old `> ["completed","abandoned"].length`
-    // bound is dead — it was a proxy for "the fold rewrites more than the retired
-    // pair", and after the alias removal only `waiting` is left. A bare non-empty
-    // check replaces it: the set must never be EMPTY (that would make the loop
-    // below vacuous and the guard silent), but its size is now the fold's business.
-    expect(PRODUCER_FOLDED_SPELLINGS.length).toBeGreaterThan(0);
-    for (const status of PRODUCER_FOLDED_SPELLINGS) {
-      expect(normalizeSessionStatus(status)).not.toBe(status);
-      expect(retiredParagraph).toContain(`\`${status}\``);
-    }
+  it("ISS-10364: no RECOGNIZED spelling is rewritten any more — the fold is the identity on the lifecycle set", () => {
+    // ISS-5592 emptied the aliases, leaving `waiting` as the one recognized,
+    // rewritten spelling. ISS-10364 then retired `waiting` as a recognized
+    // member too (it moved to RETIRED_SPELLINGS above), so
+    // RECOGNIZED_SESSION_STATUS_VALUES is now exactly the three lifecycle
+    // values — each already its own canonical form — and this set is
+    // genuinely empty rather than vacuously so. Pinned explicitly so a future
+    // change reintroducing a recognized-but-rewritten member has to update
+    // this test rather than silently reactivating a dead loop.
+    expect(PRODUCER_FOLDED_SPELLINGS).toEqual([]);
   });
 
   it("does not publish a fold for a spelling the build no longer folds", () => {
-    // The gap the shrinking set left (wongk/#5120 review): the loop above only
+    // The gap the shrinking set left (whitlockk/#5120 review): the loop above only
     // walks spellings the CURRENT fold rewrites, so a page still advertising a
     // RETIRED spelling's old mapping falls outside it entirely — which is how
     // `failed -> error` stayed published after ISS-5592 stopped performing it.

@@ -29,12 +29,10 @@
 
 import { randomUUID } from "node:crypto";
 import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
-import {
-  AgentSessionState,
-  SessionTraceThrottleSourceType,
-} from "@repo/api/src/types/agent-session";
+import { SessionTraceThrottleSourceType } from "@repo/api/src/types/agent-session";
 import { InsightsScope } from "@repo/api/src/types/insights";
 import { LossClass } from "@repo/api/src/types/session-analytics";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { ArtifactType, Prisma, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
@@ -77,13 +75,59 @@ const ENDED_AT = new Date("2026-06-10T10:30:00.000Z");
 const EARLY_STARTED_AT = new Date("2026-05-20T09:00:00.000Z");
 const EARLY_ENDED_AT = new Date("2026-05-20T10:30:00.000Z");
 
+/**
+ * The token shape every seeded usage row records.
+ *
+ * All four counts are distinct and non-zero, so each candidate basis lands on a
+ * number no other combination produces — 3,000 / 3,100 / 3,500 / 3,600 — and
+ * the two the right-sizing table actually uses cannot be swapped for each other
+ * or collapsed into one without a visible failure (ISS-5189).
+ */
+const SEEDED_MODEL = "claude-opus-4";
+const SEEDED_INPUT_TOKENS = 1000n;
+const SEEDED_OUTPUT_TOKENS = 2000n;
+const SEEDED_CACHE_READ_TOKENS = 500n;
+const SEEDED_CACHE_WRITE_TOKENS = 100n;
+/** First-pass tokens: the JOB-SIZE basis behind the median read. */
+const SEEDED_WORK_TOKENS = Number(
+  SEEDED_INPUT_TOKENS + SEEDED_OUTPUT_TOKENS + SEEDED_CACHE_WRITE_TOKENS
+);
+/** Every billed token: the RATE denominator the model spend grid reports. */
+const SEEDED_BILLED_TOKENS =
+  SEEDED_WORK_TOKENS + Number(SEEDED_CACHE_READ_TOKENS);
+/** The seeded sessions that carry a cost, and so record a usage row at all. */
+const SEEDED_USAGE_SESSIONS = 4;
+
+/**
+ * A usage-bearing session OUTSIDE every window this suite asserts over, on a
+ * model no in-window session uses.
+ *
+ * Without it the date predicate could not fail: every other seeded session sits
+ * inside BOTH the 30-day `Month` period and the explicit
+ * `[2026-05-01, 2026-06-30]` bounds the two-basis test passes, so deleting
+ * `sessionWindow(start, end)` from the TokenOps reads changed nothing and left
+ * the suite green. March is before both. Giving it its own model means an
+ * escape shows up as an EXTRA median row and an EXTRA counted session rather
+ * than as a shifted number that could be mistaken for a rounding difference.
+ */
+const OUT_OF_WINDOW_MODEL = "gpt-5.4-out-of-window";
+const OUT_OF_WINDOW_STARTED_AT = new Date("2026-03-10T09:00:00.000Z");
+const OUT_OF_WINDOW_ENDED_AT = new Date("2026-03-10T10:30:00.000Z");
+
 type SeedInput = {
   organizationId: string;
   projectId: string;
   userId: string;
   computeTargetId: string;
   endsWithError: boolean | null;
-  state: string;
+  /**
+   * ISS-7019: the ARTIFACT's lifecycle status, which is what the analytics
+   * terminal gate now reads. Was `state`, seeded onto `session_detail.state`
+   * while the artifact was hardcoded `"completed"` — a spelling ISS-5592
+   * retired, so it would now normalize to non-terminal and grade every seeded
+   * row Unknown.
+   */
+  status: string;
   filesChanged: number;
   /** Left unset to seed the NULL shape a session that never recorded PRs has. */
   pullRequests?: Prisma.InputJsonValue;
@@ -91,6 +135,8 @@ type SeedInput = {
   estimatedCostUsd?: string;
   startedAt?: Date;
   endedAt?: Date;
+  /** Defaults to {@link SEEDED_MODEL}; overridden only by the out-of-window row. */
+  usageModel?: string;
 };
 
 async function createComputeTarget(organizationId: string, userId: string) {
@@ -116,7 +162,7 @@ async function seedSession(input: SeedInput): Promise<string> {
         name: "ISS-5263 group-by session",
         organizationId: input.organizationId,
         projectId: input.projectId,
-        status: "completed",
+        status: input.status,
         type: ArtifactType.SESSION,
       },
       select: { id: true },
@@ -133,13 +179,12 @@ async function seedSession(input: SeedInput): Promise<string> {
         harness: "claude",
         model: "claude-opus-4",
         pullRequests: input.pullRequests,
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sessionEndedAt: input.endedAt ?? ENDED_AT,
         sessionStartedAt: input.startedAt ?? STARTED_AT,
+        lastActivityAt: input.startedAt ?? STARTED_AT,
         sessionUpdatedAt: input.endedAt ?? ENDED_AT,
-        state: input.state,
         throttleSources: input.throttleSources,
-        userId: input.userId,
       },
     })
   );
@@ -148,12 +193,12 @@ async function seedSession(input: SeedInput): Promise<string> {
       db.agentSessionTokenUsage.create({
         data: {
           agentSessionId: artifact.id,
-          cacheReadTokens: 500n,
-          cacheWriteTokens: 100n,
+          cacheReadTokens: SEEDED_CACHE_READ_TOKENS,
+          cacheWriteTokens: SEEDED_CACHE_WRITE_TOKENS,
           estimatedCost: input.estimatedCostUsd,
-          inputTokens: 1000n,
-          model: "claude-opus-4",
-          outputTokens: 2000n,
+          inputTokens: SEEDED_INPUT_TOKENS,
+          model: input.usageModel ?? SEEDED_MODEL,
+          outputTokens: SEEDED_OUTPUT_TOKENS,
         },
       })
     );
@@ -199,7 +244,7 @@ async function seedPopulation(): Promise<{
     estimatedCostUsd: "4.500000",
     filesChanged: 0,
     pullRequests: { note: "free-form JSON that is not a PR array" },
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
     throttleSources: [
       {
         observedAt: STARTED_AT.toISOString(),
@@ -215,7 +260,7 @@ async function seedPopulation(): Promise<{
     endsWithError: true,
     estimatedCostUsd: "1.250000",
     filesChanged: 0,
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
   });
 
   // Clean: ended without error and produced changed files.
@@ -224,7 +269,7 @@ async function seedPopulation(): Promise<{
     endsWithError: false,
     estimatedCostUsd: "2.000000",
     filesChanged: 7,
-    state: AgentSessionState.Completed,
+    status: SESSION_STATUS.INACTIVE,
   });
 
   // Unattributed: still RUNNING, so `outcomeOf` reports Unknown rather than
@@ -238,7 +283,7 @@ async function seedPopulation(): Promise<{
     ...base,
     endsWithError: false,
     filesChanged: 0,
-    state: AgentSessionState.Running,
+    status: SESSION_STATUS.ACTIVE,
   });
 
   // A second coachable loss, in the EARLIER half of the baseline window, so the
@@ -250,7 +295,22 @@ async function seedPopulation(): Promise<{
     estimatedCostUsd: "0.750000",
     filesChanged: 0,
     startedAt: EARLY_STARTED_AT,
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
+  });
+
+  // The negative case: a real, usage-bearing, cost-bearing session that every
+  // window in this suite must EXCLUDE. It is deliberately outside the 30-day
+  // `Month` period too, so none of the population counts the other tests here
+  // assert (5 sessions, 4 lost, 4 usage rows) move because of it.
+  await seedSession({
+    ...base,
+    endedAt: OUT_OF_WINDOW_ENDED_AT,
+    endsWithError: false,
+    estimatedCostUsd: "9.990000",
+    filesChanged: 7,
+    startedAt: OUT_OF_WINDOW_STARTED_AT,
+    status: SESSION_STATUS.INACTIVE,
+    usageModel: OUT_OF_WINDOW_MODEL,
   });
 
   return { organizationId, userId: user.id };
@@ -437,8 +497,70 @@ describe.skipIf(!hasDatabase)(
       });
     });
 
+    it("reads job size and the rate denominator off different token bases", async () => {
+      // ISS-5189: one all-inclusive total fed BOTH Over-powered guards —
+      // `ratePerMillion`'s denominator and the median-job-size comparison — so
+      // prompt-cache replay inflated the two in the same direction, the verdict
+      // tracked how much a harness reuses its cache rather than price or job
+      // size, and a cache-heavy model could not earn the verdict at all.
+      //
+      // The split is the fix, so both halves are pinned here and they must NOT
+      // be equal. The median drops replayed cache reads (a prefix re-read ten
+      // times is one job) but keeps cache WRITES, which are first-pass content.
+      // The grid keeps all four, because `estimated_cost` prices all four and a
+      // rate whose denominator excluded some of them would not describe the
+      // spend it is divided from.
+      //
+      // Asserted on the raw reads rather than through `fetchTokenOpsWaste`
+      // because the rate's denominator never reaches the wire — only the median
+      // does, so the response alone would leave half the fix unpinned.
+      await autoRollbackTransaction(async () => {
+        const { organizationId } = await seedPopulation();
+        const scope = Prisma.sql`a.organization_id = ${organizationId}::uuid`;
+        const start = new Date("2026-05-01T00:00:00.000Z");
+        const end = new Date("2026-06-30T23:59:59.000Z");
+
+        const [grid, medians] = await Promise.all([
+          fetchModelSpendGrid(scope, start, end),
+          fetchModelMedianTokens(scope, start, end),
+        ]);
+
+        // BOTH medians come back off the one read, on their own bases:
+        // `medianTokens` is every billed token (the basis it has always had and
+        // keeps, for the `apps/app` build that predates the new field), and
+        // `medianWorkTokens` drops the replayed cache reads.
+        expect(medians).toEqual([
+          {
+            medianTokens: SEEDED_BILLED_TOKENS,
+            medianWorkTokens: SEEDED_WORK_TOKENS,
+            model: SEEDED_MODEL,
+          },
+        ]);
+        // The sessions are really there, so the token total below is not an
+        // empty-population zero that would pass under any basis.
+        expect(grid.reduce((sum, row) => sum + row.sessions, 0)).toBe(
+          SEEDED_USAGE_SESSIONS
+        );
+        expect(
+          grid.reduce((sum, row) => sum + Number(row.tokens ?? 0), 0)
+        ).toBe(SEEDED_BILLED_TOKENS * SEEDED_USAGE_SESSIONS);
+        // Collapsing the two back onto one column is the defect, so the fixture
+        // is required to tell them apart.
+        expect(SEEDED_BILLED_TOKENS).not.toBe(SEEDED_WORK_TOKENS);
+        // THE WINDOW, asserted rather than assumed. A usage-bearing session
+        // sits in March, outside the bounds above, and both reads must exclude
+        // it — the `toEqual` on `medians` is exact, so its model appearing as a
+        // second row fails there, and the session sum fails here. Deleting
+        // `sessionWindow(start, end)` from either query goes red on both.
+        expect(medians.map((row) => row.model)).not.toContain(
+          OUT_OF_WINDOW_MODEL
+        );
+        expect(grid.map((row) => row.model)).not.toContain(OUT_OF_WINDOW_MODEL);
+      });
+    });
+
     it("resolves the same reads scoped to a single engineer", async () => {
-      // The `Me` scope appends `s.user_id = $n::uuid` to the WHERE clause,
+      // The `Me` scope appends `a.created_by_id = $n::uuid` to the WHERE clause,
       // shifting every downstream placeholder number. The grouped fragments
       // must render identically regardless of how many parameters precede them.
       await autoRollbackTransaction(async () => {

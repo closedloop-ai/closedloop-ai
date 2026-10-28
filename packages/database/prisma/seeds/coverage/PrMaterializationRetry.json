@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Loop pull-request materialization retry queue, retired with Loops (ISS-12435); the data step deletes its rows and the table stays only until the follow-up drop migration."
+}

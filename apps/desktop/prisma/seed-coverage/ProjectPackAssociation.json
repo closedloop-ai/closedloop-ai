@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "The pack scanner records it only for a `.gstack/conductor.json` under a recent session's cwd, and every golden-corpus cwd lies outside the profile's isolated harness homes, so seeding would write into the operator's filesystem."
+}

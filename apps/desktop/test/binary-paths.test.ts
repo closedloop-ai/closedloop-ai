@@ -1,26 +1,24 @@
 /**
  * T-3.14: Tests for the GET/PATCH /api/gateway/settings/binary-paths route
  * and the T-3.13 guard (desktop:update-settings rejecting binaryPaths).
- * T-4.1: Unit tests for resolveHarnessBinary.
  */
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
-import { resolveHarnessBinary } from "../src/server/operations/binary-paths.js";
-import { resetMcpDetectionCache } from "../src/server/operations/mcp-detection.js";
 import {
   configureBinaryPathsResolver,
   resetResolvedClaudePath,
-} from "../src/server/operations/symphony-loop.js";
+} from "../src/server/operations/binary-path-overrides.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
-import {
-  resetShellPathCache,
-  setShellPathForTest,
-} from "../src/server/shell-path.js";
+import type {
+  BinaryPaths,
+  CliBinaryTool,
+  PersistedCliBinaryTool,
+} from "../src/shared/cli-binary-tools.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 
 // ---------------------------------------------------------------------------
@@ -29,15 +27,9 @@ import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 
 const serversToClose: DesktopGatewayServer[] = [];
 const tempDirs: string[] = [];
-const originalPath = process.env.PATH;
-const originalHome = process.env.HOME;
 
 afterEach(async () => {
-  process.env.PATH = originalPath;
-  process.env.HOME = originalHome;
-  resetShellPathCache();
   resetResolvedClaudePath();
-  resetMcpDetectionCache();
   configureBinaryPathsResolver(null);
 
   for (const server of serversToClose.splice(0)) {
@@ -48,102 +40,25 @@ afterEach(async () => {
   }
 });
 
-type BinaryPathMap = {
-  claude?: string;
-  gh?: string;
-  codex?: string;
-  cursor?: string;
-  opencode?: string;
-  python3?: string;
-  git?: string;
-};
+type BinaryPathMap = BinaryPaths;
+type BinaryPathPatch = Partial<Record<PersistedCliBinaryTool, string | null>>;
 
 /**
- * Create a DesktopGatewayServer that has binary-path routes wired and
- * full health-check support. The in-memory store starts empty.
+ * Create a DesktopGatewayServer that has binary-path routes wired. The
+ * in-memory store starts empty.
  */
 async function createServerWithBinaryPaths(opts?: {
   initialPaths?: BinaryPathMap;
-  binDir?: string;
-  symphonyDir?: string;
 }): Promise<{
   server: DesktopGatewayServer;
   store: SettingsStore;
   tmpDir: string;
-  binDir: string;
-  symphonyDir: string;
 }> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "binary-paths-test-"));
   tempDirs.push(tmpDir);
 
-  const binDir = opts?.binDir ?? path.join(tmpDir, "bin");
-  const symphonyDir = opts?.symphonyDir ?? path.join(tmpDir, "symphony");
-  fs.mkdirSync(binDir, { recursive: true });
+  const symphonyDir = path.join(tmpDir, "symphony");
   fs.mkdirSync(symphonyDir, { recursive: true });
-
-  // Write minimal fake binaries so health-check can pass
-  const fakeBinaries: [string, string][] = [
-    ["git", '#!/bin/sh\necho "git version 2.40.0"'],
-    ["claude", '#!/bin/sh\necho "1.5.0"'],
-    [
-      "gh",
-      '#!/bin/sh\nif [ "$1" = "auth" ]; then exit 0; fi\necho "gh version 2.40.0 (2024-01-01)"\n',
-    ],
-    ["codex", '#!/bin/sh\necho "0.1.0"'],
-    ["cursor", '#!/bin/sh\necho "0.1.0"'],
-    ["opencode", '#!/bin/sh\necho "0.1.0"'],
-    ["python3", '#!/bin/sh\necho "Python 3.11.0"'],
-  ];
-  for (const [name, content] of fakeBinaries) {
-    const binPath = path.join(binDir, name);
-    fs.writeFileSync(binPath, content, { mode: 0o755 });
-  }
-
-  // Minimal symphony config so worktree-dir check passes
-  const configDir = path.join(symphonyDir, "config");
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(configDir, "repos.json"),
-    JSON.stringify({
-      settings: {
-        worktreeParentDir: "/tmp/worktrees",
-        worktreeParentDirConfirmed: true,
-      },
-    }),
-    "utf-8"
-  );
-
-  // Minimal plugins dir so plugin checks pass
-  const homeDir = path.join(tmpDir, "home");
-  const pluginsDir = path.join(homeDir, ".claude", "plugins");
-  fs.mkdirSync(pluginsDir, { recursive: true });
-  const pluginNames = [
-    "code",
-    "platform",
-    "judges",
-    "code-review",
-    "self-learning",
-  ];
-  const pluginsRecord: Record<
-    string,
-    Array<{ installPath: string; version: string }>
-  > = {};
-  for (const name of pluginNames) {
-    const installPath = path.join(tmpDir, `plugin-${name}`);
-    fs.mkdirSync(installPath, { recursive: true });
-    pluginsRecord[`${name}@closedloop-ai`] = [
-      { installPath, version: "1.0.0" },
-    ];
-  }
-  fs.writeFileSync(
-    path.join(pluginsDir, "installed_plugins.json"),
-    JSON.stringify({ version: 1, plugins: pluginsRecord }),
-    "utf-8"
-  );
-
-  process.env.HOME = homeDir;
-  process.env.PATH = binDir;
-  setShellPathForTest();
 
   // In-memory settings store
   const storeName = "test-binary-paths";
@@ -162,14 +77,7 @@ async function createServerWithBinaryPaths(opts?: {
     return store.getBinaryPaths();
   }
 
-  function applyPatch(
-    patch: Partial<
-      Record<
-        "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-        string | null
-      >
-    >
-  ): BinaryPathMap {
+  function applyPatch(patch: BinaryPathPatch): BinaryPathMap {
     // Mirror app.ts applyBinaryPathPatchAndInvalidateCaches validation
     for (const [key, value] of Object.entries(patch)) {
       if (value !== null && value !== undefined) {
@@ -181,23 +89,9 @@ async function createServerWithBinaryPaths(opts?: {
         }
       }
     }
-    const expandedPatch: Partial<
-      Record<
-        "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-        string | null
-      >
-    > = {};
+    const expandedPatch: Record<string, string | null | undefined> = {};
     for (const [key, value] of Object.entries(patch)) {
-      expandedPatch[
-        key as
-          | "claude"
-          | "gh"
-          | "codex"
-          | "cursor"
-          | "opencode"
-          | "python3"
-          | "git"
-      ] =
+      expandedPatch[key] =
         value !== null && value !== undefined
           ? value.replace(/^~/, os.homedir())
           : value;
@@ -206,7 +100,6 @@ async function createServerWithBinaryPaths(opts?: {
       expandedPatch as Record<string, string | null>
     );
     resetResolvedClaudePath();
-    resetMcpDetectionCache();
     return updated;
   }
 
@@ -228,7 +121,7 @@ async function createServerWithBinaryPaths(opts?: {
   serversToClose.push(server);
   await server.start();
 
-  return { server, store, tmpDir, binDir, symphonyDir };
+  return { server, store, tmpDir };
 }
 
 function url(server: DesktopGatewayServer, p: string): string {
@@ -250,12 +143,17 @@ describe("GET /api/gateway/settings/binary-paths", () => {
 
   test("returns current binary paths when set", async () => {
     const { server } = await createServerWithBinaryPaths({
-      initialPaths: { claude: "/usr/local/bin/claude", git: "/usr/bin/git" },
+      initialPaths: {
+        claude: "/usr/local/bin/claude",
+        gh: "/usr/local/bin/gh",
+        git: "/usr/bin/git",
+      },
     });
     const res = await fetch(url(server, "/api/gateway/settings/binary-paths"));
     assert.equal(res.status, 200);
     const body = (await res.json()) as { binaryPaths: BinaryPathMap };
     assert.equal(body.binaryPaths.claude, "/usr/local/bin/claude");
+    assert.equal(body.binaryPaths.gh, undefined);
     assert.equal(body.binaryPaths.git, "/usr/bin/git");
   });
 });
@@ -278,7 +176,7 @@ describe("PATCH /api/gateway/settings/binary-paths: valid inputs", () => {
     assert.equal(store.getBinaryPaths().claude, "/absolute/path/to/claude");
   });
 
-  test("PATCH with gh absolute path -> 200, persisted correctly", async () => {
+  test("PATCH with legacy gh path -> 200, ignored by current settings", async () => {
     const { server, store } = await createServerWithBinaryPaths();
     const res = await fetch(url(server, "/api/gateway/settings/binary-paths"), {
       method: "PATCH",
@@ -287,8 +185,26 @@ describe("PATCH /api/gateway/settings/binary-paths: valid inputs", () => {
     });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { binaryPaths: BinaryPathMap };
-    assert.equal(body.binaryPaths.gh, "/absolute/path/to/gh");
+    assert.equal(body.binaryPaths.gh, undefined);
+    assert.equal(store.getBinaryPaths().gh, undefined);
+  });
+
+  test("PATCH with current path preserves a persisted legacy gh override", async () => {
+    const { server, store } = await createServerWithBinaryPaths({
+      initialPaths: { gh: "/absolute/path/to/gh" },
+    });
+
+    const res = await fetch(url(server, "/api/gateway/settings/binary-paths"), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ git: "/usr/bin/git" }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { binaryPaths: BinaryPathMap };
+    assert.equal(body.binaryPaths.gh, undefined);
+    assert.equal(body.binaryPaths.git, "/usr/bin/git");
     assert.equal(store.getBinaryPaths().gh, "/absolute/path/to/gh");
+    assert.equal(store.getBinaryPaths().git, "/usr/bin/git");
   });
 
   test("PATCH with codex absolute path -> 200, persisted correctly", async () => {
@@ -455,150 +371,6 @@ describe("PATCH /api/gateway/settings/binary-paths: invalid inputs -> 400", () =
 });
 
 // ---------------------------------------------------------------------------
-// Integration: PATCH then health-check uses the override
-// ---------------------------------------------------------------------------
-
-describe("health-check uses binary path override after PATCH", () => {
-  test("claude override_invalid appears in health-check when override path doesn't exist", async () => {
-    const { server } = await createServerWithBinaryPaths();
-
-    // PATCH with a non-existent claude path
-    const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-hc-test-"));
-    tempDirs.push(fakeDir);
-    const fakeClaude = path.join(fakeDir, "claude");
-    // Do NOT create the file
-
-    const patchRes = await fetch(
-      url(server, "/api/gateway/settings/binary-paths"),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ claude: fakeClaude }),
-      }
-    );
-    assert.equal(patchRes.status, 200);
-
-    // Health-check should now show the override was tried
-    const hcRes = await fetch(url(server, "/api/gateway/health-check"));
-    assert.equal(hcRes.status, 200);
-    const body = (await hcRes.json()) as {
-      checks: Array<{
-        id: string;
-        passed: boolean;
-        error?: string;
-        debug?: { overrideUsed?: string };
-      }>;
-    };
-    const claudeCheck = body.checks.find((c) => c.id === "claude-cli");
-    assert.ok(claudeCheck, "claude-cli check should be present");
-    assert.equal(
-      claudeCheck.passed,
-      false,
-      "claude-cli should fail with invalid override"
-    );
-    assert.ok(
-      claudeCheck.debug?.overrideUsed === fakeClaude ||
-        claudeCheck.error?.includes("Override"),
-      `Expected override reference in health-check result. error=${claudeCheck.error}, overrideUsed=${claudeCheck.debug?.overrideUsed}`
-    );
-  });
-
-  test("gh override_invalid appears in health-check when override path doesn't exist", async () => {
-    const { server } = await createServerWithBinaryPaths();
-
-    const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-hc-gh-test-"));
-    tempDirs.push(fakeDir);
-    const fakeGh = path.join(fakeDir, "gh");
-
-    const patchRes = await fetch(
-      url(server, "/api/gateway/settings/binary-paths"),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ gh: fakeGh }),
-      }
-    );
-    assert.equal(patchRes.status, 200);
-
-    const hcRes = await fetch(url(server, "/api/gateway/health-check"));
-    assert.equal(hcRes.status, 200);
-    const body = (await hcRes.json()) as {
-      checks: Array<{ id: string; passed: boolean; error?: string }>;
-    };
-    const ghCheck = body.checks.find((c) => c.id === "gh-cli");
-    assert.ok(ghCheck, "gh-cli check should be present");
-    assert.equal(ghCheck.passed, false);
-    assert.ok(
-      ghCheck.error?.includes("Override") ||
-        ghCheck.error?.includes("not exist"),
-      `Expected override-related error, got: ${ghCheck.error}`
-    );
-  });
-
-  test("git override_invalid appears in health-check when override path doesn't exist", async () => {
-    const { server } = await createServerWithBinaryPaths();
-
-    const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "bp-hc-git-test-"));
-    tempDirs.push(fakeDir);
-    const fakeGit = path.join(fakeDir, "git");
-
-    const patchRes = await fetch(
-      url(server, "/api/gateway/settings/binary-paths"),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ git: fakeGit }),
-      }
-    );
-    assert.equal(patchRes.status, 200);
-
-    const hcRes = await fetch(url(server, "/api/gateway/health-check"));
-    assert.equal(hcRes.status, 200);
-    const body = (await hcRes.json()) as {
-      checks: Array<{ id: string; passed: boolean; error?: string }>;
-    };
-    const gitCheck = body.checks.find((c) => c.id === "git");
-    assert.ok(gitCheck, "git check should be present");
-    assert.equal(gitCheck.passed, false);
-    assert.ok(
-      gitCheck.error?.includes("Override") ||
-        gitCheck.error?.includes("not exist"),
-      `Expected override-related error, got: ${gitCheck.error}`
-    );
-  });
-
-  test("valid override path (executable) allows binary check to succeed", async () => {
-    const { server, binDir } = await createServerWithBinaryPaths();
-
-    // claude binary in binDir is executable -- patch to its absolute path
-    const claudeBinPath = path.join(binDir, "claude");
-
-    const patchRes = await fetch(
-      url(server, "/api/gateway/settings/binary-paths"),
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ claude: claudeBinPath }),
-      }
-    );
-    assert.equal(patchRes.status, 200);
-
-    const hcRes = await fetch(url(server, "/api/gateway/health-check"));
-    assert.equal(hcRes.status, 200);
-    const body = (await hcRes.json()) as {
-      checks: Array<{ id: string; passed: boolean }>;
-    };
-    const claudeCheck = body.checks.find((c) => c.id === "claude-cli");
-    assert.ok(claudeCheck, "claude-cli check should be present");
-    assert.equal(
-      claudeCheck.passed,
-      true,
-      "claude-cli should pass with valid override"
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // T-3.13 guard: SettingsStore.update() must not accept binaryPaths
 // ---------------------------------------------------------------------------
 
@@ -647,12 +419,7 @@ describe("T-3.13 guard: applyBinaryPathPatchAndInvalidateCaches validates absolu
   function makeApplyPatch(store: SettingsStore) {
     // Replicate the validation from app.ts applyBinaryPathPatchAndInvalidateCaches
     return function applyPatch(
-      patch: Partial<
-        Record<
-          "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-          string | null
-        >
-      >
+      patch: Partial<Record<CliBinaryTool, string | null>>
     ): BinaryPathMap {
       for (const [key, value] of Object.entries(patch)) {
         if (value !== null && value !== undefined) {
@@ -712,31 +479,5 @@ describe("T-3.13 guard: applyBinaryPathPatchAndInvalidateCaches validates absolu
     applyPatch({ claude: "/absolute/path" });
     assert.doesNotThrow(() => applyPatch({ claude: null }));
     assert.equal(store.getBinaryPaths().claude, undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// T-4.1: resolveHarnessBinary unit tests
-// ---------------------------------------------------------------------------
-
-describe("resolveHarnessBinary", () => {
-  test('"claude" harness returns "claude"', () => {
-    assert.equal(resolveHarnessBinary("claude"), "claude");
-  });
-
-  test('"codex" harness returns "codex"', () => {
-    assert.equal(resolveHarnessBinary("codex"), "codex");
-  });
-
-  test('"cursor" harness returns "cursor"', () => {
-    assert.equal(resolveHarnessBinary("cursor"), "cursor");
-  });
-
-  test('"opencode" harness returns "opencode"', () => {
-    assert.equal(resolveHarnessBinary("opencode"), "opencode");
-  });
-
-  test('undefined harness defaults to "claude"', () => {
-    assert.equal(resolveHarnessBinary(undefined), "claude");
   });
 });

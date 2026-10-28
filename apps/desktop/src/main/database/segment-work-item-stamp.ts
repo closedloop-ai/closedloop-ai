@@ -7,8 +7,8 @@
  *
  * Split out of `write-core.ts` by FEA-4010 (AA-10): the stamping concern is
  * cohesive and self-contained (three functions, one table written), it is what
- * that work changed, and `write-core.ts` is a shrink-only grandfathered file. The
- * import path calls it as record group 7.5; the activity-segment and artifact-link
+ * that work changed, and it keeps `write-core.ts` shrinking rather than growing.
+ * The import path calls it as record group 7.5; the activity-segment and artifact-link
  * backfills call it directly, which is why it lives beside them rather than
  * inside the importer.
  */

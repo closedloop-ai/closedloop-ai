@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import {
   GitGatewayErrorCategory,
   GitHookType,
 } from "@closedloop-ai/loops-api/friendly-error";
+import { describe, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
+import { getResolvedGitPath } from "../src/server/operations/binary-path-overrides.js";
 import { registerGitActionRoutes } from "../src/server/operations/git-action.js";
 import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "../src/server/operations/git-gateway-constants.js";
-import { getResolvedGitPath } from "../src/server/operations/symphony-loop.js";
 import type { ExecResult } from "../src/server/process-manager.js";
 import {
   createGitOpTempDirs,

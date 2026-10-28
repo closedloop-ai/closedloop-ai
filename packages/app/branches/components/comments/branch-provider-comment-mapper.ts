@@ -3,8 +3,11 @@ import type {
   BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
 import { BranchPrCommentKind } from "@repo/api/src/types/branch";
-import { TraceCommentTargetType } from "@repo/api/src/types/comment";
-import { formatRelativeTimeOrFallback } from "@repo/app/shared/lib/date-utils";
+import { CommentTargetType } from "@repo/api/src/types/comment";
+import {
+  type PullRequestKeySelection,
+  parsePullRequestKey,
+} from "@repo/app/shared/components/comments/comments-pane-model";
 import {
   type BranchCommentReply,
   BranchCommentSource,
@@ -12,6 +15,7 @@ import {
   type BranchCommentThread,
   type BranchProviderCommentProvenance,
   type BranchProviderCommentsAvailability,
+  formatBranchCommentTime,
 } from "./branch-comments-model";
 
 /** Selection-verified provider threads and independent availability evidence. */
@@ -26,7 +30,7 @@ export function mapSelectedProviderComments(
   branchId: string,
   pullRequestKey: string | null | undefined
 ): BranchProviderCommentsView | null {
-  const selection = parseProviderSelection(pullRequestKey);
+  const selection = parsePullRequestKey(pullRequestKey);
   if (
     !(
       selection &&
@@ -89,7 +93,7 @@ export function mapSelectedProviderComments(
 function matchesProviderSelection(
   response: BranchPrCommentsResponse | undefined,
   branchId: string,
-  selection: ProviderSelection
+  selection: PullRequestKeySelection
 ): response is BranchPrCommentsResponse {
   if (!(response && response.branchId === branchId)) {
     return false;
@@ -105,7 +109,7 @@ function mapProviderThread(
   comment: BranchPrComment,
   branchId: string,
   pullRequestKey: string,
-  selection: ProviderSelection
+  selection: PullRequestKeySelection
 ): BranchCommentThread {
   return {
     author: mapProviderAuthor(comment),
@@ -113,26 +117,26 @@ function mapProviderThread(
     canDeleteThread: false,
     canEditRoot: false,
     canReply: false,
-    createdAtLabel: relativeTime(comment.createdAt),
+    createdAtLabel: formatBranchCommentTime(comment.createdAt),
     id: providerViewId(comment),
     provider: mapProviderProvenance(comment, selection),
     pullRequestKey,
     replies: [],
     source: BranchCommentSource.Provider,
     tab: BranchCommentsTab.Details,
-    target: { id: branchId, type: TraceCommentTargetType.Branch },
+    target: { id: branchId, type: CommentTargetType.Branch },
   };
 }
 
 function mapProviderReply(
   comment: BranchPrComment,
-  selection: ProviderSelection
+  selection: PullRequestKeySelection
 ): BranchCommentReply {
   return {
     author: mapProviderAuthor(comment),
     body: comment.body,
     canDelete: false,
-    createdAtLabel: relativeTime(comment.createdAt),
+    createdAtLabel: formatBranchCommentTime(comment.createdAt),
     id: providerViewId(comment),
     provider: mapProviderProvenance(comment, selection),
   };
@@ -148,7 +152,7 @@ function mapProviderAuthor(comment: BranchPrComment) {
 
 function mapProviderProvenance(
   comment: BranchPrComment,
-  selection: ProviderSelection
+  selection: PullRequestKeySelection
 ): BranchProviderCommentProvenance {
   return {
     bodyTruncated: comment.bodyTruncated,
@@ -178,24 +182,9 @@ function mapProviderAvailability(
   };
 }
 
-function parseProviderSelection(
-  pullRequestKey: string | null | undefined
-): ProviderSelection | null {
-  if (!pullRequestKey) {
-    return null;
-  }
-  const separator = pullRequestKey.lastIndexOf("#");
-  if (separator <= 0) {
-    return null;
-  }
-  const repository = pullRequestKey.slice(0, separator);
-  const number = Number(pullRequestKey.slice(separator + 1));
-  return Number.isInteger(number) && number > 0 ? { number, repository } : null;
-}
-
 function safeProviderUrl(
   value: string | null,
-  selection: ProviderSelection
+  selection: PullRequestKeySelection
 ): string | null {
   if (!value) {
     return null;
@@ -224,10 +213,6 @@ function safeProviderUrl(
   }
 }
 
-function relativeTime(value: string): string {
-  return formatRelativeTimeOrFallback(value, { fallback: "Unknown time" });
-}
-
 function providerFamilyKey(kind: BranchPrCommentKind, id: string): string {
   const family =
     kind === BranchPrCommentKind.ReviewReply
@@ -242,11 +227,6 @@ function providerViewId(comment: BranchPrComment): string {
     `${comment.kind}:${comment.providerCommentId ?? comment.id}`;
   return `provider:${providerIdentity}`;
 }
-
-type ProviderSelection = {
-  number: number;
-  repository: string;
-};
 
 const GITHUB_HOSTNAME = "github.com";
 const TRAILING_SLASH = /\/$/;

@@ -64,19 +64,19 @@ vi.mock("../../hooks/use-search-intellisense", () => ({
 
 import { SearchTypeahead } from "../search-typeahead";
 
-const RE_ALPHA_LOOP = /Alpha loop/;
+const RE_ALPHA_SESSION = /Alpha session/;
 const RE_STATUS = /Status/;
 const RE_ALPHA_PRD = /Alpha PRD/;
 
 function hit(overrides: Partial<SearchHit> = {}): SearchHit {
   return {
-    entityType: SearchEntityType.Loop,
-    entityId: "loop-1",
-    title: "Alpha loop",
-    snippet: "run the <b>alpha</b> loop",
+    entityType: SearchEntityType.AgentSession,
+    entityId: "session-1",
+    title: "Alpha session",
+    snippet: "run the <b>alpha</b> session",
     rank: 0.5,
     updatedAt: new Date("2026-01-01"),
-    deepLink: "/loops/loop-1",
+    deepLink: "/sessions/session-1",
     ...overrides,
   };
 }
@@ -137,11 +137,11 @@ describe("SearchTypeahead", () => {
     await user.type(screen.getByLabelText("Search"), "al");
 
     // Type chip + highlighted snippet + org-scoped deep link.
-    expect(screen.getByText("Loop")).toBeInTheDocument();
+    expect(screen.getByText("Session")).toBeInTheDocument();
     expect(screen.getByText("alpha").tagName).toBe("MARK");
     expect(
-      screen.getByRole("option", { name: RE_ALPHA_LOOP }).querySelector("a")
-    ).toHaveAttribute("href", "/acme/loops/loop-1");
+      screen.getByRole("option", { name: RE_ALPHA_SESSION }).querySelector("a")
+    ).toHaveAttribute("href", "/acme/sessions/session-1");
   });
 
   it("enables the query once focused past the 2-char threshold", async () => {
@@ -294,10 +294,10 @@ describe("SearchTypeahead", () => {
 
     // The row's interactivity is the inner Link (the option li is not itself
     // clickable), so click the link to commit the suggestion.
-    await user.click(screen.getByRole("link", { name: RE_ALPHA_LOOP }));
+    await user.click(screen.getByRole("link", { name: RE_ALPHA_SESSION }));
 
     expect(onSelectHit).toHaveBeenCalledWith(
-      expect.objectContaining({ entityId: "loop-1" })
+      expect.objectContaining({ entityId: "session-1" })
     );
     // Selecting closes the dropdown, so the listbox is gone.
     expect(screen.queryByRole("listbox")).toBeNull();

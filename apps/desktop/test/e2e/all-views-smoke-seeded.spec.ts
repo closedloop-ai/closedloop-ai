@@ -50,20 +50,19 @@ import {
   dashboardOnboardedStorageKey,
   dashboardTourSeenStorageKey,
 } from "../../src/renderer/components/dashboard/dashboard-storage-keys";
+import { isolatedHarnessHomes } from "../helpers/isolated-harness-homes";
 import {
-  dismissDesktopOnboardingOverlay,
   gotoHash,
   gotoNav,
   launchDesktopApp,
   widenToAllTime,
 } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import { type SeedApproval, seedPendingApprovals } from "./helpers/seed";
 import {
-  type MergedUnenrichedBranchSeed,
+  type ClosedAtOnlyBranchSeed,
   type PlanListSeed,
   type SessionListSeed,
-  seedMergedUnenrichedSinglePrBranch,
+  seedClosedAtOnlySinglePrBranch,
   seedPlansList,
   seedSessionsList,
   waitForBranchesSchema,
@@ -75,12 +74,12 @@ import {
 // Dashboard SESSIONS KPI). Its session is substantive by default (the seed adds
 // a synthetic PreToolUse event), so it counts toward the Dashboard/Sessions
 // reads rather than being hidden as an idle phantom row.
-const BRANCH_SEED: MergedUnenrichedBranchSeed = {
+const BRANCH_SEED: ClosedAtOnlyBranchSeed = {
   repoFullName: "acme/web",
   branchName: "iss-4527-seeded-smoke-branch",
   sessionId: "iss-4527-seeded-smoke-branch-session",
   prNumber: 4527,
-  mergedAt: "2026-05-20T12:00:00.000Z",
+  closedAt: "2026-05-20T12:00:00.000Z",
 };
 
 // The seed inserts pr_url = https://github.com/<repo>/pull/<n>; the Branches PR
@@ -264,7 +263,7 @@ const SEEDED_VIEWS: SeededViewCase[] = [
     assertData: async (page) => {
       // ISS-6024 — settle the read BEFORE asserting its output.
       //
-      // `BranchesListBody` renders one of four terminal states — the table,
+      // `BranchesListSurfaceV2` renders one of four terminal states — the table,
       // "Couldn't load branches", "No matching branches", or "No branches yet" —
       // or, while the read is in flight, "Loading branches…" instead of any of
       // them. Only the table contains a row link, so the row assertion alone
@@ -277,9 +276,15 @@ const SEEDED_VIEWS: SeededViewCase[] = [
       //
       // Scoped to this view's own scroll region so a mounted-but-hidden sibling
       // view's table (Sessions keeps one) can never satisfy the wait.
-      const branchesRegion = page.locator('section[aria-label="Branches"]');
+      // ISS-8909: the v2 surface's scroll band is a `div` carrying
+      // `role="region"` (`BranchesView` hands it `tableScrollAttributes`), not
+      // the `<section>` element v1 rendered, and the grid inside it is
+      // `role="grid"` — a navigable widget — rather than `role="table"`.
+      const branchesRegion = page.locator(
+        '[role="region"][aria-label="Branches"]'
+      );
       const branchesReadSettled = branchesRegion
-        .getByRole("table")
+        .getByRole("grid")
         .or(
           branchesRegion.getByText(BRANCHES_UNAVAILABLE_TEXT, { exact: true })
         )
@@ -319,7 +324,7 @@ const SEEDED_VIEWS: SeededViewCase[] = [
       // Insights mounts behind a "Load insights" gate; click it, then assert the
       // bounded table populated with the seeded corpus.
       //
-      // Scoping (wongk review): the Sessions view ran earlier in this single-
+      // Scoping (whitlockk review): the Sessions view ran earlier in this single-
       // launch loop and stays mounted-but-hidden. It renders the SAME
       // `#/sessions/<id>` row links, so a bare `toBeAttached` on that href can
       // match the hidden Sessions copy — Insights could stay EMPTY and still
@@ -365,7 +370,7 @@ const SEEDED_VIEWS: SeededViewCase[] = [
     label: "Plans",
     assertData: async (page) => {
       // PlansView reads db.getPlansList() from the SQLite plans/plan_versions
-      // tables (shafty023 review), so the seeded plans render as list rows (each
+      // tables (davetho review), so the seeded plans render as list rows (each
       // a PlanListButton labelled with its title), and the queue is NOT the "No
       // plans captured yet" empty state. listPlans applies no substantive/date
       // filter, so the seeded rows always project.
@@ -387,7 +392,7 @@ const SEEDED_VIEWS: SeededViewCase[] = [
 // the view has one, also assert its OWN body <h1> heading (rendered from the
 // DEFERRED nav state), not only the Topbar breadcrumb (which follows the
 // IMMEDIATE nav state and can advance before a broken body chunk has mounted —
-// wongk review). Heading names mirror the empty smoke's per-view markers (every
+// whitlockk review). Heading names mirror the empty smoke's per-view markers (every
 // top-level view with a body heading routes its title through PageShell as a
 // single <h1>, FEA-3990). `agents` is the deliberate exception: its unified
 // workspace hosts a tabbed inventory with NO standalone <h1> (see the empty
@@ -402,7 +407,11 @@ const HEALTH_ONLY_VIEWS: {
   { navId: "agents", label: "Agents" },
   { navId: "requests", label: "Requests", heading: "Requests" },
   { navId: "diagnostics", label: "Diagnostics", heading: "Diagnostics" },
-  { navId: "settings", label: "Settings", heading: "Settings" },
+  // ISS-10195: `settings` is deliberately NOT a row here. Retiring the
+  // workspace-experience gate made Settings the modal
+  // `DesktopSettingsModalHost` presents over the last nav page rather than a
+  // nav view, so it has neither the Topbar breadcrumb nor the body <h1> this
+  // table asserts. `settings-v2-modal.spec.ts` owns the modal.
 ];
 
 // Detail surfaces mount their OWN lazy chunk — distinct from the list view's —
@@ -572,10 +581,7 @@ test.describe("All views smoke (seeded corpus, ISS-4527)", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-smoke-seeded-udd-")
     );
-    const authorityServer = await startFakeGitHubAuthorityServer([
-      BRANCH_SEED.repoFullName,
-    ]);
-    const seedEnv = { ...harnessHomes.env, ...authorityServer.env };
+    const seedEnv = { ...harnessHomes.env };
 
     try {
       // Launch 1 — create + migrate the SQLite schema, set the onboarding flags
@@ -603,7 +609,7 @@ test.describe("All views smoke (seeded corpus, ISS-4527)", () => {
       }
 
       // Seed the DB corpus while the app is DOWN.
-      await seedMergedUnenrichedSinglePrBranch(userDataDir, BRANCH_SEED);
+      await seedClosedAtOnlySinglePrBranch(userDataDir, BRANCH_SEED);
       await seedSessionsList(userDataDir, SESSION_SEEDS);
       // PlansView projects from the SQLite plans/plan_versions tables, so the
       // Plans data-backed assertion needs its rows seeded like the others.
@@ -625,11 +631,9 @@ test.describe("All views smoke (seeded corpus, ISS-4527)", () => {
           await gotoNav(page, view.navId);
           await assertTopbarLabel(page, view.navId, view.label);
 
-          // The signed-out first-launch onboarding overlay layers over the
-          // Dashboard and intercepts pointer events; clear it and widen the date
-          // range so the past-dated seed is in range before asserting KPIs.
+          // Widen the date range so the past-dated seed is in range before
+          // asserting KPIs.
           if (view.navId === "dashboard") {
-            await dismissDesktopOnboardingOverlay(page);
             await widenToAllTime(page);
           }
           // Widen Sessions/Branches to All time so the seeded rows are in range
@@ -695,7 +699,6 @@ test.describe("All views smoke (seeded corpus, ISS-4527)", () => {
         await cleanup();
       }
     } finally {
-      await authorityServer.close();
       fs.rmSync(userDataDir, { recursive: true, force: true });
       harnessHomes.cleanup();
     }
@@ -703,47 +706,27 @@ test.describe("All views smoke (seeded corpus, ISS-4527)", () => {
 });
 
 /**
- * Create a fresh empty temp dir for every harness collector home and return the
- * env vars pointing each collector at it, plus a cleanup that removes them all.
- * Isolating ALL of them (not just Codex) keeps the seeded corpus deterministic
- * on a developer machine where the operator has real Claude/Codex/OpenCode/
- * Cursor/Copilot sessions the collectors would otherwise ingest.
+ * Point every harness collector home at a fresh empty temp dir, and return the
+ * cleanup that removes them.
+ *
+ * ISS-7731: the variable list comes from the canonical `isolatedHarnessHomes`
+ * rather than a local re-listing. This file used to carry its own copy of all
+ * seven — correct when written, but a second copy that would drift the moment a
+ * sixth collector was added. `launchDesktopApp` now applies the same set by
+ * default; this stays explicit because the seed launch and the assert launch
+ * must share ONE set of homes, which only a caller-owned root can guarantee.
  */
 function createIsolatedHarnessHomes(): {
   env: Record<string, string>;
   cleanup: () => void;
 } {
-  const dirs: string[] = [];
-  const makeHome = (label: string): string => {
-    const dir = fs.mkdtempSync(
-      path.join(os.tmpdir(), `desktop-smoke-seeded-${label}-`)
-    );
-    dirs.push(dir);
-    return dir;
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "desktop-smoke-seeded-homes-")
+  );
+  return {
+    env: isolatedHarnessHomes(root),
+    cleanup: () => {
+      fs.rmSync(root, { recursive: true, force: true });
+    },
   };
-  const env = {
-    CLAUDE_HOME: makeHome("claude"),
-    CODEX_HOME: makeHome("codex"),
-    // OpenCode has TWO homes the collector reads: OPENCODE_DATA_DIR relocates
-    // `opencode.db`, but startup pack scanning resolves the config home
-    // (agent/command definitions) separately — pin OPENCODE_CONFIG_DIR too so the
-    // seeded corpus never imports the operator's real `~/.config/opencode`.
-    OPENCODE_DATA_DIR: makeHome("opencode-data"),
-    OPENCODE_CONFIG_DIR: makeHome("opencode-config"),
-    CURSOR_HOME: makeHome("cursor"),
-    // Copilot also has TWO homes the collector reads: COPILOT_HOME isolates the
-    // CLI (`~/.copilot`), but Copilot Chat lives under the VS Code workspace
-    // storage, which resolves under os.homedir() and COPILOT_HOME does NOT cover
-    // (copilot-home.ts). Pin COPILOT_VSCODE_STORAGE_DIR too (ISS-4527 review) so
-    // the default-enabled Copilot collector never scans the operator's real
-    // VS Code Copilot Chat history and inflates the seeded corpus.
-    COPILOT_HOME: makeHome("copilot"),
-    COPILOT_VSCODE_STORAGE_DIR: makeHome("copilot-vscode"),
-  };
-  const cleanup = (): void => {
-    for (const dir of dirs) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  };
-  return { env, cleanup };
 }

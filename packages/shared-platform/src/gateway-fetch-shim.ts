@@ -7,15 +7,13 @@
  * mode. Every non-gateway request passes straight through to the original
  * (un-intercepted) fetch.
  *
- * This is the single source of truth for the fetch-interception mechanics shared
- * by every surface that owns a browser-like `globalThis.fetch` — the Next.js web
- * shell (`apps/app`) and the Electron desktop renderer (`apps/desktop`).
- * Surface-specific transport lives in each surface's `SurfaceRoutingAdapter`,
+ * This is the single source of truth for the fetch-interception mechanics used
+ * by the Electron desktop renderer (`apps/desktop`). Surface-specific transport lives in each surface's `SurfaceRoutingAdapter`,
  * NOT here: this shim only matches gateway requests and delegates.
  *
  * SECURITY: the shim introduces no new local-execution path. It forwards matched
- * requests to the registered adapter only; the adapter (web) / main-process IPC
- * handler (desktop) remains the enforcement boundary.
+ * requests to the registered adapter only; the main-process IPC handler remains
+ * the enforcement boundary.
  */
 
 import { GATEWAY_PATH_PREFIX } from "./gateway-constants";

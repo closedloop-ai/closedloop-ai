@@ -146,7 +146,7 @@ export const sessions: readonly SessionRow[] = [
     status: SessionStatus.Completed,
     autonomy: 100,
     repo: REPO_SYMPHONY,
-    branch: "parkerbyrd-ux/plugins-prototype",
+    branch: "pascoebirchall-ux/plugins-prototype",
     pr: null,
   },
   {
@@ -173,7 +173,7 @@ export const sessions: readonly SessionRow[] = [
     status: SessionStatus.Completed,
     autonomy: 72,
     repo: REPO_SYMPHONY,
-    branch: "parkerbyrd-ux/setup-logs-review",
+    branch: "pascoebirchall-ux/setup-logs-review",
     pr: "#2881",
   },
   {
@@ -209,7 +209,7 @@ export const sessions: readonly SessionRow[] = [
     status: SessionStatus.Completed,
     autonomy: 88,
     repo: REPO_SYMPHONY,
-    branch: "parkerbyrd-ux/packs-domain",
+    branch: "pascoebirchall-ux/packs-domain",
     pr: "#2877",
   },
   {

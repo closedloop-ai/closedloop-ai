@@ -1,29 +1,49 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import {
   type ApiResult,
   failure,
   type JsonObject,
 } from "@repo/api/src/types/common";
-import type { GitHubBackfillResponse } from "@repo/api/src/types/github";
-import { GitHubBackfillMode } from "@repo/api/src/types/github";
+import type {
+  GitHubBackfillAcceptedResponse,
+  GitHubBackfillResponse,
+} from "@repo/api/src/types/github";
+import {
+  GitHubBackfillMode,
+  GitHubBackfillRetryErrorCode,
+  GitHubBackfillStatus,
+} from "@repo/api/src/types/github";
+import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import type { GitHubBackfillStart } from "@/app/integrations/github/backfill-service";
 import { githubBackfillService } from "@/app/integrations/github/backfill-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  recordNoOpUnlessRecorded,
+  recordOrganizationWrite,
+} from "@/lib/organization-write-receipt";
+import {
+  acceptedResponse,
+  errorResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 
 /**
- * Apply mode runs the whole backfill (repos → branches → PRs → projections)
- * synchronously before responding, so it runs well past the platform default.
- * The client pairs it with `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes); declaring
- * the same ceiling here is what makes that deadline meaningful — without it the
- * platform terminates the function first and the client surfaces a 504 long
- * before its own deadline fires (PR #4321 review).
+ * Apply mode hands the sweep to `waitUntil` rather than awaiting it (ISS-7408),
+ * but the platform still bounds that lane by the function's own ceiling, so the
+ * declaration stays load-bearing: without it the background run is killed at
+ * the default mid-sweep. What changed is who waits — the response returns in
+ * claim latency instead of the 90s-180s the awaited sweep used to cost on a
+ * route a customer hits while onboarding.
  */
 export const maxDuration = 300;
-
-const GitHubBackfillRetryErrorCode = {
-  Deferred: "GITHUB_BACKFILL_RETRY_DEFERRED",
-} as const;
 
 const backfillRequestSchema = z
   .object({
@@ -33,39 +53,103 @@ const backfillRequestSchema = z
   .strict();
 
 export const POST = withAnyAuth<
-  GitHubBackfillResponse,
+  GitHubBackfillAcceptedResponse | GitHubBackfillResponse,
   "/integrations/github/backfill"
->(async ({ user }, request) => {
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    backfillRequestSchema
-  );
-  if (parseError) {
-    return parseError;
-  }
+>(
+  withOperationReceipts<
+    GitHubBackfillAcceptedResponse | GitHubBackfillResponse,
+    "/integrations/github/backfill"
+  >(
+    OperationKind.OrganizationWrite,
+    async ({ user }, request, _params, receipts) => {
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        backfillRequestSchema
+      );
+      if (parseError) {
+        return parseError;
+      }
 
-  const mode = body.mode ?? GitHubBackfillMode.DryRun;
-  const gate =
-    mode === GitHubBackfillMode.Apply
-      ? claimBackfillRetry(user.organizationId)
-      : null;
-  if (gate && !gate.claimed) {
-    return backfillRetryDeferredResponse(gate.retryAfterSeconds);
-  }
+      const mode = body.mode ?? GitHubBackfillMode.DryRun;
+      const { organizationId } = user;
 
-  try {
-    const summary = await githubBackfillService.runPostConnectBackfill({
-      organizationId: user.organizationId,
-      approvedForVisibleWrites: mode === GitHubBackfillMode.Apply,
-      repositoryLimit: body.repositoryLimit,
-    });
-    return successResponse({ summary });
-  } finally {
-    if (gate?.claimed) {
-      releaseBackfillRetry(user.organizationId);
+      // Dry run stays on the request path. It writes nothing, and the diff it
+      // computes IS its product — a caller handed a 202 would have no way to read
+      // the preview it asked for. It is a manual diagnostic with nobody onboarding
+      // behind it, which is exactly what Apply below is not.
+      if (mode !== GitHubBackfillMode.Apply) {
+        const summary = await githubBackfillService.runPostConnectBackfill({
+          organizationId,
+          approvedForVisibleWrites: false,
+          repositoryLimit: body.repositoryLimit,
+        });
+        return successResponse({ summary });
+      }
+
+      const gate = claimBackfillRetry(organizationId);
+      if (!gate.claimed) {
+        return backfillRetryDeferredResponse(gate.retryAfterSeconds);
+      }
+
+      // The DURABLE claim is awaited here, on the request path, and only the sweep
+      // goes to `waitUntil` (ISS-7408). Handing the claim to the background lane
+      // too would let this 202 outrun the gate write, and a status poll that beat
+      // it would read the previous run's terminal status and stop polling for good
+      // — the exact "still arriving read as settled" failure this route exists to
+      // remove. By the time the response is written, the next read reports running.
+      let start: GitHubBackfillStart;
+      try {
+        // ISS-12552: the receipt commits with the lease claim, so
+        // it records the request; the sweep's own writes come later and carry
+        // none. A dry run passes no callback and records none.
+        start = await githubBackfillService.startPostConnectBackfill(
+          {
+            organizationId,
+            approvedForVisibleWrites: true,
+            repositoryLimit: body.repositoryLimit,
+          },
+          recordOrganizationWrite(receipts)
+        );
+      } catch (error) {
+        // The in-memory claim above holds a 20-minute lease, and nothing else
+        // releases it on this path: a transient failure in the durable claim would
+        // otherwise leave this warm instance 429-ing the org for the rest of it,
+        // long after the condition cleared (#5689 review).
+        releaseBackfillRetry(organizationId);
+        return errorResponse("Failed to start GitHub backfill", error);
+      }
+
+      if (!start.claimed) {
+        // Another instance already holds the durable lease, so a run IS in flight.
+        // The caller asked for a backfill and is getting one; reporting a failure
+        // would be false. Release only this instance's in-memory claim.
+        releaseBackfillRetry(organizationId);
+        await recordNoOpUnlessRecorded(receipts);
+        return acceptedResponse(
+          withOperationReceipt(runningResponse(), receipts)
+        );
+      }
+
+      waitUntil(
+        start.completion
+          .catch((error: unknown) => {
+            // Nothing is left to return this to, so the failure reaches an operator
+            // here or nowhere. Whatever the run wrote before failing stays readable
+            // through the persisted summary the GET below serves.
+            log.error("github.backfill.background_run_failed", {
+              error,
+              organizationId,
+            });
+          })
+          .finally(() => releaseBackfillRetry(organizationId))
+      );
+
+      return acceptedResponse(
+        withOperationReceipt(runningResponse(), receipts)
+      );
     }
-  }
-});
+  )
+);
 
 export const GET = withAnyAuth<
   GitHubBackfillResponse,
@@ -159,4 +243,8 @@ function evictBackfillRetryGateOverflow(): void {
     }
     backfillRetryGate.delete(oldest);
   }
+}
+
+function runningResponse(): GitHubBackfillAcceptedResponse {
+  return { accepted: true, status: GitHubBackfillStatus.Running };
 }

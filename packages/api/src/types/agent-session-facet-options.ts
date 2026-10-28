@@ -7,8 +7,8 @@
  * option is "a value you can select, and how many sessions carry it". Keeping
  * them apart is what stops a facet option being modelled as a breakdown with
  * fabricated zeros in the token fields it cannot actually measure. Also shrinks
- * `agent-session.ts`, which is grandfathered over the 1,000-line ceiling and is
- * SHRINK-ONLY (AGENTS.md → "File Size and Organization").
+ * `agent-session.ts` rather than growing it (AGENTS.md → "File Size and
+ * Organization").
  */
 
 /**

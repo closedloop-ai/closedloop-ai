@@ -1,5 +1,5 @@
 /**
- * ISS-5363 (wongk review): the ONE derivation of "does this component have
+ * ISS-5363 (whitlockk review): the ONE derivation of "does this component have
  * usage?" that every component-detail surface keys its empty state off.
  *
  * `AgentComponentDetail.invocations`/`.sessions` are `number | null` on the

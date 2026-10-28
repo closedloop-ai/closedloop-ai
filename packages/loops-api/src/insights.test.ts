@@ -3,6 +3,8 @@ import {
   COST_KPI_SUB,
   comparableKpi,
   formatDeltaPct,
+  InsightsPeriod,
+  insightsPeriodDays,
   isDeltaCapped,
   KpiDeltaBasis,
   KpiFormat,
@@ -10,8 +12,11 @@ import {
   lifespanHistogram,
   MAX_DELTA_PCT,
   NEAR_ZERO_DELTA_BASE,
+  outcomeForEndsWithError,
   pctDelta,
+  residualSeries,
   SizeCoveragePopulation,
+  SpendOutcome,
   ttmHistogram,
   withSizeCoverage,
 } from "./insights";
@@ -364,5 +369,61 @@ describe("withSizeCoverage (ISS-5414)", () => {
     expect(
       withSizeCoverage("lines changed", 2, 5, SizeCoveragePopulation.Merged)
     ).toBe("lines changed · sized 0 of 2 deduped merged PRs scanned");
+  });
+});
+
+describe("histogram drops values that match no bucket", () => {
+  it("counts NaN in no bucket, since NaN is not less than any max", () => {
+    const result = ttmHistogram([Number.NaN, HOUR]);
+    expect(result.reduce((sum, b) => sum + b.value, 0)).toBe(1);
+    expect(result.find((b) => b.key === "lt4h")?.value).toBe(1);
+  });
+
+  it("places a value equal to a bucket max in the next bucket", () => {
+    const result = ttmHistogram([4 * HOUR]);
+    expect(result.find((b) => b.key === "lt4h")?.value).toBe(0);
+    expect(result.find((b) => b.key === "4to12h")?.value).toBe(1);
+  });
+});
+
+describe("outcomeForEndsWithError", () => {
+  it("maps true to Errored, false to Clean, and null to Unknown", () => {
+    expect(outcomeForEndsWithError(true)).toBe(SpendOutcome.Errored);
+    expect(outcomeForEndsWithError(false)).toBe(SpendOutcome.Clean);
+    expect(outcomeForEndsWithError(null)).toBe(SpendOutcome.Unknown);
+  });
+});
+
+describe("residualSeries", () => {
+  it("returns the bare sentinel when no emitted key collides", () => {
+    expect(residualSeries(["claude-opus-4-7"])).toEqual({
+      key: "other",
+      label: "Other",
+    });
+  });
+
+  it("switches to the namespaced key when a model is literally named other", () => {
+    expect(residualSeries(["other"])).toEqual({
+      key: "__otherModels",
+      label: "Other models",
+    });
+  });
+
+  it("suffixes the namespaced key until it is free", () => {
+    expect(
+      residualSeries(["other", "__otherModels", "__otherModels2"])
+    ).toEqual({ key: "__otherModels3", label: "Other models" });
+  });
+});
+
+describe("insightsPeriodDays", () => {
+  it("is the period's day count for a bounded period", () => {
+    expect(insightsPeriodDays(InsightsPeriod.Week)).toBe(7);
+    expect(insightsPeriodDays(InsightsPeriod.Month)).toBe(30);
+    expect(insightsPeriodDays(InsightsPeriod.Quarter)).toBe(90);
+  });
+
+  it("is null for all time", () => {
+    expect(insightsPeriodDays(InsightsPeriod.All)).toBeNull();
   });
 });

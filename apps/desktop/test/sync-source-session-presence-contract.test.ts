@@ -12,7 +12,7 @@
  * never in the table at all.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { EVENT_INSERT_PARAM_CAP } from "../src/main/database/db-constants.js";
 import { findSqliteExistingSessionIds } from "../src/main/database/sync-source-session-rows.js";
 import { openTestPrisma } from "./prisma-test-utils.js";

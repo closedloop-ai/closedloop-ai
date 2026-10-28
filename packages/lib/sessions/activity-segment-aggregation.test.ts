@@ -14,23 +14,7 @@ import {
   OTHER_PHASE_KEY,
   toActivitySegmentTokenEvents,
 } from "./activity-segment-aggregation.js";
-
-function row(
-  overrides: Partial<SyncedActivitySegmentRow> & {
-    phase: string;
-    startMs: number;
-    endMs: number;
-  }
-): SyncedActivitySegmentRow {
-  return {
-    confidence: 0.9,
-    evidenceLayers: ["structural"],
-    version: 1,
-    workItemRef: null,
-    subagentId: null,
-    ...overrides,
-  };
-}
+import { activitySegmentRow as row } from "./activity-segment-aggregation.test-fixtures.ts";
 
 function event(
   tMs: number,
@@ -347,9 +331,10 @@ describe("buildActivitySegments — edge cases for internal helpers", () => {
 
   it("treats a non-array evidenceLayers as empty (no source, no declared flag)", () => {
     // Force null into the typed field to exercise the Array.isArray guard.
-    const evidenceLayers: string[] = null as any;
     const rows = [
-      row({ phase: "plan", startMs: 0, endMs: 100, evidenceLayers }),
+      Object.assign(row({ phase: "plan", startMs: 0, endMs: 100 }), {
+        evidenceLayers: null,
+      }),
     ];
     const segments = buildActivitySegments(rows, []);
     const plan = segments.find((s) => s.key === "plan")!;

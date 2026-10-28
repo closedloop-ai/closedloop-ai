@@ -32,7 +32,6 @@ function mockAdapter(
 const selection = (mode: EngineerRoutingMode) => ({
   mode,
   computeTargetId: null,
-  source: "auto" as const,
   updatedAt: 0,
 });
 

@@ -9,8 +9,8 @@
  * and forwards a well-formed request to `forceSyncOversized`.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import type { WebContents } from "electron";
+import { describe, test } from "vitest";
 import { registerTranscriptForceArchiveIpcHandler } from "../src/main/ipc/transcript-force-archive-ipc.js";
 import { TRANSCRIPT_FORCE_ARCHIVE_CHANNEL } from "../src/shared/transcript-read-contract.js";
 

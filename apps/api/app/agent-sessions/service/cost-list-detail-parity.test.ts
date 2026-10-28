@@ -4,9 +4,11 @@
 // the per-event token stream (FEA-2926) — so a session whose rollup had gone
 // stale/inflated relative to the (repriced) per-event costs read one figure in
 // the table and another in the card it opens ($1,378.39 list vs $33.24 detail).
-// Both surfaces now derive the displayed cost from the SAME captured-cost
-// authority (`reconcileSessionCost`); these tests pin that parity for a normal
-// record and for the high-magnitude divergence, plus the rollup-fallback paths.
+// ISS-7176 re-decided which side was right: both surfaces now derive the
+// displayed cost from the same stored rollup (`SessionDetail.estimatedCost`)
+// directly, with no per-event reconciliation on either path; these tests pin
+// that parity for a normal record and for the high-magnitude divergence, plus
+// the rollup-fallback paths.
 
 import { TokenCostCompleteness } from "@repo/api/src/types/token-cost-provenance";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,19 +52,13 @@ const TOKENS_PER_EVENT = TOKENS_PER_EVENT_INPUT + TOKENS_PER_EVENT_OUTPUT;
 /**
  * Drive both the list and detail read paths for a single session that has the
  * given stored rollup and per-event token-cost stream, and return the `cost`
- * string each surface displays. The list's per-event aggregate is served by the
- * `$queryRaw` mock (the bulk reconciler `getReconciledCostsBySessionId`, one
- * bounded org-scoped raw aggregate); the detail path reads the same events off
- * the record's `tokenEvents` select.
+ * string each surface displays.
  *
- * The fixture models a COMPLETE per-event stream: each event carries a token
- * count and the record's rollup token total is set to their sum, so the
- * FEA-4276 (shafty review) ingest-completeness cross-check
- * (`tokenEventTokenSum >= rollupTokenTotal`) passes on BOTH surfaces and the
- * per-event cost authority wins for a divergent rollup. The list feeds the
- * cross-check through the `$queryRaw` aggregate's `tokenSum`; the detail feeds
- * it by summing the per-event `inputTokens`/`outputTokens` — both must agree
- * with the rollup token total for the streams to read as complete.
+ * ISS-7176: BOTH surfaces resolve `.cost` from `estimatedCost` on their own
+ * record now, with no per-event aggregation on either side — the `$queryRaw`
+ * mock below and the `tokenEvents`/`costCompleteness` fed into the detail
+ * fixture are retained fixture shape from before that decision; neither
+ * surface's `.cost` reads them any more, whatever they are set to.
  */
 async function readListAndDetailCost(input: {
   storedRollup: number;
@@ -153,7 +149,7 @@ async function readListAndDetailCost(input: {
   return { listCost, detailCost };
 }
 
-describe("session cost list/detail parity (FEA-4276)", () => {
+describe("session cost list/detail parity (FEA-4276, re-decided by ISS-7176)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -170,17 +166,30 @@ describe("session cost list/detail parity (FEA-4276)", () => {
     expect(listCost).toBe(detailCost);
   });
 
-  it("reconciles a high-magnitude divergence to the per-event authority on BOTH surfaces", async () => {
-    // The dossier's 41× case: the stored rollup is inflated to $1,378.39 while
-    // the (repriced) per-event stream sums to $33.24. Neither surface may show
-    // the stale rollup — both must show the per-event authority.
+  it("shows the ROLLUP on both surfaces when the per-event stream disagrees 41x", async () => {
+    // THE MOTIVATING CASE, AND THE DIRECTION IT CONVERGED IN WAS WRONG.
+    //
+    // This is FEA-4276's own dossier fixture: the list showed $1,378.39 and the
+    // detail $33.24 for one session. That ticket converged them by moving the
+    // LIST onto the detail's per-event number, and this case asserted $33.24 on
+    // both.
+    //
+    // ISS-7176 re-decided it: the list was the correct surface. `$33.24` is what
+    // a stream sums to, and a stream is only ever a lower bound on a whole
+    // session — it omits any line item not billed per token (web search), and
+    // ISS-7515 measured a real session holding 97 event rows against 1,016
+    // transcript turns. The rollup is the figure that carries everything.
+    //
+    // The PARITY half of this suite is untouched and is why the case survived
+    // the re-decision rather than being deleted with the machinery: the two
+    // surfaces must agree, whichever number is right.
     const { listCost, detailCost } = await readListAndDetailCost({
       storedRollup: 1378.39,
       tokenEventCosts: [5, 10, 7, 11.24],
     });
 
-    expect(listCost).toBe("$33.24");
-    expect(detailCost).toBe("$33.24");
+    expect(listCost).toBe("$1,378.39");
+    expect(detailCost).toBe("$1,378.39");
     expect(listCost).toBe(detailCost);
   });
 

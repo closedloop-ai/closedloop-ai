@@ -8,7 +8,7 @@
  * installed, whether it was auto-installed (pushed) by the org, offered and
  * opted into, self-installed, or required.
  *
- * ## Durable provenance, not mutable policy (wongk)
+ * ## Durable provenance, not mutable policy (whitlockk)
  *
  * The provenance a member sees MUST record how the pack actually arrived at the
  * moment it was installed — it must not be re-derived from the CURRENT
@@ -72,14 +72,14 @@ import {
  * - `opted_in`       — the member accepted an `opt_in` offer and the pack was
  *   installed as a result. Written by the opt-in acceptance path
  *   (`opt-in-distributions-banner` → coaching install) at the moment the
- *   install succeeds — the milestone wongk flagged as missing: the successful
+ *   install succeeds — the milestone whitlockk flagged as missing: the successful
  *   opt-in must stamp this, not merely dismiss the banner.
  * - `self_installed` — the member installed the pack on their own, with no
  *   distribution driving it. Written by the manual/self install path.
  * - `required`       — a mandatory distribution the member cannot remove.
  *   RESERVED: no production path stamps this yet — neither the persisted
  *   Distribution nor any API/desktop payload currently carries a mandatoriness
- *   signal (wongk). It is enumerated here so the origin→source mapping is
+ *   signal (whitlockk). It is enumerated here so the origin→source mapping is
  *   exhaustive and typechecks the day a producer starts stamping it, rather
  *   than silently mislabeling a required pack as auto-installed. It has no
  *   member-facing behavior until that producer exists.
@@ -150,7 +150,7 @@ export type InstallSourceInput = {
    * `distributionMode` genuinely means self-installed); an older or partial
    * payload that cannot report linkage leaves it absent, so the resolver
    * degrades to `unknown` instead of over-claiming `self`. This is the
-   * distinction wongk flagged: "no link" and "can't report a link" are
+   * distinction whitlockk flagged: "no link" and "can't report a link" are
    * different claims.
    */
   linkageKnown?: boolean;
@@ -238,7 +238,7 @@ export function resolveInstallSource(input: InstallSourceInput): InstallSource {
  * Map a durable {@link InstallOrigin} to its member-facing {@link InstallSource}
  * label. Exhaustive `switch` with a `never`-typed default: adding a new
  * `InstallOrigin` member fails typecheck here until it is intentionally mapped,
- * so a new provenance milestone can never silently mislabel (wongk's
+ * so a new provenance milestone can never silently mislabel (whitlockk's
  * exhaustiveness point applied to the origin axis). `Required` is mapped even
  * though no producer stamps it yet, so the day one does, the label is correct.
  */
@@ -261,7 +261,7 @@ function sourceForOrigin(origin: InstallOrigin): InstallSource {
  * Map a recognized {@link DistributionMode} to an {@link InstallSource} in the
  * legacy *policy* fallback. The exhaustive `switch` with a `never`-typed default
  * makes a newly added `DistributionMode` fail typecheck here until it is
- * intentionally mapped, instead of silently compiling as `self` (wongk). A
+ * intentionally mapped, instead of silently compiling as `self` (whitlockk). A
  * runtime-unknown mode (a legacy value the union does not know) still degrades
  * safely to `unknown`.
  */

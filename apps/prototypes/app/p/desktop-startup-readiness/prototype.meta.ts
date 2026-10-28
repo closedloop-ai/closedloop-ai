@@ -1,4 +1,5 @@
 import {
+  PrototypeDeliveryMode,
   type PrototypeMeta,
   PrototypeStatus,
   PrototypeTag,
@@ -10,9 +11,10 @@ export const meta = {
   summary:
     "A truthful, non-blocking startup sequence that renders the Sessions shell immediately, makes saved sessions available first, and narrates local freshness work without implying a false overall percentage.",
   author: "Codex",
-  status: PrototypeStatus.ReadyForReview,
+  status: PrototypeStatus.HandedOff,
   tags: [PrototypeTag.BugFix, PrototypeTag.Feature],
   createdAt: "2026-08-03",
   linearIssue: null,
   closedloopDoc: "ISS-4715",
+  deliveryMode: PrototypeDeliveryMode.DisposableSketch,
 } satisfies PrototypeMeta;

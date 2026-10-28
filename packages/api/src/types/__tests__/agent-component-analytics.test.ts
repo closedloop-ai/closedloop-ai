@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   decodeComponentHashKey,
   decodeComponentSlug,
+  decodeFingerprintIdentityKey,
   encodeComponentSlug,
+  fingerprintIdentityKey,
   normalizeComponentKey,
   routableComponentHashKey,
 } from "../agent-component-analytics";
@@ -121,7 +123,7 @@ describe("encodeComponentSlug — consolidated cloud-consumer call shapes", () =
   });
 });
 
-// FEA-4335: a component's IDENTITY is its content byte hash (Mike Angstadt's
+// FEA-4335: a component's IDENTITY is its content byte hash (Marisol Ashgrove's
 // product decision) — two components are the SAME iff their content hashes are
 // identical and DIFFERENT iff they differ, regardless of name, `kind::slug`, or
 // install path. The routable detail-URI key must therefore key off the content
@@ -217,5 +219,66 @@ describe("routableComponentHashKey — content-hash identity (FEA-4335)", () => 
     const almost = encodeComponentSlug("skill", "c".repeat(63), null);
     expect(decodeComponentHashKey(almost)?.fingerprint).toBeNull();
     expect(decodeComponentHashKey(almost)?.key).toBe("c".repeat(63));
+  });
+});
+
+describe("decodeFingerprintIdentityKey (ISS-10815)", () => {
+  // The catalog list emits `fingerprintIdentityKey(slug, fingerprint)` as the
+  // `id` of a usage-only row, beside a bare-hash `slug`. Until this decoder
+  // existed that id was the one published spelling of a component's identity the
+  // detail endpoint would not resolve — it read `name@hash` as one opaque name
+  // and 404'd.
+  it("round-trips the name-qualified id the list emits", () => {
+    const hash = "b".repeat(64);
+    const id = fingerprintIdentityKey(
+      encodeComponentSlug("skill", "portfolio-rebalance", null),
+      hash
+    );
+    // Non-circular: the literal spelling the API measurably returns, so a change
+    // to either producer has to be justified here rather than agreeing with
+    // itself through a shared constant.
+    expect(id).toBe(`skill::portfolio-rebalance@${hash}`);
+    expect(decodeFingerprintIdentityKey(id)).toEqual({
+      kind: "skill",
+      key: "portfolio-rebalance",
+      fingerprint: hash,
+    });
+  });
+
+  it("rejects a BARE content-hash key, so that spelling keeps its own decoder", () => {
+    expect(decodeFingerprintIdentityKey(`skill::${"b".repeat(64)}`)).toBeNull();
+  });
+
+  it("rejects a legacy name that merely contains an `@`", () => {
+    // `fingerprintIdentityKey` emits the bare slug when there is no fingerprint,
+    // so an `@` in a name must stay part of the name.
+    const nameSlug = encodeComponentSlug("mcp_tool", "notify@slack", null);
+    expect(fingerprintIdentityKey(nameSlug, null)).toBe(nameSlug);
+    expect(decodeFingerprintIdentityKey(nameSlug)).toBeNull();
+    expect(decodeComponentHashKey(nameSlug)?.key).toBe("notify@slack");
+  });
+
+  it("rejects a trailing segment that is not a full 64-hex fingerprint", () => {
+    expect(decodeFingerprintIdentityKey("skill::deploy@deadbeef")).toBeNull();
+    expect(
+      decodeFingerprintIdentityKey(`skill::deploy@${"c".repeat(63)}`)
+    ).toBeNull();
+    expect(
+      decodeFingerprintIdentityKey(`skill::deploy@${"C".repeat(64)}`)
+    ).toBeNull();
+  });
+
+  it("rejects an empty name and a key with no `::`", () => {
+    expect(
+      decodeFingerprintIdentityKey(`skill::@${"b".repeat(64)}`)
+    ).toBeNull();
+    expect(decodeFingerprintIdentityKey(`deploy@${"b".repeat(64)}`)).toBeNull();
+  });
+
+  it("keeps the LAST `@` as the separator so a name containing one survives", () => {
+    const hash = "b".repeat(64);
+    expect(
+      decodeFingerprintIdentityKey(`mcp_tool::notify@slack@${hash}`)
+    ).toEqual({ kind: "mcp_tool", key: "notify@slack", fingerprint: hash });
   });
 });

@@ -20,6 +20,8 @@ import type {
 export type GitHubBackfillProjectionDiff = {
   branchProjectionChangeCount: number;
   pullRequestProjectionChangeCount: number;
+  lifecycleAtomProjectionChangeCount: number;
+  branchLastActivityProjectionChangeCount: number;
   reviewDecisionProjectionChangeCount: number;
   checkProjectionChangeCount: number;
   issueCommentProjectionChangeCount: number;
@@ -42,7 +44,13 @@ export type GitHubBackfillPullRequestMetadata = {
 
 export type GitHubBackfillProjectionScope = {
   organizationId: string;
-  repositoryId: string;
+  /**
+   * Null on the repo-less (observation) lane, where rows are identified by
+   * `repositoryFullName` instead — see `trackedRepositorySelector`. Carried
+   * only as author-resolution context here; nothing in this scope is a
+   * repository predicate.
+   */
+  repositoryId: string | null;
   branchArtifactId: string;
   pullRequestDetailId: string;
   pullNumber: number;

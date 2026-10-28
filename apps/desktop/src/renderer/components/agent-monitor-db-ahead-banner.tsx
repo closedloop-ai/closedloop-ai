@@ -1,10 +1,10 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { TriangleAlert } from "lucide-react";
 import { type ReactNode, useCallback } from "react";
-import { useTerminalAgentMonitorStatus } from "../hooks/use-ingest-progress";
+import { useTerminalAgentMonitorStatus } from "../hooks/use-agent-monitor-status";
 
 /**
- * ISS-4834 (Parker copy pass): effect first, cause second, and the button
+ * ISS-4834 (Pascoe copy pass): effect first, cause second, and the button
  * carries the action so the strip never says it twice. No "database", no
  * "migration", no version numbers - the user's read is that their history and
  * sync stopped, and that a newer version of the app is what reopens them.

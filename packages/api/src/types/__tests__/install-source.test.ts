@@ -2,7 +2,7 @@
  * @file install-source.test.ts
  * @description Contract tests for the FEA-4090 install-source resolver.
  *
- * Durable provenance (wongk): a recorded {@link InstallOrigin} milestone is the
+ * Durable provenance (whitlockk): a recorded {@link InstallOrigin} milestone is the
  * authoritative source and wins over any current distribution policy, so a later
  * policy change (reconcile relabel, opt-in status flip) can never rewrite the
  * label. Each arrival path stamps the right origin; every origin maps to the

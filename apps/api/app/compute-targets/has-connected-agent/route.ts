@@ -7,9 +7,9 @@ import { computeTargetsService } from "../service";
  *
  * PRD-536 §5: org-wide boolean signal for the Sessions onboarding empty state —
  * "has any real desktop compute target ever registered in this org?". This is an
- * org-wide check (not the viewer's own/org-shared listing from `GET
- * /compute-targets`), so a teammate's unshared desktop still counts as
- * connected and an empty filtered/date result for one user is never
+ * org-wide check (not the viewer's own listing from `GET /compute-targets`), so
+ * a teammate's desktop still counts as connected and an empty filtered/date
+ * result for one user is never
  * misclassified as "never onboarded".
  */
 export const GET = withAnyAuth<

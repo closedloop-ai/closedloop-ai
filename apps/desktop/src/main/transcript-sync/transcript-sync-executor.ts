@@ -14,11 +14,11 @@
  * without touching disk or the network.
  */
 import { stat } from "node:fs/promises";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
 import {
   isRecoverableTranscriptSkipReason,
   TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+} from "@repo/api/src/types/transcript-skip-reason-constants";
 import { RedactedJsonlTranscriptLineTooLongError } from "@repo/lib/security/redacted-jsonl-transcript";
 import type { TranscriptSettle } from "../database/transcript-sync-settle.js";
 import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
@@ -57,7 +57,18 @@ export type TranscriptSyncResult =
   // Absent/false = a transient skip (no complete line yet, materialized source
   // not ready, a whole-file-cap skip the force override will bypass) that is fine
   // to re-attempt.
-  | { kind: "skipped"; reason: string; permanent?: boolean };
+  | {
+      kind: "skipped";
+      reason: string;
+      permanent?: boolean;
+      /**
+       * ISS-6338: which of the two permanent causes this was, on the lane's own
+       * closed vocabulary. Set only when `permanent` is true. Without it the
+       * cloud batch event has to guess, and blaming an oversized redacted line
+       * on a missing source sends an operator hunting a file that is present.
+       */
+      permanentCause?: TranscriptSkipReason;
+    };
 
 /**
  * ISS-4695 (Item 1): the outcome of a `client.skip` POST, threading the
@@ -80,7 +91,35 @@ export type TranscriptSyncResult =
  */
 export type PermanentSkipEmitResult =
   | { acked: false }
-  | { acked: true; status: TranscriptUploadStatus };
+  | {
+      acked: true;
+      status: TranscriptUploadStatus;
+      /**
+       * ISS-9884: the reason the server ACTUALLY recorded, read off the
+       * response rather than echoed back from the request — the two differ
+       * two ways. An older server that rejects a recoverable reason with a
+       * 400 gets its {@link SKEW_FALLBACK_SKIP_REASON} substitute instead,
+       * and the server's own precedence rule (`resolveSkipReasonPrecedence`)
+       * refuses to let a recoverable reason overwrite a hard one already
+       * recorded on the row. The caller persists THIS value, so the desktop's
+       * local column and the cloud's `permanentFailureReason` describe the
+       * same terminal. Persisting the requested reason would make the desktop
+       * render "Upload paused" locally for a row the cloud settled
+       * `failedPermanent`, which is the cross-surface divergence this field
+       * exists to prevent.
+       *
+       * `null` when the server acknowledged a terminal this build cannot
+       * name: the response schema degrades an unrecognized label to `null`
+       * (precedence PRESERVES a label written by a newer peer), and a server
+       * predating the echo field sends nothing. Both are "the cloud settled
+       * it, but not as anything this build ranks", and every read maps a null
+       * reason to the conservative `failedPermanent` — which is exactly what
+       * the cloud serves for an unrecognized label too. Substituting the
+       * requested reason here would resurrect the divergence in the one case
+       * the server explicitly told us it kept something else.
+       */
+      reason: TranscriptSkipReason | null;
+    };
 
 /**
  * Thrown by {@link createTranscriptSyncExecutor} when the privacy gate revokes
@@ -135,7 +174,7 @@ export type TranscriptSyncExecutorDeps = {
  * per-file behavior for the force-archive path and the direct executor callers.
  * Deferring only the settle is safe: the up-front `markUploading` claim still
  * lands per-file (the FEA-2827 growth-signal guard), so a crash before the batch
- * flush leaves the row `uploading`, recovered by `requeueStale` on boot.
+ * flush leaves the row `uploading`, recovered by the sweep's lease reclaim.
  */
 export type TranscriptSettleCollector = (settle: TranscriptSettle) => void;
 
@@ -181,8 +220,12 @@ export type TranscriptSyncExecutor = {
    * against (the caller snapshots it before the attempt). Without it, a target
    * reconnect between the attempt and this call would record the skip under the
    * NEW target's identity while dead-lettering the local row from the original
-   * one — the original target's cloud row would stay `syncing`. Omitted/null
-   * falls back to the live target (legacy callers).
+   * one — the original target's cloud row would stay `syncing`. A `null`
+   * snapshot pins it too (ISS-9884): the attempt ran under no target, so no
+   * cloud is told and the answer is `{ acked: false }`. Falling back to the live
+   * target would acknowledge the pause under a target the caller never recorded,
+   * leaving its row dead under none, where no revival can reach it. Only an
+   * OMITTED target reads the live one.
    */
   notifyPermanentSkip(
     fingerprint: TranscriptFingerprint,
@@ -274,12 +317,7 @@ function applyTranscriptSettleToStore(
         settle.computeTargetId
       );
     case "dead":
-      return store.markDead(
-        settle.externalSessionId,
-        settle.fileKey,
-        settle.reason,
-        settle.now
-      );
+      return store.markDead(settle);
     default: {
       const exhaustive: never = settle;
       return exhaustive;
@@ -311,7 +349,7 @@ export function createTranscriptSyncExecutor(
   }
 
   /**
-   * ISS-4623 (shafty023 review) — the pre-egress guard for the whole in-flight
+   * ISS-4623 (davetho review) — the pre-egress guard for the whole in-flight
    * request. `syncFile` samples the egress gate and compute target ONCE at entry,
    * then awaits stat / newline-scan / redacted-window preparation before the
    * first server call (`syncPlan`). A policy close, tier revocation, or account
@@ -373,7 +411,15 @@ export function createTranscriptSyncExecutor(
       // ISS-4695 (Item 1): thread the server's authoritative terminal status so
       // the caller can tell a recorded `Skipped` from an `Uploaded` (a verified
       // archive the server refused to mask) and avoid dead-lettering the latter.
-      return { acked: true, status: response.status };
+      // ISS-9884: and the reason it PERSISTED, which is not always the one we
+      // asked for — the recursion below can have substituted it, and so can the
+      // server's own precedence rule. Never `?? reason`: a null here is the
+      // server saying it kept a terminal this build cannot name.
+      return {
+        acked: true,
+        status: response.status,
+        reason: response.permanentFailureReason,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // ISS-4820 item 4 — VERSION SKEW. `materialized_source_unavailable` is a
@@ -384,22 +430,26 @@ export function createTranscriptSyncExecutor(
       // no bound. Server-first deploy ordering covers the forward path but not a
       // rollback or a staged/mismatched environment.
       //
-      // Fall back to the pre-existing HARD reason the old server does accept, so
-      // the row reaches an acknowledged terminal state instead of looping. This
-      // is one-shot by construction: `source_gone` is not recoverable, so the
-      // guard below cannot match again on the retry.
+      // Fall back to the pre-existing reason the old server does accept, so
+      // the row reaches an acknowledged terminal state instead of looping.
+      // Still one-shot by construction: every fallback target is NOT
+      // recoverable, so the guard cannot match again on the retry.
+      //
+      // ISS-9884: WHICH pre-existing reason is per-reason, not one constant.
+      // A single `source_gone` was right while `materialized_source_unavailable`
+      // was the only recoverable reason, and became a worse lie than the one
+      // this ticket fixes the moment `environment_unavailable` joined it:
+      // `source_gone` renders "this session's local transcript was removed"
+      // for a file sitting on disk, and it is HARD, so nothing recovers it.
       if (
         isRecoverableTranscriptSkipReason(reason) &&
         isRejectedSkipReasonError(error)
       ) {
+        const fallback = SKEW_FALLBACK_SKIP_REASON[reason];
         log(
-          `transcript ${fp.fileKey} skip reason ${reason} rejected by the server (400); falling back to ${TranscriptSkipReason.SourceGone}`
+          `transcript ${fp.fileKey} skip reason ${reason} rejected by the server (400); falling back to ${fallback}`
         );
-        return await tryEmitPermanentSkip(
-          fp,
-          computeTargetId,
-          TranscriptSkipReason.SourceGone
-        );
+        return await tryEmitPermanentSkip(fp, computeTargetId, fallback);
       }
       log(
         `transcript ${fp.fileKey} permanent-skip notification failed (${reason}): ${message}`
@@ -421,6 +471,8 @@ export function createTranscriptSyncExecutor(
     missingSourceCount: number,
     lastError: string
   ): Promise<void> {
+    // ISS-9884: explicitly NOT terminal. The skip was not acknowledged, so the
+    // row stays on the ladder and has no terminal reason to name.
     const nowIso = now();
     const retryAttempt = fp.retryCount + 1;
     await settle({
@@ -432,6 +484,12 @@ export function createTranscriptSyncExecutor(
       dead: false,
       nextAttemptAt: isoAfter(nowIso, transcriptRetryDelayMs(retryAttempt)),
       lastError,
+      // ISS-7097: not a lane-wide stall. This path already advances the normal
+      // per-row ladder (the skip is retried on its own bound), so it keeps that
+      // bound and clears any stall run rather than freezing the budget here.
+      laneStalledSince: null,
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
       now: nowIso,
     });
   }
@@ -489,6 +547,13 @@ export function createTranscriptSyncExecutor(
         externalSessionId: fp.externalSessionId,
         fileKey: fp.fileKey,
         reason: outcomes.deadReason,
+        // ISS-9884: the reason the server RECORDED, not the one requested —
+        // they differ when the version-skew fallback fired or the server's
+        // precedence rule kept a hard reason already on the row, and the local
+        // verdict must match what the cloud will serve.
+        terminalSkipReason: emit.reason,
+        // The target that classified this skip and whose cloud acknowledged it.
+        terminalSkipComputeTargetId: computeTargetId,
         now: now(),
       });
       return "skipped";
@@ -648,6 +713,9 @@ export function createTranscriptSyncExecutor(
             ? "materialized source unavailable"
             : "source gone",
           permanent: true,
+          permanentCause: materialized
+            ? TranscriptSkipReason.MaterializedSourceUnavailable
+            : TranscriptSkipReason.SourceGone,
         };
       }
       // `uploaded` (cloud has readable bytes) or `unacknowledged`/version-skew:
@@ -673,6 +741,13 @@ export function createTranscriptSyncExecutor(
       dead: false,
       nextAttemptAt: isoAfter(nowIso, transcriptRetryDelayMs(retryAttempt)),
       lastError: missingLastError,
+      // ISS-7097: a missing source is row-attributable by definition — nothing
+      // about the cloud is involved — so it keeps the per-row ladder and ends
+      // any stall run.
+      laneStalledSince: null,
+      // ISS-9884: under the threshold, so not terminal and no reason to name.
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
       now: nowIso,
     });
     return { kind: "skipped", reason: missingReason };
@@ -705,6 +780,7 @@ export function createTranscriptSyncExecutor(
         kind: "skipped",
         reason: "redacted line too large",
         permanent: true,
+        permanentCause: TranscriptSkipReason.TooLarge,
       };
     }
     // `uploaded` (cloud holds readable bytes) or `unacknowledged`/version-skew.
@@ -864,7 +940,21 @@ export function createTranscriptSyncExecutor(
     // `[planEndOffset, newSize)` would never re-queue — permanently lost if that
     // growth was the file's final size (session end). Marking `uploading` first
     // makes `planObservation` preserve the growth signal instead of consuming it.
-    await store.markUploading(fp.externalSessionId, fp.fileKey, now());
+    const claimed = await store.markUploading(
+      fp.externalSessionId,
+      fp.fileKey,
+      now(),
+      computeTargetId
+    );
+    if (!claimed) {
+      // ISS-9884: a revived pause is owed only to the target whose cloud
+      // acknowledged it, and this attempt runs under another. Nothing was sent
+      // and nothing is settled, so the row stays queued for its own target.
+      log(
+        `transcript ${fp.fileKey} not attempted: its upload is owed to another compute target`
+      );
+      return { kind: "skipped", reason: "owed to another compute target" };
+    }
 
     const fileStat = await statFile(fp.sourcePath);
     if (!fileStat) {
@@ -948,7 +1038,7 @@ export function createTranscriptSyncExecutor(
     try {
       const { checksums: windowChecksums, planEndOffset } = uploadWindow;
 
-      // ISS-4623 (shafty023 review): `syncPlan` is the FIRST server egress and
+      // ISS-4623 (davetho review): `syncPlan` is the FIRST server egress and
       // POSTs session id + content hashes. The gate + target were sampled at
       // entry, then stat / newline-scan / redacted-window preparation awaited
       // above; re-check both here so a policy close, tier revocation, or account
@@ -979,13 +1069,15 @@ export function createTranscriptSyncExecutor(
     reason: TranscriptSkipReason,
     computeTargetId?: string | null
   ): Promise<PermanentSkipEmitResult> {
-    // Prefer the caller's snapshot of the attempt's target (see the interface
-    // doc — a reconnect between attempt and skip must not split the record
-    // across two target identities); fall back to the live target.
-    const target = computeTargetId ?? getComputeTargetId();
+    // The caller's snapshot of the attempt's target is authoritative, `null`
+    // included (see the interface doc — a reconnect between attempt and skip
+    // must not split the record across two target identities). Only a caller
+    // with no snapshot at all reads the live target.
+    const target =
+      computeTargetId === undefined ? getComputeTargetId() : computeTargetId;
     if (!target) {
-      // Offline: nothing was told to the cloud, so the caller must not treat
-      // the terminal transition as acknowledged.
+      // Offline, or the attempt had no target: nothing was told to the cloud,
+      // so the caller must not treat the terminal transition as acknowledged.
       return { acked: false };
     }
     // ISS-4695: forward the server's authoritative status so the drain-queue's
@@ -1036,3 +1128,42 @@ function missingSourceDescriptor(sourceHarness: string): {
 function isRejectedSkipReasonError(error: unknown): boolean {
   return error instanceof TranscriptSyncClientError && error.status === 400;
 }
+
+/**
+ * ISS-9884 (PLN-1986 §3) — which pre-existing reason to re-send when an older
+ * server rejects a recoverable one with a 400.
+ *
+ * Keyed by the REJECTED reason because the right degrade differs by cause, and
+ * a single constant got the second one badly wrong:
+ *
+ * - `materialized_source_unavailable` → `source_gone`. Unchanged. That source
+ *   really was absent at sync time; `source_gone` overstates only its
+ *   permanence.
+ * - `environment_unavailable` → `retries_exhausted`. This is the label every
+ *   older server already accepts for exactly this case — the desktop gave up
+ *   after bounded attempts — and maps to today's `failedPermanent`, which is
+ *   precisely the behaviour the ticket's compatibility section requires an
+ *   un-upgraded peer to keep getting. `source_gone` would instead settle a
+ *   file that is still on disk as permanently REMOVED, and hard, so no
+ *   recovery could reach it.
+ *
+ * Typed as an exhaustive `Record` over the whole enum rather than over the
+ * recoverable subset: a `Partial` would let a newly added recoverable reason
+ * compile to `undefined` here and re-send nothing, and the recoverable set is
+ * not expressible as a type (`isRecoverableTranscriptSkipReason` is a runtime
+ * predicate). Every hard reason maps to itself, which is the identity a
+ * non-recoverable reason would need if the guard above ever reached it.
+ */
+const SKEW_FALLBACK_SKIP_REASON: Record<
+  TranscriptSkipReason,
+  TranscriptSkipReason
+> = {
+  [TranscriptSkipReason.MaterializedSourceUnavailable]:
+    TranscriptSkipReason.SourceGone,
+  [TranscriptSkipReason.EnvironmentUnavailable]:
+    TranscriptSkipReason.RetriesExhausted,
+  [TranscriptSkipReason.TooLarge]: TranscriptSkipReason.TooLarge,
+  [TranscriptSkipReason.SourceGone]: TranscriptSkipReason.SourceGone,
+  [TranscriptSkipReason.RetriesExhausted]:
+    TranscriptSkipReason.RetriesExhausted,
+};

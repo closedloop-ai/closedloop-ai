@@ -14,9 +14,15 @@
  */
 
 import type { SessionQuality } from "@repo/api/src/agent-session-filters";
+import { parseSessionSortRule } from "@repo/api/src/types/agent-session-sort";
+import {
+  PRIORITY_FILTER_VALUES,
+  type PriorityFilterValue,
+} from "@repo/api/src/types/priority-filter";
+import type { SessionDateWindowField } from "../../shared/session-date-window-contract.js";
 import type { SharedAgentSessionsQuery } from "../../shared/shared-agent-sessions-contract.js";
-import type { SessionDateWindowField } from "../agent-sync/session-date-window.js";
 import { coerceSessionQuality } from "./session-quality-query.js";
+import { isLocalSessionSortColumn } from "./session-sort-columns.js";
 import {
   clampLimit,
   clampOffset,
@@ -36,12 +42,14 @@ export class SharedAgentSessionsInputError extends Error {
 }
 
 export type SanitizedQuery = {
+  componentSlug?: string;
+  componentSessionIds?: readonly string[];
   startDate: Date | null;
   endDate: Date | null;
   // ISS-5443: which timestamp the `startDate`/`endDate` window is measured
   // against. Set once by the read entrypoint — the Sessions surface (list,
-  // usage/KPI, page data) declares `SESSIONS_SURFACE_DATE_WINDOW_FIELD`,
-  // analytics declares `SESSIONS_ANALYTICS_DATE_WINDOW_FIELD` — and then flows
+  // usage/KPI, page data, analytics) declares
+  // `SESSIONS_SURFACE_DATE_WINDOW_FIELD` — and then flows
   // to BOTH the hydrated `matchesDateBounds` fold and, via
   // `buildAggregateFilters`, the SQL aggregate. One decision per read, so a
   // read's two implementations cannot window on different columns.
@@ -70,6 +78,8 @@ export type SanitizedQuery = {
   costBuckets: string[];
   changePresence: string[];
   prAssociation: string[];
+  // ISS-10332: the priority facet, validated against the cloud's vocabulary.
+  priorities: PriorityFilterValue[];
   // FEA-3284: `substantive` (default) hides idle rows; `all` reveals them.
   quality: SessionQuality;
   search: string | null;
@@ -87,11 +97,21 @@ export function sanitizeQuery(
   query: SharedAgentSessionsQuery,
   dateWindowField: SessionDateWindowField
 ): SanitizedQuery {
+  // ISS-9479: an expression is lowered at the IPC boundary
+  // (`compileSessionListQueryRequest`). Nothing below reads it, so one that
+  // reached a read unlowered would be answered with every row.
+  if (query.listQuery !== undefined) {
+    throw new SharedAgentSessionsInputError(
+      "listQuery reached the read without being lowered"
+    );
+  }
   const scope = resolveUserScope(
     coerceOptionalString(query.userId),
     coerceStringArray(query.userIds)
   );
+  const sort = resolveSortRule(query);
   return {
+    ...(query.componentSlug ? { componentSlug: query.componentSlug } : {}),
     startDate: parseOptionalDate(query.startDate, "startDate"),
     endDate: parseOptionalDate(query.endDate, "endDate"),
     dateWindowField,
@@ -109,6 +129,7 @@ export function sanitizeQuery(
     costBuckets: coerceStringArray(query.costBuckets),
     changePresence: coerceStringArray(query.changePresence),
     prAssociation: coerceStringArray(query.prAssociation),
+    priorities: coercePriorityFilterValues(query.priorities),
     // FEA-3284/FEA-3345/FEA-4145: `substantive` hides idle rows and `idle` shows
     // only idle rows; absent (or unrecognized) `quality` resolves to
     // `DEFAULT_SESSION_QUALITY` (`all`, fail-open) so ungated desktop surfaces
@@ -119,8 +140,8 @@ export function sanitizeQuery(
     countOnly: query.countOnly === true,
     limit: clampLimit(query.limit),
     offset: clampOffset(query.offset),
-    sortBy: coerceOptionalString(query.sortBy),
-    sortDir: query.sortDir === "asc" ? "asc" : "desc",
+    sortBy: sort.sortBy,
+    sortDir: sort.sortDir,
     hasUnsupportedCloudFilter: hasUnsupportedCloudFilter(query),
   };
 }
@@ -227,4 +248,165 @@ export function sanitizeIds(
     }
   }
   return sanitized;
+}
+
+/**
+ * ISS-8679: the ONE sort rule this read orders by — refusing, never truncating,
+ * a `sorts` list that asks for more than one.
+ *
+ * `sorts` wins over the scalar `sortBy`/`sortDir` pair when it carries anything,
+ * which is the same precedence the cloud's `resolveSessionSortRules` applies:
+ * a caller sending both is speaking the newer contract, and the scalar pair is
+ * only its back-compat echo of the lead rule. Reading the pair while ignoring
+ * `sorts` is exactly how the primary rule got applied silently and alone.
+ *
+ * The refusal is the honest answer rather than a shortfall. This source's
+ * ordering lives in three co-operating places that each carry ONE column — the
+ * cursor-page SQL, the repository-scoped id SQL, and the hydrated key
+ * comparator — so a second rule has nowhere to be applied. An explicit input
+ * error reaches the reader as the list's error state; dropping the rule would
+ * leave the toolbar reporting an order the rows are not in.
+ */
+function resolveSortRule(query: SharedAgentSessionsQuery): {
+  sortBy: string | null;
+  sortDir: "asc" | "desc";
+} {
+  const rules = parseSortRules(query.sorts);
+  const [rule, ...extraRules] = rules;
+  if (extraRules.length > 0) {
+    throw new SharedAgentSessionsInputError(
+      `sorts asked for ${rules.length} ordered rules; the local session source applies one`
+    );
+  }
+  if (!rule) {
+    return {
+      sortBy: coerceOptionalString(query.sortBy),
+      sortDir: query.sortDir === "asc" ? "asc" : "desc",
+    };
+  }
+  return { sortBy: rule.column, sortDir: rule.dir };
+}
+
+/**
+ * The raw `sorts` value as rules, de-duplicated by COLUMN with the first
+ * occurrence winning — the same fold the cloud applies, so the two surfaces
+ * agree on how many rules a request actually asks for and desktop cannot refuse
+ * a repeat the cloud collapses.
+ *
+ * NOTHING here is filtered. Every other array on this query is coerced with
+ * `coerceStringArray`, which DROPS an empty or non-string entry — the right
+ * reading for a facet, where a junk entry selects nothing, and the wrong one
+ * here: `["repo:asc", ""]` would resolve to one rule and be answered silently
+ * while `["repo:asc", "repo"]` threw, which is the same silent-drop under a
+ * different spelling. A rule the caller meant and this source cannot read is
+ * refused, whatever shape the unreadability takes.
+ *
+ * `parseSessionSortRule` only SPLITS the entry — it deliberately owns the
+ * encoding and neither side's vocabulary — so BOTH halves are narrowed here:
+ * the direction against the cloud validator's own closed `asc`/`desc` check,
+ * and the column against {@link isLocalSessionSortColumn}, this side's half of
+ * that vocabulary.
+ *
+ * The scalar `sortBy`/`sortDir` pair keeps coercing an unrecognized value (a
+ * direction to `desc`, a column to the comparator's started fallback). That is
+ * the shipped meaning of a pair every version-skewed build already sends, and
+ * changing it is not this seam's job.
+ */
+function parseSortRules(value: unknown): SessionSortRuleEntry[] {
+  const entries = sortRuleEntries(value);
+  const rules: SessionSortRuleEntry[] = [];
+  for (const entry of entries) {
+    const rule = toSortRule(entry);
+    if (rules.some((existing) => existing.column === rule.column)) {
+      continue;
+    }
+    rules.push(rule);
+  }
+  return rules;
+}
+
+/**
+ * The raw entries to parse, refused rather than coerced when `sorts` is not a
+ * list, and bounded before anything walks it.
+ *
+ * The bound is why it is checked HERE: {@link parseSortRules} de-duplicates by
+ * scanning what it has accumulated, so an unbounded caller-controlled array
+ * would cost O(N²) on the single-threaded main process before the one-rule
+ * refusal could fire. The same bound `sanitizeIds` puts on `ids`.
+ */
+function sortRuleEntries(value: unknown): readonly unknown[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new SharedAgentSessionsInputError(
+      "sorts is not a list of <column>:<dir> rules"
+    );
+  }
+  if (value.length > MAX_SORT_RULE_ENTRIES) {
+    throw new SharedAgentSessionsInputError(
+      `sorts carries more than ${MAX_SORT_RULE_ENTRIES} entries`
+    );
+  }
+  return value;
+}
+
+/** One wire entry as a rule, or a refusal naming why it could not be read. */
+function toSortRule(entry: unknown): SessionSortRuleEntry {
+  const parts =
+    typeof entry === "string" ? parseSessionSortRule(entry.trim()) : null;
+  if (!parts) {
+    throw new SharedAgentSessionsInputError(
+      "a sorts entry is not a <column>:<dir> rule"
+    );
+  }
+  if (parts.dir !== "asc" && parts.dir !== "desc") {
+    throw new SharedAgentSessionsInputError(
+      "a sorts entry names a direction that is not asc or desc"
+    );
+  }
+  // A column with no case in `sessionSortKey` is not readable either: that
+  // switch's `default` arm answers it with the `started` key, so accepting
+  // `autonomy:asc` (a real v2 toolbar column this source cannot order by) would
+  // serve started order under an unrelated column's name — a quietly wrong
+  // answer of exactly the kind the entries above are refused to prevent.
+  if (!isLocalSessionSortColumn(parts.column)) {
+    throw new SharedAgentSessionsInputError(
+      "a sorts entry names a column the local session source cannot order by"
+    );
+  }
+  return { column: parts.column, dir: parts.dir };
+}
+
+/** One ordered sort rule as this boundary reads it off the wire. */
+type SessionSortRuleEntry = { column: string; dir: "asc" | "desc" };
+
+/**
+ * The most `sorts` entries {@link parseSortRules} will walk before refusing.
+ *
+ * Generous by design: this source applies ONE rule and the toolbar can stack at
+ * most one per sortable column, so no honest request comes close. It is a bound
+ * on a caller-controlled array crossing the IPC boundary, not a product limit.
+ */
+const MAX_SORT_RULE_ENTRIES = 32;
+
+/**
+ * ISS-10332: the priority facet's selection, refused rather than thinned when a
+ * value is outside the cloud's vocabulary — dropping it would widen the answer
+ * to every row, and the cloud validator answers the same request with a 400.
+ */
+function coercePriorityFilterValues(value: unknown): PriorityFilterValue[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!(Array.isArray(value) && value.every(isPriorityFilterValue))) {
+    throw new SharedAgentSessionsInputError(
+      "priorities is not a list of priority filter values"
+    );
+  }
+  return [...new Set(value)];
+}
+
+function isPriorityFilterValue(value: unknown): value is PriorityFilterValue {
+  return PRIORITY_FILTER_VALUES.some((member) => member === value);
 }

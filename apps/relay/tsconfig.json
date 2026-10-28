@@ -12,7 +12,7 @@
     // imports so it also emits valid Node ESM for desktop (see packages/api).
     // Accept those `.ts` specifiers here and rewrite them to `.js` on emit,
     // mirroring packages/api's tsconfig, so relay's typecheck/build agree with
-    // the source convention instead of failing TS5097 (FEA-4293/4294, wongk).
+    // the source convention instead of failing TS5097 (FEA-4293/4294, whitlockk).
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },

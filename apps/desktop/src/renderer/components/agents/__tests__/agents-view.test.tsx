@@ -1,5 +1,4 @@
 /**
- * @file agents-view.test.tsx
  * @description Unit tests for the desktop AgentsView renderer component
  * (FEA-2923 / T-10.11 / T-5.2).
  *
@@ -16,10 +15,8 @@ import type { AgentComponentsDataSource } from "@repo/app/agents/data-source/age
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Module mocks — declared before any import of the module under test so
 // Vitest's hoisting guarantees they are in place when the test file is loaded.
-// ---------------------------------------------------------------------------
 
 // Mock the shared workspace list component to a simple test marker. This
 // prevents the test from needing a full React-Query + auth + API setup. The
@@ -57,33 +54,36 @@ vi.mock("@repo/app/agents/data-source/provider", () => ({
   }) => <>{children}</>,
 }));
 
+// ISS-9398: this suite covers the flag-OFF branch — the `AgentsGroupedList`
+// composition that ships today — so the gate is pinned closed here rather than a
+// flag adapter being mounted. The branch SELECTION itself is driven in both
+// directions by `agents-v2-mount.test.tsx`, which mounts the real v2 surface.
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: () => false,
+}));
+
 // route-table helpers used by AgentsView; only agentDetailHref is needed.
 vi.mock("../../../navigation/route-table", () => ({
   agentDetailHref: (slug: string) => `#/agents/${slug}`,
 }));
 
-// ---------------------------------------------------------------------------
 // Import the module under test AFTER the mocks are declared.
-// ---------------------------------------------------------------------------
 
 import { AgentsView } from "../agents-view";
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /** A minimal stub data source — satisfies the type without any network calls. */
 function makeStubDataSource(): AgentComponentsDataSource {
   return {
     scope: "agent-components:test-stub",
+    honorsDateWindow: false,
     list: () => Promise.resolve({ items: [], total: 0 }),
     detail: () => Promise.reject(new Error("not implemented")),
   };
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 afterEach(() => {
   vi.restoreAllMocks();

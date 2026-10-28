@@ -10,8 +10,8 @@
  * shape, where the test's idea of "in range" and the app's had drifted apart.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
+import { test } from "vitest";
 import { resolveRange } from "../src/main/database/local-insights-range.js";
 import { insightsTrendSeedAt } from "./e2e/helpers/insights-trend-seed.js";
 

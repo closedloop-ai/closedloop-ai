@@ -29,6 +29,9 @@ const socketIoMocks = vi.hoisted(() => ({
 
 vi.mock("socket.io", () => ({
   Server: class {
+    // Engine.IO stub: index.ts attaches a `connection_error` listener to
+    // `io.engine` at module load, so a Server double without one crashes on import.
+    engine = { on: vi.fn() };
     of(ns?: string) {
       if (ns === "/desktop-gateway") {
         return socketIoMocks.namespace;
@@ -125,6 +128,29 @@ describe("ISS-6126: a refused desktop.hello delivers its nack before closing", (
     expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
 
+  it("nacks internal_error before closing when the API cannot be reached", async () => {
+    // ISS-11843: a desktop reads a close with no nack as a refused handshake
+    // and stops dialing, so an API outage must not look like one.
+    const socket = harness.createMockRelaySocket("sock-hello-api-unreachable");
+    harness.getConnectionHandler()(socket);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+    );
+
+    await socket.handlers.get("desktop.hello")?.({ targetId: "t-down" });
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      "desktop.hello.nack",
+      NACK_PAYLOAD
+    );
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
+    expect(socket.emit.mock.invocationCallOrder[0]).toBeLessThan(
+      socket.disconnect.mock.invocationCallOrder[0]
+    );
+  });
+
   it("does not disconnect an accepted hello that carries response events", async () => {
     const socket = harness.createMockRelaySocket("sock-hello-accepted");
     harness.getConnectionHandler()(socket);
@@ -143,8 +169,14 @@ describe("ISS-6126: a refused desktop.hello delivers its nack before closing", (
     await socket.handlers.get("desktop.hello")?.({ targetId: "t-accepted" });
     harness.registeredTestSockets.add(socket);
 
+    // ISS-9081 adds `mintingApiOrigin` to every forwarded ack, so the payload
+    // this case delivers is no longer the API's verbatim. Kept as an exact
+    // match rather than widened: this case's subject is that an ACCEPTED hello
+    // delivers its events and stays connected, and a containment matcher would
+    // stop noticing if the relay mangled the rest of the frame on its way out.
     expect(socket.emit).toHaveBeenCalledWith("desktop.hello.ack", {
       ok: true,
+      mintingApiOrigin: TEST_API_URL,
     });
     expect(socket.disconnect).not.toHaveBeenCalled();
   });

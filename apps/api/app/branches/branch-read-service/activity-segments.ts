@@ -123,15 +123,29 @@ export async function attachBranchActivitySegments(
     eventsBySession.set(row.agentSessionId, events);
   }
 
+  // The same Session can belong to many Branches. Its tiling depends only on
+  // its evidence, so calculate it once per request rather than per membership,
+  // and hand every membership the SAME array. Phase attribution keys its
+  // per-array work on that identity (ISS-11589: one read re-processed each
+  // segment about 12 times), and every consumer only reads the segments.
+  const activityBySession = new Map<
+    string,
+    ReturnType<typeof attributeBranchSessionActivity>
+  >();
   for (const session of sessions) {
     const spans = spansBySession.get(session.sessionId);
     if (!spans) {
       continue;
     }
-    session.activitySegments = attributeBranchSessionActivity(
-      spans,
-      eventsBySession.get(session.sessionId) ?? []
-    );
+    let activity = activityBySession.get(session.sessionId);
+    if (!activity) {
+      activity = attributeBranchSessionActivity(
+        spans,
+        eventsBySession.get(session.sessionId) ?? []
+      ).map((segment) => ({ ...segment }));
+      activityBySession.set(session.sessionId, activity);
+    }
+    session.activitySegments = activity;
   }
   return [...coverageReasons];
 }

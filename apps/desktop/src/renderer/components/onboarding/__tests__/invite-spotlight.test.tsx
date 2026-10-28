@@ -14,9 +14,10 @@
  */
 
 import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
+import { WORKSPACE_MENU_TRIGGER_LABEL } from "@repo/api/src/types/workspace-menu";
+import { WORKSPACE_MENU_INVITE_ENTRY_FLAG_KEY } from "@repo/api/src/types/workspace-menu-invite-entry-flag";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { DataSyncLevelValue } from "@repo/app/shared/lib/data-sync-copy";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {
@@ -38,24 +39,24 @@ import {
   vi,
 } from "vitest";
 import { DesktopAuthStatus } from "../../../../shared/contracts";
-import { DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY } from "../../../../shared/feature-flags";
 import type { SyncConsentRecord } from "../../../../shared/sync-consent";
 import { stubLocalStorage } from "../../../__tests__/local-storage-stub";
 import { NavId } from "../../../navigation/route-table";
 import { DesktopAppCoreProvider } from "../../../shared-agent-sessions/desktop-app-core-provider";
+import { resetDesktopIdentityCacheForTests } from "../../../shared-agent-sessions/use-desktop-identity";
 import { inviteSpotlightDismissedStorageKey } from "../../dashboard/dashboard-storage-keys";
 import { Sidebar } from "../../layout/Sidebar";
 import { Topbar } from "../../layout/Topbar";
+import {
+  getBlockingOnboardingModalOpen,
+  setBlockingOnboardingModalOpen,
+} from "../blocking-onboarding-modal-store";
 import {
   INVITE_SPOTLIGHT_BODY,
   INVITE_SPOTLIGHT_DISMISS_LABEL,
   INVITE_SPOTLIGHT_INVITE_LABEL,
   InviteSpotlightProvider,
 } from "../invite-spotlight";
-import {
-  type SyncConsentArrival,
-  SyncConsentArrivalProvider,
-} from "../sync-consent-arrival";
 
 const ORG_ID = "org_acme";
 const USER_ID = "user_1";
@@ -85,15 +86,6 @@ const NEXT_ORG_ID = "org_other";
 const EMAIL_LABEL = "Email address";
 const DRAFT_EMAIL = "<redacted-email>";
 
-function arrivalForCurrentIdentity(): SyncConsentArrival {
-  return {
-    level: DataSyncLevelValue.Full,
-    organizationId: ORG_ID,
-    userId: USER_ID,
-    workspaceName: "Acme Engineering",
-  };
-}
-
 function emailFieldValue(scope: HTMLElement): string {
   return (
     within(scope).getByRole("textbox", {
@@ -101,10 +93,6 @@ function emailFieldValue(scope: HTMLElement): string {
     }) as HTMLInputElement
   ).value;
 }
-
-vi.mock("../../../feature-flags/desktop-feature-flag-provider", () => ({
-  useDesktopFeatureFlagsResolved: () => true,
-}));
 
 let innerWidthDescriptor: PropertyDescriptor | undefined;
 
@@ -136,17 +124,32 @@ function setViewportWidth(width: number) {
 /**
  * Both reads are counted, not merely stubbed. They are the only settle signals
  * this shell has — an "it did not appear" assertion taken before the consent
- * record has been read proves nothing — and the consent read doubles as proof of
- * which half of the provider mounted: the flag-off path must never reach it.
+ * record has been read proves nothing.
  */
 const bridge = {
   getDesktopAuthState: vi.fn(),
+  getDesktopIdentity: vi.fn(),
   getSyncConsentRecord: vi.fn(),
   onDesktopAuthStateChanged: vi.fn(),
 };
 
 /** The auth provider's push channel, captured so a test can switch identities. */
 let pushAuthState: ((state: unknown) => void) | null = null;
+
+/**
+ * What `GET /desktop/identity` answers for the case being run. A case that wants
+ * the UNREADABLE standing sets this to `null` before rendering; the default is a
+ * readable identity, which is the `Ready` menu the ISS-10362 cases describe.
+ */
+let identityResult: () => {
+  organizationName: string | null;
+  userName: string | null;
+  email: string | null;
+} | null = () => ({
+  organizationName: "Closedloop",
+  userName: "Ada Lovelace",
+  email: "ada@closedloop.ai",
+});
 
 function stubBridge(
   record: SyncConsentRecord = CONSENTED,
@@ -159,6 +162,13 @@ function stubBridge(
       userId: USER_ID,
     })
   );
+  // ISS-11247: a THIRD settle signal, and it decides which host the nudge hangs
+  // off. `useDesktopIdentity` settles an absent bridge read to
+  // `{identity: null, isResolved: true}`, which the workspace menu reads as
+  // `Error` — so without this the menu could never be `Ready`, the footer keeps
+  // its own invite row, and every case below would silently be asserting the
+  // footer-anchored shape while its name says workspace trigger.
+  bridge.getDesktopIdentity = vi.fn(() => Promise.resolve(identityResult()));
   bridge.getSyncConsentRecord = vi.fn(
     readRecord ?? (() => Promise.resolve(record))
   );
@@ -176,6 +186,15 @@ function stubBridge(
 }
 
 beforeEach(() => {
+  // Process-wide and keyed by user id, so one case's settled identity seeds the
+  // next case's FIRST render synchronously and an unreadable-identity case would
+  // pass or fail on run order.
+  resetDesktopIdentityCacheForTests();
+  identityResult = () => ({
+    organizationName: "Closedloop",
+    userName: "Ada Lovelace",
+    email: "ada@closedloop.ai",
+  });
   // The renderer test env ships no real `localStorage`, and the dismissal flag
   // is half the subject here — unbacked, `writeFlag` no-ops through its own
   // null guard and the relaunch case would pass for the wrong reason.
@@ -186,6 +205,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // Module-level store: a case that leaves the takeover up would withhold the
+  // nudge from every case after it, in file order only.
+  setBlockingOnboardingModalOpen(false);
   Reflect.deleteProperty(window, "desktopApi");
   if (innerWidthDescriptor) {
     Object.defineProperty(window, "innerWidth", innerWidthDescriptor);
@@ -195,34 +217,31 @@ afterEach(() => {
 });
 
 function renderShell({
-  arrival = null,
-  flagOn = true,
   sidebarOpen = true,
+  enabledFlags = [],
 }: {
-  arrival?: SyncConsentArrival | null;
-  flagOn?: boolean;
   /** `false` is the persisted collapsed-offcanvas state, not a mobile viewport. */
   sidebarOpen?: boolean;
+  /**
+   * Mounted INSIDE `DesktopAppCoreProvider`, whose own adapter is all-off — the
+   * nearer provider wins, which is how a case turns one key on without the real
+   * PostHog bridge.
+   */
+  enabledFlags?: readonly string[];
 } = {}) {
   const memoryNav = createMemoryNavigation({ initialPath: "/sessions" });
   return render(
     <DesktopAppCoreProvider>
       <FeatureFlagAdapterProvider
-        adapter={createStaticFeatureFlagAdapter({
-          enabledFlags: flagOn
-            ? [DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY]
-            : [],
-        })}
+        adapter={createStaticFeatureFlagAdapter({ enabledFlags })}
       >
         <NavigationProvider adapter={memoryNav.adapter}>
-          <SyncConsentArrivalProvider arrival={arrival}>
-            <SidebarProvider open={sidebarOpen}>
-              <InviteSpotlightProvider>
-                <Sidebar activeNav={NavId.Sessions} />
-                <Topbar breadcrumbs={[{ label: "Sessions" }]} />
-              </InviteSpotlightProvider>
-            </SidebarProvider>
-          </SyncConsentArrivalProvider>
+          <SidebarProvider open={sidebarOpen}>
+            <InviteSpotlightProvider>
+              <Sidebar activeNav={NavId.Sessions} />
+              <Topbar breadcrumbs={[{ label: "Sessions" }]} />
+            </InviteSpotlightProvider>
+          </SidebarProvider>
         </NavigationProvider>
       </FeatureFlagAdapterProvider>
     </DesktopAppCoreProvider>
@@ -257,6 +276,89 @@ function sidebarInviteItem(): HTMLElement | null {
 }
 
 describe("invite spotlight (ISS-5489)", () => {
+  /**
+   * ISS-11315 Defect 5. The wizard's own Continue on the sync step records
+   * consent, which satisfies the last arm this predicate had — so the nudge
+   * opened UNDERNEATH the guided dialog while it advanced to its own invite
+   * step. Measured on the operator's 2026-09-27 recording: up at 109.875s
+   * behind the dialog, gone by 110.875s, never answered.
+   *
+   * Driven through `setBlockingOnboardingModalOpen`, which is the production
+   * signal — the guided dialog host's own `onOpenChange` — not a test-only
+   * switch.
+   */
+  it("withholds the nudge while the guided onboarding takeover is up", async () => {
+    renderShell();
+    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
+
+    act(() => {
+      setBlockingOnboardingModalOpen(true);
+    });
+
+    expect(getBlockingOnboardingModalOpen()).toBe(true);
+    expect(screen.queryByText(INVITE_SPOTLIGHT_BODY)).toBeNull();
+    expect(anchorElement()).toBeNull();
+  });
+
+  /**
+   * The positive half, and the one that keeps the case above from being
+   * satisfied by a nudge that never fires at all: the wizard closing releases
+   * it, on the same mount, with nothing to re-read.
+   */
+  it("releases the nudge when the takeover closes", async () => {
+    renderShell();
+    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
+
+    act(() => {
+      setBlockingOnboardingModalOpen(true);
+    });
+    expect(screen.queryByText(INVITE_SPOTLIGHT_BODY)).toBeNull();
+
+    act(() => {
+      setBlockingOnboardingModalOpen(false);
+    });
+
+    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
+  });
+
+  /**
+   * THE HALF THAT IS NOT COSMETIC.
+   *
+   * `open`/`onOpenChange` are wired straight to Radix's `Popover`, and
+   * `onOpenChange(false)` is `answer()` — the write of
+   * `inviteSpotlightDismissedStorageKey`. Radix closes a popover on a
+   * focus-outside, and the wizard moves focus on every step change, so before
+   * this arm the auto-close ran `answer()` and permanently consumed the arrival
+   * nudge for that org: the reader never saw it, and it never returned on any
+   * launch. `answer()` is the single sink for a deliberate "Maybe later" and
+   * for an auto-close alike, so nothing downstream can tell them apart.
+   *
+   * A nudge that never OPENS cannot be auto-closed, which is why the arm is a
+   * withhold and not a delay or a CSS hide.
+   */
+  it("spends no dismissal when the takeover takes the nudge off screen", async () => {
+    renderShell();
+    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
+
+    act(() => {
+      setBlockingOnboardingModalOpen(true);
+    });
+
+    // The withhold closes the Popover, and a Popover closing is exactly the
+    // event that used to run `answer()`. Nothing may be written: the reader has
+    // not answered anything.
+    expect(
+      localStorage.getItem(inviteSpotlightDismissedStorageKey(ORG_ID))
+    ).toBeNull();
+
+    // And the proof the unspent nudge is still owed: it comes back the moment
+    // the wizard is out of the way, rather than being gone for good.
+    act(() => {
+      setBlockingOnboardingModalOpen(false);
+    });
+    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
+  });
+
   it("anchors to the sidebar invite item on a wide window", async () => {
     renderShell();
 
@@ -296,31 +398,6 @@ describe("invite spotlight (ISS-5489)", () => {
     expect(anchorElement()?.querySelector("button")).toBe(
       screen.getByRole("button", { name: SIDEBAR_TOGGLE_LABEL })
     );
-  });
-
-  it("fires on the run the takeover was answered, not only after a relaunch", async () => {
-    // This provider mounts its OWN `useSyncConsentRecord`, which re-reads only
-    // on a user change — so the takeover's post-save `refresh()` never reaches
-    // it and the record stays unanswered for the rest of the run. The arrival is
-    // the takeover publishing what it committed; without it the arrival nudge
-    // could only ever appear on some later launch.
-    stubBridge({ bound: false, organizationId: null, tier: null });
-
-    renderShell({ arrival: arrivalForCurrentIdentity() });
-
-    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
-  });
-
-  it("still fires when the consent record cannot be read at all", async () => {
-    // The arrival already proves consent was committed. Gating on the record
-    // first put the whole fix behind the very read it exists to bypass, so a
-    // rejected IPC call silently cost the nudge to a user who had just finished
-    // the consent flow.
-    stubBridge(CONSENTED, () => Promise.reject(new Error("bridge down")));
-
-    renderShell({ arrival: arrivalForCurrentIdentity() });
-
-    expect(await screen.findByText(INVITE_SPOTLIGHT_BODY)).toBeDefined();
   });
 
   it("discards a draft invitation when the signed-in identity changes", async () => {
@@ -370,40 +447,88 @@ describe("invite spotlight (ISS-5489)", () => {
     expect(emailFieldValue(reopened)).toBe("");
   });
 
-  it("ignores an arrival that belongs to a different identity", async () => {
-    stubBridge({ bound: false, organizationId: null, tier: null });
+  it("keeps the sidebar menu's children `li` while anchored to the workspace trigger (ISS-10362)", async () => {
+    // Once invite lives in the menu, the nudge points at the trigger that opens
+    // it — the menu is closed at rest, so the row itself is not on screen to be
+    // pointed at. `PopoverAnchor` renders a `Primitive.div`, so an anchor placed
+    // AROUND the `SidebarMenuItem` commits `ul > div > li` and destroys the list
+    // semantics screen readers rely on. Asserted with the pop-up OPEN, which is
+    // the only state in which that wrapper exists at all.
+    renderShell({ enabledFlags: [WORKSPACE_MENU_INVITE_ENTRY_FLAG_KEY] });
 
-    renderShell({
-      arrival: {
-        level: DataSyncLevelValue.Full,
-        organizationId: "org_previous",
-        userId: "user_previous",
-        workspaceName: "Previous Org",
-      },
+    await screen.findByText(INVITE_SPOTLIGHT_BODY);
+    const anchor = anchorElement();
+    // The premise: the anchor is on the workspace trigger, not the footer item.
+    expect(anchor?.querySelector("button")?.getAttribute("aria-label")).toBe(
+      WORKSPACE_MENU_TRIGGER_LABEL
+    );
+
+    // Exactly one host claims this anchor: with the menu holding the entry the
+    // footer has surrendered its row, so the trigger is the only claimant.
+    expect(document.querySelectorAll(ANCHOR_SELECTOR)).toHaveLength(1);
+
+    const list = anchor?.closest("ul");
+    expect(list).not.toBeNull();
+    expect(
+      Array.from(list?.children ?? []).map((child) => child.tagName)
+    ).toEqual(["LI"]);
+  });
+
+  it("hangs the nudge off the footer row, and off nothing else, when the workspace menu cannot hold the entry (ISS-11247)", async () => {
+    // The footer keeps its invite row in any standing but `Ready`, and that row
+    // wraps the SAME `InviteSpotlightAnchor.Sidebar` the workspace trigger does.
+    // While the header slot decided on the key alone, both claimed it: two
+    // Popovers sharing one `onOpenChange`, and the nudge never rendered at all.
+    // `invite-spotlight.tsx` states "exactly one is on screen at a time" as an
+    // invariant and enforces it with nothing, so this case is the enforcement.
+    identityResult = () => null;
+
+    renderShell({ enabledFlags: [WORKSPACE_MENU_INVITE_ENTRY_FLAG_KEY] });
+
+    await screen.findByText(INVITE_SPOTLIGHT_BODY);
+    expect(document.querySelectorAll(ANCHOR_SELECTOR)).toHaveLength(1);
+    // ...and it is the footer row, not the trigger. Since ISS-11400 the trigger
+    // is NOT disabled here and does open a menu — but `ReadyWorkspaceMenu` is
+    // still the only body that holds an invite row and still does not mount in
+    // this standing, so an invite nudge pointing at that trigger would point at
+    // a menu with nothing to invite from.
+    expect(
+      anchorElement()?.querySelector("button")?.getAttribute("aria-label")
+    ).not.toBe(WORKSPACE_MENU_TRIGGER_LABEL);
+    expect(sidebarInviteItem()).not.toBeNull();
+  });
+
+  it("keeps the workspace trigger mounted when the nudge pointing at it is answered (ISS-10362)", async () => {
+    // Clicking the trigger this pop-up points at IS the outside-click that
+    // answers the nudge, so the answer and the menu opening land in the SAME
+    // tick. While `InviteSpotlightPopover` swapped between returning `children`
+    // bare and nesting them under `Popover > PopoverAnchor`, that answer moved
+    // the trigger's position in the tree, React remounted the subtree, and the
+    // menu's own `open` state went with it — the first click after an arrival
+    // nudge did nothing at all.
+    //
+    // DOM IDENTITY is the assertion because it is the thing that broke: a
+    // remount produces an equal-looking button that is a different node, which
+    // every by-name query would still find.
+    renderShell({ enabledFlags: [WORKSPACE_MENU_INVITE_ENTRY_FLAG_KEY] });
+    await screen.findByText(INVITE_SPOTLIGHT_BODY);
+
+    const triggerWhilePointed = screen.getByRole("button", {
+      name: WORKSPACE_MENU_TRIGGER_LABEL,
     });
 
-    await waitFor(() => expect(bridge.getSyncConsentRecord).toHaveBeenCalled());
+    fireEvent.click(
+      within(spotlight()).getByRole("button", {
+        name: INVITE_SPOTLIGHT_DISMISS_LABEL,
+      })
+    );
+
+    // The premise: the nudge really is gone, so this is the transition that
+    // used to remount rather than a render where nothing changed.
     expect(screen.queryByText(INVITE_SPOTLIGHT_BODY)).toBeNull();
-  });
-
-  it("stays dark while the guest-onboarding flag is off", async () => {
-    renderShell({ flagOn: false });
-
-    // Settle on the auth read, then assert the armed half never ran at all —
-    // that is the structural guarantee, not just an absent pop-up: reading auth
-    // and consent behind an off flag is what breaks the provider-less suites.
-    await waitFor(() => expect(bridge.getDesktopAuthState).toHaveBeenCalled());
-    expect(bridge.getSyncConsentRecord).not.toHaveBeenCalled();
-    expect(screen.queryByText(INVITE_SPOTLIGHT_BODY)).toBeNull();
-  });
-
-  it("never fires while the consent takeover still owns the screen", async () => {
-    stubBridge({ bound: false, organizationId: null, tier: null });
-
-    renderShell();
-
-    await waitFor(() => expect(bridge.getSyncConsentRecord).toHaveBeenCalled());
-    expect(screen.queryByText(INVITE_SPOTLIGHT_BODY)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: WORKSPACE_MENU_TRIGGER_LABEL })
+    ).toBe(triggerWhilePointed);
   });
 
   it("suppresses on relaunch once the user says Maybe later", async () => {

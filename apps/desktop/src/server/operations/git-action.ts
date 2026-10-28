@@ -11,10 +11,15 @@ import type {
 } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
-import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
+import { getResolvedGitPathAsync } from "./binary-path-overrides.js";
+import {
+  BRANCH_NAME_LEADING_HYPHEN_ERROR,
+  GIT_GATEWAY_EXEC_TIMEOUT_MS,
+  isOptionLikeRef,
+} from "./git-gateway-constants.js";
+import { isPushAuthFailure } from "./git-process-failure.js";
 import { parseBody } from "./parse-body.js";
 import { json, jsonError } from "./response-utils.js";
-import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome } from "./symphony-utils.js";
 
 type GitAction =
@@ -211,10 +216,8 @@ async function handleBranch(
   // A branch name that reduces to a leading hyphen (e.g. `--force`, `-D`) would
   // be parsed by git as an option, not a ref: `branch --list --force` lists all
   // branches and `checkout --force` discards local changes. Reject it outright.
-  if (sanitizedBranch.startsWith("-")) {
-    json(context, 400, {
-      error: "branchName must not start with a hyphen",
-    });
+  if (isOptionLikeRef(sanitizedBranch)) {
+    json(context, 400, { error: BRANCH_NAME_LEADING_HYPHEN_ERROR });
     return;
   }
   const branchesOutput = await gitRead(
@@ -470,7 +473,7 @@ async function gitReadRaw(
   action: GitAction
 ): Promise<string> {
   const result = await processManager.exec(
-    getResolvedGitPath(),
+    await getResolvedGitPathAsync(),
     args,
     repoPath,
     { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -533,7 +536,7 @@ async function gitRun(
   action: GitAction
 ): Promise<void> {
   const result = await processManager.exec(
-    getResolvedGitPath(),
+    await getResolvedGitPathAsync(),
     args,
     repoPath,
     { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -699,19 +702,6 @@ function classifyHookType(output: string): GitHookType {
     return GitHookType.Test;
   }
   return GitHookType.Unknown;
-}
-
-function isPushAuthFailure(stderr: string): boolean {
-  const output = stderr.toLowerCase();
-  return (
-    output.includes("authentication failed") ||
-    output.includes("permission denied") ||
-    output.includes("could not read username") ||
-    output.includes("repository not found") ||
-    output.includes("access denied") ||
-    output.includes("403") ||
-    output.includes("401")
-  );
 }
 
 function isSpawnFailure(error: GitActionError): boolean {

@@ -11,6 +11,7 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import type { Octokit } from "@octokit/rest";
+import { log } from "@repo/observability/log";
 import {
   type GitHubProviderResult,
   GitHubProviderResultStatus,
@@ -237,6 +238,42 @@ describe("queryStatusCheckRollupWithProviderResult", () => {
         },
       ],
     });
+  });
+
+  // ISS-10489: a nested `response.data.data` payload keeps its errors at
+  // `response.data.errors`, so counting `error.errors` logged 0 for it.
+  it("logs the error count of the envelope it recovered", async () => {
+    vi.mocked(log.warn).mockClear();
+    mockGraphql.mockRejectedValueOnce(
+      Object.assign(new Error("Request failed due to response errors"), {
+        response: {
+          data: {
+            data: {
+              repository: {
+                object: { __typename: "Commit", statusCheckRollup: null },
+              },
+            },
+            errors: [
+              { message: "Could not resolve one GraphQL field" },
+              { message: "Could not resolve another GraphQL field" },
+            ],
+          },
+        },
+      })
+    );
+
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      VALID_SHA
+    );
+
+    expect(expectSuccessValue(result).ok).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Recovered rollup from partial GraphQL data"),
+      expect.objectContaining({ graphqlErrorCount: 2 })
+    );
   });
 
   it("returns an empty success when statusCheckRollup is null", async () => {
@@ -466,3 +503,202 @@ describe("queryStatusCheckRollupWithProviderResult", () => {
     });
   });
 });
+
+describe("queryStatusCheckRollupWithProviderResult rollup mapping", () => {
+  beforeEach(() => {
+    mockGraphql.mockReset();
+  });
+
+  // Pins current behavior; looks odd because the same missing repository
+  // resolves to Success with GraphqlError when GitHub returns it without
+  // throwing ("wraps graphql_error in a Success result when the repository is
+  // missing" above). Octokit rejects with partial data when the repository
+  // does not resolve, so this is the production path, and it lands on the
+  // retryable ProviderUnavailable status instead.
+  it("returns ProviderUnavailable when partial GraphQL data carries a null repository", async () => {
+    mockGraphql.mockRejectedValueOnce(
+      Object.assign(new Error("Request failed due to response errors"), {
+        data: { repository: null },
+        errors: [{ message: "Could not resolve to a Repository" }],
+      })
+    );
+
+    await expect(
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, VALID_SHA)
+    ).resolves.toEqual({
+      status: GitHubProviderResultStatus.ProviderUnavailable,
+    });
+  });
+
+  it("returns no checks when the rollup has no contexts connection", async () => {
+    mockGraphql.mockResolvedValueOnce(rollupResponse(null));
+
+    expect(await querySuccess()).toEqual({
+      ok: true,
+      state: "PENDING",
+      checks: [],
+      totalCount: 0,
+      truncated: false,
+    });
+  });
+
+  it("falls back to the mapped check count when a truncated page omits totalCount", async () => {
+    mockGraphql.mockResolvedValueOnce(
+      rollupResponse({
+        pageInfo: { hasNextPage: true },
+        nodes: [
+          null,
+          {
+            __typename: "StatusContext",
+            context: "ci/one",
+            state: "SUCCESS",
+            createdAt: OBSERVED_AT,
+            targetUrl: null,
+          },
+        ],
+      })
+    );
+
+    const value = await querySuccess();
+
+    expect(value).toMatchObject({ ok: true, totalCount: 1, truncated: true });
+  });
+
+  it("names unnamed nodes and falls back from detailsUrl to url", async () => {
+    mockGraphql.mockResolvedValueOnce(
+      rollupResponse({
+        pageInfo: { hasNextPage: false },
+        nodes: [
+          {
+            __typename: "CheckRun",
+            id: "node-1",
+            name: null,
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+            startedAt: null,
+            completedAt: OBSERVED_AT,
+            detailsUrl: null,
+            url: "https://github.com/acme/widgets/runs/1",
+          },
+          {
+            __typename: "StatusContext",
+            context: null,
+            state: "SUCCESS",
+            createdAt: OBSERVED_AT,
+            targetUrl: null,
+          },
+        ],
+      })
+    );
+
+    const value = await querySuccess();
+    if (!value.ok) {
+      throw new Error("Expected ok rollup");
+    }
+
+    expect(value.checks.map((check) => [check.kind, check.name])).toEqual([
+      [BranchViewCheckKind.CheckRun, "Unnamed check"],
+      [BranchViewCheckKind.StatusContext, "Unnamed status context"],
+    ]);
+    expect(value.checks[0]?.targetUrl).toBe(
+      "https://github.com/acme/widgets/runs/1"
+    );
+  });
+
+  it.each([
+    ["check run first", ["CheckRun", "StatusContext"]],
+    ["status context first", ["StatusContext", "CheckRun"]],
+  ])(
+    "keeps the check run over a same-name same-time status context (%s)",
+    async (_label, order) => {
+      const nodes = order.map((typename) =>
+        typename === "CheckRun"
+          ? {
+              __typename: "CheckRun",
+              id: "node-ci",
+              name: "ci",
+              status: "COMPLETED",
+              conclusion: "FAILURE",
+              startedAt: null,
+              completedAt: OBSERVED_AT,
+              detailsUrl: null,
+              url: null,
+            }
+          : {
+              __typename: "StatusContext",
+              context: "ci",
+              state: "SUCCESS",
+              createdAt: OBSERVED_AT,
+              targetUrl: null,
+            }
+      );
+      mockGraphql.mockResolvedValueOnce(
+        rollupResponse({ pageInfo: { hasNextPage: false }, nodes })
+      );
+
+      const value = await querySuccess();
+      if (!value.ok) {
+        throw new Error("Expected ok rollup");
+      }
+
+      expect(value.checks).toHaveLength(1);
+      expect(value.checks[0]).toMatchObject({
+        kind: BranchViewCheckKind.CheckRun,
+        providerNodeId: "node-ci",
+        position: 0,
+      });
+    }
+  );
+
+  it("keeps the later check run when two same-name runs share a timestamp", async () => {
+    const run = (id: string, conclusion: string) => ({
+      __typename: "CheckRun",
+      id,
+      name: "build",
+      status: "COMPLETED",
+      conclusion,
+      startedAt: null,
+      completedAt: OBSERVED_AT,
+      detailsUrl: null,
+      url: null,
+    });
+    mockGraphql.mockResolvedValueOnce(
+      rollupResponse({
+        pageInfo: { hasNextPage: false },
+        nodes: [run("node-first", "FAILURE"), run("node-second", "SUCCESS")],
+      })
+    );
+
+    const value = await querySuccess();
+    if (!value.ok) {
+      throw new Error("Expected ok rollup");
+    }
+
+    expect(value.checks).toHaveLength(1);
+    expect(value.checks[0]?.providerNodeId).toBe("node-second");
+  });
+});
+
+const OBSERVED_AT = "2026-09-01T00:00:00Z";
+
+function rollupResponse(contexts: unknown) {
+  return {
+    repository: {
+      object: {
+        __typename: "Commit",
+        statusCheckRollup: { state: "PENDING", contexts },
+      },
+    },
+  };
+}
+
+async function querySuccess(): Promise<StatusCheckRollupResult> {
+  return expectSuccessValue(
+    await queryStatusCheckRollupWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      VALID_SHA
+    )
+  );
+}

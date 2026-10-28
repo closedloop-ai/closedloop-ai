@@ -20,7 +20,8 @@ import { SessionCostCell } from "./session-cost-cell";
  */
 const meta: Meta<typeof SessionCostCell> = {
   component: SessionCostCell,
-  title: "App Core/Agents/Session Cost Cell",
+  title: "Composites v1.0/Sessions/Session Cost Cell",
+  tags: ["deprecated"],
 };
 
 export default meta;
@@ -106,7 +107,7 @@ export const Column: Story = {
 };
 
 /**
- * The over-wide state (wongk review): an API-billed figure too long for the Cost
+ * The over-wide state (whitlockk review): an API-billed figure too long for the Cost
  * track, in a box narrowed to the track's content width. `Available` has no
  * tooltip by contract, so an ellipsis here would be unrecoverable — and a
  * clipped `$1,226,540.10` does not read as a shortened label, it reads as a

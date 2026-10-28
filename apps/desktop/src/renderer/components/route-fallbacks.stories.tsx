@@ -9,7 +9,7 @@ import {
 } from "./route-fallbacks";
 
 /**
- * ISS-4838 (wongk story review on PR #4266): the detail-route Suspense
+ * ISS-4838 (whitlockk story review on PR #4266): the detail-route Suspense
  * fallbacks, on a canvas.
  *
  * These components exist for one reason — geometry. The claim is that the lazy
@@ -23,7 +23,8 @@ import {
  * "Loading..." on an otherwise blank body that a cold detail open used to show.
  */
 const meta = {
-  title: "Desktop/Shell/Route Fallbacks",
+  title: "Composites v1.0/Desktop Shell/Route Fallbacks",
+  tags: ["deprecated"],
   component: DetailRouteFallback,
   parameters: {
     layout: "fullscreen",

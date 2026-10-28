@@ -23,11 +23,8 @@ import {
   type LossTrendGridRow,
   type LostSessionCandidate,
 } from "./lost-work-queries";
-import {
-  type InsightsScopeContext,
-  resolvePeriodRange,
-  sessionScopeSql,
-} from "./service";
+import { resolvePeriodRange } from "./service/period";
+import { type InsightsScopeContext, sessionScopeSql } from "./service/scope";
 import {
   behavioralCauseOf,
   isLostSession,
@@ -390,7 +387,7 @@ export function toLostSessionRows(
       endsWithError: candidate.endsWithError,
       hasFailureThrottle: candidate.throttleSource !== null,
       producedArtifact: candidate.producedArtifact,
-      state: candidate.state,
+      status: candidate.status,
       wallClockMinutes: Number(candidate.minutes ?? 0),
     };
     const lossClass = lossClassOf(signals);
@@ -425,7 +422,7 @@ function candidateCause(candidate: LostSessionCandidate): string | null {
     endsWithError: candidate.endsWithError,
     hasFailureThrottle: false,
     producedArtifact: candidate.producedArtifact,
-    state: candidate.state,
+    status: candidate.status,
     wallClockMinutes: Number(candidate.minutes ?? 0),
   });
   return behavioral === null ? null : BEHAVIORAL_CAUSE_LABELS[behavioral];
@@ -441,9 +438,16 @@ function emptyTotals(): LostWorkTotals {
   };
 }
 
-/** Midpoint of the baseline window, splitting each person's early and late halves. */
-function baselineSplit(start: Date, end: Date): Date {
-  return new Date((start.getTime() + end.getTime()) / 2);
+/**
+ * Midpoint of the baseline window, splitting each person's early and late
+ * halves. Takes the ELAPSED end, never the window's declared one: the two were
+ * the same instant until ISS-10583 made the window close with the in-progress
+ * UTC day, and splitting at the nominal midpoint would hand the early half more
+ * elapsed time than the late one for all but the last millisecond of the day —
+ * making a person's verdict depend on the hour the screen was opened.
+ */
+function baselineSplit(start: Date, elapsedEnd: Date): Date {
+  return new Date((start.getTime() + elapsedEnd.getTime()) / 2);
 }
 
 /**
@@ -481,7 +485,12 @@ export async function fetchLostWork(
       limiter,
       LostWorkWidget.Trend,
       () =>
-        fetchLossTrendGrid(scopeSql, range.trendStart, range.end, ctx.timeZone),
+        fetchLossTrendGrid(
+          scopeSql,
+          range.trendStart,
+          range.elapsedEnd,
+          ctx.timeZone
+        ),
       correlation
     ),
     // The person grid reads the SAME window as the totals grid above, so the
@@ -498,7 +507,7 @@ export async function fetchLostWork(
           scopeSql,
           range.start,
           range.end,
-          baselineSplit(range.start, range.end)
+          baselineSplit(range.start, range.elapsedEnd)
         ),
       correlation
     ),
@@ -526,7 +535,7 @@ export async function fetchLostWork(
   });
   const trendDays = eachDayKey(
     range.trendStart,
-    range.end,
+    range.elapsedEnd,
     trendResult.bucketedZone
   );
   // The totals grid feeds three widgets: it IS one rollup read, so when it

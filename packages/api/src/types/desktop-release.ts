@@ -1,12 +1,12 @@
 import { z } from "zod";
 
 export const DesktopReleaseOwner = "closedloop-ai" as const;
-export const DesktopReleaseRepo = "symphony-alpha" as const;
+export const DesktopReleaseRepo = "closedloop-ai" as const;
 /**
- * Public open-source repo the signed DMG is mirrored to so it can be downloaded
- * with no GitHub account (FEA-3372). The release itself still lives in
- * `DesktopReleaseRepo` and is still the source of truth for the updater feed —
- * only the DMG is copied here, purely to give the installer a public URL.
+ * Public open-source repo the desktop installers are mirrored to so they can be
+ * downloaded with no GitHub account (FEA-3372). The release itself still lives
+ * in `DesktopReleaseRepo` and is still the source of truth for the updater feed
+ * — only the installers are copied here, purely to give them a public URL.
  */
 export const DesktopPublicMirrorRepo = "closedloop-ai" as const;
 const AllowedDesktopReleaseDownloadRepos: ReadonlySet<string> = new Set([
@@ -17,8 +17,31 @@ export const DesktopReleaseRepository =
   `${DesktopReleaseOwner}/${DesktopReleaseRepo}` as const;
 export const DesktopReleaseTagPrefix = "desktop-v" as const;
 export const DesktopReleaseChannel = "desktop-latest" as const;
+/**
+ * PRD-707 FR1 / ISS-9165: the rolling release the twice-daily candidate build
+ * publishes to, and the ONLY place a candidate's assets live.
+ *
+ * Deliberately not a versioned `desktop-v*` release: the public download route
+ * ({@link https://github.com/closedloop-ai/closedloop-ai/blob/main/apps/api/app/electron-release/route.ts})
+ * picks the newest VERSIONED release carrying {@link
+ * DesktopReleaseMetadataAssetName}, ignores the prerelease flag, and fails closed
+ * on a draft — so a versioned release cut at candidate time would put every
+ * candidate on the download page. The versioned release is created at promotion,
+ * by copying this release's assets.
+ *
+ * Only the candidate workflow writes this channel; only promotion writes {@link
+ * DesktopReleaseChannel}.
+ */
+export const DesktopReleaseCandidateChannel = "desktop-candidate" as const;
+
+/** Either mutable channel an updater request can be served from. */
+export type DesktopReleaseChannelName =
+  | typeof DesktopReleaseChannel
+  | typeof DesktopReleaseCandidateChannel;
 export const DesktopReleaseMetadataAssetName = "desktop-release.json" as const;
 export const DesktopReleaseUpdaterMetadataAssetName = "latest-mac.yml" as const;
+export const DesktopReleaseLinuxUpdaterMetadataAssetName =
+  "latest-linux.yml" as const;
 export const DesktopReleaseDmgAssetSuffix = "-universal.dmg" as const;
 export const DesktopReleaseZipAssetSuffix = "-universal-mac.zip" as const;
 const DesktopReleaseVersionRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -32,12 +55,14 @@ const DesktopReleaseVersionRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 // legacy form is removed in a follow-up (FEA-2107) once no `ClosedLoop-*` assets
 // remain on the channel.
 const DesktopReleaseUpdaterZipAssetNameRegex =
-  /^Closed[Ll]oop-(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-universal-mac\.zip$/;
+  /^Closed[Ll]oop-(?<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))-universal-mac\.zip$/;
 const DesktopReleaseUpdaterFeedFileUrlRegex =
-  /^\s*-\s*url:\s*['"]?([^'"\s#]+)['"]?/m;
+  /^\s*-\s*url:\s*['"]?([^'"\s#]+)['"]?/gm;
 const DesktopReleaseUpdaterFeedPathRegex = /^path:\s*['"]?([^'"\s#]+)['"]?/m;
 const DesktopReleaseUpdaterFeedLegacyUrlRegex =
   /^url:\s*['"]?([^'"\s#]+)['"]?/m;
+const DesktopReleaseUpdaterFeedVersionRegex =
+  /^version:\s*['"]?([^'"\s#]+)['"]?/m;
 const AllowedDesktopReleaseAssetRedirectHosts = new Set([
   "objects.githubusercontent.com",
   "release-assets.githubusercontent.com",
@@ -98,9 +123,62 @@ export const DesktopPackagingValidationContext =
 export const DesktopTestValidationContext = "desktop-test/validated" as const;
 
 /**
+ * GitHub commit-status context the twice-daily Desktop CANDIDATE build
+ * (PRD-707 FR2) posts on the candidate's commit.
+ *
+ * Distinct from {@link DesktopTestValidationContext} on purpose, and for the
+ * same reason that one is distinct from the nightly macOS backstop below: this
+ * verdict is about a SIGNED, NOTARIZED, PUBLISHED macOS package, not about a
+ * suite. Sharing a context would let a Linux-lane green stand in for a signing
+ * failure, which is the one thing the promotion gate must not accept.
+ *
+ * PRD-707 FR5 is its only consumer-to-be: promotion refuses a candidate whose
+ * SHA does not carry this context as `success`. The producing workflow
+ * (`desktop-candidate.yml`) pins the same literal, asserted equal by
+ * `scripts/deploy/desktop-candidate-workflow-source.test.ts`.
+ */
+export const DesktopCandidateValidationContext =
+  "desktop-candidate/validated" as const;
+
+/**
+ * GitHub commit-status context the NIGHTLY macOS `test:node` backstop (FEA-4224)
+ * posts on a `main` SHA.
+ *
+ * Distinct from {@link DesktopTestValidationContext} on purpose: that backstop
+ * runs on `linux_4_core_arm`, and both write a verdict for the SAME `main` SHA.
+ * Sharing one context would make each lane's episode state overwrite the other's
+ * — the macOS lane would read the Linux lane's green as its own parent and never
+ * open, and a Linux red would be "recovered" by a macOS green. Desktop ships
+ * macOS-only, so the two verdicts are about different things and need different
+ * contexts.
+ *
+ * Its sibling `incident-thread` / `episode-announced` contexts are derived from
+ * this prefix by `scripts/ci/main-health-status.ts`. The producing workflow
+ * (`desktop-testnode-macos-nightly.yml`) pins the same literal, asserted equal by
+ * `scripts/deploy/desktop-testnode-macos-report-shell.test.ts`.
+ */
+export const DesktopMacosTestNodeValidationContext =
+  "desktop-testnode-macos/validated" as const;
+
+/**
  * Resolved state of the `desktop-packaging/validated` commit status for a SHA.
  * `Success`/`Pending`/`Failure`/`Error` mirror GitHub's commit-status states;
- * `Missing` is the synthetic state for a SHA carrying no such status.
+ * `Missing` and `Unrecognized` are synthetic, for the two ways a read can end
+ * with no state of GitHub's to report.
+ *
+ * `Unrecognized` is kept apart from `Error` because they are different facts and
+ * a refusal built on them says different things (marisolashgrove, PR #6869). An
+ * `error` is a lane REPORTING that it broke: decided, and naming its run URL
+ * tells an operator where it broke. An unrecognized state string is this
+ * reader failing to understand an answer it did receive — the lane may well be
+ * green, so telling the operator it is red and handing them that same run URL
+ * sends them to debug something that is not broken. Both still fail closed;
+ * only the explanation differs.
+ *
+ * Both synthetic states are DELIBERATELY absent from the wire-state sets that
+ * decide whether an incoming `state` string is one of GitHub's — a status whose
+ * body literally said "missing" or "unrecognized" is not one of these, it is
+ * itself unrecognized.
  *
  * ISS-5434: no release gate consumes this any more. The scheduled validator
  * treats `Success`/`Failure` as decided (anything else means "validate this
@@ -113,6 +191,7 @@ export const DesktopPackagingValidationState = {
   Failure: "failure",
   Error: "error",
   Missing: "missing",
+  Unrecognized: "unrecognized",
 } as const;
 export type DesktopPackagingValidationState =
   (typeof DesktopPackagingValidationState)[keyof typeof DesktopPackagingValidationState];
@@ -144,20 +223,36 @@ export function isDesktopPackagingValidated(
  * Validates the Desktop release metadata asset shared by release producers and
  * consumers.
  */
-export const DesktopReleaseMetadataSchema = z.object({
+export const DesktopReleasePlatformSchema = z.object({
+  version: z.string().refine(isSupportedDesktopReleaseVersion),
+  tagName: z.string().min(1),
+  targetCommitish: z.string().min(1),
+  artifacts: z.record(z.string(), z.string().min(1)),
+  updaterMetadata: z.string().min(1),
+});
+
+export const DesktopReleasePlatformsMetadataSchema = z.object({
   owner: z.literal(DesktopReleaseOwner),
   repo: z.literal(DesktopReleaseRepo),
   version: z.string().refine(isSupportedDesktopReleaseVersion),
   tagName: z.string().min(1),
-  channel: z.literal(DesktopReleaseChannel),
+  channel: z.union([
+    z.literal(DesktopReleaseChannel),
+    z.literal(DesktopReleaseCandidateChannel),
+  ]),
   targetCommitish: z.string().min(1),
-  assets: z.object({
-    dmg: z.string().min(1),
-    zip: z.string().min(1),
-    updaterMetadata: z.literal(DesktopReleaseUpdaterMetadataAssetName),
-  }),
-  downloadUrl: z.string().min(1),
+  platforms: z.record(z.string(), DesktopReleasePlatformSchema).optional(),
 });
+
+export const DesktopReleaseMetadataSchema =
+  DesktopReleasePlatformsMetadataSchema.extend({
+    assets: z.object({
+      dmg: z.string().min(1),
+      zip: z.string().min(1),
+      updaterMetadata: z.literal(DesktopReleaseUpdaterMetadataAssetName),
+    }),
+    downloadUrl: z.string().min(1),
+  });
 
 export type DesktopReleaseMetadata = z.infer<
   typeof DesktopReleaseMetadataSchema
@@ -184,7 +279,11 @@ export function getDesktopReleaseDmgAssetName(version: string): string {
  * assets predate the mirror and only ever existed on the private release repo.
  */
 export function getPublicDesktopReleaseDownloadUrl(version: string): string {
-  return `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${getDesktopReleaseTag(version)}/${getDesktopReleaseDmgAssetName(version)}`;
+  return buildDesktopReleaseAssetDownloadUrl(
+    DesktopPublicMirrorRepo,
+    version,
+    getDesktopReleaseDmgAssetName(version)
+  );
 }
 
 /**
@@ -476,13 +575,43 @@ export function isDesktopReleaseUpdaterZipAssetName(
 }
 
 /**
+ * Extracts the Desktop release version from a supported updater ZIP basename.
+ */
+export function getDesktopReleaseVersionFromUpdaterZipAssetName(
+  assetName: string
+): string | null {
+  if (!isSafeDesktopReleaseAssetBasename(assetName)) {
+    return null;
+  }
+
+  return (
+    DesktopReleaseUpdaterZipAssetNameRegex.exec(assetName)?.groups?.version ??
+    null
+  );
+}
+
+/**
  * Extracts the current updater ZIP basename from an Electron latest-mac.yml feed.
  */
 export function getDesktopReleaseUpdaterZipAssetNameFromFeed(
   feedText: string
 ): string | null {
+  return getDesktopReleaseUpdaterAssetNameFromFeed(
+    feedText,
+    isDesktopReleaseUpdaterZipAssetName
+  );
+}
+
+/** Extracts a safe updater artifact basename for a platform-specific allowlist. */
+export function getDesktopReleaseUpdaterAssetNameFromFeed(
+  feedText: string,
+  isAccepted: (assetName: string) => boolean
+): string | null {
   const candidates = [
-    DesktopReleaseUpdaterFeedFileUrlRegex.exec(feedText)?.[1],
+    ...Array.from(
+      feedText.matchAll(DesktopReleaseUpdaterFeedFileUrlRegex),
+      (match) => match[1]
+    ),
     DesktopReleaseUpdaterFeedPathRegex.exec(feedText)?.[1],
     DesktopReleaseUpdaterFeedLegacyUrlRegex.exec(feedText)?.[1],
   ];
@@ -492,14 +621,29 @@ export function getDesktopReleaseUpdaterZipAssetNameFromFeed(
       continue;
     }
 
-    const zipAssetName =
-      getDesktopReleaseUpdaterZipAssetNameFromCandidate(candidate);
+    const zipAssetName = getDesktopReleaseUpdaterAssetNameFromCandidate(
+      candidate,
+      isAccepted
+    );
     if (zipAssetName !== null) {
       return zipAssetName;
     }
   }
 
   return null;
+}
+
+/**
+ * Extracts the current Desktop release version from an Electron latest-mac.yml
+ * feed without trusting the feed to name a usable ZIP asset.
+ */
+export function getDesktopReleaseUpdaterVersionFromFeed(
+  feedText: string
+): string | null {
+  const version = DesktopReleaseUpdaterFeedVersionRegex.exec(feedText)?.[1];
+  return version !== undefined && isSupportedDesktopReleaseVersion(version)
+    ? version
+    : null;
 }
 
 /**
@@ -558,24 +702,84 @@ export function isAllowedDesktopReleaseAssetRedirectUrl(
 export function isAllowedDesktopReleaseDownloadUrl(
   candidateUrl: string
 ): boolean {
+  const parts = parseDesktopReleaseDownloadUrl(candidateUrl);
+  if (parts === null) {
+    return false;
+  }
+
+  // Accept both the current "Closedloop-*" name and the pre-rename
+  // "ClosedLoop-*" name during the brand-rename transition (FEA-2101) so
+  // download URLs for already-published legacy assets keep validating.
+  return isAcceptedDesktopReleaseDmgAssetName(parts.assetName, parts.version);
+}
+
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function getDesktopReleaseUpdaterAssetNameFromCandidate(
+  candidate: string,
+  isAccepted: (assetName: string) => boolean
+): string | null {
+  const decodedCandidate = safeDecodeURIComponent(candidate);
+  if (decodedCandidate === null) {
+    return null;
+  }
+
+  if (decodedCandidate.includes("/") || decodedCandidate.includes("\\")) {
+    return null;
+  }
+
+  return isAccepted(decodedCandidate) ? decodedCandidate : null;
+}
+
+/**
+ * Shape of a validated Desktop release asset download URL, once the host,
+ * owner, repo, and tag have been checked but before any judgement about WHICH
+ * asset the URL names.
+ */
+export type DesktopReleaseDownloadUrlParts = {
+  version: string;
+  assetName: string;
+};
+
+/**
+ * Validates the SHAPE of a Desktop release asset download URL and returns the
+ * release version and asset basename it names, or null when the URL is not a
+ * Desktop release asset URL at all.
+ *
+ * Deliberately says nothing about which asset is acceptable — that is the
+ * caller's, and therefore the platform's, decision. Extracted so every
+ * per-platform download guard shares one host/owner/repo/tag/traversal check
+ * instead of re-deriving it: `isAllowedDesktopReleaseDownloadUrl` (macOS DMG)
+ * and `isAllowedDesktopReleaseWindowsDownloadUrl` (Windows installer,
+ * `./desktop-release-windows.ts`) differ ONLY in their final asset-name test.
+ */
+export function parseDesktopReleaseDownloadUrl(
+  candidateUrl: string
+): DesktopReleaseDownloadUrlParts | null {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(candidateUrl);
   } catch {
-    return false;
+    return null;
   }
 
   if (parsedUrl.protocol !== "https:") {
-    return false;
+    return null;
   }
   if (parsedUrl.username !== "" || parsedUrl.password !== "") {
-    return false;
+    return null;
   }
   if (parsedUrl.hostname !== "github.com") {
-    return false;
+    return null;
   }
   if (parsedUrl.search !== "" || parsedUrl.hash !== "") {
-    return false;
+    return null;
   }
 
   const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
@@ -583,7 +787,7 @@ export function isAllowedDesktopReleaseDownloadUrl(
     safeDecodeURIComponent(part)
   );
   if (decodedPathParts.some((part) => part === null)) {
-    return false;
+    return null;
   }
 
   const [owner, repo, releasesSegment, downloadSegment, tagName, assetName] =
@@ -595,12 +799,12 @@ export function isAllowedDesktopReleaseDownloadUrl(
     releasesSegment !== "releases" ||
     downloadSegment !== "download"
   ) {
-    return false;
+    return null;
   }
 
   const version = getDesktopReleaseVersionFromTag(tagName);
   if (version === null) {
-    return false;
+    return null;
   }
 
   if (
@@ -608,41 +812,60 @@ export function isAllowedDesktopReleaseDownloadUrl(
     assetName.includes("\\") ||
     assetName.includes("..")
   ) {
-    return false;
-  }
-
-  // Accept both the current "Closedloop-*" name and the pre-rename
-  // "ClosedLoop-*" name during the brand-rename transition (FEA-2101) so
-  // download URLs for already-published legacy assets keep validating.
-  return isAcceptedDesktopReleaseDmgAssetName(assetName, version);
-}
-
-function safeDecodeURIComponent(value: string): string | null {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-}
-
-function getDesktopReleaseUpdaterZipAssetNameFromCandidate(
-  candidate: string
-): string | null {
-  const decodedCandidate = safeDecodeURIComponent(candidate);
-  if (decodedCandidate === null) {
     return null;
   }
 
-  if (decodedCandidate.includes("/") || decodedCandidate.includes("\\")) {
-    return null;
-  }
-
-  return isDesktopReleaseUpdaterZipAssetName(decodedCandidate)
-    ? decodedCandidate
-    : null;
+  return { version, assetName };
 }
 
-function isSafeDesktopReleaseAssetBasename(assetName: string): boolean {
+/**
+ * Builds a Desktop release asset download URL.
+ *
+ * The exact inverse of {@link parseDesktopReleaseDownloadUrl}, and extracted for
+ * the same reason: the `github.com/<owner>/<repo>/releases/download/<tag>/<asset>`
+ * construction is identical for every platform and every repo, so a per-platform
+ * copy is a place for the two directions to drift apart. `repo` is a parameter
+ * because the DMG and the Windows installer are each published to the private
+ * release repo AND mirrored to the public one (FEA-3372).
+ */
+export function buildDesktopReleaseAssetDownloadUrl(
+  repo: string,
+  version: string,
+  assetName: string
+): string {
+  return `https://github.com/${DesktopReleaseOwner}/${repo}/releases/download/${getDesktopReleaseTag(version)}/${assetName}`;
+}
+
+/**
+ * Builds the rolling channel's release PAGE URL.
+ *
+ * Sibling of {@link buildDesktopReleaseAssetDownloadUrl}, and extracted for the
+ * reason stated there: the `github.com/<owner>/<repo>/releases/...` construction
+ * is identical everywhere, so a per-place copy is where the spellings drift
+ * apart. `repo` is a parameter for the same reason too — the channel exists on
+ * the private release repo AND on the public mirror (FEA-3372), and only the
+ * mirror resolves for a reader with no access to the private one.
+ *
+ * Platform-neutral by construction, which is the point: unlike an asset URL it
+ * names no artifact, so it is the correct link wherever the reader's platform is
+ * not knowable (ISS-9708).
+ */
+export function buildDesktopReleaseChannelPageUrl(repo: string): string {
+  return `https://github.com/${DesktopReleaseOwner}/${repo}/releases/tag/${DesktopReleaseChannel}`;
+}
+
+/**
+ * Returns true only for a release asset basename that names a file and nothing
+ * else: no path separator, no `..`, and no percent-encoding hiding either.
+ *
+ * Exported alongside {@link parseDesktopReleaseDownloadUrl} for the same reason
+ * — it is the traversal half of what every per-platform asset-name guard owes,
+ * and a platform that hand-rolls it inherits a weaker check than the macOS one.
+ * Compose it before the platform's own pattern, as
+ * `isDesktopReleaseUpdaterZipAssetName` and
+ * `isDesktopReleaseWindowsInstallerAssetName` do.
+ */
+export function isSafeDesktopReleaseAssetBasename(assetName: string): boolean {
   return (
     assetName.length > 0 &&
     !assetName.includes("/") &&
@@ -651,3 +874,114 @@ function isSafeDesktopReleaseAssetBasename(assetName: string): boolean {
     safeDecodeURIComponent(assetName) === assetName
   );
 }
+
+/**
+ * PRD-707 FR3 / ISS-9164: which release ring a desktop updater request resolves
+ * to.
+ *
+ * Two rings, and since ISS-9165 they select DIFFERENT channels: `Internal` is
+ * served {@link DesktopReleaseCandidateChannel}, `General` {@link
+ * DesktopReleaseChannel}. D0 (ISS-9164) resolved and logged the ring while both
+ * still pointed at `desktop-latest`, because a packaged signed build cannot
+ * redirect its baked-in feed URL — a client carrying the compute-target header
+ * has to ship and be promoted the ordinary way before any ring can mean
+ * anything. That lead time is why the resolution landed a release cycle ahead of
+ * the channel it now picks. {@link desktopReleaseChannelsForRing} is the mapping.
+ *
+ * `General` is the fail-safe answer, taken for an absent, unknown, or malformed
+ * compute-target id and for any lookup failure. There is deliberately no third
+ * "unknown" member: a ring is a channel selection, and a request that cannot be
+ * attributed gets the channel every unattributed client already gets.
+ */
+export const DesktopReleaseRing = {
+  Internal: "internal",
+  General: "general",
+} as const;
+
+/** Literal union of the desktop release rings. */
+export type DesktopReleaseRing =
+  (typeof DesktopReleaseRing)[keyof typeof DesktopReleaseRing];
+
+/**
+ * The channels a resolved ring may be served from, in preference order.
+ *
+ * ORDER IS THE CONTRACT, and the fallback runs one way only. The internal ring
+ * prefers the candidate and falls back to the promoted build when no candidate
+ * is published; the general ring's list contains the promoted channel and
+ * nothing else, so no lookup failure, empty channel, or future edit can walk a
+ * customer onto a candidate. That asymmetry is why this is an ordered list per
+ * ring rather than one channel plus a shared fallback step.
+ *
+ * The internal fallback is not a nicety. `desktop-candidate` does not exist
+ * until the candidate workflow (PRD-707 FR2) first publishes it, and it is
+ * legitimately re-pointed by hand when a candidate is bad (FR3 — there is no
+ * hold mechanism). Without the fallback, every internal-ring install's updater
+ * feed 404s in both of those windows.
+ *
+ * Backed by an exhaustive `Record` rather than a `switch` with a default or a
+ * side list of "internal-ish" rings, so a third ring cannot compile until
+ * someone states its channels.
+ */
+const DESKTOP_RELEASE_CHANNELS_BY_RING: Record<
+  DesktopReleaseRing,
+  readonly DesktopReleaseChannelName[]
+> = {
+  [DesktopReleaseRing.Internal]: [
+    DesktopReleaseCandidateChannel,
+    DesktopReleaseChannel,
+  ],
+  [DesktopReleaseRing.General]: [DesktopReleaseChannel],
+};
+
+export function desktopReleaseChannelsForRing(
+  ring: DesktopReleaseRing
+): readonly DesktopReleaseChannelName[] {
+  return DESKTOP_RELEASE_CHANNELS_BY_RING[ring];
+}
+
+/**
+ * The channels an updater ASSET request is resolved against — every request, in
+ * this order, with no ring consulted.
+ *
+ * The asset leg cannot be ringed, and the reason is upstream of this repo's
+ * choices (whitlockk, #7121). `registerUpdaterDownloadHeaderNarrowing` in
+ * `apps/desktop/src/main/update/auto-update-wiring.ts` takes the compute-target
+ * id back off `autoUpdater.requestHeaders` on `update-available`, synchronously,
+ * before `downloadUpdate()` recomputes the download's headers — deliberately,
+ * because the pinned `builder-util-runtime` forwards every header but
+ * `authorization` across the cross-origin 302 the asset route answers with, and
+ * carries no seam to add one. So the ZIP request that FOLLOWS a candidate feed
+ * is always unattributed, always resolves to {@link DesktopReleaseRing.General},
+ * and — served {@link desktopReleaseChannelsForRing}'s general list — would 404
+ * the very candidate the internal ring had just been offered.
+ *
+ * Ringing the FEED is what keeps a candidate away from a customer, and it is
+ * sufficient: a general install is never told a candidate version exists, so it
+ * never asks for that ZIP. What this list gives up is only the stronger claim
+ * that a candidate asset is unreachable by NAME, which an unauthenticated route
+ * could never have held against a caller willing to guess a version anyway.
+ *
+ * Promoted FIRST so the ordinary download — every general install, and every
+ * internal one on a promoted build — still resolves on one GitHub call, and only
+ * an asset `desktop-latest` does not carry pays for the second.
+ */
+export const DesktopReleaseAssetChannels: readonly DesktopReleaseChannelName[] =
+  [DesktopReleaseChannel, DesktopReleaseCandidateChannel];
+
+/**
+ * ISS-12173: the name a publish uploads the next feed under before swapping it
+ * in. GitHub cannot replace an asset in place, so the publish deletes
+ * {@link DesktopReleaseUpdaterMetadataAssetName} and renames this one over it.
+ */
+export const DesktopReleaseStagedUpdaterMetadataAssetName =
+  "latest-mac.next.yml" as const;
+
+/**
+ * The assets the feed route reads a channel's feed from, in order. The staged
+ * copy is read only while the live feed is absent: between a publish's delete
+ * and rename, or after a publish that failed between the two.
+ */
+export const DesktopReleaseUpdaterFeedAssetNames = [
+  DesktopReleaseUpdaterMetadataAssetName,
+  DesktopReleaseStagedUpdaterMetadataAssetName,
+] as const;

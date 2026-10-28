@@ -1,5 +1,5 @@
 /**
- * ISS-6455 (wongk, #5099 review): the LOCAL list producer must not answer a
+ * ISS-6455 (whitlockk, #5099 review): the LOCAL list producer must not answer a
  * corrupt nullable timestamp with a fabricated instant.
  *
  * `parseSessionDate` floors an unparseable value at epoch 0 so a row with a
@@ -17,8 +17,8 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, it } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { mapListItem } from "../src/main/session/shared-agent-sessions-api.js";
 

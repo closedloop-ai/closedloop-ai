@@ -12,6 +12,8 @@
  * label, which is what keeps a newly-added harness readable before its entry
  * lands here.
  */
+import { Harness } from "@repo/api/src/types/agent-component";
+import { HARNESS_LABEL } from "@repo/api/src/utils/agent-component-reduce";
 import type { Tone } from "@repo/design-system/components/ui/types";
 
 export type HarnessDisplayConfig = { label: string; tone: Tone };
@@ -32,6 +34,34 @@ export const HARNESS_DISPLAY_CONFIG: Readonly<
 };
 
 /**
+ * ISS-5524: the entry `HARNESS_DISPLAY_CONFIG` never had.
+ *
+ * `Harness.Both` is not a harness — it is the marker `resolveComponentHarness`
+ * returns when a component's usage spans more than one — so the map above, which
+ * was written against a different vocabulary (it still carries `cursor` and
+ * `copilot`, which are not `Harness` members at all) and is typed
+ * `Record<string, …>` so nothing could demand the member, simply had no row for
+ * it. The fallback then handed the raw wire value through and 30 components in
+ * this org rendered a lowercase `both` beside properly-cased `Codex` and
+ * `Claude` badges.
+ *
+ * The label is READ from `HARNESS_LABEL`, not restated: the honest wording
+ * ("Multiple harnesses", never "Claude + Codex", which would assert a harness
+ * the component never touched) is already decided in two places and a third copy
+ * is how they drift. `info` matches `HARNESS_META[Harness.Both].variant`, the
+ * tone the group header's own chip already carries.
+ *
+ * Kept OUT of `HARNESS_DISPLAY_CONFIG` itself so the correction is gateable:
+ * `resolveHarnessLabel` also feeds the Sessions "Group by" band header, which is
+ * React-free and cannot read a flag, and folding the row into the shared map
+ * would flip that surface with no gate at all.
+ */
+export const MULTIPLE_HARNESSES_DISPLAY_CONFIG: HarnessDisplayConfig = {
+  label: HARNESS_LABEL[Harness.Both],
+  tone: "info",
+};
+
+/**
  * The label + tone the `HarnessBadge` renders for `harness`, with the same
  * empty/unknown degradation the badge has always had.
  */
@@ -45,6 +75,23 @@ export function resolveHarnessDisplayConfig(
       tone: "accent",
     }
   );
+}
+
+/**
+ * ISS-5524: the same resolution with the `Harness.Both` row present.
+ *
+ * A whole second answer rather than a parameter on the resolver above, because
+ * the caller that swaps on the gate wants one of two complete configs — and the
+ * resolver stays the untouched flag-OFF shape, which is what keeps the gate
+ * flippable in both directions.
+ */
+export function resolveHonestHarnessDisplayConfig(
+  harness: string | null | undefined
+): HarnessDisplayConfig {
+  if (harness?.toLowerCase() === Harness.Both) {
+    return MULTIPLE_HARNESSES_DISPLAY_CONFIG;
+  }
+  return resolveHarnessDisplayConfig(harness);
 }
 
 /** Just the label — what a band header, chip, or plain-text caption needs. */

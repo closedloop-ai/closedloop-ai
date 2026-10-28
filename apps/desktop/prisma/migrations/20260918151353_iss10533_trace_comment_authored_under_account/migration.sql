@@ -1,0 +1,26 @@
+-- ISS-10533 (davetho, PR #7404): POSITIVE account provenance for a trace
+-- comment, written when the comment is AUTHORED.
+--
+-- Every guard `claimUnownedLocalTraceComments` has is negative evidence — a
+-- foreign owner among this table's rows, a foreign owner among `sessions`, a
+-- foreign `author_id` — and each of those only proves the store HAS served
+-- somebody else. A store that has served nobody satisfies all three, so a
+-- comment person A wrote while signed out is claimed by person B, the first to
+-- sign in on that machine, and the owned drain uploads it as B's. `author_id`
+-- cannot close it: `desktop-local` says "written on this machine", not "written
+-- by this account".
+--
+-- THREE states, which is why this is a column and not a predicate. NULL is
+-- "written by a build that did not record this" and stays claimable, because
+-- refusing those rows would un-ship the whole population ISS-10384 exists to
+-- rescue. `signed-out` is a build that DOES record it asserting nobody was
+-- signed in, so the row is attributable to no account. `account:[...]` names
+-- the account, so its own author can claim it on a genuinely new install where
+-- no other witness exists yet.
+--
+-- Additive and safe in the direction skew actually runs: rows written BEFORE
+-- this migration read back as NULL, which is the pre-migration behaviour. The
+-- other direction is not a column property at all — an older bundle booting a
+-- store that has this migration recorded is refused by the runner's own
+-- `MigrationRefusalKind.Downgrade`, so it never writes such a row.
+ALTER TABLE "trace_comments" ADD COLUMN "authored_under_account" TEXT;

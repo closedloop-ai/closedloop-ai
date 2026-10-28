@@ -1,0 +1,30 @@
+-- ISS-12251: serves the My Tasks list, `GET /documents?assigneeId=` without the
+-- recency window (`buildDocumentListWhere` + `readDocumentListInSnapshot`):
+--   WHERE organization_id = $org AND type = $type AND assignee_id = $assignee
+--   ORDER BY created_at DESC, id DESC LIMIT $n
+-- 20261012170000_iss12251_session_assignee_backfill gives every owned session
+-- an assignee_id, so the user's sessions now sit in this list's assignee range.
+-- `type` arrives as a bind parameter, which the planner cannot use to prove
+-- artifacts_org_assignee_created_id_non_session_idx's `type <> 'SESSION'`
+-- predicate, so without `type` in the key the scan reads every session
+-- interleaved in created_at order and discards it.
+--
+-- EXPLAIN (scratch DB; one org, one user with 60,000 assigned sessions and 400
+-- assigned documents, 20,000 sessions on a second user, 2,000 unassigned
+-- documents), PREPAREd, LIMIT 51:
+--   before: generic plan (type bound as "ArtifactType", or as text cast to it)
+--   and the custom plan with the text cast = Index Scan on
+--   artifacts_org_assignee_created_id_idx, Filter on type, 7,500 rows removed,
+--   7,650 buffers. Only a custom plan with the enum-typed bind proves the
+--   partial index (5 buffers).
+--   after: the three modes that missed the partial index = Index Scan on this
+--   index, 0 rows removed, 6 buffers; the enum-typed custom plan keeps the
+--   partial index.
+-- The recency-window variant reads artifacts_org_type_updated_id_idx and the
+-- count reads artifacts_organization_id_type_status_idx; neither scans the
+-- assignee range, before or after.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "artifacts_org_assignee_type_created_id_idx" ON "artifacts"("organization_id", "assignee_id", "type", "created_at" DESC, "id" DESC);

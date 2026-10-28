@@ -1,13 +1,22 @@
 "use client";
 
 import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
+import { ApiKeyCreatedDialog } from "@repo/app/api-keys/components/api-key-created-dialog";
+import { ApiKeyScopeCell } from "@repo/app/api-keys/components/api-key-scope-cell";
 import {
   useCreatePlatformApiKey,
   usePlatformApiKeys,
   useRevokePlatformApiKey,
 } from "@repo/app/api-keys/hooks/use-platform-api-keys";
+import {
+  API_KEY_STATUS_LABEL,
+  type ApiKeyStatus,
+  describeApiKeyStatus,
+  formatApiKeyDate,
+  isApiKeyActive,
+} from "@repo/app/api-keys/lib/api-key-row";
+import { getApiKeyScopeDisplay } from "@repo/app/api-keys/lib/api-key-scope-display";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
-import { formatDate } from "@repo/app/shared/lib/date-utils";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -36,45 +45,26 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
-import { InfoIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { Loader2Icon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { env } from "@/env";
-import type { ApiKeyScopeDisplay } from "./api-key-scope-display";
-import { getApiKeyScopeDisplay } from "./api-key-scope-display";
-import { CreateApiKeySuccessDialog } from "./create-api-key-success-dialog";
 
-function getKeyStatus(key: ApiKey): {
-  label: string;
-  variant: "default" | "secondary" | "destructive";
-} {
-  if (key.revokedAt !== null) {
-    return { label: "Revoked", variant: "destructive" };
-  }
-  if (key.expiresAt !== null && new Date(key.expiresAt) <= new Date()) {
-    return { label: "Expired", variant: "secondary" };
-  }
-  return { label: "Active", variant: "default" };
-}
-
-function isKeyActive(key: ApiKey): boolean {
-  return (
-    key.revokedAt === null &&
-    (key.expiresAt === null || new Date(key.expiresAt) > new Date())
-  );
-}
-
-function formatApiKeyDate(date: Date | null): string {
-  if (!date) {
-    return "—";
-  }
-  return formatDate(date);
-}
+/**
+ * This panel's treatment for each status. Kept here rather than in the shared
+ * helper because the Settings v2 panel deliberately draws the same three
+ * statuses with the low-tint variants; only the status derivation is shared, so
+ * the two cannot disagree about WHICH state a key is in. Exhaustive over
+ * `ApiKeyStatus`, so a new status fails `tsc` here rather than rendering
+ * unstyled.
+ */
+const API_KEY_STATUS_VARIANT: Record<
+  ApiKeyStatus,
+  "default" | "secondary" | "destructive"
+> = {
+  active: "default",
+  expired: "secondary",
+  revoked: "destructive",
+};
 
 type CreateApiKeyDialogProps = {
   open: boolean;
@@ -88,7 +78,9 @@ function CreateApiKeyDialog({
   onCreated,
 }: Readonly<CreateApiKeyDialogProps>) {
   const [name, setName] = useState("");
-  const createApiKey = useCreatePlatformApiKey();
+  const createApiKey = useCreatePlatformApiKey({
+    onError: () => toast.error("Failed to create API key"),
+  });
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -102,8 +94,16 @@ function CreateApiKeyDialog({
       setName("");
       onOpenChange(false);
       onCreated(response);
+      // The plaintext now lives in the panel's `createdKey` state, which is what
+      // the one-time dialog renders and what dismissing it clears. Drop the
+      // mutation cache's own copy immediately: this dialog stays MOUNTED for the
+      // life of the panel, so without this the secret outlived the disclosure it
+      // was shown in and survived every later dismissal (#6392, whitlockk). Reset
+      // here rather than at dismissal because from this line on the cached copy
+      // is redundant, and nothing reads it.
+      createApiKey.reset();
     } catch {
-      toast.error("Failed to create API key");
+      // Reported by the mutation's `onError` above.
     }
   };
 
@@ -167,6 +167,7 @@ function ApiKeysCardContent({
   apiKeys: ApiKey[] | undefined;
   onRevoke: (key: ApiKey) => void;
 }>) {
+  const now = new Date();
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -198,8 +199,8 @@ function ApiKeysCardContent({
       </TableHeader>
       <TableBody>
         {apiKeys.map((key) => {
-          const status = getKeyStatus(key);
-          const active = isKeyActive(key);
+          const status = describeApiKeyStatus(key, now);
+          const active = isApiKeyActive(key, now);
           const scope = getApiKeyScopeDisplay(key.scopes);
           return (
             <TableRow key={key.id}>
@@ -217,7 +218,9 @@ function ApiKeysCardContent({
                 {formatApiKeyDate(key.lastUsedAt)}
               </TableCell>
               <TableCell>
-                <Badge variant={status.variant}>{status.label}</Badge>
+                <Badge variant={API_KEY_STATUS_VARIANT[status]}>
+                  {API_KEY_STATUS_LABEL[status]}
+                </Badge>
               </TableCell>
               <TableCell className="text-right">
                 <Button
@@ -264,10 +267,6 @@ const MCP_TOOL_GROUPS = [
   {
     label: "Planning",
     tools: ["list-templates"],
-  },
-  {
-    label: "Loops",
-    tools: ["list-loops", "get-loop"],
   },
   {
     label: "Other",
@@ -344,7 +343,9 @@ function QuickStartGuide() {
 
 export function ApiKeysSettingsPanel() {
   const { data: apiKeys, isLoading } = usePlatformApiKeys();
-  const revokeApiKey = useRevokePlatformApiKey();
+  const revokeApiKey = useRevokePlatformApiKey({
+    onError: () => toast.error("Failed to revoke API key"),
+  });
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createdKey, setCreatedKey] = useState<CreateApiKeyResponse | null>(
     null
@@ -359,7 +360,7 @@ export function ApiKeysSettingsPanel() {
       await revokeApiKey.mutateAsync(revokeTarget.id);
       toast.success("API key revoked");
     } catch {
-      toast.error("Failed to revoke API key");
+      // Reported by the mutation's `onError` above.
     }
     setRevokeTarget(null);
   };
@@ -397,8 +398,8 @@ export function ApiKeysSettingsPanel() {
       />
 
       {createdKey ? (
-        <CreateApiKeySuccessDialog
-          onClose={() => setCreatedKey(null)}
+        <ApiKeyCreatedDialog
+          onDismiss={() => setCreatedKey(null)}
           plaintext={createdKey.plaintext}
         />
       ) : null}
@@ -414,40 +415,5 @@ export function ApiKeysSettingsPanel() {
         variant="destructive"
       />
     </>
-  );
-}
-
-/**
- * The Scope cell. Routine scope sets read as plain text alongside the Created
- * and Last Used cells; the pill is spent on the states a reader should stop on,
- * so the pill itself is the signal rather than the tone. A state whose meaning
- * needs an explanation gets the design-system Tooltip on a focusable trigger,
- * with a visible info affordance so a reader can tell there is more to read —
- * a native `title` needs a mouse, waits about a second, and never appears for
- * keyboard or touch.
- */
-function ApiKeyScopeCell({ scope }: { scope: ApiKeyScopeDisplay }) {
-  if (scope.variant === null) {
-    return <span className="text-muted-foreground text-sm">{scope.label}</span>;
-  }
-  if (scope.tooltip === undefined) {
-    return <Badge variant={scope.variant}>{scope.label}</Badge>;
-  }
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger
-          aria-label={`${scope.label} scope — what this means`}
-          className="cursor-help rounded-full focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          type="button"
-        >
-          <Badge variant={scope.variant}>
-            {scope.label}
-            <InfoIcon aria-hidden="true" />
-          </Badge>
-        </TooltipTrigger>
-        <TooltipContent>{scope.tooltip}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
   );
 }

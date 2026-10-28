@@ -19,19 +19,49 @@ import {
   vi,
 } from "vitest";
 
+const { mockWithDb, mockWithDbTx } = vi.hoisted(() => {
+  const tx =
+    vi.fn<
+      (callback: (client: unknown) => unknown, options?: unknown) => unknown
+    >();
+  return {
+    mockWithDb: Object.assign(
+      vi.fn<(callback: (client: unknown) => unknown) => unknown>(),
+      { tx }
+    ),
+    mockWithDbTx: tx,
+  };
+});
+
 vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
+  withDb: mockWithDb,
+  Prisma: {
+    // Capture tagged-template parts so the set-based displayValue rewrite is
+    // assertable — `values` holds the bound parameters in source order.
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+    join: (parts: unknown[]) => ({ __join: parts }),
+  },
 }));
 
 import {
   CustomFieldEntityType,
   CustomFieldType,
+  MAX_CUSTOM_FIELDS_PER_ORG,
+  NumberFormat,
+  ReferenceTargetSource,
 } from "@repo/api/src/types/custom-field";
-import { withDb } from "@repo/database";
-import { customFieldsService, DuplicateNameError } from "../service";
-import { MAX_CUSTOM_FIELDS_PER_ORG, ReservedNameError } from "../utils";
-
-const mockWithDb = withDb as unknown as Mock;
+import { CustomFieldFilterOperator } from "@repo/api/src/types/custom-field-list-query";
+import {
+  customFieldsService,
+  DELETE_FIELD_TX_OPTIONS,
+  DuplicateNameError,
+  IncompatibleNumberFormatError,
+  IncompatibleReferenceSourcesError,
+} from "../service";
+import { ReservedNameError } from "../utils";
 
 /** Top-level regex for the duplicate name check — avoids lint/performance/useTopLevelRegex. */
 const BUDGET_NAME_REGEX = /Budget/;
@@ -75,7 +105,7 @@ describe("customFieldsService.findById", () => {
 
   it("returns null when the field belongs to a different organization", async () => {
     // Arrange — Prisma findFirst returns null because org mismatch is enforced in WHERE
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback) =>
       callback({
         customField: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -95,7 +125,7 @@ describe("customFieldsService.findById", () => {
 
   it("returns the field when organizationId matches", async () => {
     // Arrange
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback) =>
       callback({
         customField: {
           findFirst: vi.fn().mockResolvedValue(MOCK_FIELD_ROW),
@@ -118,7 +148,7 @@ describe("customFieldsService.findById", () => {
   it("scopes the WHERE clause to the provided organizationId", async () => {
     // Arrange
     const mockFindFirst = vi.fn().mockResolvedValue(null);
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback) =>
       callback({ customField: { findFirst: mockFindFirst } })
     );
 
@@ -151,7 +181,7 @@ describe("customFieldsService.createField", () => {
       code: "P2002",
     });
 
-    (withDb as any).tx = vi.fn().mockRejectedValue(p2002Error);
+    mockWithDbTx.mockRejectedValue(p2002Error);
 
     // Act & Assert
     await expect(
@@ -168,7 +198,7 @@ describe("customFieldsService.createField", () => {
       code: "P2002",
     });
 
-    (withDb as any).tx = vi.fn().mockRejectedValue(p2002Error);
+    mockWithDbTx.mockRejectedValue(p2002Error);
 
     // Act & Assert
     await expect(
@@ -182,7 +212,7 @@ describe("customFieldsService.createField", () => {
   it("re-throws non-P2002 errors unchanged", async () => {
     // Arrange
     const dbError = new Error("Connection timeout");
-    (withDb as any).tx = vi.fn().mockRejectedValue(dbError);
+    mockWithDbTx.mockRejectedValue(dbError);
 
     // Act & Assert
     await expect(
@@ -202,7 +232,7 @@ describe("customFieldsService.createField", () => {
 function installTx(count: number, created: Record<string, unknown>) {
   const txCount = vi.fn().mockResolvedValue(count);
   const txCreate = vi.fn().mockResolvedValue(created);
-  (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
+  mockWithDbTx.mockImplementation((callback) =>
     callback({
       customField: { count: txCount, create: txCreate },
     })
@@ -361,7 +391,7 @@ describe("customFieldsService.findByOrg", () => {
 
   it("scopes to the organization and returns fields oldest-first", async () => {
     const findMany = vi.fn().mockResolvedValue([buildCreatedRow()]);
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback) =>
       callback({ customField: { findMany } })
     );
 
@@ -375,6 +405,23 @@ describe("customFieldsService.findByOrg", () => {
     );
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe(TEST_FIELD_ID);
+  });
+
+  it("publishes the filter operators this server serves on each field (ISS-9481)", async () => {
+    // Listed here rather than derived from the capability table, which would
+    // agree with the response however wrong the table became.
+    const findMany = vi.fn().mockResolvedValue([buildCreatedRow()]);
+    mockWithDb.mockImplementation((callback) =>
+      callback({ customField: { findMany } })
+    );
+
+    const [field] = await customFieldsService.findByOrg(TEST_ORG_ID);
+
+    expect([...(field.filterOperators ?? [])].sort()).toEqual([
+      CustomFieldFilterOperator.IsAnyOf,
+      CustomFieldFilterOperator.IsEmpty,
+      CustomFieldFilterOperator.IsNotEmpty,
+    ]);
   });
 });
 
@@ -395,7 +442,7 @@ describe("customFieldsService.updateField", () => {
   function installUpdateTx(existing: Record<string, unknown> | null) {
     const txFindFirst = vi.fn().mockResolvedValue(existing);
     const txUpdate = vi.fn().mockResolvedValue(buildCreatedRow());
-    (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
+    mockWithDbTx.mockImplementation((callback) =>
       callback({
         customField: { findFirst: txFindFirst, update: txUpdate },
       })
@@ -417,6 +464,189 @@ describe("customFieldsService.updateField", () => {
     );
   });
 
+  /**
+   * Installs a tx double for a `numberFormat` transition on a NUMBER field.
+   *
+   * `findMany` returns REAL rows on purpose: an empty result would let the
+   * rewrite no-op and every assertion below would pass without the production
+   * loop ever running.
+   */
+  function installFormatTransitionTx(
+    storedNumbers: number[],
+    nextFormat: NumberFormat
+  ) {
+    const txFindFirst = vi.fn().mockResolvedValue({
+      name: "Elapsed",
+      entityTypes: [],
+      numberFormat: NumberFormat.None,
+    });
+    const txUpdate = vi.fn().mockResolvedValue(
+      buildCreatedRow({
+        fieldType: CustomFieldType.Number,
+        numberFormat: nextFormat,
+      })
+    );
+    const valueFindMany = vi
+      .fn()
+      .mockResolvedValue(storedNumbers.map((numberValue) => ({ numberValue })));
+    const valueUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const executeRaw = vi.fn().mockResolvedValue(storedNumbers.length);
+    mockWithDbTx.mockImplementation((callback) =>
+      callback({
+        customField: { findFirst: txFindFirst, update: txUpdate },
+        customFieldValue: {
+          findMany: valueFindMany,
+          updateMany: valueUpdateMany,
+        },
+        $executeRaw: executeRaw,
+      })
+    );
+    return { txUpdate, valueFindMany, valueUpdateMany, executeRaw };
+  }
+
+  /**
+   * Bound parameters of the rewrite statement, in the order the tagged template
+   * binds them: the `@updatedAt` stamp, the two `unnest` arrays, then the
+   * field and org ids of the WHERE clause.
+   */
+  function readRewriteParams(executeRaw: Mock) {
+    const [statement] = executeRaw.mock.calls[0];
+    const [updatedAt, numbers, displayValues, customFieldId, organizationId] =
+      statement.values as [Date, number[], string[], string, string];
+    return { updatedAt, numbers, displayValues, customFieldId, organizationId };
+  }
+
+  it("rewrites the cached displayValue of stored rows when the number format changes", async () => {
+    const { executeRaw } = installFormatTransitionTx(
+      [3_600_000],
+      NumberFormat.Duration
+    );
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      numberFormat: NumberFormat.Duration,
+    });
+
+    // 3_600_000 ms is one hour: proves the row was re-rendered under the NEW
+    // format, not left carrying the old plain-number string.
+    const { numbers, displayValues } = readRewriteParams(executeRaw);
+    expect(numbers).toEqual([3_600_000]);
+    expect(displayValues[0]).toContain("1h");
+  });
+
+  it("keeps the org and field predicates on the set-based rewrite", async () => {
+    const { executeRaw } = installFormatTransitionTx(
+      [60_000],
+      NumberFormat.Duration
+    );
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      numberFormat: NumberFormat.Duration,
+    });
+
+    // A rewrite that lost its org predicate would restyle another tenant's
+    // rows, which the shared `custom_field_values` table cannot otherwise stop.
+    const { customFieldId, organizationId } = readRewriteParams(executeRaw);
+    expect(customFieldId).toBe(TEST_FIELD_ID);
+    expect(organizationId).toBe(TEST_ORG_ID);
+  });
+
+  it("rewrites a large population in one statement, not one per distinct value", async () => {
+    // DURATION values are elapsed spans, so `distinct` barely dedupes and the
+    // distinct count tracks the row count. 500 near-unique values stands in for
+    // that population: under the previous per-value `updateMany` loop this is
+    // 500 awaited round trips serialized on the transaction's single pinned
+    // connection, which is what blew the 30s budget with a P2028.
+    const storedNumbers = Array.from(
+      { length: 500 },
+      (_unused, index) => 191_000 + index * 1000
+    );
+    const { executeRaw, valueUpdateMany } = installFormatTransitionTx(
+      storedNumbers,
+      NumberFormat.Duration
+    );
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      numberFormat: NumberFormat.Duration,
+    });
+
+    // The count is what this test exists for: it must not scale with the
+    // population. The old loop shape scores 0 raw statements and 500 updateMany
+    // calls here, so it fails both assertions.
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(valueUpdateMany).not.toHaveBeenCalled();
+
+    // ...and the single statement still carries every value, so bounding the
+    // statement count did not buy itself a truncated rewrite.
+    const { numbers, displayValues } = readRewriteParams(executeRaw);
+    expect(numbers).toEqual(storedNumbers);
+    expect(displayValues).toHaveLength(storedNumbers.length);
+    expect(new Set(displayValues).size).toBe(storedNumbers.length);
+  });
+
+  it("rejects a DURATION transition when a stored value is illegal under it, and writes nothing", async () => {
+    const { valueUpdateMany, executeRaw } = installFormatTransitionTx(
+      [60_000, -5],
+      NumberFormat.Duration
+    );
+
+    await expect(
+      customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+        numberFormat: NumberFormat.Duration,
+      })
+    ).rejects.toThrow(IncompatibleNumberFormatError);
+
+    // The whole population is validated before any write, so the legal row is
+    // not rewritten either — the transition is all-or-nothing.
+    expect(valueUpdateMany).not.toHaveBeenCalled();
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([[Number.POSITIVE_INFINITY], [Number.NEGATIVE_INFINITY]])(
+    "rejects a plain format transition when a stored value is %p, and writes nothing",
+    async (poison) => {
+      // A legacy row holding a non-finite number predates ISS-8735's write
+      // guard; the transition refuses it until it is corrected or cleared.
+      const { valueUpdateMany, executeRaw } = installFormatTransitionTx(
+        [1000, poison],
+        NumberFormat.Currency
+      );
+
+      await expect(
+        customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+          numberFormat: NumberFormat.Currency,
+        })
+      ).rejects.toThrow(IncompatibleNumberFormatError);
+
+      expect(valueUpdateMany).not.toHaveBeenCalled();
+      expect(executeRaw).not.toHaveBeenCalled();
+    }
+  );
+
+  it("emits no rewrite statement when the field has no stored values", async () => {
+    // An empty `unnest` array would be a no-op statement, but emitting it at
+    // all costs a round trip inside the transaction for nothing.
+    const { executeRaw } = installFormatTransitionTx([], NumberFormat.Duration);
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      numberFormat: NumberFormat.Duration,
+    });
+
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("leaves stored values alone when the number format did not change", async () => {
+    const { valueFindMany } = installFormatTransitionTx(
+      [60_000],
+      NumberFormat.None
+    );
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      numberFormat: NumberFormat.None,
+    });
+
+    expect(valueFindMany).not.toHaveBeenCalled();
+  });
+
   it("skips the reserved-name read when neither name nor entityTypes changes", async () => {
     const { txFindFirst, txUpdate } = installUpdateTx(null);
 
@@ -426,6 +656,67 @@ describe("customFieldsService.updateField", () => {
 
     expect(txFindFirst).not.toHaveBeenCalled();
     expect(txUpdate).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * `fieldType` is immutable, so it is absent from the update payload and the
+   * update validator cannot run the cross-field check its create sibling does.
+   * Without this guard a PUT of `referenceTargetSources` to a TEXT field is
+   * persisted — sources on a field that can never have a reference target.
+   */
+  it("refuses reference target sources on a non-reference field", async () => {
+    const { txUpdate } = installUpdateTx({
+      name: "Notes",
+      entityTypes: [CustomFieldEntityType.Document],
+      numberFormat: null,
+      fieldType: CustomFieldType.Text,
+    });
+
+    await expect(
+      customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+        referenceTargetSources: [ReferenceTargetSource.Issue],
+      })
+    ).rejects.toThrow(IncompatibleReferenceSourcesError);
+
+    expect(txUpdate).not.toHaveBeenCalled();
+  });
+
+  it("persists reference target sources on a REFERENCE field", async () => {
+    const { txUpdate } = installUpdateTx({
+      name: "Parent issue",
+      entityTypes: [CustomFieldEntityType.Document],
+      numberFormat: null,
+      fieldType: CustomFieldType.Reference,
+    });
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      referenceTargetSources: [ReferenceTargetSource.Issue],
+    });
+
+    expect(txUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          referenceTargetSources: [ReferenceTargetSource.Issue],
+        }),
+      })
+    );
+  });
+
+  it("reads the stored row when only referenceTargetSources changes", async () => {
+    // The guard is only possible against the stored `fieldType`, so an update
+    // carrying sources must not take the skip-the-read fast path.
+    const { txFindFirst } = installUpdateTx({
+      name: "Parent issue",
+      entityTypes: [CustomFieldEntityType.Document],
+      numberFormat: null,
+      fieldType: CustomFieldType.Reference,
+    });
+
+    await customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
+      referenceTargetSources: [ReferenceTargetSource.Branch],
+    });
+
+    expect(txFindFirst).toHaveBeenCalledOnce();
   });
 
   it("validates a new name against the entity types already stored on the field", async () => {
@@ -480,7 +771,7 @@ describe("customFieldsService.updateField", () => {
     const p2002Error = Object.assign(new Error("Unique constraint failed"), {
       code: "P2002",
     });
-    (withDb as any).tx = vi.fn().mockRejectedValue(p2002Error);
+    mockWithDbTx.mockRejectedValue(p2002Error);
 
     await expect(
       customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
@@ -490,7 +781,7 @@ describe("customFieldsService.updateField", () => {
   });
 
   it("re-throws a non-P2002 failure unchanged", async () => {
-    (withDb as any).tx = vi.fn().mockRejectedValue(new Error("Deadlock"));
+    mockWithDbTx.mockRejectedValue(new Error("Deadlock"));
 
     await expect(
       customFieldsService.updateField(TEST_FIELD_ID, TEST_ORG_ID, {
@@ -514,31 +805,44 @@ describe("customFieldsService.deleteField", () => {
   });
 
   it("deletes dependents before the field itself, and scopes the field delete to the org", async () => {
-    const valueDeleteMany = vi.fn().mockResolvedValue({ count: 2 });
-    const settingDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
-    const optionDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const fieldDelete = vi.fn().mockResolvedValue(buildCreatedRow());
-
-    (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
-      callback({
-        customFieldValue: { deleteMany: valueDeleteMany },
-        customFieldSetting: { deleteMany: settingDeleteMany },
-        customFieldEnumOption: { deleteMany: optionDeleteMany },
-        customField: { delete: fieldDelete },
-      })
-    );
+    const cascade = mockDeleteCascadeDb({});
 
     await customFieldsService.deleteField(TEST_FIELD_ID, TEST_ORG_ID);
 
-    // relationMode=prisma has no DB-level cascade, so the order is the contract:
-    // every dependent must go before the row they reference.
-    expect(valueDeleteMany).toHaveBeenCalledBefore(fieldDelete);
-    expect(settingDeleteMany).toHaveBeenCalledBefore(fieldDelete);
-    expect(optionDeleteMany).toHaveBeenCalledBefore(fieldDelete);
+    // The dependent tables also carry ON DELETE CASCADE foreign keys, but the
+    // explicit order is what this service states: every dependent goes before
+    // the row they reference.
+    expect(cascade.valueDeleteMany).toHaveBeenCalledBefore(cascade.fieldDelete);
+    expect(cascade.settingDeleteMany).toHaveBeenCalledBefore(
+      cascade.fieldDelete
+    );
+    expect(cascade.optionDeleteMany).toHaveBeenCalledBefore(
+      cascade.fieldDelete
+    );
 
-    expect(fieldDelete).toHaveBeenCalledWith({
+    expect(cascade.valueDeleteMany).toHaveBeenCalledWith({
+      where: { customFieldId: TEST_FIELD_ID },
+    });
+    expect(cascade.fieldDelete).toHaveBeenCalledWith({
       where: { id: TEST_FIELD_ID, organizationId: TEST_ORG_ID },
     });
+  });
+
+  it("runs the cascade under the raised transaction bounds, not Prisma's defaults", async () => {
+    mockDeleteCascadeDb({});
+
+    await customFieldsService.deleteField(TEST_FIELD_ID, TEST_ORG_ID);
+
+    // Without the raised timeout the whole cascade rolls back with P2028 on a
+    // tenant with a large value/setting population, so the field could never
+    // be deleted there; without the raised maxWait a contended caller fails
+    // with P2024 before it starts.
+    expect(mockWithDbTx).toHaveBeenCalledWith(
+      expect.any(Function),
+      DELETE_FIELD_TX_OPTIONS
+    );
+    expect(DELETE_FIELD_TX_OPTIONS.timeout).toBeGreaterThan(5000);
+    expect(DELETE_FIELD_TX_OPTIONS.maxWait).toBeGreaterThan(2000);
   });
 
   it("rolls the whole cascade back when the field belongs to another org", async () => {
@@ -547,19 +851,7 @@ describe("customFieldsService.deleteField", () => {
     const notFound = Object.assign(new Error("Record to delete not found"), {
       code: "P2025",
     });
-    const valueDeleteMany = vi.fn().mockResolvedValue({ count: 2 });
-    const settingDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
-    const optionDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const fieldDelete = vi.fn().mockRejectedValue(notFound);
-
-    (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
-      callback({
-        customFieldValue: { deleteMany: valueDeleteMany },
-        customFieldSetting: { deleteMany: settingDeleteMany },
-        customFieldEnumOption: { deleteMany: optionDeleteMany },
-        customField: { delete: fieldDelete },
-      })
-    );
+    const cascade = mockDeleteCascadeDb({ fieldDeleteError: notFound });
 
     await expect(
       customFieldsService.deleteField(TEST_FIELD_ID, OTHER_ORG_ID)
@@ -567,11 +859,41 @@ describe("customFieldsService.deleteField", () => {
 
     // The dependent deletes did run and only the org-scoped delete rejected,
     // so the transaction rollback is the whole of the other org's protection.
-    expect(valueDeleteMany).toHaveBeenCalledOnce();
-    expect(settingDeleteMany).toHaveBeenCalledOnce();
-    expect(optionDeleteMany).toHaveBeenCalledOnce();
-    expect(fieldDelete).toHaveBeenCalledWith({
+    expect(cascade.valueDeleteMany).toHaveBeenCalledOnce();
+    expect(cascade.settingDeleteMany).toHaveBeenCalledOnce();
+    expect(cascade.optionDeleteMany).toHaveBeenCalledOnce();
+    expect(cascade.fieldDelete).toHaveBeenCalledWith({
       where: { id: TEST_FIELD_ID, organizationId: OTHER_ORG_ID },
     });
   });
 });
+
+/** Wires `withDb.tx` for a deleteField run and returns the delegate spies. */
+function mockDeleteCascadeDb({
+  fieldDeleteError,
+}: {
+  fieldDeleteError?: Error;
+}) {
+  const valueDeleteMany = vi.fn().mockResolvedValue({ count: 2 });
+  const settingDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+  const optionDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
+  const fieldDelete = fieldDeleteError
+    ? vi.fn().mockRejectedValue(fieldDeleteError)
+    : vi.fn().mockResolvedValue(buildCreatedRow());
+
+  mockWithDbTx.mockImplementation((callback) =>
+    callback({
+      customFieldValue: { deleteMany: valueDeleteMany },
+      customFieldSetting: { deleteMany: settingDeleteMany },
+      customFieldEnumOption: { deleteMany: optionDeleteMany },
+      customField: { delete: fieldDelete },
+    })
+  );
+
+  return {
+    valueDeleteMany,
+    settingDeleteMany,
+    optionDeleteMany,
+    fieldDelete,
+  };
+}

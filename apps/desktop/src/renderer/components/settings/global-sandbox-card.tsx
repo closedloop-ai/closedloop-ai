@@ -23,7 +23,7 @@ import {
  * exact save path setup uses (required + risky-root reject + repo reseed).
  *
  * Rendered as a `border-t` SECTION inside the one Security Settings card
- * (wongk review, ISS-4577), matching the rhythm of the sibling Manage API Key
+ * (whitlockk review, ISS-4577), matching the rhythm of the sibling Manage API Key
  * and Dangerous Auto-Approve sections rather than sitting as its own card.
  *
  * This is distinct from the per-gateway-profile sandbox (`ProfileSandboxField`,
@@ -41,7 +41,7 @@ export function GlobalSandboxSection({
   const headingId = useId();
   // `null` settings means the async settings load has not resolved yet — the
   // stored value is genuinely unknown, distinct from a resolved-but-empty value
-  // (wongk review, ISS-4577). We must not render a placeholder path as if it
+  // (whitlockk review, ISS-4577). We must not render a placeholder path as if it
   // were the confined folder before we know the real one.
   const settingsLoaded = settings !== null;
   const savedValue = (settings?.sandboxBaseDirectory as string) || "";
@@ -79,7 +79,7 @@ export function GlobalSandboxSection({
   // value. Saving in that window would send an unvalidated path — the main
   // settings handler rejects blank/risky but NOT a missing directory, so a
   // mistyped/stale path could persist despite this UI claiming to validate it
-  // (codex + wongk review). Treat the inspection as authoritative only when it
+  // (codex + whitlockk review). Treat the inspection as authoritative only when it
   // describes the current trimmed value; until then the value is unsettled.
   const inspectionMatchesValue = inspection?.path === trimmed;
   const inspectionPending = trimmed.length > 0 && !inspectionMatchesValue;
@@ -139,7 +139,7 @@ export function GlobalSandboxSection({
   };
 
   // The stored value is empty once settings have loaded: say so plainly instead
-  // of leaving the field looking like it shows a configured folder (wongk
+  // of leaving the field looking like it shows a configured folder (whitlockk
   // review, ISS-4577). Held silent until settings resolve so the section never
   // asserts a security boundary it doesn't yet know.
   const showNotSet = settingsLoaded && savedValue.trim().length === 0;

@@ -1,11 +1,11 @@
 import { z } from "zod";
-
 import { normalizeRepoFullName } from "./branch-repository.ts";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
   GitHubFetchTrigger,
 } from "./github-read-model.ts";
+import { normalizeConstValue } from "./normalize-const-value.ts";
 import { VcsProviderKind } from "./vcs-provider-kind.ts";
 
 /** Whether repository-default evidence is current, retained-but-stale, or absent. */
@@ -492,18 +492,6 @@ function persistedUnavailableAuthority(
       reason,
     },
   };
-}
-
-function normalizeConstValue<Value extends string>(
-  value: unknown,
-  values: Record<string, Value> & { Unknown: Value }
-): Value {
-  const knownValues = Object.values(values) as Value[];
-  const matchedValue =
-    typeof value === "string"
-      ? knownValues.find((knownValue) => knownValue === value)
-      : undefined;
-  return matchedValue ?? values.Unknown;
 }
 
 function compatibilitySourceIdentity(

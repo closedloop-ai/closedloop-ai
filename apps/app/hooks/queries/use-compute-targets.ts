@@ -2,197 +2,46 @@
 
 import type {
   ComputeTarget,
-  ComputeTargetHealthCheckSnapshot,
   CreateDesktopCommandInput,
   CreateDesktopCommandResponse,
   DesktopCommandSummary,
-  HarnessType,
-  SetComputeTargetSharingResponse,
-  StartDesktopSecurityUpgradeResponse,
 } from "@repo/api/src/types/compute-target";
 import {
   isTerminalStatus,
   UPDATE_AND_RESTART_OPERATION_ID,
 } from "@repo/api/src/types/compute-target";
-import { computePreferenceKeys } from "@repo/app/compute/hooks/use-compute-preference";
+import { computeTargetKeys } from "@repo/app/compute/hooks/compute-target-query-keys";
+import {
+  hasEffectiveCommandSigningSupport,
+  signDesktopCommand,
+} from "@repo/app/compute/lib/command-signing/command-signer";
+import { useApiClient } from "@repo/app/shared/api/use-api-client";
 import {
   type UseMutationResult,
-  type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useApiClient } from "@/hooks/use-api-client";
-import {
-  hasEffectiveCommandSigningSupport,
-  signDesktopCommand,
-} from "@/lib/desktop-command-signing/command-signer";
-import { cacheComputeTargetsForSigning } from "@/lib/desktop-command-signing/compute-target-signing-cache";
-import { computeTargetKeys } from "./compute-target-query-keys";
 
-type ApiClient = ReturnType<typeof useApiClient>;
-
-type ComputeTargetWire = Omit<
-  ComputeTarget,
-  "lastSeenAt" | "createdAt" | "updatedAt"
-> & {
-  lastSeenAt: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type ComputeTargetHealthCheckSnapshotWire = Omit<
-  ComputeTargetHealthCheckSnapshot,
-  "checkedAt" | "createdAt" | "updatedAt"
-> & {
-  checkedAt: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-function toComputeTarget(target: ComputeTargetWire): ComputeTarget {
-  return {
-    ...target,
-    lastSeenAt: new Date(target.lastSeenAt),
-    createdAt: new Date(target.createdAt),
-    updatedAt: new Date(target.updatedAt),
-  };
-}
-
-/** Fetches and materializes a full compute-target snapshot for cache/signing use. */
-export async function fetchComputeTargetsSnapshot(
-  apiClient: Pick<ApiClient, "get">
-): Promise<ComputeTarget[]> {
-  const targets = await apiClient.get<ComputeTargetWire[]>("/compute-targets");
-  const parsedTargets = targets.map(toComputeTarget);
-  cacheComputeTargetsForSigning(parsedTargets);
-  return parsedTargets;
-}
-
-function toHealthCheckSnapshot(
-  snapshot: ComputeTargetHealthCheckSnapshotWire | null
-): ComputeTargetHealthCheckSnapshot | null {
-  if (!snapshot) {
-    return null;
-  }
-  return {
-    ...snapshot,
-    pluginAutoUpdateEnabled: snapshot.pluginAutoUpdateEnabled ?? false,
-    checkedAt: new Date(snapshot.checkedAt),
-    createdAt: new Date(snapshot.createdAt),
-    updatedAt: new Date(snapshot.updatedAt),
-  };
-}
-
-export function useComputeTargets(
-  options?: Omit<UseQueryOptions<ComputeTarget[]>, "queryKey" | "queryFn">
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: computeTargetKeys.list(),
-    queryFn: () => fetchComputeTargetsSnapshot(apiClient),
-    ...options,
-  });
-}
-
-export function computeTargetHealthCheckSnapshotQueryOptions(
-  apiClient: ApiClient,
-  targetId: string | null | undefined,
-  pluginAutoUpdateEnabled = false
-) {
-  return {
-    queryKey: computeTargetKeys.healthCheckMode(
-      targetId ?? "",
-      pluginAutoUpdateEnabled
-    ),
-    queryFn: async () => {
-      if (!targetId) {
-        return null;
-      }
-      const snapshot =
-        await apiClient.get<ComputeTargetHealthCheckSnapshotWire | null>(
-          `/compute-targets/${targetId}/health-check`
-        );
-      return toHealthCheckSnapshot(snapshot);
-    },
-    enabled: Boolean(targetId),
-  } as const;
-}
-
-export function useComputeTargetHealthCheckSnapshot(
-  targetId: string | null | undefined,
-  pluginAutoUpdateEnabledOrOptions?:
-    | boolean
-    | Omit<
-        UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
-        "queryKey" | "queryFn"
-      >,
-  options?: Omit<
-    UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
-    "queryKey" | "queryFn"
-  >
-) {
-  const apiClient = useApiClient();
-  const pluginAutoUpdateEnabled =
-    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
-      ? pluginAutoUpdateEnabledOrOptions
-      : false;
-  const queryOptionsOverride =
-    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
-      ? options
-      : pluginAutoUpdateEnabledOrOptions;
-
-  return useQuery({
-    ...computeTargetHealthCheckSnapshotQueryOptions(
-      apiClient,
-      targetId,
-      pluginAutoUpdateEnabled
-    ),
-    ...queryOptionsOverride,
-  });
-}
-
-export function useDeleteComputeTarget(userId: string) {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.delete<{ deleted: true }>(`/compute-targets/${id}`),
-    onSuccess: (_result, id) => {
-      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
-      queryClient.removeQueries({
-        queryKey: computeTargetKeys.healthCheck(id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: computePreferenceKeys.detail(userId),
-      });
-    },
-  });
-}
-
-export function useToggleComputeTargetSharing() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      id,
-      isSharedWithOrg,
-    }: {
-      id: string;
-      isSharedWithOrg: boolean;
-    }) =>
-      apiClient.patch<SetComputeTargetSharingResponse>(
-        `/compute-targets/${id}/sharing`,
-        { isSharedWithOrg }
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
-    },
-  });
-}
+/**
+ * Web-shell compute-target hooks.
+ *
+ * The READ path moved to `@repo/app/compute/hooks/use-compute-targets` so the
+ * Desktop renderer can consume it too (PLN-1915 Step 1 / D8). Two groups stay
+ * here: the command-signing hooks and the compute-target write hooks below.
+ * The write hooks stay by decision rather than by constraint — the Desktop's
+ * cloud-API bridge refuses every non-GET to `/compute-targets`, so a Desktop
+ * caller of a shared write hook would get the bridge's generic network error
+ * instead of a refusal it could report. They move only when that capability is
+ * deliberately opened.
+ *
+ * The read symbols are re-exported so no call site outside this file changed.
+ */
+// biome-ignore lint/performance/noBarrelFile: migration seam, not a hub — these moved to @repo/app/compute/hooks (PLN-1915 Step 1 / D8) and the re-export is what keeps every existing apps/app importer on its current specifier.
+export {
+  useComputeTargetHealthCheckSnapshot,
+  useComputeTargets,
+} from "@repo/app/compute/hooks/use-compute-targets";
 
 type UpdateAndRestartCommandInput = Omit<
   CreateDesktopCommandInput,
@@ -273,41 +122,18 @@ export function useDispatchDesktopCommand(
   });
 }
 
-export function useUpdateComputeTargetHarness() {
+export function useDeleteComputeTarget() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({ id, harness }: { id: string; harness: HarnessType }) =>
-      apiClient.put<ComputeTarget>(`/compute-targets/${id}`, {
-        selectedHarness: harness,
-      }),
-    onSuccess: () => {
+    mutationFn: (id: string) =>
+      apiClient.delete<{ deleted: true }>(`/compute-targets/${id}`),
+    onSuccess: (_result, id) => {
       queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
+      queryClient.removeQueries({
+        queryKey: computeTargetKeys.healthCheck(id),
+      });
     },
-  });
-}
-
-export function useStartDesktopSecurityUpgrade() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      targetId,
-      webAppOrigin,
-    }: {
-      targetId: string;
-      webAppOrigin: string;
-    }) => {
-      return apiClient.postRaw<StartDesktopSecurityUpgradeResponse>(
-        `/compute-targets/${targetId}/security-upgrade-attempt`,
-        { webAppOrigin }
-      );
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
-    },
-    retry: 0,
   });
 }

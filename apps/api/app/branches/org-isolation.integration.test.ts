@@ -2,9 +2,12 @@ import { BranchTagAvailability } from "@repo/api/src/types/branch";
 import { TagColor } from "@repo/api/src/types/tag";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
-import { autoRollbackTransaction } from "@/__tests__/utils/db-helpers";
-import { seedTwoOrgFixture } from "@/__tests__/utils/two-org-fixture";
+import { afterEach, describe, expect, it } from "vitest";
+import { createCommittedTestOrganizationTracker } from "@/__tests__/utils/db-helpers";
+import {
+  seedTwoOrgFixture,
+  type TwoOrgFixture,
+} from "@/__tests__/utils/two-org-fixture";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { branchReadService } from "@/app/branches/branch-read-service";
 
@@ -22,11 +25,14 @@ const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
 
 const LIST_QUERY = { limit: 50, offset: 0 } as const;
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+afterEach(() => committedOrganizations.cleanup());
 
 describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
   it("lists only the caller org's branch even when the other org's branch is identically named", async () => {
-    await autoRollbackTransaction(async () => {
-      const { orgA, orgB } = await seedTwoOrgFixture();
+    await committedOrganizations.run(async () => {
+      const { orgA, orgB } = await seedCommittedTwoOrgFixture();
 
       const listA = await branchReadService.listBranches(
         orgA.organizationId,
@@ -40,8 +46,8 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
   });
 
   it("returns null for a branch-detail deep link carrying the other org's id", async () => {
-    await autoRollbackTransaction(async () => {
-      const { orgA, orgB } = await seedTwoOrgFixture();
+    await committedOrganizations.run(async () => {
+      const { orgA, orgB } = await seedCommittedTwoOrgFixture();
 
       // Cross-org probe → not owned → null (the route maps this to 404).
       await expect(
@@ -60,8 +66,8 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
   });
 
   it("projects only organization-owned generic tags through real list and detail reads", async () => {
-    await autoRollbackTransaction(async () => {
-      const { orgA, orgB } = await seedTwoOrgFixture();
+    await committedOrganizations.run(async () => {
+      const { orgA, orgB } = await seedCommittedTwoOrgFixture();
       const ownedTag = await withDb((db) =>
         db.tag.create({
           data: {
@@ -119,8 +125,8 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
   });
 
   it("counts only the caller org's branches in the usage aggregate", async () => {
-    await autoRollbackTransaction(async () => {
-      const { orgA } = await seedTwoOrgFixture();
+    await committedOrganizations.run(async () => {
+      const { orgA } = await seedCommittedTwoOrgFixture();
 
       const usageA = await branchReadService.getBranchUsage(
         orgA.organizationId,
@@ -132,8 +138,8 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
   });
 
   it("returns null for a session deep link carrying the other org's id and isolates its token events", async () => {
-    await autoRollbackTransaction(async () => {
-      const { orgA, orgB } = await seedTwoOrgFixture();
+    await committedOrganizations.run(async () => {
+      const { orgA, orgB } = await seedCommittedTwoOrgFixture();
 
       await expect(
         agentSessionsService.findSessionDetail({
@@ -153,12 +159,19 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
         organizationId: orgA.organizationId,
         sessionArtifactId: orgB.sessionArtifactId,
       });
-      expect(crossOrgEvents).toHaveLength(0);
+      expect(crossOrgEvents.events).toHaveLength(0);
       const ownEvents = await agentSessionsService.getSessionTokenEvents({
         organizationId: orgA.organizationId,
         sessionArtifactId: orgA.sessionArtifactId,
       });
-      expect(ownEvents).toHaveLength(1);
+      expect(ownEvents.events).toHaveLength(1);
     });
   });
 });
+
+async function seedCommittedTwoOrgFixture(): Promise<TwoOrgFixture> {
+  const fixture = await seedTwoOrgFixture();
+  committedOrganizations.track(fixture.orgA.organizationId);
+  committedOrganizations.track(fixture.orgB.organizationId);
+  return fixture;
+}

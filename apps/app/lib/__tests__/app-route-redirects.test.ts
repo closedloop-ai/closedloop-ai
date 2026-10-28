@@ -1,3 +1,9 @@
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  ISSUES_LIST_ROUTE_SEGMENT,
+  LEGACY_TYPE_ROUTE_PREFIXES,
+  RETIRED_ISSUES_ROUTE_SEGMENT,
+} from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
   BASE_SETTINGS_TABS,
@@ -29,15 +35,31 @@ function redirectPath(
   return resolveRedirect(pathname, orgSlug, searchParams)?.pathname ?? null;
 }
 
-describe("resolveRedirect — FEA-4137 /features → /issues compat", () => {
-  it("maps an org-scoped legacy detail route", () => {
-    expect(redirectPath("/acme/features/ISS-6", ORG)).toBe(
-      "/acme/issues/ISS-6"
-    );
-  });
+describe("resolveRedirect — ISS-12855 legacy detail prefixes → /documents", () => {
+  const legacyPrefixes = Object.values(LEGACY_TYPE_ROUTE_PREFIXES).flat();
 
-  it("maps a bare legacy detail route and prefixes the org in ONE hop", () => {
-    expect(redirectPath("/features/ISS-6", ORG)).toBe("/acme/issues/ISS-6");
+  it.each(legacyPrefixes)(
+    "maps an org-scoped /%s/:slug to /documents/:slug in one hop",
+    (prefix) => {
+      expect(redirectPath(`/acme/${prefix}/DOC-1`, ORG)).toBe(
+        `/acme/${DOCUMENT_ROUTE_PREFIX}/DOC-1`
+      );
+    }
+  );
+
+  it.each(legacyPrefixes)(
+    "maps an org-less /%s/:slug to /{org}/documents/:slug in one hop",
+    (prefix) => {
+      expect(redirectPath(`/${prefix}/DOC-1`, ORG)).toBe(
+        `/acme/${DOCUMENT_ROUTE_PREFIX}/DOC-1`
+      );
+    }
+  );
+
+  it("keeps a trailing slash on the detail form", () => {
+    expect(redirectPath("/acme/prds/PRD-1/", ORG)).toBe(
+      "/acme/documents/PRD-1/"
+    );
   });
 
   // The legacy FEA- slug is deliberately preserved (see the module docs): the
@@ -45,26 +67,34 @@ describe("resolveRedirect — FEA-4137 /features → /issues compat", () => {
   // change nothing but the URL. ISS-4405 keeps that alias contract in place.
   it("renames the route but preserves the legacy FEA- slug alias", () => {
     expect(redirectPath("/acme/features/FEA-592", ORG)).toBe(
-      "/acme/issues/FEA-592"
+      "/acme/documents/FEA-592"
     );
-    expect(redirectPath("/features/FEA-1", ORG)).toBe("/acme/issues/FEA-1");
-    expect(redirectPath("/acme/issues/FEA-1", ORG)).toBeNull();
+    expect(redirectPath("/features/FEA-1", ORG)).toBe("/acme/documents/FEA-1");
+    expect(redirectPath("/acme/documents/FEA-1", ORG)).toBeNull();
   });
 
-  it("maps the legacy list route, which FEA-4137 left with no page at all", () => {
-    expect(redirectPath("/acme/features", ORG)).toBe("/acme/issues");
+  it("maps the bare /features list to /issues, which FEA-4137 left with no page at all", () => {
+    expect(redirectPath(`/acme/${RETIRED_ISSUES_ROUTE_SEGMENT}`, ORG)).toBe(
+      `/acme/${ISSUES_LIST_ROUTE_SEGMENT}`
+    );
     expect(redirectPath("/features", ORG)).toBe("/acme/issues");
   });
 
+  it("leaves list routes and routes nested under a legacy prefix alone", () => {
+    expect(redirectPath("/acme/issues", ORG)).toBeNull();
+    expect(redirectPath("/acme/prds", ORG)).toBeNull();
+    expect(redirectPath("/acme/issues/ISS-6/branches", ORG)).toBeNull();
+  });
+
   it("emits no redirect for an already-canonical path (fixed point)", () => {
-    expect(redirectPath("/acme/issues/ISS-6", ORG)).toBeNull();
+    expect(redirectPath("/acme/documents/ISS-6", ORG)).toBeNull();
     expect(redirectPath("/acme/issues", ORG)).toBeNull();
     expect(redirectPath("/acme/my-tasks", ORG)).toBeNull();
   });
 
   it("still prefixes the org on non-legacy bare routes", () => {
     expect(redirectPath("/my-tasks", ORG)).toBe("/acme/my-tasks");
-    expect(redirectPath("/issues/ISS-6", ORG)).toBe("/acme/issues/ISS-6");
+    expect(redirectPath("/documents/ISS-6", ORG)).toBe("/acme/documents/ISS-6");
   });
 
   it("leaves unrelated and non-route paths alone", () => {
@@ -82,45 +112,55 @@ describe("resolveRedirect — FEA-4137 /features → /issues compat", () => {
  */
 describe("resolveRedirect — `features` as a slug or an org slug", () => {
   it("does not rewrite a document slug that happens to be 'features'", () => {
-    // The bug: `/prds/features` is /{routeDir}/{slug}, so segment 2 is a SLUG.
-    // Rewriting it produced `/prds/issues` — a different document.
-    expect(redirectPath("/prds/features", ORG)).toBe("/acme/prds/features");
+    // `/prds/features` is /{routeDir}/{slug}, so segment 2 is a SLUG. The route
+    // segment moves to `/documents` (legacy detail prefix, ISS-12855); the slug
+    // is untouched.
+    expect(redirectPath("/prds/features", ORG)).toBe(
+      "/acme/documents/features"
+    );
     expect(redirectPath("/documents/features", ORG)).toBe(
       "/acme/documents/features"
     );
-    expect(redirectPath("/acme/prds/features", ORG)).toBeNull();
+    expect(redirectPath("/acme/prds/features", ORG)).toBe(
+      "/acme/documents/features"
+    );
   });
 
   it("does not loop when the caller's org slug is literally 'features'", () => {
     // The bug: segment 1 was read as the legacy route, rewriting the ORG out of
     // the path and then re-prefixing it — `/features/issues/ISS-6` became
     // `/features/issues/issues/ISS-6`, and again on every following request.
-    expect(redirectPath("/features/issues/ISS-6", "features")).toBe(null);
+    // Inside the org, `/issues/ISS-6` is a legacy detail prefix and lands on
+    // `/documents` once (ISS-12855), which is itself a fixed point.
+    expect(redirectPath("/features/issues/ISS-6", "features")).toBe(
+      "/features/documents/ISS-6"
+    );
+    expect(redirectPath("/features/documents/ISS-6", "features")).toBeNull();
     expect(redirectPath("/features/my-tasks", "features")).toBeNull();
   });
 
   it("still maps the legacy route INSIDE an org slugged 'features'", () => {
     expect(redirectPath("/features/features/ISS-6", "features")).toBe(
-      "/features/issues/ISS-6"
+      "/features/documents/ISS-6"
     );
   });
 
   it("treats a bare legacy path as a route for every other org", () => {
     expect(redirectPath("/features/ISS-6", "features")).toBeNull();
-    expect(redirectPath("/features/ISS-6", ORG)).toBe("/acme/issues/ISS-6");
+    expect(redirectPath("/features/ISS-6", ORG)).toBe("/acme/documents/ISS-6");
   });
 
   it("leaves every canonical route of an org slugged 'features' alone", () => {
     expect(redirectPath("/features/settings", "features")).toBeNull();
-    expect(redirectPath("/features/prds/PRD-1", "features")).toBe(null);
+    expect(redirectPath("/features/documents/PRD-1", "features")).toBeNull();
   });
 
   it("still prepends the org when the org slug is 'issues'", () => {
-    // The bare path is renamed to `/issues/...` first, so an equality check
-    // against the RENAMED first segment mistook it for the org prefix and
-    // skipped the prepend, landing on no detail route at all.
+    // The bare path is renamed first, so an equality check against the RENAMED
+    // first segment mistook it for the org prefix and skipped the prepend,
+    // landing on no detail route at all.
     expect(redirectPath("/features/ISS-6", "issues")).toBe(
-      "/issues/issues/ISS-6"
+      "/issues/documents/ISS-6"
     );
     expect(redirectPath("/my-tasks", "issues")).toBe("/issues/my-tasks");
   });
@@ -129,7 +169,7 @@ describe("resolveRedirect — `features` as a slug or an org slug", () => {
 /**
  * ISS-4477: the retired Loops LIST route forwards to Sessions in the proxy (a
  * `redirect()`-only page degrades under the App Router soft-nav path). Only the
- * bare list forwards; the still-functional sub-routes are left alone.
+ * bare list forwards; the sub-routes are left alone.
  */
 describe("resolveRedirect — ISS-4477 /loops list → /sessions", () => {
   it("forwards the bare list and prefixes the org in ONE hop", () => {
@@ -151,7 +191,7 @@ describe("resolveRedirect — ISS-4477 /loops list → /sessions", () => {
     expect(redirectPath("/acme/loops/", ORG)).toBe("/acme/sessions/");
   });
 
-  it("leaves the still-functional loop sub-routes alone (only prefixes the org)", () => {
+  it("leaves the loop sub-routes alone (only prefixes the org)", () => {
     expect(redirectPath("/loops/LOOP-1", ORG)).toBe("/acme/loops/LOOP-1");
     expect(redirectPath("/acme/loops/LOOP-1", ORG)).toBeNull();
     expect(redirectPath("/acme/loops/usage", ORG)).toBeNull();
@@ -273,7 +313,7 @@ describe("resolveRedirect — ISS-5011 /organization → /settings", () => {
   });
 
   /**
-   * wongk, PR #4501: Settings gives any nonempty integration-callback key
+   * whitlockk, PR #4501: Settings gives any nonempty integration-callback key
    * precedence over `?tab=`, so a bookmarked `/organization?github=bogus` would
    * land on Integrations while its own URL still said `tab=organization`. The
    * forward has to clear the keys that outrank the tab it exists to select.
@@ -314,7 +354,7 @@ describe("resolveRedirect — ISS-5011 /organization → /settings", () => {
   });
 
   // The stub had no sub-routes, so anything after it is a genuine 404 rather
-  // than a surface to forward — same rule the live `/loops/[id]` routes get.
+  // than a surface to forward; same rule the `/loops/[id]` paths get.
   it("does not forward a path with something after the retired segment", () => {
     expect(redirectPath("/acme/organization/members", ORG)).toBeNull();
     expect(
@@ -330,7 +370,7 @@ describe("resolveRedirect — ISS-5011 /organization → /settings", () => {
   });
 
   /**
-   * wongk, PR #4501: `organization` is not a RESERVED_ORG_SLUGS entry, so an org
+   * whitlockk, PR #4501: `organization` is not a RESERVED_ORG_SLUGS entry, so an org
    * can legally be slugged `organization`. For that org the
    * `firstSegment !== orgSlug` disambiguation read the bare retired URL as its
    * own org prefix, found no second segment, and dropped through to
@@ -455,7 +495,7 @@ describe("shouldRewriteLegacyIssueUnfurl", () => {
  * org-scoped path is; everything else here depends on who is asking.
  */
 describe("resolveRedirect — ISS-4570 permanent vs temporary status", () => {
-  it("marks the org-scoped legacy rename permanent", () => {
+  it("marks the org-scoped /features alias permanent", () => {
     expect(resolveRedirect("/acme/features/ISS-6", ORG)?.status).toBe(
       RedirectStatus.Permanent
     );
@@ -465,6 +505,18 @@ describe("resolveRedirect — ISS-4570 permanent vs temporary status", () => {
     expect(
       resolveRedirect("/features/features/ISS-6", "features")?.status
     ).toBe(RedirectStatus.Permanent);
+  });
+
+  it("keeps the ISS-12855 detail rewrites of the other legacy prefixes temporary", () => {
+    expect(resolveRedirect("/acme/prds/PRD-1", ORG)?.status).toBe(
+      RedirectStatus.Temporary
+    );
+    expect(
+      resolveRedirect("/acme/implementation-plans/PLN-1", ORG)?.status
+    ).toBe(RedirectStatus.Temporary);
+    expect(resolveRedirect("/acme/issues/ISS-6", ORG)?.status).toBe(
+      RedirectStatus.Temporary
+    );
   });
 
   it("keeps the rename temporary when it also injects the org prefix", () => {
@@ -484,7 +536,7 @@ describe("resolveRedirect — ISS-4570 permanent vs temporary status", () => {
     // "was a prefix actually added" would be wrong here.
     const redirect = resolveRedirect("/features/ISS-6", null);
 
-    expect(redirect?.pathname).toBe("/issues/ISS-6");
+    expect(redirect?.pathname).toBe("/documents/ISS-6");
     expect(redirect?.status).toBe(RedirectStatus.Temporary);
   });
 

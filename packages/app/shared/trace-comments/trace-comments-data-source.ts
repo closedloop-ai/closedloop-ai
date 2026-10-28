@@ -8,13 +8,20 @@ import type {
   TraceCommentUpdate,
 } from "@repo/api/src/types/comment";
 import {
+  CommentSurface,
+  CommentTargetType,
   normalizeTraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
+  TRACE_COMMENT_INCLUDE_THREAD_PARAM,
   traceCommentPath,
   traceCommentRepliesPath,
+  traceCommentRetrySyncPath,
   traceCommentsPath,
 } from "@repo/api/src/types/comment";
+import {
+  branchSessionTraceCommentsQuery,
+  traceCommentResponseSchema,
+} from "@repo/api/src/types/trace-comment-response";
+import { z } from "zod";
 import type { ApiRequestOptions } from "../api/api-timeout";
 
 export type TraceCommentsDataSourceCapabilities = {
@@ -39,11 +46,19 @@ export type TraceCommentsDataSourceCapabilities = {
 export type TraceCommentReadOptions = Pick<
   ApiRequestOptions,
   "signal" | "timeoutMs"
->;
+> & {
+  /** ISS-11004: one thread to return even when it falls past the cap. */
+  includeThreadId?: string;
+};
 
 /** Portable trace-comments persistence port shared by Sessions and Branches. */
 export type TraceCommentsDataSource = {
   scope: string;
+  /** ISS-12282: null means an older API does not support the additive batch read. */
+  listBranchSessions?(
+    branchId: string,
+    options?: TraceCommentReadOptions
+  ): Promise<TraceComment[] | null>;
   capabilities?: TraceCommentsDataSourceCapabilities;
   list(
     target: TraceCommentTarget,
@@ -72,6 +87,27 @@ export type TraceCommentsDataSource = {
     commentId: string,
     collection?: BranchTraceCommentCollectionQuery
   ): Promise<TraceCommentDeleteResult>;
+  /**
+   * ISS-8597 (PRD-699 §5 D2): re-pend one comment this source dead-lettered, and
+   * answer with the collection's refreshed list.
+   *
+   * OPTIONAL, and absence is still the answer rather than a gap: only a source
+   * that can represent an ABANDONED comment can un-abandon one. A surface offers
+   * the retry affordance exactly when this is present, so the port's shape
+   * decides it instead of a per-surface flag.
+   *
+   * ISS-10382 made the cloud HTTP source one of those sources. It used to opt
+   * out on the grounds that "a comment it returns has been delivered by
+   * definition", which stopped being true when the API gained a dead-letter
+   * representation of its own: the cloud can now hold a comment whose delivery
+   * was permanently rejected, so it has something real to re-pend and the web
+   * shell has the same door desktop has.
+   */
+  retrySync?(
+    target: TraceCommentTarget,
+    commentId: string,
+    collection?: BranchTraceCommentCollectionQuery
+  ): Promise<TraceComment[]>;
 };
 
 export type TraceCommentCollectionRead = {
@@ -93,13 +129,33 @@ export function createHttpTraceCommentsDataSource(
   return {
     scope: "http",
     capabilities: { branchTimelineWrites: true },
-    list: async (target, collection, options) =>
-      (
-        await api.get<TraceComment[]>(
-          traceCommentsCollectionPath(target, collection),
+    listBranchSessions: async (branchId, options) => {
+      const query = new URLSearchParams(branchSessionTraceCommentsQuery);
+      const target = { type: CommentTargetType.Branch, id: branchId };
+      try {
+        const incoming = await api.get<unknown>(
+          `${traceCommentsPath(target)}?${query}`,
           { cache: "no-store", ...options }
+        );
+        return z.array(traceCommentResponseSchema).parse(incoming);
+      } catch (error) {
+        // The previous API rejects this unknown query parameter. Preserve its
+        // exact collection reads until the server is upgraded (ISS-12282).
+        if (z.object({ status: z.literal(400) }).safeParse(error).success) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    list: async (target, collection, options) => {
+      const { includeThreadId, ...requestOptions } = options ?? {};
+      return (
+        await api.get<TraceComment[]>(
+          traceCommentsCollectionReadPath(target, collection, includeThreadId),
+          { cache: "no-store", ...requestOptions }
         )
-      ).map(withNormalizedKind),
+      ).map(withNormalizedKind);
+    },
     create: async (target, draft, collection) =>
       withNormalizedKind(
         await api.post<TraceComment>(
@@ -137,18 +193,32 @@ export function createHttpTraceCommentsDataSource(
           collection
         )
       ),
+    // ISS-10382: the web recovery door. Answers with the refreshed collection,
+    // normalized exactly like `list` does — the response is the same list shape
+    // and a caller must not get an un-normalized `kind` only on this path.
+    retrySync: async (target, commentId, collection) =>
+      (
+        await api.post<TraceComment[]>(
+          withCollectionQuery(
+            traceCommentRetrySyncPath(target, commentId),
+            target,
+            collection
+          ),
+          {}
+        )
+      ).map(withNormalizedKind),
   };
 }
 
 /** Canonical collection surface for cache, transport, and validation. */
-export function normalizedTraceCommentSurface(
+export function normalizedCommentSurface(
   target: TraceCommentTarget,
   collection?: BranchTraceCommentCollectionQuery
 ) {
-  if (target.type === TraceCommentTargetType.Session) {
-    return TraceCommentSurface.SessionDetail;
+  if (target.type === CommentTargetType.Session) {
+    return CommentSurface.SessionDetail;
   }
-  return collection?.surface ?? TraceCommentSurface.BranchDetail;
+  return collection?.surface ?? CommentSurface.BranchDetail;
 }
 
 /**
@@ -171,20 +241,62 @@ export async function readTraceCommentCollection(
   };
 }
 
+/**
+ * Whether this source can accept a write to this collection at all.
+ *
+ * Exported beside the assert because a SURFACE has to ask the question before
+ * rendering the control, not only before sending the write: a button that throws
+ * on click is the dead affordance the port's optional-method contract exists to
+ * avoid (ISS-10383). One rule, two callers — the assert below is the fail-closed
+ * backstop for anything that reaches the write without asking.
+ */
+export function isTraceCommentWriteSupported(
+  dataSource: TraceCommentsDataSource,
+  target: TraceCommentTarget,
+  collection?: BranchTraceCommentCollectionQuery
+): boolean {
+  return !(
+    target.type === CommentTargetType.Branch &&
+    normalizedCommentSurface(target, collection) ===
+      CommentSurface.BranchTimeline &&
+    dataSource.capabilities?.branchTimelineWrites !== true
+  );
+}
+
 /** Fail closed before an additive Branch-timeline write reaches an old port. */
 export function assertTraceCommentWriteSupported(
   dataSource: TraceCommentsDataSource,
   target: TraceCommentTarget,
   collection?: BranchTraceCommentCollectionQuery
 ): void {
-  if (
-    target.type === TraceCommentTargetType.Branch &&
-    normalizedTraceCommentSurface(target, collection) ===
-      TraceCommentSurface.BranchTimeline &&
-    dataSource.capabilities?.branchTimelineWrites !== true
-  ) {
+  if (!isTraceCommentWriteSupported(dataSource, target, collection)) {
     throw new TraceCommentCapabilityError();
   }
+}
+
+/**
+ * Re-pend one dead-lettered comment through the port (ISS-8597).
+ *
+ * The collection argument is OMITTED rather than passed as `undefined` for a
+ * session target, because a source may distinguish "no collection" from "an
+ * undefined collection". ISS-10383 moved this beside the port it calls: the
+ * Sessions rail and the Branches surface were each about to declare that
+ * convention themselves, and two copies of one calling convention drift in
+ * silence — a surface keeps the old arity and addresses the wrong collection.
+ */
+export function executeTraceCommentRetrySync(
+  dataSource: TraceCommentsDataSource,
+  target: TraceCommentTarget,
+  commentId: string,
+  collection?: BranchTraceCommentCollectionQuery
+): Promise<TraceComment[]> {
+  const retrySync = dataSource.retrySync;
+  if (!retrySync) {
+    throw new Error("This trace-comment source cannot retry a failed sync.");
+  }
+  return collection === undefined
+    ? retrySync.call(dataSource, target, commentId)
+    : retrySync.call(dataSource, target, commentId, collection);
 }
 
 /** Reject a mutation response that came back for another target or surface. */
@@ -221,7 +333,7 @@ function traceCommentMatchesCollection(
   return (
     comment.target?.type === target.type &&
     comment.target.id === target.id &&
-    comment.surface === normalizedTraceCommentSurface(target, collection)
+    comment.surface === normalizedCommentSurface(target, collection)
   );
 }
 
@@ -230,11 +342,11 @@ function traceCommentsCollectionPath(
   collection?: BranchTraceCommentCollectionQuery
 ): string {
   const path = traceCommentsPath(target);
-  if (target.type === TraceCommentTargetType.Session) {
+  if (target.type === CommentTargetType.Session) {
     return path;
   }
   const query = new URLSearchParams({
-    surface: normalizedTraceCommentSurface(target, collection),
+    surface: normalizedCommentSurface(target, collection),
   });
   return `${path}?${query.toString()}`;
 }
@@ -244,15 +356,31 @@ function withCollectionQuery(
   target: TraceCommentTarget,
   collection?: BranchTraceCommentCollectionQuery
 ): string {
-  if (target.type === TraceCommentTargetType.Session) {
+  if (target.type === CommentTargetType.Session) {
     return path;
   }
   const query = new URLSearchParams({
-    surface: normalizedTraceCommentSurface(target, collection),
+    surface: normalizedCommentSurface(target, collection),
   });
   return `${path}?${query.toString()}`;
 }
 
 function withNormalizedKind(comment: TraceComment): TraceComment {
   return { ...comment, kind: normalizeTraceCommentKind(comment.kind) };
+}
+
+function traceCommentsCollectionReadPath(
+  target: TraceCommentTarget,
+  collection: BranchTraceCommentCollectionQuery | undefined,
+  includeThreadId: string | undefined
+): string {
+  const path = traceCommentsCollectionPath(target, collection);
+  if (!includeThreadId) {
+    return path;
+  }
+  const separator = path.includes("?") ? "&" : "?";
+  const query = new URLSearchParams({
+    [TRACE_COMMENT_INCLUDE_THREAD_PARAM]: includeThreadId,
+  });
+  return `${path}${separator}${query.toString()}`;
 }

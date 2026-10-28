@@ -18,9 +18,10 @@
  * time.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
+import { OutboxStatus } from "../src/shared/sync-lane-contract.js";
 import {
   flushAgentSessionSync,
   makeServiceWithIdentity,
@@ -31,6 +32,7 @@ const TARGET = "target-iss-6031-reconcile";
 const SOURCE_KEY = buildAgentSessionSyncSourceKey(TARGET);
 const STRANDED = "stranded-pending-row";
 const NEIGHBOR = "neighbor";
+const WITHHELD = "withheld-idle-row";
 
 async function drain(
   service: ReturnType<typeof makeServiceWithIdentity>,
@@ -136,5 +138,50 @@ test("ISS-6031: a permanently-stuck row keeps the rest of the queue draining AND
   assert.ok(
     source.findExistingSessionIdCalls.length > 0,
     "the lane keeps probing the stuck row rather than forgetting it"
+  );
+});
+
+test("ISS-7246: the reconciliation re-arms owed rows only — a withheld row stays out of the queues", async () => {
+  gatewayLog.clear();
+  // Both rows are stranded in the same way (the cursor has walked past them), so
+  // the ONLY thing separating them is status. `pending` is owed and must be
+  // re-armed; `withheld` is not owed — re-arming it is the ISS-7246 loop.
+  const source = new FakeSyncSource([
+    makeSyncedSession(STRANDED, "2026-08-12T03:29:06.102Z"),
+    makeSyncedSession(WITHHELD, "2026-08-12T03:29:07.102Z"),
+  ]);
+  source.seedOutbox(SOURCE_KEY, STRANDED);
+  source.seedOutbox(SOURCE_KEY, WITHHELD, OutboxStatus.Withheld);
+  source.seedSyncState(SOURCE_KEY, {
+    observedTopUpdatedAt: "2026-08-12T03:38:25.995Z",
+    observedIdsAtTopUpdatedAt: [],
+  });
+
+  const sent: string[][] = [];
+  const service = makeServiceWithIdentity(
+    source,
+    (batch) => {
+      sent.push(batch.sessions.map((s) => s.externalSessionId));
+      return Promise.resolve({ accepted: true as const });
+    },
+    TARGET
+  );
+  await drain(service, 6);
+  service.stop();
+
+  assert.ok(
+    sent.flat().includes(STRANDED),
+    "the owed row is still reconciled back onto the lane"
+  );
+  assert.ok(
+    !sent.flat().includes(WITHHELD),
+    "the withheld row is never re-armed — nothing owes it"
+  );
+  assert.equal(
+    [...source.outbox.values()].find(
+      (row) => row.sourceKey === SOURCE_KEY && row.id === WITHHELD
+    )?.status,
+    OutboxStatus.Withheld,
+    "and it is still recorded, not dropped"
   );
 });

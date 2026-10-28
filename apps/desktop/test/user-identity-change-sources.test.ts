@@ -14,7 +14,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, mock, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
+import type { ApiKeyUserIdentity } from "../src/main/auth/api-key-identity-resolver.js";
+import { ApiKeyIdentityResolver } from "../src/main/auth/api-key-identity-resolver.js";
 import type { DbHostIdentityPublisher } from "../src/main/database/db-host/db-host-identity-publisher.js";
 import { createDbHostIdentityPublisher } from "../src/main/database/db-host/db-host-identity-publisher.js";
 import type { DbHostUserIdentity } from "../src/main/database/db-host/db-host-protocol.js";
@@ -22,12 +24,11 @@ import {
   ApiKeyStore,
   type SafeStorageLike,
 } from "../src/main/settings/api-key-store.js";
-import type { TraceCommentUserIdentity } from "../src/main/trace-comments/trace-comment-identity-resolver.js";
-import { TraceCommentIdentityResolver } from "../src/main/trace-comments/trace-comment-identity-resolver.js";
 import {
   createUserIdentityChangeSubscription,
   sameUserIdentity,
 } from "../src/main/util/user-identity.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 const ALICE: DbHostUserIdentity = {
   userId: "user_alice",
@@ -56,6 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  nodeTestTimers.reset();
   for (const [name, value] of savedEnvironmentKeys) {
     if (value === undefined) {
       Reflect.deleteProperty(process.env, name);
@@ -178,15 +180,15 @@ describe("ApiKeyStore identity change notifications (ISS-6243)", () => {
   });
 });
 
-describe("TraceCommentIdentityResolver identity transitions (ISS-6243)", () => {
+describe("ApiKeyIdentityResolver identity transitions (ISS-6243)", () => {
   test("announces the identity the background /me resolves", async () => {
     let apiKey: string | null = "sk_live_first";
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => apiKey,
       getApiOrigin: () => "https://api.example.test",
       fetchImpl: meResponder({ id: "user_alice", organizationId: "org_one" }),
     });
-    const observed: (TraceCommentUserIdentity | null)[] = [];
+    const observed: (ApiKeyUserIdentity | null)[] = [];
     resolver.subscribe(() => {
       observed.push(resolver.resolve());
     });
@@ -220,12 +222,12 @@ describe("TraceCommentIdentityResolver identity transitions (ISS-6243)", () => {
   test("a key rotation announces null before the new identity resolves", async () => {
     let apiKey = "sk_live_first";
     let me = { id: "user_alice", organizationId: "org_one" };
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => apiKey,
       getApiOrigin: () => "https://api.example.test",
       fetchImpl: () => meResponder(me)(),
     });
-    const observed: (TraceCommentUserIdentity | null)[] = [];
+    const observed: (ApiKeyUserIdentity | null)[] = [];
     resolver.subscribe(() => {
       observed.push(resolver.resolve());
     });
@@ -249,7 +251,7 @@ describe("TraceCommentIdentityResolver identity transitions (ISS-6243)", () => {
 
   test("a throwing listener cannot break resolve() for other callers", async () => {
     let apiKey: string | null = "sk_live_first";
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => apiKey,
       getApiOrigin: () => "https://api.example.test",
       fetchImpl: meResponder({ id: "user_alice", organizationId: "org_one" }),
@@ -275,14 +277,14 @@ describe("TraceCommentIdentityResolver identity transitions (ISS-6243)", () => {
     assert.equal(reached, 2, "one bad subscriber must not strand the others");
   });
 
-  // Review thread (wongk, PR #4964): onboarding commits the key and the API
+  // Review thread (whitlockk, PR #4964): onboarding commits the key and the API
   // origin in two separate steps, so a lookup can legitimately be issued against
   // the previous cloud. A fingerprint-only cache key would then serve that
   // wrong-cloud answer for the new origin forever.
   test("an API origin change invalidates the cached identity", async () => {
     let apiOrigin = "https://old.example.test";
     const apiKey = "sk_live_same_key_both_clouds";
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => apiKey,
       getApiOrigin: () => apiOrigin,
       fetchImpl: (input) =>
@@ -312,81 +314,73 @@ describe("TraceCommentIdentityResolver identity transitions (ISS-6243)", () => {
     );
   });
 
-  // Review thread (wongk, PR #4964): session ingestion reads the db host's
+  // Review thread (whitlockk, PR #4964): session ingestion reads the db host's
   // cached identity, never `resolve()`, so nothing re-kicks a failed cold-start
   // lookup. One transient failure used to leave every session of that process
   // unattributed.
   test("a transient /me failure is retried against the active credential", async () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    try {
-      let attempts = 0;
-      const resolver = new TraceCommentIdentityResolver({
-        getApiKey: () => "sk_live_first",
-        getApiOrigin: () => "https://api.example.test",
-        fetchImpl: () => {
-          attempts++;
-          return attempts === 1
-            ? Promise.reject(new Error("network unreachable"))
-            : meResponder({ id: "user_alice", organizationId: "org_one" })();
-        },
-      });
-      const observed: (TraceCommentUserIdentity | null)[] = [];
-      resolver.subscribe(() => {
-        observed.push(resolver.resolve());
-      });
+    nodeTestTimers.enable(["setTimeout"]);
+    let attempts = 0;
+    const resolver = new ApiKeyIdentityResolver({
+      getApiKey: () => "sk_live_first",
+      getApiOrigin: () => "https://api.example.test",
+      fetchImpl: () => {
+        attempts++;
+        return attempts === 1
+          ? Promise.reject(new Error("network unreachable"))
+          : meResponder({ id: "user_alice", organizationId: "org_one" })();
+      },
+    });
+    const observed: (ApiKeyUserIdentity | null)[] = [];
+    resolver.subscribe(() => {
+      observed.push(resolver.resolve());
+    });
 
-      resolver.resolve();
-      await settleWarm();
-      assert.deepEqual(
-        observed,
-        [],
-        "the first lookup failed — nothing resolved"
-      );
+    resolver.resolve();
+    await settleWarm();
+    assert.deepEqual(
+      observed,
+      [],
+      "the first lookup failed — nothing resolved"
+    );
 
-      mock.timers.tick(60_000);
-      await settleWarm();
+    nodeTestTimers.tick(60_000);
+    await settleWarm();
 
-      assert.equal(attempts, 2, "the ladder must issue a second lookup");
-      assert.deepEqual(
-        observed,
-        [ALICE],
-        "the retry must land the identity, or every session stays unattributed"
-      );
-    } finally {
-      mock.timers.reset();
-    }
+    assert.equal(attempts, 2, "the ladder must issue a second lookup");
+    assert.deepEqual(
+      observed,
+      [ALICE],
+      "the retry must land the identity, or every session stays unattributed"
+    );
   });
 
   test("a rejected credential is not retried", async () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    try {
-      let attempts = 0;
-      const resolver = new TraceCommentIdentityResolver({
-        getApiKey: () => "sk_live_revoked",
-        getApiOrigin: () => "https://api.example.test",
-        fetchImpl: () => {
-          attempts++;
-          return Promise.resolve(new Response("", { status: 401 }));
-        },
-      });
+    nodeTestTimers.enable(["setTimeout"]);
+    let attempts = 0;
+    const resolver = new ApiKeyIdentityResolver({
+      getApiKey: () => "sk_live_revoked",
+      getApiOrigin: () => "https://api.example.test",
+      fetchImpl: () => {
+        attempts++;
+        return Promise.resolve(new Response("", { status: 401 }));
+      },
+    });
 
-      resolver.resolve();
-      await settleWarm();
-      mock.timers.tick(600_000);
-      await settleWarm();
+    resolver.resolve();
+    await settleWarm();
+    nodeTestTimers.tick(600_000);
+    await settleWarm();
 
-      assert.equal(
-        attempts,
-        1,
-        "the server answered — a revoked key will not become valid by asking again"
-      );
-    } finally {
-      mock.timers.reset();
-    }
+    assert.equal(
+      attempts,
+      1,
+      "the server answered — a revoked key will not become valid by asking again"
+    );
   });
 
   test("unsubscribing stops the notifications", async () => {
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => "sk_live_first",
       getApiOrigin: () => "https://api.example.test",
       fetchImpl: meResponder({ id: "user_alice", organizationId: "org_one" }),
@@ -446,7 +440,7 @@ describe("createDbHostIdentityPublisher (ISS-6243)", () => {
     assert.deepEqual(pushed.at(-1), null, "sign-out publishes null");
   });
 
-  // Review thread (wongk, PR #4964): seeding `published` with `null` collapsed
+  // Review thread (whitlockk, PR #4964): seeding `published` with `null` collapsed
   // "nothing published yet" into "published a signed-out machine". Init carried
   // ALICE, so the child opened as ALICE; she signs out before the host reports
   // Ready; the post-Ready reconcile then read null, deduped against the null
@@ -565,7 +559,7 @@ describe("sameUserIdentity (ISS-6243)", () => {
 describe("createUserIdentityChangeSubscription (ISS-6243)", () => {
   test("fans out to the credential store AND the /me resolver", async () => {
     const store = makeApiKeyStore();
-    const resolver = new TraceCommentIdentityResolver({
+    const resolver = new ApiKeyIdentityResolver({
       getApiKey: () => store.getApiKey(),
       getApiOrigin: () => "https://api.example.test",
       fetchImpl: meResponder({ id: "user_alice", organizationId: "org_one" }),

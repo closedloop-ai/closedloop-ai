@@ -7,17 +7,18 @@ import {
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import {
+  AGENT_COMPONENT_KIND_ORDER,
+  countFacetValues,
+  HARNESS_LABEL,
+  sortAgentComponentRows,
+} from "@repo/api/src/utils/agent-component-reduce";
 import { describe, expect, it } from "vitest";
 import { AGENT_COMPONENT_NO_AUTHORS_LABEL } from "../agent-component-authors";
-import {
-  countFacetValues,
-  groupAgentComponentRows,
-  sortAgentComponentRows,
-} from "../agent-component-sort-group";
+import { groupAgentComponentRows } from "../agent-component-sort-group";
+import { KIND_META } from "../component-meta";
 
-// ---------------------------------------------------------------------------
 // Fixture helpers
-// ---------------------------------------------------------------------------
 
 function makeRow(overrides: Partial<AgentComponent> = {}): AgentComponent {
   return {
@@ -40,9 +41,7 @@ function makeRow(overrides: Partial<AgentComponent> = {}): AgentComponent {
   };
 }
 
-// ---------------------------------------------------------------------------
 // sortAgentComponentRows — T-10.6
-// ---------------------------------------------------------------------------
 
 describe("sortAgentComponentRows", () => {
   it("sorts by Name ascending (default locale order)", () => {
@@ -252,9 +251,7 @@ describe("sortAgentComponentRows", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // groupAgentComponentRows — T-10.6
-// ---------------------------------------------------------------------------
 
 describe("groupAgentComponentRows", () => {
   it("None — returns a single group with empty label", () => {
@@ -343,14 +340,9 @@ describe("groupAgentComponentRows", () => {
     const groups = groupAgentComponentRows(rows, AgentComponentGroupBy.Type);
 
     const labels = groups.map((g) => g.label);
-    expect(labels).toContain("Agents");
-    expect(labels).toContain("Commands");
-    expect(labels).toContain("Skills");
-    expect(labels).toContain("Workflows");
-    expect(labels).toContain("Plugins");
-    expect(labels).toContain("MCPs");
-    expect(labels).toContain("Hooks");
-    expect(labels).toContain("Memory & config");
+    expect(labels).toEqual(
+      AGENT_COMPONENT_KIND_ORDER.map((k) => KIND_META[k].plural)
+    );
   });
 
   it("Collaborators — one group per distinct author (multi-author rows appear under each), sorted alphabetically, none → 'No authors' at end", () => {
@@ -442,9 +434,7 @@ describe("groupAgentComponentRows", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // countFacetValues — T-10.6
-// ---------------------------------------------------------------------------
 
 describe("countFacetValues", () => {
   const ALL_ROWS: AgentComponent[] = [
@@ -544,7 +534,7 @@ describe("countFacetValues", () => {
     expect(harnessIds).not.toContain(Harness.Both);
     // No option carries the combined label either.
     expect(facets.harnesses.map((h) => h.label)).not.toContain(
-      "Multiple harnesses"
+      HARNESS_LABEL[Harness.Both]
     );
   });
 
@@ -586,7 +576,7 @@ describe("countFacetValues", () => {
     expect(facets.harnesses.some((h) => h.id === Harness.Both)).toBe(false);
   });
 
-  it("harness options count off harnessCountRows so an active harness filter does not zero-out the other harness (wongk, FEA-4336)", () => {
+  it("harness options count off harnessCountRows so an active harness filter does not zero-out the other harness (whitlockk, FEA-4336)", () => {
     // Simulate the real adapter with Claude checked: `rows` has dropped every
     // Codex-only component (only rows 1, 3, 4 survive the Claude facet — see
     // harnessMatchesFacet), but `harnessCountRows` is the harness-CLEARED corpus
@@ -655,9 +645,7 @@ describe("countFacetValues", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // T-18.1(a) — Plugin kind in countFacetValues and KIND_ORDER
-// ---------------------------------------------------------------------------
 
 describe("Plugin kind — countFacetValues T-18.1(a)", () => {
   const EMPTY_FILTERS = {

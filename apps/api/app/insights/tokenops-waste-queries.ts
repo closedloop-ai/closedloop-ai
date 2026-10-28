@@ -26,10 +26,11 @@ import {
 /**
  * The signal dimensions TokenOps classifies on. Bounded: 3 × 2 × 2 × states.
  *
- * `s.state` is grouped on because the shared classifier reads it: a run that
- * has not reached a terminal state has no outcome yet, and without the column
- * a live session's `ends_with_error: false` would land its spend in the
- * "Ended clean" bucket.
+ * `a.status` is grouped on because the shared classifier reads it: a run that
+ * has not reached a terminal status has no outcome yet, and without it a live
+ * session's `ends_with_error: false` would land its spend in the "Ended clean"
+ * bucket. ISS-7019 moved this off `s.state`, a column nothing writes, which is
+ * why that bucket HAS been absorbing live runs.
  *
  * This is interpolated into both {@link SPEND_GRID_SELECT} and the `GROUP BY`
  * of every read below, so every fragment it carries must be parameter-free —
@@ -41,7 +42,7 @@ const SPEND_GRID_DIMENSIONS = assertGroupSafe(
   s.ends_with_error,
   ${PRODUCED_ARTIFACT},
   (${WALL_CLOCK_MINUTES} > 0),
-  s.state
+  a.status
 `
 );
 
@@ -52,15 +53,85 @@ const SPEND_GRID_SELECT = assertGroupSafe(
   s.ends_with_error AS "endsWithError",
   ${PRODUCED_ARTIFACT} AS "producedArtifact",
   (${WALL_CLOCK_MINUTES} > 0) AS "hasWallClock",
-  s.state AS "state"
+  a.status AS "status"
 `
 );
 
-const TOKEN_SUM = Prisma.sql`
+/**
+ * The model right-sizing table grades on TWO bases, and they are deliberately
+ * different columns (ISS-5189). Read them together — the split is the fix.
+ *
+ * The defect was that both Over-powered guards were computed over the same
+ * all-four-column total, so both moved with a harness's prompt-cache REUSE
+ * rather than with price or job size, and in the SAME direction: replay
+ * inflated the rate's denominator AND the measured job size, so a cache-heavy
+ * model showed a low $/Mtok AND large-looking sessions and was structurally
+ * exempt from the verdict, while a low-cache model read as expensive on small
+ * work. Claude Code replays the same prefix every turn, so nearly all of its
+ * volume lands in `cache_read_tokens` — the hazard FEA-2331 already documents
+ * on the desktop model charts (`local-insights.ts`).
+ *
+ * {@link BILLED_TOKEN_SUM} — every token the provider charged for — stays the
+ * RATE denominator. `estimated_cost` is a single priced Decimal with no
+ * per-class breakdown, so it is the only denominator whose population matches
+ * that numerator. Dividing a bill that prices cache reads by a count that
+ * excludes them is not a cache-neutral rate, it is an incoherent one: it would
+ * report a model that reuses its cache heavily — and therefore costs LESS in
+ * real dollars for the same work — as several times more expensive per million.
+ * That is the original distortion with its sign flipped, not its removal.
+ *
+ * {@link WORK_TOKEN_SUM} — first-pass tokens only — is the JOB-SIZE proxy.
+ * Re-reading one prefix ten times is one job, not ten, so replay is the one
+ * class that must not count here. `cache_write_tokens` stays: per the input
+ * convention in `packages/cost/src/genai-cost.ts`, `input_tokens` holds only
+ * the UNCACHED remainder, and cache writes are fresh content being processed
+ * for the first time, so dropping them would shrink real jobs.
+ *
+ * Together the two guards stop moving as one. Cache reuse now pushes the rate
+ * DOWN (cheap tokens dilute the blend, which is a true economic fact) while
+ * pushing measured job size DOWN as well — so it drives the guards in opposite
+ * directions instead of aligning them, and neither caching behaviour nor its
+ * absence can decide the verdict on its own.
+ *
+ * Two sibling per-model derivations read these columns and deliberately do NOT
+ * match {@link WORK_TOKEN_SUM}. Neither is wrong; they answer different
+ * questions, and the disagreement is stated here rather than left to be
+ * discovered:
+ * - `countedTokens` (`token-derivations.ts`) counts input + output for the
+ *   "Input + output tokens" KPI, whose exact equality is pinned by the desktop
+ *   golden oracle, so it cannot absorb cache writes.
+ * - `fetchModelUsageRows` (`service.ts`, FEA-3497) sums all four for the Agents
+ *   usage toggle, which asks how much total volume a model moved. Replay
+ *   belongs in that answer and not in a job-size one.
+ *
+ * The screen names the job-size basis where that number is rendered, so a
+ * reader is never left guessing which tokens they are looking at — see
+ * `model-right-sizing.tsx`.
+ *
+ * The wire carries BOTH medians for one release, and that is deliberate rather
+ * than transitional clutter. `apps/api` and `apps/app` are separate Vercel
+ * deploy units on a single push to `main`, so one of them is old for a window
+ * whichever lands first. Swapping this basis underneath the EXISTING
+ * `medianTokens` key would make that window misreport in one direction or the
+ * other: an old screen would caption first-pass numbers with the vague header
+ * it used to carry, and a new screen would caption billed numbers with copy
+ * that asserts they are first-pass — a confident false statement, which is the
+ * worse half. So `medianTokens` keeps its billed basis untouched and
+ * `medianWorkTokens` arrives beside it as an optional field. The new screen
+ * reads only the new key and shows its unavailable dash when the key is absent,
+ * so neither deploy order can put a number under copy that does not describe
+ * it. `medianTokens` is retired in a later release, not this one.
+ */
+const BILLED_TOKEN_SUM = Prisma.sql`
   (
     tu.input_tokens + tu.output_tokens
     + tu.cache_read_tokens + tu.cache_write_tokens
   )
+`;
+
+/** First-pass tokens: everything except replayed cache reads. See above. */
+const WORK_TOKEN_SUM = Prisma.sql`
+  (tu.input_tokens + tu.output_tokens + tu.cache_write_tokens)
 `;
 
 /**
@@ -98,19 +169,43 @@ export type SpendGridRow = {
   endsWithError: boolean | null;
   producedArtifact: boolean;
   hasWallClock: boolean;
-  state: string | null;
+  status: string | null;
   usd: number | null;
   sessions: number;
 };
 
 export type ModelSpendGridRow = SpendGridRow & {
   model: string;
+  /**
+   * Every billed token — see {@link BILLED_TOKEN_SUM}. This is the RATE
+   * denominator and must keep the same population as `usd` beside it; the
+   * job-size basis is the separate median read below.
+   */
   tokens: number | null;
 };
 
+/**
+ * Both medians, read together off one pass over the same per-session totals.
+ *
+ * Both are nullable, and `null` means "no median for this model", which is a
+ * different fact from a median of zero. Neither is coerced here — see
+ * `tokenops-waste.ts` for why a fabricated `0` is not a safe stand-in on the
+ * work basis.
+ */
 export type ModelMedianRow = {
   model: string;
+  /**
+   * Median per-session BILLED tokens — see {@link BILLED_TOKEN_SUM}. The
+   * original basis of the wire field of the same name, kept unchanged for the
+   * deploy window in which `apps/app` is still the old build (ISS-5189).
+   */
   medianTokens: number | null;
+  /**
+   * Median per-session new-work tokens — see {@link WORK_TOKEN_SUM}. A job-size
+   * proxy, so prompt-cache replay is not counted as a bigger job. This is the
+   * basis the Over-powered verdict's second guard reads.
+   */
+  medianWorkTokens: number | null;
 };
 
 /**
@@ -160,7 +255,7 @@ export function fetchModelSpendGrid(
         tu.model AS "model",
         ${SPEND_GRID_SELECT},
         SUM(tu.estimated_cost)::float8 AS "usd",
-        SUM(${TOKEN_SUM})::float8 AS "tokens",
+        SUM(${BILLED_TOKEN_SUM})::float8 AS "tokens",
         COUNT(DISTINCT tu.agent_session_id)::int AS "sessions"
       ${MODEL_SPEND_FROM}
       WHERE ${sessionWindow(start, end)}
@@ -171,7 +266,15 @@ export function fetchModelSpendGrid(
 }
 
 /**
- * Median tokens per session, per model.
+ * BOTH per-session medians, per model: the billed basis this screen has always
+ * sent, and the new-work basis the Over-powered verdict's second guard reads.
+ * See {@link BILLED_TOKEN_SUM} and {@link WORK_TOKEN_SUM} for what separates
+ * them.
+ *
+ * Read together off ONE pass over the same per-session rows rather than as two
+ * queries: they describe the same population over the same window, and two
+ * reads could settle differently and leave the response quoting two bases from
+ * two populations.
  *
  * Computed in its own read over per-session totals rather than folded out of
  * the grid above: a median cannot be recombined from per-bucket medians, and
@@ -189,7 +292,8 @@ export function fetchModelMedianTokens(
         SELECT
           tu.model AS model,
           tu.agent_session_id AS session_id,
-          SUM(${TOKEN_SUM})::float8 AS tokens
+          SUM(${BILLED_TOKEN_SUM})::float8 AS billed_tokens,
+          SUM(${WORK_TOKEN_SUM})::float8 AS work_tokens
         ${MODEL_SPEND_FROM}
         WHERE ${sessionWindow(start, end)}
           AND (${scopeSql})
@@ -197,8 +301,10 @@ export function fetchModelMedianTokens(
       )
       SELECT
         model AS "model",
-        percentile_cont(0.5) WITHIN GROUP (ORDER BY tokens)::float8
-          AS "medianTokens"
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY billed_tokens)::float8
+          AS "medianTokens",
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY work_tokens)::float8
+          AS "medianWorkTokens"
       FROM per_session
       GROUP BY model
     `)

@@ -19,13 +19,14 @@
  * user. Do not add `-w` here.
  *
  * ── Why it is cached, and why the TTL is asymmetric ───────────────────────────
- * `detectBillingMode` is called per session row at ingest — inside the
+ * `detectBillingMode` is called per session row at ingest, inside the
  * single-writer write-queue transaction (`database/write-core.ts`,
- * `database/live-hook.ts`) — and again for every stored-`unknown` row on the
- * synchronous sync/reconciliation read paths (`cost/reconciliation-worker.ts`).
- * That is thousands of calls on a real install, and `execFileSync` BLOCKS the
- * calling thread, so an unmemoized spawn there would stall the write queue per
- * row. The answer is therefore memoized, with a deliberately asymmetric TTL:
+ * `database/live-hook.ts`), and again for every stored-`unknown` row on the
+ * db-host store worker's sync and reconciliation read paths
+ * (`database/sync-source.ts`). That is thousands of calls on a real install,
+ * and `execFileSync` BLOCKS the calling thread, so an unmemoized spawn there
+ * would stall the write queue per row. The answer is therefore memoized, with a
+ * deliberately asymmetric TTL:
  *
  *   - PRESENT is cached for 10 minutes. A subscription credential does not
  *     disappear mid-session, and this is the machine state the fix targets, so
@@ -35,10 +36,21 @@
  *
  * Combined with the short subprocess timeout below, the worst case is a bounded
  * sub-second stall at most once per minute, on macOS only.
+ *
+ * ISS-12120: the synchronous {@link hasKeychainCredentialCached} is for the
+ * db-host store worker only (ISS-12419 owns moving it off there too). On the
+ * Electron main thread that stall freezes every window, IPC reply and timer, so
+ * main-thread callers (live-session telemetry, the Sessions and Branches usage
+ * reads) use {@link hasKeychainCredentialNonBlocking}: the same lookup, timeout
+ * and memo, answered synchronously from a fresh memo and otherwise through one
+ * shared asynchronous probe.
+ * `test/main-thread-keychain-probe-guard.test.ts` keeps the synchronous chain
+ * off the main thread.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, type StdioOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { userInfo } from "node:os";
+import { execFileNonBlocking } from "../../server/non-blocking-exec.js";
 
 /**
  * Kill a wedged `security` call rather than stalling the write queue. A local
@@ -46,6 +58,14 @@ import { userInfo } from "node:os";
  * generous; it exists to bound a pathological hang, not a normal lookup.
  */
 const KEYCHAIN_PROBE_TIMEOUT_MS = 800;
+
+/**
+ * How long past its timeout a shared non-blocking probe may stay unsettled.
+ * `execFileNonBlocking` settles on the child's `close`, which a child that
+ * survives its SIGTERM never reaches; at this deadline the probe answers
+ * absent, as a timed-out synchronous lookup does, and frees its slot.
+ */
+const KEYCHAIN_PROBE_DEADLINE_GRACE_MS = 200;
 
 /** Memo lifetime for a FOUND credential — see the header's TTL rationale. */
 const KEYCHAIN_PROBE_TTL_PRESENT_MS = 10 * 60_000;
@@ -90,9 +110,23 @@ export type KeychainProbeDeps = {
   itemExists: (service: string, account: string) => boolean;
 };
 
+/** {@link KeychainProbeDeps} with an asynchronous existence lookup. */
+export type KeychainProbeNonBlockingDeps = Omit<
+  KeychainProbeDeps,
+  "itemExists"
+> & {
+  itemExists: (service: string, account: string) => Promise<boolean>;
+};
+
 type KeychainCacheEntry = { value: boolean; expiresAt: number };
 
 const keychainCache = new Map<string, KeychainCacheEntry>();
+
+/**
+ * The one unsettled non-blocking probe per service. Bounded by the services
+ * probed (one today) and emptied as each probe settles or hits its deadline.
+ */
+const keychainProbesInFlight = new Map<string, Promise<boolean>>();
 
 /**
  * Derive the Keychain account name Claude Code stores its credential under:
@@ -145,19 +179,44 @@ export function probeKeychainCredential(
   }
 }
 
-/**
- * Real macOS lookup. Existence-only — see the secret-handling rule above; the
- * secret is never requested and all output is discarded. Both `-a` (account)
- * and `-s` (service) are always supplied, so the item identity stays exactly as
- * narrow as the one Claude Code itself writes.
- */
-function securityItemExists(service: string, account: string): boolean {
-  const args = ["find-generic-password", "-a", account, "-s", service];
+/** {@link probeKeychainCredential} over an asynchronous lookup. */
+export async function probeKeychainCredentialNonBlocking(
+  service: string,
+  deps: KeychainProbeNonBlockingDeps
+): Promise<boolean> {
+  if (deps.platform !== "darwin") {
+    return false;
+  }
   try {
-    execFileSync(SECURITY_BINARY_PATH, args, {
-      stdio: ["ignore", "ignore", "ignore"],
-      timeout: KEYCHAIN_PROBE_TIMEOUT_MS,
-    });
+    return await deps.itemExists(service, deps.account);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `security` arguments. Existence-only, see the secret-handling rule
+ * above: the secret is never requested and all output is discarded. Both `-a`
+ * (account) and `-s` (service) are always supplied, so the item identity stays
+ * exactly as narrow as the one Claude Code itself writes.
+ */
+function securityLookupArgs(service: string, account: string): string[] {
+  return ["find-generic-password", "-a", account, "-s", service];
+}
+
+const SECURITY_LOOKUP_OPTIONS: { stdio: StdioOptions; timeout: number } = {
+  stdio: ["ignore", "ignore", "ignore"],
+  timeout: KEYCHAIN_PROBE_TIMEOUT_MS,
+};
+
+/** Real macOS lookup on the calling thread (store worker only). */
+function securityItemExists(service: string, account: string): boolean {
+  try {
+    execFileSync(
+      SECURITY_BINARY_PATH,
+      securityLookupArgs(service, account),
+      SECURITY_LOOKUP_OPTIONS
+    );
     return true;
   } catch {
     // Non-zero exit (item absent), timeout, or `security` missing entirely.
@@ -165,8 +224,41 @@ function securityItemExists(service: string, account: string): boolean {
   }
 }
 
-/** Live probe deps for desktop-main. */
-function realProbeDeps(): KeychainProbeDeps {
+/** The same lookup without blocking the calling thread. */
+async function securityItemExistsNonBlocking(
+  service: string,
+  account: string
+): Promise<boolean> {
+  try {
+    await execFileNonBlocking(
+      SECURITY_BINARY_PATH,
+      securityLookupArgs(service, account),
+      SECURITY_LOOKUP_OPTIONS
+    );
+    return true;
+  } catch (error) {
+    // Non-zero exit (item absent), timeout, or `security` missing entirely,
+    // with one exception. The timeout here is a timer on this thread, and a
+    // child's exit is delivered after expired timers run, so a thread busy for
+    // the whole timeout reports a child that already exited 0 as timed out.
+    // The synchronous probe measured the child itself and saw it succeed.
+    return exitedZero(error);
+  }
+}
+
+/** Whether a failed lookup's child nonetheless exited with status 0. */
+function exitedZero(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    error.status === 0 &&
+    !("signal" in error && error.signal)
+  );
+}
+
+/** The platform and account the live probes use. */
+function realProbeIdentity(): Pick<KeychainProbeDeps, "platform" | "account"> {
   let osUserName: string | null = null;
   try {
     osUserName = userInfo().username;
@@ -176,8 +268,41 @@ function realProbeDeps(): KeychainProbeDeps {
   return {
     platform: process.platform,
     account: keychainAccountName(process.env, osUserName),
-    itemExists: securityItemExists,
   };
+}
+
+/** Live probe deps for the store worker. */
+function realProbeDeps(): KeychainProbeDeps {
+  return { ...realProbeIdentity(), itemExists: securityItemExists };
+}
+
+/** Live probe deps for the main thread. */
+function realProbeNonBlockingDeps(): KeychainProbeNonBlockingDeps {
+  return { ...realProbeIdentity(), itemExists: securityItemExistsNonBlocking };
+}
+
+/** Record a probe answer with the asymmetric TTL, measured from `now`. */
+function rememberKeychainAnswer(
+  service: string,
+  value: boolean,
+  now: number
+): void {
+  if (keychainCache.size >= KEYCHAIN_CACHE_MAX_ENTRIES) {
+    keychainCache.clear();
+  }
+  const ttl = value
+    ? KEYCHAIN_PROBE_TTL_PRESENT_MS
+    : KEYCHAIN_PROBE_TTL_ABSENT_MS;
+  keychainCache.set(service, { value, expiresAt: now + ttl });
+}
+
+/** The memoized answer for `service`, if it is still fresh at `now`. */
+function freshKeychainAnswer(
+  service: string,
+  now: number
+): boolean | undefined {
+  const cached = keychainCache.get(service);
+  return cached && cached.expiresAt > now ? cached.value : undefined;
 }
 
 /**
@@ -193,24 +318,88 @@ export function hasKeychainCredentialCached(
   now: number = Date.now(),
   deps?: KeychainProbeDeps
 ): boolean {
-  const cached = keychainCache.get(service);
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
+  const cached = freshKeychainAnswer(service, now);
+  if (cached !== undefined) {
+    return cached;
   }
   const value = probeKeychainCredential(service, deps ?? realProbeDeps());
-  if (keychainCache.size >= KEYCHAIN_CACHE_MAX_ENTRIES) {
-    keychainCache.clear();
-  }
-  const ttl = value
-    ? KEYCHAIN_PROBE_TTL_PRESENT_MS
-    : KEYCHAIN_PROBE_TTL_ABSENT_MS;
-  keychainCache.set(service, { value, expiresAt: now + ttl });
+  rememberKeychainAnswer(service, value, now);
   return value;
 }
 
-/** Drop the memo. Test-only seam; production relies on the TTL. */
+/**
+ * Main-thread twin of {@link hasKeychainCredentialCached}: the same memo,
+ * TTLs and lookup, without blocking the event loop. Answers synchronously when
+ * the memo is fresh or the platform is not macOS (no subprocess either way).
+ * Otherwise it returns the one shared probe for `service`, which writes the
+ * memo with the TTL measured from the first caller's `now`, as the synchronous
+ * reader does, and settles as absent at its deadline if the child never exits.
+ */
+export function hasKeychainCredentialNonBlocking(
+  service: string,
+  now: number = Date.now(),
+  deps?: KeychainProbeNonBlockingDeps
+): boolean | Promise<boolean> {
+  const cached = freshKeychainAnswer(service, now);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const inFlight = keychainProbesInFlight.get(service);
+  if (inFlight) {
+    return inFlight;
+  }
+  const probeDeps = deps ?? realProbeNonBlockingDeps();
+  if (probeDeps.platform !== "darwin") {
+    rememberKeychainAnswer(service, false, now);
+    return false;
+  }
+  const probe = settleByDeadline(
+    probeKeychainCredentialNonBlocking(service, probeDeps),
+    KEYCHAIN_PROBE_TIMEOUT_MS + KEYCHAIN_PROBE_DEADLINE_GRACE_MS
+  ).then((value) => {
+    // A reset (or a later probe) replaced this slot: the answer is stale.
+    if (keychainProbesInFlight.get(service) === probe) {
+      keychainProbesInFlight.delete(service);
+      rememberKeychainAnswer(service, value, now);
+    }
+    return value;
+  });
+  keychainProbesInFlight.set(service, probe);
+  return probe;
+}
+
+/**
+ * `probe`'s answer, or absent (`false`) if it has not settled by `deadlineMs`.
+ * The deadline answers from `setImmediate`, after the event loop's I/O phase,
+ * so a child exit already waiting behind a busy thread settles the probe
+ * first instead of losing to a timer that only expired because of the stall.
+ */
+function settleByDeadline(
+  probe: Promise<boolean>,
+  deadlineMs: number
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let immediate: ReturnType<typeof setImmediate> | undefined;
+  const deadline = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => {
+      immediate = setImmediate(() => resolve(false));
+      immediate.unref?.();
+    }, deadlineMs);
+    timer.unref?.();
+  });
+  return Promise.race([probe, deadline]).finally(() => {
+    clearTimeout(timer);
+    clearImmediate(immediate);
+  });
+}
+
+/**
+ * Drop the memo and forget every in-flight probe, so one that settles later
+ * cannot write the memo. Test-only seam; production relies on the TTL.
+ */
 export function resetKeychainCredentialCache(): void {
   keychainCache.clear();
+  keychainProbesInFlight.clear();
 }
 
 /**

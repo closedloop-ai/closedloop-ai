@@ -1,11 +1,7 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareByDisplayDuration,
-  compareByDisplayedStatus,
   compareByOwnerDisplayName,
   compareByRecordUpdatedAt,
   type DisplaySortCandidate,
@@ -38,16 +34,66 @@ const RECORD_UPDATED_BASE = new Date("2026-05-20T17:00:00.000Z");
 
 /**
  * The status/awaiting-input columns the duration/owner comparators ignore. A
- * non-awaiting, terminal `completed` shape keeps those candidates out of the
- * Waiting projection so status has no bearing on the duration/owner assertions.
+ * non-awaiting, genuinely terminal `inactive` shape keeps those candidates
+ * measured by their own end instant so status has no bearing on the
+ * duration/owner assertions.
+ *
+ * ISS-10364: this used to stand in the retired `completed` spelling for
+ * "terminal". That spelling now fails OPEN to Active (Running) rather than
+ * folding to a terminal lifecycle, which would silently turn every duration
+ * fixture below into a running-clock measurement — so it has to be a real
+ * `SESSION_STATUS` member.
  */
-const NON_WAITING_STATUS_FIELDS = {
-  awaitingInputSince: null,
-  artifact: { status: "completed", updatedAt: RECORD_UPDATED_BASE },
-  updatedAt: RECORD_UPDATED_BASE,
+/**
+ * ISS-8335 widened `displaySortCandidateSelect` with the DB-native sort columns
+ * so a multi-rule chain can order them in memory. These tests exercise the
+ * DISPLAY comparators, which never read them, so every fixture pins ONE
+ * non-differentiating value per column — varying them here would suggest they
+ * took part in the order under test. `session-sort-comparators.test.ts` is where
+ * they do differentiate.
+ */
+const DB_SORT_COLUMN_FIELDS = {
+  computeTargetId: "target-1",
+  externalSessionId: "session-1",
+  autonomy: null,
+  // ISS-7176: `cost` became a DB-native sort column, so the candidate carries
+  // `estimatedCost` for the same reason it carries the four below.
+  estimatedCost: null,
+  harness: "claude",
+  model: null,
+  repositoryFullName: null,
 } satisfies Pick<
   DisplaySortCandidate,
-  "awaitingInputSince" | "artifact" | "updatedAt"
+  | "autonomy"
+  | "estimatedCost"
+  | "harness"
+  | "model"
+  | "repositoryFullName"
+  | "computeTargetId"
+  | "externalSessionId"
+>;
+
+const NON_WAITING_STATUS_FIELDS = {
+  awaitingInputSince: null,
+  artifact: {
+    status: SESSION_STATUS.INACTIVE,
+    priority: null,
+    updatedAt: RECORD_UPDATED_BASE,
+    assignee: null,
+  },
+  updatedAt: RECORD_UPDATED_BASE,
+  endsWithError: null,
+  ...DB_SORT_COLUMN_FIELDS,
+} satisfies Pick<
+  DisplaySortCandidate,
+  | "awaitingInputSince"
+  | "artifact"
+  | "autonomy"
+  | "endsWithError"
+  | "harness"
+  | "model"
+  | "repositoryFullName"
+  | "updatedAt"
 >;
 
 /**
@@ -77,7 +123,6 @@ function durationCandidate(
     sessionStartedAt: START,
     lastActivityAt: freshAnchor(),
     sessionEndedAt: new Date(START.getTime() + durationMs),
-    user: null,
     ...NON_WAITING_STATUS_FIELDS,
   };
 }
@@ -93,7 +138,6 @@ function unmeasurableCandidate(artifactId: string): DisplaySortCandidate {
     sessionStartedAt: START,
     lastActivityAt: freshAnchor(),
     sessionEndedAt: null,
-    user: null,
     ...NON_WAITING_STATUS_FIELDS,
   };
 }
@@ -109,47 +153,21 @@ function negativeSpanCandidate(artifactId: string): DisplaySortCandidate {
     sessionStartedAt: START,
     lastActivityAt: freshAnchor(),
     sessionEndedAt: new Date(START.getTime() - 5000),
-    user: null,
     ...NON_WAITING_STATUS_FIELDS,
   };
 }
 
 function ownerCandidate(
   artifactId: string,
-  user: DisplaySortCandidate["user"]
+  assignee: DisplaySortCandidate["artifact"]["assignee"]
 ): DisplaySortCandidate {
   return {
     artifactId,
     sessionStartedAt: START,
     lastActivityAt: freshAnchor(),
     sessionEndedAt: new Date(START.getTime() + 1000),
-    user,
     ...NON_WAITING_STATUS_FIELDS,
-  };
-}
-
-/**
- * A candidate carrying only the fields the status comparator reads: its stored
- * status, awaiting-input timestamp, and end. The duration/owner columns are set
- * to fixed non-differentiating values so the status projection alone drives order.
- */
-function statusCandidate(
-  artifactId: string,
-  opts: {
-    storedStatus: string;
-    awaitingInputSince?: Date | null;
-    sessionEndedAt?: Date | null;
-  }
-): DisplaySortCandidate {
-  return {
-    artifactId,
-    sessionStartedAt: START,
-    lastActivityAt: freshAnchor(),
-    sessionEndedAt: opts.sessionEndedAt ?? null,
-    user: null,
-    awaitingInputSince: opts.awaitingInputSince ?? null,
-    artifact: { status: opts.storedStatus, updatedAt: RECORD_UPDATED_BASE },
-    updatedAt: RECORD_UPDATED_BASE,
+    artifact: { ...NON_WAITING_STATUS_FIELDS.artifact, assignee },
   };
 }
 
@@ -192,7 +210,7 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
   });
 
   it("measures a RUNNING session against the clock it is handed", () => {
-    // wongk (#4409): this was a live-clock BOUNDED assertion — `>= 90m` and
+    // whitlockk (#4409): this was a live-clock BOUNDED assertion — `>= 90m` and
     // `< 91m` around a `Date.now()` read the production code made separately.
     // The repo bans those: scheduler delay can flake it, and a one-minute range
     // is wide enough to hide a real regression. `nowMs` is now an argument, so
@@ -210,13 +228,17 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
   });
 
   it("ignores a stale endedAt on a session that is still running", () => {
-    // Only the status picks the branch (ISS-5182 clears `endedAt` when an
-    // inactive session resumes; until then a leftover value must not freeze it).
+    // ISS-5182 clears `endedAt` when an inactive session resumes; until then a
+    // leftover value must not freeze the span. The status alone decides the
+    // branch — a stored `active` row measures against the clock whether or
+    // not it carries a leftover end, with or without later activity (see the
+    // sibling case below).
     expect(
       resolveDisplayDurationMs(
         {
           sessionStartedAt: START,
           sessionEndedAt: new Date(START.getTime() + 30 * MINUTE_MS),
+          lastActivityAt: new Date(START.getTime() + 60 * MINUTE_MS),
           artifact: { status: SESSION_STATUS.ACTIVE },
         },
         START.getTime() + 90 * MINUTE_MS
@@ -224,16 +246,43 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
     ).toBe(90 * MINUTE_MS);
   });
 
-  it("never reaches the clock for an INDETERMINATE status with no end instant", () => {
-    // ISS-4997 + #4409: an unrecognized or display-only status asserts nothing
-    // about the lifecycle, and the ABSENCE of an end instant is not evidence the
-    // run continues. A clock-bound key here would have ordered a row the cell
-    // renders blank as though it were the longest session on the page.
-    for (const status of [
-      "some-future-status",
-      DISPLAYED_SESSION_STATUS.STALE,
-      null,
-    ]) {
+  it("measures an ended row that stores active against the clock, same as any other active row", () => {
+    // The same leftover `endedAt`, but with NO activity after it: the stored
+    // `active` still decides the branch, so the span measures to the clock.
+    expect(
+      resolveDisplayDurationMs(
+        {
+          sessionStartedAt: START,
+          sessionEndedAt: new Date(START.getTime() + 30 * MINUTE_MS),
+          lastActivityAt: new Date(START.getTime() + 20 * MINUTE_MS),
+          artifact: { status: SESSION_STATUS.ACTIVE },
+        },
+        START.getTime() + 90 * MINUTE_MS
+      )
+    ).toBe(90 * MINUTE_MS);
+  });
+
+  it("returns null for an ABSENT status with no end instant — Indeterminate never reaches the clock", () => {
+    // #4409: the ABSENCE of an end instant is not evidence the run continues. A
+    // clock-bound key here would have ordered a row the cell renders blank as
+    // though it were the longest session on the page.
+    expect(
+      resolveDisplayDurationMs(
+        {
+          sessionStartedAt: START,
+          sessionEndedAt: null,
+          artifact: { status: null },
+        },
+        NOW_MS
+      )
+    ).toBeNull();
+  });
+
+  it("ISS-10364: an unrecognized or display-only status with no end instant now measures RUNNING, not Indeterminate", () => {
+    // ISS-4997's `unknown` fold and the staleness fold are both gone: a status
+    // this build does not model now fails OPEN to Active like any other
+    // version-skewed spelling, and Active with no end instant is Running.
+    for (const status of ["some-future-status", "stale"]) {
       expect(
         resolveDisplayDurationMs(
           {
@@ -243,7 +292,7 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
           },
           NOW_MS
         )
-      ).toBeNull();
+      ).toBe(NOW_MS - START.getTime());
     }
   });
 
@@ -287,18 +336,8 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
     ).toBeNull();
   });
 
-  it("resolves an unrecognized or absent status by EVIDENCE (ISS-4997 version skew)", () => {
+  it("resolves a wholly ABSENT status by evidence — an omitted artifact stays Indeterminate", () => {
     const spanMs = 37 * MINUTE_MS;
-    expect(
-      resolveDisplayDurationMs(
-        {
-          sessionStartedAt: START,
-          sessionEndedAt: new Date(START.getTime() + spanMs),
-          artifact: { status: "some-future-status" },
-        },
-        NOW_MS
-      )
-    ).toBe(spanMs);
     expect(
       resolveDisplayDurationMs(
         {
@@ -311,9 +350,29 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
     ).toBe(spanMs);
   });
 
-  it("bounds the LEGACY terminal statuses too (ISS-4586)", () => {
-    // A stored `completed`/`abandoned` row must not fall through to the running
-    // branch and be measured against now().
+  it("ISS-10364: an unrecognized-but-present status now measures RUNNING, ignoring its own recorded end", () => {
+    // Before this ticket an unrecognized spelling was Indeterminate and bounded
+    // by its own sessionEndedAt (evidence-based). ISS-10364 removed that fold:
+    // the status now fails OPEN to Active, so Running always wins and the
+    // recorded end is ignored — the trade the operator ruling accepted for
+    // "Unparsable status are already converted to Active on import".
+    expect(
+      resolveDisplayDurationMs(
+        {
+          sessionStartedAt: START,
+          sessionEndedAt: new Date(START.getTime() + 37 * MINUTE_MS),
+          artifact: { status: "some-future-status" },
+        },
+        NOW_MS
+      )
+    ).toBe(NOW_MS - START.getTime());
+  });
+
+  it("ISS-10364: the LEGACY completed/abandoned spellings now measure RUNNING too — they fail open like any other unrecognized status", () => {
+    // Before this ticket these folded to the display-only `unknown`
+    // (Indeterminate, bounded). ISS-10364 removed that fold, so a stored
+    // `completed`/`abandoned` row now falls through to the same fail-open
+    // Active/Running branch as any other version-skewed spelling.
     for (const status of ["completed", "abandoned"]) {
       expect(
         resolveDisplayDurationMs(
@@ -324,7 +383,7 @@ describe("resolveDisplayDurationMs (ISS-5131)", () => {
           },
           NOW_MS
         )
-      ).toBeNull();
+      ).toBe(NOW_MS - START.getTime());
     }
   });
 });
@@ -526,145 +585,6 @@ describe("compareByOwnerDisplayName (FEA-4300)", () => {
   });
 });
 
-const AWAITING = new Date("2026-05-20T17:05:00.000Z");
-const ENDED = new Date("2026-05-20T17:10:00.000Z");
-
-describe("compareByDisplayedStatus staleness fold (ISS-5366)", () => {
-  /** Comfortably past STALE_SESSION_DISPLAY_THRESHOLD_HOURS (24). */
-  function staleAnchoredCandidate(artifactId: string): DisplaySortCandidate {
-    return {
-      artifactId,
-      sessionStartedAt: START,
-      lastActivityAt: new Date(Date.now() - 72 * HOUR_MS),
-      sessionEndedAt: null,
-      user: null,
-      awaitingInputSince: null,
-      artifact: {
-        status: SESSION_STATUS.ACTIVE,
-        updatedAt: RECORD_UPDATED_BASE,
-      },
-      updatedAt: RECORD_UPDATED_BASE,
-    };
-  }
-
-  it("sorts a long-silent active row by its DISPLAYED Stale rank, not among the Active rows", () => {
-    // The row badges "Stale", so it must not sort into the Active block — the
-    // sort, the badge, and the Status facet now read one projection.
-    const candidates = [
-      staleAnchoredCandidate("row-stale"),
-      statusCandidate("row-active", { storedStatus: SESSION_STATUS.ACTIVE }),
-      statusCandidate("row-error", {
-        storedStatus: SESSION_STATUS.ERROR,
-        sessionEndedAt: ENDED,
-      }),
-    ];
-    expect(sortIds(candidates, compareByDisplayedStatus, "asc")).toEqual([
-      "row-active",
-      "row-error",
-      "row-stale",
-    ]);
-  });
-
-  it("keeps an unrecognized status ranked last as Unknown", () => {
-    const candidates = [
-      statusCandidate("row-future", { storedStatus: "some-future-status" }),
-      statusCandidate("row-active", { storedStatus: SESSION_STATUS.ACTIVE }),
-    ];
-    expect(sortIds(candidates, compareByDisplayedStatus, "asc")).toEqual([
-      "row-active",
-      "row-future",
-    ]);
-  });
-});
-
-describe("compareByDisplayedStatus (FEA-4301 / ISS-4586)", () => {
-  it("orders ASC by the DISPLAYED status lifecycle: Active → Waiting → Inactive → Error", () => {
-    const candidates = [
-      statusCandidate("row-inactive", {
-        storedStatus: SESSION_STATUS.INACTIVE,
-        sessionEndedAt: ENDED,
-      }),
-      statusCandidate("row-active", { storedStatus: SESSION_STATUS.ACTIVE }),
-      statusCandidate("row-error", {
-        storedStatus: SESSION_STATUS.ERROR,
-        sessionEndedAt: ENDED,
-      }),
-      // Stored `active`, but awaiting input → DISPLAYS as Waiting.
-      statusCandidate("row-waiting", {
-        storedStatus: SESSION_STATUS.ACTIVE,
-        awaitingInputSince: AWAITING,
-      }),
-    ];
-    expect(sortIds(candidates, compareByDisplayedStatus, "asc")).toEqual([
-      "row-active",
-      "row-waiting",
-      "row-inactive",
-      "row-error",
-    ]);
-  });
-
-  it("sorts a displayed-Waiting row (stored active) as Waiting, NOT among the Active rows", () => {
-    const active = statusCandidate("row-active", {
-      storedStatus: SESSION_STATUS.ACTIVE,
-    });
-    // Same stored status as `active`, but awaiting input → Waiting.
-    const waiting = statusCandidate("row-waiting", {
-      storedStatus: SESSION_STATUS.ACTIVE,
-      awaitingInputSince: AWAITING,
-    });
-    const inactive = statusCandidate("row-inactive", {
-      storedStatus: SESSION_STATUS.INACTIVE,
-      sessionEndedAt: ENDED,
-    });
-    // The Waiting row lands BETWEEN Active and Completed — a raw-status sort would
-    // have collapsed it onto the Active row (both store `active`).
-    expect(
-      sortIds([inactive, waiting, active], compareByDisplayedStatus, "asc")
-    ).toEqual(["row-active", "row-waiting", "row-inactive"]);
-  });
-
-  it("breaks ties within the same displayed status on the unique artifactId (FEA-4329)", () => {
-    const a = statusCandidate("aaa", { storedStatus: SESSION_STATUS.ACTIVE });
-    const b = statusCandidate("bbb", { storedStatus: SESSION_STATUS.ACTIVE });
-    // Same displayed status → the artifactId-desc tiebreaker is total and stable
-    // regardless of input order.
-    expect(sortIds([a, b], compareByDisplayedStatus, "asc")).toEqual([
-      "bbb",
-      "aaa",
-    ]);
-    expect(sortIds([b, a], compareByDisplayedStatus, "asc")).toEqual([
-      "bbb",
-      "aaa",
-    ]);
-  });
-
-  it("keeps an UNKNOWN status LAST in BOTH directions (thread #3: not promoted to the front on desc)", () => {
-    const active = statusCandidate("row-active", {
-      storedStatus: SESSION_STATUS.ACTIVE,
-    });
-    // ISS-5592: the KNOWN comparator is `inactive`, not the retired `completed`.
-    // That spelling is unrecognized now, so it ranks WITH the unknown row and
-    // cannot serve as the known half of this comparison.
-    const inactive = statusCandidate("row-inactive", {
-      storedStatus: SESSION_STATUS.INACTIVE,
-      sessionEndedAt: ENDED,
-    });
-    // A future status the vocabulary does not cover.
-    const unknown = statusCandidate("row-unknown", {
-      storedStatus: "quantum-flux",
-    });
-    // ASC: known lifecycle first, unknown last.
-    expect(
-      sortIds([unknown, inactive, active], compareByDisplayedStatus, "asc")
-    ).toEqual(["row-active", "row-inactive", "row-unknown"]);
-    // DESC: the KNOWN ranks reverse, but the unknown stays LAST — a
-    // direction-flipped raw rank delta would have put it FIRST here.
-    expect(
-      sortIds([active, inactive, unknown], compareByDisplayedStatus, "desc")
-    ).toEqual(["row-inactive", "row-active", "row-unknown"]);
-  });
-});
-
 /**
  * ISS-5131 (#4409 review): `?sortBy=duration` across PAGE requests.
  *
@@ -693,9 +613,15 @@ describe("compareByDisplayDuration across page requests (#4409)", () => {
         sessionStartedAt: START,
         lastActivityAt: freshAnchor(),
         sessionEndedAt: new Date(START.getTime() + 90 * MINUTE_MS + 20_000),
-        user: null,
+        ...DB_SORT_COLUMN_FIELDS,
         awaitingInputSince: null,
-        artifact: { status: "completed", updatedAt: RECORD_UPDATED_BASE },
+        endsWithError: null,
+        artifact: {
+          status: SESSION_STATUS.INACTIVE,
+          priority: null,
+          updatedAt: RECORD_UPDATED_BASE,
+          assignee: null,
+        },
         updatedAt: RECORD_UPDATED_BASE,
       },
       {
@@ -703,11 +629,14 @@ describe("compareByDisplayDuration across page requests (#4409)", () => {
         sessionStartedAt: START,
         lastActivityAt: freshAnchor(),
         sessionEndedAt: null,
-        user: null,
+        ...DB_SORT_COLUMN_FIELDS,
         awaitingInputSince: null,
+        endsWithError: null,
         artifact: {
           status: SESSION_STATUS.ACTIVE,
+          priority: null,
           updatedAt: RECORD_UPDATED_BASE,
+          assignee: null,
         },
         updatedAt: RECORD_UPDATED_BASE,
       },
@@ -762,9 +691,15 @@ describe("compareByRecordUpdatedAt (ISS-6005)", () => {
       sessionStartedAt: START,
       lastActivityAt: freshAnchor(),
       sessionEndedAt: new Date(START.getTime() + HOUR_MS),
-      user: null,
+      ...DB_SORT_COLUMN_FIELDS,
       awaitingInputSince: null,
-      artifact: { status: "completed", updatedAt: parentUpdatedAt },
+      endsWithError: null,
+      artifact: {
+        status: "completed",
+        priority: null,
+        updatedAt: parentUpdatedAt,
+        assignee: null,
+      },
       updatedAt: detailUpdatedAt,
     };
   }
@@ -842,7 +777,7 @@ describe("compareByRecordUpdatedAt (ISS-6005)", () => {
     // A tie is otherwise the degenerate ordering, and FEA-4329 requires it
     // resolve deterministically or a row can repeat across pages.
     //
-    // thadeusb review: sorting ONE array twice and comparing the two results
+    // tamsinb review: sorting ONE array twice and comparing the two results
     // proves nothing — `Array#sort` is deterministic for a given input, so that
     // assertion holds even if `compareTiebreaker` returned 0 and left the tie
     // unresolved. The claim is that the order is independent of the INPUT
@@ -955,30 +890,11 @@ describe("sort-key derivation per candidate (ISS-6051)", () => {
           lastName: "Example",
           email: `owner${index}@example.com`,
         }),
-        "user",
+        "artifact",
         counter
       )
     );
     sortIds(candidates, compareByOwnerDisplayName, "asc");
-    expect(counter.reads).toBe(ROW_COUNT);
-  });
-
-  it("projects the displayed status once per candidate, against one clock read", () => {
-    const counter = { reads: 0 };
-    const candidates = rowIndexes().map((index) =>
-      countReadsOf(
-        statusCandidate(`row-${index}`, {
-          // Alternating displayed statuses so the ranks differ and the sort
-          // cannot short-circuit on an all-equal population.
-          storedStatus:
-            index % 2 === 0 ? SESSION_STATUS.ACTIVE : SESSION_STATUS.ERROR,
-          sessionEndedAt: index % 2 === 0 ? null : ENDED,
-        }),
-        "awaitingInputSince",
-        counter
-      )
-    );
-    sortIds(candidates, compareByDisplayedStatus, "asc");
     expect(counter.reads).toBe(ROW_COUNT);
   });
 

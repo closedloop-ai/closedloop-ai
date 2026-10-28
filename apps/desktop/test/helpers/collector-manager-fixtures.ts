@@ -1,7 +1,8 @@
 /**
  * @file collector-manager-fixtures.ts
  * @description Shared fixtures for `CollectorManager` tests — the Codex session
- * factory, the completion barrier, and the no-op `FSWatcher` stub.
+ * factory, the completion barrier, the no-op `FSWatcher` stub, and the two
+ * manager builders the restart-persistence suites drive (ISS-9838).
  *
  * Extracted from `ingest-orchestrator.test.ts` so a second manager suite can use
  * them without copying (the repo rule: a nontrivial test fixture used by more
@@ -9,9 +10,15 @@
  * level `fakeCollector` / `makeSession` primitives stay in
  * `../normalized-session-test-utils.js`, which is consumed far more widely.
  */
+import { CollectorManager } from "../../src/main/collectors/engine/collector-manager.js";
 import type { AttachedDirectoryWatcher } from "../../src/main/collectors/engine/watcher.js";
-import type { NormalizedSession } from "../../src/main/collectors/types.js";
+import type {
+  HarnessCollector,
+  NormalizedSession,
+} from "../../src/main/collectors/types.js";
+import type { MemoryIngestStoreProvider } from "../ingest-store-test-utils.js";
 import { makeSession as baseSession } from "../normalized-session-test-utils.js";
+import { waitForCondition } from "../wait-for-condition.js";
 
 /** A complete, importable Codex session — the manager suites' default subject. */
 export function makeSession(
@@ -37,14 +44,13 @@ export function makeSession(
  * bounded loop is the sanctioned fallback precisely because it fails loudly
  * instead of falling through and letting a later assertion read stale state.
  */
-export async function waitUntil(predicate: () => boolean): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > 2000) {
-      throw new Error("timed out waiting for collector import");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+export function waitUntil(predicate: () => boolean): Promise<void> {
+  return waitForCondition(
+    predicate,
+    2000,
+    10,
+    "timed out waiting for collector import"
+  );
 }
 
 /**
@@ -59,17 +65,28 @@ export async function waitUntil(predicate: () => boolean): Promise<void> {
 export type RecordingDirectoryWatcher = AttachedDirectoryWatcher & {
   /** How many times the watcher under test called `close()` on this handle. */
   closeCount(): number;
+  /**
+   * Fire the `error` production subscribed with (ISS-7255). A fake whose `on`
+   * discarded the listener could not tell a handler that recovers the live
+   * channel from one that swallows the failure and leaves it dead.
+   */
+  emitError(error: Error): void;
 };
 
 /** A watch handle that records `close()` so teardown can be asserted. */
 export function recordingFsWatcher(): RecordingDirectoryWatcher {
   let closes = 0;
+  let onError: ((error: Error) => void) | undefined;
   const watcher: RecordingDirectoryWatcher = {
-    on: () => watcher,
+    on: (_event, listener) => {
+      onError = listener;
+      return watcher;
+    },
     close: () => {
       closes += 1;
     },
     closeCount: () => closes,
+    emitError: (error) => onError?.(error),
   };
   return watcher;
 }
@@ -86,4 +103,84 @@ export function fakeFsWatcher(): AttachedDirectoryWatcher {
  */
 export async function noopCooperativeDelay(): Promise<void> {
   // Intentionally empty: the import loop's yield point is a no-op under test.
+}
+
+/**
+ * A manager over ONE Codex source whose session id is derivable from the path —
+ * the lever the FEA-1785 orphan self-heal pulls. Extracted from
+ * `ingest-orchestrator.test.ts` (ISS-9838) so wiring the ingest-store provider
+ * through it does not grow a grandfathered file.
+ */
+export function makeOrphanManager(opts: {
+  stateDir: string;
+  ingestStores: MemoryIngestStoreProvider;
+  source: string;
+  sessionId: string;
+  imported: string[];
+  listExistingSessionIds?: () => Promise<ReadonlySet<string>>;
+  onBootImportComplete?: () => void;
+}): CollectorManager {
+  const collector: HarnessCollector = {
+    key: "codex",
+    cacheName: "codex",
+    allowUnscopedSourceAdmission: true,
+    watchRoots: () => [],
+    watchMatch: () => true,
+    listSources: () => [opts.source],
+    parse: () => Promise.resolve([makeSession(opts.sessionId)]),
+    sessionIdForSource: (s: string) =>
+      s === opts.source ? opts.sessionId : null,
+  };
+  return new CollectorManager({
+    importer: {
+      importSession: (session) => {
+        opts.imported.push(session.sessionId);
+        return Promise.resolve({ skipped: false, reactivated: false });
+      },
+    },
+    stateDir: opts.stateDir,
+    ingestStores: opts.ingestStores.provider,
+    emit: () => {},
+    getCollectionMode: () => "disabled",
+    catchupPollMs: null,
+    collectors: [collector],
+    listExistingSessionIds: opts.listExistingSessionIds,
+    onBootImportComplete: opts.onBootImportComplete,
+  });
+}
+
+/**
+ * Run ONE boot import pass to completion over `collector` and stop. Callers that
+ * assert across a restart pass the SAME `ingestStores`, because what carries the
+ * catchup/quarantine state across the two passes is the store behind that
+ * provider, not the state directory (ISS-9838).
+ */
+export async function runBootImport(
+  stateDir: string,
+  collector: HarnessCollector,
+  ingestStores: MemoryIngestStoreProvider
+): Promise<void> {
+  let resolveBootComplete: (() => void) | undefined;
+  const bootComplete = new Promise<void>((resolve) => {
+    resolveBootComplete = resolve;
+  });
+  const manager = new CollectorManager({
+    importer: {
+      importSession: () =>
+        Promise.resolve({ skipped: false, reactivated: false }),
+    },
+    stateDir,
+    ingestStores: ingestStores.provider,
+    emit: () => {},
+    getCollectionMode: () => "disabled",
+    catchupPollMs: null,
+    onBootImportComplete: () => {
+      resolveBootComplete?.();
+    },
+    collectors: [collector],
+  });
+
+  manager.start();
+  await bootComplete;
+  await manager.stop();
 }

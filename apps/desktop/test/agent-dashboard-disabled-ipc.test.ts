@@ -10,17 +10,21 @@
  * throw-on-duplicate behavior to prove it.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   BranchTraceUnavailableReason,
   unavailableBranchTraceResult,
 } from "@repo/api/src/types/branch-trace.js";
 import {
+  ConvertFailureClass,
+  makeConvertInstallErrorOutcome,
+} from "@repo/api/src/types/convert-install.js";
+import { test } from "vitest";
+import {
+  CATALOG_CONVERT_INSTALL_CHANNEL,
   DESIGN_SYSTEM_DB_IPC_CHANNELS,
   type IpcHandleRegistrar,
   installDisabledAgentDashboardDbIpcHandlers,
 } from "../src/main/dashboard/agent-dashboard-ipc-contract.js";
-import { ScheduledTasksIpcChannel } from "../src/shared/scheduled-tasks-channel.js";
 import {
   emptySharedAgentSessionsAnalytics,
   emptySharedAgentSessionsListResponse,
@@ -35,13 +39,7 @@ import {
   SHARED_BRANCHES_IPC_CHANNEL_LIST,
   SHARED_BRANCHES_IPC_CHANNELS,
 } from "../src/shared/shared-branches-contract.js";
-import {
-  SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST,
-  SHARED_TRACE_COMMENTS_IPC_CHANNELS,
-} from "../src/shared/shared-trace-comments-contract.js";
-
-const LOCAL_STORE_UNAVAILABLE_RE = /local store is unavailable/;
-const ROUTINES_UNAVAILABLE_RE = /routines are unavailable/i;
+import { THREAD_VIEWED_CHANNEL } from "../src/shared/thread-viewership-contract.js";
 
 type Listener = (event: unknown, ...args: unknown[]) => unknown;
 
@@ -65,6 +63,18 @@ function makeFakeRegistrar(): {
     },
   };
   return { registrar, handlers };
+}
+
+function invokeDisabled(
+  handlers: Map<string, Listener>,
+  channel: string,
+  ...args: unknown[]
+): unknown {
+  const listener = handlers.get(channel);
+  if (!listener) {
+    throw new Error(`missing disabled handler for ${channel}`);
+  }
+  return listener(undefined, ...args);
 }
 
 test("installs disabled DB IPC responders for every design-system channel", () => {
@@ -151,22 +161,10 @@ test("installs disabled shared-session responders returning canonical empty/null
     handlers.get(SHARED_AGENT_SESSIONS_IPC_CHANNELS.detail)?.(undefined),
     null
   );
-});
-
-test("installs disabled shared trace-comment responders for every exposed channel", () => {
-  const { registrar, handlers } = makeFakeRegistrar();
-  installDisabledAgentDashboardDbIpcHandlers(registrar);
-
-  for (const channel of SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST) {
-    assert.ok(handlers.has(channel), `missing disabled handler for ${channel}`);
-  }
-  assert.throws(
-    () => handlers.get(SHARED_TRACE_COMMENTS_IPC_CHANNELS.list)?.(undefined),
-    LOCAL_STORE_UNAVAILABLE_RE
-  );
-  assert.throws(
-    () => handlers.get(SHARED_TRACE_COMMENTS_IPC_CHANNELS.create)?.(undefined),
-    LOCAL_STORE_UNAVAILABLE_RE
+  // ISS-9857: the events page fails closed like the detail it continues.
+  assert.equal(
+    handlers.get(SHARED_AGENT_SESSIONS_IPC_CHANNELS.events)?.(undefined),
+    null
   );
 });
 
@@ -190,45 +188,105 @@ test("replaces already-registered live branch handlers after a startup failure",
   );
 });
 
-test("disabled scheduled-tasks: reads return empty, writes reject (FEA-3852/3853)", () => {
+test("disabled paged and kanban responses preserve caller window arguments", () => {
   const { registrar, handlers } = makeFakeRegistrar();
   installDisabledAgentDashboardDbIpcHandlers(registrar);
 
-  // Reads degrade to an empty surface so a mounted view shows its empty state.
   assert.deepEqual(
-    handlers.get(ScheduledTasksIpcChannel.List)?.(undefined),
-    []
+    invokeDisabled(handlers, "desktop:db:get-sessions-page", {
+      limit: 17,
+      offset: 34,
+    }),
+    { sessions: [], total: 0, limit: 17, offset: 34 }
   );
   assert.deepEqual(
-    handlers.get(ScheduledTasksIpcChannel.Runs)?.(undefined),
-    []
+    invokeDisabled(
+      handlers,
+      "desktop:db:get-kanban-pages",
+      ["active", 42, "error", null],
+      13
+    ),
+    {
+      active: { sessions: [], total: 0, limit: 13, offset: 0 },
+      error: { sessions: [], total: 0, limit: 13, offset: 0 },
+    },
+    "non-string statuses must not become response keys"
   );
-
-  // The schedule preview returns an inert invalid result, never a throw.
-  const preview = handlers.get(ScheduledTasksIpcChannel.PreviewSchedule)?.(
-    undefined
-  ) as { valid: boolean; nextRuns: unknown[] };
-  assert.equal(preview.valid, false);
-  assert.deepEqual(preview.nextRuns, []);
-
-  // Writes reject: a create against a disabled store cannot succeed, so the
-  // handler throws rather than letting the UI believe the write landed.
-  for (const channel of [
-    ScheduledTasksIpcChannel.Create,
-    ScheduledTasksIpcChannel.Update,
-    ScheduledTasksIpcChannel.Delete,
-    ScheduledTasksIpcChannel.Toggle,
-    ScheduledTasksIpcChannel.RunNow,
-  ]) {
-    assert.throws(
-      () => handlers.get(channel)?.(undefined),
-      ROUTINES_UNAVAILABLE_RE,
-      `${channel} must reject while disabled`
-    );
-  }
 });
 
-// ISS-4773 (wongk review): the canonical empty usage summary must PUBLISH the
+test("disabled insights return the exact empty shape for each section", () => {
+  const { registrar, handlers } = makeFakeRegistrar();
+  installDisabledAgentDashboardDbIpcHandlers(registrar);
+  const emptyTimeSeries = { series: [], points: [] };
+
+  assert.deepEqual(
+    invokeDisabled(handlers, "desktop:db:get-insights", "utilization"),
+    {
+      kpis: [],
+      charts: {
+        eventActivity: emptyTimeSeries,
+        eventVolume: emptyTimeSeries,
+        eventsByType: [],
+        sessionsByStatus: [],
+        reviewQueue: [],
+      },
+    }
+  );
+  assert.deepEqual(
+    invokeDisabled(handlers, "desktop:db:get-insights", "agents"),
+    {
+      kpis: [],
+      charts: {
+        modelUsageOverTime: emptyTimeSeries,
+        modelBreakdown: [],
+        tokenDistribution: [],
+        toolUsage: [],
+        agentsByStatus: [],
+        agentsByType: [],
+        toolRunsOverTime: emptyTimeSeries,
+      },
+    }
+  );
+  assert.deepEqual(
+    invokeDisabled(handlers, "desktop:db:get-insights", "delivery"),
+    {
+      kpis: [],
+      charts: {
+        prTrend: emptyTimeSeries,
+        klocTrend: emptyTimeSeries,
+        locTrend: emptyTimeSeries,
+        prByRepo: [],
+        meanTimeToMerge: [],
+        prByState: [],
+        branchLifespan: [],
+        branchesWithoutPr: [],
+      },
+    }
+  );
+});
+
+test("disabled conversion, viewership, and default list arms stay contract-complete", () => {
+  const { registrar, handlers } = makeFakeRegistrar();
+  installDisabledAgentDashboardDbIpcHandlers(registrar);
+
+  assert.deepEqual(
+    invokeDisabled(handlers, CATALOG_CONVERT_INSTALL_CHANNEL),
+    makeConvertInstallErrorOutcome({
+      failureClass: ConvertFailureClass.Transient,
+      message: "Agent Dashboard is disabled in Settings.",
+    })
+  );
+  assert.deepEqual(invokeDisabled(handlers, THREAD_VIEWED_CHANNEL), {
+    recorded: false,
+  });
+  assert.deepEqual(
+    invokeDisabled(handlers, "desktop:db:get-sessions"),
+    [],
+    "the named default arm must remain an empty list"
+  );
+});
+
+// ISS-4773 (whitlockk review): the canonical empty usage summary must PUBLISH the
 // three-way cost split as explicit zeroes.
 //
 // On the wire, an ABSENT `meteredEstimatedCost`/`unknownEstimatedCost` pair is

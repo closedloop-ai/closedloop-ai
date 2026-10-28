@@ -3,7 +3,7 @@ import type { FileChange, SessionLane, TraceTurn } from "./mock";
 import type { BranchScenario } from "./mock-detail";
 import { idleTimelineColumn, timelineColumn } from "./timeline-fixtures";
 
-type TraceUserId = "u-alex" | "u-sam" | "u-jordan" | "u-parker";
+type TraceUserId = "u-alex" | "u-sam" | "u-jordan" | "u-pascoe";
 
 type VariantConfig = {
   title: string;
@@ -22,7 +22,7 @@ const ACTOR_NAMES: Record<TraceUserId, string> = {
   "u-alex": "Alex Rivera",
   "u-sam": "Sam Chen",
   "u-jordan": "Jordan Lee",
-  "u-parker": "Parker Byrd",
+  "u-pascoe": "Pascoe Birchall",
 };
 
 const ACTOR_COLORS = [chartColor(0), chartColor(1)];
@@ -214,7 +214,7 @@ export function buildVariantScenarios(
       failure: "The migration test failed on repository-level precedence.",
       finalResult:
         "Corrected the merge order and added the mixed-precedence regression case.",
-      ownerId: "u-parker",
+      ownerId: "u-pascoe",
       reviewerId: "u-alex",
       sessionCount: 3,
       files: [

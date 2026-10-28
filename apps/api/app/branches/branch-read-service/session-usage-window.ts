@@ -1,6 +1,6 @@
 // FEA-4270 — the per-EVENT SPEND window for the Branches usage/analytics reads.
-// Extracted from `branch-read-service.ts` so that grandfathered file stays under
-// its shrink-only ceiling.
+// Extracted from `branch-read-service.ts` so that file shrinks rather than
+// grows.
 //
 // ISS-4813: these exports are PRIVATE INTERNALS of the `branch-read-service`
 // surface, not a route-facing sibling service, so per `apps/api/AGENTS.md` they
@@ -21,7 +21,7 @@
 // keeps the branch's lifetime session metadata (sessionIds/dataState/owner)
 // intact.
 
-import { LinkType } from "@repo/api/src/types/artifact";
+import { sessionCostIsNumeric } from "@repo/api/src/agent-session-filters";
 import {
   isMeteredBillingMode,
   isSubscriptionBillingMode,
@@ -38,14 +38,23 @@ import {
 import {
   deriveBranchParticipationFromMetadata,
   parseSessionPrLinkMetadata,
-  SessionArtifactLinkKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { ArtifactType, type Prisma, type PrismaClient } from "@repo/database";
+import type { PrismaClient } from "@repo/database";
 import { deriveBranchLifecyclePhaseSegments } from "@repo/lib/branches/branch-lifecycle-phase";
 import type { BranchPhaseLifecycleEvent } from "@repo/lib/branches/branch-phase-attribution";
 import { resolveSessionEventEvidence } from "../branch-session-cost-evidence";
+import type { OwnerProfile } from "./owner-attribution";
+import { readCachedBranchLifetimeUsage } from "./session-lifetime-usage-cache";
+import {
+  type LinkedSession,
+  readSessionUsageLinks,
+  SESSION_USAGE_BRANCH_ID_CHUNK_SIZE,
+  type SessionUsageLink,
+  type SessionUsageLinkReadClient,
+} from "./session-usage-link-read";
 
 export type SessionUsageDateWindow = {
+  cacheScopeKey?: string;
   startDate?: Date;
   endDate?: Date;
 };
@@ -62,6 +71,12 @@ export type WindowedSessionSpend = {
   estimatedCostUsd: number;
 };
 
+/** Resolved session spend plus whether its cost is known, not just numeric. */
+export type ResolvedSessionSpend = WindowedSessionSpend & {
+  /** True when this spend observed a valid cost value, including a real zero. */
+  hasPricedCost: boolean;
+};
+
 /**
  * FEA-4270: lift the usage/analytics date filter off a branch list query as a
  * per-event spend window. The same startDate/endDate that narrows the branch
@@ -71,13 +86,20 @@ export type WindowedSessionSpend = {
  * un-windowed fast path — no per-event query, LIFETIME session totals stand).
  */
 export function sessionUsageDateWindow(query: {
+  evaluationNow?: Date;
   startDate?: Date;
   endDate?: Date;
 }): SessionUsageDateWindow | undefined {
   if (!(query.startDate || query.endDate)) {
     return;
   }
-  return { startDate: query.startDate, endDate: query.endDate };
+  return {
+    ...(query.evaluationNow
+      ? { cacheScopeKey: query.evaluationNow.toISOString() }
+      : {}),
+    startDate: query.startDate,
+    endDate: query.endDate,
+  };
 }
 
 /**
@@ -141,8 +163,8 @@ export type SessionSpendEvent = {
 export function windowedSpendBySession(
   events: readonly SessionSpendEvent[],
   dateWindow: SessionUsageDateWindow | undefined
-): Map<string, WindowedSessionSpend> {
-  const bySession = new Map<string, WindowedSessionSpend>();
+): Map<string, ResolvedSessionSpend> {
+  const bySession = new Map<string, ResolvedSessionSpend>();
   for (const event of events) {
     if (!tokenEventInDateWindow(event.eventCreatedAt, dateWindow)) {
       continue;
@@ -153,6 +175,7 @@ export function windowedSpendBySession(
     spend.cacheReadTokens += Number(event.cacheReadTokens);
     spend.cacheWriteTokens += Number(event.cacheWriteTokens);
     spend.estimatedCostUsd += numberFromDecimal(event.estimatedCost);
+    spend.hasPricedCost ||= hasValidPricedCost(event.estimatedCost);
     bySession.set(event.agentSessionId, spend);
   }
   return bySession;
@@ -160,13 +183,14 @@ export function windowedSpendBySession(
 
 /** A zeroed windowed-spend accumulator — the starting point for a session's
  * fold, and the value a session with no in-window events resolves to. */
-export function emptyWindowedSpend(): WindowedSessionSpend {
+export function emptyWindowedSpend(): ResolvedSessionSpend {
   return {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     estimatedCostUsd: 0,
+    hasPricedCost: false,
   };
 }
 
@@ -185,13 +209,11 @@ export function totalSessionSpend(spend: WindowedSessionSpend): number {
 // The usage-window helpers only read links and per-event token/cost rows, so
 // they take a narrow two-delegate client rather than the branch-read
 // subsystem's broad `BranchReadClient` — unrelated query dependencies stay out
-// of this module (wongk review, #4207). The broad client that fans out across
+// of this module (whitlockk review, #4207). The broad client that fans out across
 // the rest of the branch-read surface lives with `branch-read-service.ts`, and
 // a broad client is structurally assignable to this narrow parameter.
-export type SessionUsageClient = Pick<
-  PrismaClient,
-  "$queryRaw" | "agentSessionTokenEvent" | "artifactLink"
->;
+export type SessionUsageClient = SessionUsageLinkReadClient &
+  Pick<PrismaClient, "$queryRaw" | "agentSessionTokenEvent">;
 
 /** Read one Branch corpus and fold its cost evidence through the shared contract. */
 export async function getSessionUsageWithCostCompleteness(
@@ -216,100 +238,11 @@ export async function getSessionUsageWithCostCompleteness(
   };
 }
 
-export function sessionLinkWhere(
-  organizationId: string,
-  branchIds: string[],
-  options: {
-    includeReviewedParticipation?: boolean;
-  } = {}
-): Prisma.ArtifactLinkWhereInput {
-  return {
-    organizationId,
-    targetId: { in: branchIds },
-    linkType: LinkType.RelatesTo,
-    AND: [
-      { OR: sessionBranchUsageLinkKindWhere() },
-      { OR: sessionBranchParticipationWhere(options) },
-    ],
-    source: {
-      organizationId,
-      type: ArtifactType.SESSION,
-      // FEA-4263 invariant: an orphaned/half-synced link whose source SESSION
-      // carries no `SessionDetail` row is NOT a valid session (matches the
-      // `accumulateSessionLink` fold that skips `source.session == null`).
-      // Filtering it here — at the shared link-query boundary — keeps orphans
-      // from consuming a cap slot BEFORE the JS hydration check (which would let
-      // a newer orphan evict a valid older session from the capped trace set).
-      //
-      // FEA-4270: the usage/analytics date window is deliberately NOT applied
-      // here. A windowed spend figure must not drop the branch's lifetime link
-      // metadata (its `sessionIds`, dominant owner, `Ready`/`NoSessions` data
-      // state, and the session rows the detail page lists) — a branch that was
-      // active in-window but whose sessions all started before the window would
-      // otherwise return zero links and render as `NoSessions` with a null owner
-      // (P1: chatgpt-codex #3667842008). So we load every lifetime link and let
-      // `accumulateSessionLink` bound only the COST/TOKEN accumulation by each
-      // usage event's `eventCreatedAt` (see `tokenEventInDateWindow` +
-      // `windowedSpendBySession`), leaving identity metadata lifetime-accurate
-      // while spend reflects the per-event window.
-      session: { isNot: null },
-    },
-    target: {
-      organizationId,
-      type: ArtifactType.BRANCH,
-    },
-  };
-}
-
-export function sessionBranchUsageLinkKindWhere(): Prisma.ArtifactLinkWhereInput[] {
-  return [
-    {
-      metadata: {
-        path: ["linkKind"],
-        equals: SessionArtifactLinkKind.SessionPr,
-      },
-    },
-    {
-      metadata: {
-        path: ["linkKind"],
-        equals: SessionArtifactLinkKind.SessionBranch,
-      },
-    },
-  ];
-}
-
-export function sessionBranchParticipationWhere(
-  options: { includeReviewedParticipation?: boolean } = {}
-): Prisma.ArtifactLinkWhereInput[] {
-  const legacyOrWritten: Prisma.ArtifactLinkWhereInput[] = [
-    { branchParticipation: BranchParticipationKind.Wrote },
-    // Pre-FEA-3820 branch links carried only linkKind metadata. Preserve their
-    // historical active-link behavior rather than hiding old branch sessions.
-    { branchParticipation: null },
-  ];
-  if (!options.includeReviewedParticipation) {
-    return legacyOrWritten;
-  }
-  return [
-    ...legacyOrWritten,
-    { branchParticipation: BranchParticipationKind.Reviewed },
-  ];
-}
-
-// Bound the `targetId IN (...)` list of the session-link lookup. The full-set
-// usage/analytics reads pass every filtered branch id at once (FEA-2538), which
-// for large orgs would blow past Postgres bind limits and the serverless
-// request's memory/time budget in one unbounded query. Chunking keeps full-set
-// semantics: branch ids partition cleanly across chunks (each targetId lives in
-// exactly one chunk), so accumulation into one map needs no cross-chunk merge.
-export const SESSION_USAGE_BRANCH_ID_CHUNK_SIZE = 1000;
-
 export async function getSessionUsageByBranch(
   db: SessionUsageClient,
   organizationId: string,
   branchIds: string[],
   options: {
-    includeReviewedParticipation?: boolean;
     dateWindow?: SessionUsageDateWindow;
     // ISS-4632: when provided AND a window is active, the same one-scan links are
     // folded a second time (lifetime, no window) INTO this map — see the fold
@@ -320,23 +253,15 @@ export async function getSessionUsageByBranch(
     /**
      * Receives persisted Session→Branch identity evidence from this same scan.
      * Reviewed participation is included in the query when this collector is
-     * present, but remains excluded from usage unless explicitly requested.
+     * present, but remains excluded from usage.
      */
     identityEvidenceOut?: SessionBranchIdentityEvidence[];
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
   } = {}
 ): Promise<Map<string, SessionUsage>> {
   const usageByBranch = new Map<string, SessionUsage>();
-  // Track seen session ids per branch with a Set for O(1) dedup, avoiding an
-  // O(S²) linear scan of usage.sessionIds on every link (perf-pete FEA-2544).
-  // The Set map lives outside the chunk loop so dedup stays correct even if a
-  // branch's session links were to span chunk boundaries.
   const seenSessionIdsByBranch = new Map<string, Set<string>>();
-  // FEA-4270: under an ACTIVE window, spend is the SUM of a session's per-event
-  // rows whose `eventCreatedAt` is in-window — NOT its lifetime session totals —
-  // so a long-running session's cost splits across windows by turn. We collect
-  // every branch-linked session's chunk of links first, then run ONE per-event
-  // read across the whole distinct session set, then fold. With no window the
-  // map is undefined and the loop takes the lifetime fast path (no extra query).
   const allLinks: SessionUsageLink[] = [];
   for (
     let start = 0;
@@ -347,54 +272,9 @@ export async function getSessionUsageByBranch(
       start,
       start + SESSION_USAGE_BRANCH_ID_CHUNK_SIZE
     );
-    const links = await db.artifactLink.findMany({
-      where: sessionLinkWhere(organizationId, idChunk, {
-        includeReviewedParticipation:
-          options.includeReviewedParticipation ||
-          options.identityEvidenceOut !== undefined,
-      }),
-      select: {
-        targetId: true,
-        sourceId: true,
-        branchParticipation: true,
-        branchParticipationMethod: true,
-        branchParticipationObservedAt: true,
-        metadata: true,
-        source: {
-          select: {
-            name: true,
-            slug: true,
-            session: {
-              select: {
-                artifactId: true,
-                externalSessionId: true,
-                harness: true,
-                sessionStartedAt: true,
-                sessionEndedAt: true,
-                estimatedCost: true,
-                inputTokens: true,
-                outputTokens: true,
-                cacheReadTokens: true,
-                cacheWriteTokens: true,
-                // ISS-5445: the session's stored billing mode, needed so the
-                // org-level usage fold can split subscription-covered from
-                // metered API spend with the SAME canonical classifier the
-                // desktop projection uses. Before this it was not selected at
-                // all, so `getBranchUsage` had nothing to classify on and
-                // hardcoded the subscription total to 0 — every dollar,
-                // including Pro/Max/seat sessions, was reported as API spend.
-                // Nullable: a legacy row with no captured mode classifies as
-                // neither bucket (unknown ledger) and counts only toward total.
-                billingMode: true,
-                // Owner attribution (FEA-3457): the session's opaque owner id,
-                // tallied into ownerCounts below. Nullable — a session with no
-                // captured owner contributes no owner vote.
-                userId: true,
-              },
-            },
-          },
-        },
-      },
+    const links = await readSessionUsageLinks(db, organizationId, idChunk, {
+      includeReviewedIdentityEvidence:
+        options.identityEvidenceOut !== undefined,
     });
     for (const link of links) {
       allLinks.push(link);
@@ -404,7 +284,6 @@ export async function getSessionUsageByBranch(
           sourceId: link.sourceId,
           branchParticipationMethod: link.branchParticipationMethod,
           branchParticipationObservedAt: link.branchParticipationObservedAt,
-          userId: link.source.session.userId,
         });
       }
     }
@@ -414,8 +293,7 @@ export async function getSessionUsageByBranch(
     const participation = branchParticipationForLink(link);
     if (
       link.source.session &&
-      (participation !== BranchParticipationKind.Reviewed ||
-        options.includeReviewedParticipation)
+      participation !== BranchParticipationKind.Reviewed
     ) {
       sessionById.set(link.source.session.artifactId, link.source.session);
     }
@@ -426,29 +304,21 @@ export async function getSessionUsageByBranch(
           db,
           organizationId,
           [...sessionById.values()],
-          options.dateWindow
+          options.dateWindow,
+          { includeCostEvidence: options.costEvidenceOut !== undefined }
         )
       : { contributions: [] };
   options.costEvidenceOut?.push(...eventEvidence.contributions);
   foldLinksIntoUsage(usageByBranch, seenSessionIdsByBranch, allLinks, {
-    includeReviewedParticipation: options.includeReviewedParticipation,
+    includeLifecycleEvents: options.includeLifecycleEvents,
+    includeSessionPhaseSegments: options.includeSessionPhaseSegments,
     dateWindow: options.dateWindow,
     windowedSpend: eventEvidence.windowedSpend,
   });
-  // ISS-4632 (wongk/shafty023 review): when a window is active AND the caller
-  // asked for the lifetime counterpart (`options.lifetimeOut`), fold the SAME
-  // already-scanned links a second time WITHOUT `windowedSpend` (so
-  // `accumulateSessionLink` takes the lifetime path) — no extra artifactLink scan,
-  // no second per-event read. This replaces the previous second
-  // `getSessionUsageByBranch` call, which re-scanned the identical links purely to
-  // build the lifetime map: it doubled the chunked scan on every date-filtered
-  // list page + analytics request (wongk) and added a SECOND failure point on the
-  // fatal `/branches` path for a Value-per-$-only enrichment (shafty023). With no
-  // window the lifetime map EQUALS the windowed one, so `getBranchLifetimeUsage`
-  // aliases it and this second fold never runs.
   if (options.lifetimeOut && eventEvidence.windowedSpend !== undefined) {
     foldLinksIntoUsage(options.lifetimeOut, new Map(), allLinks, {
-      includeReviewedParticipation: options.includeReviewedParticipation,
+      includeLifecycleEvents: options.includeLifecycleEvents,
+      includeSessionPhaseSegments: options.includeSessionPhaseSegments,
       // No `dateWindow`/`windowedSpend` → the lifetime fold.
     });
   }
@@ -465,9 +335,10 @@ function foldLinksIntoUsage(
   seenSessionIdsByBranch: Map<string, Set<string>>,
   links: readonly SessionUsageLink[],
   options: {
-    includeReviewedParticipation?: boolean;
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
     dateWindow?: SessionUsageDateWindow;
-    windowedSpend?: Map<string, WindowedSessionSpend>;
+    windowedSpend?: Map<string, ResolvedSessionSpend>;
   }
 ): void {
   for (const link of links) {
@@ -478,7 +349,8 @@ function foldLinksIntoUsage(
       seenSessionIdsByBranch.set(link.targetId, seenSessionIds);
     }
     accumulateSessionLink(usage, link, seenSessionIds, {
-      includeReviewedParticipation: options.includeReviewedParticipation,
+      includeLifecycleEvents: options.includeLifecycleEvents,
+      includeSessionPhaseSegments: options.includeSessionPhaseSegments,
       dateWindow: options.dateWindow,
       windowedSpend: options.windowedSpend,
     });
@@ -486,19 +358,57 @@ function foldLinksIntoUsage(
   }
 }
 
-/**
- * ISS-4632: the WINDOWED usage map and its LIFETIME counterpart over the SAME
- * branch/session set from ONE artifactLink scan. With no active window the two are
- * identical, so `lifetime` ALIASES `windowed` (no second fold). Under a window the
- * lifetime map is folded from the same one-scan links (see `getSessionUsageByBranch`
- * `lifetimeOut`) — no second query and no independent failure domain.
- */
 export async function getBranchLifetimeUsage(
   db: SessionUsageClient,
   organizationId: string,
   branchIds: string[],
   dateWindow: SessionUsageDateWindow | undefined,
-  identityEvidenceOut?: SessionBranchIdentityEvidence[]
+  identityEvidenceOut?: SessionBranchIdentityEvidence[],
+  options: {
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
+  } = {}
+): Promise<{
+  windowed: Map<string, SessionUsage>;
+  lifetime: Map<string, SessionUsage>;
+}> {
+  const includeLifecycleEvents = options.includeLifecycleEvents !== false;
+  const includeSessionPhaseSegments =
+    options.includeSessionPhaseSegments !== false;
+  const result = await readCachedBranchLifetimeUsage({
+    organizationId,
+    branchIds,
+    dateWindow,
+    includeLifecycleEvents,
+    includeSessionPhaseSegments,
+    needsIdentityEvidence: identityEvidenceOut !== undefined,
+    read: (cachedIdentityEvidenceOut) =>
+      readBranchLifetimeUsage(
+        db,
+        organizationId,
+        branchIds,
+        dateWindow,
+        cachedIdentityEvidenceOut,
+        {
+          includeLifecycleEvents,
+          includeSessionPhaseSegments,
+        }
+      ),
+  });
+  identityEvidenceOut?.push(...result.identityEvidence);
+  return { windowed: result.windowed, lifetime: result.lifetime };
+}
+
+async function readBranchLifetimeUsage(
+  db: SessionUsageClient,
+  organizationId: string,
+  branchIds: string[],
+  dateWindow: SessionUsageDateWindow | undefined,
+  identityEvidenceOut?: SessionBranchIdentityEvidence[],
+  options: {
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
+  } = {}
 ): Promise<{
   windowed: Map<string, SessionUsage>;
   lifetime: Map<string, SessionUsage>;
@@ -508,7 +418,11 @@ export async function getBranchLifetimeUsage(
       db,
       organizationId,
       branchIds,
-      { identityEvidenceOut }
+      {
+        identityEvidenceOut,
+        includeLifecycleEvents: options.includeLifecycleEvents,
+        includeSessionPhaseSegments: options.includeSessionPhaseSegments,
+      }
     );
     return { windowed, lifetime: windowed };
   }
@@ -517,44 +431,16 @@ export async function getBranchLifetimeUsage(
     db,
     organizationId,
     branchIds,
-    { dateWindow, lifetimeOut: lifetime, identityEvidenceOut }
+    {
+      dateWindow,
+      lifetimeOut: lifetime,
+      identityEvidenceOut,
+      includeLifecycleEvents: options.includeLifecycleEvents,
+      includeSessionPhaseSegments: options.includeSessionPhaseSegments,
+    }
   );
   return { windowed, lifetime };
 }
-
-type SessionUsageLink = {
-  // The branch (link target) this session→branch link points at. Selected by the
-  // `getSessionUsageByBranch` query and used to bucket usage per branch once all
-  // links are gathered (FEA-4270 collects every chunk's links before the single
-  // per-event spend read).
-  targetId: string;
-  sourceId: string;
-  branchParticipation: string | null;
-  branchParticipationMethod: string | null;
-  branchParticipationObservedAt: Date | null;
-  metadata: Prisma.JsonValue | null;
-  source: {
-    name: string;
-    slug: string | null;
-    session: {
-      artifactId: string;
-      externalSessionId: string;
-      harness: string;
-      sessionStartedAt: Date;
-      sessionEndedAt: Date | null;
-      estimatedCost: { toString(): string } | number;
-      inputTokens: bigint | number;
-      outputTokens: bigint | number;
-      cacheReadTokens: bigint | number;
-      cacheWriteTokens: bigint | number;
-      // ISS-5445 — the stored `billing_mode`, used to split subscription-covered
-      // from metered API spend in `sumDistinctSessionUsage`. Nullable: legacy
-      // rows predate billing-mode capture and classify into neither bucket.
-      billingMode: string | null;
-      userId: string | null;
-    } | null;
-  };
-};
 
 /** Persisted fields required by the Branch identity projector. */
 export type SessionBranchIdentityEvidence = {
@@ -562,92 +448,47 @@ export type SessionBranchIdentityEvidence = {
   sourceId: string;
   branchParticipationMethod: string | null;
   branchParticipationObservedAt: Date | null;
-  userId: string | null;
 };
 
 /**
  * Fold one session→branch link into a branch's running usage: dedups the session
- * (per-branch), tallies the owner vote ONCE per distinct session (FEA-3457), and
- * accumulates the session's tokens/cost. Extracted from getSessionUsageByBranch
- * to keep that function under the cognitive-complexity budget.
- *
- * FEA-4270: a date window bounds only SPEND, never identity. Every valid lifetime
- * link still records its session id, owner vote, and `sessions[]` row so the
- * branch's `sessionIds`/`dataState`/owner and the detail's session list stay
- * lifetime-accurate (a branch active in-window whose sessions all ran before it
- * must not read as `NoSessions` — P1 chatgpt-codex #3667842008). Under an active
- * window a write session contributes only the token/cost of its EVENTS whose
- * `eventCreatedAt` fell in-window (`windowedSpend`, keyed by session id); a
- * long-running session's spend therefore splits across windows by turn instead of
- * counting all-or-nothing by session start. A session with no in-window events
- * still records its `sessions[]` row (windowed spend zeroed, cost null) and its
- * identity metadata, but adds nothing to the branch's token/cost totals. So
- * metadata is lifetime while spend is per-event windowed, in ONE extra read.
+ * per branch, tallies each distinct owner once, and bounds only spend by date
+ * window while keeping lifetime identity/session metadata intact.
  */
 function accumulateSessionLink(
   usage: SessionUsage,
   link: SessionUsageLink,
   seenSessionIds: Set<string>,
   options: {
-    includeReviewedParticipation?: boolean;
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
     dateWindow?: SessionUsageDateWindow;
-    windowedSpend?: Map<string, WindowedSessionSpend>;
+    windowedSpend?: Map<string, ResolvedSessionSpend>;
   } = {}
 ): void {
   const session = link.source.session;
-  // FEA-4263 invariant: a branch is first-class (renders a full detail page /
-  // counts a session) only when it relates to ≥1 VALID session. A session→branch
-  // `ArtifactLink` whose source SESSION artifact carries no `SessionDetail` row
-  // (an orphaned/half-synced link) is NOT a valid session — the `source.session`
-  // relation is null. Skipping it up front keeps such a link out of `sessionIds`
-  // and the owner tallies, so a branch whose only links are orphaned resolves to
-  // `sessionIds: []` → `deriveDataState` returns `NoSessions` (the honest empty
-  // state) instead of `Ready` (a full detail page over zero real sessions —
-  // exactly the PR #3786 violation). Previously the id was pushed BEFORE this
-  // null check, inflating the count. Degrades gracefully: no data is mutated, the
-  // branch re-hydrates the instant its session's detail row lands.
+  // FEA-4263: an orphaned link without SessionDetail is not branch usage.
   if (!session) {
     return;
   }
   const participation = branchParticipationForLink(link);
-  if (
-    participation === BranchParticipationKind.Reviewed &&
-    !options.includeReviewedParticipation
-  ) {
+  if (participation === BranchParticipationKind.Reviewed) {
     return;
   }
-  // Normal list/analytics reads count only write participation. The detail read
-  // explicitly opts reviewed participation into the same spend population so a
-  // successful reviewed-only Session's Review subtotal reconciles with the
-  // Branch header; owner attribution remains write-only below.
-  const isWriteParticipation =
-    participation !== BranchParticipationKind.Reviewed;
-  const reportsSpend =
-    isWriteParticipation || Boolean(options.includeReviewedParticipation);
-  // FEA-4270: the spend a write session contributes. With NO active window it is
-  // the session's LIFETIME totals; under a window it is the per-event sum whose
-  // `eventCreatedAt` fell in-window (resolved once in `getSessionUsageByBranch`).
-  // A windowed session with zero in-window events is absent from the map → zero
-  // spend, so its cost/tokens drop out while its identity metadata stays. This
-  // splits a long-running session's spend across windows by turn, instead of the
-  // old all-or-nothing gate on session start.
   const windowed = Boolean(
     options.dateWindow?.startDate || options.dateWindow?.endDate
   );
   const spend = resolveSessionSpend(session, options.windowedSpend, windowed);
   // A write session's `sessions[]` row reports the resolved spend's tokens
   // (windowed sum under a window, lifetime otherwise). Its `estimatedCostUsd` is
-  // that cost, but stays NULL for a windowed write session with ZERO in-window
-  // spend — an honest "no spend in this window" rather than a computed "$0.00" —
-  // A non-windowed participating session's cost is always shown.
+  // that cost only when the cost is known; placeholder SessionDetail zeros stay
+  // null so Branches do not disagree with Sessions' "—" cost authority.
   const hasWindowedSpend = totalSessionSpend(spend) > 0;
-  const reportsCost = reportsSpend && (!windowed || hasWindowedSpend);
+  const reportsCost = spend.hasPricedCost && (!windowed || hasWindowedSpend);
   // Under an active window, the write session's `sessions[]` tokens are the
   // windowed sum; without a window they are the lifetime totals.
-  const usesWindowedTokens = reportsSpend && windowed;
-  // Owner tally + byActor attribution follow write-participation IDENTITY, which
-  // is lifetime (a windowed spend view still knows who owns the branch's
-  // sessions), so they key off `isWriteParticipation`, not the windowed spend.
+  const usesWindowedTokens = windowed;
+  // Owner and byActor attribution follow lifetime write-participation identity.
   const isFirstSessionEvidence = !seenSessionIds.has(link.sourceId);
   const writeSessionIds = usage.writeSessionIds ?? new Set<string>();
   usage.writeSessionIds = writeSessionIds;
@@ -659,16 +500,16 @@ function accumulateSessionLink(
     seenSessionIds.add(link.sourceId);
     usage.sessionIds.push(link.sourceId);
   }
-  if (isWriteParticipation && !writeSessionIds.has(link.sourceId)) {
+  if (!writeSessionIds.has(link.sourceId)) {
     writeSessionIds.add(link.sourceId);
-    tallyDistinctSessionOwner(usage, session, isWriteParticipation);
+    recordDistinctSessionOwner(usage, session);
   }
-  appendLifecycleEvents(usage, link.sourceId, link);
+  appendLifecycleEventsIfEnabled(usage, link.sourceId, link, options);
   if (!isFirstSessionEvidence) {
     const existingSession = sessionRowsById.get(link.sourceId);
     if (existingSession) {
       mergeSessionParticipation(existingSession, participation);
-      attachMergedLifecyclePhaseSegments(existingSession, usage, session);
+      attachPhaseSegmentsIfEnabled(existingSession, usage, session, options);
     }
     return;
   }
@@ -678,23 +519,25 @@ function accumulateSessionLink(
     usesWindowedTokens,
     spend,
   });
-  attachMergedLifecyclePhaseSegments(sessionRow, usage, session);
+  attachPhaseSegmentsIfEnabled(sessionRow, usage, session, options);
   usage.sessions.push(sessionRow);
   sessionRowsById.set(link.sourceId, sessionRow);
+  // ISS-8972 — recorded on the FIRST evidence for this session, alongside the row
+  // it describes, so these maps' keys track `usage.sessions` exactly (the same
+  // placement and reasoning as `sessionBillingModeById` below). Keyed by
+  // `session.artifactId`, which is `link.sourceId` and `sessionRow.sessionId`.
+  recordSessionPresentationFacts(usage, link, session);
+  if (reportsCost && spend.hasPricedCost) {
+    usage.hasPricedCost = true;
+  }
   // ISS-5445 — recorded on the FIRST evidence for this session, alongside the
   // row it classifies, so the map's keys track `usage.sessions` exactly. Keyed
   // by `session.artifactId` (=== `link.sourceId`, and === `sessionRow.sessionId`)
   // so it aligns with the identity `sumDistinctSessionUsage` de-dupes on.
-  // Deliberately NOT gated on `reportsSpend`: a session that reports no spend
-  // still contributes 0 to whichever bucket it belongs to, and gating here would
-  // silently drop its classification.
   usage.sessionBillingModeById.set(
     session.artifactId,
     session.billingMode ?? null
   );
-  if (!reportsSpend) {
-    return;
-  }
   usage.inputTokens += spend.inputTokens;
   usage.outputTokens += spend.outputTokens;
   usage.cacheReadTokens += spend.cacheReadTokens;
@@ -702,17 +545,12 @@ function accumulateSessionLink(
   usage.estimatedCostUsd += spend.estimatedCostUsd;
 }
 
-/**
- * FEA-4270: the token/cost a write session contributes to branch spend. Lifetime
- * totals with no active window; the per-event windowed sum otherwise. A windowed
- * session with no in-window events (absent from the map) resolves to all-zero, so
- * it drops out of branch spend and reports a zeroed/null-cost `sessions[]` row.
- */
+/** Resolve lifetime spend or the already-aggregated per-event windowed spend. */
 function resolveSessionSpend(
   session: LinkedSession,
-  windowedSpend: Map<string, WindowedSessionSpend> | undefined,
+  windowedSpend: Map<string, ResolvedSessionSpend> | undefined,
   windowed: boolean
-): WindowedSessionSpend {
+): ResolvedSessionSpend {
   if (windowed) {
     return windowedSpend?.get(session.artifactId) ?? emptyWindowedSpend();
   }
@@ -722,49 +560,30 @@ function resolveSessionSpend(
     cacheReadTokens: Number(session.cacheReadTokens),
     cacheWriteTokens: Number(session.cacheWriteTokens),
     estimatedCostUsd: numberFromDecimal(session.estimatedCost),
+    hasPricedCost: sessionHasNumericCost(session),
   };
 }
 
-export type LinkedSession = NonNullable<SessionUsageLink["source"]["session"]>;
-
 /**
- * Tally a distinct linked session's owner ONCE (FEA-3457). A branch can carry
- * several session_pr link rows for the same session, so a per-link tally would
- * let one user's duplicate links outvote other linked owners. Owner attribution
- * is LIFETIME identity (a windowed spend view still knows who owns the branch),
- * so it keys off write-participation, never the date window. Mirrors the desktop
- * producer's per-session owner count.
+ * Record a distinct linked session's owner ONCE (FEA-3457), keyed off the
+ * session's own artifactId so it aligns with the `sessions[].sessionId` the
+ * usage summary de-dupes on; the byActor rollup groups distinct sessions by it.
+ * Owner attribution is LIFETIME identity, so it keys off write-participation,
+ * never the date window.
  */
-function tallyDistinctSessionOwner(
+function recordDistinctSessionOwner(
   usage: SessionUsage,
-  session: LinkedSession,
-  isWriteParticipation: boolean
+  session: LinkedSession
 ): void {
-  if (!isWriteParticipation) {
-    return;
-  }
-  const ownerUserId = session.userId ?? null;
-  if (ownerUserId) {
-    usage.ownerCounts.set(
-      ownerUserId,
-      (usage.ownerCounts.get(ownerUserId) ?? 0) + 1
-    );
-  }
-  // Record this distinct session's owner (by session artifact id) for the byActor
-  // rollup — keyed off the session's own artifactId so it aligns with the
-  // `sessions[].sessionId` the usage summary de-dupes on.
-  usage.sessionOwnerById.set(session.artifactId, ownerUserId);
+  usage.sessionOwnerById.set(session.artifactId, session.ownerUserId ?? null);
 }
 
 /**
  * Build one `sessions[]` row. FEA-4270: `spend` carries the session's resolved
  * token/cost — the PER-EVENT windowed sum under an active window, the lifetime
- * totals otherwise. `reportsCost` shows that cost (a reviewed session, or a
- * windowed write session with zero in-window spend, shows null cost — an honest
- * "no in-window spend", never a computed $0.00). `usesWindowedTokens` renders the
- * windowed token sum for a write session under a window (so windowed token totals
- * via sumDistinctSessionUsage / buildBranchByActor match), while reviewed sessions
- * and the un-windowed detail path keep their lifetime raw-token row unchanged.
+ * totals otherwise. A windowed session with zero in-window spend shows null cost
+ * — an honest "no in-window spend", never a computed $0.00. `usesWindowedTokens`
+ * keeps row tokens aligned with the windowed Branch totals.
  */
 function buildSessionUsageRow(
   link: SessionUsageLink,
@@ -803,7 +622,7 @@ function buildSessionUsageRow(
     cacheReadTokens: tokens.cacheReadTokens,
     cacheWriteTokens: tokens.cacheWriteTokens,
     ...(participation ? { participation } : {}),
-    ownerUserId: session.userId ?? null,
+    ownerUserId: session.ownerUserId ?? null,
     // FEA-3576 — resolved lazily by the detail read from `sessionOwnerById`
     // (session artifact id → owner user id → display name). Placeholder null so
     // the row is honest until (and unless) the owner resolves; the list/usage
@@ -856,13 +675,46 @@ function attachMergedLifecyclePhaseSegments(
   }
 }
 
+function appendLifecycleEventsIfEnabled(
+  usage: SessionUsage,
+  sessionId: string,
+  link: Pick<SessionUsageLink, "metadata">,
+  options: {
+    includeLifecycleEvents?: boolean;
+  }
+): void {
+  if (options.includeLifecycleEvents === false) {
+    return;
+  }
+  appendLifecycleEvents(usage, sessionId, link);
+}
+
+function attachPhaseSegmentsIfEnabled(
+  row: SessionUsage["sessions"][number],
+  usage: SessionUsage,
+  session: LinkedSession,
+  options: {
+    includeLifecycleEvents?: boolean;
+    includeSessionPhaseSegments?: boolean;
+  }
+): void {
+  if (
+    options.includeLifecycleEvents === false ||
+    options.includeSessionPhaseSegments === false
+  ) {
+    return;
+  }
+  attachMergedLifecyclePhaseSegments(row, usage, session);
+}
+
 export function emptyUsage(): SessionUsage {
   return {
     sessionIds: [],
     sessions: [],
-    ownerCounts: new Map(),
     sessionOwnerById: new Map(),
     sessionBillingModeById: new Map(),
+    sessionDisplayInputsById: new Map(),
+    sessionOwnerProfileById: new Map(),
     lifecycleEventsBySession: new Map(),
     sessionRowsById: new Map(),
     writeSessionIds: new Set(),
@@ -871,6 +723,7 @@ export function emptyUsage(): SessionUsage {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     estimatedCostUsd: 0,
+    hasPricedCost: false,
   };
 }
 
@@ -969,17 +822,31 @@ export function toIso(value: Date): string {
   return value.toISOString();
 }
 
+/**
+ * ISS-8972 — everything the SHARED displayed-status projector needs for one
+ * Session, kept as one record rather than a map per column so a field cannot be
+ * carried on one path and dropped on the other. Shaped to
+ * `projectDisplayedSessionStatus`'s parameter so it is passed through whole.
+ *
+ * An absent timestamp stays absent here; the projector owns what that means.
+ */
+export type SessionDisplayInputs = {
+  status: string;
+  awaitingInputSince: Date | null;
+  sessionEndedAt: Date | null;
+  lastActivityAt?: Date | null;
+  sessionStartedAt?: Date | null;
+  endsWithError?: boolean | null;
+};
+
 export type SessionUsage = UsageTotals & {
+  /** True when any included session reports priced cost, including a real zero. */
+  hasPricedCost: boolean;
   sessionIds: string[];
   sessions: BranchPageDetail["sessions"];
   /** Raw provider-neutral evidence retained until priced-segment projection. */
   lifecycleEventsBySession?: Map<string, BranchPhaseLifecycleEvent[]>;
-  // Per-actor attribution: how many DISTINCT linked sessions each Session owner
-  // (`SessionDetail.userId`) contributed to this branch. Counts each Session
-  // once so duplicate links cannot inflate the by-actor rollup. This is not the
-  // canonical Branch Owner contract, which comes from exact push evidence.
-  ownerCounts: Map<string, number>;
-  // Per-session owner id (`SessionDetail.userId`), keyed by session artifact id
+  // Per-session owner id (the session's assignee), keyed by session artifact id
   // — the byActor rollup groups DISTINCT sessions by owner. Kept out of the wire
   // `sessions` array (BranchSession) so the branch contract carries no raw ids.
   sessionOwnerById: Map<string, string | null>;
@@ -992,6 +859,24 @@ export type SessionUsage = UsageTotals & {
    * the desktop projection uses instead of hardcoding the split.
    */
   sessionBillingModeById: Map<string, string | null>;
+  /**
+   * ISS-8972 — per-session STORED lifecycle status (`artifacts.status`), keyed by
+   * session artifact id. Kept OUT of the wire `sessions` array (BranchSession)
+   * for the same reason `sessionOwnerById` is: the branch contract carries no raw
+   * producer fields. The projection folds it to a display value; nothing writes
+   * it back, so a display word can never reach a column through this map.
+   */
+  sessionDisplayInputsById: Map<string, SessionDisplayInputs>;
+  /**
+   * ISS-8972 — per-session owner chip name and avatar, keyed by session artifact
+   * id. Resolved once per PAGE (list) or once per branch read (detail) and
+   * stamped in by `attachSessionOwnerProfiles`, so neither path issues a
+   * per-branch identity read. The name is name parts only, never an email
+   * (ISS-11738). A session whose owner is absent, unresolved, or nameless has no
+   * entry, which the projection reports as `ownerUnavailable` rather than
+   * inventing a name.
+   */
+  sessionOwnerProfileById: Map<string, OwnerProfile>;
   /** Internal O(1) index used while duplicate relationship evidence is folded. */
   sessionRowsById?: Map<string, BranchPageDetail["sessions"][number]>;
   /** Internal guard so reviewed-first evidence can later acquire one write vote. */
@@ -1043,7 +928,7 @@ function branchLifecycleEventIdentity(
 // A branch/owner usage rollup carries the same five token/cost fields as a
 // single session's windowed spend, so it aliases `WindowedSessionSpend` rather
 // than redeclaring the shape — a token or cost field cannot drift between the
-// per-session accumulator and the aggregate total (wongk review, #4207). The
+// per-session accumulator and the aggregate total (whitlockk review, #4207). The
 // distinct name is kept for call-site readability (a rollup, not one session's
 // spend).
 export type UsageTotals = WindowedSessionSpend;
@@ -1078,3 +963,72 @@ export type DistinctUsageTotals = UsageTotals & {
   /** Confirmed metered per-token API spend. */
   apiEstimatedCostUsd: number;
 };
+
+function hasValidPricedCost(
+  value: { toString(): string } | number | null
+): boolean {
+  if (value === null) {
+    return false;
+  }
+  const cost = numberFromDecimal(value);
+  return Number.isFinite(cost) && cost >= 0;
+}
+
+function sessionHasNumericCost(session: LinkedSession): boolean {
+  // ISS-7813: a never-priced session has no numeric cost, so it must not be
+  // reported as one. `numberFromDecimal` folds null to 0 — correct for the
+  // ISS-4882 token-event field it was written for, where a null already meant
+  // "this event adds nothing", but wrong for `SessionDetail.estimatedCost`,
+  // where null now means "nobody priced this session". Without this guard the
+  // fold reaches `sessionCostIsNumeric`, which returns true unconditionally for
+  // a subscription-billed session that did substantive work, and the row
+  // renders a fabricated, measured-looking $0.00. `hasValidPricedCost` above is
+  // the same guard, already applied on the windowed per-event path.
+  if (!hasValidPricedCost(session.estimatedCost)) {
+    return false;
+  }
+  const estimatedCost = numberFromDecimal(session.estimatedCost);
+  return sessionCostIsNumeric({
+    estimatedCost,
+    billingMode: session.billingMode,
+    turns: session.turns,
+    inputTokens: Number(session.inputTokens),
+    outputTokens: Number(session.outputTokens),
+    cacheReadTokens: Number(session.cacheReadTokens),
+    cacheWriteTokens: Number(session.cacheWriteTokens),
+    toolUseCount: session.toolUseCount,
+    // ISS-5801: the 7th substantive signal — without it an invocation-only
+    // subscription session diverges from the Sessions surface's cost fold.
+    componentInvocationCount: session.componentInvocationCount,
+  });
+}
+
+/**
+ * ISS-8972 — the per-Session facts the Linked Sessions chips render, recorded
+ * beside the row they describe so these maps' keys track `usage.sessions`
+ * exactly. Extracted to keep `accumulateSessionLink` under the
+ * cognitive-complexity ceiling.
+ *
+ * An absent interaction instant stays ABSENT. There is no honest stand-in for
+ * one nobody recorded — `new Date()`, the epoch, or the branch's own timestamp
+ * would each render as a confident date on a chip — so the entry is omitted and
+ * the renderer decides what to do with a Session it cannot date.
+ */
+function recordSessionPresentationFacts(
+  usage: SessionUsage,
+  link: SessionUsageLink,
+  session: LinkedSession
+): void {
+  usage.sessionDisplayInputsById.set(session.artifactId, {
+    status: link.source.status,
+    // ISS-8972 (whitlockk review): `awaitingInputSince` and `endsWithError` ride
+    // along because the cloud never STORES `waiting` — a blocked run stores
+    // `active` — so without them the shared projector cannot answer Waiting and
+    // the chip reads Active or Stale for a session waiting on a human.
+    awaitingInputSince: session.awaitingInputSince ?? null,
+    sessionEndedAt: session.sessionEndedAt,
+    lastActivityAt: session.lastActivityAt ?? null,
+    sessionStartedAt: session.sessionStartedAt,
+    endsWithError: session.endsWithError ?? null,
+  });
+}

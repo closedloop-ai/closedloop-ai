@@ -1,9 +1,13 @@
+import type { CloudReadReadinessSnapshot } from "../../src/shared/cloud-read-readiness-contract.js";
+import { projectCloudReadReadiness } from "../../src/shared/cloud-read-readiness-contract.js";
 import {
   OldestPendingBasis,
   type SyncBurndownSnapshot,
   type SyncLaneBurndown,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
+  SyncLaneRemainderBasis,
 } from "../../src/shared/sync-burndown-contract.js";
 
 /**
@@ -21,6 +25,7 @@ export function burndownLane(
   return {
     lane: SyncLaneId.SessionMetadata,
     state: SyncLaneDrainState.Drained,
+    resumeBlocked: false,
     itemsRemaining: 0,
     itemsRemainingIsLowerBound: false,
     readyItemsRemaining: null,
@@ -28,6 +33,8 @@ export function burndownLane(
     bytesRemaining: 0,
     chunksRemaining: null,
     deadLetteredCount: 0,
+    deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
+    remainderBasis: SyncLaneRemainderBasis.Counted,
     oldestPendingSinceIso: null,
     oldestPendingBasis: OldestPendingBasis.EnqueuedAt,
     oldestPendingAgeMs: null,
@@ -46,4 +53,17 @@ export function burndownSnapshot(
   lanes: readonly SyncLaneBurndown[]
 ): SyncBurndownSnapshot {
   return { sampledAtIso: "2026-08-07T12:00:00.000Z", lanes };
+}
+
+/**
+ * The projection a suite takes when the consent axis is not what it is testing.
+ *
+ * ISS-6972 removed the consent tier from the readiness payload — the read source
+ * asks the consent IPC directly — so this is now a plain pass-through. Kept as
+ * the named entry point the ~40 call sites across two files already use.
+ */
+export function projectConsentedReadiness(
+  input: Parameters<typeof projectCloudReadReadiness>[0]
+): CloudReadReadinessSnapshot {
+  return projectCloudReadReadiness(input);
 }

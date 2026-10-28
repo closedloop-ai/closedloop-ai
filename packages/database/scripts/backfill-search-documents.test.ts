@@ -6,7 +6,7 @@
  * in-memory `SearchBackfillClient` fake (NO database) and prove the contracts
  * the Slice-1 acceptance criteria call out:
  *
- *  1. ROW SHAPE: each Document/Feature Artifact, Project, and Loop projects
+ *  1. ROW SHAPE: each Document/Feature Artifact and Project projects
  *     exactly one row with the correct `entityType`, `title`, `body`, and
  *     visibility keys.
  *  2. IDEMPOTENT: a second run over the already-populated projection produces no
@@ -27,7 +27,6 @@ import {
   artifact,
   branch,
   comment,
-  loop,
   makeFakeClient,
   ORG_A,
   ORG_B,
@@ -36,7 +35,7 @@ import {
 } from "./backfill-search-documents.fixtures";
 
 describe("runSearchDocumentBackfill", () => {
-  it("projects one correctly-shaped row per Document, Project, and Loop", async () => {
+  it("projects one correctly-shaped row per Document and Project", async () => {
     const { client, store } = makeFakeClient({
       artifacts: [
         artifact({
@@ -49,7 +48,6 @@ describe("runSearchDocumentBackfill", () => {
       projects: [
         project({ id: "p1", name: "Alpha", description: "the alpha project" }),
       ],
-      loops: [loop({ id: "l1", command: "execute", prompt: "do the thing" })],
     });
 
     const counts = await runSearchDocumentBackfill(client, { pageSize: 500 });
@@ -57,13 +55,12 @@ describe("runSearchDocumentBackfill", () => {
     expect(counts).toEqual({
       documents: 1,
       projects: 1,
-      loops: 1,
       comments: 0,
       pullRequests: 0,
       branches: 0,
       agentComponents: 0,
       staleAgentComponentsRemoved: 0,
-      total: 3,
+      total: 2,
     });
 
     const doc = store.get(`${ORG_A}|${SearchEntityType.Document}|a1`);
@@ -86,16 +83,6 @@ describe("runSearchDocumentBackfill", () => {
       // A project is its own visibility scope.
       projectId: "p1",
     });
-
-    const lp = store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`);
-    expect(lp).toMatchObject({
-      entityType: SearchEntityType.Loop,
-      entityId: "l1",
-      title: "execute",
-      body: "do the thing",
-      projectId: null,
-      assigneeId: "user-1",
-    });
   });
 
   it("projects Phase-2 route fields and the document's latest-version content body", async () => {
@@ -112,7 +99,6 @@ describe("runSearchDocumentBackfill", () => {
       projects: [
         project({ id: "p1", name: "Alpha", slug: "alpha", teamIds: ["t1"] }),
       ],
-      loops: [loop({ id: "l1", command: "execute", prompt: "do the thing" })],
     });
 
     await runSearchDocumentBackfill(client);
@@ -134,17 +120,9 @@ describe("runSearchDocumentBackfill", () => {
       teamId: "t1",
       entitySubtype: null,
     });
-
-    // Loop: routes by id — no slug/subtype/team.
-    const lp = store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`);
-    expect(lp).toMatchObject({
-      slug: null,
-      entitySubtype: null,
-      teamId: null,
-    });
   });
 
-  it("projects status/priority for documents and projects, status-only for loops (FEA-3930)", async () => {
+  it("projects status/priority for documents and projects (FEA-3930)", async () => {
     const { client, store } = makeFakeClient({
       artifacts: [
         artifact({
@@ -157,8 +135,6 @@ describe("runSearchDocumentBackfill", () => {
       projects: [
         project({ id: "p1", status: "IN_PROGRESS", priority: "MEDIUM" }),
       ],
-      // A loop carries a status but no priority.
-      loops: [loop({ id: "l1", status: "RUNNING" })],
     });
 
     await runSearchDocumentBackfill(client);
@@ -173,17 +149,12 @@ describe("runSearchDocumentBackfill", () => {
       status: "IN_PROGRESS",
       priority: "MEDIUM",
     });
-    expect(store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`)).toMatchObject({
-      status: "RUNNING",
-      priority: null,
-    });
   });
 
   it("leaves status/priority null for comment/pull-request/branch rows (FEA-3930)", async () => {
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       comments: [comment({ id: "c1", plainText: "hi" })],
       pullRequests: [pullRequest({ id: "pr1", title: "PR" })],
       branches: [
@@ -214,7 +185,6 @@ describe("runSearchDocumentBackfill", () => {
     const { client, store } = makeFakeClient({
       artifacts: [artifact({ id: "a1", slug: "d", subtype: "FEATURE" })],
       projects: [project({ id: "p1", slug: "p", teamIds: [] })],
-      loops: [],
     });
 
     await runSearchDocumentBackfill(client);
@@ -235,7 +205,6 @@ describe("runSearchDocumentBackfill", () => {
         artifact({ id: "a3", type: "SESSION", name: "a session" }),
       ],
       projects: [],
-      loops: [],
     });
 
     const counts = await runSearchDocumentBackfill(client);
@@ -254,7 +223,6 @@ describe("runSearchDocumentBackfill", () => {
         project({ id: "p1", name: "P", description: "   " }),
         project({ id: "p2", name: "Q", description: hugePrompt }),
       ],
-      loops: [loop({ id: "l1", command: "chat", prompt: hugePrompt })],
     });
 
     await runSearchDocumentBackfill(client);
@@ -267,15 +235,68 @@ describe("runSearchDocumentBackfill", () => {
     const projBody = store.get(`${ORG_A}|${SearchEntityType.Project}|p2`)?.body;
     expect(projBody).not.toBeNull();
     expect((projBody as string).length).toBeLessThan(hugePrompt.length);
-    const loopBody = store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`)?.body;
-    expect((loopBody as string).length).toBeLessThan(hugePrompt.length);
+  });
+
+  it("corrects a STALE pre-ISS-9665 row that recorded MEDIUM for an unset priority", async () => {
+    // ISS-9665, raised in review by codex (P1) and tamsinb on PR #6796.
+    //
+    // THE GAP. `indexDocumentProjection` builds its row from `toDocument()`
+    // output, and before ISS-9665 `toDocument()` folded a NULL artifact
+    // priority to `MEDIUM`. So every search_document row written before that
+    // deploy carries `'MEDIUM'` for an artifact that has no priority: the new
+    // `priority:none` predicate misses them and `priority:medium` claims them.
+    //
+    // WHY THIS PROVES THE REMEDY AND NOT A TAUTOLOGY. The store is pre-seeded
+    // with a row in the OLD shape — the stale `'MEDIUM'` — for an artifact
+    // whose column is genuinely NULL. A test seeded only from the fixtures
+    // would project a correct row on the first pass and prove nothing about
+    // the corpus that already exists in production. This one starts wrong and
+    // must end right.
+    //
+    // WHY NO NEW BACKFILL IS ADDED. This script reads `artifact.priority`
+    // straight from the column and never goes through `toDocument()`, so it
+    // was already correct — running it is the whole remediation. The other
+    // half, that a NULL projection row is what `priority:none` selects, is
+    // `apps/api/app/search/search-fts-filters.test.ts`.
+    const fake = makeFakeClient({
+      artifacts: [artifact({ id: "a1", name: "Doc", priority: null })],
+      projects: [],
+    });
+    const staleKey = `${ORG_A}|${SearchEntityType.Document}|a1`;
+    fake.store.set(staleKey, {
+      organizationId: ORG_A,
+      entityType: SearchEntityType.Document,
+      entityId: "a1",
+      title: "Doc",
+      body: null,
+      projectId: null,
+      assigneeId: null,
+      status: null,
+      priority: "MEDIUM",
+      updatedAt: AT,
+      slug: null,
+      entitySubtype: null,
+      teamId: null,
+      anchorEntityId: null,
+    });
+    // The gap itself, asserted rather than assumed: this row answers
+    // `priority:medium` and is invisible to `priority:none` before the run.
+    expect(fake.store.get(staleKey)?.priority).toBe("MEDIUM");
+
+    await runSearchDocumentBackfill(fake.client);
+
+    // `toBeNull`, not a falsy check: `undefined` here would mean the backfill
+    // dropped the key rather than correcting it, which is a different bug.
+    expect(fake.store.get(staleKey)?.priority).toBeNull();
+    // And it corrected the row in place — no second, competing projection for
+    // the same artifact, which would leave the stale one still answering.
+    expect(fake.store.size).toBe(1);
   });
 
   it("is idempotent: a second run adds no rows and re-upserts the same keys", async () => {
     const fake = makeFakeClient({
       artifacts: [artifact({ id: "a1", name: "Doc" })],
       projects: [project({ id: "p1" })],
-      loops: [loop({ id: "l1" })],
     });
 
     await runSearchDocumentBackfill(fake.client);
@@ -299,7 +320,6 @@ describe("runSearchDocumentBackfill", () => {
         artifact({ id: "shared-doc", organizationId: ORG_B, name: "Same" }),
       ],
       projects: [],
-      loops: [],
     });
 
     await runSearchDocumentBackfill(client);
@@ -315,33 +335,6 @@ describe("runSearchDocumentBackfill", () => {
     expect(store.size).toBe(2);
   });
 
-  it("derives a loop's project visibility from its target artifact", async () => {
-    const { client, store } = makeFakeClient({
-      artifacts: [],
-      projects: [],
-      loops: [
-        // Loop attached to an artifact that lives in project p1.
-        loop({ id: "l1", command: "execute", artifact: { projectId: "p1" } }),
-        // Loop whose artifact has no project (cloud/legacy) → null visibility.
-        loop({ id: "l2", command: "plan", artifact: { projectId: null } }),
-        // Loop with no artifact at all → null visibility.
-        loop({ id: "l3", command: "chat", artifact: null }),
-      ],
-    });
-
-    await runSearchDocumentBackfill(client);
-
-    expect(store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`)?.projectId).toBe(
-      "p1"
-    );
-    expect(
-      store.get(`${ORG_A}|${SearchEntityType.Loop}|l2`)?.projectId
-    ).toBeNull();
-    expect(
-      store.get(`${ORG_A}|${SearchEntityType.Loop}|l3`)?.projectId
-    ).toBeNull();
-  });
-
   it("paginates until exhausted (no capped first page)", async () => {
     const artifacts = Array.from({ length: 7 }, (_, i) =>
       artifact({ id: `a${i}`, name: `Doc ${i}` })
@@ -349,7 +342,6 @@ describe("runSearchDocumentBackfill", () => {
     const fake = makeFakeClient({
       artifacts,
       projects: [],
-      loops: [],
     });
 
     // Page size 2 forces multiple pages over 7 rows (2,2,2,1).
@@ -359,8 +351,8 @@ describe("runSearchDocumentBackfill", () => {
 
     expect(counts.documents).toBe(7);
     expect(fake.store.size).toBe(7);
-    // 4 artifact pages (2,2,2,1) each upsert once; the empty project/loop
-    // sources upsert nothing — proving every page was flushed, not just the
+    // 4 artifact pages (2,2,2,1) each upsert once; the empty project source
+    // upserts nothing — proving every page was flushed, not just the
     // first.
     expect(fake.upsertCalls).toBe(4);
   });
@@ -371,7 +363,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       comments: [
         comment({
           id: "c1",
@@ -408,7 +399,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       comments: [
         comment({
           id: "c2",
@@ -434,7 +424,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       comments: [
         comment({ id: "live", plainText: "keep me" }),
         comment({ id: "gone", plainText: "drop me", deletedAt: AT }),
@@ -452,7 +441,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       pullRequests: [
         pullRequest({
           id: "pr1",
@@ -484,7 +472,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       branches: [
         branch({
           artifactId: "branch-artifact-3",
@@ -515,7 +502,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       branches: [
         branch({ artifactId: "b-live" }),
         branch({ artifactId: "b-gone", deletedAt: AT }),
@@ -533,7 +519,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       comments: [
         comment({
           id: "shared-c",
@@ -587,7 +572,6 @@ describe("runSearchDocumentBackfill — comment/pull_request/branch corpus (FEA-
     const fake = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       branches,
     });
 

@@ -10,7 +10,7 @@
  * generation owns the signal), and the finalizer always runs.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { attachPostBootMaintenanceSettle } from "../src/main/lifecycle/post-boot-maintenance-settle.js";
 
 test("fires the readiness signal when maintenance resolves for the active generation", async () => {

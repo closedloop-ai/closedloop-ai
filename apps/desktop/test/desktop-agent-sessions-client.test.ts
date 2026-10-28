@@ -7,7 +7,6 @@
  * dead-letter class, or a permanently parked lane).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import {
   AgentSessionSyncMode,
@@ -15,19 +14,30 @@ import {
   SYNC_CONTENT_ENCODING_HEADER,
   SyncPayloadEncoding,
 } from "@repo/api/src/types/agent-session";
+import { DesktopClientAttributionHeader } from "@repo/api/src/types/desktop-client-attribution";
+import { test } from "vitest";
 import type { AgentSessionSyncTransportPayload } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import { AgentSessionSyncTransportError } from "../src/main/agent-sync/agent-session-sync-service-helpers.js";
 import {
   AGENT_SESSIONS_HTTP_REQUEST_TIMEOUT_MS,
   createDesktopAgentSessionsClient,
 } from "../src/main/agent-sync/desktop-agent-sessions-client.js";
-import { DesktopAgentSessionsAckReason } from "../src/main/cloud/cloud-protocol.js";
+import {
+  DesktopAgentSessionsAckReason,
+  UNKNOWN_ACK_REASON,
+} from "../src/main/cloud/cloud-protocol.js";
+import {
+  resetDesktopClientAttribution,
+  setDesktopClientAttributionResolver,
+} from "../src/main/util/desktop-client-attribution-provider.js";
 
 const TOKEN = "session-token-1";
 const ORIGIN = "https://api.example.test";
 const TARGET = "target-1";
 const NETWORK_FAILURE_PATTERN = /fetch failed/;
 const ORIGIN_UNAVAILABLE_PATTERN = /API origin unavailable/;
+const BIGINT_SERIALIZE_PATTERN = /BigInt/;
 
 function makeBatch(): AgentSessionSyncTransportPayload {
   return {
@@ -46,7 +56,7 @@ function makeClient(
   overrides?: {
     getAccessToken?: () => Promise<string | null>;
     getApiOrigin?: () => string | undefined;
-    onUnauthorized?: () => void;
+    onUnauthorized?: (rejectedToken: string) => void;
   }
 ): {
   client: ReturnType<typeof createDesktopAgentSessionsClient>;
@@ -66,10 +76,14 @@ function makeClient(
   return { client, calls };
 }
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {}
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -172,9 +186,9 @@ test("FEA-3425: HTTP 401 maps to unauthenticated", async () => {
 });
 
 test("FEA-3425: HTTP 401 reports the rejected credential via onUnauthorized; other statuses never do", async () => {
-  let invalidations = 0;
-  const onUnauthorized = () => {
-    invalidations += 1;
+  const invalidations: string[] = [];
+  const onUnauthorized = (rejectedToken: string) => {
+    invalidations.push(rejectedToken);
   };
   const { client } = makeClient(
     () => jsonResponse(401, { success: false, error: "Unauthorized" }),
@@ -182,7 +196,7 @@ test("FEA-3425: HTTP 401 reports the rejected credential via onUnauthorized; oth
   );
 
   await client.sendBatch(makeBatch(), TARGET);
-  assert.equal(invalidations, 1);
+  assert.deepEqual(invalidations, [TOKEN]);
 
   const { client: forbiddenClient } = makeClient(
     () => jsonResponse(403, { success: false, error: "Forbidden" }),
@@ -190,9 +204,9 @@ test("FEA-3425: HTTP 401 reports the rejected credential via onUnauthorized; oth
   );
 
   await forbiddenClient.sendBatch(makeBatch(), TARGET);
-  assert.equal(
+  assert.deepEqual(
     invalidations,
-    1,
+    [TOKEN],
     "a non-401 failure must not invalidate the cached credential"
   );
 });
@@ -273,10 +287,94 @@ test("FEA-3425: 429 maps to rate-limited", async () => {
 
   const ack = await client.sendBatch(makeBatch(), TARGET);
 
+  // ISS-10014: the deep-equal is also the OMISSION assertion — a server that
+  // sent no `Retry-After` must not produce a `retryAfterMs` key, because the
+  // fold reads absence as "no instruction" and a present key as a real one.
   assert.deepEqual(ack, {
     accepted: false,
     reason: DesktopAgentSessionsAckReason.RateLimited,
   });
+});
+
+test("ISS-10014: a 429 carrying Retry-After puts the parsed wait on the ack", async () => {
+  const { client } = makeClient(() =>
+    jsonResponse(
+      429,
+      {
+        success: false,
+        error: "Rate limited",
+        code: DesktopAgentSessionsSyncErrorCode.RateLimited,
+      },
+      { "Retry-After": "600" }
+    )
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  assert.deepEqual(
+    ack,
+    {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.RateLimited,
+      retryAfterMs: 600_000,
+    },
+    "the delta-seconds form is read off the real response headers and carried in ms"
+  );
+});
+
+test("ISS-10014: an unreadable Retry-After yields no hint rather than a fabricated one", async () => {
+  const { client } = makeClient(() =>
+    jsonResponse(
+      429,
+      {
+        success: false,
+        error: "Rate limited",
+        code: DesktopAgentSessionsSyncErrorCode.RateLimited,
+      },
+      { "Retry-After": "soon" }
+    )
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  assert.deepEqual(
+    ack,
+    {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.RateLimited,
+    },
+    "a header we cannot parse is not evidence of any wait — inferring one from garbage is what the parser returns undefined to avoid"
+  );
+});
+
+test("ISS-10014: the hint rides every rejection, including one the dispatch will not act on", async () => {
+  const { client } = makeClient(() =>
+    jsonResponse(
+      400,
+      {
+        success: false,
+        error: "Invalid",
+        code: DesktopAgentSessionsSyncErrorCode.ValidationFailed,
+      },
+      { "Retry-After": "600" }
+    )
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  // Not gated on the transport's class: a newer server's unknown code
+  // classifies ITEM here while the dispatch routes the unknown REASON to the
+  // stall fold that honors the hint, so gating here would strip it exactly on
+  // the skew path. Which acks act on it is the dispatch's decision.
+  assert.deepEqual(
+    ack,
+    {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      retryAfterMs: 600_000,
+    },
+    "the transport reports what the server said; the validation branch of the dispatch simply never reads it"
+  );
 });
 
 test("FEA-3425: 5xx (coded or not) and unexpected statuses map to ingestion-failed", async () => {
@@ -313,6 +411,122 @@ test("FEA-3425: 5xx (coded or not) and unexpected statuses map to ingestion-fail
   }
 });
 
+/**
+ * ISS-8595 (whitlockk review) — the boundary that makes the sync lane's version-skew
+ * branch reachable at all.
+ *
+ * Before this, `ackReasonForHttpFailure` was TOTAL over the current enum: every
+ * non-2xx fell through to `ingestion_failed` and every 2xx to accepted or
+ * `ingestion_failed`, so a newer cloud's rejection class could not survive
+ * translation, and the lane's "treat an unrecognized reason as environmental"
+ * fallback could only ever be reached by a test casting a string into the ack.
+ * A branch no production input can reach changes no skew behavior.
+ */
+test("ISS-8595: a code NEITHER contract in this build knows survives as the version-skew class", async () => {
+  const { client } = makeClient(() =>
+    jsonResponse(503, {
+      success: false,
+      error: "quota exceeded for this tenant",
+      code: "tenant_quota_exhausted",
+    })
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  assert.deepEqual(ack, {
+    accepted: false,
+    reason: UNKNOWN_ACK_REASON,
+    // Log-only, and the reason an operator can tell which new class this was.
+    unrecognizedReason: "tenant_quota_exhausted",
+  });
+});
+
+/**
+ * ISS-10014 (codex review) — the version-skew shape, which is the one a class
+ * gate here would silently strip.
+ *
+ * A 422 is a status this route has never been seen to emit, so Appendix A's
+ * DEFAULT table would call it ITEM; an unknown code on top of it is skew
+ * evidence twice, and `ackReasonForHttpFailure` resolves it to the environmental
+ * `UNKNOWN_ACK_REASON` rather than to that default. Reading `Retry-After` only
+ * on the statuses this build maps to an environmental class would therefore drop
+ * the hint on exactly the path the dispatch DOES honor it — the transport's
+ * class and the dispatch's reason are not the same axis. Pinned with the hint
+ * and the reason in ONE deep-equal so neither can regress alone.
+ */
+test("ISS-10014: an unknown code on a non-environmental status keeps the server's Retry-After", async () => {
+  const { client } = makeClient(() =>
+    jsonResponse(
+      422,
+      {
+        success: false,
+        error: "quota exceeded for this tenant",
+        code: "tenant_quota_exhausted",
+      },
+      { "Retry-After": "600" }
+    )
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  assert.deepEqual(
+    ack,
+    {
+      accepted: false,
+      reason: UNKNOWN_ACK_REASON,
+      retryAfterMs: 600_000,
+      unrecognizedReason: "tenant_quota_exhausted",
+    },
+    "a newer server's unknown rejection class reaches the stall fold WITH the wait it asked for, not on the lane's own faster schedule"
+  );
+});
+
+test("ISS-8595: a code the ROUTE contract already declares is not mistaken for skew", async () => {
+  // The regression half, and the case that makes the negative test two-sided:
+  // `internal_error` is a live route code that is deliberately NOT an ack
+  // reason, so a skew check that only consulted the ack enum would reclassify
+  // traffic today's server already sends. `errorCode` here is the shared const,
+  // never a literal.
+  for (const errorCode of Object.values(DesktopAgentSessionsSyncErrorCode)) {
+    const { client } = makeClient(() =>
+      jsonResponse(500, { success: false, error: "boom", code: errorCode })
+    );
+
+    const ack = await client.sendBatch(makeBatch(), TARGET);
+
+    assert.deepEqual(
+      ack,
+      {
+        accepted: false,
+        reason: DesktopAgentSessionsAckReason.IngestionFailed,
+      },
+      `${errorCode} is a known route code and must keep its bounded classification`
+    );
+  }
+});
+
+test("ISS-8595: a recognized STATUS keeps its classification even when the body names a newer code", async () => {
+  // A 400 is a verdict about these bytes whatever the server calls the class, so
+  // the skew check runs only where the alternative was the catch-all. Without
+  // this, a newer server that started coding its 400s would silently move
+  // `validation_failed` — the one row-attributable class — onto the
+  // environmental path and never dead-letter a genuinely poisoned row.
+  const { client } = makeClient(() =>
+    jsonResponse(400, {
+      success: false,
+      error: "bad",
+      code: "schema_v9_violation",
+    })
+  );
+
+  const ack = await client.sendBatch(makeBatch(), TARGET);
+
+  assert.deepEqual(ack, {
+    accepted: false,
+    reason: DesktopAgentSessionsAckReason.ValidationFailed,
+  });
+});
+
 test("FEA-3425: a 2xx with an unrecognizable body maps to ingestion-failed, not accepted", async () => {
   const { client } = makeClient(
     () => new Response("<html>proxy page</html>", { status: 200 })
@@ -345,10 +559,13 @@ test("ISS-5088: a CLIENT-side abort maps to transport-timeout, not ack-timeout",
   });
 });
 
-test("ISS-5088: a SERVER-answered 408 still maps to ack-timeout (batch-attributable)", async () => {
-  // The counterpart to the test above: the server received the batch and gave up
-  // on it, so the verdict IS about this payload and keeps the row-attributable
-  // `MAX_CONSECUTIVE_TIMEOUTS` budget it has always had.
+test("ISS-5088: an HTTP 408 on the response still maps to ack-timeout", async () => {
+  /* The counterpart to the test above: something answered 408 over the wire, so
+     the client resolves `AckTimeout` rather than the client-abort
+     `TransportTimeout`. What that classification MEANS downstream changed in
+     ISS-8605 — 408 is environmental now, defers with budgets intact, and the
+     `MAX_CONSECUTIVE_TIMEOUTS` budget it used to carry is deleted — but the
+     mapping this test pins is unchanged. */
   const { client } = makeClient(() =>
     jsonResponse(408, { success: false, error: "Request Timeout" })
   );
@@ -361,18 +578,20 @@ test("ISS-5088: a SERVER-answered 408 still maps to ack-timeout (batch-attributa
   });
 });
 
-test("FEA-3425: a network failure THROWS (socket-drop parity) so the thrown-transport budget applies", async () => {
+test("ISS-10602: a network failure THROWS typed as a transport throw, so the lane defers instead of the row", async () => {
   const { client } = makeClient(() => {
     throw new TypeError("fetch failed");
   });
 
   await assert.rejects(
     () => client.sendBatch(makeBatch(), TARGET),
-    NETWORK_FAILURE_PATTERN
+    (error: unknown) =>
+      error instanceof AgentSessionSyncTransportError &&
+      NETWORK_FAILURE_PATTERN.test(error.message)
   );
 });
 
-test("FEA-3425: a missing API origin THROWS (local config fault), never an unauthenticated defer", async () => {
+test("ISS-10602: a missing API origin THROWS typed as a transport throw, never an unauthenticated defer", async () => {
   const { client, calls } = makeClient(
     () => jsonResponse(200, { success: true, data: { synced: true } }),
     { getApiOrigin: () => undefined }
@@ -380,9 +599,33 @@ test("FEA-3425: a missing API origin THROWS (local config fault), never an unaut
 
   await assert.rejects(
     () => client.sendBatch(makeBatch(), TARGET),
-    ORIGIN_UNAVAILABLE_PATTERN
+    (error: unknown) =>
+      error instanceof AgentSessionSyncTransportError &&
+      ORIGIN_UNAVAILABLE_PATTERN.test(error.message)
   );
   assert.equal(calls.length, 0);
+});
+
+test("ISS-10602: a batch that cannot be encoded throws RAW, never typed as a transport throw", async () => {
+  const { client, calls } = makeClient(() =>
+    jsonResponse(200, { success: true, data: { synced: true } })
+  );
+  // A BigInt is what JSON.stringify refuses. Typed, this would defer the whole
+  // lane on one row's bytes instead of dead-lettering that row.
+  const unencodable = Object.assign(makeBatch(), { unencodable: 1n });
+
+  await assert.rejects(
+    () => client.sendBatch(unencodable, TARGET),
+    (error: unknown) =>
+      error instanceof TypeError &&
+      !(error instanceof AgentSessionSyncTransportError) &&
+      BIGINT_SERIALIZE_PATTERN.test(error.message)
+  );
+  assert.equal(
+    calls.length,
+    0,
+    "an unencodable batch never reaches the network"
+  );
 });
 
 test("FEA-4138: compress option gzips the body and stamps Content-Encoding: gzip", async () => {
@@ -479,4 +722,76 @@ test("ISS-5090 skew: a 400 without a usable detail omits the key entirely", asyn
       `an absent/unusable detail must not add the key: ${JSON.stringify(body)}`
     );
   }
+});
+
+/**
+ * ISS-8749: the highest-volume desktop→cloud lane builds its own request init,
+ * so the attribution headers have to be merged there explicitly. Asserting
+ * BOTH states with the same request builder is the point — a presence-only test
+ * would stay green against a client that stamped a placeholder for an install
+ * that never published one.
+ */
+test("sync request carries the published Desktop install and build", async () => {
+  resetDesktopClientAttribution();
+  setDesktopClientAttributionResolver(() => ({
+    installationId: "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311",
+    clientVersion: "1.24.3",
+  }));
+  const requests: RequestInit[] = [];
+  const client = createDesktopAgentSessionsClient({
+    fetch: ((_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return Promise.resolve(
+        new Response(JSON.stringify({ success: true, data: {} }), {
+          status: 200,
+        })
+      );
+    }) as typeof fetch,
+    getAccessToken: () => Promise.resolve(TOKEN),
+    getApiOrigin: () => ORIGIN,
+  });
+
+  await client.sendBatch(makeBatch(), TARGET);
+
+  const headers = requests[0]?.headers as Record<string, string>;
+  assert.equal(
+    headers[DesktopClientAttributionHeader.InstallationId],
+    "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311"
+  );
+  assert.equal(headers[DesktopClientAttributionHeader.ClientVersion], "1.24.3");
+  // The credential must still be the credential; attribution merges beneath it.
+  assert.equal(headers.Authorization, `Bearer ${TOKEN}`);
+  resetDesktopClientAttribution();
+});
+
+test("sync request omits attribution entirely when none was published", async () => {
+  resetDesktopClientAttribution();
+  const requests: RequestInit[] = [];
+  const client = createDesktopAgentSessionsClient({
+    fetch: ((_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return Promise.resolve(
+        new Response(JSON.stringify({ success: true, data: {} }), {
+          status: 200,
+        })
+      );
+    }) as typeof fetch,
+    getAccessToken: () => Promise.resolve(TOKEN),
+    getApiOrigin: () => ORIGIN,
+  });
+
+  await client.sendBatch(makeBatch(), TARGET);
+
+  const headers = requests[0]?.headers as Record<string, string>;
+  // Absent keys, not empty-string values: the server reads header presence, and
+  // a blank header is a different fact from no header.
+  assert.equal(
+    Object.hasOwn(headers, DesktopClientAttributionHeader.InstallationId),
+    false
+  );
+  assert.equal(
+    Object.hasOwn(headers, DesktopClientAttributionHeader.ClientVersion),
+    false
+  );
+  assert.equal(headers.Authorization, `Bearer ${TOKEN}`);
 });

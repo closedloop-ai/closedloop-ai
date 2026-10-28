@@ -42,7 +42,7 @@ const HEALTHY_SLUG = "quarantine-caveat-healthy";
 // The settled Sessions card's caveat copy, count-agnostic. Matches the
 // singular/plural forms `resolveSessionsCardDetail` renders in
 // `sessions-summary-cards.tsx` ("1 transcript couldn't be read" /
-// "N transcripts couldn't be read"). PR #4085 review (wongk / stage): the seam's
+// "N transcripts couldn't be read"). PR #4085 review (whitlockk / stage): the seam's
 // tightened 2s deadline is manager-wide, so on a busy CI runner a second real
 // source could also cross it and push the count past 1 — asserting the
 // count-agnostic caveat (not the exact "1" string) keeps the test honest about the
@@ -53,7 +53,7 @@ const CAVEAT_PATTERN = /\d+ transcripts? couldn't be read/;
 // The always-available cards' skeleton-wait captions; asserting neither remains lets
 // us prove the loading state CLEARED before the caveat is checked.
 const IMPORTING_CAPTION = "Importing your history";
-// PR #4085 review (wongk): give this import-heavy launch spec an explicit timeout
+// PR #4085 review (whitlockk): give this import-heavy launch spec an explicit timeout
 // like the nearby Sessions E2Es — the ~46s local run plus CI startup/import variance
 // leaves almost no headroom under Playwright's 60s default before the 45s caveat wait.
 const SPEC_TIMEOUT_MS = 120_000;

@@ -39,7 +39,7 @@ import { PageSection } from "./page-section";
  * (`PackAdminCapability.InstallToOwnMachines`) and the API enforces node
  * ownership, so nothing here widens who may install.
  *
- * Honest states, per the FEA-4088 Parker principle:
+ * Honest states, per the FEA-4088 Pascoe principle:
  *  - `isLoading` → per-row skeletons (the block is coming, not empty).
  *  - `error`     → an in-block error state (never a silent absence, never a lie
  *                  that the pack is "not installed" when the read actually failed).

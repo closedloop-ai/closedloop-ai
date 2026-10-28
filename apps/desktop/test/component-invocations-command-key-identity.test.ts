@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
 import type { NormalizedSession } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import { storedCommandCandidates } from "../src/main/database/component-invocation-stored-candidates.js";
 import { deriveAgentComponentInvocationCandidates } from "../src/main/database/component-invocations.js";
 import { makeSession } from "./normalized-session-test-utils.js";
@@ -99,7 +99,7 @@ describe("ISS-4796 placeholder command admission", () => {
 /**
  * ISS-4796 — the STORED-ROW REBUILD half of the same admission contract.
  *
- * wongk (PR #4322): "The new test never runs the stored-row rebuild, so dropping
+ * whitlockk (PR #4322): "The new test never runs the stored-row rebuild, so dropping
  * this gate later can re-admit `/...` from persisted session metadata while the
  * live path stays green."
  *

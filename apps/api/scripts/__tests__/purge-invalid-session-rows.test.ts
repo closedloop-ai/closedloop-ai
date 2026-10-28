@@ -27,6 +27,7 @@ import {
   countDependents,
   countOrphanedChildren,
   invalidSessionWhere,
+  main,
   OrphanRowsRemainError,
   PredicateDriftError,
   positiveIntEnv,
@@ -34,6 +35,7 @@ import {
   resolveRunConfig,
   writeBackupToFile,
 } from "../purge-invalid-session-rows";
+import type { ScriptOutput } from "../script-progress-output";
 
 function makeFakeDb() {
   return {
@@ -41,7 +43,6 @@ function makeFakeDb() {
     agentSessionTokenUsage: { count: vi.fn() },
     agentSessionEvent: { count: vi.fn() },
     artifact: { deleteMany: vi.fn(), findMany: vi.fn() },
-    loop: { count: vi.fn() },
   };
 }
 
@@ -77,7 +78,6 @@ beforeEach(() => {
   // Default: no wider-cascade associations on the matched artifacts. Tests that
   // exercise the association signal override these.
   db.artifact.findMany.mockResolvedValue([]);
-  db.loop.count.mockResolvedValue(0);
 });
 
 function selectRow(id: string, dataRevision: number | null) {
@@ -201,7 +201,7 @@ describe("countOrphanedChildren", () => {
 });
 
 describe("countCascadeAssociations", () => {
-  it("sums per-artifact association counts (incl. source+target links) and loop refs, filtered by predicate", async () => {
+  it("sums per-artifact association counts (incl. source+target links), filtered by predicate", async () => {
     db.artifact.findMany.mockResolvedValueOnce([
       associationCountRow({
         commentThreads: 2,
@@ -210,7 +210,6 @@ describe("countCascadeAssociations", () => {
       }),
       associationCountRow({ favoritedBy: 3, tagArtifacts: 1, ratings: 1 }),
     ]);
-    db.loop.count.mockResolvedValueOnce(4);
 
     const result = await countCascadeAssociations(db as never, "org-A");
 
@@ -220,29 +219,19 @@ describe("countCascadeAssociations", () => {
       favorites: 3,
       tagArtifacts: 1,
       ratings: 1,
-      loopReferences: 4,
     });
-    // total counts every field, including the dangling-pointer loop refs.
-    expect(result.total).toBe(2 + 2 + 3 + 1 + 1 + 4);
-    // No id arrays — artifacts + loops filtered via the session predicate, so it
+    // total counts every field.
+    expect(result.total).toBe(2 + 2 + 3 + 1 + 1);
+    // No id arrays — artifacts filtered via the session predicate, so it
     // cannot hit the bind-parameter limit regardless of org size.
     const sessionWhere = invalidSessionWhere("org-A");
     expect(db.artifact.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { session: sessionWhere } })
     );
-    expect(db.loop.count).toHaveBeenCalledWith({
-      where: {
-        OR: [
-          { artifact: { session: sessionWhere } },
-          { sessionArtifact: { session: sessionWhere } },
-        ],
-      },
-    });
   });
 
-  it("returns zero when no matched artifacts or loops", async () => {
+  it("returns zero when no matched artifacts", async () => {
     db.artifact.findMany.mockResolvedValueOnce([]);
-    db.loop.count.mockResolvedValueOnce(0);
     const result = await countCascadeAssociations(db as never, "org-A");
     expect(result.total).toBe(0);
   });
@@ -265,12 +254,16 @@ describe("positiveIntEnv", () => {
 });
 
 describe("resolveRunConfig", () => {
+  // `resolveRunConfig` takes a `NodeJS.ProcessEnv`, which Next augments to
+  // REQUIRE `NODE_ENV`, so every literal environment has to carry it.
+  const baseEnv = { NODE_ENV: "test" } as const;
+
   it("requires ORG_ID", () => {
-    expect(resolveRunConfig({})).toMatchObject({ ok: false });
+    expect(resolveRunConfig({ ...baseEnv })).toMatchObject({ ok: false });
   });
 
   it("defaults to a dry run when ORG_ID is present", () => {
-    expect(resolveRunConfig({ ORG_ID: "org-A" })).toStrictEqual({
+    expect(resolveRunConfig({ ...baseEnv, ORG_ID: "org-A" })).toStrictEqual({
       ok: true,
       orgId: "org-A",
       dryRun: true,
@@ -278,14 +271,56 @@ describe("resolveRunConfig", () => {
   });
 
   it("executes only when DRY_RUN=0", () => {
-    expect(resolveRunConfig({ ORG_ID: "org-A", DRY_RUN: "0" })).toStrictEqual({
+    expect(
+      resolveRunConfig({ ...baseEnv, ORG_ID: "org-A", DRY_RUN: "0" })
+    ).toStrictEqual({
       ok: true,
       orgId: "org-A",
       dryRun: false,
     });
-    expect(resolveRunConfig({ ORG_ID: "org-A", DRY_RUN: "1" })).toMatchObject({
+    expect(
+      resolveRunConfig({ ...baseEnv, ORG_ID: "org-A", DRY_RUN: "1" })
+    ).toMatchObject({
       dryRun: true,
     });
+  });
+});
+
+describe("main", () => {
+  it("writes config errors through script output before exiting", async () => {
+    const savedDryRun = process.env.DRY_RUN;
+    const savedOrgId = process.env.ORG_ID;
+    const deferred = createDeferredErrorOutput();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+      code?: string | number | null | undefined
+    ) => {
+      throw new Error(`process.exit:${code}`);
+    }) as typeof process.exit);
+
+    try {
+      process.env.DRY_RUN = "0";
+      Reflect.deleteProperty(process.env, "ORG_ID");
+
+      const run = main(deferred.output);
+      await Promise.resolve();
+
+      expect(deferred.output.error).toHaveBeenCalledWith(
+        expect.stringContaining("ORG_ID is required")
+      );
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      deferred.resolveError();
+
+      await expect(run).rejects.toThrow("process.exit:1");
+
+      expect(db.sessionDetail.count).not.toHaveBeenCalled();
+      expect(db.sessionDetail.findMany).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      restoreEnvValue("DRY_RUN", savedDryRun);
+      restoreEnvValue("ORG_ID", savedOrgId);
+    }
   });
 });
 
@@ -296,11 +331,10 @@ describe("purgeInvalidSessionRows — dry run", () => {
     db.agentSessionTokenUsage.count.mockResolvedValueOnce(6);
     db.agentSessionEvent.count.mockResolvedValueOnce(12);
     // One matched artifact carries a comment thread + a favorite the backup
-    // won't capture, and two loops point at the matched set.
+    // won't capture.
     db.artifact.findMany.mockResolvedValueOnce([
       associationCountRow({ commentThreads: 1, favoritedBy: 1 }),
     ]);
-    db.loop.count.mockResolvedValueOnce(2);
     const writeBackup = vi.fn();
 
     const report = await purgeInvalidSessionRows(
@@ -319,8 +353,7 @@ describe("purgeInvalidSessionRows — dry run", () => {
       associations: {
         commentThreads: 1,
         favorites: 1,
-        loopReferences: 2,
-        total: 4,
+        total: 2,
       },
     });
     expect(db.sessionDetail.count).toHaveBeenCalledWith({
@@ -500,3 +533,27 @@ describe("purgeInvalidSessionRows — execute", () => {
     expect(writeBackup).not.toHaveBeenCalled();
   });
 });
+
+function createDeferredErrorOutput() {
+  let resolveError: () => void;
+  const errorPromise = new Promise<void>((resolve) => {
+    resolveError = resolve;
+  });
+  const output = {
+    log: vi.fn(async (..._parts: unknown[]) => {}),
+    warn: vi.fn(async (..._parts: unknown[]) => {}),
+    error: vi.fn(() => errorPromise),
+  } satisfies ScriptOutput;
+  return {
+    output,
+    resolveError: () => resolveError(),
+  };
+}
+
+function restoreEnvValue(key: string, value: string | undefined) {
+  if (value === undefined) {
+    Reflect.deleteProperty(process.env, key);
+    return;
+  }
+  process.env[key] = value;
+}

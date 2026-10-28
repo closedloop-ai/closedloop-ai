@@ -117,9 +117,9 @@ const SELECTION_ACTOR = { name: "claude-opus-4", human: null };
 const SELECTION_ROW_ATTRIBUTE = "[data-trace-text-row]";
 
 const meta = {
-  title: "App Core/Agents/Trace Message Body",
+  title: "Composites v1.0/Agents/Detail/Trace Message Body",
   component: TraceMessageBody,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type {
   CallExpression,
@@ -22,6 +21,7 @@ import {
   ScriptKind,
   ScriptTarget,
 } from "typescript6";
+import { test } from "vitest";
 import { DesktopSyncBatchOutcome } from "../src/main/telemetry/app-otel-runtime.js";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));

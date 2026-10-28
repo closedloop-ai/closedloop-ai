@@ -15,7 +15,10 @@ import {
   TranscriptBytesTransportProvider,
 } from "../../../data-source/transcript-bytes-transport";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
-import { SessionTranscriptPanel } from "../session-transcript-panel";
+import {
+  SessionTranscriptPanel,
+  TRANSCRIPT_RETRY_LABEL,
+} from "../session-transcript-panel";
 
 /**
  * FEA-3634: the `missing` availability state, split into its own file so the
@@ -39,7 +42,6 @@ import { SessionTranscriptPanel } from "../session-transcript-panel";
  */
 
 const SESSION_ID = "session-transcript-missing-1";
-const RETRY_BUTTON_NAME = /retry/i;
 const NOT_SYNCED_TITLE = "Transcript still syncing";
 const NOT_SYNCED_NOTICE =
   /No Claude transcript from this session has synced yet/i;
@@ -138,7 +140,7 @@ describe("SessionTranscriptPanel — missing transcript (FEA-3634)", () => {
     // The browser has nothing to re-fetch — the next move belongs to the source
     // machine — so unlike `uploadFailed` this state offers no Retry.
     expect(
-      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
+      screen.queryByRole("button", { name: isRetryButtonName })
     ).not.toBeInTheDocument();
     expect(screen.queryByText("db fallback prompt")).not.toBeInTheDocument();
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -190,7 +192,7 @@ describe("SessionTranscriptPanel — missing transcript (FEA-3634)", () => {
     expect(await screen.findByText(NOT_SYNCED_TITLE)).toBeInTheDocument();
     expect(screen.queryByText(GENERIC_LOAD_ERROR_TITLE)).toBeNull();
     expect(
-      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
+      screen.queryByRole("button", { name: isRetryButtonName })
     ).not.toBeInTheDocument();
     // Pin the PRECONDITION, not just the outcome (Codex review): this test is
     // only meaningful while the desktop actually attempts the local read and
@@ -304,3 +306,7 @@ describe("SessionTranscriptPanel — missing transcript (FEA-3634)", () => {
     expect(screen.getByText(TITLE_CASED_CLAUDE_NOTICE)).toBeInTheDocument();
   });
 });
+
+function isRetryButtonName(name: string): boolean {
+  return name.toLowerCase().includes(TRANSCRIPT_RETRY_LABEL.toLowerCase());
+}

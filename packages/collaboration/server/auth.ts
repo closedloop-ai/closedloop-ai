@@ -37,7 +37,7 @@ export async function authenticate({
   // what `parseDocumentRoomId` accepts: granting only `:artifact:*` while the
   // parser still accepted the pre-rename `:document:` namespace meant a legacy
   // room authorized with a 200 and a token that had no permission for it
-  // (PR #4285 reviewer wongk).
+  // (PR #4285 reviewer whitlockk).
   for (const namespace of ROOM_NAMESPACES) {
     session.allow(`${organizationId}:${namespace}:*`, session.FULL_ACCESS);
   }

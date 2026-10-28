@@ -19,14 +19,13 @@ describe("ChecklistItemId", () => {
   // and this row is where that step went. Raising the number is the point of the
   // change, not a test being loosened to accommodate it.
   it("contains the seven expected checklist item IDs", () => {
-    expect(Object.keys(ChecklistItemId)).toHaveLength(7);
+    expect(Object.keys(ChecklistItemId)).toHaveLength(6);
     expect(Object.keys(ChecklistItemId)).toEqual(
       expect.arrayContaining([
         "CreateTeam",
         "CreateProject",
         "DownloadDesktop",
         "ConnectGitHub",
-        "AddAnthropicKey",
         "ConnectGoogle",
         "InviteMembers",
       ])
@@ -38,7 +37,6 @@ describe("ChecklistItemId", () => {
     expect(ChecklistItemId.CreateProject).toBe("CREATE_PROJECT");
     expect(ChecklistItemId.DownloadDesktop).toBe("DOWNLOAD_DESKTOP");
     expect(ChecklistItemId.ConnectGitHub).toBe("CONNECT_GITHUB");
-    expect(ChecklistItemId.AddAnthropicKey).toBe("ADD_ANTHROPIC_KEY");
     expect(ChecklistItemId.ConnectGoogle).toBe("CONNECT_GOOGLE");
     expect(ChecklistItemId.InviteMembers).toBe("INVITE_MEMBERS");
   });

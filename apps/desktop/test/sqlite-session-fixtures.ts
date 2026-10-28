@@ -1,5 +1,9 @@
 import type { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { recomputeSessionLastActivityAt } from "../src/main/database/write-core.js";
+import {
+  artifactIdFromIdentityKey,
+  computeIdentityKey,
+} from "../src/main/enrichment/identity-key.js";
 
 /**
  * Row fixtures shared by the SQLite store suites.
@@ -81,5 +85,75 @@ export async function insertSqliteEvent(
   // re-implementing its SQL, so the test can never drift from ingest.
   await db.prisma.write((client) =>
     client.$transaction((tx) => recomputeSessionLastActivityAt(tx, sessionId))
+  );
+}
+
+export async function insertSqliteAgent(
+  db: SqliteAgentDatabaseHandle,
+  sessionId: string,
+  id: string
+): Promise<void> {
+  await db.run(
+    `INSERT INTO agents (id, session_id, name, type, status, started_at, updated_at)
+     VALUES ($1, $2, $3, 'main', 'completed', $4, $4)`,
+    id,
+    sessionId,
+    `Agent ${id}`,
+    "2026-09-21T11:05:00.000Z"
+  );
+}
+
+/**
+ * FEA-1899: PRs surface from artifact links (relation 'created'/'workspace')
+ * joined to the canonical artifacts table — no longer from the pull_requests
+ * detail store. Mirrors persistNormalizedPullRequests' identity_key/id scheme:
+ * the ids come from `computeIdentityKey`/`artifactIdFromIdentityKey` rather
+ * than being hand-built, so a change to the identity rule reaches these rows.
+ */
+export async function insertSqlitePrArtifact(
+  db: SqliteAgentDatabaseHandle,
+  sessionId: string,
+  pr: {
+    repoFullName: string;
+    prNumber: number;
+    title?: string | null;
+    relation?: "created" | "workspace";
+    observedAt?: string;
+  }
+): Promise<void> {
+  const relation = pr.relation ?? "created";
+  const observedAt = pr.observedAt ?? "2026-06-16T10:35:00.000Z";
+  const identityKey = computeIdentityKey({
+    kind: "pull_request",
+    repoFullName: pr.repoFullName,
+    prNumber: pr.prNumber,
+  });
+  const artifactId = artifactIdFromIdentityKey(identityKey);
+  await db.run(
+    `INSERT INTO artifacts
+       (id, identity_key, kind, repo_full_name, pr_number, title,
+        harness, observed_at, created_at, last_seen_at)
+     VALUES ($1, $2, 'pull_request', $3, $4, $5, 'codex', $6, $6, $6)
+     ON CONFLICT(identity_key) DO UPDATE SET
+       title = COALESCE(artifacts.title, EXCLUDED.title),
+       last_seen_at = EXCLUDED.last_seen_at`,
+    artifactId,
+    identityKey,
+    pr.repoFullName,
+    pr.prNumber,
+    pr.title ?? null,
+    observedAt
+  );
+  await db.run(
+    `INSERT INTO session_artifact_links
+       (id, session_id, artifact_id, relation, method, evidence, is_primary,
+        status, extractor_version, observed_at, created_at)
+     VALUES ($1, $2, $3, $4, 'test_fixture', '{}', 0, 'candidate', 1, $5, $5)
+     ON CONFLICT(session_id, artifact_id, relation) DO NOTHING`,
+    `${sessionId}:${artifactId}:${relation}`,
+    sessionId,
+    artifactId,
+    relation,
+    observedAt
   );
 }

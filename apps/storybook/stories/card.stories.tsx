@@ -28,9 +28,9 @@ const notifications = [
  * Displays a card with header, content, and footer.
  */
 const meta = {
-  title: "Design System/Layout/Card",
+  title: "Primitives v1.0/Layout/Card",
   component: Card,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     className: "w-96",

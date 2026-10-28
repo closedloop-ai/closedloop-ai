@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   ArtifactRefMethod,
   ArtifactRefTargetKind,
@@ -8,6 +7,7 @@ import {
   MonitoredSessionActivityEventKind,
   type SyncedMonitoredSessionActivity,
 } from "@repo/api/src/types/session-monitored-activity";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import {
   GitHubMonitoredActivityTool,
@@ -39,7 +39,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6060,
               method: "get_files",
             },
@@ -79,7 +79,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
               timestamp: READ_AT,
               input: {
                 owner: "closedloop-ai",
-                repo: "symphony-alpha",
+                repo: "closedloop-ai",
                 pullNumber: prNumber,
                 method,
               },
@@ -118,7 +118,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
               timestamp: ACTION_AT,
               input: {
                 owner: "closedloop-ai",
-                repo: "symphony-alpha",
+                repo: "closedloop-ai",
                 pullNumber: prNumber,
               },
               output: { ok: true },
@@ -150,7 +150,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               branch: BRANCH,
             },
             output: { ref: `refs/heads/${BRANCH}` },
@@ -161,7 +161,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               head: BRANCH,
             },
             output: {
@@ -200,7 +200,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               head: BRANCH,
             },
             output: { ok: true },
@@ -210,7 +210,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: ACTION_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               head: BRANCH,
             },
             output: "https://github.com/another/repository/pull/6261",
@@ -243,7 +243,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6060,
               method: "unsupported_method",
             },
@@ -254,7 +254,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             timestamp: READ_AT,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6061,
               method: "get",
             },
@@ -266,7 +266,7 @@ describe("ISS-6060 GitHub MCP monitored activity", () => {
             isError: true,
             input: {
               owner: "closedloop-ai",
-              repo: "symphony-alpha",
+              repo: "closedloop-ai",
               pullNumber: 6062,
             },
           },

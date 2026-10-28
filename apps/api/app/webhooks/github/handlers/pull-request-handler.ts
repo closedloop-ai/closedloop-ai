@@ -1,7 +1,6 @@
 import type { PullRequest } from "@octokit/webhooks-types";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
-import type { Document } from "@repo/api/src/types/document";
 import type { GitHubPRState } from "@repo/api/src/types/github";
 import {
   GitHubDirtyScopeKind,
@@ -10,12 +9,13 @@ import {
 import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
 import type { TransactionClient } from "@repo/database";
 import { ArtifactType, ChecksStatus, withDb } from "@repo/database";
-import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { adoptRepolessPullRequestByRepoIdentity } from "@/app/branches/github-projection-writer";
+import { reconcilePullRequestProviderIdentityInTransaction } from "@/app/branches/pull-request-provider-identity";
+import { pullRequestProviderLockTxOptions } from "@/app/branches/pull-request-provider-lock";
+import { runWithAttributionEvidenceGate } from "@/lib/attribution-evidence-gate-scope";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
-import { pickPrimaryArtifactReference } from "./artifact-reference";
+import { pickPullRequestArtifactReference } from "./artifact-reference";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
@@ -26,12 +26,16 @@ import {
   applyPullRequestAction,
   type HandledPullRequestEvent,
 } from "./pull-request-action-application";
+import { readPullRequestAttributionEvidence } from "./pull-request-attribution-read";
+import { repairPullRequestBranchAssociationInTransaction } from "./pull-request-branch-association-repair";
 import { materializeWebhookPullRequestBranch } from "./pull-request-branch-materialization";
+import { seedPullRequestBranchOwner } from "./pull-request-branch-owner-seed";
 import { reconcilePullRequestLabelsForWebhook } from "./pull-request-label-reconciliation";
 import {
   shouldApplyCurrentBranchPrEvent,
   shouldApplyPullRequestLifecycleUpdate,
 } from "./pull-request-lifecycle-decision";
+import { createLinkageRecords } from "./pull-request-linkage-records";
 import { writeExistingWebhookPullRequestProjection } from "./pull-request-projection";
 
 /**
@@ -39,7 +43,7 @@ import { writeExistingWebhookPullRequestProjection } from "./pull-request-projec
  * GitHub sends many PR action types (labeled, assigned, etc.)
  * that we don't process.
  */
-const HANDLED_ACTIONS = new Set<HandledPullRequestEvent["action"]>([
+export const HANDLED_ACTIONS = new Set<HandledPullRequestEvent["action"]>([
   "opened",
   "edited",
   "closed",
@@ -50,7 +54,7 @@ const HANDLED_ACTIONS = new Set<HandledPullRequestEvent["action"]>([
 ]);
 
 /** Actions that trigger plan reference parsing and linkage. */
-const LINKAGE_ACTIONS = new Set(["opened", "edited", "reopened"]);
+export const LINKAGE_ACTIONS = new Set(["opened", "edited", "reopened"]);
 
 type LinkableDocumentArtifact = {
   id: string;
@@ -92,15 +96,36 @@ export async function handlePullRequest(
     );
   }
 
-  // Prisma's default interactive-transaction bounds. The 5s/30s override this
-  // used to carry existed solely to absorb the wait on the per-feature advisory
-  // lock taken by the linked-feature auto-advance this handler no longer
-  // performs (FEA-3685 #3375); with no lock left to block on, a raised ceiling
-  // only lets a stalled delivery hold a pooled connection longer than the work
-  // needs.
-  const publication = await withDb.tx((tx) =>
-    processPullRequestTransaction(tx, event, installationId, observationContext)
-  );
+  // ISS-7130: sized to the worst-case holder of the PR-provider identity lock.
+  // The FEA-3685 #3375 override was dropped because the auto-advance that took
+  // a blocking advisory lock had left this handler — true when written, and
+  // falsified by ISS-6980, which put a blocking `pg_advisory_xact_lock` back on
+  // this path (identity reconcile, then branch-association repair). That wait
+  // happens inside the transaction, so on Prisma's 5s default a contended
+  // delivery aborts with P2028 mid-wait and its projection write is simply lost.
+  // This is also the OUTERMOST transaction for the branch upsert this path
+  // reaches (`branchService.upsertBranchArtifact` joins it), whose own options
+  // are dropped once nested — same shape as `handleDeploymentStatus`.
+  const publication = await runWithAttributionEvidenceGate(async () => {
+    // ISS-12552: only a delivery that names an artifact can write the source
+    // link that reads this answer, so any other reads nothing (flag-off parity).
+    if (
+      LINKAGE_ACTIONS.has(action) &&
+      pickPullRequestArtifactReference(pull_request)
+    ) {
+      await readPullRequestAttributionEvidence(repository, installationId);
+    }
+    return await withDb.tx(
+      (tx) =>
+        processPullRequestTransaction(
+          tx,
+          event,
+          installationId,
+          observationContext
+        ),
+      pullRequestProviderLockTxOptions
+    );
+  });
   if (publication) {
     await publishGitHubDirtyScopes(publication);
   }
@@ -148,41 +173,38 @@ async function processPullRequestTransaction(
   }
 
   let prDetail = await findPullRequestDetail(tx, repo.id, pull_request.number);
-  if (!prDetail && repo.installation.organizationId) {
-    // FEA-2732: no App-owned row for this (repo, PR#) yet — adopt a desktop-
-    // produced repo-less row if one exists (fills repositoryId + githubId, and
-    // the branch's repositoryId), so a webhook arriving AFTER the App install
-    // reuses it instead of dropping state or inserting a duplicate. The githubId
-    // stamp is required before the githubId-keyed action updates below.
-    const adopted = await adoptRepolessPullRequestByRepoIdentity(tx, {
+  if (repo.installation.organizationId) {
+    await reconcilePullRequestProviderIdentityInTransaction(tx, {
       organizationId: repo.installation.organizationId,
-      repositoryFullName: normalizeRepoFullName(repo.fullName),
-      number: pull_request.number,
       repositoryId: repo.id,
+      repositoryFullName: normalizeRepoFullName(repo.fullName),
       githubId: String(pull_request.id),
+      number: pull_request.number,
     });
-    if (adopted) {
-      prDetail = await findPullRequestDetail(tx, repo.id, pull_request.number);
-    }
+    prDetail = await findPullRequestDetail(tx, repo.id, pull_request.number);
   }
-  // FEA-2732: a desktop-synced row can already occupy this (repo, PR#) with
-  // repositoryId set but githubId still null — the session referenced an
-  // existing PR before any webhook fired for it. findPullRequestDetail matches
-  // that row, so the repo-less adopt above is skipped and the githubId is never
-  // stamped. Left null, the githubId-keyed updates in applyPrAction throw P2025
-  // ("record to update not found"), rolling back the entire webhook tx
-  // (including the ensureCurrentPullRequestForExistingBranch write). Adopt the
-  // row in place by stamping its githubId here. Safe: githubId is GitHub's
-  // globally-unique PR id, and (repositoryId, number) is unique, so no other
-  // row can already hold this githubId.
-  if (prDetail && prDetail.githubId === null) {
-    await tx.pullRequestDetail.update({
-      where: { id: prDetail.id },
-      data: { githubId: String(pull_request.id) },
-      select: { id: true },
-    });
-    prDetail = { ...prDetail, githubId: String(pull_request.id) };
-  }
+  const repaired = isAuthoritativeRelinkDelivery(prDetail, pull_request, action)
+    ? await repairPullRequestBranchAssociationInTransaction(tx, {
+        organizationId:
+          (prDetail?.branchArtifact ?? prDetail?.artifact)?.organizationId ??
+          null,
+        repositoryId: repo.id,
+        repositoryFullName: repo.fullName,
+        headBranch: pull_request.head.ref,
+        headRepositoryFullName: pull_request.head.repo?.full_name ?? null,
+        pullRequestNumber: pull_request.number,
+        pullRequestDetailId: prDetail?.id ?? "",
+        currentBranchArtifactId: prDetail?.branchArtifactId ?? null,
+        incomingUpdatedAt: new Date(pull_request.updated_at),
+      })
+    : false;
+  prDetail = await reloadRepairedPullRequestDetail(
+    tx,
+    repo.id,
+    pull_request.number,
+    prDetail,
+    repaired
+  );
   const existingPr = prDetail
     ? buildExistingPr(prDetail)
     : await findExistingBranchPr(tx, repo.id, pull_request.head.ref);
@@ -194,6 +216,7 @@ async function processPullRequestTransaction(
     existingPr,
     observationContext
   );
+  await seedPullRequestBranchOwner(tx, repo, pull_request);
   if (!wroteProjection) {
     return null;
   }
@@ -259,6 +282,8 @@ function findPullRequestDetail(
       isDraft: true,
       closedAt: true,
       mergedAt: true,
+      githubUpdatedAt: true,
+      headRefName: true,
       artifact: {
         select: {
           organizationId: true,
@@ -303,6 +328,27 @@ function findPullRequestDetail(
       },
     },
   });
+}
+
+async function reloadRepairedPullRequestDetail(
+  tx: TransactionClient,
+  repositoryId: string,
+  pullRequestNumber: number,
+  current: ExistingPrDetail | null,
+  repaired: boolean
+): Promise<ExistingPrDetail | null> {
+  if (!repaired) {
+    return current;
+  }
+  const reloaded = await findPullRequestDetail(
+    tx,
+    repositoryId,
+    pullRequestNumber
+  );
+  if (!reloaded) {
+    throw new Error("relinked pull request could not be reloaded");
+  }
+  return reloaded;
 }
 
 async function processExistingPullRequest(
@@ -369,6 +415,7 @@ async function processExistingPullRequest(
       organizationId: existingPr.organizationId,
       pullRequestDetailId: existingPr.pullRequestDetailId,
       repositoryId: repo.id,
+      repositoryFullName: repo.fullName,
     },
     pull_request,
     action,
@@ -495,6 +542,8 @@ type ExistingPrDetail = {
   isDraft: boolean;
   closedAt: Date | null;
   mergedAt: Date | null;
+  githubUpdatedAt: Date | null;
+  headRefName: string | null;
   artifact: ExistingPrOwnerArtifact | null;
   branchArtifact: ExistingPrOwnerArtifact | null;
 };
@@ -536,6 +585,42 @@ function buildExistingPr(prDetail: ExistingPrDetail): ExistingPr | null {
     document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
     hasBranchArtifact: !!prDetail.branchArtifactId,
   };
+}
+
+function isAuthoritativeRelinkDelivery(
+  prDetail: ExistingPrDetail | null,
+  pullRequest: PullRequest,
+  action: HandledPullRequestEvent["action"]
+): boolean {
+  if (!prDetail) {
+    return true;
+  }
+  const existingPr = buildExistingPr(prDetail);
+  if (!existingPr) {
+    return true;
+  }
+  const incomingUpdatedAt = new Date(pullRequest.updated_at);
+  if (
+    prDetail.githubUpdatedAt &&
+    incomingUpdatedAt.getTime() < prDetail.githubUpdatedAt.getTime()
+  ) {
+    return false;
+  }
+  if (
+    prDetail.githubUpdatedAt &&
+    incomingUpdatedAt.getTime() === prDetail.githubUpdatedAt.getTime() &&
+    prDetail.headRefName !== null &&
+    prDetail.headRefName !== pullRequest.head.ref
+  ) {
+    return false;
+  }
+  // ISS-12344: no current-PR gate here. A PR filed under the wrong Branch need
+  // not be that Branch's current PR, and the repair only moves the PR.
+  return shouldApplyPullRequestLifecycleUpdate(
+    getLifecycleSubject(existingPr, pullRequest, action),
+    pullRequest,
+    action
+  ).apply;
 }
 
 type PullRequestDirtyScopePublication = {
@@ -664,18 +749,7 @@ async function attemptArtifactLinkage(
     return;
   }
 
-  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const refs = parseArtifactReferences(
-    pull_request.title,
-    pull_request.body,
-    appBaseUrl
-  );
-
-  if (refs.length === 0) {
-    return;
-  }
-
-  const primaryRef = pickPrimaryArtifactReference(refs);
+  const primaryRef = pickPullRequestArtifactReference(pull_request);
   if (!primaryRef) {
     return;
   }
@@ -813,58 +887,6 @@ async function createAndLinkPr(
     documentId: artifact.id,
     slug: artifact.slug,
   });
-}
-
-/**
- * Create the ArtifactLink row for a PR-to-plan link. Lifecycle/status mutations
- * are intentionally owned by `applyPrAction` or the branch service create path
- * so linkage cannot double-write PR state.
- */
-async function createLinkageRecords(
-  tx: TransactionClient,
-  artifact: Pick<Document, "id" | "organizationId" | "projectId" | "slug">,
-  pullRequest: HandledPullRequestEvent["pull_request"],
-  knownBranchArtifactId?: string
-): Promise<void> {
-  // Find the branch artifact by current PR detail github id.
-  const existingPrDetail = await tx.pullRequestDetail.findUnique({
-    where: { githubId: String(pullRequest.id) },
-    select: { artifactId: true, branchArtifactId: true },
-  });
-
-  const branchArtifactId =
-    knownBranchArtifactId ?? existingPrDetail?.branchArtifactId ?? null;
-  const legacyArtifactId = branchArtifactId
-    ? null
-    : (existingPrDetail?.artifactId ?? null);
-  const targetArtifactId = branchArtifactId ?? legacyArtifactId;
-  if (!targetArtifactId) {
-    return;
-  }
-
-  // Dedup ArtifactLink — enforced by the unique constraint but we check first
-  // to avoid the round-trip when it already exists.
-  const existingLink = await tx.artifactLink.findFirst({
-    where: {
-      organizationId: artifact.organizationId,
-      sourceId: artifact.id,
-      targetId: targetArtifactId,
-      linkType: LinkType.Produces,
-    },
-    select: { id: true },
-  });
-
-  if (!existingLink) {
-    await tx.artifactLink.create({
-      data: {
-        organizationId: artifact.organizationId,
-        sourceId: artifact.id,
-        targetId: targetArtifactId,
-        linkType: LinkType.Produces,
-      },
-      select: { id: true },
-    });
-  }
 }
 
 /** Persist activity after repository lookup proves the PR-to-Branch association. */

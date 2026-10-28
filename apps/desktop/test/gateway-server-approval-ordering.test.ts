@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 
@@ -74,7 +74,7 @@ test("awaits async approval evaluation before dispatch", async () => {
   await server.start();
 
   const responsePromise = fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/symphony/sessions`
+    `http://127.0.0.1:${server.getActivePort()}/api/gateway/repos`
   );
 
   await waitForEvent(events, "approval-start");

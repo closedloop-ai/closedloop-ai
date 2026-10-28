@@ -10,15 +10,16 @@ import {
   toCandidate,
   wallTimeImpactScore,
 } from "./agent-coaching-scoring";
-import type {
-  AgentCoachingGroundedMetrics,
-  AgentCoachingInput,
-  AgentCoachingTip,
+import {
+  type AgentCoachingGroundedMetrics,
+  type AgentCoachingInput,
+  type AgentCoachingTip,
+  COACHING_NUMBER_LOCALE,
 } from "./agent-coaching-types";
 
 /** Format a USD amount with a thousands separator, matching the token counts. */
 function formatUsd(amount: number): string {
-  return `$${amount.toLocaleString(undefined, {
+  return `$${amount.toLocaleString(COACHING_NUMBER_LOCALE, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -58,7 +59,7 @@ export function buildWallTimeCandidate(
       "Wall-clock time is your time, not just tokens. Long sessions usually mean late course-correction, not hard problems.",
     evidence: [
       `${avgMinutes} min average session wall time`,
-      `${metrics.sessionsAnalyzed.toLocaleString()} sessions analyzed`,
+      `${metrics.sessionsAnalyzed.toLocaleString(COACHING_NUMBER_LOCALE)} sessions analyzed`,
       // The cadence label is already a complete sentence, so it stands alone —
       // no "cadence:" prefix (which produced a double colon) — and the row is
       // dropped entirely when no cadence signal exists rather than printing a
@@ -136,7 +137,7 @@ export function buildCostCandidate(
     : null;
   const spendPhrase = costLabel
     ? `${costLabel} over the window`
-    : `${metrics.totalTokens.toLocaleString()} tokens over the window`;
+    : `${metrics.totalTokens.toLocaleString(COACHING_NUMBER_LOCALE)} tokens over the window`;
   const modelClause = modelLabel ? `, and ${modelLabel}` : "";
 
   const tip: AgentCoachingTip = {
@@ -149,11 +150,11 @@ export function buildCostCandidate(
     evidence: [
       costLabel
         ? `estimated spend: ${costLabel}`
-        : `total tokens: ${metrics.totalTokens.toLocaleString()}`,
+        : `total tokens: ${metrics.totalTokens.toLocaleString(COACHING_NUMBER_LOCALE)}`,
       // Only a measured model-attribution row here — never the fabricated
       // "one model dominates" placeholder when attribution is missing.
       ...(modelLabel ? [modelLabel] : []),
-      `${metrics.sessionsAnalyzed.toLocaleString()} sessions analyzed`,
+      `${metrics.sessionsAnalyzed.toLocaleString(COACHING_NUMBER_LOCALE)} sessions analyzed`,
     ],
     experiment:
       "For the next batch of routine tasks, pick a smaller model and compare cost and rework against the default.",

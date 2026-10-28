@@ -13,7 +13,7 @@
 -- so it is not a full-table scan — `(organization_id, user_id)` can drive the
 -- grouping — but neither grouped `max()` was index-covered, so every run had to
 -- visit the heap row of every registered target in every org and the sampler's
--- cost grew with fleet size (wongk, service.ts:285).
+-- cost grew with fleet size (whitlockk, service.ts:285).
 --
 -- SHAPE. `(organization_id, last_seen_at)` gives the planner an index-ordered
 -- scan per org, so `max(last_seen_at)` is the last entry of each group's range

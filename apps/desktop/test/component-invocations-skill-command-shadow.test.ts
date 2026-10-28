@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
 import {
   NormalizedDefinitionKind,
   type NormalizedSession,
 } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import { deriveAgentComponentInvocationCandidates } from "../src/main/database/component-invocations.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 
@@ -71,7 +71,7 @@ describe("ISS-4775 skill/command shadow suppression", () => {
     );
   });
 
-  // wongk (PR #4193): a legacy `Skill` tool_use carries normalizedName "Skill"
+  // whitlockk (PR #4193): a legacy `Skill` tool_use carries normalizedName "Skill"
   // (the tool identity) with the invoked skill in `skillName`. With no
   // `session.skills` entry, suppression must still key off `skillName` so the
   // phantom `/review` command is dropped — keying off normalizedName would add
@@ -231,7 +231,7 @@ describe("ISS-4810 per-occurrence skill/command shadow correlation", () => {
     );
   });
 
-  // wongk-adjacent review threads (chatgpt-codex-connector + closedloop-ai-stage,
+  // whitlockk-adjacent review threads (chatgpt-codex-connector + closedloop-ai-stage,
   // PR #4255): the `earliestUnclaimed` fallback existed for occurrences with NO
   // timestamp, but as written it also fired for a fully-positioned Skill that
   // strictly PRECEDES every unclaimed slash turn — claiming a command forward in

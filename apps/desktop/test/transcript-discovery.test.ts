@@ -6,14 +6,20 @@
  * session.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { CodexRolloutLinkage } from "../src/main/collectors/codex/codex-subagent-rollouts.js";
 import {
   claudeRefsFromListings,
   codexRefsFromRollouts,
+  codexRefsFromRolloutsAttributable,
   discoverTranscriptFiles,
+  discoverTranscriptFilesWithEvidence,
   opencodeRefsFromSessions,
 } from "../src/main/transcript-sync/transcript-discovery.js";
+import {
+  TRANSCRIPT_MAIN_FILE_KEY,
+  TranscriptSourceHarness,
+} from "../src/main/transcript-sync/transcript-sync-types.js";
 import { codexLinkage as linkage } from "./normalized-session-test-utils.js";
 
 test("claudeRefsFromListings maps main + subagent files to one session", () => {
@@ -133,16 +139,105 @@ test("discoverTranscriptFiles appends opencode refs after claude + codex (FEA-39
     listOpencodeMaterializedFiles: () => [
       {
         externalSessionId: "opencode-1",
-        fileKey: "main",
+        fileKey: TRANSCRIPT_MAIN_FILE_KEY,
         sourcePath:
           "/state/transcript-materialized/opencode/opencode-1/main.jsonl",
       },
     ],
   });
   const harnesses = refs.map((r) => r.sourceHarness);
-  assert.ok(harnesses.includes("claude"));
-  assert.ok(harnesses.includes("opencode"));
+  assert.ok(harnesses.includes(TranscriptSourceHarness.Claude));
+  assert.ok(harnesses.includes(TranscriptSourceHarness.OpenCode));
   // OpenCode refs come last (appended after claude + codex).
-  assert.equal(refs.at(-1)?.sourceHarness, "opencode");
+  assert.equal(refs.at(-1)?.sourceHarness, TranscriptSourceHarness.OpenCode);
   assert.equal(refs.at(-1)?.externalSessionId, "opencode-1");
+});
+
+test("the import lane still re-roots an orphaned descendant onto itself", () => {
+  // ISS-8506 pins the EXISTING behavior rather than changing it. For an
+  // error-tolerant import, half a graph beats none: the session is real and its
+  // transcript should still sync. The measurement lane needs the opposite
+  // answer, which is why it is a separate function rather than an edit here.
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["child", linkage("child", "missing-parent", 1, "/codex/child.jsonl")],
+  ]);
+
+  const refs = codexRefsFromRollouts(byId);
+
+  assert.deepEqual(
+    refs.map((r) => `${r.externalSessionId}:${r.fileKey}`),
+    ["child:main"]
+  );
+});
+
+test("the measurement lane drops a rollout whose parent chain was cut", () => {
+  // Re-rooting here would file real bytes under a session id that is not a
+  // session — a fabricated measurement. Under-report with evidence instead.
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["child", linkage("child", "missing-parent", 1, "/codex/child.jsonl")],
+  ]);
+
+  const attributable = codexRefsFromRolloutsAttributable(byId);
+
+  assert.deepEqual(attributable.refs, []);
+  assert.equal(attributable.orphanCount, 1);
+});
+
+test("the measurement lane keeps a rollout whose chain resolves intact", () => {
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["root", linkage("root", null, 0, "/codex/root.jsonl")],
+    ["child", linkage("child", "root", 1, "/codex/child.jsonl")],
+  ]);
+
+  const attributable = codexRefsFromRolloutsAttributable(byId);
+
+  assert.equal(attributable.orphanCount, 0);
+  assert.deepEqual(
+    attributable.refs.map((r) => `${r.externalSessionId}:${r.fileKey}`).sort(),
+    ["root:main", "root:subagent:child"]
+  );
+});
+
+test("a fork-linked rollout with a missing target is dropped, not re-rooted", () => {
+  // `effectiveParentId` prefers `parentThreadId` and falls back to
+  // `forkedFromId`. Reusing it here is what keeps the orphan test from drifting
+  // out of step with the walk's own notion of a parent.
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["forked", linkage("forked", null, 0, "/codex/forked.jsonl", "gone")],
+  ]);
+
+  assert.equal(codexRefsFromRolloutsAttributable(byId).orphanCount, 1);
+});
+
+test("discovery with evidence walks the same one enumeration and reports orphans", () => {
+  const discovered = discoverTranscriptFilesWithEvidence({
+    listClaudeMainFiles: () => ["/home/.claude/projects/p/sess-1.jsonl"],
+    listClaudeSubagentFiles: () => [],
+    listCodexRolloutFiles: () => [],
+    mapCodexById: () =>
+      new Map<string, CodexRolloutLinkage>([
+        ["orphan", linkage("orphan", "gone", 1, "/codex/orphan.jsonl")],
+        ["root", linkage("root", null, 0, "/codex/root.jsonl")],
+      ]),
+    listOpencodeMaterializedFiles: () => [
+      {
+        externalSessionId: "opencode-1",
+        fileKey: TRANSCRIPT_MAIN_FILE_KEY,
+        sourcePath:
+          "/state/transcript-materialized/opencode/opencode-1/main.jsonl",
+      },
+    ],
+  });
+
+  // Same three harnesses, same order, one walk — the numerator and the
+  // denominator cannot disagree about which files exist.
+  assert.deepEqual(
+    discovered.refs.map((r) => r.sourceHarness),
+    [
+      TranscriptSourceHarness.Claude,
+      TranscriptSourceHarness.Codex,
+      TranscriptSourceHarness.OpenCode,
+    ]
+  );
+  assert.equal(discovered.orphanCount, 1);
 });

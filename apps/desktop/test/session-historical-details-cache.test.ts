@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { Harness } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { createSqliteSessionStore } from "../src/main/database/read-stores.js";
 import { openTestPrisma } from "./prisma-test-utils.js";

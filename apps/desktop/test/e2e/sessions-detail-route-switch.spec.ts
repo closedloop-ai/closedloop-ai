@@ -16,7 +16,7 @@
  *   5. Navigate straight to session B's route — a detail → detail switch with no
  *      intervening list — and assert the view actually became B.
  *
- * Warming B in step 3 removes a real confound (wongk review on PR #4266): an
+ * Warming B in step 3 removes a real confound (whitlockk review on PR #4266): an
  * UNCACHED query key fetches normally whether or not the component remounted,
  * so with B cold the switch exercises a plain first fetch rather than the
  * cache-hit path the ISS-4772 `key={detailSessionId}` guarantee is about.
@@ -57,9 +57,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { SESSION_DETAIL_LOADING_LABEL } from "@repo/app/agents/lib/session-detail-slots.ts";
 import {
   breadcrumbNav,
   breadcrumbParentLink,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoHash,
   gotoNav,
   launchDesktopApp,
@@ -91,16 +94,21 @@ const SESSIONS_CRUMB = "Sessions";
  * noun "Session" carries no such name, so observing this is what proves the
  * trail held rather than parking a placeholder.
  *
- * Mirrors `DETAIL_FALLBACK_LABELS.session`, pinned as a LITERAL rather than
- * imported. `src/renderer/components/route-fallbacks` pulls in
- * `@closedloop-ai/design-system` and `@repo/api/src/types/...` — extension-less
- * TypeScript subpaths of workspace packages. Vite/vitest resolve them;
- * Playwright's Node loader does not, and importing one from a spec aborts the
- * WHOLE Electron e2e run at load time before any test executes. Sibling specs
- * (`db-ahead-banner`, `sessions-local-authored-pr-gate`) pin their constants the
- * same way for the same reason.
+ * `DETAIL_FALLBACK_LABELS.session` is this same constant (ISS-5662), but it
+ * still cannot be imported from `src/renderer/components/route-fallbacks`: that
+ * module statically imports `@closedloop-ai/design-system/components/ui/skeleton`, which
+ * in turn imports `@closedloop-ai/design-system/lib/utils` — extension-less TypeScript
+ * subpaths of a workspace package that ships no `exports` map. Vite/vitest
+ * resolve them; Playwright's Node loader does not, and importing one from a
+ * spec aborts the WHOLE Electron e2e run at load time before any test executes.
+ * The React-free slots module imports nothing, so the explicit-extension
+ * specifier above resolves — the same route the sibling
+ * `session-detail-states.spec.ts` already takes for
+ * `SESSION_DETAIL_LOADING_SLOT`. Other specs (`db-ahead-banner`,
+ * `sessions-local-authored-pr-gate`) still pin literals because their constants
+ * have no such React-free owner.
  */
-const PENDING_SESSION_CRUMB_LABEL = "Loading session";
+const PENDING_SESSION_CRUMB_LABEL = SESSION_DETAIL_LOADING_LABEL;
 
 test.describe("Sessions detail route switch (ISS-4836 / ISS-4772)", () => {
   test("switching detail A → B lands on B and resolves B's own name, not A's", async () => {
@@ -147,9 +155,8 @@ test.describe("Sessions detail route switch (ISS-4836 / ISS-4772)", () => {
       try {
         await gotoNav(page, "sessions");
         // Widen to "All time" so the seeded corpus is in range regardless of the
-        // run clock. `:visible` scopes to the Sessions toolbar (keep-alive views
-        // stay mounted-but-hidden and render the same control).
-        await page.locator('[aria-label="All time"]:visible').click();
+        // run clock.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // ── The list rendered both seeded rows ───────────────────────────────
         // Positive, blocking assertions first: everything below is meaningless

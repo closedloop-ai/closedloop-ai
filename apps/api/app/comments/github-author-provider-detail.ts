@@ -1,3 +1,4 @@
+import type { BranchPrCommentAuthor } from "@repo/api/src/types/branch";
 import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type GitHubActorType,
@@ -37,5 +38,38 @@ export function mergeGitHubAuthorProviderDetail(
   return {
     ...(parsed.success ? parsed.data : {}),
     actorType,
+  };
+}
+
+/** A GitHub comment's stored external author, read in the given organization only. */
+export function githubCommentExternalAuthorSelect(organizationId: string) {
+  return {
+    where: { organizationId },
+    select: {
+      providerLogin: true,
+      displayName: true,
+      avatarUrl: true,
+      profileUrl: true,
+      providerDetail: true,
+    },
+  } as const;
+}
+
+export function toBranchPrCommentAuthor(author: {
+  providerLogin: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+  providerDetail: unknown;
+}): BranchPrCommentAuthor {
+  const actorType = parseGitHubAuthorProviderDetailActorType(
+    author.providerDetail
+  );
+  return {
+    login: author.providerLogin,
+    displayName: author.displayName,
+    avatarUrl: author.avatarUrl,
+    profileUrl: author.profileUrl,
+    ...(actorType ? { actorType } : {}),
   };
 }

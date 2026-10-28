@@ -7,6 +7,7 @@
  */
 
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
+import type { BoundedRequestHandlerConfig } from "./request-handler";
 
 type CredentialsProvider = S3ClientConfig["credentials"];
 
@@ -24,21 +25,39 @@ export function getAwsCredentials(): CredentialsProvider {
   }
 
   if (!_credentials) {
-    // Dynamic import at init time to avoid bundling @vercel/functions
-    // in environments that don't need it (local dev, tests).
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { awsCredentialsProvider } = require("@vercel/functions/oidc") as {
-      awsCredentialsProvider: (opts: {
-        roleArn: string;
-        clientConfig?: { region: string };
-      }) => NonNullable<CredentialsProvider>;
-    };
-
-    _credentials = awsCredentialsProvider({
-      roleArn,
-      clientConfig: { region: process.env.AWS_REGION ?? "us-east-1" },
-    });
+    _credentials = vercelOidcRoleCredentials(roleArn);
   }
 
   return _credentials;
+}
+
+/**
+ * Vercel OIDC → STS AssumeRoleWithWebIdentity for `roleArn`. The web identity
+ * is the token's default audience, the one the role trusts. `requestHandler`
+ * bounds that STS call: the provider builds its own STS client, which does not
+ * inherit the caller's handler.
+ */
+export function vercelOidcRoleCredentials(
+  roleArn: string,
+  requestHandler?: BoundedRequestHandlerConfig
+): NonNullable<CredentialsProvider> {
+  // Dynamic import at init time to avoid bundling @vercel/functions
+  // in environments that don't need it (local dev, tests).
+  const { awsCredentialsProvider } = require("@vercel/functions/oidc") as {
+    awsCredentialsProvider: (opts: {
+      roleArn: string;
+      clientConfig?: {
+        region: string;
+        requestHandler?: BoundedRequestHandlerConfig;
+      };
+    }) => NonNullable<CredentialsProvider>;
+  };
+
+  return awsCredentialsProvider({
+    roleArn,
+    clientConfig: {
+      region: process.env.AWS_REGION ?? "us-east-1",
+      ...(requestHandler && { requestHandler }),
+    },
+  });
 }

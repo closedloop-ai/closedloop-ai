@@ -1,8 +1,14 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { DesktopDistributionStatusResponse } from "@repo/api/src/types/distribution";
 import { DistributionTargetStatusValue } from "@repo/api/src/types/distribution";
 import { z } from "zod";
 import { distributionsService } from "@/app/distributions/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { writeInShape } from "@/lib/record-write-in-transaction";
 import {
   badRequestResponse,
   errorResponse,
@@ -10,6 +16,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { distributionStatusReceiptWrite } from "./status-receipt";
 
 // ---------------------------------------------------------------------------
 // Validators
@@ -55,43 +62,69 @@ export const POST = withAnyAuth<
   DesktopDistributionStatusResponse,
   "/desktop/distributions/status"
 >(
-  async ({ user, clerkUserId }, request) => {
-    const { body, errorResponse: parseErr } = await parseBody(
-      request,
-      desktopDistributionStatusSchema
-    );
-    if (parseErr) {
-      return parseErr;
-    }
-
-    if (!body.computeTargetId) {
-      return badRequestResponse("computeTargetId is required");
-    }
-
-    try {
-      const result = await distributionsService.upsertStatusReports(
-        user.organizationId,
-        body.computeTargetId,
-        user.id,
-        clerkUserId,
-        body.reports
+  withOperationReceipts(
+    OperationKind.DesktopSync,
+    async ({ user, clerkUserId }, request, _params, receipts) => {
+      const { body, errorResponse: parseErr } = await parseBody(
+        request,
+        desktopDistributionStatusSchema
       );
-      if (!result.ok) {
-        if (result.error === "forbidden") {
-          return forbiddenResponse();
+      if (parseErr) {
+        return parseErr;
+      }
+
+      if (!body.computeTargetId) {
+        return badRequestResponse("computeTargetId is required");
+      }
+
+      try {
+        const { computeTargetId, reports } = body;
+        const result = await writeInShape(
+          receipts.whenRecording<number>((tx, accepted) =>
+            receipts.record(tx, distributionStatusReceiptWrite(accepted))
+          ),
+          {
+            unrecorded: () =>
+              distributionsService.upsertStatusReports(
+                user.organizationId,
+                computeTargetId,
+                user.id,
+                clerkUserId,
+                reports
+              ),
+            recorded: (recordWrite) =>
+              distributionsService.upsertStatusReports(
+                user.organizationId,
+                computeTargetId,
+                user.id,
+                clerkUserId,
+                reports,
+                recordWrite
+              ),
+          }
+        );
+        if (!result.ok) {
+          if (result.error === "forbidden") {
+            return forbiddenResponse();
+          }
+          return errorResponse(
+            "Failed to process distribution status reports",
+            result.error
+          );
         }
+        if (result.value === 0) {
+          await receipts.recordStandalone(distributionStatusReceiptWrite(0));
+        }
+        return successResponse(
+          withOperationReceipt({ accepted: result.value }, receipts)
+        );
+      } catch (error) {
         return errorResponse(
           "Failed to process distribution status reports",
-          result.error
+          error
         );
       }
-      return successResponse({ accepted: result.value });
-    } catch (error) {
-      return errorResponse(
-        "Failed to process distribution status reports",
-        error
-      );
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );

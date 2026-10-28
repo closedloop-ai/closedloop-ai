@@ -170,13 +170,7 @@ function MobileSearchSheet({ onClose }: Readonly<{ onClose: () => void }>) {
 
 // Pre-search prompt, shared by the visible copy and the sr-only description so
 // the two never drift. Names the corpus the facets actually cover and teaches
-// the `:`/`@` query language sighted users can't otherwise discover.
-//
-// ISS-4477 retires the Loops *nav & UI* only; it deliberately leaves the search
-// corpus untouched — the `Loop` search facet (`SearchEntityType.Loop`) still
-// ships a "Loop" type token and label, and Loop hits still deep-link to
-// `/loops/<id>`. So "loops" stays in this prompt: dropping it would undersell a
-// corpus the facets still cover. Remove it here only when the Loop search facet
-// itself goes.
+// the `:`/`@` query language sighted users can't otherwise discover. PRD-795
+// removed the Loop search facet, so "loops" left the list (the ISS-4477 rule).
 const SEARCH_PROMPT =
-  "Search documents, projects, loops, sessions, and more. Type : to filter by field, @ to find a person.";
+  "Search documents, projects, sessions, and more. Type : to filter by field, @ to find a person.";

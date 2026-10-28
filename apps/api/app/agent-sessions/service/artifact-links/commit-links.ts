@@ -5,7 +5,10 @@ import type {
   SyncedCommitArtifactRef,
 } from "@repo/api/src/types/session-artifact-link";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
-import { reconcileCommitOnTx } from "@/app/commits/commit-service";
+import {
+  type ReconcileCommitInput,
+  reconcileCommitsOnTx,
+} from "@/app/commits/commit-service";
 import type { AgentSessionUpsertTx } from "../records";
 import { storeUnresolvedRefs } from "./shared";
 
@@ -92,9 +95,9 @@ export async function persistSessionCommitRefs(
   // ISS-4440: resolve every ref's branch artifact id in ONE org-scoped read
   // instead of a per-ref findFirst N+1 (those round-trips serialize inside the
   // agent-session upsert transaction, which runs under the 30s
-  // AGENT_SESSION_UPSERT_TX_TIMEOUT_MS override — not Prisma's 5s default). The
-  // per-ref reconcile writes below stay per-commit — they are genuinely
-  // distinct rows.
+  // AGENT_SESSION_UPSERT_TX_TIMEOUT_MS override — not Prisma's 5s default).
+  // ISS-8145 did the same for the WRITES: the reconcile below is now one
+  // batched call rather than an awaited round trip per commit.
   const branchArtifactIdByKey = await resolveBranchArtifactIds(
     tx,
     organizationId,
@@ -102,6 +105,7 @@ export async function persistSessionCommitRefs(
   );
 
   const unresolved: UnresolvedCommitRef[] = [];
+  const resolved: ReconcileCommitInput[] = [];
   for (const ref of commitRefs) {
     const repositoryFullName = normalizeRepoFullName(ref.repositoryFullName);
     const branchArtifactId = branchArtifactIdByKey.get(
@@ -115,7 +119,7 @@ export async function persistSessionCommitRefs(
       });
       continue;
     }
-    await reconcileCommitOnTx(tx, {
+    resolved.push({
       organizationId,
       repositoryFullName,
       sha: ref.sha,
@@ -128,6 +132,7 @@ export async function persistSessionCommitRefs(
       filesChanged: ref.filesChanged ?? null,
     });
   }
+  await reconcileCommitsOnTx(tx, resolved);
 
   if (unresolved.length > 0) {
     await storeUnresolvedCommitRefs(tx, sessionArtifactId, unresolved);

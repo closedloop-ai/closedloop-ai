@@ -26,32 +26,34 @@ import {
   MergedPrsCoverage,
   resolveMergedPrsCoverage,
 } from "@repo/api/src/types/analytics";
-import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
+import {
+  LOC_METRIC_DEFINITION,
+  LocMetricDefinitionId,
+} from "@repo/api/src/types/loc-metric-definitions";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import {
   agentSessionToSessionTableRow,
   resolveSessionRepoLabel,
   type SessionRowResolutionOptions,
 } from "@repo/app/agents/lib/session-table-row";
-import { formatLocPerDollar } from "@repo/app/shared/lib/format-utils";
+import {
+  formatCountOrDash,
+  formatLocPerDollar,
+  KPI_NO_VALUE,
+} from "@repo/app/shared/lib/format-utils";
 import {
   cappedCohortScanCaveat,
   UNDECLARED_COHORT_COVERAGE_CAVEAT,
 } from "@repo/app/shared/lib/merged-prs-coverage-copy";
+import { SESSION_LEVEL_ATTRIBUTION_CAVEAT } from "./session-level-attribution-copy";
 
-// ---------------------------------------------------------------------------
-// Formatting helper (mirrors NUMBER_FORMAT from component-meta.tsx — defined
-// here independently so this file has no dependency on T-1.2 until it lands).
-// ---------------------------------------------------------------------------
+// ISS-10467: the SSOT glyph, not a fourth copy of it. `formatCountOrDash` above
+// already emits this same constant, so a card that formats and a card that
+// branches on null cannot print two different no-value marks.
+const METRIC_DASH = KPI_NO_VALUE;
 
-const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
-
-const METRIC_DASH = "—";
-
-// ---------------------------------------------------------------------------
 // ComponentMetric — the display-ready cards rendered above the Sessions /
 // Branches tabs on the detail page.
-// ---------------------------------------------------------------------------
 
 export type ComponentMetric = {
   key: string;
@@ -96,19 +98,18 @@ export const componentMetrics = (
       ? Math.round(detail.invocations / detail.sessions)
       : null;
 
-  // `Number.isFinite` rather than `value === null`: the payload is wire data, so
-  // a version-skewed producer can OMIT one of these fields entirely, and
-  // `Intl.NumberFormat.format(undefined)` renders the literal "NaN" on the card.
-  // Anything that is not a real number is the same "not computable" state as an
-  // explicit null and gets the same dash (ISS-4798).
-  const numOrDash = (value: number | null | undefined): string =>
-    typeof value === "number" && Number.isFinite(value)
-      ? NUMBER_FORMAT.format(value)
-      : METRIC_DASH;
+  // ISS-10467: the shared `formatCountOrDash` rather than a private copy — this
+  // was the original of that helper, and the per-version drill-down below the
+  // cards must not be able to print a different no-value mark from them. Same
+  // wire-data guard as before (ISS-4798): a version-skewed producer can OMIT one
+  // of these fields, and `Intl.NumberFormat.format(undefined)` would render the
+  // literal "NaN" on the card.
+  const numOrDash = formatCountOrDash;
 
   const locPerDollarCard: ComponentMetric = {
     key: "loc-per-dollar",
-    label: LOC_PER_DOLLAR_LABEL,
+    label:
+      LOC_METRIC_DEFINITION[LocMetricDefinitionId.ComponentLinesChanged].label,
     value: formatLocPerDollar(detail.locPerDollar),
     info: {
       // ISS-5366: "changed", not "merged". This renders the same
@@ -116,7 +117,10 @@ export const componentMetrics = (
       // POLISHED_METRIC_HEADER in agents-table.tsx); only the Sessions card's
       // `mergedLocPerDollar` earns the word "merged".
       what: "Lines changed per dollar across sessions that used it. Higher is better.",
-      how: "A session-level metric, so read it as directional. One component doesn't cause it.",
+      // ISS-10467: the shared sentence, not a literal. The per-version token and
+      // cost rows make the same admission, and two spellings of it are how one
+      // gets softened later while the other still means it.
+      how: SESSION_LEVEL_ATTRIBUTION_CAVEAT,
     },
   };
   const invocationsCard: ComponentMetric = {
@@ -138,10 +142,12 @@ export const componentMetrics = (
   // The card rendered a hard `0` over a component whose `mergedPrs` was 42: a
   // zero that meant "not hydrated". `numOrDash` keeps the honest third state —
   // a null `mergedPrs` (not computable) shows `—`, never a fabricated 0.
-  // ISS-5521: the server counts distinct merged PRs over the FIRST
-  // `COHORT_SCAN_CAP` cohort sessions (`cohort-performance.ts`), so on a
-  // component with a larger cohort the figure is a floor over an arbitrary
+  // ISS-5521: a server predating ISS-9853 counted distinct merged PRs over the
+  // first 2,000 cohort sessions (`cohort-performance.ts`), so on a component
+  // with a larger cohort the figure was a floor over an arbitrary
   // insertion-ordered sample — while the copy below claimed "every session".
+  // A current server walks every id it is handed and declares a floor only
+  // when the usage lane's own bound sampled that id set (ISS-9852).
   //
   // The trailing `+` is this page's OWN partial-total convention, not a new
   // glyph: `detailTabTruncationReadout` marks a partial total the same way, and
@@ -160,7 +166,7 @@ export const componentMetrics = (
   // `resolveMergedPrsCoverage`, beside the contract, so the Packs tile decodes
   // the same field the same way.
   //
-  // UNGATED (wongk, #5096 review). The `agents-detail-honesty` flag still owns
+  // UNGATED (whitlockk, #5096 review). The `agents-detail-honesty` flag still owns
   // the unrelated card-dropping below, but not this: ISS-6462 gave the Packs
   // Performance tile the same disclosure with no flag on it, so on the DEFAULT
   // path one screen read "996+ (capped scan)" while this one read a bare "996"
@@ -195,7 +201,7 @@ export const componentMetrics = (
 
   // FEA-4052: the LOC/$ card renders ONLY for a kind with reliable per-component
   // attribution (currently only `subagent`; skill/command are session-level and
-  // excluded — wongk, PR #3720). A non-verifiable kind (skill/command/plugin/mcp/
+  // excluded — whitlockk, PR #3720). A non-verifiable kind (skill/command/plugin/mcp/
   // tool/…) always carries `locPerDollar: null` from the service; the card is
   // HIDDEN entirely rather than shown as a dead "—", matching the hidden column +
   // summary card on the inventory tabs.
@@ -250,12 +256,10 @@ export const componentMetrics = (
   ];
 };
 
-// ---------------------------------------------------------------------------
 // detailFor — look up a component detail record from the caller-supplied
 // array. In production the array is fetched from the data source; in the
 // stub source it is the pre-built mock catalogue. Returns `undefined` when
 // no matching id is found so callers can surface a 404.
-// ---------------------------------------------------------------------------
 
 /**
  * Find a component detail record by its stable `id` from a caller-supplied
@@ -271,10 +275,8 @@ export const detailFor = (
 ): AgentComponentDetail | undefined =>
   components.find((component) => component.id === id);
 
-// ---------------------------------------------------------------------------
 // sessionsFor — map AgentSessionListItem rows to the presentational
-// SessionTableRow shape accepted by sessions-table.tsx.
-// ---------------------------------------------------------------------------
+// SessionTableRow shape accepted by session-detail-table.tsx.
 
 /**
  * Map a list of `AgentSessionListItem` records (from `detail.sessionsTab`)
@@ -287,7 +289,7 @@ export const detailFor = (
  * comes pre-fetched from the data source with server-side scoping.
  *
  * Returns `SessionTableRow[]` matching the type in
- * `packages/app/agents/components/sessions/sessions-table.tsx`.
+ * `packages/app/agents/lib/session-list-row.ts`.
  *
  * ISS-4979 (#4291 review): `durationOptions` is threaded from the render
  * boundary (`DetailSessionsTab`, which has hook access) rather than read here,
@@ -354,7 +356,7 @@ export type ComponentMetricsOptions = {
    * When true: a "Lines shipped" / "Total cost" card with no measurement behind
    * it is dropped instead of rendering a dash beside a real ratio.
    *
-   * ISS-6462 (wongk, #5096 review) took the Merged PRs coverage disclosure OUT
+   * ISS-6462 (whitlockk, #5096 review) took the Merged PRs coverage disclosure OUT
    * of this flag's scope. The Packs Performance tile discloses the same cap off
    * the same field with no gate, so gating it here left the default path with
    * two screens contradicting each other about one response. What remains behind

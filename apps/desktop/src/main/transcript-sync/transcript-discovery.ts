@@ -19,6 +19,7 @@ import {
 import { listAllRolloutFiles } from "../collectors/codex/codex-home.js";
 import {
   type CodexRolloutLinkage,
+  effectiveParentId,
   mapCodexRolloutsById,
   walkCodexRootLinkage,
 } from "../collectors/codex/codex-subagent-rollouts.js";
@@ -164,4 +165,89 @@ export function discoverTranscriptFiles(
     deps.listOpencodeMaterializedFiles()
   );
   return [...claudeRefs, ...codexRefs, ...opencodeRefs];
+}
+
+/**
+ * The Codex refs whose owning session could actually be resolved, plus a count
+ * of the ones that could not (ISS-8506).
+ */
+export type AttributableCodexRefs = {
+  refs: TranscriptFileRef[];
+  /** Rollouts dropped because their parent chain is not in `byId`. */
+  orphanCount: number;
+};
+
+/**
+ * Map a Codex rollout index to refs, DROPPING any rollout whose owning session
+ * cannot be resolved from the index it was given.
+ *
+ * {@link walkCodexRootLinkage} stops when a parent id is missing from the map,
+ * so a descendant whose ancestors are absent resolves to itself — and
+ * {@link codexRefsFromRollouts} then files it as that session's `main`
+ * transcript. For the import lane that is the right error-tolerant behavior:
+ * the session is real, and half a graph beats none.
+ *
+ * For a MEASUREMENT it is not. Whenever the index is a truncated prefix of the
+ * corpus (ISS-8506 caps the listing to bound the 64 KB-per-rollout metadata
+ * reads), re-rooting attributes real bytes to a session that does not exist.
+ * The honest reading of a broken chain is "I could not attribute this", so this
+ * variant excludes it and reports how many, which forces the inventory to
+ * `partial`. Under-report with evidence; never invent a session.
+ *
+ * A root is genuine when it names no parent at all. That test reuses the
+ * exported {@link effectiveParentId} rather than re-deriving the
+ * `parentThreadId` / `forkedFromId` precedence, so the two cannot drift.
+ */
+export function codexRefsFromRolloutsAttributable(
+  byId: ReadonlyMap<string, CodexRolloutLinkage>
+): AttributableCodexRefs {
+  const refs: TranscriptFileRef[] = [];
+  let orphanCount = 0;
+  for (const linkage of byId.values()) {
+    const root = walkCodexRootLinkage(linkage, byId);
+    if (effectiveParentId(root) !== null) {
+      orphanCount += 1;
+      continue;
+    }
+    const isDescendant = root.rolloutId !== linkage.rolloutId;
+    refs.push({
+      externalSessionId: root.rolloutId,
+      fileKey: isDescendant
+        ? subagentFileKey(linkage.rolloutId)
+        : TRANSCRIPT_MAIN_FILE_KEY,
+      sourceHarness: TranscriptSourceHarness.Codex,
+      sourcePath: linkage.sourcePath,
+    });
+  }
+  return { refs, orphanCount };
+}
+
+/**
+ * The same single enumeration {@link discoverTranscriptFiles} performs, plus
+ * the attribution evidence a measurement needs (ISS-8506).
+ *
+ * This is deliberately an ADDITIVE sibling rather than a change to
+ * {@link discoverTranscriptFiles}: the sync lane's error-tolerant re-rooting is
+ * correct for an import and must not change. It is still ONE enumeration — the
+ * inventory's numerator and denominator both come from this call, so they
+ * cannot disagree about which files exist.
+ */
+export function discoverTranscriptFilesWithEvidence(
+  overrides: Partial<TranscriptDiscoveryDeps> = {}
+): AttributableCodexRefs {
+  const deps: TranscriptDiscoveryDeps = { ...defaultDeps, ...overrides };
+  const claudeRefs = claudeRefsFromListings(
+    deps.listClaudeMainFiles(),
+    deps.listClaudeSubagentFiles()
+  );
+  const codex = codexRefsFromRolloutsAttributable(
+    deps.mapCodexById(deps.listCodexRolloutFiles())
+  );
+  const opencodeRefs = opencodeRefsFromSessions(
+    deps.listOpencodeMaterializedFiles()
+  );
+  return {
+    refs: [...claudeRefs, ...codex.refs, ...opencodeRefs],
+    orphanCount: codex.orphanCount,
+  };
 }

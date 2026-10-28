@@ -23,7 +23,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   InitialWindowRevealGate,
   WindowRevealReason,
@@ -142,7 +142,7 @@ describe("ISS-5346 InitialWindowRevealGate", () => {
   });
 
   test("an app-activate show BEFORE the reveal arms the gate instead of showing", () => {
-    // wongk: Electron emits `activate` on the first macOS launch and
+    // whitlockk: Electron emits `activate` on the first macOS launch and
     // `startup.ts` routes it through `handleActivate()` to `DesktopWindow.show()`.
     // That path used to reach `BrowserWindow.show()` directly, bypassing the
     // gate and exposing the pre-mount shell it exists to hide. `boot()` never
@@ -449,6 +449,22 @@ describe("ISS-5346 waitForInitialWindowRevealReadiness", () => {
       await gates.waitForInitialWindowRevealReadiness(),
       WindowRevealReason.AppMounted
     );
+  });
+
+  test("requires a fresh mount after the renderer generation is reset", async () => {
+    const gates = new RendererReadinessGates(createRecordingLog());
+    gates.notifyRendererMounted();
+    gates.resetRendererMounted();
+    let settled = false;
+    const pending = gates.whenInitialRendererMounted().then(() => {
+      settled = true;
+    });
+
+    await flushMicrotasks();
+    assert.equal(settled, false);
+    gates.notifyRendererMounted();
+    await pending;
+    assert.equal(settled, true);
   });
 
   test("the DOWNSTREAM dashboard gates do not release the reveal", async () => {

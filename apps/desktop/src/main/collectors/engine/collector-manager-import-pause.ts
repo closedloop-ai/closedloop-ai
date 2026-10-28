@@ -1,8 +1,8 @@
 /**
  * @file collector-manager-import-pause.ts
  * @description Pause/resume gate for the long first-launch historical backfill,
- * extracted from collector-manager.ts (grandfathered shrink-only under the root
- * AGENTS.md line-count contract) alongside the sibling IngestProgressTracker and
+ * extracted from collector-manager.ts (under the root AGENTS.md line-count
+ * contract) alongside the sibling IngestProgressTracker and
  * BootImportLifecycle extractions.
  *
  * Behavior-preserving: the state is in-memory, so it resets on app restart and
@@ -15,7 +15,7 @@
  * deliberately does NOT read it: `pause()` flips the flag while a parse or DB
  * write is still in flight, so muting on the flag would hide a genuinely wedged
  * operation until it returned. The import loop instead tells the tracker when it
- * actually parks on {@link ImportPauseGate.wait} (wongk review, ISS-4917).
+ * actually parks on {@link ImportPauseGate.wait} (whitlockk review, ISS-4917).
  */
 
 export class ImportPauseGate {
@@ -33,7 +33,7 @@ export class ImportPauseGate {
    * user asks. The two diverge for as long as the loop takes to reach its next
    * pause gate — during the first-launch source scan (`listSources` +
    * `loadExistingSessionIds` + `collectPendingSources` all run before the first
-   * gate) that is the whole discovery pass. ISS-5115 (wongk review): the startup
+   * gate) that is the whole discovery pass. ISS-5115 (whitlockk review): the startup
    * panel reads this so it can say "Pausing" while work is still running and
    * only claim "paused" once it has genuinely stopped.
    *

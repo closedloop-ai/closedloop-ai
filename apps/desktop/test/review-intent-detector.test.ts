@@ -7,7 +7,7 @@
  * (3) `computeReviewRequestMs` collecting + de-duplicating request timestamps.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   computeReviewRequestMs,
   isReviewRequestCommandName,
@@ -162,7 +162,7 @@ test("computeReviewRequestMs is empty when the session has no review request", (
 
 test("AA-06: a re-run request re-establishes the review phase", () => {
   // "re-run the review" puts the review noun as the OBJECT of a run verb with
-  // nothing after it, so the work-object cue cannot reach it. In `b50de790` this
+  // nothing after it, so the work-object cue cannot reach it. In `6d6d2e80` this
   // opened the session's only SUCCESSFUL review execution and it carried no
   // declared review provenance at all.
   for (const text of [

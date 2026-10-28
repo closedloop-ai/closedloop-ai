@@ -1,5 +1,4 @@
 import {
-  BranchCloudHydrationStatus,
   BranchCommentsState,
   type BranchPageDetail,
   BranchStatus,
@@ -22,18 +21,37 @@ import {
   SelectedPullRequestChecksCompleteness,
   SelectedPullRequestChecksHistoryMode,
 } from "@repo/api/src/types/selected-pull-request-checks-evidence";
+import { BRANCH_COMMENTS_READ_FAILED } from "@repo/app/branches/components/comments/branch-comments-model";
+import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
 import { BranchBackLabel } from "@repo/app/branches/lib/branch-back-href";
+import { RelatedSessionsSection } from "@repo/app/documents/components/related-sessions-section";
+import { RELATED_SESSIONS_SECTION_TITLE } from "@repo/app/documents/lib/related-sessions-labels";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
+import { GITHUB_CONNECT_COPY } from "@repo/app/github/lib/github-connect-copy";
 import type { ApiAdapter } from "@repo/app/shared/api/api-adapter";
 import { ApiAdapterProvider } from "@repo/app/shared/api/provider";
 import { AuthAdapterProvider } from "@repo/app/shared/auth/provider";
 import { createStaticAuthAdapter } from "@repo/app/shared/auth/static-auth-adapter";
+import { GatedMetricIndicatorVariant } from "@repo/app/shared/components/gated-metric-indicator";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { RELATED_SESSIONS_FIELD_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LOCAL_BRANCH_READ } from "../../../../shared/shared-branches-contract";
 import { createDesktopNavigation } from "../../../navigation/desktop-adapter";
 import { BranchDetailView } from "../branch-detail-view";
 
@@ -52,13 +70,22 @@ const inertApiAdapter: ApiAdapter = {
   resolveApiOrigin: () => "http://test.local",
   fetch: () => Promise.reject(new Error("no remote REST API in tests")),
 };
-const CONNECT_GITHUB_BUTTON_NAME_PATTERN = /connect github/i;
-const DETAIL_CONNECT_OPENED_MESSAGE_PATTERN = /branch details refresh/i;
-const DETAIL_CONNECT_FAILED_MESSAGE_PATTERN =
-  /github connect could not be opened/i;
-const CLOUD_REFRESH_FAILED_MESSAGE_PATTERN = /github cloud refresh failed/i;
-const SIGN_IN_TO_SYNC_MESSAGE_PATTERN =
-  /sign in to closedloop desktop to sync github data/i;
+/**
+ * The real control's accessible name. The first ISS-11274 case below renders
+ * `ConnectGitHubIndicator` on its own through this exact pattern, so the absence
+ * assertions cannot pass on a locator that matches nothing.
+ */
+const CONNECT_GITHUB_BUTTON_NAME_PATTERN = /connect (?:to )?github/i;
+/**
+ * The sentence the retired Branches connect ask carried (`variant: Notice`,
+ * metric scope). Asserted ALONGSIDE the control's accessible name because the
+ * control renders as a button on desktop (`onConnect`), a link on web
+ * (`actionHref`), and as neither when the host resolves no target — so a
+ * button-only absence check would pass on a rendered informational ask.
+ */
+const CONNECT_EXPLANATION =
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].gatedMetricExplanation;
+
 const OPEN_DIFF_BUTTON_NAME_PATTERN = /Open diff for/;
 const PENDING_FILE_LIST_PATTERN =
   /File evidence is unavailable for pull request #\d+/i;
@@ -109,6 +136,8 @@ function makeDetail(
       ...selectedPullRequest(),
       body: "Body",
       reviewDecision: overrides.reviewDecision ?? null,
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: "a".repeat(40),
       mergeCommitSha: null,
       changedFiles: null,
@@ -197,13 +226,18 @@ function installDesktopApi(detail: () => Promise<BranchPageDetail | null>): {
   return { detail: detailMock };
 }
 
-function renderView(initialPath = "/branches/b-1") {
+function renderView(
+  initialPath = "/branches/b-1",
+  enabledFlags: readonly string[] = []
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  const flagAdapter = createStaticFeatureFlagAdapter({ enabledFlags: [] });
+  const flagAdapter = createStaticFeatureFlagAdapter({
+    enabledFlags: [...enabledFlags],
+  });
   const navigation = createMemoryNavigation({ initialPath });
   const result = render(
     <NavigationProvider adapter={navigation.adapter}>
@@ -261,6 +295,8 @@ function renderDesktopAdapterView() {
 }
 
 afterEach(() => {
+  focusManager.setFocused(undefined);
+  vi.useRealTimers();
   commentsStateForTest = BranchCommentsState.UnsyncedUnknown;
   vi.restoreAllMocks();
 });
@@ -291,7 +327,9 @@ describe("BranchDetailView", () => {
     ).toBeDefined();
     // The populated page no longer renders an in-page "Back to Branches" control
     // — the Topbar breadcrumb ("Branches / <name>") is the back affordance.
-    await waitFor(() => expect(detail).toHaveBeenCalledWith("b-1"));
+    await waitFor(() =>
+      expect(detail).toHaveBeenCalledWith({ id: "b-1", ...LOCAL_BRANCH_READ })
+    );
   });
 
   it("links delivered artifacts through the authenticated desktop web origin", async () => {
@@ -319,7 +357,7 @@ describe("BranchDetailView", () => {
 
     const link = await screen.findByRole("link", { name: "Issue FEA-3595" });
     expect(link.getAttribute("href")).toBe(
-      "https://app.closedloop.test/acme/issues/FEA-3595"
+      "https://app.closedloop.test/acme/documents/FEA-3595"
     );
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noreferrer");
@@ -353,7 +391,7 @@ describe("BranchDetailView", () => {
     // query). `BranchDetailPage` seeds `activeTab` from `initialTab` once, so
     // without the tab-keyed remount a same-branch nav to
     // `?tab=sessions-timeline` — and the clear back to no query — would leave
-    // the previously-selected tab on screen. This is wongk's review case: drive
+    // the previously-selected tab on screen. This is whitlockk's review case: drive
     // the store through `navigate` (no remount by the test) and assert the tab
     // follows the query in both directions.
     installDesktopApi(() => Promise.resolve(makeDetail()));
@@ -398,7 +436,29 @@ describe("BranchDetailView", () => {
     ).toBe("false");
   });
 
-  it("overrides desktop ambient staleTime so focus can recheck detail hydration", async () => {
+  it("stays within two reads through two idle minutes and one focus event", async () => {
+    vi.useFakeTimers();
+    focusManager.setFocused(true);
+    const api = installDesktopApi(() => Promise.resolve(makeDetail()));
+    const view = renderView();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    // Local comments resolve PR identity through one additional IPC detail read.
+    expect(api.detail).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    act(() => focusManager.setFocused(false));
+    act(() => focusManager.setFocused(true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(api.detail).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it("uses the shared five-minute freshness policy without focus refetches", async () => {
     installDesktopApi(() => Promise.resolve(makeDetail()));
     const { queryClient } = renderView();
 
@@ -411,69 +471,53 @@ describe("BranchDetailView", () => {
       .findAll({ queryKey: ["branches", "detail"] })
       .find((candidate) => candidate.state.data !== undefined);
     const options = query?.options as BranchQueryFreshnessOptions | undefined;
-    expect(options?.staleTime).toBe(30_000);
-    expect(options?.refetchOnWindowFocus).toBe(true);
+    expect(options?.staleTime).toBe(300_000);
+    expect(options?.refetchOnWindowFocus).toBe(false);
   });
 
-  it("opens GitHub connect from the connect bar when GitHub is not connected", async () => {
-    // No repo identity → the shared `connect-github` banner condition holds, so
-    // the standalone connect bar is the reachable connect affordance.
+  it("resolves the shipped connect control through these locators", () => {
+    render(
+      <ConnectGitHubIndicator
+        connect={{
+          action: GitHubConnectAction.Connect,
+          onConnect: () => undefined,
+        }}
+        variant={GatedMetricIndicatorVariant.Centered}
+      />
+    );
+
+    expect(screen.getByText(CONNECT_EXPLANATION)).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: CONNECT_GITHUB_BUTTON_NAME_PATTERN })
+    ).toBeDefined();
+  });
+
+  it("offers no connect-GitHub control on a branch with no repo identity (ISS-11274)", async () => {
+    // The exact fixture that used to raise the standalone connect bar: no repo
+    // identity, so the retired resolver answered "connect-github". The approved
+    // Branch detail design places no connect control here, so the page renders
+    // without one and nothing can open the desktop connect handoff.
     installDesktopApi(() =>
       Promise.resolve(makeDetail({ repoFullName: null }))
     );
     renderView();
 
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: CONNECT_GITHUB_BUTTON_NAME_PATTERN,
-      })
-    );
-
-    await waitFor(() =>
-      expect(openGitHubConnectMock).toHaveBeenCalledWith({
-        returnTo: "/branches/b-1",
-      })
-    );
-    expect(
-      screen.getByText(DETAIL_CONNECT_OPENED_MESSAGE_PATTERN)
-    ).toBeDefined();
-  });
-
-  it("shows the connect-failed banner when GitHub connect IPC rejects (FEA-2782)", async () => {
-    // A rejected (not resolved-false) IPC call must still flip to the Failed
-    // banner instead of leaking an unhandled rejection and pinning Pending.
-    installDesktopApi(() =>
-      Promise.resolve(makeDetail({ repoFullName: null }))
-    );
-    openGitHubConnectMock.mockRejectedValue(new Error("ipc channel closed"));
-    renderView();
-
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: CONNECT_GITHUB_BUTTON_NAME_PATTERN,
-      })
-    );
-
-    expect(
-      await screen.findByText(DETAIL_CONNECT_FAILED_MESSAGE_PATTERN)
-    ).toBeDefined();
-  });
-
-  it("hides the duplicate connect bar when GitHub is connected (FEA-2792)", async () => {
-    // Repo identity present → GitHub is connected; the standalone top bar must
-    // not duplicate the CTA the shared `BranchDetailPage` already gates.
-    installDesktopApi(() => Promise.resolve(makeDetail()));
-    renderView();
-
-    // Wait for the page to populate before asserting the bar is absent.
+    // The detail body itself rendered — without this the absence checks could
+    // pass on a page that never painted.
     expect(
       await screen.findByRole("tab", { name: "Branch details" })
     ).toBeDefined();
+
+    expect(screen.queryByText(CONNECT_EXPLANATION)).toBeNull();
     expect(
       screen.queryByRole("button", {
         name: CONNECT_GITHUB_BUTTON_NAME_PATTERN,
       })
     ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: CONNECT_GITHUB_BUTTON_NAME_PATTERN })
+    ).toBeNull();
+    expect(openGitHubConnectMock).not.toHaveBeenCalled();
   });
 
   it("renders cloud-hydrated review and checks in the visible detail panel", async () => {
@@ -525,49 +569,6 @@ describe("BranchDetailView", () => {
     expect(await screen.findByText("3/3 passing")).toBeDefined();
   });
 
-  it("surfaces failed desktop cloud hydration while keeping local detail visible", async () => {
-    installDesktopApi(() =>
-      Promise.resolve(
-        makeDetail({
-          cloudHydrationStatus: BranchCloudHydrationStatus.Failed,
-          cloudHydrationFailure: "cloud_pull_failed",
-        })
-      )
-    );
-
-    renderView();
-
-    expect(
-      await screen.findByText(CLOUD_REFRESH_FAILED_MESSAGE_PATTERN)
-    ).toBeDefined();
-    expect(await screen.findByText("Branch details")).toBeDefined();
-  });
-
-  // PLN-1535 M3.2 — the plan's "UX honesty fix". A repo-linked branch whose
-  // hydration reports CredentialMissing means this Desktop holds no cloud
-  // credential; the old code rendered that as NotConnected and offered a
-  // Connect-GitHub CTA that could never resolve it. Both halves are asserted:
-  // the honest sign-in copy appears AND the misleading CTA does not.
-  it("asks a credential-less desktop to sign in, not to connect GitHub", async () => {
-    installDesktopApi(() =>
-      Promise.resolve(
-        makeDetail({
-          cloudHydrationStatus: BranchCloudHydrationStatus.CredentialMissing,
-        })
-      )
-    );
-
-    renderView();
-
-    expect(
-      await screen.findByText(SIGN_IN_TO_SYNC_MESSAGE_PATTERN)
-    ).toBeDefined();
-    expect(await screen.findByText("Branch details")).toBeDefined();
-    expect(
-      screen.queryByRole("button", { name: CONNECT_GITHUB_BUTTON_NAME_PATTERN })
-    ).toBeNull();
-  });
-
   it("shows a skeleton while the detail read is pending", async () => {
     // A never-resolving detail keeps useBranchDetail in its loading state.
     installDesktopApi(() => new Promise<BranchPageDetail>(() => undefined));
@@ -595,9 +596,12 @@ describe("BranchDetailView", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Show comments rail" })
     );
+    expect(await screen.findByText(BRANCH_COMMENTS_READ_FAILED)).toBeDefined();
     expect(
-      await screen.findByText("Comments are unavailable in this view.")
-    ).toBeDefined();
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([url]) => String(url).includes("/api/gateway/"))
+    ).toBe(false);
   });
 
   it("does not mount local gateway live file overlays on desktop detail", async () => {
@@ -618,6 +622,63 @@ describe("BranchDetailView", () => {
           String(url).includes("/api/gateway/git/pr/")
         )
     ).toBe(false);
+  });
+
+  /**
+   * ISS-7235 AC1 — the desktop half of the web-only gate, asserted rather than
+   * asserted-in-a-comment.
+   *
+   * The web route injects `relatedSessionsSlot` into the shared
+   * `BranchDetailPage`; this shell deliberately injects nothing. That omission
+   * is what keeps `related-sessions-field` off the desktop renderer: the slot
+   * is the whole mechanism, not a gate this shell resolves differently — both
+   * shells read the same PostHog key, so nothing about the flag itself would
+   * hold the section back here.
+   *
+   * The flag is turned ON for this test, and that is the whole point. With the
+   * suite's default `enabledFlags: []`, `RelatedSessionsSection` returns null on
+   * its own gate, so an absence assertion would pass whether or not this shell
+   * wired the slot — it would be green against the mutation it claims to
+   * prevent. Enabling the flag is what makes the omission the only remaining
+   * reason the section is absent.
+   */
+  it("never composes Related Sessions, even with the web-only flag enabled (ISS-7235 AC1)", async () => {
+    installDesktopApi(() =>
+      Promise.resolve(
+        makeDetail({ artifactId: "01a01b91-2d88-755a-9864-39e82e304b20" })
+      )
+    );
+
+    const { unmount } = renderView("/branches/b-1", [
+      RELATED_SESSIONS_FIELD_FEATURE_FLAG_KEY,
+    ]);
+
+    // Positive sibling FIRST: with this exact provider stack and this exact
+    // flag state, the section DOES render its title. Without this, the negative
+    // below could pass because the flag never took, the providers were wrong,
+    // or the title string drifted — none of which are the claim.
+    expect(
+      await screen.findByRole("tab", { name: "Branch details" })
+    ).toBeDefined();
+    expect(screen.queryByText(RELATED_SESSIONS_SECTION_TITLE)).toBeNull();
+    unmount();
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AuthAdapterProvider adapter={createStaticAuthAdapter()}>
+          <ApiAdapterProvider adapter={inertApiAdapter}>
+            <FeatureFlagAdapterProvider
+              adapter={createStaticFeatureFlagAdapter({
+                enabledFlags: [RELATED_SESSIONS_FIELD_FEATURE_FLAG_KEY],
+              })}
+            >
+              <RelatedSessionsSection artifactId="01a01b91-2d88-755a-9864-39e82e304b20" />
+            </FeatureFlagAdapterProvider>
+          </ApiAdapterProvider>
+        </AuthAdapterProvider>
+      </QueryClientProvider>
+    );
+    expect(screen.getByText(RELATED_SESSIONS_SECTION_TITLE)).toBeDefined();
   });
 });
 

@@ -83,7 +83,7 @@ describe("isSkillInvokedSlashKey", () => {
   });
 });
 
-// ISS-5260 (wongk review): the per-row exclusion both sides must apply before
+// ISS-5260 (whitlockk review): the per-row exclusion both sides must apply before
 // the inventory predicate runs, so a genuine command carrying its own
 // definition is never folded — including when its inventory row has not synced.
 describe("carriesOwnDefinitionEvidence", () => {

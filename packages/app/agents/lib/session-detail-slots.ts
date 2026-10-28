@@ -1,5 +1,6 @@
 /**
- * The `data-slot` hook on the session-detail view's PENDING state.
+ * The `data-slot` hook and the accessible name on the session-detail view's
+ * PENDING state.
  *
  * One hook, singular — the file header said "non-loaded states" plural while
  * only the pending state ever got one (#4669 review). `SessionDetailNotFound`
@@ -8,16 +9,17 @@
  * that asymmetry is the whole reason this module exists.
  *
  * Kept in this lightweight, React-free module rather than on the component
- * itself for the same reason {@link ActivityBreakdownSlot} is
- * (`session-activity-phases.ts`): the Playwright suites that drive these states
- * are Node-side, and a spec must be able to read the constant without importing
- * a `"use client"` React module — on the desktop suite that is not merely
- * wasteful, it aborts the whole Electron run at load.
+ * itself: the Playwright suites that drive these states are Node-side, and a
+ * spec must be able to read the constant without importing a `"use client"`
+ * React module — on the desktop suite that is not merely wasteful, it aborts the
+ * whole Electron run at load.
  *
- * Consumers: the component, the web suite (`e2e/session-detail-states.spec.ts`),
- * and the desktop twin (`apps/desktop/test/e2e/session-detail-states.spec.ts`) —
- * the consumer the React-free constraint above exists for. One constant across
- * all three, so the hook and the specs that address it cannot drift.
+ * Consumers: the component, the desktop shell's route fallback, the web suite
+ * (`e2e/session-detail-states.spec.ts`), and the desktop twins
+ * (`apps/desktop/test/e2e/session-detail-states.spec.ts`,
+ * `sessions-detail-route-switch.spec.ts`) — the consumers the React-free
+ * constraint above exists for. One constant each, so the hook, the name, and
+ * the specs that address them cannot drift.
  */
 
 /**
@@ -54,3 +56,26 @@
  * merging them would buy a cleaner negative at the cost of the positive.
  */
 export const SESSION_DETAIL_LOADING_SLOT = "session-detail-loading";
+
+/**
+ * ISS-5593 — the accessible name of the pending session-detail read.
+ *
+ * The desktop route's Suspense fallback (`DetailRouteFallback`, named by
+ * `DETAIL_FALLBACK_LABELS.session`) wraps the IDENTICAL 520px slab in a polite
+ * live region, then hands off to `SessionDetailLoading` once the lazy chunk
+ * resolves. Until ISS-5593 the view side announced nothing, so the handoff read
+ * as "Loading session" → silence → content arriving with no signal: two
+ * treatments of one state on one route. The two sides announcing the SAME
+ * string is what makes the swap continuous rather than a gap, so the string is
+ * declared once here rather than copied — ISS-5662, after a rename on either
+ * side would have re-opened that gap with green CI. It is also the breadcrumb's
+ * ISS-4839 pending-segment label, so the trail and the body name one thing.
+ *
+ * On the live region rather than a wrapper element deliberately — the
+ * skeleton's geometry is load-bearing (it exists so the fallback→view swap
+ * moves nothing), so it names the existing node instead of adding one.
+ *
+ * The sibling `BranchDetailLoading` still has this gap. Left alone: it belongs
+ * to the branches slice, which this Sessions-detail constant does not own.
+ */
+export const SESSION_DETAIL_LOADING_LABEL = "Loading session";

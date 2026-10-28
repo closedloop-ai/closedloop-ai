@@ -4,8 +4,8 @@
  * cooperative per-source / per-session pauses, and the gate that decides when the
  * pass may return early to service queued live-watcher events.
  *
- * Extracted from collector-manager.ts (grandfathered shrink-only under the root
- * AGENTS.md line-count contract) so this one cohesive concern — "how hard may the
+ * Extracted from collector-manager.ts (under the root AGENTS.md line-count
+ * contract) so this one cohesive concern — "how hard may the
  * backfill run, and when must it step aside" — lives in a module that can own its
  * own contract and its own tests.
  *
@@ -80,7 +80,7 @@
  * A time escape at that site is therefore self-defeating: on a machine whose
  * watcher queue never drains, a store whose parse alone approaches the quantum
  * would yield after the first session of every resume, re-parse the whole store,
- * and never finish — ISS-5028 again, one layer down (wongk review). The
+ * and never finish — ISS-5028 again, one layer down (whitlockk review). The
  * mid-source gate consequently requires a real, DURABLE batch of imported
  * sessions (`MIN_SESSIONS_PER_LIVE_YIELD_QUANTUM`) and nothing else, which
  * bounds a batch import at ceil(sessions / quantum) resumes rather than leaving
@@ -134,7 +134,7 @@ export const MIN_SOURCES_PER_LIVE_YIELD_QUANTUM = 10;
 export const MAX_MS_PER_LIVE_YIELD_QUANTUM = 30_000;
 
 /**
- * ISS-5028 (wongk review): minimum sessions a low-duty pass must have DURABLY
+ * ISS-5028 (whitlockk review): minimum sessions a low-duty pass must have DURABLY
  * imported this quantum before it may yield from INSIDE a source's session loop.
  * The only term that gate accepts — see the file header for why neither the
  * source floor (a mid-source yield means the current source has not completed)

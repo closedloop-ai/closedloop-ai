@@ -36,3 +36,16 @@ export declare function classifyMacSigningEnv(
 export declare function macSigningFailureMessage(
   emptyDefinedNames: readonly string[]
 ): string;
+
+/**
+ * ISS-10381 — the transient-signing-failure allowlist.
+ *
+ * Returns the class name a second packaging attempt is worth trying for, or
+ * `null` for everything else. `string | null` rather than a boolean on purpose:
+ * the caller puts the class name in the annotation a run is read by, and "no
+ * known transient class" must not be spellable as `false` beside a `true` that
+ * carries no reason.
+ */
+export declare function classifyRetryableMacSigningFailure(
+  output: string
+): string | null;

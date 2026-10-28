@@ -82,7 +82,7 @@ export function resetWebAppOriginCacheForTests(): void {
  * org: a pill that looks live and lands nowhere, which is the exact failure this
  * row's design has spent three tickets avoiding.
  *
- * FAILS UNRESOLVED, NOT TO PRODUCTION (wongk + codex review). The earlier
+ * FAILS UNRESOLVED, NOT TO PRODUCTION (whitlockk + codex review). The earlier
  * version seeded state with `DEFAULT_WEB_APP_ORIGIN` and kept it on a failed or
  * malformed read. Identity resolves on its own schedule, so on a stage build
  * that made the window between mount and the settings read settling — and,

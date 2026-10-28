@@ -79,18 +79,20 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE happy paths", () => {
     ["cl-relay", Origin.Relay],
     ["cl-desktop", Origin.Desktop],
     ["cl-mcp", Origin.Mcp],
-  ] as [
-    string,
-    Origin,
-  ][])("resolves %s to %s without warning", async (ddServiceValue, expected) => {
-    vi.resetModules();
-    vi.stubEnv("DD_SERVICE", ddServiceValue);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const mod = await import("../telemetry/origin");
+    ["cl-realtime", Origin.Realtime],
+    ["cl-doc-sync", Origin.DocSync],
+  ] as [string, Origin][])(
+    "resolves %s to %s without warning",
+    async (ddServiceValue, expected) => {
+      vi.resetModules();
+      vi.stubEnv("DD_SERVICE", ddServiceValue);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const mod = await import("../telemetry/origin");
 
-    expect(mod.ORIGIN).toBe(expected);
-    expect(warnSpy).not.toHaveBeenCalled();
-  });
+      expect(mod.ORIGIN).toBe(expected);
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
@@ -171,9 +173,6 @@ describe("ORIGIN — immutability after module load", () => {
  * asserted on the parsed object rather than by scanning the raw string:
  * `status` is Datadog's reserved severity attribute and `level` is not, and
  * only a parse proves the line carries both at the same severity (ISS-6341).
- *
- * Severity is a literal here because origin.ts cannot import `LogLevel` from
- * ../log — that import cycle is why it writes to console.warn at all.
  */
 const ORIGIN_FALLBACK_LINE = {
   event: "telemetry.origin_fallback",

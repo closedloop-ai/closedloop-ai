@@ -61,6 +61,14 @@ export type SeedComponentRow = {
   // with distinct hashes must split into two list rows carrying distinct
   // `versionId`s; a null hash keeps the name-only identity.
   contentHash?: string | null;
+  /**
+   * The captured definition text (FEA-2923 content pipeline). Left null by
+   * default. Set it when the read under test recomputes the canonical
+   * `computeDefinitionHash(content, kind)` digest from the row — a null here
+   * makes that recompute return null, which silently disables any predicate
+   * built from it and can pass a test against the very scoping it means to pin.
+   */
+  content?: string | null;
 };
 
 /** One `agent_component_session_usage` row. */
@@ -69,8 +77,14 @@ export type SeedUsageRow = {
   kind: string;
   key: string;
   invocations: number;
-  lastInvokedAt?: string;
-  firstInvokedAt?: string;
+  /**
+   * ISS-7663: nullable, because the COLUMN is — `last_invoked_at` is written
+   * from `MAX(agent_component_invocations.invoked_at)` and is NULL when a usage
+   * row has no timestamped invocation. Omit for the seeded default; pass `null`
+   * to seed the untimed row a date window has to drop.
+   */
+  lastInvokedAt?: string | null;
+  firstInvokedAt?: string | null;
   harness?: string | null;
   versionHash?: string | null;
   /**
@@ -91,9 +105,10 @@ export async function insertComponent(
       `INSERT INTO agent_components
          (id, component_kind, external_id, component_key, name, harness,
           source, source_url, description, install_path, pack_id, scope,
-          project_path, content_hash, first_seen_at, last_seen_at, uninstalled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-               '2026-01-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z', $15)`,
+          project_path, content_hash, content, first_seen_at, last_seen_at,
+          uninstalled_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+               '2026-01-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z', $16)`,
       row.id,
       row.kind,
       row.externalId,
@@ -108,6 +123,7 @@ export async function insertComponent(
       row.scope ?? null,
       row.projectPath ?? null,
       row.contentHash ?? null,
+      row.content ?? null,
       row.uninstalledAt ?? null
     )
   );
@@ -117,6 +133,14 @@ export async function insertUsage(
   prisma: DesktopPrisma,
   row: SeedUsageRow
 ): Promise<void> {
+  // `=== undefined`, not `??`: an explicitly-null stamp must reach the column,
+  // while an omitted one still takes the seeded default.
+  const lastInvokedAt =
+    row.lastInvokedAt === undefined
+      ? "2026-06-01T00:00:00.000Z"
+      : row.lastInvokedAt;
+  const firstInvokedAt =
+    row.firstInvokedAt === undefined ? lastInvokedAt : row.firstInvokedAt;
   await prisma.write((client) =>
     client.$executeRawUnsafe(
       `INSERT INTO agent_component_session_usage
@@ -130,8 +154,8 @@ export async function insertUsage(
       row.invocations,
       row.harness ?? null,
       row.versionHash ?? null,
-      row.firstInvokedAt ?? row.lastInvokedAt ?? "2026-06-01T00:00:00.000Z",
-      row.lastInvokedAt ?? "2026-06-01T00:00:00.000Z",
+      firstInvokedAt,
+      lastInvokedAt,
       row.agentComponentId ?? null
     )
   );

@@ -7,7 +7,7 @@
  *
  * The derivation is `packages/app/agents/lib/session-duration.ts`, mounted by
  * BOTH the web adapter and this renderer (`sessions-table-body.tsx` ->
- * `SyncedSessionsTable` -> `agentSessionToSessionTableRow`), so wongk's
+ * `SyncedSessionsTable` -> `agentSessionToSessionTableRow`), so whitlockk's
  * cross-surface rule requires a real-surface regression on each adapter.
  *
  * The fixture reproduces the reported `019fb3e3` shape, scaled down: a session
@@ -29,6 +29,8 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
   breadcrumbParentLink,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
 } from "./helpers/desktop-app";
@@ -131,8 +133,8 @@ test.describe("Sessions Duration parity (ISS-5131)", () => {
       try {
         await gotoNav(page, "sessions");
         // Widen to "All time" so the seed is in range regardless of the default
-        // window. `:visible` scopes to the mounted Sessions toolbar.
-        await page.locator('[aria-label="All time"]:visible').click();
+        // window.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // Prove the row rendered before asserting anything negative about it.
         const rowLink = page.getByRole("link", { name: SESSION_NAME });

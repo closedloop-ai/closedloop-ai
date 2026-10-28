@@ -1,0 +1,39 @@
+{
+  "name": "@repo/http-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./internal-oidc": "./src/internal-oidc.ts",
+    "./internal-auth": "./src/internal-auth.ts",
+    "./errors": "./src/errors.ts",
+    "./body-limit": "./src/body-limit.ts",
+    "./rate-limit": "./src/rate-limit.ts",
+    "./token-bucket": "./src/token-bucket.ts",
+    "./json-body": "./src/json-body.ts",
+    "./describe-cause": "./src/describe-cause.ts",
+    "./node-listener": "./src/node-listener.ts",
+    "./test-support/oidc-fixture": "./src/test-support/oidc-fixture.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'"
+  },
+  "dependencies": {
+    "@hono/node-server": "catalog:",
+    "@repo/observability": "workspace:*",
+    "@repo/realtime-contract": "workspace:*",
+    "hono": "catalog:",
+    "jose": "^6.2.12",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

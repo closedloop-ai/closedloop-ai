@@ -10,7 +10,7 @@
  * probe drives the ceiling branch, so nothing here asserts on wall-clock timing.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   WAL_TRUNCATE_FRAME_CEILING,
   WAL_TRUNCATE_INTERVAL_MS,

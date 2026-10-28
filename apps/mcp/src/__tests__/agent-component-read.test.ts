@@ -1,5 +1,9 @@
-import { Harness } from "@repo/api/src/types/agent-component.js";
+import {
+  AGENT_COMPONENT_LIST_MAX_OFFSET,
+  Harness,
+} from "@repo/api/src/types/agent-component.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { z } from "zod";
 import {
   buildAgentComponentListQuery,
   registerGetAgentComponent,
@@ -13,7 +17,7 @@ describe("buildAgentComponentListQuery", () => {
     expect(
       buildAgentComponentListQuery({
         collaborator: "Ada Lovelace",
-        source: "closedloop-ai/symphony-alpha",
+        source: "closedloop-ai/closedloop-ai",
         harness: "claude",
         search: "review",
         startDate: "2026-07-01",
@@ -25,7 +29,7 @@ describe("buildAgentComponentListQuery", () => {
       })
     ).toEqual({
       collaborator: "Ada Lovelace",
-      source: "closedloop-ai/symphony-alpha",
+      source: "closedloop-ai/closedloop-ai",
       harness: "claude",
       search: "review",
       startDate: "2026-07-01",
@@ -93,7 +97,7 @@ describe("buildAgentComponentListQuery", () => {
 
   it("forwards the opencode harness filter (ISS-4386)", () => {
     // OpenCode is a first-class harness value now; the tool must forward it to
-    // the API query, not silently drop it (shafty023).
+    // the API query, not silently drop it (davetho).
     expect(buildAgentComponentListQuery({ harness: Harness.Opencode })).toEqual(
       { harness: "opencode" }
     );
@@ -108,7 +112,7 @@ describe("shapeAgentComponentListItem", () => {
       name: "code-review",
       kind: "skill",
       sourceType: "repo",
-      source: "closedloop-ai/symphony-alpha",
+      source: "closedloop-ai/closedloop-ai",
       harness: "claude",
       invocations: 42,
       sessions: 7,
@@ -128,7 +132,7 @@ describe("shapeAgentComponentListItem", () => {
       name: "code-review",
       kind: "skill",
       sourceType: "repo",
-      source: "closedloop-ai/symphony-alpha",
+      source: "closedloop-ai/closedloop-ai",
       harness: "claude",
       invocations: 42,
       sessions: 7,
@@ -180,7 +184,7 @@ const DETAIL = {
   versions: [
     {
       hash: "hash-new",
-      source: "closedloop-ai/symphony-alpha",
+      source: "closedloop-ai/closedloop-ai",
       format: "md",
       createdAt: "2026-07-10T00:00:00.000Z",
       isCurrent: true,
@@ -188,7 +192,7 @@ const DETAIL = {
     },
     {
       hash: "hash-old",
-      source: "closedloop-ai/symphony-alpha",
+      source: "closedloop-ai/closedloop-ai",
       format: "md",
       createdAt: "2026-06-01T00:00:00.000Z",
       isCurrent: false,
@@ -210,7 +214,7 @@ describe("shapeAgentComponentDetail", () => {
     expect(shaped.versions).toEqual([
       {
         hash: "hash-new",
-        source: "closedloop-ai/symphony-alpha",
+        source: "closedloop-ai/closedloop-ai",
         format: "md",
         createdAt: "2026-07-10T00:00:00.000Z",
         isCurrent: true,
@@ -218,7 +222,7 @@ describe("shapeAgentComponentDetail", () => {
       },
       {
         hash: "hash-old",
-        source: "closedloop-ai/symphony-alpha",
+        source: "closedloop-ai/closedloop-ai",
         format: "md",
         createdAt: "2026-06-01T00:00:00.000Z",
         isCurrent: false,
@@ -293,7 +297,7 @@ describe("shapeAgentComponentDetail", () => {
     expect(shaped.promptLength).toBe(0);
   });
 
-  // ISS-5029 (wongk): this projection rebuilds the detail field-by-field, so it
+  // ISS-5029 (whitlockk): this projection rebuilds the detail field-by-field, so it
   // dropped the truncation discriminator and returned a capped revision history
   // as if it were the complete one.
   it("forwards versionsTruncated when the API marks the history partial", () => {
@@ -351,7 +355,7 @@ describe("shapeAgentComponentDetail — absent or null versions", () => {
       versions: [
         {
           hash: "hash-null-content",
-          source: "closedloop-ai/symphony-alpha",
+          source: "closedloop-ai/closedloop-ai",
           format: "md",
           createdAt: "2026-07-10T00:00:00.000Z",
           isCurrent: true,
@@ -365,7 +369,7 @@ describe("shapeAgentComponentDetail — absent or null versions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ISS-4942 (wongk): the `buildAgentComponentListQuery` unit tests above never
+// ISS-4942 (whitlockk): the `buildAgentComponentListQuery` unit tests above never
 // cross the REGISTERED tool boundary, so `collaborator` could vanish from the
 // declared input schema — or the handler could stop routing input through the
 // mapper — with every one of them still green. These drive the real
@@ -386,6 +390,32 @@ describe("list-agent-components registered tool", () => {
     vi.clearAllMocks();
     apiClient.get.mockResolvedValue({ items: [], total: 0, hasMore: false });
     registerListAgentComponents({ registerTool } as never, apiClient as never);
+  });
+
+  // ISS-8734: the tool's own bound, not just the server's. Without `.max()`
+  // here the agent-facing schema accepts an offset the API answers with a 400,
+  // and the agent has no way to learn the ceiling from the tool description
+  // either — the parity `list-tags` and `list-agent-sessions` already have.
+  it("rejects an offset above the shared ceiling and accepts one at it", () => {
+    const offsetSchema = registeredOffsetSchema();
+
+    expect(
+      offsetSchema.safeParse(AGENT_COMPONENT_LIST_MAX_OFFSET + 1).success
+    ).toBe(false);
+    expect(offsetSchema.safeParse(AGENT_COMPONENT_LIST_MAX_OFFSET)).toEqual(
+      expect.objectContaining({
+        success: true,
+        data: AGENT_COMPONENT_LIST_MAX_OFFSET,
+      })
+    );
+  });
+
+  it("publishes the accepted offset range in the agent-facing description", () => {
+    const offsetSchema = registeredOffsetSchema();
+
+    expect(offsetSchema.description).toContain(
+      `0-${AGENT_COMPONENT_LIST_MAX_OFFSET}`
+    );
   });
 
   it("declares both the collaborator filter and its deprecated owner alias", () => {
@@ -456,7 +486,7 @@ describe("list-agent-components registered tool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ISS-5029 (wongk): the truncation discriminator has to survive all the way to
+// ISS-5029 (whitlockk): the truncation discriminator has to survive all the way to
 // the JSON text the MCP client actually reads, so these drive the registered
 // `get-agent-component` handler and parse its emitted payload.
 // ---------------------------------------------------------------------------
@@ -496,3 +526,12 @@ describe("get-agent-component registered tool", () => {
     expect(Object.hasOwn(payload, "versionsTruncated")).toBe(false);
   });
 });
+
+/** The `offset` field of the registered tool's input schema; throws when nothing was registered. */
+function registeredOffsetSchema(): z.ZodType {
+  const registration = registerTool.mock.calls[0];
+  if (!registration) {
+    throw new Error("registerTool was never called");
+  }
+  return (registration[1].inputSchema as Record<string, z.ZodType>).offset;
+}

@@ -1,4 +1,3 @@
-import type { OrgSessionSyncPolicyState } from "../../shared/contracts.js";
 import {
   consentTierForOrg,
   type SyncConsentRecord,
@@ -18,23 +17,13 @@ import {
  * grandfathered `app.ts` should not keep carrying the store-binding half of the
  * responsibility inline.
  *
- * `sync-egress-gate.ts` owns the pure two-layer decision — server-owned ORG
- * POLICY ANDed above the per-device consent tier, so the gate can only suppress,
- * never widen. This module owns only the binding: reading both inputs LIVE on
- * every evaluation, so a later consent change or policy resolution is picked up
- * on the next `shouldRun()` evaluation rather than being captured once at wiring
- * time.
+ * `sync-egress-gate.ts` owns the pure decision — since ISS-11449 that is the
+ * per-device consent tier alone, the outer org policy having been retired. This
+ * module owns only the binding: reading the inputs LIVE on every evaluation, so a
+ * later consent change is picked up on the next `shouldRun()` evaluation rather
+ * than being captured once at wiring time.
  */
 export type SyncEgressGateAdapterDeps = {
-  /**
-   * Kick the policy store's throttled self-heal. Called on every read because a
-   * lane whose tick timer was torn down stops calling the gate entirely; the
-   * store ALSO self-heals on its own timer and notifies subscribers, which
-   * re-kick the lanes (see the `wireOrgSyncPolicySubscription` wiring).
-   */
-  ensureResolved: () => void;
-  /** The cached org-policy state (outer gate); `"unknown"` until a fetch lands. */
-  getPolicyState: () => OrgSessionSyncPolicyState;
   /**
    * What this device has on disk about the user's consent answer: the tier, and
    * the org it was recorded for.
@@ -62,10 +51,9 @@ export type SyncEgressGateAdapter = {
   /** Transcript lane: may it reach the cloud right now? Fails CLOSED. */
   transcriptAllowed: () => boolean;
   /**
-   * The transcript gate as THREE states, for consumers that DISPLAY it rather
-   * than drain on it — an unresolved org policy stays distinguishable from a
-   * real denial, so the import splash cannot state a denial nobody made. Egress
-   * still keys off {@link SyncEgressGateAdapter.transcriptAllowed}.
+   * The transcript gate as a named verdict, for consumers that DISPLAY it rather
+   * than drain on it. Egress keys off
+   * {@link SyncEgressGateAdapter.transcriptAllowed}.
    */
   transcriptGate: () => TranscriptEgressGate;
 };
@@ -73,16 +61,12 @@ export type SyncEgressGateAdapter = {
 export function createSyncEgressGateAdapter(
   deps: SyncEgressGateAdapterDeps
 ): SyncEgressGateAdapter {
-  const readInputs = (): SyncEgressGateInputs => {
-    deps.ensureResolved();
-    return {
-      policyState: deps.getPolicyState(),
-      tier: consentTierForOrg(
-        deps.getConsentRecord(),
-        deps.getSessionOrganizationId()
-      ),
-    };
-  };
+  const readInputs = (): SyncEgressGateInputs => ({
+    tier: consentTierForOrg(
+      deps.getConsentRecord(),
+      deps.getSessionOrganizationId()
+    ),
+  });
   return {
     readInputs,
     sessionMetadataAllowed: () => sessionMetadataEgressAllowed(readInputs()),

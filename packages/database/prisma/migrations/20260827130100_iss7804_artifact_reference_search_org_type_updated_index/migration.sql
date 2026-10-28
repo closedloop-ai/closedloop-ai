@@ -1,0 +1,89 @@
+-- ISS-7804 (2 of 2): the index the SINGLE-SOURCE reference typeahead needs.
+--
+-- Its sibling (20260827130000) covers the arm that carries no type predicate.
+-- This one covers the arm that does: a REFERENCE custom field sourced to ONE
+-- population — SESSION, BRANCH, or ISSUE — compiles to
+-- `organization_id = $1 AND type = $2 [AND subtype IN ($3, $4)]`, still ordered
+-- by `updated_at DESC, id ASC` with `take: limit + 1`.
+--
+-- WHY THE SIBLING IS NOT ENOUGH. `(organization_id, updated_at DESC, id ASC)` can
+-- serve this shape by walking the tenant in order and filtering on `type`, and
+-- for a COMMON source that is fine. It pays in proportion to how rare the source
+-- is, and that cost scales with the tenant: measured on a deliberately narrow
+-- source (2.6% of this tenant) the ordered scan touched 391 buffers at 120k
+-- tenant rows, and that is linear in tenant size at fixed selectivity. Leading
+-- with `type` makes the scan proportional to the SELECTED population instead of
+-- to the tenant, which is the property the typeahead needs as tenants grow.
+--
+-- SHAPE: `(organization_id, type, updated_at DESC, id ASC)`. `subtype` is
+-- deliberately NOT a key column. It appears only as `IN (...)`, and a
+-- ScalarArrayOp on a non-final index column cannot return rows already sorted by
+-- the columns after it, so putting `subtype` between `type` and `updated_at`
+-- would buy a cheaper recheck and hand the sort back — the exact thing this index
+-- exists to remove. Left out, `subtype` is a filter applied to rows the index
+-- already delivers in order, and the LIMIT still terminates the scan.
+--
+-- MEASURED (same database, seed and method as 20260827130000: Postgres 16,
+-- 500,000 artifacts across 12 organizations, tenant under test 120,319 rows;
+-- SQL taken from `log_statement=all` while running `searchTargets`'s `findMany`
+-- with the production `referenceSourceScope` predicate):
+--
+--   SESSION source (84,406 of the tenant), nothing typed
+--     before  Bitmap Heap Scan on artifacts -> Sort (top-N heapsort)
+--               Bitmap Index Scan on artifacts_organization_id_type_status_idx
+--                 rows=84,406 — the whole SESSION partition, then sorted
+--             Buffers: shared hit=9782      Execution Time: 27.0 ms
+--     after   Index Scan using artifacts_org_type_updated_id_idx
+--               Index Cond: ((organization_id = ...) AND (type = 'SESSION'))
+--               no sort node at all
+--             Buffers: shared hit=24        Execution Time: 0.08 ms
+--
+--   ISSUE source (type = DOCUMENT AND subtype IN (FEATURE, ISSUE)), nothing typed
+--     before  Bitmap Heap Scan, rows=15,482 read then 9,287 removed by the
+--               subtype filter, then Sort
+--             Buffers: shared hit=7815      Execution Time: 14.9 ms
+--     after   Index Scan using artifacts_org_type_updated_id_idx
+--               Filter: subtype = ANY (...), 34 rows removed
+--             Buffers: shared hit=58        Execution Time: 0.16 ms
+--
+-- The `subtype` filter removing 34 rows rather than 9,287 is the point of the
+-- ordered scan: it stops as soon as 21 rows have passed, instead of qualifying
+-- the whole type partition first.
+--
+-- WHAT THIS DOES NOT COVER, stated so the next reader does not assume otherwise:
+-- the MULTI-SOURCE arm (an `OR` of type predicates) cannot use a type-leading
+-- index as an ordered scan — the planner picks the sibling index for it, which is
+-- measured on that migration — and the TYPED-TEXT arm's `ILIKE '%term%'` is not
+-- btree-servable in either index. The trigram decision for that arm, and the
+-- measurement behind rejecting it, are recorded on 20260827130000 rather than
+-- repeated here.
+--
+-- COST: 32 MB on this 500k-row slice, and `updated_at` carries `@updatedAt`, so
+-- every update to an artifact writes a new entry here as well as in the sibling.
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE. `artifacts` is written
+-- continuously by session and branch ingest, so a plain `CREATE INDEX` would hold
+-- ACCESS EXCLUSIVE for the whole build and stall that ingest at production size.
+-- `CREATE INDEX CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE. It cannot run
+-- inside a transaction block (SQLSTATE 25001), and `prisma migrate deploy` only
+-- splits a migration file into per-statement simple queries when it can do so
+-- confidently, so this file is ONE bare statement: no BEGIN/COMMIT, no `DO`
+-- block, and not the sibling index.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a cancelled
+-- or crashed build fails closed on SQLSTATE 42P07 against the same-named INVALID
+-- remnant instead of recording the migration APPLIED over a permanently-unusable
+-- index. Recovery is operator-driven: `DROP INDEX CONCURRENTLY` the remnant in
+-- psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*` schemas.
+-- CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "artifacts_org_type_updated_id_idx" ON "artifacts"("organization_id", "type", "updated_at" DESC, "id" ASC);

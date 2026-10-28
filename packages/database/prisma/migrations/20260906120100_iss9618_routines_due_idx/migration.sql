@@ -1,0 +1,27 @@
+-- ISS-9618: give the cross-org due sweep an index it can seek.
+--
+-- WHAT ASKS FOR IT. `listDueCloudRoutines`
+-- (apps/api/app/routines/cloud-execution-service.ts) reads, every five minutes,
+-- the `runs_on = 'CLOUD'` + `status = 'ACTIVE'` routines whose `next_run_at` has
+-- passed, ordered by `next_run_at` and capped by a LIMIT.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. Every index on `routines` LEADS on
+-- `organization_id`, and this read is FLEET-WIDE by construction — a cron tick
+-- has no caller org to supply — so not one of them has a usable prefix and the
+-- planner is left with a sequential scan of every routine in every org, on a
+-- tick whose whole job is to be cheap and frequent.
+--
+-- WHY THIS SHAPE. The two equality predicates lead, so the scan starts already
+-- narrowed to the cloud-schedulable routines; `next_run_at` trailing makes the
+-- due window a range seek that stops at `now()` instead of reading the rest of
+-- the schedule, and it satisfies the query's ordering so no sort node is planned
+-- and the LIMIT can stop the scan early.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `routines` for the
+-- whole build, which would block the desktop routine sync lane's upserts.
+-- `IF NOT EXISTS` is deliberately absent: with CONCURRENTLY a failed build
+-- leaves a same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+CREATE INDEX CONCURRENTLY "routines_runs_on_status_next_run_at_idx"
+  ON "routines" ("runs_on", "status", "next_run_at");

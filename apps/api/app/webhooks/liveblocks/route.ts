@@ -5,7 +5,11 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { scheduleLogFlush } from "@/lib/route-utils";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
+import {
+  LIVEBLOCKS_WEBHOOK_MAX_BYTES,
+  readVerifiableWebhookBody,
+} from "../webhook-body";
 import {
   handleCommentCreated,
   handleCommentDeleted,
@@ -17,12 +21,14 @@ import {
   handleThreadResolved,
   handleThreadUnresolved,
 } from "./handlers";
+import { LiveblocksWebhookOutcome } from "./webhook-outcome";
 
-export async function POST(request: Request): Promise<Response> {
+export const POST = withRequestCompleted(handleLiveblocksWebhook);
+
+async function handleLiveblocksWebhook(request: Request): Promise<Response> {
   const webhookHandler = createWebhookHandler();
   if (!webhookHandler) {
     log.warn("[webhook/liveblocks] Webhook secret not configured, rejecting");
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Liveblocks webhooks not configured", ok: false },
       { status: 200 }
@@ -30,7 +36,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const rawBody = await request.text();
+    // Bounded: `verifyRequest` signs over these raw bytes, so the read runs
+    // before the caller is authenticated (ISS-7665).
+    const { body: rawBody, response: oversized } =
+      await readVerifiableWebhookBody(request, LIVEBLOCKS_WEBHOOK_MAX_BYTES);
+    if (oversized) {
+      return oversized;
+    }
 
     let event: WebhookEvent;
     try {
@@ -40,57 +52,53 @@ export async function POST(request: Request): Promise<Response> {
       });
     } catch {
       log.warn("[webhook/liveblocks] Invalid webhook signature");
-      scheduleLogFlush();
       return NextResponse.json(
         { message: "Invalid signature", ok: false },
         { status: 401 }
       );
     }
 
+    let outcome: LiveblocksWebhookOutcome;
     switch (event.type) {
       case "threadCreated":
-        await handleThreadCreated(event);
+        outcome = await handleThreadCreated(event);
         break;
       case "commentCreated":
-        await handleCommentCreated(event);
+        outcome = await handleCommentCreated(event);
         break;
       case "commentEdited":
-        await handleCommentEdited(event);
+        outcome = await handleCommentEdited(event);
         break;
       case "commentDeleted":
-        await handleCommentDeleted(event);
+        outcome = await handleCommentDeleted(event);
         break;
       case "commentReactionAdded":
-        await handleCommentReactionAdded(event);
+        outcome = await handleCommentReactionAdded(event);
         break;
       case "commentReactionRemoved":
-        await handleCommentReactionRemoved(event);
+        outcome = await handleCommentReactionRemoved(event);
         break;
       case "threadDeleted":
-        await handleThreadDeleted(event);
+        outcome = await handleThreadDeleted(event);
         break;
       case "threadMarkedAsResolved":
-        await handleThreadResolved(event);
+        outcome = await handleThreadResolved(event);
         break;
       case "threadMarkedAsUnresolved":
-        await handleThreadUnresolved(event);
+        outcome = await handleThreadUnresolved(event);
         break;
       default:
-        logLiveblocksTerminalEvent(event.type, "unsupported_event");
+        outcome = LiveblocksWebhookOutcome.UnsupportedEvent;
         break;
     }
 
-    if (isSupportedLiveblocksEvent(event.type)) {
-      logLiveblocksTerminalEvent(event.type, "processed");
-    }
-    scheduleLogFlush();
+    logLiveblocksTerminalEvent(event.type, outcome);
     return NextResponse.json({ message: "Event processed", ok: true });
   } catch (error) {
     const message = parseError(error);
     log.error("[webhook/liveblocks] Unhandled error processing webhook", {
       error: message,
     });
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Something went wrong", ok: false },
       { status: 500 }
@@ -98,23 +106,9 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-function isSupportedLiveblocksEvent(type: string): boolean {
-  return (
-    type === "threadCreated" ||
-    type === "commentCreated" ||
-    type === "commentEdited" ||
-    type === "commentDeleted" ||
-    type === "commentReactionAdded" ||
-    type === "commentReactionRemoved" ||
-    type === "threadDeleted" ||
-    type === "threadMarkedAsResolved" ||
-    type === "threadMarkedAsUnresolved"
-  );
-}
-
 function logLiveblocksTerminalEvent(
   eventType: string,
-  outcome: "processed" | "unsupported_event"
+  outcome: LiveblocksWebhookOutcome
 ): void {
   log.info("[webhook/liveblocks] Event handled", {
     eventType,

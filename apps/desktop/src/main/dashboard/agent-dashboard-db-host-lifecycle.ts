@@ -1,7 +1,7 @@
 /**
  * @file agent-dashboard-db-host-lifecycle.ts
  * @description ISS-4771: the db-host lifecycle concern of the Agent Dashboard
- * design-system runtime, extracted out of the shrink-only grandfathered
+ * design-system runtime, extracted out of
  * `agent-dashboard-design-system-runtime.ts`.
  *
  * It owns everything that wraps `DbHostClient`: the pre-open zombie-holder reap,
@@ -19,7 +19,8 @@
  * drain.
  */
 
-import { SCHEDULED_TASKS_CHANGED_CHANNEL } from "../../shared/scheduled-tasks-channel.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
+import { dataRevisionFor } from "../collectors/engine/data-revision.js";
 import { buildZombieDbHolderOsDeps } from "../database/database-integrity/zombie-db-holder-os.js";
 import {
   makeOwnProcessMatcher,
@@ -31,11 +32,29 @@ import {
   type DbHostForkFn,
 } from "../database/db-host/db-host-client.js";
 import { createDbHostIdentityPublisher } from "../database/db-host/db-host-identity-publisher.js";
+import {
+  DB_HOST_RESTART_EXHAUSTED_RUNTIME_STATUS,
+  DB_HOST_RESTART_EXHAUSTED_USER_REASON,
+} from "../database/db-host/db-host-restart-budget.js";
+import { DB_HOST_STORE_OP_PREFIX } from "../database/db-host/db-host-store-op-registry.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
 import { sendToRendererWindow } from "../ipc/renderer-ipc.js";
+import { onFatalExit } from "../lifecycle/fatal-exit-notice.js";
 import type { CatalogFetchCoordinator } from "../packs/catalog-fetch-coordinator.js";
 import type { PackScanCoordinator } from "../packs/pack-scan-coordinator.js";
-import { reportDbHostExitedUnexpectedly } from "../telemetry/db-host-exit-telemetry.js";
+import { effectiveParsePolicy } from "../parse-policy/effective-parse-policy.js";
+import {
+  PARSE_POLICY_SET_STORE_OP,
+  type ParsePolicy,
+} from "../parse-policy/parse-policy.js";
+import {
+  createParsePolicyPusher,
+  subscribeParsePolicyFlips,
+} from "../parse-policy/parse-policy-resolver.js";
+import {
+  reportDbHostExitedUnexpectedly,
+  reportDbHostRestartExhausted,
+} from "../telemetry/db-host-exit-telemetry.js";
 import type {
   AgentDashboardDesignSystemRuntimeOptions,
   InvokeStoreOp,
@@ -90,6 +109,11 @@ export type AgentDashboardDbHostLifecycle = {
   beginClosing: () => void;
   /** The bounded, clean db-host drain. */
   close: () => Promise<void>;
+  /**
+   * ISS-9802 — ask the child to abandon the in-flight read carrying `token`.
+   * Fire-and-forget; a token naming nothing in flight is a no-op on the child.
+   */
+  cancelRead: (token: string) => void;
   /**
    * ISS-4823 — is the db-host process currently reporting memory pressure? The
    * DATA_REVISION rebuild's adaptive write-pause reads this so it backs off
@@ -150,7 +174,7 @@ async function reapZombieDbHoldersBeforeOpen(
 /**
  * FEA-2038: SQLite + Prisma + all stores run in a dedicated utilityProcess (the
  * DB host) so the 6–20 GB first-launch backfill never blocks the main thread.
- * The child opens the DB (with billing-mode/git/gh resolvers wired on its side);
+ * The child opens the DB (with billing-mode/git resolvers wired on its side);
  * main only forwards calls and relays the child's change events.
  */
 export function createAgentDashboardDbHostLifecycle(
@@ -163,9 +187,13 @@ export function createAgentDashboardDbHostLifecycle(
     onEmit: (sessionId: string) => {
       // The child already invalidated its own session caches before emitting;
       // here we only nudge the renderer to refetch.
-      sendToRendererWindow(options.getWindow(), "desktop:db:changed", {
-        sessionId,
-      });
+      sendToRendererWindow(
+        options.getWindow(),
+        DesktopRendererEventChannel.DbChanged,
+        {
+          sessionId,
+        }
+      );
     },
     onSessionTerminal: options.onSessionTerminal,
     onLog: (message: string) => log("agent-sqlite", message),
@@ -175,21 +203,38 @@ export function createAgentDashboardDbHostLifecycle(
     // page-data read) fail where only the last one is visible — so route it to
     // the telemetry path too, carrying how many in-flight ops were dropped.
     // That makes the exit queryable in Datadog; the alert on top of it is a
-    // companion monitor in `cl-tofu-aws-live` (see db-host-exit-telemetry.ts).
+    // companion monitor in `example-infrastructure` (see db-host-exit-telemetry.ts).
     onUnexpectedExit: (event) => reportDbHostExitedUnexpectedly(event),
-    // FEA-3814 (PRD-553 M2): the crewd scheduler in the child changed its
-    // tasks/runs; nudge the renderer to refetch the read-only Scheduled Tasks
-    // view. Payload-free — the renderer refetches list + runs itself.
-    onSchedulerChanged: () => {
-      sendToRendererWindow(
-        options.getWindow(),
-        SCHEDULED_TASKS_CHANGED_CHANNEL
+    // ISS-8776: the ladder gave up. Separate sinks, because the audiences are
+    // different and none substitutes for another — the telemetry event so a
+    // shipped app's unrecoverable store is QUERYABLE rather than known only to
+    // the machine it happened on (queryable, not alerting: the companion
+    // `datadog_monitor` is ISS-8242 and has not landed — whitlockk, #6432), and
+    // `onTerminalFailure` so the user is told, through the SAME Agent Monitor
+    // notification + tray path a boot-time DB refusal already uses. Reusing that
+    // channel is the point: a terminal store failure is a terminal store failure
+    // whether it happens at open or eight restarts later.
+    // THREE sinks, not two (davetho, #6432). The notification and the tray
+    // are a one-shot the user can miss or dismiss; `desktop:get-runtime-status`
+    // is the standing answer every renderer surface polls, and a boot that
+    // reached `ready` has already latched it there. Left alone it keeps
+    // reporting healthy for the rest of a session whose local store is gone —
+    // the same "never let the UI lie about state" line the boot-time refusal
+    // path already holds by publishing a failed status of its own.
+    onRestartExhausted: (event) => {
+      reportDbHostRestartExhausted(event);
+      options.setAgentMonitorRuntimeStatus(
+        DB_HOST_RESTART_EXHAUSTED_RUNTIME_STATUS
       );
+      options.onTerminalFailure(DB_HOST_RESTART_EXHAUSTED_USER_REASON);
     },
-    // FEA-4143: run a scheduled review the child's daemon dispatch proxied to
-    // main, composed through the SAME AuditService the on-demand Audit view uses.
-    onRunScheduledReview: options.onRunScheduledReview,
   });
+  // ISS-8776: `app.exit()` from the process error handlers skips `before-quit`,
+  // so the graceful shutdown that calls `beginClosing()` never runs on the fatal
+  // path. Registered HERE, beside the client it tears down, so the hook cannot
+  // outlive its subject — both graceful entry points release it below before
+  // doing their own teardown.
+  const releaseFatalExitHook = onFatalExit(() => dbHost.beginClosing());
   // Forwarding proxy: every consumer keeps calling `agentDatabase.*` unchanged,
   // but each call executes in the DB host over IPC.
   const agentDatabase = createDbHostAgentDatabase(dbHost);
@@ -217,6 +262,18 @@ export function createAgentDashboardDbHostLifecycle(
   const unsubscribeIdentity = options.subscribeUserIdentityChanged?.(() =>
     identityPublisher.sync()
   );
+  // ISS-12552 (PRD-800 "Rollout"): subscribed here, before `start` reads
+  // the policy below, so no settled flip can land between that read and a
+  // subscription: one before `start` is in what it reads, one after reaches
+  // the child (queued until it is ready) and the retained init options.
+  const pushConfirmed = createParsePolicyPusher({
+    push: (policy) => pushParsePolicy(policy),
+    expectedRevision: dataRevisionFor,
+    log: (message) => log("agent-sqlite", message),
+  });
+  const unsubscribeParsePolicy = subscribeParsePolicyFlips((policy) => {
+    pushConfirmed(policy).catch(() => undefined);
+  });
   // Releasing the identity subscription is NOT solely close()'s job. When
   // `ready` rejects, runtime creation throws before any close handle reaches the
   // caller, so close() is never called and this subscription — plus every value
@@ -226,6 +283,7 @@ export function createAgentDashboardDbHostLifecycle(
   const releaseIdentityWatch = (): void => {
     unsubscribeIdentity?.();
     identityPublisher.stop();
+    unsubscribeParsePolicy();
   };
   const ready = reapZombieDbHoldersBeforeOpen(dbPath, log)
     // Read the identity HERE rather than before the reap: the reap shells out to
@@ -234,7 +292,11 @@ export function createAgentDashboardDbHostLifecycle(
     .then(() => {
       const identity = options.getUserIdentity?.() ?? null;
       identityPublisher.seedFromChildOpen(identity);
-      return dbHost.start({ dataDir: dbPath, identity });
+      return dbHost.start({
+        dataDir: dbPath,
+        identity,
+        parsePolicy: effectiveParsePolicy(),
+      });
     })
     .then(
       () => {
@@ -245,6 +307,32 @@ export function createAgentDashboardDbHostLifecycle(
         return agentDatabase;
       },
       (error: unknown) => {
+        // ISS-8776: the fatal-exit hook is released here for exactly the reason
+        // the comment above gives for the identity watch — a `ready` rejection
+        // throws out of runtime creation before any close handle reaches the
+        // caller, so neither `beginClosing()` nor `close()` ever runs and the
+        // hook would stay registered for the life of the process.
+        //
+        // But the CHILD is not necessarily gone with it (codex, #6432). A store
+        // that refuses to open — a migration refusal, a storage-exhaustion
+        // classification — is answered by the worker with a `Ready` carrying an
+        // error and STAYING ALIVE (`db-host-worker.ts`, PLN-1837 §1.2), because
+        // the refusal is deterministic and exiting would refuse again on every
+        // restart. `DbHostClient` retains that child too. Releasing the hook
+        // without more would therefore leave a live utility process behind with
+        // nothing left to announce a fatal teardown to it: `app.exit()` kills
+        // the child, `handleExit()` sees neither `closing` nor `closed`, and the
+        // supervisor relabels it a crash and re-forks into a dying main process
+        // — the exact loop this ticket exists to stop.
+        //
+        // So mark the intentional-shutdown window BEFORE letting the hook go.
+        // `beginClosing()` is synchronous, cheap and idempotent, and it is
+        // honest here rather than merely convenient: the runtime never reached
+        // any consumer (DB IPC is registered in its DISABLED form on this path),
+        // nothing re-arms `ready`, so no restart of this child could deliver a
+        // store to anyone. A later exit of it is expected by construction.
+        dbHost.beginClosing();
+        releaseFatalExitHook();
         releaseIdentityWatch();
         throw error;
       }
@@ -253,8 +341,14 @@ export function createAgentDashboardDbHostLifecycle(
   // FEA-2038: store ops whose store fn takes a callback (prisma.write) can't run
   // over the method proxy — a function can't cross IPC. They execute wholly in
   // the DB host via `store:`-prefixed invokes.
+  // Which of them may still cross a CLOSING client is the client's own call
+  // (`db-host-shutdown-admission.ts`), keyed on the prefixed op name.
   const rawStoreOp = (name: string, args: unknown[] = []): Promise<unknown> =>
-    dbHost.invoke(`store:${name}`, args);
+    dbHost.invoke(`${DB_HOST_STORE_OP_PREFIX}${name}`, args);
+  function pushParsePolicy(policy: ParsePolicy): Promise<unknown> {
+    dbHost.retainParsePolicy(policy);
+    return rawStoreOp(PARSE_POLICY_SET_STORE_OP, [policy]);
+  }
   // FEA-3628 / ISS-5274: intercept the pack-scan and catalog-fetch triggers so
   // their heavy work runs in the main process (off the db-host) and redundant
   // triggers coalesce. Every other store op forwards to the db-host unchanged.
@@ -280,13 +374,16 @@ export function createAgentDashboardDbHostLifecycle(
     // change landing mid-teardown cannot push a SetUserIdentity into a child
     // that is being closed.
     beginClosing: () => {
+      releaseFatalExitHook();
       releaseIdentityWatch();
       dbHost.beginClosing();
     },
     close: () => {
+      releaseFatalExitHook();
       releaseIdentityWatch();
       return dbHost.close();
     },
     isUnderMemoryPressure: () => dbHost.isUnderMemoryPressure(),
+    cancelRead: (token: string) => dbHost.cancelRead(token),
   };
 }

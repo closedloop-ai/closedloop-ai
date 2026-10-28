@@ -1,39 +1,7 @@
 {
-  "seed_version": 13,
-  "_note": "Seed v13 (FEA-2101): brand rename ClosedLoop -> Closedloop in seed-owned display_name/description/install command copy. The version bump is required so upsertCatalogSeed reapplies the renamed copy to existing Desktop installs (rows are skipped while stored seed_version >= incoming). v12 (2026-06-09): adds the built-in Closedloop Web Command Pack as the default installed command protocol boundary. v11's idempotent gstack install commands are preserved.",
+  "seed_version": 15,
+  "_note": "ISS-12435: the bundled Closedloop Web Command Pack row was removed with Loops; upsertCatalogSeed deletes its stored row (RETIRED_CATALOG_PACK_IDS) on every boot, so no seed_version bump is needed. Seed v15 (ISS-10605): marks the bundled Closedloop Web Command Pack contents type 'bundled-local' so the catalog fetch stops trying to read stars and forks for it. Its github_url is a PRIVATE repo and the catalog transport is unauthenticated by design, so that lookup 404s for every user on every run, forever. The version bump is required or existing Desktop installs — already stored at v14 — keep the old row and keep logging the permanent failure, because upsertCatalogSeed skips a row while its stored seed_version >= incoming. v14 (ISS-8943): drops the retired GENERATE_PRD command from the Closedloop Web Command Pack description. The version bump is required or existing Desktop installs — already stored at v13 — keep advertising a command the server no longer accepts, because upsertCatalogSeed skips a row while its stored seed_version >= incoming. v13 (FEA-2101): brand rename ClosedLoop -> Closedloop in seed-owned display_name/description/install command copy. v12 (2026-06-09): adds the built-in Closedloop Web Command Pack as the default installed command protocol boundary. v11's idempotent gstack install commands are preserved.",
   "packs": [
-    {
-      "pack_id": "closedloop-web-command-pack",
-      "display_name": "Closedloop Web Command Pack",
-      "category": "workflow-pack",
-      "github_url": "https://github.com/closedloop-ai/symphony-alpha",
-      "description": "Closedloop's built-in web command protocol pack for PLAN, EXECUTE, DECOMPOSE, EVALUATE_*, GENERATE_PRD, and REQUEST_* commands. Ships with Desktop and brokers commands to the selected local harness; non-run-loop commands can use native Claude or Codex prompt adapters while PLAN/EXECUTE continue through the legacy Claude bridge until that runtime is migrated.",
-      "harnesses": ["claude", "codex", "cursor", "opencode"],
-      "harness_agnostic": true,
-      "install_commands": {
-        "claude": "echo 'Closedloop Web Command Pack ships with Closedloop Desktop.'",
-        "codex": "echo 'Closedloop Web Command Pack ships with Closedloop Desktop.'",
-        "cursor": "echo 'Closedloop Web Command Pack ships with Closedloop Desktop.'",
-        "opencode": "echo 'Closedloop Web Command Pack ships with Closedloop Desktop.'"
-      },
-      "uninstall_commands": {
-        "claude": "echo 'Closedloop Web Command Pack is built into Closedloop Desktop.'",
-        "codex": "echo 'Closedloop Web Command Pack is built into Closedloop Desktop.'",
-        "cursor": "echo 'Closedloop Web Command Pack is built into Closedloop Desktop.'",
-        "opencode": "echo 'Closedloop Web Command Pack is built into Closedloop Desktop.'"
-      },
-      "install_notes": "Installed by default from the bundled Desktop resource at resources/command-packs/closedloop-web-command-pack. Cursor and OpenCode are declared as planned adapters until their noninteractive launchers are wired. This pack introduces the Desktop-owned command boundary; it does not yet replace every claude-plugins runtime behavior.",
-      "verified": true,
-      "pin_order": 0,
-      "detection_patterns": [
-        "/resources/command-packs/closedloop-web-command-pack/",
-        "/command-packs/closedloop-web-command-pack/manifest.json"
-      ],
-      "contents": {
-        "type": "none",
-        "reason": "Built-in Desktop command-pack manifest, not a remote skill or plugin tree."
-      }
-    },
     {
       "pack_id": "closedloop-ai",
       "display_name": "Closedloop Agent Plugins",

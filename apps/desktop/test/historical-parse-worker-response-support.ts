@@ -14,6 +14,9 @@
  * through this guard makes the suite fail on the response it actually got.
  */
 
+import { ToolResultState } from "@repo/api/src/types/operation-claims";
+import { requestKeyFor } from "@repo/lib/harness/request-key";
+import { claudeTranscriptEntryUuidScheme } from "@repo/lib/harness/usage-dedup";
 import {
   type HistoricalParseWorkerResponse,
   HistoricalParseWorkerResponseType,
@@ -99,6 +102,15 @@ export const REVIEWED_NORMALIZED_TOOL_USE_FIELDS = {
   diffDelta: { add: 3, del: 1 },
   id: "toolu_123",
   providerToolUseId: "toolu_123",
+  requestKey: requestKeyFor(
+    claudeTranscriptEntryUuidScheme,
+    "00000000-0000-4000-8000-000000000123"
+  ),
+  candidateRequestKeys: [
+    "codex.response.id:resp_1",
+    "codex.response.id:resp_2",
+  ],
+  requestUnresolved: true,
   definitionSnapshot: {
     kind: NormalizedDefinitionKind.Skill,
     rawName: "review",
@@ -109,4 +121,9 @@ export const REVIEWED_NORMALIZED_TOOL_USE_FIELDS = {
   resultTimestamp: "2026-06-07T12:00:01.000Z",
   gitBranch: "feat/parser-fix",
   subagentId: null,
+  outputFootprintTokens: 256,
+  mcpNamespace: "mcp__closedloop",
+  resultState: ToolResultState.Present,
+  closedloopResultFacts: { isError: false, nestedSlugs: ["PRD-1"] },
+  shellOperationIds: ["clop_01a14224-9b59-77ba-b518-16aaa9880991"],
 } satisfies Record<keyof NormalizedToolUse, unknown>;

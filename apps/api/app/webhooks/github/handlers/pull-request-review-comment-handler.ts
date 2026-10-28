@@ -3,25 +3,25 @@ import type {
   PullRequestReviewCommentDeletedEvent,
   PullRequestReviewCommentEditedEvent,
 } from "@octokit/webhooks-types";
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
 import {
   GitHubDirtyScopeKind,
   GitHubDirtyTrigger,
 } from "@repo/api/src/types/github-dirty-scope";
-import {
-  GitHubCommentThreadKind,
-  GitHubLegacyCommentState,
-  type TransactionClient,
-  withDb,
-} from "@repo/database";
+import { GitHubCommentThreadKind, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { resolveExternalGitHubAuthorInTransaction } from "@/app/comments/external-authors";
-import { normalizeGitHubDiffSide } from "@/app/comments/github-diff-side";
+import { commentsService } from "@/app/comments/service";
 import {
-  GitHubProjectionNoWriteError,
-  softDeleteGitHubCommentByRemoteId,
-  upsertGitHubReviewCommentThread,
-} from "@/app/comments/github-projection";
+  ApplyExternalOutcome,
+  type GitHubExternalEvent,
+  GitHubExternalEventKind,
+} from "@/app/comments/service/github/apply-external-events";
+import { withGitHubCommentWriteRetry } from "@/app/comments/service/github/github-comment-write-retry";
+import {
+  gitHubExternalReviewComment,
+  gitHubReviewThreadPosition,
+} from "@/app/comments/service/github/github-external-comment";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
@@ -36,6 +36,7 @@ import {
 import {
   type CommentWebhookPrContext,
   loadPrContextForCommentWebhook,
+  webhookDeliveryReachedProjection,
 } from "./pr-comment-context";
 
 /**
@@ -57,10 +58,10 @@ export type HandledPullRequestReviewCommentEvent =
  * Handle GitHub pull_request_review_comment webhook events.
  *
  * Supported actions:
- * - created: Upserts unified GitHub comment projection
- * - edited: Updates the unified GitHub comment projection; if GitHub delivers
- *   edited before created, the first projection write emits the added event
- * - deleted: Soft-deletes the unified GitHub comment projection by githubCommentId
+ * - created / edited: upserts the review comment's thread through
+ *   `applyExternal`; a delivery older than the stored comment, or for a
+ *   deleted one, is dropped
+ * - deleted: deletes it through `applyExternal`; the delete is terminal
  */
 export async function handlePullRequestReviewComment(
   event: HandledPullRequestReviewCommentEvent,
@@ -107,67 +108,69 @@ export async function handlePullRequestReviewComment(
   );
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
-  const publication = await withDb.tx(async (tx) => {
-    const ownerResolution = await resolveGitHubCommentOwner(tx, {
-      installationId,
-      repositoryId: repository.id,
-      pullNumber: pull_request.number,
-    });
-
-    if (!ownerResolution.ok) {
-      log.warn("[handlePullRequestReviewComment] Owner resolution failed", {
-        code: ownerResolution.code,
+  const publication = await withGitHubCommentWriteRetry(() =>
+    withDb.tx(async (tx) => {
+      const ownerResolution = await resolveGitHubCommentOwner(tx, {
         installationId,
-        githubRepoId: repository.id,
-        repositoryFullName: repository.full_name,
-        action,
-        prNumber: pull_request.number,
+        repositoryId: repository.id,
+        pullNumber: pull_request.number,
       });
-      return null;
-    }
 
-    const existingPr = await loadPrContextForCommentWebhook(tx, {
-      ownerResolution,
-      prNumber: pull_request.number,
-      action,
-      logPrefix: "[handlePullRequestReviewComment]",
-    });
+      if (!ownerResolution.ok) {
+        log.warn("[handlePullRequestReviewComment] Owner resolution failed", {
+          code: ownerResolution.code,
+          installationId,
+          githubRepoId: repository.id,
+          repositoryFullName: repository.full_name,
+          action,
+          prNumber: pull_request.number,
+        });
+        return null;
+      }
 
-    if (!existingPr) {
-      return null;
-    }
+      const existingPr = await loadPrContextForCommentWebhook(tx, {
+        ownerResolution,
+        prNumber: pull_request.number,
+        action,
+        logPrefix: "[handlePullRequestReviewComment]",
+      });
 
-    if (!existingPr.isCurrentPullRequest) {
+      if (!existingPr) {
+        return null;
+      }
+
+      if (!existingPr.isCurrentPullRequest) {
+        await persistReviewCommentActivity(
+          event,
+          existingPr,
+          ownerResolution.organizationId,
+          observationContext
+        );
+        return null;
+      }
+
+      const wroteProjection = await dispatchReviewCommentAction(event, {
+        existingPr,
+        organizationId: ownerResolution.organizationId,
+      });
+      if (!wroteProjection) {
+        return null;
+      }
       await persistReviewCommentActivity(
         event,
         existingPr,
         ownerResolution.organizationId,
         observationContext
       );
-      return null;
-    }
-
-    const wroteProjection = await dispatchReviewCommentAction(tx, event, {
-      existingPr,
-      organizationId: ownerResolution.organizationId,
-    });
-    if (!wroteProjection) {
-      return null;
-    }
-    await persistReviewCommentActivity(
-      event,
-      existingPr,
-      ownerResolution.organizationId,
-      observationContext
-    );
-    return buildReviewCommentDirtyScopePublication({
-      comment,
-      pullRequest: pull_request,
-      organizationId: ownerResolution.organizationId,
-      repositoryId: ownerResolution.repositoryRecordId,
-      repositoryFullName: repository.full_name,
-    });
-  });
+      return buildReviewCommentDirtyScopePublication({
+        comment,
+        pullRequest: pull_request,
+        organizationId: ownerResolution.organizationId,
+        repositoryId: ownerResolution.repositoryRecordId,
+        repositoryFullName: repository.full_name,
+      });
+    })
+  );
   if (publication) {
     await publishGitHubDirtyScopes(publication);
   }
@@ -187,214 +190,30 @@ export async function handlePullRequestReviewComment(
     ok: true,
   });
 }
-
-async function handleCreatedComment(
-  tx: TransactionClient,
-  existingPr: CommentWebhookPrContext,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"],
-  organizationId: string
-): Promise<boolean> {
-  const author = await resolveExternalGitHubAuthorInTransaction(tx, {
-    organizationId,
-    author: comment.user,
-    source: {
-      sourceKind: "review_comment",
-      githubObjectId: String(comment.id),
-      pullNumber: pull_request.number,
-    },
-  });
-
-  const projectionInput: Parameters<typeof upsertGitHubReviewCommentThread>[1] =
-    {
-      organizationId,
-      branchArtifactId: existingPr.branchArtifactId,
-      pullRequestDetailId: existingPr.id,
-      reviewThreadId: null,
-      reviewId: comment.pull_request_review_id
-        ? String(comment.pull_request_review_id)
-        : null,
-      rootCommentId: comment.in_reply_to_id ?? comment.id,
-      path: comment.path,
-      line: comment.line,
-      side: normalizeGitHubDiffSide(comment.side),
-      startLine: comment.start_line ?? null,
-      startSide: normalizeGitHubDiffSide(comment.start_side),
-      commitSha: comment.commit_id ?? null,
-      htmlUrl: comment.html_url,
-      legacyState: GitHubLegacyCommentState.PENDING,
-      lastSyncedAt: new Date(),
-      fetchProvenance: githubAppWebhookFetchProvenance(),
-      comments: [
-        {
-          githubCommentId: comment.id,
-          githubInReplyToCommentId: comment.in_reply_to_id ?? null,
-          githubHtmlUrl: comment.html_url,
-          githubUpdatedAt: new Date(comment.updated_at),
-          bodyMarkdown: comment.body,
-          author: {
-            userId: author.user.id,
-            externalAuthorId: author.externalAuthor.id,
-          },
-          createdAt: new Date(comment.created_at),
-        },
-      ],
+function reviewCommentEvent(
+  event: HandledPullRequestReviewCommentEvent
+): GitHubExternalEvent {
+  const { comment } = event;
+  if (event.action === "deleted") {
+    return {
+      kind: GitHubExternalEventKind.CommentDelete,
+      threadKind: GitHubCommentThreadKind.REVIEW_THREAD,
+      githubCommentId: comment.id,
+      providerUpdatedAt: new Date(comment.updated_at),
     };
-
-  const projectionResult = await upsertReviewCommentThreadOrSkip(tx, {
-    action: "created",
-    input: projectionInput,
-    prNumber: pull_request.number,
-  });
-  if (!projectionResult) {
-    return false;
   }
-
-  log.debug("[handlePullRequestReviewComment] Review comment created", {
-    commentId: comment.id,
-    prNumber: pull_request.number,
-    path: comment.path,
-    line: comment.line,
-  });
-  return true;
-}
-
-async function handleEditedComment(
-  tx: TransactionClient,
-  existingPr: CommentWebhookPrContext,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"],
-  organizationId: string
-): Promise<boolean> {
-  const author = await resolveExternalGitHubAuthorInTransaction(tx, {
-    organizationId,
-    author: comment.user,
-    source: {
-      sourceKind: "review_comment",
-      githubObjectId: String(comment.id),
-      pullNumber: pull_request.number,
-    },
-  });
-
-  const projectionInput: Parameters<typeof upsertGitHubReviewCommentThread>[1] =
-    {
-      organizationId,
-      branchArtifactId: existingPr.branchArtifactId,
-      pullRequestDetailId: existingPr.id,
-      reviewThreadId: null,
-      reviewId: comment.pull_request_review_id
-        ? String(comment.pull_request_review_id)
-        : null,
-      rootCommentId: comment.in_reply_to_id ?? comment.id,
-      path: comment.path,
-      line: comment.line,
-      side: normalizeGitHubDiffSide(comment.side),
-      startLine: comment.start_line ?? null,
-      startSide: normalizeGitHubDiffSide(comment.start_side),
-      commitSha: comment.commit_id ?? null,
-      htmlUrl: comment.html_url,
-      legacyState: GitHubLegacyCommentState.PENDING,
-      lastSyncedAt: new Date(),
-      fetchProvenance: githubAppWebhookFetchProvenance(),
-      comments: [
-        {
-          githubCommentId: comment.id,
-          githubInReplyToCommentId: comment.in_reply_to_id ?? null,
-          githubHtmlUrl: comment.html_url,
-          githubUpdatedAt: new Date(comment.updated_at),
-          bodyMarkdown: comment.body,
-          author: {
-            userId: author.user.id,
-            externalAuthorId: author.externalAuthor.id,
-          },
-          createdAt: new Date(comment.created_at),
-        },
-      ],
-    };
-
-  const projectionResult = await upsertReviewCommentThreadOrSkip(tx, {
-    action: "edited",
-    input: projectionInput,
-    prNumber: pull_request.number,
-  });
-  if (!projectionResult) {
-    return false;
-  }
-
-  log.debug("[handlePullRequestReviewComment] Review comment edited", {
-    commentId: comment.id,
-    prNumber: pull_request.number,
-  });
-  return true;
-}
-
-async function handleDeletedComment(
-  tx: TransactionClient,
-  existingPr: CommentWebhookPrContext,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"],
-  organizationId: string
-): Promise<boolean> {
-  const deletedComment = await softDeleteGitHubCommentByRemoteId(tx, {
-    organizationId,
-    branchArtifactId: existingPr.branchArtifactId,
-    pullRequestDetailId: existingPr.id,
-    githubCommentId: comment.id,
-    deletedAt: new Date(),
-    threadKind: GitHubCommentThreadKind.REVIEW_THREAD,
-    fetchProvenance: githubAppWebhookFetchProvenance(),
-  });
-
-  if (deletedComment.comments === 0) {
-    log.warn(
-      "[handlePullRequestReviewComment] Comment not found for deletion",
-      {
-        githubCommentId: comment.id,
-        prNumber: pull_request.number,
-        reason: "Comment may not have been tracked by Symphony",
-      }
-    );
-    return false;
-  }
-  log.debug("[handlePullRequestReviewComment] Review comment deleted", {
-    commentId: comment.id,
-    prNumber: pull_request.number,
-  });
-  return true;
-}
-
-/**
- * Converts scoped projection no-write conflicts into bounded webhook skips while
- * preserving unexpected errors for the top-level webhook failure path.
- */
-async function upsertReviewCommentThreadOrSkip(
-  tx: TransactionClient,
-  ctx: {
-    action: "created" | "edited";
-    input: Parameters<typeof upsertGitHubReviewCommentThread>[1];
-    prNumber: number;
-  }
-): Promise<Awaited<ReturnType<typeof upsertGitHubReviewCommentThread>> | null> {
-  try {
-    return await upsertGitHubReviewCommentThread(tx, ctx.input);
-  } catch (error) {
-    if (!(error instanceof GitHubProjectionNoWriteError)) {
-      throw error;
-    }
-    log.warn("[handlePullRequestReviewComment] Skipping projection no-write", {
-      action: ctx.action,
-      branchArtifactId: ctx.input.branchArtifactId,
-      code: error.code,
-      details: error.details,
-      githubCommentId: ctx.input.comments[0]?.githubCommentId ?? null,
-      organizationId: ctx.input.organizationId,
-      prNumber: ctx.prNumber,
-      pullRequestDetailId: ctx.input.pullRequestDetailId,
-      reviewId: ctx.input.reviewId,
-      rootCommentId: ctx.input.rootCommentId,
-    });
-    return null;
-  }
+  return {
+    kind: GitHubExternalEventKind.ReviewThreadUpsert,
+    reviewThreadId: null,
+    reviewId: comment.pull_request_review_id
+      ? String(comment.pull_request_review_id)
+      : null,
+    rootCommentId: comment.in_reply_to_id ?? comment.id,
+    position: gitHubReviewThreadPosition(comment),
+    htmlUrl: comment.html_url,
+    comments: [gitHubExternalReviewComment(comment)],
+    ...(comment.in_reply_to_id ? { threadFieldsFromReply: true } : {}),
+  };
 }
 
 function buildReviewCommentDirtyScopePublication({
@@ -449,41 +268,36 @@ function persistReviewCommentActivity(
   });
 }
 
-/** Apply the event-specific comment projection before activity persistence. */
+/**
+ * Apply the event through `applyExternal` (PLN-2122 Step 4) before activity
+ * persistence; its ordering guard drops a delivery older than the stored
+ * comment and never brings a deleted comment back.
+ */
 async function dispatchReviewCommentAction(
-  tx: TransactionClient,
   event: HandledPullRequestReviewCommentEvent,
   context: {
     existingPr: CommentWebhookPrContext;
     organizationId: string;
   }
 ): Promise<boolean> {
-  if (event.action === "created") {
-    return await handleCreatedComment(
-      tx,
-      context.existingPr,
-      event.comment,
-      event.pull_request,
-      context.organizationId
+  const result = await commentsService.applyExternal({
+    provider: CommentSyncProvider.Github,
+    organizationId: context.organizationId,
+    branchArtifactId: context.existingPr.branchArtifactId,
+    pullRequestDetailId: context.existingPr.id,
+    fetchProvenance: githubAppWebhookFetchProvenance(),
+    events: [reviewCommentEvent(event)],
+  });
+  const outcome = result.outcomes[0] ?? ApplyExternalOutcome.NotFound;
+  if (outcome === ApplyExternalOutcome.NotFound) {
+    log.warn(
+      "[handlePullRequestReviewComment] Comment not found for deletion",
+      {
+        githubCommentId: event.comment.id,
+        prNumber: event.pull_request.number,
+        reason: "Comment may not have been tracked by Symphony",
+      }
     );
   }
-  if (event.action === "edited") {
-    return await handleEditedComment(
-      tx,
-      context.existingPr,
-      event.comment,
-      event.pull_request,
-      context.organizationId
-    );
-  }
-  if (event.action === "deleted") {
-    return await handleDeletedComment(
-      tx,
-      context.existingPr,
-      event.comment,
-      event.pull_request,
-      context.organizationId
-    );
-  }
-  return false;
+  return webhookDeliveryReachedProjection(outcome);
 }

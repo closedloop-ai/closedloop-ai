@@ -55,10 +55,8 @@ export function FeedStream() {
       if (registered === undefined) {
         continue;
       }
-      const state = getSourceState(source.id) ?? source.defaultFilterState;
-      const filtered = source.applyFilter(registered.result.items, state);
-      for (const item of filtered) {
-        out.push({ item, rendered: source.renderItem(item) });
+      for (const { item, render } of registered.select(getSourceState)) {
+        out.push({ item, rendered: render() });
       }
     }
     const direction = sort === FeedFilterSort.Newest ? -1 : 1;

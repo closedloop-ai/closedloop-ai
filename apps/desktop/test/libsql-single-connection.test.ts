@@ -20,8 +20,8 @@ import { readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { createClient } from "@libsql/client";
+import { test } from "vitest";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
@@ -100,7 +100,6 @@ test("reader keeps query_only=ON across a snapshot $transaction", async () => {
 });
 
 test("a burst of interactive transactions does not leak file descriptors", {
-  // /dev/fd exists on darwin + linux (all CI/dev platforms for the desktop app).
   skip: fdCount() === null,
 }, async () => {
   const before = fdCount() as number;

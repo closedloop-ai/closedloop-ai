@@ -18,6 +18,8 @@ export const InsightsKpiKey = {
   Merged: "merged",
   Ttm: "ttm",
   Kloc: "kloc",
+  /** ISS-8184: {@link Kloc} in raw lines — the LOC-terminology operand. */
+  Loc: "loc",
   Cost: "cost",
   MergeRate: "merge-rate",
   PrSize: "pr-size",
@@ -58,13 +60,15 @@ export type InsightsKpiKey =
  *   not actually know a team running fewer sessions is bad. Only the metrics we
  *   have a real opinion on carry a verdict word: delivery output (merged PRs,
  *   KLOC, merge rate), spend/latency (cost, time-to-merge), review health (PR
- *   size, backlog), and cache savings. `merged` and `kloc` stay
- *   higher-is-better because they are shipped-work outcomes, not raw usage.
+ *   size, backlog), and cache savings. `merged`, `kloc` and its raw-line twin
+ *   `loc` stay higher-is-better because they are shipped-work outcomes, not raw
+ *   usage.
  */
 export const KPI_METRIC_POLARITY: Record<InsightsKpiKey, MetricPolarity> = {
   [InsightsKpiKey.Merged]: MetricPolarity.HigherIsBetter,
   [InsightsKpiKey.Ttm]: MetricPolarity.LowerIsBetter,
   [InsightsKpiKey.Kloc]: MetricPolarity.HigherIsBetter,
+  [InsightsKpiKey.Loc]: MetricPolarity.HigherIsBetter,
   [InsightsKpiKey.Cost]: MetricPolarity.LowerIsBetter,
   [InsightsKpiKey.MergeRate]: MetricPolarity.HigherIsBetter,
   [InsightsKpiKey.PrSize]: MetricPolarity.LowerIsBetter,

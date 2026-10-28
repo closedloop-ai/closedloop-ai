@@ -12,11 +12,12 @@ import { SessionLimitsDetail } from "./session-limits-detail";
  * rows exist is entirely plan-driven, and the row set is the thing most likely
  * to look wrong without being wrong in a unit assertion: a per-model week
  * duplicating the all-models week, extra usage appearing at $0, the empty state
- * arriving as a bare drawer (wongk, PR #4572).
+ * arriving as a bare drawer (whitlockk, PR #4572).
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Detail",
+  title: "Primitives v1.0/Data Display/Session Limits Detail",
   component: SessionLimitsDetail,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

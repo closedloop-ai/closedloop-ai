@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { AUTONOMY_FORMULA_VERSION } from "@repo/lib/session-trace/autonomy";
+import { test } from "vitest";
 import {
   buildAgentComponentSyncSourceKey,
   buildAgentSessionSyncSourceKey,
@@ -29,6 +29,25 @@ const CURRENT_STATE = {
   deadLetteredIds: ["dead-1"],
 };
 
+/**
+ * ISS-11427: the cursor load keeps a dead-letter only while its outbox row is
+ * still `dead_lettered`, so a cursor naming `dead-1` needs that row to round-trip.
+ */
+async function seedDeadLetteredRow(
+  db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
+  sourceKey: string
+): Promise<void> {
+  await db.syncSource.enqueueOutboxEntries?.(sourceKey, [
+    { externalSessionId: "dead-1", syncClass: "backfill" },
+  ]);
+  await db.syncSource.markOutboxDeadLettered?.(
+    sourceKey,
+    "dead-1",
+    "oversized",
+    3
+  );
+}
+
 async function withDatabase(
   run: (
     db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>
@@ -51,6 +70,7 @@ async function withDatabase(
 test("a cursor persisted under the current formula resumes normally", async () => {
   await withDatabase(async (db) => {
     const sourceKey = buildAgentSessionSyncSourceKey("org:user:target");
+    await seedDeadLetteredRow(db, sourceKey);
     await db.syncSource.advanceSyncState?.(sourceKey, CURRENT_STATE);
 
     // `advanceSyncState` stamps the current formula version, so the very next
@@ -65,6 +85,7 @@ test("a cursor persisted under the current formula resumes normally", async () =
 test("a cursor stamped under a superseded formula loads with its watermark cleared", async () => {
   await withDatabase(async (db) => {
     const sourceKey = buildAgentSessionSyncSourceKey("org:user:target");
+    await seedDeadLetteredRow(db, sourceKey);
     await db.syncSource.advanceSyncState?.(sourceKey, CURRENT_STATE);
     // Simulate a client that last synced under the previous formula. A NULL
     // column (a cursor written before migration 0040) is the real-world shape;
@@ -125,13 +146,14 @@ test("the formula reset durably re-pends dead-lettered rows so a crash cannot st
     );
     // The retry budget restarts too, mirroring reEnqueueRecoveredDeadLetter.
     const retryState =
-      await db.syncSource.loadPendingOutboxRetryState?.(sourceKey);
+      await db.syncSource.loadPendingSessionOutboxEngineState?.(sourceKey);
     assert.equal(
       retryState?.some((entry) => entry.id === "stranded"),
       false
     );
 
     // Simulate the crash: the re-walk stamped a fresh cursor but never drained.
+    await seedDeadLetteredRow(db, sourceKey);
     await db.syncSource.advanceSyncState?.(sourceKey, CURRENT_STATE);
     // Next boot no longer re-walks, and the row is still recoverable.
     assert.deepEqual(
@@ -164,6 +186,7 @@ test("the re-walk fires once: the next persist re-stamps and the cursor resumes"
 
     // The re-walk completes and persists a fresh cursor, which stamps the
     // current version. A restart after that must resume, not re-walk again.
+    await seedDeadLetteredRow(db, sourceKey);
     await db.syncSource.advanceSyncState?.(sourceKey, CURRENT_STATE);
 
     assert.deepEqual(

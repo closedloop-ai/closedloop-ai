@@ -1,9 +1,8 @@
 /**
  * @file session-model-backfill.ts
  * @description ISS-4649 finding 8 — the null-`sessions.model` backfill, lifted
- * out of `write-core.ts`'s token-usage import phase (that file is on the
- * `noExcessiveLinesPerFile` grandfather list, so extracting a cohesive unit is
- * part of touching it) and corrected to pick the LATEST record by timestamp.
+ * out of `write-core.ts`'s token-usage import phase (extracting a cohesive unit
+ * is part of touching that file) and corrected to pick the LATEST record by timestamp.
  *
  * FEA-1459 Fix 9 backfills `sessions.model` from `tokensByModel` when the parser
  * could not name a model. With ONE model key the choice is trivial; with several

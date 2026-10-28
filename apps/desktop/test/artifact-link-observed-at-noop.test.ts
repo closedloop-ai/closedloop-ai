@@ -22,9 +22,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   fakeCollector,
@@ -60,8 +60,15 @@ type RebuildOutcome = {
  */
 async function importThenRebuildWithAdvancedClock(
   dir: string,
-  gitBranch: string | undefined,
-  rebuiltGitBranch: string | undefined = gitBranch
+  // ISS-8741: `string | null`, not `string | undefined`. `NormalizedSession`
+  // declares `gitBranch: string | null` REQUIRED, so `undefined` is a value no
+  // parser can emit — it only reached the fixture because `Partial<>` spreads an
+  // explicit `undefined` over the default. The rebuild now validates its
+  // candidate against the canonical derived-record schema before promoting it,
+  // which refuses that shape. `null` is what branchless actually looks like, and
+  // it mints no `start_branch` link either, so the control is unchanged.
+  gitBranch: string | null,
+  rebuiltGitBranch: string | null = gitBranch
 ): Promise<RebuildOutcome> {
   let clock = IMPORT_CLOCK;
   // `openTestDb` (not a raw `openSqliteAgentDatabase`) so teardown also runs the
@@ -71,7 +78,7 @@ async function importThenRebuildWithAdvancedClock(
   // the import and the rebuild, which the helper's fixed default cannot do.
   const db = await openTestDb(dir, { now: () => clock });
   try {
-    const build = (branch: string | undefined) =>
+    const build = (branch: string | null) =>
       makePopulatedSession({
         sessionId: SESSION_ID,
         endedAt: SESSION_ENDED_AT,
@@ -123,7 +130,7 @@ describe("ISS-5148: artifact-link observed_at must not churn the rebuild change-
       assert.equal(result.rebuilt, 1, "the session was actually rebuilt");
       assert.equal(
         result.dataRevision,
-        DATA_REVISION,
+        effectiveDataRevision(),
         "data_revision healed so the row is not re-rebuilt next boot"
       );
       assert.deepEqual(
@@ -144,9 +151,9 @@ describe("ISS-5148: artifact-link observed_at must not churn the rebuild change-
   test("the no-op also holds for a branchless session (control: no scan-time branch link)", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "iss5148-nobranch-"));
     try {
-      const result = await importThenRebuildWithAdvancedClock(dir, undefined);
+      const result = await importThenRebuildWithAdvancedClock(dir, null);
       assert.equal(result.rebuilt, 1);
-      assert.equal(result.dataRevision, DATA_REVISION);
+      assert.equal(result.dataRevision, effectiveDataRevision());
       assert.deepEqual(result.changedSessionIds, []);
       assert.equal(result.updatedAt, STALE_WATERMARK);
     } finally {

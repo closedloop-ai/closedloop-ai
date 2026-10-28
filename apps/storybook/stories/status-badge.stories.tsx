@@ -6,7 +6,7 @@ import type { Tone } from "@repo/design-system/components/ui/types";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * ISS-5036 (wongk): every tone `StatusDot` can render, rendered.
+ * ISS-5036 (whitlockk): every tone `StatusDot` can render, rendered.
  *
  * The dot became design-system API when the Sessions list needed a standalone
  * liveness mark, and it brought its own `dotToneClasses` map with it. Inside a
@@ -62,7 +62,7 @@ const ToneBadgeGallery = () => (
       <ToneBadge label="Active" pulse tone="success" />
     </div>
 
-    {/* ISS-5282 (wongk): the dotless pill. `showDot={false}` is a real visual
+    {/* ISS-5282 (whitlockk): the dotless pill. `showDot={false}` is a real visual
         variant, not internal plumbing — its whole job is to sit on one line with
         toned state pills and match their height, weight and type scale while
         carrying a count rather than a state (the Sessions row-qualifier overflow
@@ -103,12 +103,26 @@ const ToneBadgeGallery = () => (
 );
 
 const meta = {
-  title: "Design System/Primitives/Status Badge",
+  title: "Primitives v1.0/Feedback & Status/Status Badge",
   component: ToneBadgeGallery,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ToneBadgeGallery>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Default: Story = {};
+
+/** A single default-tone badge, the atomic state every other tone builds on. */
+export const Default: Story = {
+  render: () => <ToneBadge label="Default" tone="default" />,
+};
+
+/**
+ * Every tone, plus the pulse/pulseRing/showDot/bg-current-inherit
+ * treatments, composed together for comparison — see the file doc comment
+ * for why each group is composed the way it is.
+ */
+export const AllTones: Story = {
+  tags: ["!manifest"],
+  parameters: { controls: { disable: true } },
+};

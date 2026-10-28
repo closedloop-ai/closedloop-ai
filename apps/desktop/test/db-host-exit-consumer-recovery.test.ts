@@ -9,8 +9,8 @@
  * second, unrelated-looking one.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import type { IpcMainInvokeEvent } from "electron";
+import { test } from "vitest";
 import { rethrowAsBranchSourceError } from "../src/main/branch/branch-read-boundaries.js";
 import {
   CollectorImportScope,
@@ -216,6 +216,8 @@ function readyRow(): TranscriptFingerprint {
 }
 
 const STRANDED_IDENTITY = "sess-a:main";
+/** Mirrors the bounded host-exit recovery set in `transcript-uploading-recovery.ts`. */
+const MAX_HOST_EXIT_ABANDONED_ROWS = 256;
 
 test("a db-host exit mid-upload leaves the file's retry budget untouched", async () => {
   const store = fakeStore([readyRow()]);
@@ -313,7 +315,7 @@ test("the stranded row is re-armed BY IDENTITY, never by the boot-only global re
   assert.equal(
     store.requeueCalls,
     0,
-    "`requeueStale` resets EVERY uploading row and its own contract says that is safe only in a fresh process; a live service with overlapping drains would reset a sibling's active claim"
+    "lease reclaim is a SWEEP recovery, not a drain one: a plain drain must never re-arm rows, and ISS-7097's lease is what makes the sweep's version safe against a sibling's active claim"
   );
 });
 
@@ -359,4 +361,52 @@ test("a re-arm that fails against a still-dead host is retried, not dropped", as
   // healthy row on every tick forever.
   await service.drainOnce();
   assert.equal(attempted.length, 2);
+});
+
+test("ISS-8138: host-exit recovery remembers exactly the first 256 abandoned rows", async () => {
+  const rows = Array.from(
+    { length: MAX_HOST_EXIT_ABANDONED_ROWS + 1 },
+    (_, index) =>
+      fingerprint({
+        externalSessionId: `sess-${index}`,
+        fileKey: `file-${index}`,
+      })
+  );
+  const store = fakeStore(rows);
+  const attempted: string[][] = [];
+  store.requeueUnsettledBatch = (
+    identities: readonly TranscriptRowIdentity[]
+  ) => {
+    attempted.push(
+      identities.map((id) => `${id.externalSessionId}:${id.fileKey}`)
+    );
+    return Promise.resolve(identities.length);
+  };
+  const { service } = makeService({
+    store,
+    concurrency: rows.length,
+    scheduler: fakeScheduler().scheduler,
+    executor: fakeExecutor({
+      syncFile: () => {
+        throw recoverableExit();
+      },
+    }),
+  });
+
+  await assert.rejects(service.drainOnce(), EXIT_MESSAGE_RE);
+  store.ready = [];
+  await service.drainOnce();
+
+  assert.deepEqual(attempted, [
+    rows
+      .slice(0, MAX_HOST_EXIT_ABANDONED_ROWS)
+      .map((row) => `${row.externalSessionId}:${row.fileKey}`),
+  ]);
+  assert.equal(
+    attempted[0]?.includes(
+      `sess-${MAX_HOST_EXIT_ABANDONED_ROWS}:file-${MAX_HOST_EXIT_ABANDONED_ROWS}`
+    ),
+    false,
+    "the overflow identity is left uploading for boot recovery"
+  );
 });

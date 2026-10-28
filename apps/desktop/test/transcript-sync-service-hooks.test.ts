@@ -13,7 +13,7 @@
  * activity trigger has its own suite in `transcript-sync-activity.test.ts`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   fakeScheduler,
   fakeStore,

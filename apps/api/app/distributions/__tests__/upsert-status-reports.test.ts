@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  getOrgAdminStatus: vi.fn(),
   computeTargetsService: {
     findOwnedById: vi.fn(),
   },
@@ -38,7 +38,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/catalog-assets", () => ({
   getCatalogAssetDownloadUrl: mocks.getCatalogAssetDownloadUrl,
 }));
 
@@ -47,7 +47,7 @@ vi.mock("@repo/aws/keys", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  getOrgAdminStatus: mocks.getOrgAdminStatus,
 }));
 
 vi.mock("@/app/compute-targets/service", () => ({
@@ -312,7 +312,7 @@ describe("distributionsService.upsertStatusReports", () => {
   });
 
   it("FEA-4193: the ON CONFLICT upsert is freshness-aware so a stale batch can't clobber a newer committed row", async () => {
-    // Regression guard for the stale-write race (shafty023 review): an older
+    // Regression guard for the stale-write race (davetho review): an older
     // wide batch can capture its batch timestamp, block on an earlier advisory
     // lock, let a NEWER batch commit a later shared key, then resume and reach
     // that key. The DO UPDATE must NOT unconditionally overwrite the newer row.

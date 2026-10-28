@@ -21,7 +21,7 @@ export type ArtifactRepositoriesSummaryProps = {
 };
 
 /**
- * Read-only summary of the repositories an artifact was created against.
+ * Read-only summary of the repositories an artifact belongs to.
  * The primary repo is ordered first, marked visually, and any branch/ref
  * hints are shown as secondary text.
  */

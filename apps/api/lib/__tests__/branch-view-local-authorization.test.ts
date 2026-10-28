@@ -40,7 +40,6 @@ vi.mock("@/lib/resolve-pr-context", () => ({
 import {
   authorizeBranchViewLocalEventRead,
   classifyBranchViewLocalCommand,
-  isStoredBranchViewLocalCommand,
   stampBranchViewLocalCommandMetadata,
   validateBranchViewLocalAccess,
 } from "@/lib/branch-view-local-authorization";
@@ -287,20 +286,23 @@ describe("validateBranchViewLocalAccess — the denial ladder", () => {
     ["repository", { repoFullName: "acme/other-repo" }],
     ["head branch", { headBranch: "feature/somewhere-else" }],
     ["PR number", { prNumber: 43 }],
-  ])("denies ContextMismatch when the %s disagrees with the resolved PR", async (_label, override) => {
-    const result = await validateBranchViewLocalAccess({
-      ...validInput(),
-      ...override,
-    });
+  ])(
+    "denies ContextMismatch when the %s disagrees with the resolved PR",
+    async (_label, override) => {
+      const result = await validateBranchViewLocalAccess({
+        ...validInput(),
+        ...override,
+      });
 
-    expect(result).toMatchObject({
-      code: BranchViewLocalErrorCode.ContextMismatch,
-    });
-    // A mismatched proof must not reach the compute target.
-    expect(
-      mocks.computeTargetsService.findAccessibleById
-    ).not.toHaveBeenCalled();
-  });
+      expect(result).toMatchObject({
+        code: BranchViewLocalErrorCode.ContextMismatch,
+      });
+      // A mismatched proof must not reach the compute target.
+      expect(
+        mocks.computeTargetsService.findAccessibleById
+      ).not.toHaveBeenCalled();
+    }
+  );
 
   it("compares the repository case- and whitespace-insensitively", async () => {
     const result = await validateBranchViewLocalAccess({
@@ -528,25 +530,28 @@ describe("authorizeBranchViewLocalEventRead — replaying a stored proof", () =>
     ["the payload is not an object", "not-an-object"],
     ["the headers are absent", { path: "/x" }],
     ["the headers are not an object", { headers: "nope" }],
-  ])("treats a command whose %s as a non-Branch-View command", async (_label, requestPayload) => {
-    mocks.desktopCommandFindUnique.mockResolvedValue({
-      computeTargetId: COMPUTE_TARGET_ID,
-      operationId: "symphony_chat",
-      requestPayload,
-    });
+  ])(
+    "treats a command whose %s as a non-Branch-View command",
+    async (_label, requestPayload) => {
+      mocks.desktopCommandFindUnique.mockResolvedValue({
+        computeTargetId: COMPUTE_TARGET_ID,
+        operationId: "symphony_chat",
+        requestPayload,
+      });
 
-    const result = await authorizeBranchViewLocalEventRead({
-      commandId: COMMAND_ID,
-      computeTargetId: COMPUTE_TARGET_ID,
-      userId: AUTHORIZED_USER_ID,
-      organizationId: AUTHORIZED_ORG_ID,
-    });
+      const result = await authorizeBranchViewLocalEventRead({
+        commandId: COMMAND_ID,
+        computeTargetId: COMPUTE_TARGET_ID,
+        userId: AUTHORIZED_USER_ID,
+        organizationId: AUTHORIZED_ORG_ID,
+      });
 
-    // `requestPayload` is a Json column, so a row written by an older build can
-    // hold any shape. Unreadable must degrade to "not one of ours", never to an
-    // authorization grant derived from a half-parsed proof.
-    expect(result).toEqual({ ok: true, metadataHeaders: {} });
-  });
+      // `requestPayload` is a Json column, so a row written by an older build can
+      // hold any shape. Unreadable must degrade to "not one of ours", never to an
+      // authorization grant derived from a half-parsed proof.
+      expect(result).toEqual({ ok: true, metadataHeaders: {} });
+    }
+  );
 
   it("ignores non-string header values rather than coercing them", async () => {
     mocks.desktopCommandFindUnique.mockResolvedValue({
@@ -697,104 +702,6 @@ describe("authorizeBranchViewLocalEventRead — replaying a stored proof", () =>
   });
 });
 
-describe("isStoredBranchViewLocalCommand", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it.each([
-    [
-      "the API-owned marker is present",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: "engineer_http_request",
-        requestPayload: { headers: storedProofHeaders() },
-      },
-    ],
-    // The internal event-read block is the other half of the fail-open: a known
-    // Branch View command that reports false here has its raw event log served
-    // by the internal route, bypassing the public author-checked route entirely.
-    [
-      "only the stored gateway path identifies it",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: "engineer_http_request",
-        requestPayload: { path: BranchViewLocalGatewayPath.Diff },
-      },
-    ],
-    [
-      "only the stored operation id identifies it",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: BranchViewLocalOperationId.CommitPush,
-        requestPayload: { path: "/api/gateway/git/status" },
-      },
-    ],
-    [
-      "the marker is corrupt but the path still identifies it",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: "engineer_http_request",
-        requestPayload: {
-          path: BranchViewLocalGatewayPath.List,
-          headers: storedProofHeaders({
-            [BranchViewLocalHeader.Operation]: "0",
-          }),
-        },
-      },
-    ],
-  ])("reports true when %s", async (_label, command) => {
-    mocks.desktopCommandFindUnique.mockResolvedValue(command);
-
-    await expect(
-      isStoredBranchViewLocalCommand({
-        commandId: COMMAND_ID,
-        computeTargetId: COMPUTE_TARGET_ID,
-      })
-    ).resolves.toBe(true);
-  });
-
-  it.each([
-    ["the command is missing", null],
-    [
-      "the command belongs to another target",
-      {
-        computeTargetId: "target-other",
-        operationId: "engineer_http_request",
-        requestPayload: { headers: storedProofHeaders() },
-      },
-    ],
-    [
-      "nothing about the command identifies it as Branch View local",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: "symphony_chat",
-        requestPayload: {
-          path: "/api/gateway/symphony/chat/run-1",
-          headers: { "x-unrelated": "1" },
-        },
-      },
-    ],
-    [
-      "the payload is not an object",
-      {
-        computeTargetId: COMPUTE_TARGET_ID,
-        operationId: "symphony_chat",
-        requestPayload: 7,
-      },
-    ],
-  ])("reports false when %s", async (_label, command) => {
-    mocks.desktopCommandFindUnique.mockResolvedValue(command);
-
-    await expect(
-      isStoredBranchViewLocalCommand({
-        commandId: COMMAND_ID,
-        computeTargetId: COMPUTE_TARGET_ID,
-      })
-    ).resolves.toBe(false);
-  });
-});
-
 describe("classifyBranchViewLocalCommand", () => {
   it.each([
     BranchViewLocalGatewayPath.List,
@@ -810,29 +717,6 @@ describe("classifyBranchViewLocalCommand", () => {
         path: "/api/gateway/git/status",
       } as never)
     ).toBe(false);
-  });
-
-  it("reads the nested path out of a relay dispatch request", () => {
-    expect(
-      classifyBranchViewLocalCommand({
-        params: {
-          request: { path: BranchViewLocalGatewayPath.CommitPush },
-        },
-      } as never)
-    ).toBe(true);
-  });
-
-  it.each([
-    ["params are absent", {}],
-    ["params are not an object", { params: "nope" }],
-    ["the request is not an object", { params: { request: 5 } }],
-    ["the nested path is not a string", { params: { request: { path: 5 } } }],
-  ])("does not classify a relay dispatch whose %s", (_label, input) => {
-    // A relay payload crosses a process boundary, so every level of this reach
-    // is genuinely reachable as a non-object at runtime. Misclassifying one as
-    // a Branch View command would apply the author gate to an unrelated
-    // operation — or, worse, skip it for one that needs it.
-    expect(classifyBranchViewLocalCommand(input as never)).toBe(false);
   });
 });
 

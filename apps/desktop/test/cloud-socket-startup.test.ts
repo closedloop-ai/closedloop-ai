@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
+import { AuthOutcome, AuthReason } from "@closedloop-ai/telemetry-contract/app";
+import { afterEach, describe, test } from "vitest";
+import type { DesktopAuthFailureEventInput } from "../src/main/cloud/auth-failure-telemetry.js";
 import type { CloudSocketStatus } from "../src/main/cloud/cloud-protocol.js";
 import type { ApiKeyDiagnostic } from "../src/main/cloud/cloud-socket.js";
 import { CloudSocketService } from "../src/main/cloud/cloud-socket.js";
@@ -217,9 +219,59 @@ describe("delayed cloud socket startup", () => {
   });
 });
 
+describe("ISS-8142: an invalid relay origin is a config error, not a pairing rejection", () => {
+  test("REPORTAUTHFAILURE POSITIVE CONTROL: the missing-key path can still fire it for an undecryptable key", async () => {
+    // Proves the harness CAN make reportAuthFailure fire before the test below
+    // relies on it staying silent for a different branch entirely.
+    const reported: DesktopAuthFailureEventInput[] = [];
+    const service = createMissingKeyService(
+      () => undefined,
+      "undecryptable",
+      (input) => reported.push(input)
+    );
+
+    await service.start();
+
+    assert.deepEqual(reported, [
+      {
+        outcome: AuthOutcome.PairingRejected,
+        reason: AuthReason.CredentialUnreadable,
+      },
+    ]);
+  });
+
+  test("a rejected relay origin degrades without ever calling connect() or reporting a pairing rejection", async () => {
+    for (const invalidOrigin of [
+      "http://example.com",
+      "http://127.evil.com:3000",
+    ]) {
+      const statuses: CloudSocketStatus[] = [];
+      const reported: DesktopAuthFailureEventInput[] = [];
+      const service = createInvalidOriginService(
+        invalidOrigin,
+        (status) => statuses.push(status),
+        (input) => reported.push(input)
+      );
+
+      await service.start();
+
+      // start() always notifies "idle" immediately before it ever calls
+      // connect() — a lone "degraded" entry is the proof connect() (and so
+      // io()) was never reached for this origin.
+      assert.deepEqual(statuses, [
+        { state: "degraded", error: INVALID_RELAY_ORIGIN_MESSAGE },
+      ]);
+      // A bad origin is a desktop CONFIG error, not the cloud refusing a
+      // pairing attempt — lumping it in would corrupt the ISS-6334 signal.
+      assert.deepEqual(reported, []);
+    }
+  });
+});
+
 function createMissingKeyService(
   onStatusChange: (status: CloudSocketStatus) => void,
-  diagnostic: ApiKeyDiagnostic = "missing"
+  diagnostic: ApiKeyDiagnostic = "missing",
+  reportAuthFailure?: (input: DesktopAuthFailureEventInput) => void
 ): CloudSocketService {
   return new CloudSocketService({
     getRelayOrigin: () => "https://relay.example.com",
@@ -233,5 +285,33 @@ function createMissingKeyService(
     desktopClientVersion: "0.16.0-test",
     gatewayProtocolVersion: "0.1.0",
     onStatusChange,
+    reportAuthFailure,
   });
 }
+
+function createInvalidOriginService(
+  relayOrigin: string,
+  onStatusChange: (status: CloudSocketStatus) => void,
+  reportAuthFailure?: (input: DesktopAuthFailureEventInput) => void
+): CloudSocketService {
+  return new CloudSocketService({
+    getRelayOrigin: () => relayOrigin,
+    getApiKey: () => "test-key",
+    getAllowedDirectories: () => ["/tmp"],
+    getMaxInFlightCommands: () => 5,
+    getEnabledOperations: () => ["test_op"],
+    machineName: "test-machine",
+    pluginVersion: "1.0.0-test",
+    desktopClientVersion: "0.16.0-test",
+    gatewayProtocolVersion: "0.1.0",
+    onStatusChange,
+    reportAuthFailure,
+  });
+}
+
+// The exact text `normalizeAndValidateOrigin` throws for a non-loopback http
+// origin (apps/desktop/src/main/settings/origin-policy.ts). Both invalid
+// inputs below share this one rejection branch — confirmed in
+// origin-policy.test.ts, which pins the same message via a regex match.
+const INVALID_RELAY_ORIGIN_MESSAGE =
+  "Origin must use https (http is allowed only for localhost/127.0.0.1 in local development)";

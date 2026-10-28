@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  DOCUMENT_TYPE_INPUT_OPTIONS,
   DocumentType,
   DocumentTypeAlias,
 } from "@repo/api/src/types/document.js";
@@ -7,8 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
-  PROJECT_BOUND_DOCUMENT_TYPE_INPUTS,
-  projectBoundDocumentTypeInputSchema,
+  CREATE_DOCUMENT_TYPE_INPUTS,
+  createDocumentTypeInputSchema,
   registerCreateDocument,
 } from "../tools/create-document.js";
 import { registerListDocuments } from "../tools/list-documents.js";
@@ -17,6 +18,7 @@ import {
   DOCUMENT_DOC_HELP,
   type McpUrlBuilder,
 } from "../tools/tool-utils.js";
+import { expectIssue, ZodIssueCode } from "./fixtures/zod-issues.js";
 
 // ISS-4397: the MCP create/list document tools accept `ISSUE` in addition to the
 // legacy `FEATURE`, normalizing the alias to the persisted FEATURE subtype so
@@ -103,44 +105,48 @@ async function driveTool(
 
 describe("create-document accepts the ISSUE alias (ISS-4397)", () => {
   it("normalizes ISSUE to the persisted FEATURE subtype", () => {
-    expect(
-      projectBoundDocumentTypeInputSchema.parse(DocumentTypeAlias.Issue)
-    ).toBe(DocumentType.Feature);
+    expect(createDocumentTypeInputSchema.parse(DocumentTypeAlias.Issue)).toBe(
+      DocumentType.Feature
+    );
   });
 
   it("still accepts FEATURE unchanged (compat alias)", () => {
-    expect(
-      projectBoundDocumentTypeInputSchema.parse(DocumentType.Feature)
-    ).toBe(DocumentType.Feature);
+    expect(createDocumentTypeInputSchema.parse(DocumentType.Feature)).toBe(
+      DocumentType.Feature
+    );
   });
 
   it("accepts PRD and IMPLEMENTATION_PLAN unchanged", () => {
-    expect(projectBoundDocumentTypeInputSchema.parse(DocumentType.Prd)).toBe(
+    expect(createDocumentTypeInputSchema.parse(DocumentType.Prd)).toBe(
       DocumentType.Prd
     );
     expect(
-      projectBoundDocumentTypeInputSchema.parse(DocumentType.ImplementationPlan)
+      createDocumentTypeInputSchema.parse(DocumentType.ImplementationPlan)
     ).toBe(DocumentType.ImplementationPlan);
   });
 
-  it("rejects org-level types (DOC/TEMPLATE) and unknown types", () => {
-    expect(
-      projectBoundDocumentTypeInputSchema.safeParse(DocumentType.Doc).success
-    ).toBe(false);
-    expect(
-      projectBoundDocumentTypeInputSchema.safeParse(DocumentType.Template)
-        .success
-    ).toBe(false);
-    expect(projectBoundDocumentTypeInputSchema.safeParse("EPIC").success).toBe(
-      false
+  it("accepts DOC unchanged (ISS-10984)", () => {
+    expect(createDocumentTypeInputSchema.parse(DocumentType.Doc)).toBe(
+      DocumentType.Doc
     );
   });
 
-  it("lists ISSUE alongside the canonical project-bound inputs", () => {
-    expect(PROJECT_BOUND_DOCUMENT_TYPE_INPUTS).toContain(
-      DocumentTypeAlias.Issue
+  it("rejects TEMPLATE and unknown types", () => {
+    const creatable = {
+      code: ZodIssueCode.InvalidValue,
+      values: CREATE_DOCUMENT_TYPE_INPUTS,
+    };
+    expectIssue(
+      createDocumentTypeInputSchema.safeParse(DocumentType.Template),
+      [],
+      creatable
     );
-    expect(PROJECT_BOUND_DOCUMENT_TYPE_INPUTS).toContain(DocumentType.Feature);
+    expectIssue(createDocumentTypeInputSchema.safeParse("EPIC"), [], creatable);
+  });
+
+  it("lists ISSUE alongside the canonical creatable inputs", () => {
+    expect(CREATE_DOCUMENT_TYPE_INPUTS).toContain(DocumentTypeAlias.Issue);
+    expect(CREATE_DOCUMENT_TYPE_INPUTS).toContain(DocumentType.Feature);
   });
 
   it("POSTs FEATURE to /documents when the caller passes type=ISSUE", async () => {
@@ -220,8 +226,16 @@ describe("list-documents accepts the ISSUE type filter (ISS-4397)", () => {
     ]) {
       expect(z.object(tool.inputSchema).parse({ type }).type).toBe(type);
     }
-    expect(z.object(tool.inputSchema).safeParse({ type: "EPIC" }).success).toBe(
-      false
+    // list-documents registers the BROADER documentTypeInputSchema, which
+    // accepts TEMPLATE (proved by the loop above) — not create-document's
+    // creatable set.
+    expectIssue(
+      z.object(tool.inputSchema).safeParse({ type: "EPIC" }),
+      ["type"],
+      {
+        code: ZodIssueCode.InvalidValue,
+        values: DOCUMENT_TYPE_INPUT_OPTIONS,
+      }
     );
   });
 

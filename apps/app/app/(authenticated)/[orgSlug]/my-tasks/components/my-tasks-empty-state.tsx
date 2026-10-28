@@ -2,13 +2,13 @@
 
 import { DocumentType } from "@repo/api/src/types/document";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import { CreateIssueModal } from "@repo/app/issues/components/create-issue-modal";
 import { MyTasksRecencyEmptyState } from "@repo/app/my-tasks/components/my-tasks-recency-empty-state";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { CheckSquareIcon } from "lucide-react";
 import { useState } from "react";
 import { CreateDocumentModal } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-document-modal";
-import { CreateIssueModal } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal";
 import { TeamModal } from "@/app/(authenticated)/[orgSlug]/teams/components/team-modal";
 
 type MyTasksEmptyStateProps = {

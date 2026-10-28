@@ -5,6 +5,7 @@ import type {
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { JUDGES_ANALYTICS_ALL_TIME_START_DATE } from "@repo/app/judges-analytics/lib/judges-analytics";
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
 import { LABS_NAV_SECTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -173,7 +174,9 @@ describe("JudgesAnalyticsPage - empty-state widen affordance", () => {
     expect(
       screen.getByText("No evaluations in this range")
     ).toBeInTheDocument();
-    const widenButton = screen.getByRole("button", { name: "Show all time" });
+    const widenButton = screen.getByRole("button", {
+      name: MY_TASKS_RECENCY_SHOW_ALL_LABEL,
+    });
     expect(widenButton).toBeInTheDocument();
   });
 
@@ -207,7 +210,9 @@ describe("JudgesAnalyticsPage - empty-state widen affordance", () => {
 
     render(<JudgesAnalyticsPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show all time" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
+    );
 
     // Landed on a non-empty state after the widen.
     expect(mockUseJudgesAnalytics).toHaveBeenCalledWith(
@@ -239,11 +244,13 @@ describe("JudgesAnalyticsPage - empty-state widen affordance", () => {
     // Drive the terminal branch through the empty-state widen action itself, so
     // this asserts that Show all time lands on the genuinely-empty state — not
     // merely that the filter's "All time" pill does.
-    fireEvent.click(screen.getByRole("button", { name: "Show all time" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
+    );
 
     expect(screen.getByText("No judge evaluations found")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Show all time" })
+      screen.queryByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
     ).not.toBeInTheDocument();
   });
 
@@ -270,7 +277,7 @@ describe("JudgesAnalyticsPage - empty-state widen affordance", () => {
       screen.queryByText("No judge evaluations found")
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Show all time" })
+      screen.queryByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
     ).not.toBeInTheDocument();
   });
 });

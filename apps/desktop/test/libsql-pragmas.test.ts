@@ -12,13 +12,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterAll, test } from "vitest";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
 const tempDirs: string[] = [];
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );

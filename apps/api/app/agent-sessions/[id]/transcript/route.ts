@@ -1,5 +1,10 @@
-import type { TranscriptAccessResponse } from "@repo/api/src/types/desktop-transcripts";
+import {
+  TRANSCRIPT_ACCESS_FILE_KEY_PARAM,
+  type TranscriptAccessResponse,
+  transcriptFileKeySchema,
+} from "@repo/api/src/types/desktop-transcripts";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isUuid } from "@/lib/is-uuid";
 import {
   type IdRouteParams,
   notFoundResponse,
@@ -12,6 +17,9 @@ import { transcriptReadService } from "../../transcript-read-service";
  * archived transcript files (FEA-2716 / PLN-1289). Returns one descriptor per
  * file (main + subagents) with the FR8 availability state and a short-lived
  * signed S3 GET URL for readable files; the browser fetches raw JSONL directly.
+ * An optional `?fileKey=` limits the signing to the file the caller is about to
+ * read (ISS-12276); absent or unrecognized, every readable file is signed as
+ * before, so an older or newer client never loses a read.
  *
  * Access mirrors the session detail route exactly: org-scoping is the boundary,
  * so a transcript for a session in another org 404s and no content or signed URL
@@ -23,11 +31,18 @@ import { transcriptReadService } from "../../transcript-read-service";
 export const GET = withAnyAuth<
   TranscriptAccessResponse,
   "/agent-sessions/[id]/transcript"
->(async ({ user }, _request, params) => {
+>(async ({ user }, request, params) => {
   const { id } = (await params) as Awaited<IdRouteParams["params"]>;
+  if (!isUuid(id)) {
+    return notFoundResponse("Agent session");
+  }
+  const requestedFileKey = transcriptFileKeySchema.safeParse(
+    request.nextUrl.searchParams.get(TRANSCRIPT_ACCESS_FILE_KEY_PARAM)
+  );
   const access = await transcriptReadService.findTranscriptAccess({
     id,
     organizationId: user.organizationId,
+    ...(requestedFileKey.success ? { fileKey: requestedFileKey.data } : {}),
   });
 
   if (!access) {

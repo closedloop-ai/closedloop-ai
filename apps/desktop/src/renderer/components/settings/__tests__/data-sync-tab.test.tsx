@@ -1,9 +1,32 @@
+import {
+  DATA_SYNC_LEVELS,
+  DataSyncLevel,
+} from "@repo/api/src/types/data-sync-level";
+import {
+  OnboardingAnalyticsEvent,
+  OnboardingAnalyticsPageName,
+  OnboardingAnalyticsProperty,
+} from "@repo/api/src/types/onboarding-analytics";
+import { Surface } from "@repo/api/src/types/surface-analytics";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { findDataSyncLevelCopy } from "@repo/app/shared/lib/data-sync-copy";
+import { installButtonClickTracker } from "@repo/app/shared/observability/button-click-tracker";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DataSyncLevel } from "../../../../shared/contracts";
-import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../../shared/feature-flags";
+import { SyncObservabilityTier } from "../../../../shared/contracts";
+import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../../shared/feature-flags-labs-detail";
+import {
+  IPC_WRAPPER_PHRASE,
+  ipcWrappedError,
+  LEAKY_IPC_CHANNEL,
+} from "../../../__tests__/ipc-wrapper-error-fixture";
 import { DataSyncTab } from "../data-sync-tab";
 
 // FEA-3907: mount the real DataSyncTab with a stubbed window.desktopApi and
@@ -22,7 +45,10 @@ const READ_FAILURE_RE = /Couldn't read your data sync level/i;
 const RAISED_CONFIRMATION_RE = /Raised to Full transcripts/i;
 const RADIOGROUP_NAME_RE = /data & sync level/i;
 const REDACTED_RE = /Redacted sessions/i;
-const OFF_OPTION_RE = /Nothing leaves this device/i;
+// ISS-6147: each option's accessible name is now its level TITLE (the shared
+// picker labels the radio), not the whole card body — so "Off" is matched
+// exactly rather than by a line from its description.
+const OFF_OPTION_RE = /^off$/i;
 const LOWERED_CONFIRMATION_RE = /Lowered to Off/i;
 // The approved green the ISS-5318 pill must use: the design-system `success`
 // Badge variant, not a hand-rolled color.
@@ -53,12 +79,18 @@ function renderedLevelOrder(): string[] {
 }
 
 type DataSyncApi = {
+  getSyncConsentRecord: ReturnType<typeof vi.fn>;
   getDataSyncLevel: ReturnType<typeof vi.fn>;
   setDataSyncLevel: ReturnType<typeof vi.fn>;
 };
 
 function installDesktopApi(overrides: Partial<DataSyncApi> = {}): DataSyncApi {
   const api: DataSyncApi = {
+    getSyncConsentRecord: vi.fn(async () => ({
+      bound: false,
+      organizationId: null,
+      tier: SyncObservabilityTier.Metadata,
+    })),
     getDataSyncLevel: vi.fn(async () => ({ level: DataSyncLevel.Metadata })),
     setDataSyncLevel: vi.fn(async (level: DataSyncLevel) => ({ level })),
     ...overrides,
@@ -80,6 +112,51 @@ afterEach(() => {
 });
 
 describe("DataSyncTab graduated selector", () => {
+  it.each([null, undefined])(
+    "shows an unanswered %s tier separately from saved Off",
+    async (tier) => {
+      const api = installDesktopApi({
+        getSyncConsentRecord: vi.fn(async () => ({
+          tier,
+          bound: false,
+          organizationId: null,
+        })),
+        getDataSyncLevel: vi.fn(async () => ({ level: DataSyncLevel.Off })),
+      });
+      render(<DataSyncTab />);
+      const message = await screen.findByText(
+        "This device has not saved a sync choice yet. Choose a level below, then save it for this workspace."
+      );
+      expect(screen.queryByRole("radio", { checked: true })).toBeNull();
+      const apply = screen.getByRole("button", { name: "Apply changes" });
+      expect((apply as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole("radio", { name: OFF_OPTION_RE }));
+      expect(message.isConnected).toBe(true);
+      expect(api.setDataSyncLevel).not.toHaveBeenCalled();
+      fireEvent.click(apply);
+      await waitFor(() =>
+        expect(api.setDataSyncLevel).toHaveBeenCalledWith(DataSyncLevel.Off)
+      );
+      await waitFor(() => expect(message.isConnected).toBe(false));
+      expect(
+        screen.getByText("Current level").parentElement?.textContent
+      ).toContain("Off");
+    }
+  );
+
+  it("surfaces an unreadable consent record instead of showing the effective level as a choice", async () => {
+    installDesktopApi({
+      getSyncConsentRecord: vi.fn(async () => ({
+        tier: "unknown",
+        bound: false,
+        organizationId: null,
+      })),
+    });
+    render(<DataSyncTab />);
+    expect(await screen.findByText(READ_FAILURE_RE)).not.toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
   it("reads the current data sync level on mount", async () => {
     const api = installDesktopApi();
     render(<DataSyncTab />);
@@ -210,4 +287,77 @@ describe("DataSyncTab graduated selector", () => {
     renderWithRedactedFlag(false);
     await screen.findByText(REDACTED_RE);
   });
+});
+
+/**
+ * ISS-7599: the Apply catch renders the caught message, so a rejection that
+ * crossed `ipcRenderer.invoke` must be cleaned before it lands in the alert —
+ * otherwise the private `setDataSyncLevel` channel name is shown to the user on
+ * a failure they are already trying to make sense of.
+ */
+describe("DataSyncTab — Electron IPC wrapper never reaches the user", () => {
+  it("cleans a wrapped setDataSyncLevel rejection", async () => {
+    installDesktopApi({
+      setDataSyncLevel: vi.fn(() =>
+        Promise.reject(ipcWrappedError("config file is read-only"))
+      ),
+    });
+    render(<DataSyncTab />);
+    await screen.findByText("Recommended");
+
+    fireEvent.click(screen.getByRole("radio", { name: FULL_TRANSCRIPTS_RE }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+    const message = await screen.findByText("config file is read-only");
+    expect(message.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(message.textContent).not.toContain(IPC_WRAPPER_PHRASE);
+    // The raw wrapper is nowhere on the panel, not just absent from this node.
+    expect(screen.queryByText(new RegExp(LEAKY_IPC_CHANNEL))).toBeNull();
+  });
+});
+
+describe("DataSyncTab sync choice analytics (ISS-12228)", () => {
+  it.each(DATA_SYNC_LEVELS)(
+    "captures the selected %s on Apply changes",
+    async (level) => {
+      const previous =
+        level === DataSyncLevel.Full ? DataSyncLevel.Off : DataSyncLevel.Full;
+      const saved = Promise.resolve({ level });
+      const api = installDesktopApi({
+        getDataSyncLevel: vi.fn(async () => ({ level: previous })),
+        setDataSyncLevel: vi.fn(() => saved),
+      });
+      renderWithRedactedFlag(true);
+      await screen.findByText("Recommended");
+      fireEvent.click(
+        screen.getByRole("radio", { name: findDataSyncLevelCopy(level).title })
+      );
+      const capture = vi.fn();
+      const tracker = installButtonClickTracker({
+        document: globalThis.document,
+        capture,
+        surface: Surface.Desktop,
+        getPage: () => ({
+          pageName: OnboardingAnalyticsPageName.Settings,
+          entry: "/settings",
+        }),
+      });
+      try {
+        await act(() => {
+          fireEvent.click(
+            screen.getByRole("button", { name: "Apply changes" })
+          );
+        });
+        expect(api.setDataSyncLevel).toHaveBeenCalledExactlyOnceWith(level);
+        expect(capture).toHaveBeenCalledExactlyOnceWith(
+          OnboardingAnalyticsEvent.ButtonClicked,
+          expect.objectContaining({
+            [OnboardingAnalyticsProperty.SyncChoiceSelected]: level,
+          })
+        );
+      } finally {
+        tracker.dispose();
+      }
+    }
+  );
 });

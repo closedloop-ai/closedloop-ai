@@ -7,7 +7,7 @@
  * initial hydration / full-walk.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type BackfillQueueFeedContext,
   feedIdsIntoBackfillQueue,
@@ -144,7 +144,7 @@ test("injectIdsIntoLiveQueue does NOT feed or nudge when every id is already tra
 });
 
 test("injectIdsIntoLiveQueue RECOVERS a dead-lettered id on inject, then queues it", () => {
-  // Dead-letter recovery edge (PR #4098 review, shafty023): an injected id that is
+  // Dead-letter recovery edge (PR #4098 review, davetho): an injected id that is
   // currently set aside as a dead-letter must be RECOVERED (re-pended) and then
   // queued, not silently skipped by the dedup guard — otherwise the re-derived
   // session stays parked. Not specific to the retired FEA-3427 wall-clock heal:

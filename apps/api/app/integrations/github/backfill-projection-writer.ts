@@ -1,39 +1,38 @@
 import { BranchBaseBranchSource } from "@repo/api/src/types/artifact";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import {
+  type GitHubFetchCredentialType,
   GitHubFetchTrigger,
   type GitHubReadModelPullRequest,
 } from "@repo/api/src/types/github-read-model";
-import {
-  GitHubCommentThreadKind,
-  GitHubLegacyCommentState,
-  type TransactionClient,
-  withDb,
-} from "@repo/database";
+import { type TransactionClient, withDb } from "@repo/database";
 import type {
   GitHubPullRequestReview,
   StatusCheckRollupResult,
 } from "@repo/github";
+import type { BranchActivityAtomBatchRecord } from "@/app/branches/branch-activity-evidence-batch";
+import { seedBranchOwners } from "@/app/branches/branch-owner-seed/branch-owner-seed";
 import { writeExistingBranchPullRequestProjection } from "@/app/branches/github-projection-writer";
 import { pullRequestHeadRepositoryObservation } from "@/app/branches/pull-request-head-authority";
-import { createExternalGitHubAuthorResolutionCache } from "@/app/comments/external-author-resolution-cache";
-import { normalizeGitHubDiffSide } from "@/app/comments/github-diff-side";
 import {
-  softDeleteGitHubCommentProjection,
-  upsertGitHubIssueCommentThread,
-  upsertGitHubReviewCommentThread,
-} from "@/app/comments/github-projection";
+  buildPullRequestLifecycleActivityRecords,
+  persistPullRequestLifecycleActivityRecordsInTransaction,
+} from "@/app/branches/pull-request-lifecycle-activity";
+import { pullRequestProviderLockHolderTxOptions } from "@/app/branches/pull-request-provider-lock";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
 import {
+  backfillFetchProvenance,
+  type GitHubFetchProvenance,
   gitHubFetchProvenanceData,
-  githubAppBackfillFetchProvenance,
-  githubAppGraphqlFetchProvenance,
+  graphqlFetchProvenance,
 } from "@/lib/github-fetch-provenance";
 import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
+import { keepLatestReviewPerAuthor } from "./backfill-desired-projection";
 import {
-  gitHubLegacyStateFromReviewThreadResolved,
-  gitHubThreadStatusFromReviewThreadResolved,
-  keepLatestReviewPerAuthor,
-} from "./backfill-desired-projection";
+  type LifecycleBranch,
+  type LifecyclePullRequest,
+  predictBackfillLifecycleProjectionDiff,
+} from "./backfill-lifecycle-projection-diff";
 import type {
   GitHubBackfillProjectionDiff,
   GitHubBackfillProjectionScope,
@@ -44,69 +43,116 @@ import {
   emptyProjectionDiff,
   incrementIncomingMetadataBlastRadius,
   incrementWriteDiff,
-  pullRequestProjectionWouldChange,
 } from "./backfill-projection-diff-counter";
+import { parseNullableDate } from "./backfill-projection-helpers";
+import {
+  type BackfillProjectionReadScope,
+  backfillPullRequestSelect,
+  backfillRepositorySelector,
+  loadBackfillBranchesByName,
+  openBackfillProjectionReads,
+} from "./backfill-projection-reads";
 import { persistLatestGitHubPRReview } from "./pr-review-projection";
 
 export type GitHubBackfillRepository = {
-  id: string;
+  /**
+   * `GitHubInstallationRepository.id`, or null on the repo-less (observation)
+   * lane. Never an observation row's id: that is a different table's UUID, and
+   * this column is the installation-repo surrogate.
+   */
+  id: string | null;
+  /** Provider casing; every predicate built from it normalizes first. */
   fullName: string;
 };
 
-export type WriteGitHubBackfillProjectionInput = {
+/** Which credential actually fetched the payload being projected. */
+export type GitHubBackfillCredential = {
+  type: GitHubFetchCredentialType;
+  /** Whose grant drew it on the pool lane; null on the installation lane. */
+  ownerId: string | null;
+};
+
+export type GitHubBackfillProjectionInput = {
   organizationId: string;
   repository: GitHubBackfillRepository;
   pullRequests: readonly GitHubReadModelPullRequest[];
   pullRequestMetadata?: readonly GitHubBackfillPullRequestMetadata[];
 };
 
-const BACKFILL_PROJECTION_TRANSACTION_MAX_WAIT_MS = 5000;
-const BACKFILL_PROJECTION_TRANSACTION_TIMEOUT_MS = 30_000;
+/**
+ * The write path additionally requires the credential, because every row it
+ * persists is stamped with the lane that fetched it. The dry-run diff has no
+ * such field to fill, which is why it takes the narrower input.
+ */
+export type WriteGitHubBackfillProjectionInput =
+  GitHubBackfillProjectionInput & {
+    credential: GitHubBackfillCredential;
+    /** Told each pull request the write projected, for its comment reconcile. */
+    onPullRequestProjected?: (pullRequest: {
+      number: number;
+      pullRequestDetailId: string;
+    }) => void;
+  };
 
 /**
  * Computes the existing-branch projection for dry-run or approved backfill;
  * provider data never creates branch artifacts here.
  */
 export const githubBackfillProjectionWriter = {
-  diff(input: WriteGitHubBackfillProjectionInput) {
+  diff(input: GitHubBackfillProjectionInput) {
     return withDb((db) => diffGitHubBackfillProjection(db, input));
   },
   write(input: WriteGitHubBackfillProjectionInput) {
-    return withDb.tx((tx) => writeGitHubBackfillProjection(tx, input), {
-      maxWait: BACKFILL_PROJECTION_TRANSACTION_MAX_WAIT_MS,
-      timeout: BACKFILL_PROJECTION_TRANSACTION_TIMEOUT_MS,
-    });
+    // ISS-7130: this lane reaches the same PR-provider advisory lock through
+    // `writeExistingBranchPullRequestProjection`, so it reads its bounds from
+    // that lock's owner rather than restating them. The HOLDER bounds, not the
+    // waiter ones: a backfill keeps the lock for a whole multi-PR batch, and
+    // the waiter margin is only real while the long-batch lanes stay off it.
+    // Same 30s ceiling this lane already carried, now named once.
+    return withDb.tx(
+      (tx) => writeGitHubBackfillProjection(tx, input),
+      pullRequestProviderLockHolderTxOptions
+    );
   },
 };
 
 async function diffGitHubBackfillProjection(
   db: TransactionClient,
-  input: WriteGitHubBackfillProjectionInput
+  input: GitHubBackfillProjectionInput
 ): Promise<GitHubBackfillProjectionDiff> {
-  const branchNames = collectHeadBranches(input.pullRequests);
-  const branches = await db.branchDetail.findMany({
-    where: {
-      repositoryId: input.repository.id,
-      branchName: { in: branchNames },
-      artifact: { organizationId: input.organizationId },
-    },
-    include: { currentPullRequestDetail: true },
-  });
-  const branchesByName = new Map(
-    branches.map((branch) => [branch.branchName, branch])
+  const scope = backfillProjectionReadScope(input);
+  const branchesByName = await loadBackfillBranchesByName(
+    db,
+    scope,
+    input.pullRequests
   );
+  // Stays here, not in the reads module beside its batched branch twin: a
+  // set-shaped `pullRequestDetail` read in `apps/api` must declare a sanctioned
+  // population, and this lane's allowlisted exemption is pinned to THIS file.
   const existingPrs = await db.pullRequestDetail.findMany({
     where: {
-      repositoryId: input.repository.id,
+      ...backfillRepositorySelector(input.repository),
       number: {
         in: input.pullRequests.map((pullRequest) => pullRequest.number),
       },
       branchArtifact: { organizationId: input.organizationId },
     },
+    // The write path's own select, imported rather than restated: this read and
+    // `findExistingPullRequestDetail` feed the same comparisons, so a column
+    // here that the write path lacks makes the preview disagree with the write
+    // it is previewing.
+    select: backfillPullRequestSelect,
   });
   const prsByNumber = new Map(existingPrs.map((pr) => [pr.number, pr]));
   const metadataByNumber = buildMetadataByNumber(input.pullRequestMetadata);
   const diff = emptyProjectionDiff();
+  // Accumulated inside the loop and predicted after it, exactly as the write
+  // path does (#6038 review). Predicting up here against the FULL branch and PR
+  // lists counted lifecycle atoms for repo-less PRs the loop below skips — the
+  // write collects nothing for them, so the dry run promised a blast radius the
+  // approval could not cash.
+  const lifecycleBranches: LifecycleBranch[] = [];
+  const lifecycleExistingPullRequests: LifecyclePullRequest[] = [];
 
   for (const pullRequest of input.pullRequests) {
     const branch = branchesByName.get(pullRequest.headBranch);
@@ -115,25 +161,23 @@ async function diffGitHubBackfillProjection(
       continue;
     }
     const existingPr = prsByNumber.get(pullRequest.number);
-    if (!existingPr) {
-      diff.pullRequestProjectionChangeCount += 1;
-    } else if (pullRequestProjectionWouldChange(existingPr, pullRequest)) {
-      diff.pullRequestProjectionChangeCount += 1;
+    // Mirrors the write path's repo-less skip. Predicting a create the write
+    // will never make is what turns a dry run into a promise the approval
+    // cannot keep.
+    if (!(existingPr || input.repository.id)) {
+      diff.skippedBranchCount += 1;
+      continue;
     }
+    lifecycleBranches.push(branch);
+    if (existingPr) {
+      lifecycleExistingPullRequests.push(existingPr);
+    }
+    // The same three comparisons the write path makes, from the one owner: a
+    // dry run that counted them differently would be a preview of a write that
+    // does not happen.
+    incrementWriteDiff(diff, branch, existingPr ?? null, pullRequest);
     if (branch.currentPullRequestDetailId !== existingPr?.id) {
       diff.branchProjectionChangeCount += 1;
-    }
-    if (
-      pullRequest.reviewDecision !== null &&
-      existingPr?.reviewDecision !== pullRequest.reviewDecision
-    ) {
-      diff.reviewDecisionProjectionChangeCount += 1;
-    }
-    if (
-      pullRequest.checksStatus !== null &&
-      branch.checksStatus !== pullRequest.checksStatus
-    ) {
-      diff.checkProjectionChangeCount += 1;
     }
     const metadata = metadataByNumber.get(pullRequest.number);
     if (!metadata) {
@@ -158,6 +202,14 @@ async function diffGitHubBackfillProjection(
     );
   }
 
+  const lifecycleDiff = await predictBackfillLifecycleProjectionDiff(db, {
+    organizationId: input.organizationId,
+    pullRequests: input.pullRequests,
+    branches: lifecycleBranches,
+    existingPullRequests: lifecycleExistingPullRequests,
+  });
+  Object.assign(diff, lifecycleDiff);
+
   return diff;
 }
 
@@ -166,40 +218,59 @@ async function writeGitHubBackfillProjection(
   input: WriteGitHubBackfillProjectionInput
 ): Promise<GitHubBackfillProjectionDiff> {
   const diff = emptyProjectionDiff();
+  const provenance = backfillWriteProvenance(input.credential);
   const metadataByNumber = buildMetadataByNumber(input.pullRequestMetadata);
+  const lifecycleRecords: BranchActivityAtomBatchRecord[] = [];
+  const lifecycleBranches: LifecycleBranch[] = [];
+  const lifecycleExistingPullRequests: LifecyclePullRequest[] = [];
+  const reads = await openBackfillProjectionReads(
+    tx,
+    backfillProjectionReadScope(input),
+    input.pullRequests
+  );
   for (const pullRequest of input.pullRequests) {
-    const branch = await tx.branchDetail.findFirst({
-      where: {
-        repositoryId: input.repository.id,
-        branchName: pullRequest.headBranch,
-        artifact: { organizationId: input.organizationId },
-      },
-      include: { currentPullRequestDetail: true },
-    });
+    const { branch, existing } = await reads.resolve(pullRequest);
     if (!branch) {
       diff.skippedBranchCount += 1;
       continue;
     }
-    const existing = await tx.pullRequestDetail.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId: input.repository.id,
-          number: pullRequest.number,
-        },
-      },
-    });
+    if (!(existing || input.repository.id)) {
+      // Backfill does not create PR rows on the repo-less lane, by design: the
+      // shared writer's create path keys on the `(repositoryId, number)` unique
+      // and refuses a null id. An unseen PR is counted as skipped — the same
+      // thing `skippedBranchCount` already means one branch above: an incoming
+      // PR this pass could not attach to an existing projection row.
+      diff.skippedBranchCount += 1;
+      continue;
+    }
+    // Past every skip, so this iteration WILL write: the payload-wide read
+    // stops being authoritative for this branch, and for whichever branch the
+    // PR currently points at, here.
+    reads.markWritten({ pullRequest, branch, existing });
+    lifecycleBranches.push(branch);
+    if (existing) {
+      lifecycleExistingPullRequests.push(existing);
+    }
     incrementWriteDiff(diff, branch, existing, pullRequest);
 
+    const openedAt = parseNullableDate(pullRequest.openedAt);
+    const closedAt = parseNullableDate(pullRequest.closedAt);
+    const mergedAt = parseNullableDate(pullRequest.mergedAt);
     const prDetail = await writeExistingBranchPullRequestProjection(
       tx,
       {
         branchArtifactId: branch.artifactId,
         pullRequestDetailId: existing?.id ?? null,
+        pullRequestBranchArtifactId: existing?.branchArtifactId ?? null,
         currentHeadSha: branch.headSha,
       },
       {
         organizationId: input.organizationId,
         repositoryId: input.repository.id,
+        // Normalized, not provider casing: the shared writer's repo-less
+        // resolution matches this column literally, and every other consumer
+        // normalizes internally, so the App lane is unaffected.
+        repositoryFullName: normalizeRepoFullName(input.repository.fullName),
         githubId: pullRequest.githubId,
         number: pullRequest.number,
         title: pullRequest.title,
@@ -216,16 +287,31 @@ async function writeGitHubBackfillProjection(
         reviewDecision: pullRequest.reviewDecision,
         headRepositoryObservation:
           pullRequestHeadRepositoryObservation(pullRequest),
-        githubCreatedAt: parseNullableDate(pullRequest.openedAt),
-        closedAt: parseNullableDate(pullRequest.closedAt),
-        mergedAt: parseNullableDate(pullRequest.mergedAt),
+        githubCreatedAt: openedAt,
+        githubUpdatedAt: parseNullableDate(pullRequest.updatedAt),
+        closedAt,
+        mergedAt,
         mergeCommitSha: pullRequest.mergeCommitSha,
-        fetchProvenance: githubAppBackfillFetchProvenance(),
+        fetchProvenance: provenance.backfill,
       }
+    );
+    lifecycleRecords.push(
+      ...buildPullRequestLifecycleActivityRecords({
+        organizationId: input.organizationId,
+        branchArtifactId: branch.artifactId,
+        pullRequestDetailId: prDetail.id,
+        openedAt,
+        mergedAt,
+        closedAt,
+      })
     );
     if (branch.currentPullRequestDetailId !== prDetail.id) {
       diff.branchProjectionChangeCount += 1;
     }
+    input.onPullRequestProjected?.({
+      number: pullRequest.number,
+      pullRequestDetailId: prDetail.id,
+    });
     await tx.branchDetail.update({
       where: { artifactId: branch.artifactId },
       data: {
@@ -247,156 +333,69 @@ async function writeGitHubBackfillProjection(
         pullNumber: pullRequest.number,
         headSha: pullRequest.headSha,
       },
+      provenance,
       metadataByNumber.get(pullRequest.number),
       diff
     );
   }
+  // ISS-12463: every branch this pass filed a PR under. The pass stamps no PR
+  // author, but it can relink an already-authored PR onto the branch, and the
+  // commit-author rung and PR authors stamped earlier resolve here too; the
+  // seed is set-if-NULL, so a branch already seeded is untouched.
+  await seedBranchOwners(
+    tx,
+    input.organizationId,
+    lifecycleBranches.map((branch) => branch.artifactId)
+  );
+  const lifecycleDiff = await predictBackfillLifecycleProjectionDiff(tx, {
+    organizationId: input.organizationId,
+    pullRequests: input.pullRequests,
+    branches: lifecycleBranches,
+    existingPullRequests: lifecycleExistingPullRequests,
+  });
+  Object.assign(diff, lifecycleDiff);
+  await persistPullRequestLifecycleActivityRecordsInTransaction(tx, {
+    organizationId: input.organizationId,
+    records: lifecycleRecords,
+  });
   return diff;
 }
 
 async function writePullRequestMetadata(
   tx: TransactionClient,
   scope: GitHubBackfillProjectionScope,
+  provenance: BackfillWriteProvenance,
   metadata: GitHubBackfillPullRequestMetadata | undefined,
   diff: GitHubBackfillProjectionDiff
 ): Promise<void> {
   if (!metadata) {
     return;
   }
+  // The comments themselves are not written here: the caller reconciles each
+  // projected pull request's comments through the comment service after this
+  // transaction commits (PLN-2122 Step 4).
   await addMetadataDiff(tx, diff, scope, metadata);
-  await writeUnifiedGitHubComments(tx, scope, metadata);
-  await writeBackfillReviews(tx, scope.pullRequestDetailId, metadata.reviews);
-  await writeStatusChecks(tx, scope, metadata.statusCheckRollup);
-}
-
-async function writeUnifiedGitHubComments(
-  tx: TransactionClient,
-  scope: GitHubBackfillProjectionScope,
-  metadata: GitHubBackfillPullRequestMetadata
-): Promise<void> {
-  const resolveAuthor = createExternalGitHubAuthorResolutionCache(
+  await writeBackfillReviews(
     tx,
-    scope.organizationId
+    scope.pullRequestDetailId,
+    provenance,
+    metadata.reviews
   );
-
-  for (const comment of metadata.issueComments) {
-    const author = await resolveAuthor(comment.user, {
-      sourceKind: "issue_comment",
-      githubObjectId: String(comment.id),
-      repositoryId: scope.repositoryId,
-      pullNumber: scope.pullNumber,
-    });
-    await upsertGitHubIssueCommentThread(tx, {
-      organizationId: scope.organizationId,
-      branchArtifactId: scope.branchArtifactId,
-      pullRequestDetailId: scope.pullRequestDetailId,
-      htmlUrl: comment.html_url,
-      legacyState: GitHubLegacyCommentState.PENDING,
-      lastSyncedAt: new Date(),
-      fetchProvenance: githubAppBackfillFetchProvenance(),
-      comment: {
-        githubCommentId: comment.id,
-        githubHtmlUrl: comment.html_url,
-        githubUpdatedAt: new Date(comment.updated_at),
-        bodyMarkdown: comment.body,
-        createdAt: new Date(comment.created_at),
-        author: {
-          userId: author.user.id,
-          externalAuthorId: author.externalAuthor.id,
-        },
-      },
-    });
-  }
-
-  for (const comment of metadata.reviewComments) {
-    const author = await resolveAuthor(comment.user, {
-      sourceKind: "review_comment",
-      githubObjectId: String(comment.id),
-      repositoryId: scope.repositoryId,
-      pullNumber: scope.pullNumber,
-    });
-    await upsertGitHubReviewCommentThread(tx, {
-      organizationId: scope.organizationId,
-      branchArtifactId: scope.branchArtifactId,
-      pullRequestDetailId: scope.pullRequestDetailId,
-      reviewThreadId: comment.review_thread_node_id,
-      reviewId: comment.pull_request_review_id
-        ? String(comment.pull_request_review_id)
-        : null,
-      rootCommentId: comment.in_reply_to_id ?? comment.id,
-      path: comment.path,
-      line: comment.line,
-      side: normalizeGitHubDiffSide(comment.side),
-      startLine: comment.start_line,
-      startSide: normalizeGitHubDiffSide(comment.start_side),
-      commitSha: comment.commit_id,
-      htmlUrl: comment.html_url,
-      legacyState: gitHubLegacyStateFromReviewThreadResolved(
-        comment.review_thread_is_resolved
-      ),
-      resolutionStatus: gitHubThreadStatusFromReviewThreadResolved(
-        comment.review_thread_is_resolved
-      ),
-      lastSyncedAt: new Date(),
-      fetchProvenance: githubAppBackfillFetchProvenance(),
-      comments: [
-        {
-          githubCommentId: comment.id,
-          githubInReplyToCommentId: comment.in_reply_to_id,
-          githubHtmlUrl: comment.html_url,
-          githubUpdatedAt: new Date(comment.updated_at),
-          bodyMarkdown: comment.body,
-          createdAt: new Date(comment.created_at),
-          author: {
-            userId: author.user.id,
-            externalAuthorId: author.externalAuthor.id,
-          },
-        },
-      ],
-    });
-  }
-
-  if (metadata.issueCommentsComplete) {
-    await softDeleteGitHubCommentProjection(tx, {
-      organizationId: scope.organizationId,
-      branchArtifactId: scope.branchArtifactId,
-      pullRequestDetailId: scope.pullRequestDetailId,
-      threadKind: GitHubCommentThreadKind.ISSUE_COMMENT,
-      liveGithubCommentIds: new Set(
-        metadata.issueComments.map((comment) => String(comment.id))
-      ),
-      deletedAt: new Date(),
-      fetchProvenance: githubAppBackfillFetchProvenance(),
-    });
-  }
-  if (metadata.reviewCommentsComplete) {
-    await softDeleteGitHubCommentProjection(tx, {
-      organizationId: scope.organizationId,
-      branchArtifactId: scope.branchArtifactId,
-      pullRequestDetailId: scope.pullRequestDetailId,
-      threadKind: GitHubCommentThreadKind.REVIEW_THREAD,
-      liveGithubCommentIds: new Set(
-        metadata.reviewComments.map((comment) => String(comment.id))
-      ),
-      deletedAt: new Date(),
-      fetchProvenance: githubAppBackfillFetchProvenance(),
-    });
-  }
+  await writeStatusChecks(tx, scope, provenance, metadata.statusCheckRollup);
 }
 
 async function writeBackfillReviews(
   tx: TransactionClient,
   pullRequestDetailId: string,
+  provenance: BackfillWriteProvenance,
   reviews: readonly GitHubPullRequestReview[]
 ): Promise<void> {
   const latestByAuthor = keepLatestReviewPerAuthor(reviews);
   if (latestByAuthor.size === 0) {
     return;
   }
+  const fetchProvenance = gitHubFetchProvenanceData(provenance.backfill);
   for (const review of latestByAuthor.values()) {
-    const fetchProvenance = gitHubFetchProvenanceData(
-      githubAppBackfillFetchProvenance()
-    );
     await persistLatestGitHubPRReview(tx, {
       pullRequestId: pullRequestDetailId,
       githubReviewId: review.githubReviewId,
@@ -415,6 +414,7 @@ async function writeBackfillReviews(
 async function writeStatusChecks(
   tx: TransactionClient,
   scope: GitHubBackfillProjectionScope,
+  provenance: BackfillWriteProvenance,
   rollup: StatusCheckRollupResult | null
 ): Promise<void> {
   if (!(scope.headSha && rollup)) {
@@ -425,9 +425,7 @@ async function writeStatusChecks(
     organizationId: scope.organizationId,
     headSha: scope.headSha,
     rollup,
-    fetchProvenance: githubAppGraphqlFetchProvenance({
-      trigger: GitHubFetchTrigger.Backfill,
-    }),
+    fetchProvenance: provenance.statusCheck,
   });
 }
 
@@ -437,18 +435,42 @@ function buildMetadataByNumber(
   return new Map((metadata ?? []).map((entry) => [entry.number, entry]));
 }
 
-function collectHeadBranches(
-  pullRequests: readonly GitHubReadModelPullRequest[]
-): string[] {
-  return [
-    ...new Set(
-      pullRequests
-        .map((pullRequest) => pullRequest.headBranch)
-        .filter((branchName) => branchName.length > 0)
-    ),
-  ];
+/** The identity every read in `backfill-projection-reads.ts` scopes on. */
+function backfillProjectionReadScope(
+  input: GitHubBackfillProjectionInput
+): BackfillProjectionReadScope {
+  return {
+    organizationId: input.organizationId,
+    repository: input.repository,
+  };
 }
 
-function parseNullableDate(value: string | null): Date | null {
-  return value ? new Date(value) : null;
+/**
+ * The two provenance stamps one backfill projection write applies, built once
+ * from the credential that actually fetched the payload. Both were hardcoded to
+ * the App before ISS-7721 taught this sweep the pool lane, which would have
+ * named a credential an installation-free org does not have.
+ */
+type BackfillWriteProvenance = {
+  backfill: GitHubFetchProvenance;
+  statusCheck: GitHubFetchProvenance;
+};
+
+function backfillWriteProvenance(
+  credential: GitHubBackfillCredential
+): BackfillWriteProvenance {
+  const observedAt = new Date();
+  return {
+    backfill: backfillFetchProvenance({
+      credentialType: credential.type,
+      credentialOwnerId: credential.ownerId,
+      observedAt,
+    }),
+    statusCheck: graphqlFetchProvenance({
+      trigger: GitHubFetchTrigger.Backfill,
+      credentialType: credential.type,
+      credentialOwnerId: credential.ownerId,
+      observedAt,
+    }),
+  };
 }

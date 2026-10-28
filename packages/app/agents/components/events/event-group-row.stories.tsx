@@ -12,7 +12,7 @@ const group: SessionEventGroup = {
       sessionId: "sess-1",
       agentId: "agent-1",
       agentLabel: "Main agent",
-      project: "symphony-alpha",
+      project: "closedloop-ai",
       eventType: "tool_use",
       status: "working",
       toolName: "Edit",
@@ -26,7 +26,7 @@ const group: SessionEventGroup = {
       sessionId: "sess-1",
       agentId: "agent-1",
       agentLabel: "Main agent",
-      project: "symphony-alpha",
+      project: "closedloop-ai",
       eventType: "tool_result",
       status: "completed",
       toolName: "Edit",
@@ -38,10 +38,31 @@ const group: SessionEventGroup = {
   ],
 };
 
+const singleEventGroup: SessionEventGroup = {
+  id: "group-2",
+  title: "Read session table",
+  durationLabel: "2s",
+  events: [
+    {
+      id: "event-3",
+      sessionId: "sess-1",
+      agentId: "agent-1",
+      agentLabel: "Main agent",
+      project: "closedloop-ai",
+      eventType: "tool_use",
+      status: "completed",
+      toolName: "Read",
+      title: "Read shared table",
+      summary: "Reviewed the shared session table before editing it.",
+      createdAt: "2026-05-29T11:59:40.000Z",
+    },
+  ],
+};
+
 const meta = {
-  title: "App Core/Agents/Event Group Row",
+  title: "Composites v1.0/Agents/General/Event Group Row",
   component: EventGroupRow,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { group, defaultExpanded: true },
 } satisfies Meta<typeof EventGroupRow>;
@@ -49,3 +70,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
+
+/**
+ * A single-event row, beside {@link Default}'s two-event group — the cyan left
+ * border and the "N events" chip are both `isMultiEvent`-gated, so this is the
+ * only place their absence is visible rather than assumed.
+ */
+export const SingleEvent: Story = {
+  args: { group: singleEventGroup },
+};

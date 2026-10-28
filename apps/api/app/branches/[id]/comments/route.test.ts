@@ -96,7 +96,7 @@ function routeContext(id: string) {
 function commentsResponse() {
   return {
     branchId,
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     state: BranchCommentsState.StaleMixed,
     comments: [
       {
@@ -119,7 +119,7 @@ function commentsResponse() {
         createdAt: "2026-08-10T10:00:00.000Z",
         updatedAt: "2026-08-10T10:01:00.000Z",
         providerUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r1",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r1",
         stale: true,
         bodyTruncated: true,
       },
@@ -138,6 +138,6 @@ function commentsResponse() {
     stale: true,
     mixedProjection: true,
     prNumber: 42,
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
   };
 }

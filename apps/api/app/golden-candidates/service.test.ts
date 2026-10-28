@@ -1,9 +1,10 @@
 import {
+  CommentTargetType,
   ThreadSource,
   TRACE_COMMENT_METADATA_KIND,
   TraceCommentKind,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
+import { GOLDEN_CANDIDATE_LIST_MAX_OFFSET } from "@repo/api/src/types/golden-candidate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
@@ -15,6 +16,16 @@ vi.mock("@repo/database", async () => {
   });
 });
 
+vi.mock("@repo/observability/log", () => ({
+  log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+
+import { log } from "@repo/observability/log";
+import {
+  COMMENTS_DATA_INVALID_EVENT,
+  CommentDataInvalidReason,
+} from "@/app/comments/comment-data-invalid";
+import { resetReportedTraceAnchorFailures } from "@/app/comments/service/trace-comment-anchor-json";
 import { getMockWithDb } from "../../__tests__/utils/db-helpers";
 import { goldenCandidatesService } from "./service";
 
@@ -35,10 +46,9 @@ const anchor = {
 const parsingBugMetadata = {
   kind: TRACE_COMMENT_METADATA_KIND,
   schemaVersion: 1,
-  targetType: TraceCommentTargetType.Session,
+  targetType: CommentTargetType.Session,
   surface: "session_detail",
   commentKind: TraceCommentKind.ParsingBug,
-  anchor,
 };
 
 function parsingBugThread() {
@@ -46,6 +56,7 @@ function parsingBugThread() {
     id: "thread-1",
     artifactId: "session-artifact-1",
     metadata: parsingBugMetadata,
+    anchor: { v: 1, kind: "trace", ...anchor },
     createdAt: new Date("2026-06-17T10:00:00.000Z"),
     comments: [
       {
@@ -81,6 +92,7 @@ function mockDb(rows: unknown[], total = rows.length) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetReportedTraceAnchorFailures();
 });
 
 describe("goldenCandidatesService.listAll", () => {
@@ -97,7 +109,7 @@ describe("goldenCandidatesService.listAll", () => {
       commentId: "comment-1",
       threadId: "thread-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       sessionId: "session-artifact-1",
@@ -127,7 +139,7 @@ describe("goldenCandidatesService.listAll", () => {
       {
         metadata: {
           path: ["targetType"],
-          equals: TraceCommentTargetType.Session,
+          equals: CommentTargetType.Session,
         },
       },
     ]);
@@ -149,14 +161,14 @@ describe("goldenCandidatesService.listAll", () => {
     expect(where.AND).toContainEqual({
       metadata: {
         path: ["targetType"],
-        equals: TraceCommentTargetType.Session,
+        equals: CommentTargetType.Session,
       },
     });
     // And the branch target is not one of the accepted values.
     expect(where.AND).not.toContainEqual({
       metadata: {
         path: ["targetType"],
-        equals: TraceCommentTargetType.Branch,
+        equals: CommentTargetType.Branch,
       },
     });
   });
@@ -170,9 +182,8 @@ describe("goldenCandidatesService.listAll", () => {
       metadata: {
         kind: TRACE_COMMENT_METADATA_KIND,
         schemaVersion: 1,
-        targetType: TraceCommentTargetType.Session,
+        targetType: CommentTargetType.Session,
         surface: "session_detail",
-        anchor,
       },
     };
     mockDb([plainThread]);
@@ -183,6 +194,39 @@ describe("goldenCandidatesService.listAll", () => {
     });
 
     expect(response.items).toHaveLength(0);
+  });
+
+  it("reports and drops a candidate whose stored anchor does not read back (ISS-11212)", async () => {
+    const unreadable = {
+      ...parsingBugThread(),
+      id: "thread-bad-anchor",
+      anchor: { v: 1, kind: "trace", traceId: "" },
+    };
+    const missing = {
+      ...parsingBugThread(),
+      id: "thread-no-anchor",
+      anchor: null,
+    };
+    mockDb([unreadable, missing, parsingBugThread()]);
+
+    const response = await goldenCandidatesService.listAll({
+      organizationId: "org-1",
+      filters: {},
+    });
+
+    expect(response.items.map((item) => item.threadId)).toEqual(["thread-1"]);
+    expect(log.error).toHaveBeenCalledWith(COMMENTS_DATA_INVALID_EVENT, {
+      event: COMMENTS_DATA_INVALID_EVENT,
+      reason: CommentDataInvalidReason.AnchorUnparseable,
+      organizationId: "org-1",
+      threadId: "thread-bad-anchor",
+    });
+    expect(log.error).toHaveBeenCalledWith(COMMENTS_DATA_INVALID_EVENT, {
+      event: COMMENTS_DATA_INVALID_EVENT,
+      reason: CommentDataInvalidReason.AnchorMissing,
+      organizationId: "org-1",
+      threadId: "thread-no-anchor",
+    });
   });
 
   it("narrows to a single source session when sessionId is supplied", async () => {
@@ -208,5 +252,32 @@ describe("goldenCandidatesService.listAll", () => {
     expect(response.total).toBe(3);
     expect(response.nextCursor).toBe("1");
     expect(findMany.mock.calls[0]?.[0]?.take).toBe(1);
+  });
+
+  it("still mints a cursor when the next offset lands exactly on the ceiling", async () => {
+    mockDb([parsingBugThread()], GOLDEN_CANDIDATE_LIST_MAX_OFFSET + 5);
+
+    const response = await goldenCandidatesService.listAll({
+      organizationId: "org-1",
+      filters: { limit: 1, offset: GOLDEN_CANDIDATE_LIST_MAX_OFFSET - 1 },
+    });
+
+    expect(response.nextCursor).toBe(String(GOLDEN_CANDIDATE_LIST_MAX_OFFSET));
+  });
+
+  it("withholds the cursor past the ceiling rather than minting a token the schema rejects", async () => {
+    mockDb([parsingBugThread()], GOLDEN_CANDIDATE_LIST_MAX_OFFSET + 500);
+
+    const response = await goldenCandidatesService.listAll({
+      organizationId: "org-1",
+      filters: { limit: 1, offset: GOLDEN_CANDIDATE_LIST_MAX_OFFSET },
+    });
+
+    // Rows remain, so this is not "exhausted" — `total` says so, and the null
+    // cursor says this pagination cannot reach them. Minting
+    // `GOLDEN_CANDIDATE_LIST_MAX_OFFSET + 1` would be a token
+    // `goldenCandidateListQuerySchema` answers 400 to.
+    expect(response.total).toBe(GOLDEN_CANDIDATE_LIST_MAX_OFFSET + 500);
+    expect(response.nextCursor).toBeNull();
   });
 });

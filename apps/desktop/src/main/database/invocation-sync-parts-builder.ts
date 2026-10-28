@@ -20,6 +20,7 @@ import {
 import { AgentComponentInvocationSyncLocalError } from "../agent-sync/agent-component-invocation-sync-constants.js";
 import {
   AgentComponentInvocationSyncPayloadContractError,
+  AgentComponentInvocationSyncPayloadDuplicateIdError,
   AgentComponentInvocationSyncPayloadLimitError,
   prepareAgentComponentInvocationSyncParts,
 } from "../agent-sync/agent-component-invocation-sync-payload.js";
@@ -27,7 +28,7 @@ import {
 /** The wire parts for a deliverable generation, or the local reason it is not. */
 export type InvocationSyncPartsBuild = {
   parts: AgentComponentInvocationSyncPart[];
-  /* Narrowed to the declared reasons (wongk review on #4448): the value is
+  /* Narrowed to the declared reasons (whitlockk review on #4448): the value is
      persisted verbatim into the outbox `last_error` column, so a new branch
      returning an undeclared string must fail typecheck rather than land a
      reason no consumer maps. */
@@ -83,6 +84,14 @@ function localInvocationSyncError(
   }
   if (error instanceof AgentComponentInvocationSyncPayloadLimitError) {
     return AgentComponentInvocationSyncLocalError.GenerationWireLimitExceeded;
+  }
+  if (error instanceof AgentComponentInvocationSyncPayloadDuplicateIdError) {
+    // ISS-6889 (codex P1 review): the collision is REPRODUCIBLE FROM THE ROW
+    // (invariant 4), so it is row-attributable and terminal — the cloud's own
+    // `hasUniqueInvocationIds` would reject the part for the same reason. Coming
+    // back here as a declared reason is what keeps the throw from escaping into
+    // the caller's import `$transaction`.
+    return AgentComponentInvocationSyncLocalError.DuplicateInvocationId;
   }
   return null;
 }

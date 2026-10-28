@@ -117,24 +117,26 @@ function seedPowerUserYear(): SeededArtifact[] {
       updatedAt: new Date(FIXED_NOW.getTime() - dayIndex * DAY_MS),
     });
   }
-  artifacts.push({
-    id: "artifact-other-user",
-    organizationId: ORGANIZATION_ID,
-    type: ArtifactType.DOCUMENT,
-    assigneeId: OTHER_USER_ID,
-    projectId: ACTIVE_PROJECT_ID,
-    createdAt: FIXED_NOW,
-    updatedAt: FIXED_NOW,
-  });
-  artifacts.push({
-    id: "artifact-not-a-document",
-    organizationId: ORGANIZATION_ID,
-    type: ArtifactType.BRANCH,
-    assigneeId: USER_ID,
-    projectId: ACTIVE_PROJECT_ID,
-    createdAt: FIXED_NOW,
-    updatedAt: FIXED_NOW,
-  });
+  artifacts.push(
+    {
+      id: "artifact-other-user",
+      organizationId: ORGANIZATION_ID,
+      type: ArtifactType.DOCUMENT,
+      assigneeId: OTHER_USER_ID,
+      projectId: ACTIVE_PROJECT_ID,
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    },
+    {
+      id: "artifact-not-a-document",
+      organizationId: ORGANIZATION_ID,
+      type: ArtifactType.BRANCH,
+      assigneeId: USER_ID,
+      projectId: ACTIVE_PROJECT_ID,
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    }
+  );
   return artifacts;
 }
 
@@ -246,7 +248,7 @@ describe("FEA-1626: a 12-month power-user account reads bounded, not whole", () 
   });
 
   it("returns the FULL year to a paged request that omits the new params", async () => {
-    // The deploy-skew case (wongk): an already-deployed `apps/app`, and a new
+    // The deploy-skew case (whitlockk): an already-deployed `apps/app`, and a new
     // build with the flag off, both send assigneeId + limit and nothing else.
     // If the server defaulted the window, this would come back bounded and the
     // closed-by-default flag would be controlling nothing.

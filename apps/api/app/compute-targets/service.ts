@@ -1,48 +1,58 @@
 import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   ComputeTarget,
   ComputeTargetHealthCheckSnapshot,
-  ComputeTargetSecurity,
-  ComputeTargetServerCapabilities,
   RegisterComputeTargetInput,
-  UpdateComputeTargetInput,
-  UpsertComputeTargetHealthCheckSnapshotInput,
 } from "@repo/api/src/types/compute-target";
-import {
-  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
-  DesktopSecurityStatus,
-  deriveAvailableHarnesses,
-  HarnessType,
-  HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
-} from "@repo/api/src/types/compute-target";
+import { COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY } from "@repo/api/src/types/compute-target";
+import { RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS } from "@repo/api/src/types/relay-heartbeat";
 import {
   type Result as DomainResult,
   Result,
 } from "@repo/api/src/types/result";
-import { type Prisma, type TransactionClient, withDb } from "@repo/database";
-import { log } from "@repo/observability/log";
+import { type TransactionClient, withDb } from "@repo/database";
 import { loadProtectedGateways } from "@/app/compute-targets/protected-gateways";
-import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
+import {
+  buildSecurity,
+  COMPUTE_TARGET_RECORD_SELECT,
+  type ComputeTargetRecord,
+  toComputeTarget,
+  toComputeTargetList,
+  toJsonObject,
+  toRequiredComputeTarget,
+} from "@/app/compute-targets/service/compute-target-record";
+import { deleteOwnedComputeTarget } from "@/app/compute-targets/service/delete-owned";
+import {
+  COMPUTE_TARGET_MATERIAL_CHANGE_SELECT,
+  hasMaterialHealthCheckFieldChanged,
+} from "@/app/compute-targets/service/health-check-material-change";
+import { recordRelayPresence } from "@/app/compute-targets/service/relay-presence";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
+import { getPrismaErrorCode, matchesPrismaP2002Target } from "@/lib/db-utils";
+import { SOCKET_HEARTBEAT_INTERVAL_MS } from "@/lib/desktop-gateway-types";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 import {
-  CommandSigningEligibilityStatus,
-  loadActiveDesktopManagedGatewayIds,
-} from "@/lib/compute-target-signing-eligibility";
-import { mapWithDbConcurrency } from "@/lib/db-fanout";
-import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
-import { parseJsonObject } from "@/lib/json-schema";
-import { purgeTranscriptObjectsBestEffort } from "@/lib/transcript-object-purge";
-import { formatUserFullName } from "@/lib/user-display-name";
-import {
-  buildHealthCheckSnapshotWrite,
+  COMPUTE_TARGET_HEALTH_CHECK_SELECT,
   toHealthCheckSnapshot,
-  toStringArray,
 } from "./health-check-snapshot-record";
 
-export const COMPUTE_TARGET_STALE_MS = 90_000;
-export const DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION = 1;
+/**
+ * Silence past which `markStaleTargetsOffline` flips a target to offline.
+ *
+ * Three check-ins of the SLOWEST periodic writer of `lastSeenAt`, derived rather
+ * than re-declared at `90_000`, because it is a timeout on that cadence: set it
+ * at or below one interval and every live target is flipped offline between its
+ * own check-ins. `recordRelayPresence` enumerates the writers; the periodic ones
+ * are paced by two independent knobs — the relay transport's presence heartbeat
+ * and the direct Socket.IO server's per-socket timer — which hold the same value
+ * today but are separately tunable, so taking the max is what keeps a retune of
+ * either from silently eating the headroom.
+ */
+export const COMPUTE_TARGET_STALE_MS =
+  3 *
+  Math.max(RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS, SOCKET_HEARTBEAT_INTERVAL_MS);
 
 export type ComputeTargetGatewayConflict = "gateway_conflict";
 
@@ -59,126 +69,8 @@ function computeTargetGatewayConflictResult<T>(): DomainResult<
   return Result.err("gateway_conflict");
 }
 
-type ComputeTargetRecord = {
-  id: string;
-  organizationId: string;
-  userId: string;
-  machineName: string;
-  platform: string;
-  capabilities: unknown;
-  supportedOperations: unknown;
-  lastSeenAt: Date;
-  isOnline: boolean;
-  isSharedWithOrg: boolean;
-  gatewayId?: string | null;
-  selectedHarness?: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  user?: {
-    clerkId: string | null;
-    firstName: string | null;
-    lastName: string | null;
-  } | null;
-};
-
-const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
-
-export function parseSelectedHarness(
-  value: string | null | undefined
-): HarnessType {
-  return value != null && VALID_HARNESS_VALUES.has(value)
-    ? (value as HarnessType)
-    : HarnessType.Claude;
-}
-
-function toJsonObject(value: unknown): JsonObject {
-  return parseJsonObject(value) ?? {};
-}
-
-function normalizeForStableJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeForStableJson(entry));
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => {
-          if (left < right) {
-            return -1;
-          }
-          if (left > right) {
-            return 1;
-          }
-          return 0;
-        })
-        .map(([key, entry]) => [key, normalizeForStableJson(entry)])
-    );
-  }
-  return value;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(normalizeForStableJson(value));
-}
-
-function hasMaterialHealthCheckFieldChanged(
-  existing: Pick<
-    ComputeTargetRecord,
-    | "machineName"
-    | "platform"
-    | "gatewayId"
-    | "capabilities"
-    | "supportedOperations"
-  >,
-  next: Partial<
-    Pick<
-      ComputeTargetRecord,
-      | "machineName"
-      | "platform"
-      | "gatewayId"
-      | "capabilities"
-      | "supportedOperations"
-    >
-  >
-): boolean {
-  if (
-    next.machineName !== undefined &&
-    next.machineName !== existing.machineName
-  ) {
-    return true;
-  }
-  if (next.platform !== undefined && next.platform !== existing.platform) {
-    return true;
-  }
-  if (next.gatewayId !== undefined && next.gatewayId !== existing.gatewayId) {
-    return true;
-  }
-  if (
-    next.capabilities !== undefined &&
-    stableJson(next.capabilities) !== stableJson(existing.capabilities)
-  ) {
-    return true;
-  }
-  if (
-    next.supportedOperations !== undefined &&
-    stableJson(next.supportedOperations) !==
-      stableJson(existing.supportedOperations)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function getDesktopSecurityProtocolVersion(
-  target: Pick<ComputeTargetRecord, "capabilities">
-): number | null {
-  const capabilities = toJsonObject(target.capabilities);
-  const value = capabilities.desktopSecurityUpgradeProtocolVersion;
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
-}
-
 function buildCapabilitiesPayload(
-  payload: RegisterComputeTargetInput | UpdateComputeTargetInput,
+  payload: ComputeTargetRegistration | OwnedComputeTargetUpdate,
   existingCapabilities?: unknown
 ): JsonObject {
   const payloadCapabilities = toJsonObject(payload.capabilities);
@@ -214,232 +106,11 @@ function buildCapabilitiesPayload(
   return capabilities;
 }
 
-function buildSecurity(
-  target: ComputeTargetRecord,
-  viewerUserId: string | undefined,
-  protectedGateways: Set<string>,
-  lookupFailed: boolean,
-  desktopSecurityEnabled: boolean
-): ComputeTargetSecurity {
-  if (!desktopSecurityEnabled) {
-    return {
-      status: DesktopSecurityStatus.LegacyManual,
-      reason: "FEATURE_DISABLED",
-      upgradeSupported: false,
-    };
-  }
-
-  const isOwnedByViewer = viewerUserId ? target.userId === viewerUserId : true;
-  if (!isOwnedByViewer) {
-    return {
-      status: DesktopSecurityStatus.UpdateRequired,
-      reason: "SHARED_TARGET",
-      upgradeSupported: false,
-    };
-  }
-  if (lookupFailed) {
-    return {
-      status: DesktopSecurityStatus.Unknown,
-      reason: "LOOKUP_FAILED",
-      upgradeSupported: false,
-    };
-  }
-  if (target.gatewayId && protectedGateways.has(target.gatewayId)) {
-    return {
-      status: DesktopSecurityStatus.Protected,
-      reason: "BOUND_DESKTOP_MANAGED_KEY",
-      upgradeSupported: false,
-    };
-  }
-  if (!target.isOnline) {
-    return {
-      status: DesktopSecurityStatus.LegacyManual,
-      reason: "TARGET_OFFLINE",
-      upgradeSupported: false,
-    };
-  }
-  if (!target.gatewayId) {
-    return {
-      status: DesktopSecurityStatus.UpdateRequired,
-      reason: "MISSING_GATEWAY_ID",
-      upgradeSupported: false,
-    };
-  }
-  if (
-    getDesktopSecurityProtocolVersion(target) !==
-    DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION
-  ) {
-    return {
-      status: DesktopSecurityStatus.UpdateRequired,
-      reason: "UNSUPPORTED_DESKTOP_VERSION",
-      upgradeSupported: false,
-    };
-  }
-  return {
-    status: DesktopSecurityStatus.UpgradeAvailable,
-    reason: "NO_BOUND_MANAGED_KEY",
-    upgradeSupported: true,
-  };
-}
-
-function formatOwnerName(
-  user: { firstName: string | null; lastName: string | null } | null | undefined
-): string {
-  // Divergent fallback ("Teammate") kept at the call site per FEA-3506; the
-  // name derivation itself routes through the shared SSOT.
-  return (user && formatUserFullName(user)) || "Teammate";
-}
-
-function toComputeTarget(
-  target: ComputeTargetRecord | null,
-  /** When set, ownerName is populated for targets not owned by this user. */
-  viewerUserId?: string,
-  security?: ComputeTargetSecurity,
-  serverCapabilities?: ComputeTargetServerCapabilities
-): ComputeTarget | null {
-  if (!target) {
-    return null;
-  }
-
-  const isOwnedByViewer = viewerUserId ? target.userId === viewerUserId : true;
-
-  return {
-    id: target.id,
-    organizationId: target.organizationId,
-    userId: target.userId,
-    machineName: target.machineName,
-    platform: target.platform,
-    gatewayId: target.gatewayId ?? undefined,
-    capabilities: toJsonObject(target.capabilities),
-    supportedOperations: toStringArray(target.supportedOperations),
-    lastSeenAt: target.lastSeenAt,
-    isOnline: target.isOnline,
-    isSharedWithOrg: target.isSharedWithOrg,
-    serverCapabilities,
-    security:
-      security ?? buildSecurity(target, viewerUserId, new Set(), false, false),
-    ownerName: isOwnedByViewer ? undefined : formatOwnerName(target.user),
-    selectedHarness: parseSelectedHarness(target.selectedHarness),
-    createdAt: target.createdAt,
-    updatedAt: target.updatedAt,
-  };
-}
-
-function toRequiredComputeTarget(target: ComputeTargetRecord): ComputeTarget {
-  const mapped = toComputeTarget(target);
-  if (!mapped) {
-    throw new Error("Expected persisted compute target");
-  }
-  return mapped;
-}
-
-async function toComputeTargetList(
-  targets: ComputeTargetRecord[],
-  viewerUserId?: string,
-  viewerClerkUserId?: string | null
-): Promise<ComputeTarget[]> {
-  const desktopSecurityEnabled = viewerUserId
-    ? await isDesktopManagedPopEnforcementEnabled({
-        userId: viewerUserId,
-        clerkUserId: viewerClerkUserId,
-      })
-    : false;
-  const viewerOwnedGateways = Array.from(
-    new Set(
-      targets.flatMap((target) =>
-        target.userId === viewerUserId && target.gatewayId
-          ? [target.gatewayId]
-          : []
-      )
-    )
-  );
-  const firstViewerTarget = targets.find(
-    (target) => target.userId === viewerUserId
-  );
-  const { protectedGateways, lookupFailed } =
-    firstViewerTarget && viewerUserId && desktopSecurityEnabled
-      ? await loadProtectedGateways(
-          firstViewerTarget.organizationId,
-          viewerUserId,
-          viewerOwnedGateways
-        )
-      : { protectedGateways: new Set<string>(), lookupFailed: false };
-  // Bounded: one task per distinct compute-target owner, and via
-  // `listAvailableForOrg` that set is every org member sharing a target — an
-  // uncapped query. Each task takes pooled connections and holds one across a
-  // co-scheduled PostHog call, so a large org could drain the pool from a single
-  // GET. The bound also shortens the hold window (FEA-3299 / PRD-528).
-  const ownerCapabilityEntries = await mapWithDbConcurrency(
-    Array.from(new Set(targets.map((target) => target.userId))),
-    async (ownerUserId) => {
-      const ownerTargets = targets.filter(
-        (target) => target.userId === ownerUserId
-      );
-      const ownerTarget = ownerTargets[0];
-      const ownerClerkUserId =
-        ownerUserId === viewerUserId
-          ? viewerClerkUserId
-          : ownerTarget?.user?.clerkId;
-      const ownerGatewayIds = ownerTargets.flatMap((target) =>
-        target.gatewayId ? [target.gatewayId] : []
-      );
-      const [signingGatewayResult, agentSessionSync] = await Promise.all([
-        ownerTarget
-          ? loadActiveDesktopManagedGatewayIds({
-              organizationId: ownerTarget.organizationId,
-              userId: ownerUserId,
-              clerkUserId: ownerClerkUserId,
-              gatewayIds: ownerGatewayIds,
-            })
-          : Promise.resolve({
-              status: CommandSigningEligibilityStatus.Ineligible,
-              gatewayIds: new Set<string>(),
-              reason: "owner_not_found" as const,
-            }),
-        isAgentSessionSyncSupportedForUser({
-          userId: ownerUserId,
-          clerkUserId: ownerClerkUserId,
-        }),
-      ]);
-      return [ownerUserId, { signingGatewayResult, agentSessionSync }] as const;
-    }
-  );
-  const serverCapabilitiesByOwner = new Map(ownerCapabilityEntries);
-
-  return targets.flatMap((target) => {
-    const ownerCapabilities = serverCapabilitiesByOwner.get(target.userId);
-    const computeTargetSigning =
-      ownerCapabilities?.signingGatewayResult.status ===
-        CommandSigningEligibilityStatus.Eligible &&
-      target.gatewayId !== null &&
-      target.gatewayId !== undefined &&
-      ownerCapabilities.signingGatewayResult.gatewayIds.has(target.gatewayId);
-    const serverCapabilities =
-      ownerCapabilities &&
-      (computeTargetSigning || ownerCapabilities.agentSessionSync)
-        ? {
-            ...(computeTargetSigning ? { computeTargetSigning: true } : {}),
-            ...(ownerCapabilities.agentSessionSync
-              ? { agentSessionSync: true }
-              : {}),
-          }
-        : undefined;
-    const mapped = toComputeTarget(
-      target,
-      viewerUserId,
-      buildSecurity(
-        target,
-        viewerUserId,
-        protectedGateways,
-        lookupFailed,
-        desktopSecurityEnabled
-      ),
-      serverCapabilities
-    );
-    return mapped ? [mapped] : [];
-  });
-}
-
+/**
+ * The caller's own target in the org, or null. Owner-only since ISS-12617
+ * retired target sharing: the only consumer that dispatched to a teammate's
+ * machine was the deleted Loop resolver (#8800).
+ */
 function findAccessibleTargetRecord(
   db: TransactionClient,
   id: string,
@@ -450,8 +121,9 @@ function findAccessibleTargetRecord(
     where: {
       id,
       organizationId,
-      OR: [{ userId }, { isSharedWithOrg: true }],
+      userId,
     },
+    select: COMPUTE_TARGET_RECORD_SELECT,
   });
 }
 
@@ -466,7 +138,7 @@ async function hasGatewayConflictForOwnedUpdate({
   id: string;
   organizationId: string;
   userId: string;
-  gatewayId?: string;
+  gatewayId?: string | null;
 }): Promise<boolean> {
   if (!gatewayId) {
     return false;
@@ -486,7 +158,7 @@ async function hasGatewayConflictForOwnedUpdate({
 }
 
 function buildComputeTargetUpdateData(
-  payload: UpdateComputeTargetInput,
+  payload: OwnedComputeTargetUpdate,
   existingCapabilities: unknown
 ) {
   return {
@@ -501,21 +173,18 @@ function buildComputeTargetUpdateData(
     ...(payload.supportedOperations
       ? { supportedOperations: payload.supportedOperations }
       : {}),
-    ...(payload.gatewayId ? { gatewayId: payload.gatewayId } : {}),
-    ...(payload.selectedHarness
-      ? { selectedHarness: payload.selectedHarness }
-      : {}),
+    ...gatewayIdUpdate(payload.gatewayId),
   };
 }
 
 function buildMaterialHealthCheckUpdateFields(
-  payload: UpdateComputeTargetInput,
+  payload: OwnedComputeTargetUpdate,
   updated: ComputeTargetRecord
 ) {
   return {
     ...(payload.machineName ? { machineName: payload.machineName } : {}),
     ...(payload.platform ? { platform: payload.platform } : {}),
-    ...(payload.gatewayId ? { gatewayId: payload.gatewayId } : {}),
+    ...gatewayIdUpdate(payload.gatewayId),
     ...(payload.supportedOperations
       ? { supportedOperations: payload.supportedOperations }
       : {}),
@@ -537,7 +206,7 @@ async function updateOwnedComputeTargetInTransaction({
   id: string;
   organizationId: string;
   userId: string;
-  payload: UpdateComputeTargetInput;
+  payload: OwnedComputeTargetUpdate;
 }): Promise<
   DomainResult<ComputeTargetRecord | null, ComputeTargetGatewayConflict>
 > {
@@ -555,6 +224,7 @@ async function updateOwnedComputeTargetInTransaction({
 
   const existing = await tx.computeTarget.findFirst({
     where: { id, organizationId, userId },
+    select: COMPUTE_TARGET_MATERIAL_CHANGE_SELECT,
   });
   if (!existing) {
     return Result.ok<ComputeTargetRecord | null, ComputeTargetGatewayConflict>(
@@ -585,138 +255,32 @@ export const computeTargetsService = {
   async register(
     organizationId: string,
     userId: string,
-    payload: RegisterComputeTargetInput
+    payload: ComputeTargetRegistration,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<DomainResult<ComputeTarget, ComputeTargetGatewayConflict>> {
     const now = new Date();
     const capabilities = buildCapabilitiesPayload(payload);
 
-    if (payload.gatewayId) {
+    const { gatewayId } = payload;
+    if (gatewayId) {
       let target: DomainResult<
         ComputeTargetRecord,
         ComputeTargetGatewayConflict
       >;
       try {
         target = await withDb.tx(async (db) => {
-          const conflictingGateway = await db.computeTarget.findFirst({
-            where: {
-              gatewayId: payload.gatewayId,
-              OR: [
-                { organizationId: { not: organizationId } },
-                { userId: { not: userId } },
-              ],
-            },
-            select: { id: true },
+          const registered = await registerGatewayTargetInTransaction(db, {
+            organizationId,
+            userId,
+            payload,
+            gatewayId,
+            capabilities,
+            now,
           });
-          if (conflictingGateway) {
-            return computeTargetGatewayConflictResult<ComputeTargetRecord>();
+          if (!isComputeTargetGatewayConflictResult(registered)) {
+            await recordWrite?.(db, { changed: true });
           }
-
-          const gatewayTarget = await db.computeTarget.findFirst({
-            where: {
-              organizationId,
-              userId,
-              gatewayId: payload.gatewayId,
-            },
-          });
-          if (gatewayTarget) {
-            const nextFields = {
-              machineName: payload.machineName,
-              platform: payload.platform,
-              capabilities,
-              supportedOperations: payload.supportedOperations,
-            };
-            const shouldInvalidateHealthCheck =
-              hasMaterialHealthCheckFieldChanged(gatewayTarget, nextFields);
-            const updated = await db.computeTarget.update({
-              where: { id: gatewayTarget.id },
-              data: {
-                ...nextFields,
-                isOnline: true,
-                lastSeenAt: now,
-              },
-            });
-            if (shouldInvalidateHealthCheck) {
-              await db.computeTargetHealthCheck.deleteMany({
-                where: { computeTargetId: gatewayTarget.id },
-              });
-            }
-            return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-              updated
-            );
-          }
-
-          const machineTarget = await db.computeTarget.findFirst({
-            where: {
-              organizationId,
-              userId,
-              machineName: payload.machineName,
-            },
-          });
-          if (machineTarget) {
-            const nextFields = {
-              gatewayId: payload.gatewayId,
-              platform: payload.platform,
-              capabilities,
-              supportedOperations: payload.supportedOperations,
-            };
-            const shouldInvalidateHealthCheck =
-              hasMaterialHealthCheckFieldChanged(machineTarget, nextFields);
-            const updated = await db.computeTarget.update({
-              where: { id: machineTarget.id },
-              data: {
-                ...nextFields,
-                isOnline: true,
-                lastSeenAt: now,
-              },
-            });
-            if (shouldInvalidateHealthCheck) {
-              await db.computeTargetHealthCheck.deleteMany({
-                where: { computeTargetId: machineTarget.id },
-              });
-            }
-            return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-              updated
-            );
-          }
-
-          await db.computeTargetHealthCheck.deleteMany({
-            where: {
-              computeTarget: {
-                userId,
-                machineName: payload.machineName,
-              },
-            },
-          });
-          const upserted = await db.computeTarget.upsert({
-            where: {
-              userId_machineName: {
-                userId,
-                machineName: payload.machineName,
-              },
-            },
-            update: {
-              gatewayId: payload.gatewayId,
-              platform: payload.platform,
-              capabilities,
-              supportedOperations: payload.supportedOperations,
-              isOnline: true,
-              lastSeenAt: now,
-            },
-            create: {
-              organizationId,
-              userId,
-              gatewayId: payload.gatewayId,
-              machineName: payload.machineName,
-              platform: payload.platform,
-              capabilities,
-              supportedOperations: payload.supportedOperations,
-              isOnline: true,
-              lastSeenAt: now,
-            },
-          });
-          return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-            upserted
-          );
+          return registered;
         });
       } catch (error) {
         if (isGatewayUniqueConstraintViolation(error)) {
@@ -740,11 +304,13 @@ export const computeTargetsService = {
             machineName: payload.machineName,
           },
         },
+        select: COMPUTE_TARGET_MATERIAL_CHANGE_SELECT,
       });
       const nextFields = {
         platform: payload.platform,
         capabilities,
         supportedOperations: payload.supportedOperations,
+        ...gatewayIdUpdate(payload.gatewayId),
       };
       if (
         existing &&
@@ -755,7 +321,7 @@ export const computeTargetsService = {
         });
       }
 
-      return db.computeTarget.upsert({
+      const upserted = await db.computeTarget.upsert({
         where: {
           userId_machineName: {
             userId,
@@ -763,9 +329,7 @@ export const computeTargetsService = {
           },
         },
         update: {
-          platform: payload.platform,
-          capabilities,
-          supportedOperations: payload.supportedOperations,
+          ...nextFields,
           isOnline: true,
           lastSeenAt: now,
         },
@@ -780,6 +344,8 @@ export const computeTargetsService = {
           lastSeenAt: now,
         },
       });
+      await recordWrite?.(db, { changed: true });
+      return upserted;
     });
 
     return Result.ok(toRequiredComputeTarget(target));
@@ -799,7 +365,8 @@ export const computeTargetsService = {
           // (owns backfilled cloud-authored agent_components; not a real device).
           isCloudSentinel: false,
         },
-        orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
+        orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }, { id: "asc" }],
+        select: COMPUTE_TARGET_RECORD_SELECT,
       })
     );
 
@@ -832,6 +399,7 @@ export const computeTargetsService = {
           organizationId,
           userId,
         },
+        select: COMPUTE_TARGET_RECORD_SELECT,
       })
     );
 
@@ -866,7 +434,7 @@ export const computeTargetsService = {
     id: string,
     organizationId: string,
     userId: string,
-    payload: UpdateComputeTargetInput,
+    payload: OwnedComputeTargetUpdate,
     clerkUserId?: string | null
   ): Promise<DomainResult<ComputeTarget | null, ComputeTargetGatewayConflict>> {
     try {
@@ -927,95 +495,33 @@ export const computeTargetsService = {
     }
   },
 
-  async deleteOwned(
+  // The FK/lock-ordered teardown lives in `service/delete-owned.ts` — see there
+  // for why each delete is where it is.
+  deleteOwned(
+    id: string,
+    organizationId: string,
+    userId: string,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
+  ): Promise<boolean> {
+    return deleteOwnedComputeTarget(id, organizationId, userId, recordWrite);
+  },
+  // ISS-8897: the relay-presence clock lives in `service/relay-presence.ts` —
+  // see there for why it is a separate writer and not a flag on `heartbeat`.
+  recordRelayPresence(
     id: string,
     organizationId: string,
     userId: string
   ): Promise<boolean> {
-    const outcome = await withDb.tx(async (tx) => {
-      const target = await tx.computeTarget.findFirst({
-        where: { id, organizationId, userId },
-        select: { id: true },
-      });
-      if (!target) {
-        return { deleted: false, transcriptKeys: [] as string[] };
-      }
-      // SESSION artifacts reference the compute target with onDelete: Restrict
-      // (FEA-1699), so the parent artifacts must be removed first — that cascades
-      // to session_detail and its event/token-usage children. Deleting the
-      // artifacts here also removes the user-facing session records, which is the
-      // intended behavior when a compute target is deleted.
-      await tx.artifact.deleteMany({
-        where: {
-          organizationId,
-          type: ArtifactType.Session,
-          session: { is: { computeTargetId: id } },
-        },
-      });
-      // Collect the transcript objects' storage keys before dropping the rows
-      // that carry them: the raw JSONL bytes live in the transcripts bucket,
-      // separate from the row metadata, so once these rows are gone there is no
-      // DB record of which objects to purge. The best-effort purge runs after
-      // the transaction commits (below) so an S3 failure can never roll back or
-      // corrupt the FK-ordering delete.
-      const transcripts = await tx.sessionTranscript.findMany({
-        where: { computeTargetId: id },
-        select: { objectStorageKey: true },
-      });
-      // session_transcript rows reference the compute target with
-      // onDelete: Restrict, so they must be removed explicitly before the
-      // target row. Deleting the SESSION artifacts above only NULLs their
-      // sessionDetailId (that FK is SetNull) — the transcript rows survive
-      // with the RESTRICT link intact, which would otherwise make the final
-      // computeTarget delete throw a P2003 and leave the target undeletable.
-      await tx.sessionTranscript.deleteMany({
-        where: { computeTargetId: id },
-      });
-      // deleteMany keeps deletion idempotent under concurrency: a parallel
-      // delete that wins the race yields count 0 here (-> 404) instead of the
-      // P2025 a singular delete would throw.
-      const deleted = await tx.computeTarget.deleteMany({ where: { id } });
-      return {
-        deleted: deleted.count > 0,
-        transcriptKeys: transcripts
-          .map((t) => t.objectStorageKey)
-          .filter((key): key is string => key.length > 0),
-      };
-    });
-
-    // Purge the transcript objects only after the row delete has committed, so
-    // the RESTRICT-FK ordering fix (the reason this method deletes transcripts
-    // before the target) is never rolled back by a storage failure. Best-effort:
-    // an S3 error is logged with the orphaned keys for follow-up cleanup rather
-    // than turned into a delete failure — the target is already gone. The shared
-    // helper defers the `@repo/aws` import (which begins with `import
-    // "server-only"`) so this module — statically imported by the desktop
-    // gateway socket server and loaded under tsx by `server:import-smoke` — keeps
-    // the S3 dependency off its eager load graph.
-    if (outcome.deleted) {
-      await purgeTranscriptObjectsBestEffort(
-        outcome.transcriptKeys,
-        "[compute-targets] failed to purge transcript objects after target delete",
-        { computeTargetId: id, organizationId }
-      );
-    } else if (outcome.transcriptKeys.length > 0) {
-      // Transcript rows were deleted (e.g. in a concurrent race that already
-      // removed the compute-target row) but the target row itself was already
-      // gone when deleteMany ran, so deleted=false. The transcript S3 objects
-      // were NOT purged — log them so orphaned objects are observable.
-      log.warn(
-        "[compute-targets] transcript rows deleted but compute target row was already gone; S3 objects may be orphaned",
-        {
-          computeTargetId: id,
-          organizationId,
-          objectStorageKeys: outcome.transcriptKeys,
-        }
-      );
-    }
-
-    return outcome.deleted;
+    return recordRelayPresence(id, organizationId, userId);
   },
-
+  /**
+   * Any desktop-originated check-in, on any transport.
+   *
+   * NOT a presence clock (ISS-8897): two callers reach this — the direct
+   * Socket.IO server's 30s timer and its `desktop.presence` event — and neither
+   * drives the presence-triggered command drain. A reader that needs "is the relay presence
+   * trigger covering this target" wants `presenceAt`, not `lastSeenAt`.
+   */
   async heartbeat(
     id: string,
     organizationId: string,
@@ -1104,8 +610,8 @@ export const computeTargetsService = {
   /**
    * PRD-536 §5: org-wide "has any real desktop compute target ever registered?"
    * signal for the Sessions onboarding empty state. Unlike `listAvailableForOrg`
-   * (which filters to the viewer's own + org-shared targets), this counts every
-   * target in the org so a teammate's unshared desktop still counts as
+   * (which filters to the viewer's own targets), this counts every
+   * target in the org so a teammate's desktop still counts as
    * "connected" — the Sessions list is an org-wide view, so its
    * onboarding-vs-filters decision must be org-wide too. Excludes the synthetic
    * cloud sentinel to match the "real device?" semantics of `hasAnyForOwner`.
@@ -1136,8 +642,8 @@ export const computeTargetsService = {
   },
 
   /**
-   * Returns the user's own targets plus any shared targets from other org members.
-   * Shared targets include the owner's name for display.
+   * Returns the user's own targets in the org. Owner-only since ISS-12617
+   * retired target sharing.
    */
   async listAvailableForOrg(
     organizationId: string,
@@ -1151,12 +657,12 @@ export const computeTargetsService = {
           // FEA-2923: exclude the synthetic per-org "cloud" sentinel target so
           // it never appears as a selectable dispatch target.
           isCloudSentinel: false,
-          OR: [{ userId }, { isSharedWithOrg: true }],
+          userId,
         },
         include: {
           user: { select: { clerkId: true, firstName: true, lastName: true } },
         },
-        orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
+        orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }, { id: "asc" }],
       })
     );
 
@@ -1164,8 +670,8 @@ export const computeTargetsService = {
   },
 
   /**
-   * Finds a compute target by ID within the org — either owned by the user
-   * or shared with the org. Used for dispatch to shared targets.
+   * Finds a compute target by ID within the org that the user owns. Unlike
+   * {@link findOwnedById} it skips the command-signing eligibility lookup.
    */
   async findAccessibleById(
     id: string,
@@ -1197,109 +703,11 @@ export const computeTargetsService = {
 
       return db.computeTargetHealthCheck.findUnique({
         where: { computeTargetId: targetId },
+        select: COMPUTE_TARGET_HEALTH_CHECK_SELECT,
       });
     });
 
     return toHealthCheckSnapshot(snapshot);
-  },
-
-  async upsertHealthCheckSnapshot(
-    organizationId: string,
-    userId: string,
-    targetId: string,
-    payload: UpsertComputeTargetHealthCheckSnapshotInput
-  ): Promise<ComputeTargetHealthCheckSnapshot | null> {
-    const {
-      result: normalizedResult,
-      requiredFailureIds,
-      allRequiredPassed,
-    } = buildHealthCheckSnapshotWrite(payload.result);
-    const checkedAt = new Date();
-    const availableHarnesses = deriveAvailableHarnesses(payload.result);
-    const snapshot = await withDb.tx(async (tx) => {
-      const target = await findAccessibleTargetRecord(
-        tx,
-        targetId,
-        organizationId,
-        userId
-      );
-      if (!target) {
-        return null;
-      }
-      const pluginAutoUpdateEnabled =
-        (payload.pluginAutoUpdateEnabled ?? false) && target.userId === userId;
-      const selectedHarness = parseSelectedHarness(target.selectedHarness);
-
-      if (
-        target.userId === userId &&
-        availableHarnesses.length > 0 &&
-        !availableHarnesses.includes(selectedHarness)
-      ) {
-        const nextHarness = availableHarnesses.includes(HarnessType.Claude)
-          ? HarnessType.Claude
-          : availableHarnesses[0];
-        await tx.computeTarget.update({
-          where: { id: targetId },
-          data: { selectedHarness: nextHarness },
-        });
-      }
-
-      // ONE set of column values, spread into both branches, so a `create` and
-      // an `update` of the same payload cannot diverge (ISS-5868 — that is how
-      // `schemaVersion` was once stamped on one branch only, and how
-      // `normalizedResult` could have reached one branch and not the other).
-      // `normalizedResult` is `payload.result` — already shape-validated by
-      // healthCheckSnapshotValidator, which has no top-level passthrough — with
-      // `allRequiredPassed` replaced by the derivation the sibling column also
-      // uses, so the JSON blob and the boolean column can never disagree. The
-      // casts only bridge that Zod-typed value into Prisma's JSON column type;
-      // they don't widen an unvalidated shape.
-      const snapshotColumns = {
-        organizationId,
-        checkedAt,
-        expectedMcpUrl: payload.expectedMcpUrl ?? null,
-        latestVersion: payload.latestVersion ?? null,
-        pluginAutoUpdateEnabled,
-        result: normalizedResult as unknown as Prisma.InputJsonValue,
-        allRequiredPassed,
-        requiredFailureIds:
-          requiredFailureIds as unknown as Prisma.InputJsonValue,
-        // The column defaults to 1, so a `create` that left it to the default
-        // would stamp every brand-new snapshot as the version consumers now
-        // reject (ISS-5811).
-        schemaVersion: HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
-      };
-      return tx.computeTargetHealthCheck.upsert({
-        where: { computeTargetId: targetId },
-        create: { ...snapshotColumns, computeTargetId: targetId },
-        update: snapshotColumns,
-      });
-    });
-
-    return toHealthCheckSnapshot(snapshot);
-  },
-
-  async setSharing(
-    id: string,
-    organizationId: string,
-    userId: string,
-    isSharedWithOrg: boolean
-  ): Promise<{ id: string; isSharedWithOrg: boolean } | null> {
-    try {
-      const updated = await withDb((db) =>
-        db.computeTarget.update({
-          where: { id, organizationId, userId },
-          data: { isSharedWithOrg },
-          select: { id: true, isSharedWithOrg: true },
-        })
-      );
-      return updated;
-    } catch (error) {
-      if (getPrismaErrorCode(error) === "P2025") {
-        return null;
-      }
-      throw error;
-    }
   },
 };
 
@@ -1312,8 +720,7 @@ const COMPUTE_TARGET_GATEWAY_ID_UNIQUE_TARGETS = new Set([
 ]);
 
 function isGatewayUniqueConstraintViolation(error: unknown): boolean {
-  const target = getPrismaP2002Target(error);
-  return isGatewayUniqueConstraintTarget(target);
+  return matchesPrismaP2002Target(error, isGatewayUniqueConstraintTarget);
 }
 
 function isGatewayUniqueConstraintTarget(target: unknown): boolean {
@@ -1324,4 +731,188 @@ function isGatewayUniqueConstraintTarget(target: unknown): boolean {
     return target.some(isGatewayUniqueConstraintTarget);
   }
   return false;
+}
+
+/**
+ * ISS-12032: `gatewayId: null` is a hello that declared no gateway, and clears
+ * the stored one so a Desktop that never upgrades is not left addressed by a
+ * stale id; an omitted gatewayId leaves the column alone. The hello handlers
+ * are the only callers.
+ */
+type OwnedComputeTargetUpdate = Partial<
+  Pick<
+    RegisterComputeTargetInput,
+    | "machineName"
+    | "platform"
+    | "capabilities"
+    | "supportedOperations"
+    | "desktopSecurityUpgradeProtocolVersion"
+  >
+> & {
+  gatewayId?: string | null;
+};
+
+type ComputeTargetRegistration = Omit<
+  RegisterComputeTargetInput,
+  "gatewayId"
+> & {
+  gatewayId?: string | null;
+};
+
+function gatewayIdUpdate(gatewayId: string | null | undefined): {
+  gatewayId?: string | null;
+} {
+  if (gatewayId === null) {
+    return { gatewayId: null };
+  }
+  return gatewayId ? { gatewayId } : {};
+}
+
+/**
+ * Register or refresh the caller's target for a Desktop gateway identity:
+ * refuse a gateway bound to another owner, else update the target already
+ * holding the gateway or machine name, else upsert by machine name.
+ */
+async function registerGatewayTargetInTransaction(
+  db: TransactionClient,
+  {
+    organizationId,
+    userId,
+    payload,
+    gatewayId,
+    capabilities,
+    now,
+  }: {
+    organizationId: string;
+    userId: string;
+    payload: ComputeTargetRegistration;
+    gatewayId: string;
+    capabilities: ReturnType<typeof buildCapabilitiesPayload>;
+    now: Date;
+  }
+): Promise<DomainResult<ComputeTargetRecord, ComputeTargetGatewayConflict>> {
+  const conflictingGateway = await db.computeTarget.findFirst({
+    where: {
+      gatewayId,
+      OR: [
+        { organizationId: { not: organizationId } },
+        { userId: { not: userId } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (conflictingGateway) {
+    return computeTargetGatewayConflictResult<ComputeTargetRecord>();
+  }
+
+  const gatewayTarget = await db.computeTarget.findFirst({
+    where: {
+      organizationId,
+      userId,
+      gatewayId,
+    },
+    select: COMPUTE_TARGET_MATERIAL_CHANGE_SELECT,
+  });
+  if (gatewayTarget) {
+    const nextFields = {
+      machineName: payload.machineName,
+      platform: payload.platform,
+      capabilities,
+      supportedOperations: payload.supportedOperations,
+    };
+    const shouldInvalidateHealthCheck = hasMaterialHealthCheckFieldChanged(
+      gatewayTarget,
+      nextFields
+    );
+    const updated = await db.computeTarget.update({
+      where: { id: gatewayTarget.id },
+      data: {
+        ...nextFields,
+        isOnline: true,
+        lastSeenAt: now,
+      },
+    });
+    if (shouldInvalidateHealthCheck) {
+      await db.computeTargetHealthCheck.deleteMany({
+        where: { computeTargetId: gatewayTarget.id },
+      });
+    }
+    return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
+      updated
+    );
+  }
+
+  const machineTarget = await db.computeTarget.findFirst({
+    where: {
+      organizationId,
+      userId,
+      machineName: payload.machineName,
+    },
+    select: COMPUTE_TARGET_MATERIAL_CHANGE_SELECT,
+  });
+  if (machineTarget) {
+    const nextFields = {
+      gatewayId,
+      platform: payload.platform,
+      capabilities,
+      supportedOperations: payload.supportedOperations,
+    };
+    const shouldInvalidateHealthCheck = hasMaterialHealthCheckFieldChanged(
+      machineTarget,
+      nextFields
+    );
+    const updated = await db.computeTarget.update({
+      where: { id: machineTarget.id },
+      data: {
+        ...nextFields,
+        isOnline: true,
+        lastSeenAt: now,
+      },
+    });
+    if (shouldInvalidateHealthCheck) {
+      await db.computeTargetHealthCheck.deleteMany({
+        where: { computeTargetId: machineTarget.id },
+      });
+    }
+    return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
+      updated
+    );
+  }
+
+  await db.computeTargetHealthCheck.deleteMany({
+    where: {
+      computeTarget: {
+        userId,
+        machineName: payload.machineName,
+      },
+    },
+  });
+  const upserted = await db.computeTarget.upsert({
+    where: {
+      userId_machineName: {
+        userId,
+        machineName: payload.machineName,
+      },
+    },
+    update: {
+      gatewayId,
+      platform: payload.platform,
+      capabilities,
+      supportedOperations: payload.supportedOperations,
+      isOnline: true,
+      lastSeenAt: now,
+    },
+    create: {
+      organizationId,
+      userId,
+      gatewayId,
+      machineName: payload.machineName,
+      platform: payload.platform,
+      capabilities,
+      supportedOperations: payload.supportedOperations,
+      isOnline: true,
+      lastSeenAt: now,
+    },
+  });
+  return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(upserted);
 }

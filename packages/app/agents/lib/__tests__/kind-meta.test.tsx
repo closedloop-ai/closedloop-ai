@@ -96,26 +96,29 @@ describe("KindLabel", () => {
   it.each([
     [AgentComponentKind.Skill, "Skill"],
     [AgentComponentKind.Command, "Command"],
-  ])("renders %s with the uniform icon and muted-label treatment", (kind, label) => {
-    const { container } = render(<KindLabel kind={kind} />);
-    const text = screen.getByText(label);
-    const wrapper = text.parentElement;
-    const icon = wrapper?.querySelector("svg");
+  ])(
+    "renders %s with the uniform icon and muted-label treatment",
+    (kind, label) => {
+      const { container } = render(<KindLabel kind={kind} />);
+      const text = screen.getByText(label);
+      const wrapper = text.parentElement;
+      const icon = wrapper?.querySelector("svg");
 
-    expect(wrapper).toHaveClass(
-      "flex",
-      "min-w-0",
-      "items-center",
-      "gap-1.5",
-      "font-medium",
-      "text-muted-foreground",
-      "text-xs"
-    );
-    expect(text).toHaveClass("truncate");
-    expect(icon).toHaveClass("size-3.5", "shrink-0");
-    expect(icon).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelector('[data-slot="badge"]')).toBeNull();
-  });
+      expect(wrapper).toHaveClass(
+        "flex",
+        "min-w-0",
+        "items-center",
+        "gap-1.5",
+        "font-medium",
+        "text-muted-foreground",
+        "text-xs"
+      );
+      expect(text).toHaveClass("truncate");
+      expect(icon).toHaveClass("size-3.5", "shrink-0");
+      expect(icon).toHaveAttribute("aria-hidden", "true");
+      expect(container.querySelector('[data-slot="badge"]')).toBeNull();
+    }
+  );
 
   it("uses the canonical fallback icon and label for an unmapped kind", () => {
     const { container } = render(<KindLabel kind={UNMAPPED_KIND} />);

@@ -4,6 +4,9 @@
     "allowImportingTsExtensions": true,
     "paths": {
       "@/*": ["./*"],
+      "@repo/http-service/*": ["../../packages/http-service/src/*"],
+      "@repo/realtime-contract/*": ["../../packages/realtime-contract/src/*"],
+      "@repo/realtime-server/*": ["../../packages/realtime-server/src/*"],
       "@repo/*": ["../../packages/*"]
     },
     "types": ["vitest/globals"]
@@ -15,5 +18,5 @@
     "**/*.tsx",
     ".next/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "scripts"]
+  "exclude": ["node_modules"]
 }

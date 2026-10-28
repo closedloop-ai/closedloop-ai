@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SESSION_STATUS_FILTER_VALUES } from "@repo/api/src/agent-session-filters.js";
+import { SESSION_LIST_MAX_OFFSET } from "@repo/api/src/types/agent-session-list-limits.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentSessionListInputSchema,
@@ -108,6 +109,25 @@ describe("buildAgentSessionListQuery", () => {
     });
   });
 
+  // ISS-8528: the tool's own bound, not just the server's. Without `.max()` here
+  // the agent-facing schema accepts an offset the API answers with a 400, and the
+  // agent has no way to learn the ceiling from the tool description either.
+  it("rejects an offset above the shared ceiling and accepts one at it", () => {
+    const offsetSchema = agentSessionListInputSchema.offset;
+
+    const overCap = offsetSchema.safeParse(SESSION_LIST_MAX_OFFSET + 1);
+    expect(overCap.success).toBe(false);
+    expect(offsetSchema.safeParse(SESSION_LIST_MAX_OFFSET)).toEqual(
+      expect.objectContaining({ success: true, data: SESSION_LIST_MAX_OFFSET })
+    );
+  });
+
+  it("publishes the accepted offset range in the agent-facing description", () => {
+    expect(agentSessionListInputSchema.offset.description).toContain(
+      `0-${SESSION_LIST_MAX_OFFSET}`
+    );
+  });
+
   // FEA-3345: the server default is now fail-open `all`, but this MCP read tool
   // keeps its documented `substantive` default by sending it explicitly, so an
   // agent that omits `quality` still hides idle sessions (its `.describe()`
@@ -131,7 +151,7 @@ describe("shapeAgentSessionListItem", () => {
       status: "completed",
       harness: "claude-code",
       model: "claude-opus-4",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       baseBranch: "main",
       startedAt: "2026-07-10T00:00:00.000Z",
       lastActivityAt: "2026-07-10T01:00:00.000Z",
@@ -165,7 +185,7 @@ describe("shapeAgentSessionListItem", () => {
       status: "completed",
       harness: "claude-code",
       model: "claude-opus-4",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       baseBranch: "main",
       startedAt: "2026-07-10T00:00:00.000Z",
       lastActivityAt: "2026-07-10T01:00:00.000Z",
@@ -202,6 +222,45 @@ describe("shapeAgentSessionListItem", () => {
     expect(shaped.endedAt).toBeNull();
     expect(shaped.estimatedCost).toBeNull();
     expect(shaped.user).toBeNull();
+  });
+
+  // ISS-12585: the Owner rides beside the deprecated `user`.
+  it("carries the assignee beside the user alias", () => {
+    const person = (id: string, firstName: string) => ({
+      id,
+      email: `${firstName.toLowerCase()}@example.com`,
+      firstName,
+      lastName: "Example",
+      avatarUrl: null,
+    });
+    const shaped = shapeAgentSessionListItem({
+      id: "88888888-8888-8888-8888-888888888888",
+      user: person("assignee-1", "Ada"),
+      assignee: person("assignee-1", "Ada"),
+    });
+
+    expect(shaped.user).toEqual({
+      id: "assignee-1",
+      email: "ada@example.com",
+      firstName: "Ada",
+      lastName: "Example",
+    });
+    expect(shaped).toHaveProperty("assignee", shaped.user);
+  });
+
+  it("keeps a null assignee and omits one an older API row omits", () => {
+    const unassigned = shapeAgentSessionListItem({
+      id: "99999999-9999-9999-9999-999999999999",
+      user: null,
+      assignee: null,
+    });
+    const olderApi = shapeAgentSessionListItem({
+      id: "99999999-9999-9999-9999-999999999999",
+      user: null,
+    });
+
+    expect(unassigned).toHaveProperty("assignee", null);
+    expect(olderApi).not.toHaveProperty("assignee");
   });
 });
 

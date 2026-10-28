@@ -6,12 +6,12 @@
  * under the 1,000-line ceiling, and this is a self-contained pure decision with
  * its own tests.
  */
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
 import {
   isRecoverableTranscriptSkipReason,
   type TranscriptSkipReason,
-  TranscriptUploadStatus,
   toKnownTranscriptSkipReason,
-} from "@repo/api/src/types/desktop-transcripts";
+} from "@repo/api/src/types/transcript-skip-reason-constants";
 
 /**
  * ISS-4820 item 2 — reason PRECEDENCE for a skip landing on an existing row.

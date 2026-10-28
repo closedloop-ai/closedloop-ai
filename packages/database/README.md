@@ -157,7 +157,7 @@ pnpm --filter=@repo/database seed
 
 **Empty-org precondition.** The seed assumes a near-empty organization (one `Organization` row, one `User` row, nothing else). It uses deterministic IDs as the idempotency key, but the underlying schema enforces several global / per-org unique constraints — `GitHubInstallation.installationId`, `LinearIntegration.organizationId`, `SlackIntegration.organizationId`, `(organizationId, slug)` on projects/workstreams, and so on. If the resolved organization already has any of those rows, the seed's `create` block would either fail with a unique-constraint violation or partially mutate real integration metadata (while preserving real secrets). The CLI now refuses to proceed in that case. Set `SEED_FORCE_OVERWRITE=1` to override — only safe on a disposable database (staging restore, preview env) where you accept the risk of clobbering existing data.
 
-**Reset mode.** Use `pnpm seed -- --reset` to delete resettable data owned by the resolved organization and reseed with the selected profile. Reset preserves the `Organization` row and `User` rows, clears organization/user Claude key fields plus `Organization.publicDashboardToken` and `User.preferredComputeTargetId`, deletes org-owned credential/runtime/integration/seed rows, verifies no resettable rows remain, then runs the normal seed flow. Reset does not require `SEED_FORCE_OVERWRITE`.
+**Reset mode.** Use `pnpm seed -- --reset` to delete resettable data owned by the resolved organization and reseed with the selected profile. Reset preserves the `Organization` row and `User` rows, deletes org-owned credential/runtime/integration/seed rows, verifies no resettable rows remain, then runs the normal seed flow. Reset does not require `SEED_FORCE_OVERWRITE`.
 
 ```bash
 # Interactive: type the displayed organization UUID to confirm.
@@ -180,12 +180,12 @@ Destructive reset against a non-localhost target requires its own opt-in beyond 
 | any non-localhost | (unset or any other) | `1` | TLS, no cert verification (legacy / self-signed RDS) |
 | any non-localhost | (unset or any other) | (unset) | TLS with cert verification (safe default) |
 
-`ALLOW_INSECURE_SSL=1` is an escape hatch for talking to self-signed RDS endpoints that lack a trusted chain — do not set it for interactive/manual seed runs (the strict-verification default is correct there). The one intentional exception is the **automated preview seed** (`runPreviewSeed` → `buildPreviewSeedInvocation` in `scripts/preview-seed.ts`), which always sets it so the seed connects to the RDS preview endpoint with the same `rejectUnauthorized: false` posture as the runtime app pool (`index.ts`) and `prisma migrate deploy` — the seed is otherwise the only path that would verify that chain strictly, which broke preview seeding (FEA-1786).
+`ALLOW_INSECURE_SSL=1` is an escape hatch for talking to self-signed endpoints that lack a trusted chain — do not set it. The verified path already trusts RDS: `VERIFIED_SSL_CA` (`scripts/db-utils.ts`) merges Amazon's RDS CA bundle with the Mozilla roots, so `rejectUnauthorized: true` verifies RDS and publicly-trusted endpoints alike. The **automated preview seed** (`previewSeedEnv` in `scripts/preview-seed.ts`) used to force this flag (FEA-1786, before the RDS CA bundle landed in #2084) and no longer does — it carries an IAM database token, which must not ride an unverified chain.
 
 **What it does:**
 1. Resolves the target user and organization from the database — run after at least one sign-in so the rows exist. No-reset defaults to the legacy first-user target; reset fails closed on ambiguous targets.
-2. Optionally resets org-owned data when `--reset` is passed, preserving identity rows and clearing sensitive/runtime scalars.
-3. Seeds core entities (teams, projects, workstreams, artifacts), then execution, integration, evaluation, and customization data in FK-dependency order, using the selected profile.
+2. Optionally resets org-owned data when `--reset` is passed, preserving identity rows.
+3. Seeds core entities (teams, projects, workstreams, artifacts), then integration, evaluation, and customization data in FK-dependency order, using the selected profile.
 4. Logs progress per module and prints a row-count summary on success. Stdout includes the resolved org/user UUIDs and a redacted email (`<redacted>@example.com`); it never prints the resolved user's full email or the organization's name/slug, because CI logs and incident artifacts retain stdout.
 
 **Expected output:**

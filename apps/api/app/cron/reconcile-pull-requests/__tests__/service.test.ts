@@ -11,21 +11,37 @@ vi.mock("@/lib/db-fanout", () => ({
   ) => Promise.all(items.map((item, index) => fn(item, index))),
 }));
 
-vi.mock("../repo-reconciler", () => ({
+vi.mock("../repo-reconciler", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../repo-reconciler")>()),
   reconcileRepo: vi.fn(),
-  ReconcileRepoStatus: {
-    Swept: "swept",
-    Deferred: "deferred",
-    Reclassified: "reclassified",
-    Failed: "failed",
-  },
+  // The settlement WRITE is owned by repo-reconciler and covered there; the
+  // service's job is to call it, for the right row, with the right stampSwept
+  // and the reason its own lane knows.
+  persistFailureSettlement: vi.fn(),
+}));
+
+const deliveryCoverageMocks = vi.hoisted(() => ({
+  reportGitHubDeliveryCoverageTick: vi.fn(),
+}));
+
+vi.mock("../delivery-coverage-metrics", () => ({
+  reportGitHubDeliveryCoverageTick:
+    deliveryCoverageMocks.reportGitHubDeliveryCoverageTick,
 }));
 
 import { withDb } from "@repo/database";
 import { GITHUB_SYNC_REPO_VERDICT_TTL_MS } from "@/lib/github/github-access";
 import { GITHUB_REPO_SCOPE } from "@/lib/github/github-connection-credential";
-import { GitHubRepoSyncTier } from "@/lib/github/github-repo-sync-state";
-import { ReconcileRepoStatus, reconcileRepo } from "../repo-reconciler";
+import {
+  GitHubRepoSyncDeferralReason,
+  GitHubRepoSyncTier,
+} from "@/lib/github/github-repo-sync-state";
+import { ReconcileRepoStatus } from "../repo-reconcile-status";
+import {
+  persistFailureSettlement,
+  RECONCILE_UNEXPECTED_FAILURE_REASON,
+  reconcileRepo,
+} from "../repo-reconciler";
 import {
   githubPullRequestReconcilerService,
   RECONCILE_REPO_BATCH,
@@ -34,6 +50,11 @@ import {
 
 const mockWithDb = withDb as unknown as ReturnType<typeof vi.fn>;
 const mockReconcile = reconcileRepo as unknown as ReturnType<typeof vi.fn>;
+const mockSettleFailure = persistFailureSettlement as unknown as ReturnType<
+  typeof vi.fn
+>;
+const mockReportCoverage =
+  deliveryCoverageMocks.reportGitHubDeliveryCoverageTick;
 
 type SyncStateQuery = {
   where: { tier?: unknown };
@@ -43,6 +64,7 @@ type SyncStateQuery = {
 type SyncStateRow = {
   organizationId: string;
   repositoryFullName: string;
+  tier?: string | null;
   watermark: Date | null;
   cursor: string | null;
   consecutiveFailureCount: number;
@@ -55,6 +77,17 @@ let findManyCalls: SyncStateQuery[];
 let dueRepos: SyncStateRow[];
 let wakeupRepos: SyncStateRow[];
 let sweptStamps: unknown[];
+type CountQuery = {
+  where: { repositoryFullName?: { notIn: string[] } };
+};
+let countCalls: CountQuery[];
+// The org's due population by name, as the database would see it AFTER the
+// sweep — so a repo this pass failed is already absent from it, exactly as its
+// settlement leaves it. The count mock applies the query's own exclusion to
+// this, so a case states a population rather than a pre-computed answer.
+let stillDueRepoNames: string[];
+let countRejection: Error | null;
+let sweptStampRejection: Error | null;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -62,6 +95,11 @@ beforeEach(() => {
   dueRepos = [];
   wakeupRepos = [];
   sweptStamps = [];
+  countCalls = [];
+  stillDueRepoNames = [];
+  countRejection = null;
+  sweptStampRejection = null;
+  mockReportCoverage.mockResolvedValue(undefined);
   const db = {
     gitHubRepoSyncState: {
       findMany: vi.fn((args: SyncStateQuery) => {
@@ -69,8 +107,21 @@ beforeEach(() => {
         const isWakeup = args.where.tier === GitHubRepoSyncTier.Unsyncable;
         return Promise.resolve(isWakeup ? wakeupRepos : dueRepos);
       }),
+      count: vi.fn((args: CountQuery) => {
+        countCalls.push(args);
+        if (countRejection) {
+          return Promise.reject(countRejection);
+        }
+        const handled = args.where.repositoryFullName?.notIn ?? [];
+        return Promise.resolve(
+          stillDueRepoNames.filter((name) => !handled.includes(name)).length
+        );
+      }),
       updateMany: vi.fn((args: unknown) => {
         sweptStamps.push(args);
+        if (sweptStampRejection) {
+          return Promise.reject(sweptStampRejection);
+        }
         return Promise.resolve({ count: 1 });
       }),
     },
@@ -78,13 +129,17 @@ beforeEach(() => {
   mockWithDb.mockImplementation((fn: (client: unknown) => unknown) => fn(db));
 });
 
-function outcome(status: string, writtenCount = 0) {
+function outcome(
+  status: string,
+  writtenCount = 0,
+  deferredReason: GitHubRepoSyncDeferralReason | null = null
+) {
   return {
     repositoryFullName: "acme/widgets",
     status,
     tier: GitHubRepoSyncTier.Installed,
     writtenCount,
-    deferredReason: null,
+    deferredReason,
   };
 }
 
@@ -163,11 +218,53 @@ describe("githubPullRequestReconcilerService.run", () => {
       reposSelected: 4,
       reposSwept: 1,
       reposDeferredBudget: 1,
+      reposDeferredContention: 0,
       reposReclassified: 1,
       reposFailed: 1,
       pullRequestsWritten: 3,
     });
     expect(mockReconcile).toHaveBeenCalledTimes(4);
+  });
+
+  it("counts a contention deferral apart from the budget floor (ISS-8270)", async () => {
+    dueRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "a/1",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+      {
+        organizationId: "o",
+        repositoryFullName: "a/2",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    mockReconcile
+      .mockResolvedValueOnce(
+        outcome(
+          ReconcileRepoStatus.Deferred,
+          0,
+          GitHubRepoSyncDeferralReason.Budget
+        )
+      )
+      .mockResolvedValueOnce(
+        outcome(
+          ReconcileRepoStatus.Deferred,
+          0,
+          GitHubRepoSyncDeferralReason.Contention
+        )
+      );
+
+    const summary = await githubPullRequestReconcilerService.run();
+
+    // A busy pool and a throttled one are different operator signals; one
+    // deferral tally for both reports the first as the second.
+    expect(summary.reposDeferredBudget).toBe(1);
+    expect(summary.reposDeferredContention).toBe(1);
   });
 
   it("isolates a thrown repo reconcile as a failure without aborting the batch", async () => {
@@ -196,6 +293,124 @@ describe("githubPullRequestReconcilerService.run", () => {
     expect(summary.reposFailed).toBe(1);
     expect(summary.reposSwept).toBe(1);
     expect(summary.pullRequestsWritten).toBe(2);
+  });
+
+  it("emits a failed delivery coverage repo tick for an isolated thrown repo reconcile", async () => {
+    const now = new Date("2026-08-26T19:20:00.000Z");
+    dueRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/main",
+        tier: GitHubRepoSyncTier.UserToken,
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 1,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+
+    await githubPullRequestReconcilerService.run({ now });
+
+    expect(mockReportCoverage).toHaveBeenCalledWith({
+      organizationId: "o",
+      repositoryId: null,
+      repositoryFullName: "broken/main",
+      status: ReconcileRepoStatus.Failed,
+      tier: GitHubRepoSyncTier.UserToken,
+      writtenCount: 0,
+      deferredReason: null,
+      fetchFailureCount: 0,
+      targetFetchFailureWriteCount: 0,
+      budgetDeferralCount: 0,
+      now,
+    });
+  });
+
+  it("a thrown main-batch repo gets the failure backoff, so it stops heading every batch", async () => {
+    // No settlement at all would leave its stale lastSweptAt at the head of the
+    // oldest-swept-first selector forever; 25 such repos zero the sweep out.
+    const now = new Date("2026-08-14T10:00:00Z");
+    dueRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/main",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 2,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+
+    await githubPullRequestReconcilerService.run({ now });
+
+    expect(mockSettleFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "o",
+        repositoryFullName: "broken/main",
+        consecutiveFailureCount: 2,
+      }),
+      now,
+      // Not stamped: moving lastSweptAt would silently reorder the queue.
+      // ISS-7875: the throw lane names itself, so a settlement written here is
+      // distinguishable in the log from a classified provider failure.
+      { stampSwept: false, reason: RECONCILE_UNEXPECTED_FAILURE_REASON }
+    );
+  });
+
+  it("a thrown main-batch repo does not take the wake-up lastSweptAt stamp path", async () => {
+    dueRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/main",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+
+    await githubPullRequestReconcilerService.run();
+
+    // Whether the settlement itself omits lastSweptAt is asserted where that
+    // write lives (repo-reconciler, plus the DB integration case); here the
+    // claim is only that the main lane never reaches stampSweptBestEffort.
+    expect(sweptStamps).toEqual([]);
+  });
+
+  it("a failed backoff write stays inside the isolation and does not fail the batch", async () => {
+    dueRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/main",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+    mockSettleFailure.mockRejectedValueOnce(new Error("write failed"));
+
+    const summary = await githubPullRequestReconcilerService.run();
+
+    expect(summary.reposFailed).toBe(1);
+  });
+
+  it("a thrown wake-up row is settled by its lastSweptAt stamp, not the backoff", async () => {
+    // The wake-up selector never reads nextRetryAt, so only the stamp bounds it.
+    wakeupRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/wakeup",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+
+    await githubPullRequestReconcilerService.run();
+
+    expect(mockSettleFailure).not.toHaveBeenCalled();
   });
 
   it("wake-up query shape: tier-3, stale lastSweptAt, org-scoped, bounded by RECONCILE_WAKEUP_BATCH", async () => {
@@ -320,4 +535,195 @@ describe("githubPullRequestReconcilerService.run", () => {
       })
     );
   });
+
+  it("keeps a wake-up reconciliation failure isolated when its best-effort stamp also rejects", async () => {
+    wakeupRepos = [
+      {
+        organizationId: "o",
+        repositoryFullName: "broken/wakeup",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+    sweptStampRejection = new Error("stamp write failed");
+
+    const summary = await githubPullRequestReconcilerService.run();
+
+    expect(summary.reposFailed).toBe(1);
+    expect(summary.reposSelected).toBe(1);
+    expect(mockSettleFailure).not.toHaveBeenCalled();
+  });
 });
+
+describe("githubPullRequestReconcilerService.runForOrganization", () => {
+  const now = new Date("2026-08-25T10:00:00Z");
+
+  it("selects only the caller's org, on the same due predicate as the cron batch", async () => {
+    await githubPullRequestReconcilerService.runForOrganization("org-1", {
+      limit: 5,
+      now,
+    });
+
+    expect(findManyCalls[0]?.where).toEqual({
+      organizationId: "org-1",
+      tier: { not: GitHubRepoSyncTier.Unsyncable },
+      OR: [
+        { nextRetryAt: null },
+        { nextRetryAt: { lte: now } },
+        { consecutiveFailureCount: 0 },
+      ],
+    });
+    expect(findManyCalls[0]?.take).toBe(5);
+    // The remaining count has to ask the same question as the selection, or the
+    // number reported as left-for-the-cron describes a different population.
+    expect(countCalls[0]?.where).toEqual(findManyCalls[0]?.where);
+  });
+
+  it("reconciles the selected repos and reports what the bound left behind", async () => {
+    dueRepos = [
+      {
+        organizationId: "org-1",
+        repositoryFullName: "acme/one",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+      {
+        organizationId: "org-1",
+        repositoryFullName: "acme/two",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    // Both selected repos swept cleanly, so both are still due afterwards; the
+    // remainder is the seven the limit never reached.
+    stillDueRepoNames = [
+      "acme/one",
+      "acme/two",
+      ...Array.from({ length: 7 }, (_, index) => `acme/spare-${index}`),
+    ];
+    mockReconcile.mockResolvedValue(outcome(ReconcileRepoStatus.Swept, 3));
+
+    const summary = await githubPullRequestReconcilerService.runForOrganization(
+      "org-1",
+      { limit: 2, now }
+    );
+
+    expect(mockReconcile).toHaveBeenCalledTimes(2);
+    expect(summary.reposSelected).toBe(2);
+    expect(summary.reposSwept).toBe(2);
+    expect(summary.pullRequestsWritten).toBe(6);
+    expect(summary.reposRemaining).toBe(7);
+  });
+
+  it("still sweeps, and reports no remainder, when the count fails", async () => {
+    dueRepos = [
+      {
+        organizationId: "org-1",
+        repositoryFullName: "acme/one",
+        watermark: null,
+        cursor: null,
+        consecutiveFailureCount: 0,
+      },
+    ];
+    countRejection = new Error("count timed out");
+    mockReconcile.mockResolvedValue(outcome(ReconcileRepoStatus.Swept, 4));
+
+    const summary = await githubPullRequestReconcilerService.runForOrganization(
+      "org-1",
+      { limit: 5, now }
+    );
+
+    // The remainder is a footnote to the sweep, so losing it must not cost the
+    // just-connected org the reconciliation it is a footnote to — and it must
+    // not report 0, the one value that reads as full coverage.
+    expect(mockReconcile).toHaveBeenCalledTimes(1);
+    expect(summary.reposSwept).toBe(1);
+    expect(summary.pullRequestsWritten).toBe(4);
+    expect(summary.reposRemaining).toBeNull();
+  });
+
+  it("floors the limit at one repo", async () => {
+    await githubPullRequestReconcilerService.runForOrganization("org-1", {
+      limit: 0,
+      now,
+    });
+
+    expect(findManyCalls[0]?.take).toBe(1);
+  });
+
+  it("does not deduct a repo this pass already failed out of the due population", async () => {
+    dueRepos = [
+      orgRepo("acme/one"),
+      orgRepo("acme/two"),
+      orgRepo("acme/three"),
+    ];
+    // Post-sweep truth for an org of ten due repos whose selected three all
+    // failed: each settlement wrote nextRetryAt, so the three are already gone
+    // from the due population and only the seven the limit never reached remain.
+    stillDueRepoNames = Array.from(
+      { length: 7 },
+      (_, index) => `acme/spare-${index}`
+    );
+    mockReconcile.mockResolvedValue(outcome(ReconcileRepoStatus.Failed));
+
+    const summary = await githubPullRequestReconcilerService.runForOrganization(
+      "org-1",
+      { limit: 3, now }
+    );
+
+    expect(summary.reposFailed).toBe(3);
+    // Deducting the handled page from a wider count reported 4, subtracting the
+    // three failures a second time and drifting the number toward the 0 that
+    // reads as full coverage exactly when the pass went worst.
+    expect(summary.reposRemaining).toBe(7);
+    // The exclusion belongs inside the count, on the selection's own predicate:
+    // a second statement to subtract could disagree with the first.
+    expect(countCalls).toHaveLength(1);
+    expect(countCalls[0]?.where).toEqual({
+      organizationId: "org-1",
+      tier: { not: GitHubRepoSyncTier.Unsyncable },
+      OR: [
+        { nextRetryAt: null },
+        { nextRetryAt: { lte: now } },
+        { consecutiveFailureCount: 0 },
+      ],
+      repositoryFullName: { notIn: ["acme/one", "acme/two", "acme/three"] },
+    });
+  });
+
+  it("isolates a thrown reconcile with the main-batch backoff, never the wake-up stamp", async () => {
+    dueRepos = [orgRepo("acme/one")];
+    mockReconcile.mockRejectedValueOnce(new Error("unexpected failure"));
+
+    const summary = await githubPullRequestReconcilerService.runForOrganization(
+      "org-1",
+      { limit: 5, now }
+    );
+
+    // Resolving at all is half the contract: mapWithDbConcurrency is fail-fast,
+    // so an unisolated throw rejects the whole post-connect chain.
+    expect(summary.reposFailed).toBe(1);
+    expect(mockSettleFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ repositoryFullName: "acme/one" }),
+      now,
+      { stampSwept: false, reason: RECONCILE_UNEXPECTED_FAILURE_REASON }
+    );
+    // The org lane always passes isWakeup: false, so it must never take the
+    // wake-up path that moves lastSweptAt.
+    expect(sweptStamps).toEqual([]);
+  });
+});
+
+function orgRepo(repositoryFullName: string): SyncStateRow {
+  return {
+    organizationId: "org-1",
+    repositoryFullName,
+    watermark: null,
+    cursor: null,
+    consecutiveFailureCount: 0,
+  };
+}

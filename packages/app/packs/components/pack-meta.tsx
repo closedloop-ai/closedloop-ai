@@ -4,6 +4,7 @@
 // retyped onto the canonical `PackView` model.
 
 import type { Harness } from "@repo/app/agents/lib/session-types";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 import {
   BotIcon,
   HammerIcon,
@@ -114,30 +115,6 @@ export function formatStars(stars: number | null | undefined): string {
 
 // A stable fallback accent color derived from a seed (used when a PackUser has
 // no color of its own), so avatars stay consistent across renders.
-const FALLBACK_COLORS = [
-  "#e11d48",
-  "#6366f1",
-  "#10b981",
-  "#f59e0b",
-  "#8b5cf6",
-  "#0891b2",
-  "#db2777",
-  "#2563eb",
-];
-
-export function stableUserColor(
-  user: Pick<PackUser, "id" | "name" | "color">
-): string {
-  if (user.color) {
-    return user.color;
-  }
-  const seed = user.id || user.name;
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) % 2_147_483_647;
-  }
-  return FALLBACK_COLORS[Math.abs(hash) % FALLBACK_COLORS.length];
-}
 
 // An overlapping avatar stack of the members who installed a pack.
 export const InstallerStack = ({
@@ -151,18 +128,17 @@ export const InstallerStack = ({
   const extra = users.length - shown.length;
   return (
     <div className="flex items-center">
+      {/* One initial on the shared avatar colours (Nerys, 2026-10-22). */}
       {shown.map((user, index) => (
-        <span
-          className="-ml-1.5 flex size-6 items-center justify-center rounded-full border-2 border-background font-medium text-[9px] text-white first:ml-0"
+        <PersonAvatar
+          className="-ml-1.5 size-6 border-2 border-background first:ml-0"
+          fallbackClassName="text-[9px]"
+          initials={user.initials}
           key={user.id}
-          style={{
-            backgroundColor: stableUserColor(user),
-            zIndex: shown.length - index,
-          }}
+          name={user.name}
+          style={{ zIndex: shown.length - index }}
           title={user.name}
-        >
-          {user.initials}
-        </span>
+        />
       ))}
       {extra > 0 ? (
         <span className="-ml-1.5 flex size-6 items-center justify-center rounded-full border-2 border-background bg-muted font-medium text-[9px] text-muted-foreground">
@@ -188,15 +164,13 @@ export const UserPill = ({
       muted ? "text-muted-foreground" : ""
     }`}
   >
-    <span
-      aria-hidden="true"
-      className={`flex size-5 shrink-0 items-center justify-center rounded-full font-medium text-[10px] text-white ${
-        muted ? "opacity-60 grayscale" : ""
-      }`}
-      style={{ backgroundColor: stableUserColor(user) }}
-    >
-      {user.initials}
-    </span>
+    <PersonAvatar
+      className={`size-5 shrink-0 ${muted ? "opacity-60 grayscale" : ""}`}
+      decorative
+      fallbackClassName="text-[10px]"
+      initials={user.initials}
+      name={user.name}
+    />
     <span className="truncate">{user.name}</span>
   </span>
 );

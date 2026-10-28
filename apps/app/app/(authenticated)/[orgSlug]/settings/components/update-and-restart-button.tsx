@@ -1,6 +1,5 @@
 "use client";
 
-import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import {
   DesktopCommandStatus,
@@ -8,7 +7,9 @@ import {
   UPDATE_AND_RESTART_OPERATION_ID,
 } from "@repo/api/src/types/compute-target";
 import type { ElectronReleaseInfo } from "@repo/api/src/types/electron";
+import { ELECTRON_REMOTE_UPDATE_FLAG_KEY } from "@repo/api/src/types/electron-remote-update-flag";
 import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
+import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
 import {
   getPluginVersion,
   isUpdateAvailable,
@@ -341,7 +342,7 @@ function UpdateAndRestartButtonInner({
 
 export function UpdateAndRestartButton(props: UpdateAndRestartButtonProps) {
   return (
-    <FeatureFlagged flag="electron-remote-update">
+    <FeatureFlagged flag={ELECTRON_REMOTE_UPDATE_FLAG_KEY}>
       <UpdateAndRestartButtonInner {...props} />
     </FeatureFlagged>
   );

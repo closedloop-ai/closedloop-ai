@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 
 import { isValidBranchName } from "../src/main/enrichment/branch-validation.js";
 
@@ -56,6 +56,27 @@ describe("isValidBranchName", () => {
         assert.equal(isValidBranchName(name), false);
       });
     }
+  });
+
+  describe("ISS-8751: git check-ref-format slash rules", () => {
+    // A ref can neither begin nor end with `/`, nor hold consecutive slashes.
+    // Only the trailing case was covered, so an absolute path passed as a branch
+    // name and `git worktree add --detach /tmp/x` minted `branch::/tmp/x`.
+    const invalid = [
+      "/tmp/nrev-emergent-emma-1-93305",
+      "/main",
+      "feat//double-slash",
+      "//leading-double",
+    ];
+    for (const name of invalid) {
+      test(`rejects '${name}'`, () => {
+        assert.equal(isValidBranchName(name), false);
+      });
+    }
+
+    test("still accepts an ordinary single-slash branch", () => {
+      assert.equal(isValidBranchName("feat/iss-8751"), true);
+    });
   });
 
   describe("bare SHA hashes (>=8 hex chars)", () => {
@@ -123,5 +144,23 @@ describe("isValidBranchName", () => {
         assert.equal(isValidBranchName(name), true);
       });
     }
+  });
+
+  describe("ISS-8529: branch name length bound", () => {
+    test("rejects a 400-character branch name", () => {
+      assert.equal(isValidBranchName(`feat/${"z".repeat(400)}`), false);
+    });
+
+    test("accepts a 250-character branch name", () => {
+      assert.equal(isValidBranchName(`feat/${"z".repeat(245)}`), true);
+    });
+
+    test("rejects a name at exactly the bound + 1", () => {
+      assert.equal(isValidBranchName("a".repeat(257)), false);
+    });
+
+    test("accepts a name at exactly the bound", () => {
+      assert.equal(isValidBranchName("a".repeat(256)), true);
+    });
   });
 });

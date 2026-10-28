@@ -23,6 +23,7 @@ import {
   type SessionFetchOptions,
   unwrapApiEnvelope,
 } from "../util/api-response-utils.js";
+import { desktopClientAttributionHeaders } from "../util/desktop-client-attribution-provider.js";
 import { fetchJsonAndParse } from "../util/fetch-json-and-parse.js";
 
 // ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ export async function reportDistributionStatus(
     const response = await fetchFn(url.toString(), {
       method: "POST",
       headers: {
+        ...desktopClientAttributionHeaders(),
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },

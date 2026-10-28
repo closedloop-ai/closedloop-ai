@@ -13,7 +13,7 @@
  * uses. It asserts the shipped behavior of the shell, not of the factory.
  *
  * The focus option is RESOLVED against synthetic query states rather than
- * stringified (wongk review on #4818). Stringifying was already weak — it proved
+ * stringified (whitlockk review on #4818). Stringifying was already weak — it proved
  * only that an option was exposed — and it became actively unsafe once the
  * default became the `shouldRefetchOnFocus` predicate, whose own source contains
  * the literal `true`: a `toHaveTextContent("true")` assertion would keep passing

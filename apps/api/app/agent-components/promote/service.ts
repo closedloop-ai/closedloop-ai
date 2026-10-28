@@ -7,7 +7,9 @@ import {
 } from "@repo/api/src/types/distribution";
 import { withDb } from "@repo/database";
 import { deriveComponentUuid } from "@/app/catalog/component-uuid";
-import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
+import { getPrismaErrorCode, matchesPrismaP2002Target } from "@/lib/db-utils";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 
 /**
  * The AgentComponent fields snapshotted into the promoted CatalogItemVersion
@@ -178,7 +180,8 @@ async function findPromotedItem(
 async function resolvePromotion(
   promoted: PromotedItem,
   organizationId: string,
-  userId: string
+  userId: string,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<PromoteResponse> {
   if (promoted.distributionId) {
     return {
@@ -213,6 +216,7 @@ async function resolvePromotion(
       orderBy: { createdAt: "asc" },
     });
     if (current) {
+      await recordWrite?.(tx, { changed: false });
       return current.id;
     }
 
@@ -227,6 +231,7 @@ async function resolvePromotion(
       },
       select: { id: true },
     });
+    await recordWrite?.(tx, { changed: true });
     return created.id;
   });
 
@@ -244,22 +249,26 @@ async function resolvePromotion(
  * constraint-name string and the field/column array shapes Prisma adapters may
  * report (apps/api/AGENTS.md).
  */
+const PROMOTION_SOURCE_UNIQUE_INDEX =
+  "catalog_items_organization_id_source_agent_component_id_key";
+
 function isPromotionSourceComponentUniqueError(error: unknown): boolean {
   if (getPrismaErrorCode(error) !== "P2002") {
     return false;
   }
 
-  const target = getPrismaP2002Target(error);
-  if (Array.isArray(target)) {
-    return target.some(
-      (field) =>
-        field === "sourceAgentComponentId" ||
-        field === "source_agent_component_id"
-    );
-  }
-  return (
-    typeof target === "string" && target.includes("source_agent_component_id")
-  );
+  return matchesPrismaP2002Target(error, (target) => {
+    if (Array.isArray(target)) {
+      return target.some(
+        (field) =>
+          field === "sourceAgentComponentId" ||
+          field === "source_agent_component_id"
+      );
+    }
+    // Exact index name, not a substring: `catalog_items` carries other uniques
+    // and a containment test would widen silently as they are added.
+    return target === PROMOTION_SOURCE_UNIQUE_INDEX;
+  });
 }
 
 /**
@@ -281,7 +290,8 @@ function isPromotionSourceComponentUniqueError(error: unknown): boolean {
  * source_agent_component_id) and recovered as the existing promotion.
  */
 export async function promoteAgentComponent(
-  input: PromoteInput
+  input: PromoteInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<PromoteResult> {
   const component = await withDb((db) =>
     db.agentComponent.findFirst({
@@ -330,7 +340,8 @@ export async function promoteAgentComponent(
       response: await resolvePromotion(
         existing,
         input.organizationId,
-        input.userId
+        input.userId,
+        recordWrite
       ),
     };
   }
@@ -373,7 +384,7 @@ export async function promoteAgentComponent(
 
       // Snapshot an installable initial version so the auto-install Distribution
       // has non-null content (an empty CatalogItem would be un-installable and
-      // silently skipped by the desktop / listAgentsForContextPack).
+      // silently skipped by the desktop).
       await tx.catalogItemVersion.create({
         data: {
           catalogItemId: catalogItem.id,
@@ -384,6 +395,7 @@ export async function promoteAgentComponent(
             "Promoted from discovered component (FEA-2923 best-of-breed)",
           changedById: input.userId,
         },
+        select: { id: true },
       });
 
       const distribution = await tx.distribution.create({
@@ -397,6 +409,7 @@ export async function promoteAgentComponent(
         },
         select: { id: true },
       });
+      await recordWrite?.(tx, { changed: true });
 
       return {
         catalogItemId: catalogItem.id,
@@ -419,7 +432,8 @@ export async function promoteAgentComponent(
           response: await resolvePromotion(
             raced,
             input.organizationId,
-            input.userId
+            input.userId,
+            recordWrite
           ),
         };
       }

@@ -16,11 +16,15 @@
  * Pure/in-memory: no DB, no fs, no session iteration — a total predicate over a
  * single segment's `{ phase, confidence }`.
  */
+
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 import {
   confidenceBucketFor,
   isConfident,
 } from "../../../telemetry/attribution-metrics.js";
-import { ACTIVITY_PHASE, type ActivityPhase } from "../activity-taxonomy.js";
 
 /**
  * The minimal segment shape the residual predicate needs: the taxonomy `phase`

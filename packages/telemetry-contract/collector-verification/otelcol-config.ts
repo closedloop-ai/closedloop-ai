@@ -4,24 +4,6 @@ import YAML from "yaml";
 import { isRecord } from "../scripts/collector-codegen-common";
 import { CollectorTailSamplingPath } from "../scripts/generate-collector-tail-sampling";
 
-/**
- * Builds the otelcol-contrib config used by the tail-sampling mechanical
- * verification (FEA-2182).
- *
- * The verification must exercise the EXACT `tail_sampling` block that is
- * committed (and vendored cross-repo into cl-tofu), not a freshly rendered one —
- * so we read `collector/tail-sampling.yaml` and splice its processor block,
- * verbatim, into a minimal traces pipeline:
- *
- *   otlp(http) → tail_sampling → file
- *
- * Redaction and batch are deliberately omitted: this isolates the processor
- * under test, and the `test.scenario` marker attribute survives to the file
- * exporter for ground-truth grouping. The collector's own internal metrics are
- * exposed on a Prometheus endpoint so the run can read
- * `otelcol_processor_tail_sampling_*` decision counters.
- */
-
 export type VerificationEndpoints = {
   /** OTLP/HTTP receiver port (container-internal). */
   readonly otlpHttpPort: number;
@@ -36,6 +18,14 @@ export const DEFAULT_VERIFICATION_ENDPOINTS: VerificationEndpoints = {
   metricsPort: 8888,
   exportFilePath: "/output/traces.json",
 };
+
+/**
+ * Flush cadence pinned on the `file` exporter. otelcol's default is a full
+ * second of buffering, which the runner would have to out-wait blindly; pinning
+ * it here is what makes the runner's settle window a multiple of a value we set
+ * rather than of an unstated collector default (ISS-9913).
+ */
+export const VERIFICATION_EXPORT_FLUSH_INTERVAL_MS = 100;
 
 function readCommittedFragment(): string {
   const fragmentUrl = new URL(
@@ -81,7 +71,10 @@ export function renderVerificationCollectorConfig(
       tail_sampling: tailSampling,
     },
     exporters: {
-      file: { path: endpoints.exportFilePath },
+      file: {
+        path: endpoints.exportFilePath,
+        flush_interval: `${VERIFICATION_EXPORT_FLUSH_INTERVAL_MS}ms`,
+      },
     },
     service: {
       telemetry: {

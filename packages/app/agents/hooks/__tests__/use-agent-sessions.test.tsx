@@ -4,6 +4,7 @@ import {
   type AgentSessionUsageSummary,
   AgentSessionViewerScope,
 } from "@repo/api/src/types/agent-session";
+import { ReadInitiator } from "@repo/api/src/types/read-initiator";
 import type { AgentSessionsDataSource } from "@repo/app/agents/data-source/agent-sessions-data-source";
 import { AgentSessionsDataSourceProvider } from "@repo/app/agents/data-source/provider";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
@@ -11,8 +12,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { agentSessionKeys } from "../agent-session-keys";
 import {
-  agentSessionKeys,
   useAgentSessionAnalytics,
   useAgentSessions,
   useAgentSessionsPageData,
@@ -31,7 +32,7 @@ describe("agent-session team-scope hooks", () => {
         useAgentSessionUsage({
           viewerScope: AgentSessionViewerScope.Team,
         }),
-      { wrapper: createWrapper(source) }
+      { wrapper: createDataSourceWrapper(source) }
     );
 
     expect(source.usage).not.toHaveBeenCalled();
@@ -50,24 +51,32 @@ describe("agent-session team-scope hooks", () => {
       }),
       {
         initialProps: { teamId: TEAM_A },
-        wrapper: createWrapper(source),
+        wrapper: createDataSourceWrapper(source),
       }
     );
 
+    // ISS-9741: the analytics read now carries the query's own `AbortSignal`
+    // alongside the filters, matching `usage`/`pageData` above.
     await waitFor(() =>
-      expect(source.analytics).toHaveBeenCalledWith({
-        teamId: TEAM_A,
-        viewerScope: AgentSessionViewerScope.Team,
-      })
+      expect(source.analytics).toHaveBeenCalledWith(
+        {
+          teamId: TEAM_A,
+          viewerScope: AgentSessionViewerScope.Team,
+        },
+        { signal: expect.any(AbortSignal) }
+      )
     );
 
     rerender({ teamId: TEAM_B });
 
     await waitFor(() =>
-      expect(source.analytics).toHaveBeenCalledWith({
-        teamId: TEAM_B,
-        viewerScope: AgentSessionViewerScope.Team,
-      })
+      expect(source.analytics).toHaveBeenCalledWith(
+        {
+          teamId: TEAM_B,
+          viewerScope: AgentSessionViewerScope.Team,
+        },
+        { signal: expect.any(AbortSignal) }
+      )
     );
 
     expect(
@@ -136,7 +145,7 @@ describe("useAgentSessionsPageData (FEA-4157 combined read)", () => {
     const { result } = renderHook(
       () => useAgentSessionsPageData({ limit: 25 }),
       {
-        wrapper: createWrapper(source),
+        wrapper: createDataSourceWrapper(source),
       }
     );
 
@@ -144,7 +153,13 @@ describe("useAgentSessionsPageData (FEA-4157 combined read)", () => {
 
     // ONE combined read backs both surfaces...
     expect(source.pageData).toHaveBeenCalledTimes(1);
-    expect(source.pageData).toHaveBeenCalledWith({ limit: 25 });
+    // ISS-7852: the read carries the query's own `AbortSignal` alongside the
+    // filters. This pins the CALLER shape only; what each transport can do with
+    // that signal differs, and is stated on `AgentSessionsReadOptions`.
+    expect(source.pageData).toHaveBeenCalledWith(
+      { limit: 25 },
+      { signal: expect.any(AbortSignal), readInitiator: ReadInitiator.User }
+    );
     expect(result.current.data).toEqual({
       list: LIST_FIXTURE,
       usage: USAGE_FIXTURE,
@@ -166,7 +181,7 @@ describe("useAgentSessionsPageData (FEA-4157 combined read)", () => {
       }),
       {
         initialProps: { filters: { limit: 25, offset: 0 } },
-        wrapper: createWrapper(source),
+        wrapper: createDataSourceWrapper(source),
       }
     );
 
@@ -186,7 +201,10 @@ describe("useAgentSessionsPageData (FEA-4157 combined read)", () => {
     });
 
     await waitFor(() =>
-      expect(source.pageData).toHaveBeenCalledWith({ limit: 25, offset: 25 })
+      expect(source.pageData).toHaveBeenCalledWith(
+        { limit: 25, offset: 25 },
+        { signal: expect.any(AbortSignal), readInitiator: ReadInitiator.User }
+      )
     );
     // Each distinct filter set is its own cache entry; the prior one is retained.
     expect(
@@ -214,7 +232,7 @@ describe("FEA-4177 Sessions list/summary read decoupling", () => {
       }),
       {
         initialProps: { offset: 0 },
-        wrapper: createWrapper(source),
+        wrapper: createDataSourceWrapper(source),
       }
     );
 
@@ -224,11 +242,10 @@ describe("FEA-4177 Sessions list/summary read decoupling", () => {
     // Page forward: the list re-fetches under its new key...
     rerender({ offset: 25 });
     await waitFor(() =>
-      expect(source.list).toHaveBeenCalledWith({
-        startDate: "d1",
-        limit: 25,
-        offset: 25,
-      })
+      expect(source.list).toHaveBeenCalledWith(
+        { startDate: "d1", limit: 25, offset: 25 },
+        { readInitiator: ReadInitiator.User }
+      )
     );
     // ...but the summary read stays cached — still exactly one usage fetch.
     expect(source.usage).toHaveBeenCalledTimes(1);
@@ -245,7 +262,7 @@ describe("FEA-4177 Sessions list/summary read decoupling", () => {
         facetOption: useAgentSessionUsage({ startDate: "d1" }),
         summary: useAgentSessionUsage({ startDate: "d1" }),
       }),
-      { wrapper: createWrapper(source) }
+      { wrapper: createDataSourceWrapper(source) }
     );
 
     await waitFor(() => expect(result.current.summary.data).toBeDefined());
@@ -263,7 +280,7 @@ describe("FEA-4177 Sessions list/summary read decoupling", () => {
         list: useAgentSessions({ startDate: "d1", limit: 25, offset: 0 }),
         usage: useAgentSessionUsage({ startDate: "d1" }),
       }),
-      { wrapper: createWrapper(source) }
+      { wrapper: createDataSourceWrapper(source) }
     );
 
     // The summary errors, but the list still resolves — a summary failure never
@@ -294,7 +311,7 @@ function createSource(): AgentSessionsDataSource {
   };
 }
 
-function createWrapper(source: AgentSessionsDataSource) {
+function createDataSourceWrapper(source: AgentSessionsDataSource) {
   return ({ children }: { children: ReactNode }) => (
     <AppCoreStoryProviders>
       <AgentSessionsDataSourceProvider dataSource={source}>

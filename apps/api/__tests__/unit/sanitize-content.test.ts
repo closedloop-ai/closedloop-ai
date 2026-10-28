@@ -32,6 +32,10 @@ import {
   sanitizeDocumentContent,
 } from "@/app/documents/sanitize-content";
 
+// A raw `<script` in the OUTPUT is the failure that would matter for every
+// adversarial case below; the escaped spellings are inert text.
+const RAW_SCRIPT_TAG = /<script/i;
+
 describe("sanitizeDocumentContent", () => {
   describe("dangerous element stripping", () => {
     it("strips script tags", () => {
@@ -369,8 +373,7 @@ describe("sanitizeDocumentContent", () => {
     it("sanitizes 5000 lines with one or two unclosed backticks each without corrupting them", () => {
       const lines: string[] = [];
       for (let i = 0; i < 2500; i++) {
-        lines.push("`single backtick line");
-        lines.push("``double backtick line");
+        lines.push("`single backtick line", "``double backtick line");
       }
       const content = lines.join("\n");
 
@@ -387,6 +390,198 @@ describe("sanitizeDocumentContent", () => {
     }, 2000);
   });
 
+  describe("bare ampersand preservation (ISS-9925)", () => {
+    // One save cycle plus the SECOND one: a rewrite that is merely wrong is a
+    // one-off diff, but a rewrite that re-reads its own output compounds, and
+    // only the second pass can tell those apart.
+    const saveTwice = (content: string) => {
+      const first = sanitizeDocumentContent(content);
+      const second = sanitizeDocumentContent(first.content);
+      return { first: first.content, second: second.content };
+    };
+
+    it.each([
+      ["a heading", "## Goals & Success Metrics"],
+      ["prose", "The R&D team shipped it."],
+      ["a link query string", "[x](https://example.com/s?a=1&b=2)"],
+      ["an inline code span", "Write `a && b` to combine them."],
+      ["a fenced code block", "```ts\nconst ok = a && b;\n```"],
+    ])(
+      "leaves a bare & in %s untouched across two saves",
+      (_label, content) => {
+        const { first, second } = saveTwice(content);
+        expect(first).toBe(content);
+        expect(second).toBe(content);
+      }
+    );
+
+    it("leaves an author's deliberate &amp; single-escaped across two saves", () => {
+      const content = "Literally &amp; in the source.";
+      const { first, second } = saveTwice(content);
+      expect(first).toBe(content);
+      expect(second).toBe(content);
+    });
+
+    it("leaves an author's deliberate &lt; single-escaped across two saves", () => {
+      const content = "Escaped &lt;tag&gt; in the source.";
+      const { first, second } = saveTwice(content);
+      expect(first).toBe(content);
+      expect(second).toBe(content);
+    });
+
+    // The sibling of the two cases above: those pin that an & already spelling
+    // an entity is NOT re-escaped, and this pins that one which is not IS left
+    // bare — the same predicate asserted in its opposite state, so a pass that
+    // simply stopped protecting anything could not satisfy both.
+    it("keeps a bare & bare while an entity-spelling & stays an entity", () => {
+      const result = sanitizeDocumentContent(
+        "bare & and entity &amp; together"
+      );
+      expect(result.content).toBe("bare & and entity &amp; together");
+    });
+
+    // Prose that is SHAPED like an entity but is not one. The first cut of this
+    // pass tested the shape and corrupted all of these, while preserving `R&D`
+    // in the same document — one body spelling `&` two ways, which is worse than
+    // spelling it wrong consistently because neither form is then safe to repair
+    // mechanically.
+    it.each([
+      ["a bare initialism", "Q&A; see below"],
+      ["a finance abbreviation", "P&L; and more"],
+      ["a company name", "AT&T; the carrier"],
+      ["an unknown named reference", "Ships &foo; and &NotAnEntity; verbatim"],
+    ])("preserves %s that only looks like an entity", (_label, content) => {
+      const { first, second } = saveTwice(content);
+      expect(first).toBe(content);
+      expect(second).toBe(content);
+    });
+
+    it("leaves a real entity inside an HTML attribute for sanitize-html to escape", () => {
+      // A bare `&` in an `href` is not conformant HTML, so the protection must
+      // NOT reach inside a tag. Reachable with user-supplied content (document
+      // bodies are user- and agent-written) but not an injection: the scheme
+      // allow-list has already run, the `&` sits inside a quoted value whose
+      // quotes are still escaped, and a character reference cannot open a tag.
+      const result = sanitizeDocumentContent(
+        '<a href="https://x.com/?a=1&b=2">x</a>'
+      );
+      expect(result.content).toBe('<a href="https://x.com/?a=1&amp;b=2">x</a>');
+    });
+
+    describe("adversarial input", () => {
+      // The burden on a loosened sanitizer escape is the hostile input, not the
+      // friendly one. Each row asserts the payload is still delivered as inert
+      // TEXT and that a second save does not decode it one step further — the
+      // failure that would matter is a `<script` the renderer can act on.
+      it.each([
+        ["an escaped script tag", "&lt;script&gt;alert(1)&lt;/script&gt;"],
+        ["a double-encoded payload", "&amp;lt;script&amp;gt;"],
+        ["a triple-encoded payload", "&amp;amp;lt;script&amp;amp;gt;"],
+        ["an unknown named reference", "&NotAnEntity;"],
+      ])("round-trips %s unchanged and inert", (_label, content) => {
+        const { first, second } = saveTwice(content);
+        expect(first).toBe(content);
+        expect(second).toBe(content);
+        expect(first).not.toMatch(RAW_SCRIPT_TAG);
+      });
+
+      it.each([
+        ["a decimal reference", "&#60;script&#62;", "&lt;script&gt;"],
+        ["a hex reference", "&#x3C;script&#x3E;", "&lt;script&gt;"],
+      ])(
+        "normalizes %s to its escaped form rather than decoding it to markup",
+        (_label, content, expected) => {
+          const { first, second } = saveTwice(content);
+          expect(first).toBe(expected);
+          expect(second).toBe(expected);
+          expect(first).not.toMatch(RAW_SCRIPT_TAG);
+        }
+      );
+
+      it("strips a real script tag that follows a bare &", () => {
+        const result = sanitizeDocumentContent("&<script>alert(1)</script>");
+        expect(result.content).toBe("&");
+        // Sibling of the content assertion: a regression that removed the tag
+        // but stopped populating `stripped` would silence the
+        // `document.content.sanitized` audit warning while still looking clean.
+        expect(result.stripped.length).toBeGreaterThan(0);
+      });
+
+      // whitlockk's review of the first cut: a numeric character reference is
+      // decoded WITHOUT its trailing semicolon, so an `&` this pass hid from
+      // sanitize-html would clear the scheme allow-list as a relative URL and
+      // come back a browser-decoded `javascript:` one. Nothing is hidden here:
+      // inside a tag because the pass skips tags, and in prose because asking
+      // sanitize-html — which decodes `&#58alert` — reports a reference where
+      // the superseded shape test, requiring the `;`, reported none. Either
+      // guard alone is sufficient, so the href row falls only when BOTH go and
+      // the prose row falls to the shape test on its own.
+      it("does not hide a semicolon-less numeric reference from the scheme gate", () => {
+        expect(
+          sanitizeDocumentContent('<a href="javascript&#58alert(1)">x</a>')
+            .content
+        ).toBe("<a>x</a>");
+        // Unchanged from before this pass existed: sanitize-html decodes the
+        // reference in prose, which is what stops it reaching storage in the
+        // disguised spelling a link gate would read as inert.
+        expect(
+          sanitizeDocumentContent("[x](javascript&#58alert(1))").content
+        ).toBe("[x](javascript:alert(1))");
+      });
+
+      it("keeps a lone & stable beside a tag character on either side", () => {
+        for (const content of ["&", "x &", "&<", "<&"]) {
+          const { first, second } = saveTwice(content);
+          expect(first).toBe(content);
+          expect(second).toBe(content);
+        }
+      });
+
+      // The guard's own miss before this: `ENTITY_REFERENCE_HEAD` required a
+      // trailing `;`, so the ~106 HTML5 LEGACY names that decode without one
+      // slipped through and `&` + `lt` was restored bare, minting `&ltscript`
+      // from a literal `&` and the word `lt` the author wrote separately.
+      it("escapes a splice that would mint a semicolon-less legacy entity", () => {
+        const { first, second } = saveTwice("&<span>lt</span>script>");
+        expect(first).toBe("&amp;ltscript&gt;");
+        expect(second).toBe(first);
+      });
+
+      // Correctness at scale, in the shape the sibling ReDoS block uses: the
+      // explicit timeout is the budget and the assertion is round-trip fidelity,
+      // never an elapsed-time bound. Registering each protected `&` in the
+      // placeholder map cost the restore loop one full-string scan per
+      // ampersand, which this body (≈60k of them) turns from a slow function
+      // into a held row lock — `sanitizeAndLog` runs inside the document write
+      // transaction.
+      it("sanitizes a 1 MB body dense with ampersands without corrupting it", () => {
+        const line = "see [x](https://e.com/?a=1&b=2) and R&D plus AT&T.\n";
+        const content = line.repeat(20_000);
+
+        const result = sanitizeDocumentContent(content);
+
+        expect(result.content).toBe(content);
+        expect(result.stripped).toEqual([]);
+        // 1 s is a BUDGET, not an elapsed-time assertion (same shape as the
+        // sibling ReDoS case). Measured on this body: ~50 ms correct, ~1800 ms
+        // with each protected `&` registered in the placeholder map — so the
+        // bound separates them by >15x in one direction and 1.8x in the other,
+        // which is what keeps it from flaking on a loaded box.
+      }, 1000);
+    });
+
+    // Stripping a disallowed tag can butt the protected & straight up against
+    // entity-ish text it was never adjacent to. Restoring a plain & there would
+    // mint `&#60;` from two things the author did not write together, and the
+    // NEXT save would read that as a real entity and rewrite it — so the escape
+    // is decided from what actually follows after sanitizing, not up front.
+    it("escapes a protected & that tag-stripping would splice into an entity", () => {
+      const { first, second } = saveTwice("A &<span>#60;script>");
+      expect(first).toBe("A &amp;#60;script&gt;");
+      expect(second).toBe(first);
+    });
+  });
+
   describe("idempotency", () => {
     it("applying sanitize twice yields the same result as applying once", () => {
       const mixedInput =
@@ -394,6 +589,36 @@ describe("sanitizeDocumentContent", () => {
       const firstPass = sanitizeDocumentContent(mixedInput);
       const secondPass = sanitizeDocumentContent(firstPass.content!);
       expect(secondPass.content).toBe(firstPass.content);
+    });
+  });
+
+  // ISS-10138. Restoring with one `replaceAll` per key was O(keys x body). The
+  // single-pass replacement is only correct because its callback re-resolves
+  // its own result: an earlier pass's key can sit INSIDE a later pass's captured
+  // value, which is what the old reverse-insertion-order loop handled by
+  // ordering. Nothing in this suite covered that before — a non-recursive
+  // rewrite passed all 77 of the cases above while leaking a raw key into the
+  // document.
+  describe("nested placeholder restore (ISS-10138)", () => {
+    it("restores an inline span captured inside an indented code block", () => {
+      const nested = INDENT_AROUND_INLINE_CODE;
+
+      expect(sanitizeDocumentContent(nested).content).toBe(nested);
+    });
+
+    it("restores an inline span captured inside an HTML comment", () => {
+      const nested = COMMENT_AROUND_INLINE_CODE;
+
+      expect(sanitizeDocumentContent(nested).content).toBe(nested);
+    });
+
+    it("does not add a body scan per placeholder", () => {
+      // Equal, not merely bounded: the passes are a fixed list, so eleven times
+      // the placeholders must buy zero extra scans. The old shape spent one per
+      // key, which is 200 more here.
+      expect(countFullBodyScans(MANY_SPANS)).toBe(
+        countFullBodyScans(FEW_SPANS)
+      );
     });
   });
 });
@@ -444,3 +669,59 @@ describe("sanitizeAndLog", () => {
     });
   });
 });
+// A markdown body whose inline code spans are captured by a LATER pass than the
+// one that protects them, which is the only shape that exercises nesting.
+const INDENT_AROUND_INLINE_CODE = [
+  "intro paragraph",
+  "",
+  "    indented `inline` line",
+  "    second line",
+  "",
+  "trailing",
+  "",
+].join("\n");
+
+const COMMENT_AROUND_INLINE_CODE = "before <!-- note `code` here --> after";
+
+const FEW_SPANS = 20;
+const MANY_SPANS = 220;
+
+function inlineSpanBody(spans: number): string {
+  const lines: string[] = [];
+  for (let index = 0; index < spans; index++) {
+    lines.push(`paragraph ${index} holding \`token_${index}\` and prose.`, "");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Full-body scans one sanitize costs, counted rather than timed: a wall-clock
+ * threshold is what `no-timing-assertions` forbids, and the complexity claim is
+ * about scan COUNT anyway.
+ *
+ * Only calls whose receiver is body-sized are counted. sanitize-html makes its
+ * own `replaceAll` calls, one per text node, so an unfiltered count grows with
+ * the input for a reason that has nothing to do with the restore.
+ */
+function countFullBodyScans(spans: number): number {
+  const body = inlineSpanBody(spans);
+  const bodySized = Math.floor(body.length / 2);
+  const actual = String.prototype.replaceAll;
+  let scans = 0;
+  const spy = vi
+    .spyOn(String.prototype, "replaceAll")
+    .mockImplementation(function (this: string, ...args: unknown[]): string {
+      if (this.length >= bodySized) {
+        scans++;
+      }
+      return Reflect.apply(actual, this, args) as string;
+    });
+
+  try {
+    sanitizeDocumentContent(body);
+  } finally {
+    spy.mockRestore();
+  }
+
+  return scans;
+}

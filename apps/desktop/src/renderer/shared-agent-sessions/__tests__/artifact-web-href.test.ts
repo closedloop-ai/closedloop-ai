@@ -6,7 +6,7 @@ import { buildArtifactWebHref } from "../artifact-web-href";
 // The origin the caller resolves from the active gateway profile
 // (`useWebAppOrigin`), deliberately NOT the production default: a stage-pointed
 // desktop must build a stage URL for its stage org.
-const WEB_APP_ORIGIN = "https://app.closedloop-stage.ai";
+const WEB_APP_ORIGIN = "https://app.stage.example";
 
 /**
  * ISS-4898: the desktop renderer's only possible destination for a linked
@@ -29,14 +29,10 @@ function artifact(
 
 describe("buildArtifactWebHref (ISS-4898)", () => {
   it.each([
-    ["ISS-4544", DocumentType.Feature, "/acme/issues/ISS-4544"],
-    ["FEA-4375", DocumentType.Feature, "/acme/issues/FEA-4375"],
-    ["PRD-538", DocumentType.Prd, "/acme/prds/PRD-538"],
-    [
-      "PLN-988",
-      DocumentType.ImplementationPlan,
-      "/acme/implementation-plans/PLN-988",
-    ],
+    ["ISS-4544", DocumentType.Feature, "/acme/documents/ISS-4544"],
+    ["FEA-4375", DocumentType.Feature, "/acme/documents/FEA-4375"],
+    ["PRD-538", DocumentType.Prd, "/acme/documents/PRD-538"],
+    ["PLN-988", DocumentType.ImplementationPlan, "/acme/documents/PLN-988"],
     ["DOC-1", DocumentType.Doc, "/acme/documents/DOC-1"],
   ])("builds the org-scoped web URL for %s", (slug, documentType, path) => {
     expect(
@@ -55,7 +51,7 @@ describe("buildArtifactWebHref (ISS-4898)", () => {
     // an absolute http(s) href; a root-relative one would render an in-app Link
     // the desktop nav guard silently drops.
     expect(href?.startsWith("https://")).toBe(true);
-    expect(new URL(href as string).pathname).toBe("/acme/issues/ISS-4544");
+    expect(new URL(href as string).pathname).toBe("/acme/documents/ISS-4544");
   });
 
   it("returns null for a non-navigable artifact rather than a URL that 404s", () => {
@@ -86,6 +82,6 @@ describe("buildArtifactWebHref (ISS-4898)", () => {
         "acme",
         artifact("ISS-4544", DocumentType.Feature)
       )
-    ).toBe("http://localhost:3000/acme/issues/ISS-4544");
+    ).toBe("http://localhost:3000/acme/documents/ISS-4544");
   });
 });

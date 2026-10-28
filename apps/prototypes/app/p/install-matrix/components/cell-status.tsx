@@ -7,7 +7,7 @@ import {
 import type { ReactNode } from "react";
 import { CellState } from "../mock";
 
-// One status per cell (Parker: say it once). Each state maps to exactly one
+// One status per cell (Pascoe: say it once). Each state maps to exactly one
 // status-icon-primitive glyph/ring plus a text label, never icon + badge + word
 // for the same state. Status is carried by icon SHAPE and LABEL, not by color
 // alone (a check glyph, an x glyph, a swap glyph, a dashed ring), so it reads

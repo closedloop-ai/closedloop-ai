@@ -3,8 +3,8 @@
  * multi-byte characters. Walks backward past continuation bytes (0x80..0xBF)
  * to find the last complete codepoint boundary.
  *
- * SSOT for the loop telemetry/observability pipeline (desktop main + apps/api).
- * Re-exported by `@repo/observability/truncate-utf8` for existing consumers.
+ * SSOT for desktop main and apps/api. Re-exported by
+ * `@repo/observability/truncate-utf8` for existing consumers.
  */
 export function truncateUtf8(input: string, maxBytes: number): string {
   const encoded = new TextEncoder().encode(input);

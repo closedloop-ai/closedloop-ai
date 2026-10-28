@@ -1,9 +1,17 @@
+import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import {
   type BranchAnalytics,
   BranchKpiState,
   BranchStatus,
   type BranchRow as WireBranchRow,
 } from "@repo/api/src/types/branch";
+import { resolveAttributedBranchCost } from "@repo/api/src/types/branch-cost";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
+import {
+  BranchPhaseAttributionCompleteness,
+  type BranchPhaseAttributionResult,
+  BranchVisibleLifecyclePhase,
+} from "@repo/api/src/types/branch-phase-attribution";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import {
@@ -16,11 +24,19 @@ import {
   resolveSessionDurationWindow,
   resolveSessionWallClockLabel,
 } from "@repo/app/agents/lib/session-duration";
+import {
+  resolveTimelineCostEvidence,
+  TimelineTraceEvidence,
+} from "@repo/app/branches/components/branch-pr-activity-timeline-helpers";
+import { phaseAttributionSegment } from "@repo/lib/branches/__tests__/branch-phase-attribution-fixture";
+import { calculateBranchDetailMetrics } from "@repo/lib/branches/branch-detail-outcomes";
 import { describe, expect, it } from "vitest";
+import { makeBranchDetail as detailFixture } from "../../__tests__/branch-fixtures";
 import { makeBranchAnalytics } from "../../components/branch-analytics-fixtures";
+import { resolveBranchDisplayRows } from "../branch-page-state";
 import type { BranchRow as RenderBranchRow } from "../branch-row";
 import { BranchRowStatus, DEFAULT_BRANCH_FILTERS } from "../branch-row";
-import { filterBranchRowsByWindow } from "../branch-sort-group";
+import { BranchSortDir, BranchSortKey } from "../branch-sort-group";
 import {
   deriveFilteredBranchAnalytics,
   selectVisibleWireRows,
@@ -460,11 +476,17 @@ describe("ISS-4407 date-window cohort parity (summary cards == table population)
     ];
 
     // Drive the REAL wiring the page runs: window → recover wire rows by id →
-    // derive. `filterBranchRowsByWindow` is the adapter under test; a regression
-    // in its predicate (or in the selectVisibleWireRows hand-off) now fails here.
-    const visibleRenderRows = filterBranchRowsByWindow(
+    // derive. The legacy-path window in `resolveBranchDisplayRows` is the
+    // adapter under test; a regression in its predicate (or in the
+    // selectVisibleWireRows hand-off) now fails here.
+    const { visibleRows: visibleRenderRows } = resolveBranchDisplayRows(
       allRenderRows,
-      windowStart
+      {
+        serverPageActive: false,
+        startDate: windowStart,
+        sortKey: BranchSortKey.Name,
+        sortDir: BranchSortDir.Asc,
+      }
     );
     // The window predicate itself dropped the old row — assert that, not a
     // pre-omitted fixture.
@@ -492,3 +514,175 @@ describe("ISS-4407 date-window cohort parity (summary cards == table population)
     expect(expectAvailableKpiValue(summary, "activeBranchCount")).toBe(1);
   });
 });
+
+describe("ISS-6949 Branch-detail cost reconciliation (card total vs Sessions timeline)", () => {
+  // The Cost breakdown header and the Sessions & timeline cost stat read the SAME
+  // branch. Before this fix the header was the phase-attribution rollup residue,
+  // which understated the timeline's figure by 12x-388x on 8 of 10 sampled
+  // branches. These pin the two onto one number.
+
+  it("card total equals the timeline's authoritative cost when the rows reconcile", () => {
+    const detail = costDetail({ attributedCostUsd: 24 });
+    const metrics = detailMetrics(detail, reconcilingAttribution(24));
+
+    expect(metrics.totalCostUsd.value).toBe(
+      resolveAttributedBranchCost(detail)
+    );
+    expect(metrics.totalCostUsd.state).toBe(BranchMetricAvailability.Complete);
+    expect(metrics.phaseCostUsd.build.state).toBe(
+      BranchMetricAvailability.Complete
+    );
+  });
+
+  it("card total equals the timeline's authoritative cost when the rows do NOT", () => {
+    // The ticket's case: segments price only part of the branch's real spend.
+    const detail = costDetail({ attributedCostUsd: 24 });
+    const metrics = detailMetrics(detail, reconcilingAttribution(8));
+
+    expect(metrics.totalCostUsd.value).toBe(
+      resolveAttributedBranchCost(detail)
+    );
+    expect(metrics.totalCostUsd.value).not.toBe(8);
+    // The incompleteness is real and is disclosed — on the rows, which are the
+    // thing that is incomplete.
+    expect(metrics.phaseCostUsd.build.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("declines rather than presenting the rollup residue when no attributed cost exists", () => {
+    const detail = costDetail({ attributedCostUsd: null });
+    const metrics = detailMetrics(detail, reconcilingAttribution(8));
+
+    expect(resolveAttributedBranchCost(detail)).toBeNull();
+    expect(metrics.totalCostUsd.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+    expect(metrics.locPerDollar.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("keeps a genuinely unpriced Branch readable as zero, not unavailable", () => {
+    const detail = costDetail({ attributedCostUsd: null });
+    const metrics = detailMetrics(detail, reconcilingAttribution(0));
+
+    expect(metrics.totalCostUsd.value).toBe(0);
+    expect(metrics.totalCostUsd.state).toBe(BranchMetricAvailability.Complete);
+  });
+
+  it("falls back to the legacy replicated total when the producer sends no attributed field", () => {
+    // `resolveAttributedBranchCost` returns `estimatedCostUsd` only when
+    // `attributedCostUsd` is ABSENT — an explicit null is authoritative. A
+    // "simplification" to `attributedCostUsd ?? estimatedCostUsd` reddens this.
+    const detail = detailFixture({ estimatedCostUsd: 12 });
+    const metrics = detailMetrics(detail, reconcilingAttribution(8));
+
+    expect(resolveAttributedBranchCost(detail)).toBe(12);
+    expect(metrics.totalCostUsd.value).toBe(12);
+  });
+
+  it.each([
+    ["rows reconcile", 24],
+    ["rows under-attribute", 8],
+    ["rows over-attribute", 40],
+  ])(
+    "the card total is the timeline's authoritative figure when %s",
+    (_label, rollupCostUsd) => {
+      // The cross-surface contract both producers must satisfy: whatever the
+      // phase rollups say, the total is the ONE figure the timeline treats as
+      // authoritative. Each producer's own half — that it actually feeds this
+      // figure — is asserted against the real attacher in
+      // apps/api/.../branch-canonical-metric-projection.test.ts and
+      // apps/desktop/test/branch-canonical-metric-projection.test.ts, which this
+      // package cannot import.
+      const detail = costDetail({ attributedCostUsd: 24 });
+      const metrics = detailMetrics(
+        detail,
+        reconcilingAttribution(rollupCostUsd)
+      );
+
+      expect(metrics.totalCostUsd.value).toBe(
+        resolveAttributedBranchCost(detail)
+      );
+      expect(metrics.totalCostUsd.value).not.toBe(
+        rollupCostUsd === 24 ? -1 : rollupCostUsd
+      );
+    }
+  );
+
+  it("documents the timeline's own charted fallback as the boundary of this parity", () => {
+    // AC1 holds on the timeline's AUTHORITATIVE INPUT. The timeline separately
+    // substitutes its charted subtotal when its own timing evidence is
+    // incomplete (ISS-5951) — a pre-existing, separately-gated behavior this
+    // ticket does not own. Asserted rather than hidden.
+    const authoritative = resolveTimelineCostEvidence({
+      authoritativeCostUsd: 24,
+      chartableCostUsd: 8,
+      sourceCostUnpriced: false,
+      timingIncomplete: false,
+      traceEvidence: TimelineTraceEvidence.Complete,
+    });
+    const charted = resolveTimelineCostEvidence({
+      authoritativeCostUsd: 24,
+      chartableCostUsd: 8,
+      sourceCostUnpriced: false,
+      timingIncomplete: true,
+      traceEvidence: TimelineTraceEvidence.Complete,
+    });
+
+    expect(authoritative.value).toBe(24);
+    expect(charted.value).toBe(8);
+    expect(charted.incomplete).toBe(true);
+  });
+});
+
+function detailMetrics(
+  detail: BranchPageDetail,
+  phaseAttribution: BranchPhaseAttributionResult
+) {
+  return calculateBranchDetailMetrics({
+    attributedCostUsd: resolveAttributedBranchCost(detail),
+    phaseAttribution,
+    selectedCycle: null,
+    selectedPrAdditions: 100,
+    selectedPrDeletions: 0,
+    selectedPrLocComplete: true,
+  });
+}
+
+function costDetail(cost: {
+  attributedCostUsd: number | null;
+}): BranchPageDetail {
+  return detailFixture({ estimatedCostUsd: 48, ...cost });
+}
+
+/** Rollups totalling `costUsd`, with event evidence that reconciles internally. */
+function reconcilingAttribution(costUsd: number): BranchPhaseAttributionResult {
+  return {
+    segments: [
+      phaseAttributionSegment({
+        sessionId: "s1",
+        phase: BranchVisibleLifecyclePhase.Build,
+        startMs: 0,
+        endMs: 1,
+        estimatedCostUsd: costUsd,
+      }),
+    ],
+    rollups: Object.values(BranchVisibleLifecyclePhase).map((phase) => ({
+      phase,
+      estimatedCostUsd:
+        phase === BranchVisibleLifecyclePhase.Build ? costUsd : 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      durationMs: 0,
+      sessionCount: 1,
+    })),
+    coverage: {
+      completeness: BranchPhaseAttributionCompleteness.Complete,
+      subtotalUsd: costUsd,
+    },
+  };
+}

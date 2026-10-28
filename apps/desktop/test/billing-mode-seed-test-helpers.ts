@@ -62,8 +62,8 @@ export async function seedLegacyUnknownBillingSession(
   const model = seed.model ?? "gpt-4o";
   const costUsd = seed.costUsd ?? null;
   await db.run(
-    `INSERT INTO sessions (id, status, started_at, ended_at, updated_at, billing_mode, harness)
-     VALUES ($1, 'completed', $2, $3, $3, 'unknown', $4)`,
+    `INSERT INTO sessions (id, status, started_at, ended_at, updated_at, last_activity_at, billing_mode, harness)
+     VALUES ($1, 'completed', $2, $3, $3, $3, 'unknown', $4)`,
     seed.sessionId,
     BILLING_SEED_T0,
     BILLING_SEED_T1,

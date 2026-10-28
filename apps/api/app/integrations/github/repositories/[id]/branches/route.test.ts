@@ -129,13 +129,25 @@ describe("GET /integrations/github/repositories/[id]/branches", () => {
   it("allows desktop API-key principals to read repository branches", async () => {
     await GET(request({ token: "sk_live_desktop" }), ROUTE_CONTEXT);
 
-    expect(getBranchesMock).toHaveBeenCalledWith("repo-1", "org-1", 20, false);
+    expect(getBranchesMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      20,
+      false,
+      "user-1"
+    );
   });
 
   it("allows Clerk principals to read repository branches", async () => {
     await GET(request({ token: "clerk-session" }), ROUTE_CONTEXT);
 
-    expect(getBranchesMock).toHaveBeenCalledWith("repo-1", "org-1", 20, false);
+    expect(getBranchesMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      20,
+      false,
+      "user-1"
+    );
   });
 
   it("forwards the public-repos rollout so the public fallback stays gated when disabled", async () => {
@@ -143,7 +155,13 @@ describe("GET /integrations/github/repositories/[id]/branches", () => {
 
     await GET(request({ token: "sk_live_desktop" }), ROUTE_CONTEXT);
 
-    expect(getBranchesMock).toHaveBeenCalledWith("repo-1", "org-1", 20, false);
+    expect(getBranchesMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      20,
+      false,
+      "user-1"
+    );
   });
 
   it("permits the public fallback when the rollout is enabled for the principal", async () => {
@@ -151,7 +169,13 @@ describe("GET /integrations/github/repositories/[id]/branches", () => {
 
     await GET(request({ token: "sk_live_desktop" }), ROUTE_CONTEXT);
 
-    expect(getBranchesMock).toHaveBeenCalledWith("repo-1", "org-1", 20, true);
+    expect(getBranchesMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      20,
+      true,
+      "user-1"
+    );
   });
 
   it("rejects unauthenticated reads before the service boundary", async () => {
@@ -192,7 +216,8 @@ describe("GET /integrations/github/repositories/[id]/branches", () => {
       "repo-1",
       "wrong-org",
       20,
-      false
+      false,
+      "user-1"
     );
   });
 
@@ -202,7 +227,13 @@ describe("GET /integrations/github/repositories/[id]/branches", () => {
       ROUTE_CONTEXT
     );
 
-    expect(getBranchesMock).toHaveBeenCalledWith("repo-1", "org-1", 100, false);
+    expect(getBranchesMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      100,
+      false,
+      "user-1"
+    );
   });
 
   it("rejects zero, negative, and non-numeric limits", async () => {

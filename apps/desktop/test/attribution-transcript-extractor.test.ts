@@ -7,13 +7,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
 import { claudeTranscriptEntryUuidScheme } from "@repo/lib/harness/usage-dedup";
+import { test } from "vitest";
 import { extractTranscriptTokens } from "../src/main/database/transcript.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {

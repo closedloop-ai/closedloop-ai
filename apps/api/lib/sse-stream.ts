@@ -169,9 +169,32 @@ export function createSseResponse(
 ): Response {
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/event-stream",
+      "Content-Type": SSE_CONTENT_TYPE,
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
     },
   });
 }
+
+/**
+ * Stream lifetime left at construction, for a stream that must close
+ * `deadlineMs` after request entry.
+ *
+ * The platform's `maxDuration` clock starts at request entry, but a stream's
+ * timer cannot start until the route's setup has resolved, and setup can block
+ * (each pooled connection alone can wait `DB_POOL_ACQUIRE_TIMEOUT_MS`). Handing
+ * the stream its whole budget makes the real lifetime `setup + budget`, which a
+ * slow-but-successful setup pushes past the ceiling: the function is killed
+ * before the graceful close can fire. Charging setup against the budget keeps
+ * the total measured from entry. `floorMs` is the lifetime a stream still gets
+ * once setup has spent the whole budget.
+ */
+export function remainingStreamDurationMs(
+  startedAt: number,
+  deadlineMs: number,
+  floorMs = 0
+): number {
+  return Math.max(floorMs, deadlineMs - (Date.now() - startedAt));
+}
+
+export const SSE_CONTENT_TYPE = "text/event-stream";

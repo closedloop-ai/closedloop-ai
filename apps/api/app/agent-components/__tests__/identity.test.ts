@@ -11,7 +11,7 @@
  *    observed on two devices) dedupe to ONE row that folds both compute targets;
  *  - a hash-less legacy/event-minted row still renders exactly ONCE under the
  *    name-only identity (version-skew safe), with no fingerprint to badge;
- *  - (wongk decision) usage — FK-linked OR orphaned — carrying a
+ *  - (whitlockk decision) usage — FK-linked OR orphaned — carrying a
  *    `componentVersionHash` attributes to the MATCHING version bucket, NOT to the
  *    inventory row that currently holds the FK and NOT to a catch-all unversioned
  *    bucket. A device that moved hash A→B keeps its historical A sessions on A;
@@ -48,7 +48,7 @@ import {
   resolveOrphanSourceType,
   type UsageGroupRow,
 } from "../identity";
-import { inventoryRow, MAX_ROWS, orphanUsage } from "./identity-test-fixtures";
+import { inventoryRow, orphanUsage } from "./identity-test-fixtures";
 
 const HASH_A =
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -264,7 +264,7 @@ describe("buildInventorySlugById", () => {
   });
 });
 
-describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () => {
+describe("foldFkUsageIntoMerged — version-keyed FK attribution (whitlockk)", () => {
   it("attributes FK usage by its OWN carried hash, not the inventory row currently holding the FK", () => {
     // One shared inventory row that now reads HASH_B, but historical usage on it
     // carried HASH_A. The A usage must land on the A bucket, not B.
@@ -295,7 +295,7 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     // The A bucket got the historical A session; the current B bucket did NOT.
     expect(
@@ -327,7 +327,7 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     // Both seeded on DEF_A → the usage folds into the single seeded bucket.
     expect(merged.size).toBe(1);
@@ -354,7 +354,7 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     expect(merged.size).toBe(1);
     expect(merged.get(SLUG)?.totalInvocations).toBe(2);
@@ -389,7 +389,7 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     // The usage landed on its OWN identity, NOT the FK'd inventory row's slug.
     expect(merged.get(otherSlug)?.totalInvocations).toBe(6);
@@ -422,7 +422,7 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     // Recovered onto the `code-review` family even though its FK'd inventory row
     // was outside the working set.
@@ -451,13 +451,13 @@ describe("foldFkUsageIntoMerged — version-keyed FK attribution (wongk)", () =>
       ],
     ]);
 
-    foldFkUsageIntoMerged(merged, slugById, usageByComponentId, MAX_ROWS);
+    foldFkUsageIntoMerged(merged, slugById, usageByComponentId);
 
     expect(merged.get(SLUG)?.totalInvocations).toBe(4);
   });
 });
 
-describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)", () => {
+describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (whitlockk)", () => {
   it("folds orphan usage carrying a hash into the MATCHING version bucket, not an arbitrary or unversioned one", () => {
     // A name owns two fingerprinted inventory rows. Orphan (null-FK) usage that
     // carried HASH_A must land ON the HASH_A bucket — the version it ran against.
@@ -471,11 +471,9 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
     ]);
     expect(merged.size).toBe(2);
 
-    foldOrphanUsageIntoMerged(
-      merged,
-      [orphanUsage({ invocationCount: 3, componentVersionHash: HASH_A })],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(merged, [
+      orphanUsage({ invocationCount: 3, componentVersionHash: HASH_A }),
+    ]);
 
     // No new bucket — it folded into the existing HASH_A version bucket.
     expect(merged.size).toBe(2);
@@ -493,17 +491,13 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
       inventoryRow({ id: "row-a", contentHash: HASH_A, definitionHash: DEF_A }),
     ]);
 
-    foldOrphanUsageIntoMerged(
-      merged,
-      [
-        orphanUsage({
-          invocationCount: 2,
-          componentVersionHash: HASH_A,
-          definitionHash: DEF_A,
-        }),
-      ],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(merged, [
+      orphanUsage({
+        invocationCount: 2,
+        componentVersionHash: HASH_A,
+        definitionHash: DEF_A,
+      }),
+    ]);
 
     expect(merged.size).toBe(1);
     expect(
@@ -522,16 +516,12 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
       inventoryRow({ id: "row-b", contentHash: HASH_B, computeTargetId: "t2" }),
       inventoryRow({ id: "row-a", contentHash: HASH_A }),
     ]);
-    foldOrphanUsageIntoMerged(
-      forward,
-      [orphanUsage({ invocationCount: 3, componentVersionHash: null })],
-      MAX_ROWS
-    );
-    foldOrphanUsageIntoMerged(
-      reverse,
-      [orphanUsage({ invocationCount: 3, componentVersionHash: null })],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(forward, [
+      orphanUsage({ invocationCount: 3, componentVersionHash: null }),
+    ]);
+    foldOrphanUsageIntoMerged(reverse, [
+      orphanUsage({ invocationCount: 3, componentVersionHash: null }),
+    ]);
 
     // Neither versioned bucket moved; the name-level bucket carries the usage.
     expect(forward.get(SLUG)?.totalInvocations).toBe(3);
@@ -548,22 +538,18 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
     // No inventory at all — the orphan's carried hash seeds a synthetic entry
     // badged with that version.
     const merged = mergeComponentRows([]);
-    foldOrphanUsageIntoMerged(
-      merged,
-      [
-        orphanUsage({
-          agentSessionId: "s1",
-          invocationCount: 2,
-          componentVersionHash: HASH_A,
-        }),
-        orphanUsage({
-          agentSessionId: "s2",
-          invocationCount: 4,
-          componentVersionHash: HASH_A,
-        }),
-      ],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(merged, [
+      orphanUsage({
+        agentSessionId: "s1",
+        invocationCount: 2,
+        componentVersionHash: HASH_A,
+      }),
+      orphanUsage({
+        agentSessionId: "s2",
+        invocationCount: 4,
+        componentVersionHash: HASH_A,
+      }),
+    ]);
     // Both orphan rows for the same name+hash collapse into ONE synthetic entry.
     expect(merged.size).toBe(1);
     const entry = merged.get(fingerprintIdentityKey(SLUG, HASH_A));
@@ -574,22 +560,18 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
 
   it("splits orphan usage of the same name across the versions it actually ran against", () => {
     const merged = mergeComponentRows([]);
-    foldOrphanUsageIntoMerged(
-      merged,
-      [
-        orphanUsage({
-          agentSessionId: "s1",
-          invocationCount: 2,
-          componentVersionHash: HASH_A,
-        }),
-        orphanUsage({
-          agentSessionId: "s2",
-          invocationCount: 4,
-          componentVersionHash: HASH_B,
-        }),
-      ],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(merged, [
+      orphanUsage({
+        agentSessionId: "s1",
+        invocationCount: 2,
+        componentVersionHash: HASH_A,
+      }),
+      orphanUsage({
+        agentSessionId: "s2",
+        invocationCount: 4,
+        componentVersionHash: HASH_B,
+      }),
+    ]);
     expect(merged.size).toBe(2);
     expect(
       merged.get(fingerprintIdentityKey(SLUG, HASH_A))?.totalInvocations
@@ -602,7 +584,7 @@ describe("foldOrphanUsageIntoMerged — version-keyed orphan attribution (wongk)
 
 describe("version-identity keys-covered guard", () => {
   it("names every UsageGroupRow + OrphanUsageRow field so a new version field is a compile error, not a silent drop", () => {
-    // FEA-3982 (wongk): the version fold routes on `componentVersionHash` +
+    // FEA-3982 (whitlockk): the version fold routes on `componentVersionHash` +
     // `definitionHash`. If a new version-identity field is added to either usage
     // type but not to the fold, this typed keys map fails `tsc` (a missing key is
     // a type error) — surfacing it at compile time rather than as silently

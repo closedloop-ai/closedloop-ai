@@ -20,7 +20,7 @@
  * fail here instead of in the Help reader.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { slugify } from "../scripts/generate-docs-bundle-manifest-lib.mjs";
 import { slugifyHeading } from "../src/renderer/components/help/help-slug.js";
 

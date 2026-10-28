@@ -21,7 +21,9 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias
  *    `DESKTOP_BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY`
  *    (`apps/desktop/src/shared/feature-flags.ts`).
  *

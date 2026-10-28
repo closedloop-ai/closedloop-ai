@@ -1,6 +1,5 @@
 import "server-only";
 
-import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
 import {
   type SelectedPullRequestCheck,
   SelectedPullRequestCheckCategory,
@@ -26,6 +25,10 @@ import {
 } from "./selected-pull-request-checks-pagination";
 import type { SelectedPullRequestChecksOctokit } from "./selected-pull-request-client";
 import {
+  type NormalizedSelectedPullRequestInput,
+  normalizeSelectedPullRequestInput,
+} from "./selected-pull-request-identity";
+import {
   classifySelectedPullRequestProviderError,
   type SelectedPullRequestProviderFailure,
   SelectedPullRequestProviderOperation,
@@ -39,7 +42,7 @@ export async function getSelectedPullRequestChecksEvidence(
   pullNumber: number,
   options: SelectedPullRequestAcquisitionOptions = {}
 ): Promise<SelectedPullRequestChecksEvidenceResult> {
-  const input = normalizeInput(owner, repo, pullNumber);
+  const input = normalizeSelectedPullRequestInput(owner, repo, pullNumber);
   const deadline = createSelectedPullRequestAcquisitionDeadline(options);
   if (!(input && deadline)) {
     deadline?.dispose();
@@ -68,7 +71,7 @@ export async function getSelectedPullRequestChecksEvidence(
 
 async function acquireSelectedPullRequestChecksEvidence(
   octokit: SelectedPullRequestChecksOctokit,
-  input: NormalizedInput,
+  input: NormalizedSelectedPullRequestInput,
   signal: AbortSignal
 ): Promise<SelectedPullRequestChecksEvidenceResult> {
   signal.throwIfAborted();
@@ -124,7 +127,7 @@ async function acquireSelectedPullRequestChecksEvidence(
 
 async function readPullRequestMetadata(
   octokit: SelectedPullRequestChecksOctokit,
-  input: NormalizedInput,
+  input: NormalizedSelectedPullRequestInput,
   signal: AbortSignal
 ): Promise<InternalResult<PullRequestMetadata>> {
   try {
@@ -157,7 +160,7 @@ async function readPullRequestMetadata(
 }
 
 function buildEvidence(
-  input: NormalizedInput,
+  input: NormalizedSelectedPullRequestInput,
   metadata: PullRequestMetadata,
   read: SelectedPullRequestCheckContextsRead
 ): SelectedPullRequestChecksEvidence {
@@ -238,33 +241,6 @@ function incrementCategory(
   }
 }
 
-function normalizeInput(
-  owner: string,
-  repo: string,
-  pullNumber: number
-): NormalizedInput | null {
-  const parsed = inputSchema.safeParse({ owner, repo, pullNumber });
-  if (!parsed.success) {
-    return null;
-  }
-  const repositoryFullName = normalizeRepoFullName(
-    `${parsed.data.owner}/${parsed.data.repo}`
-  );
-  if (!REPOSITORY_FULL_NAME_REGEX.test(repositoryFullName)) {
-    return null;
-  }
-  const [normalizedOwner, normalizedRepo] = repositoryFullName.split("/");
-  if (!(normalizedOwner && normalizedRepo)) {
-    return null;
-  }
-  return {
-    owner: normalizedOwner,
-    repo: normalizedRepo,
-    pullNumber: parsed.data.pullNumber,
-    repositoryFullName,
-  };
-}
-
 function metadataRemainedStable(
   initial: PullRequestMetadata,
   final: PullRequestMetadata
@@ -322,13 +298,6 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled selected pull-request check category: ${value}`);
 }
 
-type NormalizedInput = {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-  repositoryFullName: string;
-};
-
 type PullRequestMetadata = {
   githubId: string;
   number: number;
@@ -349,13 +318,6 @@ type UnavailableResult = Exclude<
 type InternalResult<T> = InternalAvailable<T> | UnavailableResult;
 
 const GIT_SHA_REGEX = /^[0-9a-f]{40}$/i;
-const REPOSITORY_FULL_NAME_REGEX = /^[^/]+\/[^/]+$/;
-
-const inputSchema = z.object({
-  owner: z.string().trim().min(1).refine(isRepositoryComponent),
-  repo: z.string().trim().min(1).refine(isRepositoryComponent),
-  pullNumber: z.number().int().positive(),
-});
 
 const pullRequestMetadataSchema = z.object({
   id: z.number().int().nonnegative(),
@@ -363,9 +325,5 @@ const pullRequestMetadataSchema = z.object({
   html_url: z.url().refine((value) => HTTP_URL_PROTOCOL_REGEX.test(value)),
   head: z.object({ sha: z.string().nullish() }),
 });
-
-function isRepositoryComponent(value: string): boolean {
-  return !value.includes("/");
-}
 
 const HTTP_URL_PROTOCOL_REGEX = /^https?:\/\//;

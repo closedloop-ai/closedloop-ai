@@ -50,7 +50,7 @@ function SessionReadSourceBadge({
     DESKTOP_SESSION_DETAIL_READ_SOURCE_FEATURE_FLAG_KEY
   );
   // `enabled: false` — this is an OBSERVER of the pane's cache entry, never a
-  // second reader of it (wongk cid 3776137731). This component mounts in the
+  // second reader of it (whitlockk cid 3776137731). This component mounts in the
   // Topbar, OUTSIDE the lazy detail boundary, so it commits before the pane and
   // an enabled observer would be the one to open the read. That matters because
   // `applyDesktopSessionsListPollDefaults` puts `refetchInterval: 5s` and

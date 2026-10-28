@@ -19,6 +19,10 @@ const NON_DOSSIER_DIRS: ReadonlySet<string> = new Set([
   "_templates",
   "collection-kit",
   "node_modules",
+  // ISS-12552: published contract fixtures and the accuracy
+  // report sit beside the dossiers.
+  "contract-fixtures",
+  "reports",
 ]);
 
 export type DossierDir = {
@@ -30,6 +34,11 @@ export type DossierDir = {
 export type DossierRawDir = DossierDir & {
   /** Absolute path to the dossier's frozen `raw/` directory. */
   rawDir: string;
+  /**
+   * ISS-12552: the dossier's frozen `server/` captures
+   * (`receipts.json`, `state.json`), present only on attribution dossiers.
+   */
+  serverDir: string;
 };
 
 /**
@@ -66,7 +75,33 @@ export function listDossierRawDirs(corpusDir: string): DossierRawDir[] {
   return listDossierDirs(corpusDir).map((d) => ({
     ...d,
     rawDir: join(d.dir, "raw"),
+    serverDir: join(d.dir, "server"),
   }));
+}
+
+const SQLITE_SIDECAR_SUFFIX = /-(wal|shm|journal)$/;
+
+/**
+ * Every `-wal` / `-shm` / `-journal` entry directly under a dossier `raw/`,
+ * as absolute paths. A readOnly node:sqlite open of a WAL-mode db creates the
+ * first two on its first query and `close()` keeps them, so their presence
+ * means a reader opened the frozen bytes in place. Deliberately fs-only: the
+ * files are gitignored, so `git status` is the one tool that cannot find them
+ * (ISS-10167).
+ */
+export function findSqliteSidecars(corpusDir: string): string[] {
+  const found: string[] = [];
+  for (const { rawDir } of listDossierRawDirs(corpusDir)) {
+    if (!existsSync(rawDir)) {
+      continue;
+    }
+    for (const entry of readdirSync(rawDir).sort()) {
+      if (SQLITE_SIDECAR_SUFFIX.test(entry)) {
+        found.push(join(rawDir, entry));
+      }
+    }
+  }
+  return found;
 }
 
 export type RawFileClassification =
@@ -115,4 +150,18 @@ export function classifyRawFiles(
     throw new Error(`${sessionId}: expected raw/${main} for a claude dossier`);
   }
   return { kind: "claude", main };
+}
+
+/**
+ * ISS-7504: exhaustiveness guard for `RawFileClassification`. A fourth union
+ * member fails tsc at the `never` annotation AND throws at runtime so an
+ * unrecognised dossier is rejected rather than silently mis-parsed or skipped.
+ *
+ * Pass the whole `classification` value — after an exhaustive if/else or switch
+ * over all three kinds, TypeScript narrows the variable to `never`.
+ */
+export function assertExhaustiveClassification(classification: never): never {
+  throw new Error(
+    `unrecognised raw-file classification kind: ${(classification as RawFileClassification).kind}`
+  );
 }

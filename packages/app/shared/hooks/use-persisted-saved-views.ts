@@ -11,6 +11,11 @@ import {
   updateSavedView,
 } from "@repo/design-system/lib/table-saved-views";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  decodeStoredJson,
+  readStoredJson,
+  subscribeToStorageKey,
+} from "./subscribe-to-storage-key";
 
 export type PersistedSavedViewsConfig<TArrangement> = {
   /** Surface key; when omitted the collection is memory-only (no persistence). */
@@ -33,25 +38,6 @@ export type PersistedSavedViewsConfig<TArrangement> = {
    */
   onPersistError?: () => void;
 };
-
-function loadCollection<TArrangement>(
-  keyPrefix: string,
-  persistKey: string,
-  parse: (raw: unknown) => SavedViewCollection<TArrangement> | null
-): SavedViewCollection<TArrangement> | null {
-  if (typeof localStorage === "undefined") {
-    return null;
-  }
-  try {
-    const raw = localStorage.getItem(`${keyPrefix}${persistKey}`);
-    if (!raw) {
-      return null;
-    }
-    return parse(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Generic persistence + mutation machinery for a collection of NAMED, switchable
@@ -89,10 +75,24 @@ export function usePersistedSavedViews<TArrangement>(
   // it after a successful write does not itself trigger a re-render/re-write.
   const lastPersistedRef =
     useRef<SavedViewCollection<TArrangement>>(collection);
+  // The collection as of the LAST COMMITTED RENDER. Assigned during render, so
+  // between a mutation's commit and the passive persist effect that writes it
+  // this differs from `lastPersistedRef` — which is exactly "this tab is
+  // holding work no other document can see yet" (ISS-9568, marisolashgrove review).
+  const collectionRef = useRef<SavedViewCollection<TArrangement>>(collection);
+  collectionRef.current = collection;
   // Latest error callback in a ref so the write effect need not depend on it
   // (an unstable inline callback would otherwise re-run the effect each render).
   const onPersistErrorRef = useRef(onPersistError);
   onPersistErrorRef.current = onPersistError;
+  const parseRef = useRef(parse);
+  parseRef.current = parse;
+  // ISS-9568: how many times a cross-tab write has been adopted under the
+  // current key. A consumer that pushes the ACTIVE view onto live table state
+  // once per restore (`useBranchSavedViews`) keys a re-apply on this, so an
+  // adoption that switches the active view is not left as a trigger naming a
+  // view the table is not on.
+  const [adoptionCount, setAdoptionCount] = useState(0);
   // The storage key this hook has finished restoring under. `null` = nothing
   // restored yet. Tracked (not a one-shot ref) so an identity change that
   // rekeys the store — a signed-in user switching org, FEA-4180 — RE-restores
@@ -113,7 +113,7 @@ export function usePersistedSavedViews<TArrangement>(
     // stale in-memory collection from a previous key is never flushed under the
     // new one. A memory-only surface (`persistKey` omitted) resets to empty.
     const restoredCollection = persistKey
-      ? (loadCollection(keyPrefix, persistKey, parse) ??
+      ? (readStoredJson(`${keyPrefix}${persistKey}`, parse) ??
         emptySavedViewCollection<TArrangement>())
       : emptySavedViewCollection<TArrangement>();
     // The restored value IS what's on disk for this key, so seed the rollback
@@ -154,6 +154,44 @@ export function usePersistedSavedViews<TArrangement>(
       onPersistErrorRef.current?.();
     }
   }, [persistKey, keyPrefix, restored, collection]);
+
+  // ISS-9568: adopt another same-origin tab's write to THIS key. The event
+  // carries the new bytes, which go through the same parser the restore uses;
+  // a removed key, non-JSON bytes or a rejected shape leave the collection as it
+  // is (after a removal the collection is memory-only until the next local
+  // mutation, which writes it whole again because every mutation is a new
+  // reference). Seeding `lastPersistedRef` BEFORE the state update is what keeps
+  // adoption write-free — the persist effect above skips an identical
+  // reference — and it also makes the adopted collection the rollback baseline
+  // for a later failed local write. Gated on `restored` for the current key so
+  // a mid-rekey event can never land under the wrong identity.
+  useEffect(() => {
+    if (!(persistKey && restored && fullKey)) {
+      return;
+    }
+    return subscribeToStorageKey(fullKey, (event) => {
+      // A local mutation commits to state but is written by the passive persist
+      // effect above, and a `storage` event can land in the gap between the two.
+      // Adopting there would replace the unflushed work in memory AND seed
+      // `lastPersistedRef` to the adopted value, so the persist effect's
+      // identity check would then find nothing to flush: the view would be gone
+      // from memory, never on disk, with no error and nothing in the switcher.
+      // `main` always let the local mutation win and land, so skipping restores
+      // that — the pending flush goes out and the other tab adopts it in turn.
+      // This is not a merge (ISS-9448/ISS-9449 own that), only a refusal to drop
+      // unflushed work on the floor.
+      if (collectionRef.current !== lastPersistedRef.current) {
+        return;
+      }
+      const adopted = decodeStoredJson(event.newValue, parseRef.current);
+      if (!adopted) {
+        return;
+      }
+      lastPersistedRef.current = adopted;
+      setCollection(adopted);
+      setAdoptionCount((count) => count + 1);
+    });
+  }, [persistKey, restored, fullKey]);
 
   // Save the caller's CURRENT arrangement as a new named view and make it
   // active. Blank names are rejected in the pure model (no-op).
@@ -211,5 +249,7 @@ export function usePersistedSavedViews<TArrangement>(
     // one-shot reapply on this so an identity switch (org/user change) re-applies
     // the NEW key's active view instead of staying on the old one.
     restoredKey,
+    // Cross-tab adoptions under the current key (ISS-9568); `0` until one lands.
+    adoptionCount,
   };
 }

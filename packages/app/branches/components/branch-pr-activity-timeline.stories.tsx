@@ -10,7 +10,10 @@ import {
   type BranchTraceState,
   BranchTraceUnavailableReason,
 } from "@repo/api/src/types/branch-trace";
+import { TIMELINE_SCALE_VISIBLE_LABEL_FLAG_KEY } from "@repo/api/src/types/timeline-scale-visible-label-flag";
+import { TimelineScale } from "@repo/app/agents/lib/session-timeline-scale";
 import type { Meta, StoryObj } from "@storybook/react";
+import { type ComponentProps, useState } from "react";
 import { BranchPrActivityTimeline } from "./branch-pr-activity-timeline";
 
 function ses(over: Partial<BranchSession>): BranchSession {
@@ -86,9 +89,9 @@ function detail(
 }
 
 const meta = {
-  title: "App Core/Branches/PR Activity Timeline",
+  title: "Composites v1.0/Branches/Branch PR Activity Timeline",
   component: BranchPrActivityTimeline,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchPrActivityTimeline>;
 
@@ -105,10 +108,67 @@ export const SingleUser: Story = {
         endedAt: "2026-06-10T13:00:00.000Z",
         inputTokens: 2400,
         estimatedCostUsd: 18,
-        ownerUserName: "Chris",
+        ownerUserName: "Cosimo",
       }),
     ]),
   },
+};
+
+/**
+ * ISS-10599: no prior story here ever passed `onScaleChange`, so the scale
+ * toggle — the same `TimelineScaleControl` the Session Timeline uses, same
+ * fix — had zero Storybook coverage on this consumer. Rendered LIVE with real
+ * `useState`, not a static prop, so the toggle is actually operable here: a
+ * control nobody can click in Storybook is a control nobody can check the
+ * label, the focus ring, or the keyboard path on.
+ *
+ * Takes the story's own `args` rather than building a second fixture of its own
+ * (#7592 review, marisolashgrove): a `render` that ignores `args` leaves the
+ * controls panel editing nothing while the same detail is constructed twice.
+ * Dropping the `args` block outright is not the alternative — `detail` is a
+ * required prop, so `StoryObj` rejects a story without it.
+ *
+ * The story turns the visible-label flag ON through the global preview
+ * decorator's `appCore` parameter (`apps/storybook/.storybook/preview.tsx`,
+ * which passes `parameters.appCore.enabledFlags` into the mounted
+ * `FeatureFlagAdapterProvider`). Without it this renders the CLOSED default —
+ * the pre-fix unlabeled row — and the one thing the story exists to show is the
+ * one thing it could not show.
+ */
+function LiveScaleControl(
+  props: Omit<
+    ComponentProps<typeof BranchPrActivityTimeline>,
+    "onScaleChange" | "scale"
+  >
+) {
+  const [scale, setScale] = useState<TimelineScale>(TimelineScale.OneHour);
+
+  return (
+    <BranchPrActivityTimeline
+      {...props}
+      onScaleChange={setScale}
+      scale={scale}
+    />
+  );
+}
+
+export const WithScaleControl: Story = {
+  parameters: {
+    appCore: { enabledFlags: [TIMELINE_SCALE_VISIBLE_LABEL_FLAG_KEY] },
+  },
+  args: {
+    detail: detail([
+      ses({
+        sessionId: "s1",
+        startedAt: "2026-06-10T10:00:00.000Z",
+        endedAt: "2026-06-10T13:00:00.000Z",
+        inputTokens: 2400,
+        estimatedCostUsd: 18,
+        ownerUserName: "Cosimo",
+      }),
+    ]),
+  },
+  render: (args) => <LiveScaleControl {...args} />,
 };
 
 /** Two users spending in the same hour, with a concurrency-marked hour. */
@@ -122,7 +182,7 @@ export const MultiUserConcurrent: Story = {
           endedAt: "2026-06-10T12:00:00.000Z",
           inputTokens: 1600,
           estimatedCostUsd: 12,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         ses({
           sessionId: "s2",
@@ -130,12 +190,12 @@ export const MultiUserConcurrent: Story = {
           endedAt: "2026-06-10T12:00:00.000Z",
           inputTokens: 800,
           estimatedCostUsd: 6,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
       [
-        startItem("s1", "2026-06-10T10:00:00.000Z", "Kris + Claude"),
-        startItem("s2", "2026-06-10T11:00:00.000Z", "Thadeus + Claude"),
+        startItem("s1", "2026-06-10T10:00:00.000Z", "Kerensa + Claude"),
+        startItem("s2", "2026-06-10T11:00:00.000Z", "Tamsin + Claude"),
       ]
     ),
   },
@@ -150,7 +210,7 @@ export const MixedTimingCompleteness: Story = {
           sessionId: "s1",
           slug: "SES-1",
           estimatedCostUsd: 5,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         ses({
           sessionId: "s2",
@@ -158,7 +218,7 @@ export const MixedTimingCompleteness: Story = {
           startedAt: "2026-06-10T12:00:00.000Z",
           endedAt: "2026-06-10T12:00:00.000Z",
           estimatedCostUsd: 7,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
       [],
@@ -177,7 +237,7 @@ export const IdleGap: Story = {
         endedAt: "2026-06-10T11:00:00.000Z",
         inputTokens: 600,
         estimatedCostUsd: 4,
-        ownerUserName: "Chris",
+        ownerUserName: "Cosimo",
       }),
       ses({
         sessionId: "s2",
@@ -185,7 +245,7 @@ export const IdleGap: Story = {
         endedAt: "2026-06-10T14:00:00.000Z",
         inputTokens: 900,
         estimatedCostUsd: 7,
-        ownerUserName: "Thadeus",
+        ownerUserName: "Tamsin",
       }),
     ]),
   },
@@ -198,8 +258,8 @@ export const Empty: Story = {
 export const PartialCoverage: Story = {
   args: {
     detail: detail([
-      ses({ sessionId: "s1", ownerUserName: "Chris" }),
-      ses({ sessionId: "s2", ownerUserName: "Thadeus" }),
+      ses({ sessionId: "s1", ownerUserName: "Cosimo" }),
+      ses({ sessionId: "s2", ownerUserName: "Tamsin" }),
     ]),
     traceState: traceState(BranchTraceCompletenessState.Incomplete),
   },
@@ -207,7 +267,7 @@ export const PartialCoverage: Story = {
 
 export const UnavailableCoverage: Story = {
   args: {
-    detail: detail([ses({ sessionId: "s1", ownerUserName: "Chris" })]),
+    detail: detail([ses({ sessionId: "s1", ownerUserName: "Cosimo" })]),
     traceState: traceState(BranchTraceCompletenessState.Unavailable),
   },
 };

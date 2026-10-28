@@ -2,14 +2,17 @@
  * Focused local-Desktop seed for the ISS-4473 Branch Details E2E.
  *
  * The fixture deliberately stops at the local persistence boundary: two
- * associated pull requests and their LOC are real SQLite rows, while provider
+ * associated pull requests are real SQLite rows, while provider
  * checks, files/diffs, comments, and explicit PRODUCES relationships remain
  * absent. The launched page must describe those lanes as unavailable or
  * incomplete instead of fabricating cloud parity.
  */
 
 import { applyDesktopSeedPragmas, openSeedClient } from "./desktop-seed-core";
-import { seedMergedUnenrichedSinglePrBranch } from "./seed-branches-db";
+import { seedClosedAtOnlySinglePrBranch } from "./seed-branches-db";
+
+/** Raw `summary` of the seeded `TurnDuration` row; the trace must not render it. */
+export const SEEDED_TURN_DURATION_MS = "52900";
 
 export type BranchDetailsSeed = {
   repoFullName: string;
@@ -19,17 +22,11 @@ export type BranchDetailsSeed = {
     number: number;
     title: string;
     mergedAt: string;
-    additions: number;
-    deletions: number;
-    filesChanged: number;
   };
   activePullRequest: {
     number: number;
     title: string;
     openedAt: string;
-    additions: number;
-    deletions: number;
-    filesChanged: number;
   };
 };
 
@@ -38,14 +35,14 @@ export async function seedBranchDetails(
   userDataDir: string,
   seed: BranchDetailsSeed
 ): Promise<void> {
-  await seedMergedUnenrichedSinglePrBranch(
+  await seedClosedAtOnlySinglePrBranch(
     userDataDir,
     {
       repoFullName: seed.repoFullName,
       branchName: seed.branchName,
       sessionId: seed.sessionId,
       prNumber: seed.mergedPullRequest.number,
-      mergedAt: seed.mergedPullRequest.mergedAt,
+      closedAt: seed.mergedPullRequest.mergedAt,
     },
     { linkPullRequestArtifact: true }
   );
@@ -64,26 +61,14 @@ export async function seedBranchDetails(
     await client.batch(
       [
         {
-          sql: `UPDATE artifacts
-                SET title = ?, lines_added = ?, lines_removed = ?, files_changed = ?
-                WHERE id = ?`,
-          args: [
-            seed.mergedPullRequest.title,
-            seed.mergedPullRequest.additions,
-            seed.mergedPullRequest.deletions,
-            seed.mergedPullRequest.filesChanged,
-            mergedArtifactId,
-          ],
-        },
-        {
-          sql: "UPDATE pull_requests SET title = ? WHERE id = ?",
-          args: [seed.mergedPullRequest.title, `pr-${seed.sessionId}`],
+          sql: "UPDATE artifacts SET title = ? WHERE id = ?",
+          args: [seed.mergedPullRequest.title, mergedArtifactId],
         },
         {
           sql: `INSERT INTO pull_requests
                   (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
-                   state, opened_at, title, observed_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+                   opened_at, observed_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             `pr-${seed.sessionId}-active`,
             seed.sessionId,
@@ -92,7 +77,6 @@ export async function seedBranchDetails(
             seed.repoFullName,
             seed.branchName,
             seed.activePullRequest.openedAt,
-            seed.activePullRequest.title,
             seed.activePullRequest.openedAt,
             seed.activePullRequest.openedAt,
           ],
@@ -100,9 +84,8 @@ export async function seedBranchDetails(
         {
           sql: `INSERT INTO artifacts
                   (id, identity_key, kind, repo_full_name, branch_name, pr_number,
-                   pr_state, url, title, lines_added, lines_removed, files_changed,
-                   created_at, last_seen_at, observed_at)
-                VALUES (?, ?, 'pull_request', ?, ?, ?, 'open', ?, ?, ?, ?, ?,
+                   url, title, created_at, last_seen_at, observed_at)
+                VALUES (?, ?, 'pull_request', ?, ?, ?, ?, ?,
                         ?, ?, ?)`,
           args: [
             activeArtifactId,
@@ -112,9 +95,6 @@ export async function seedBranchDetails(
             seed.activePullRequest.number,
             activeUrl,
             seed.activePullRequest.title,
-            seed.activePullRequest.additions,
-            seed.activePullRequest.deletions,
-            seed.activePullRequest.filesChanged,
             seed.activePullRequest.openedAt,
             seed.activePullRequest.openedAt,
             seed.activePullRequest.openedAt,
@@ -134,6 +114,7 @@ export async function seedBranchDetails(
             seed.activePullRequest.openedAt,
           ],
         },
+        turnDurationEventBatchItem(seed.sessionId),
       ],
       "write"
     );
@@ -145,4 +126,26 @@ export async function seedBranchDetails(
 
 function pullRequestUrl(repoFullName: string, number: number): string {
   return `https://github.com/${repoFullName}/pull/${number}`;
+}
+
+/**
+ * ISS-12467: the end-of-turn `TurnDuration` row the importer writes for every
+ * completed turn (`write-core-import-phases-events.ts`), with the duration in
+ * `summary`. Stamped at seed time, at or after the seeded tool event's "now".
+ */
+function turnDurationEventBatchItem(sessionId: string): {
+  sql: string;
+  args: string[];
+} {
+  return {
+    sql: `INSERT INTO events
+            (id, session_id, event_type, tool_name, summary, created_at)
+          VALUES (?, ?, 'TurnDuration', NULL, ?, ?)`,
+    args: [
+      `event-turn-duration-${sessionId}`,
+      sessionId,
+      SEEDED_TURN_DURATION_MS,
+      new Date().toISOString(),
+    ],
+  };
 }

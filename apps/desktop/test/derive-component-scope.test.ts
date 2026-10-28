@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   ComponentScope,
   deriveComponentScope,
@@ -101,7 +101,7 @@ const OPENCODE_CONFIG_HOME = path.join(HOME, ".config", "opencode");
 test("user scope: OpenCode config-home definition via userScopeRoots (ISS-4386)", () => {
   // OpenCode's user-global agents/commands live under `~/.config/opencode`,
   // which no `.claude`-shaped branch recognizes — so without the extra
-  // user-scope root they persisted with `scope = null` (shafty023). Passed as a
+  // user-scope root they persisted with `scope = null` (davetho). Passed as a
   // userScopeRoot, a definition there is user-scoped.
   const agent = path.join(OPENCODE_CONFIG_HOME, "agents", "reviewer.md");
   const command = path.join(OPENCODE_CONFIG_HOME, "commands", "deploy.md");

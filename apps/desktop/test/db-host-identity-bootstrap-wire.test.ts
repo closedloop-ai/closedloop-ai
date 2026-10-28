@@ -24,8 +24,8 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "node:test";
 import ts from "typescript6";
+import { test } from "vitest";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 
 const BOOTSTRAP_PATH = join(

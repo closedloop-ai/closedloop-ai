@@ -1,56 +1,105 @@
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
-import { TablePaginationFooter } from "@closedloop-ai/design-system/components/ui/table-pagination-footer";
-import { BranchesListBody } from "@repo/app/branches/components/branches-list-body";
-import { BranchesSummaryCards } from "@repo/app/branches/components/branches-summary-cards";
-import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar";
-import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
-import type { BranchesDataSource } from "@repo/app/branches/data-source/branches-data-source";
+import { branchListCohortKey } from "@repo/api/src/types/branch-list-cohort";
 import {
-  APPROVED_BRANCH_PAGE_SIZE,
+  DEFAULT_BRANCH_STATUS_ORDERING,
+  ROOT_FIRST_BRANCH_STATUS_ORDERING,
+} from "@repo/api/src/types/branch-status-order";
+import { BranchesListSurfaceV2 } from "@repo/app/branches/components/branches-list-surface-v2";
+import type { BranchesStallCta } from "@repo/app/branches/components/branches-stall-cta";
+import type { BranchesToolbarProps } from "@repo/app/branches/components/branches-toolbar-model";
+import { useBranchesBulkTagActions } from "@repo/app/branches/components/use-branches-bulk-tag-actions";
+import type { BranchesDataSource } from "@repo/app/branches/data-source/branches-data-source";
+import { useBranchesDataSource } from "@repo/app/branches/data-source/provider";
+import {
+  useBranchServedStatusOrderingReset,
   useUrlSyncedBranchFilterState,
+  useUrlSyncedBranchServerState,
 } from "@repo/app/branches/hooks/use-branch-filter-state";
-import { useBranchSavedViews } from "@repo/app/branches/hooks/use-branch-saved-views";
+import {
+  useBranchSavedViews,
+  useBranchSavedViewsStore,
+} from "@repo/app/branches/hooks/use-branch-saved-views";
 import { useBranchViewState } from "@repo/app/branches/hooks/use-branch-view-state";
 import {
   useBranchCohortAnalytics,
   useBranchesPageData,
 } from "@repo/app/branches/hooks/use-branches";
 import {
-  bindApprovedBranchCohortAnalytics,
+  bindApprovedBranchCohortAnalyticsOverFilteredRows,
+  bindApprovedBranchCohortAnalyticsOverFilteredRowsWithPartialCohort,
   buildApprovedBranchCohortRequest,
 } from "@repo/app/branches/lib/approved-branch-cohort";
-import { resolveBranchListBanner } from "@repo/app/branches/lib/branch-list-banner";
-import { adaptBranchRows } from "@repo/app/branches/lib/branch-row-adapter";
 import {
-  type BranchSortDir,
-  type BranchSortKey,
-  filterBranchRowsByWindow,
-  sortBranchRows,
+  resolveBranchCohortEvaluationNow,
+  resolveBranchCohortNotice,
+} from "@repo/app/branches/lib/branch-cohort-transparency";
+import { branchFiltersAreActive } from "@repo/app/branches/lib/branch-list-state";
+import {
+  branchListHasCompletePopulation,
+  composeBranchResetView,
+  isBranchPageDataPresentationPending,
+  resolveBranchDisplayRows,
+  resolveBranchPageState,
+  selectPresentedBranchPageData,
+  shouldUseBranchServerControls,
+} from "@repo/app/branches/lib/branch-page-state";
+import { adaptBranchRows } from "@repo/app/branches/lib/branch-row-adapter";
+import type { BranchAppliedArrangement } from "@repo/app/branches/lib/branch-saved-views";
+import {
+  buildBranchServerPageFilters,
+  isBranchServerPageResponse,
+} from "@repo/app/branches/lib/branch-server-page-query";
+import type {
+  BranchSortDir,
+  BranchSortKey,
 } from "@repo/app/branches/lib/branch-sort-group";
+import { BRANCHES_PARTIAL_COHORT_METRICS_FEATURE_FLAG_KEY } from "@repo/app/branches/lib/branches-partial-cohort-metrics-flag";
+import { resolveBranchesStallCtaSignals } from "@repo/app/branches/lib/branches-stall-cta";
+import {
+  resolveBranchesSummaryErrored,
+  resolveBranchesSummaryPending,
+} from "@repo/app/branches/lib/branches-summary-state";
 import { selectVisibleWireRows } from "@repo/app/branches/lib/filtered-branch-analytics";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagGate,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useSharedDateRange } from "@repo/app/shared/hooks/use-shared-date-range";
+import { useSharedTimezoneMode } from "@repo/app/shared/hooks/use-shared-timezone-mode";
+import { ARTIFACT_STATUS_ROOT_ORDER_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   type DateRange,
-  getStableUtcDateWindowForRange,
+  getStableDateWindowForRange,
 } from "@repo/app/shared/lib/format-utils";
 import { keepPreviousData } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useCloudReadCutoverBadge } from "../../shared-agent-sessions/use-cloud-read-cutover-badge";
+import { Profiler, useCallback, useEffect, useMemo, useRef } from "react";
+import { RendererRenderView } from "../../../shared/render-commit-event";
+import { useDesktopBranchMetricSparkline } from "../../feature-flags/use-desktop-branch-metric-sparkline";
+import { DesktopAppCoreMode } from "../../shared-agent-sessions/desktop-app-core-mode";
+import { useDesktopAppCoreMode } from "../../shared-agent-sessions/desktop-app-core-provider";
 import { useOnlineStatus } from "../../shared-agent-sessions/use-online-status";
 import {
   desktopBranchDetailHref,
+  desktopBranchSessionChipHref,
   desktopBranchSessionsHref,
 } from "../../shared-branches/branch-hrefs";
 import { DesktopBranchesSource } from "../../shared-branches/desktop-branches-source";
-import { DesktopCloudHydrationStatus } from "../../shared-branches/desktop-cloud-hydration-status";
 import { DesktopConnectStatus } from "../../shared-branches/desktop-connect-status";
-import { DASHBOARD_METRIC_CARD_CLASS_NAME } from "../layout/page-shell";
+import { DesktopGitHubConnectSurface } from "../../shared-branches/desktop-github-connect-copy";
+import {
+  resolveBranchesListCause,
+  useRenderCommitInstrumentation,
+} from "../sessions/use-render-commit-instrumentation";
+import { BranchesStallAccountCta } from "./branches-stall-account-cta";
+import { branchesSummaryConnectAsk } from "./branches-summary-connect-ask";
+import { useBranchesListDeadEndTelemetry } from "./use-branches-dead-end-telemetry";
+import { useBranchesListRecovery } from "./use-branches-list-recovery";
+import { useDesktopBranchesCustomFieldsController } from "./use-desktop-branches-custom-fields-controller";
 import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
 
 /**
  * Branches view — desktop counterpart of the web `/branches` page, rendering
- * the shared `BranchesTable` + `BranchesToolbar` from the `@repo/app`
+ * the shared `BranchesListSurfaceV2` from the `@repo/app`
  * branches slice so both surfaces stay identical (PRD-454). Rows come from
  * `useBranchesPageData()` (the authenticated canonical cloud source or the
  * signed-out local `BranchesDataSource`, combined list + analytics read —
@@ -61,10 +110,9 @@ import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
  * `DesktopBranchesSource`: a complete authenticated identity keeps the org
  * cloud source across connectivity changes so a matching canonical cache can
  * remain readable; an uncached offline read pauses. Signed-out or incomplete
- * identity reads the local SQLite source. Both sources return the complete list
- * (no server `limit`/`offset`), so the client-side window → sort → filter →
- * paginate below applies uniformly and the ordering stays identical across
- * modes.
+ * identity reads the local SQLite source. Desktop asks split-capable cloud
+ * producers for one exact Branches page; local producers keep the combined
+ * complete-list IPC read so their pre-pagination cohort cards stay exact.
  *
  * Layout: a first-class time window + filter toolbar on top, then the summary
  * cards (which reflect the window), then the table.
@@ -89,34 +137,142 @@ import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
 // per-card floor. Bringing that page onto this floor is tracked separately and
 // is deliberately not folded in here rather than being claimed as already done.
 const DESKTOP_BRANCHES_LIST_STALE_TIME_MS = 90_000;
+const DESKTOP_BRANCHES_SCROLL_CONTAINER_TEST_ID = "branches-scroll-container";
+const DESKTOP_BRANCHES_HISTORY_LIST_TEST_ID = "branches-history-list";
 
 export function BranchesView({
   dataSource,
+  isActive = true,
 }: {
   /** Test seam; production selects local vs cloud by mode (DesktopBranchesSource). */
   dataSource?: BranchesDataSource;
+  /**
+   * Whether this view is the page the shell has committed to. Branches is kept
+   * mounted across navigation (`shouldKeepNavMounted`), so dead-end telemetry
+   * must not report a treatment that came up behind a hidden panel.
+   */
+  isActive?: boolean;
 } = {}) {
   return (
     <DesktopBranchesSource override={dataSource}>
-      <BranchesViewContent />
+      <BranchesViewContent isActive={isActive} />
     </DesktopBranchesSource>
   );
 }
 
-function BranchesViewContent() {
+function BranchesViewContent({ isActive }: { isActive: boolean }) {
   const isOnline = useOnlineStatus();
-  const { connectState, connectGitHub: handleConnectGitHub } =
-    useDesktopGitHubConnect("/branches");
-  const { dateRange, setDateRange } = useSharedDateRange("desktop", "30d");
-  // The local branches LIST op does not yet window server-side, so the table is
-  // windowed client-side on the raw activity timestamp. Rows with no timestamp
-  // (hand-built fixtures) pass through. The analytics/usage ops DO honor the
-  // window server-side now (FEA-2155), so the summary cards — fed the same
-  // `startDate` — reconcile with this windowed table.
-  const { startDate, endDate } = getStableUtcDateWindowForRange(dateRange);
+  // Read unconditionally, not gated on whether the stalled-load slot ends up
+  // asking: those are the same instant, so a gate would paint the first-time
+  // verb and swap it to `Reconnect` a roundtrip later (decided 2026-08-21).
+  const {
+    connectAction: githubConnectAction,
+    connectState,
+    connectTarget: githubConnect,
+  } = useDesktopGitHubConnect("/branches");
+  const { dateRange, setDateRange } = useSharedDateRange("desktop");
+  const trendSparkline = useDesktopBranchMetricSparkline();
+  // ISS-9619: the same surface key the range above uses, so this shell's two
+  // lists keep agreeing about the window the way they already do. One flag read;
+  // shut, it is UTC with no setter and the toolbar grows no control.
+  const { timezoneMode, setTimezoneMode, isTimezoneModeReady } =
+    useSharedTimezoneMode("desktop");
+  const {
+    sortKey,
+    sortDir,
+    visibleColumns,
+    hiddenColumns,
+    columnOrder,
+    setColumnOrder,
+    columnWidths,
+    setColumnWidth,
+    pageSize: savedPageSize,
+    setPageSize,
+    setSort,
+    toggleColumn,
+    resetView,
+    hiddenSummaryCards,
+    toggleSummaryCard,
+    isViewReady,
+    ...groupViewSource
+  } = useBranchViewState("desktop", true);
+  // ISS-9447 (review): the named saved-view COLLECTION, restored here rather
+  // than at the `useBranchSavedViews` call below, for the reason the web page
+  // gives — `isArrangementSettled` gates the read that call's inputs come from.
+  const savedViewsStore = useBranchSavedViewsStore("desktop", true);
+  const dataSource = useBranchesDataSource();
+  const splitPageDataSupported = dataSource.supportsSplitPageData === true;
+  // ISS-10332 (#7762 review): the Priority column's opt-in is the data-source
+  // seam, as on Sessions. Cloud mode's HTTP source writes priority, and so
+  // does the local store (PLN-2086 Milestone 3) when its preload offers it.
+  const showPriorityColumn = dataSource.updatePriority !== undefined;
+  // ISS-12456: Tags is a cloud-Artifact concept — the tag picker writes
+  // against `item.artifactId`, which local rows never carry — so the column's
+  // opt-in mirrors Priority's, keyed on the data source rather than per row.
+  const showTagsColumn = dataSource.supportsTags === true;
+  // ISS-12456: same reasoning as Tags — Project is also a cloud-Artifact
+  // concept local rows carry no identity for.
+  const showProjectColumn = dataSource.supportsProject === true;
+  // ISS-9692: the URL still wins, but a visit that carries no `?pageSize=`
+  // adopts the saved view's — so the choice survives navigating away and coming
+  // back, not just a reload of the same link.
+  const serverControls = useUrlSyncedBranchServerState(
+    {
+      groupView: groupViewSource,
+      isArrangementSettled: savedViewsStore.isArrangementSettled,
+      isRestored: isViewReady,
+      onPageSizePersist: setPageSize,
+      persistedPageSize: savedPageSize,
+    },
+    showTagsColumn
+  );
+  const partialCohortMetricsEnabled = useFeatureFlagEnabled(
+    BRANCHES_PARTIAL_COHORT_METRICS_FEATURE_FLAG_KEY
+  );
+  // ISS-9437: the GATE form, for the same reason the web page uses it
+  // (marisolashgrove review on #6928). The desktop adapter reports real
+  // settled-ness — `DesktopPostHogFlagAssignment.resolved` — so `false` here
+  // means "not answered yet" just as often as it means "off", and acting on it
+  // sorted the table in vocabulary order and re-sorted it when the account's
+  // assignment arrived.
+  const statusOrderingGate = useFeatureFlagGate(
+    ARTIFACT_STATUS_ROOT_ORDER_FEATURE_FLAG_KEY
+  );
+  const branchPageSize = serverControls.pageSize;
+  // Desktop requests the same bounded server page the API validates for the
+  // cloud path. Local producers keep the complete-list client pipeline.
+  // ISS-9619: ONE window under the chosen boundary, feeding both the bounded
+  // page request and the summary reads, so rows and cards cannot disagree.
+  const { startDate, endDate } = getStableDateWindowForRange(
+    dateRange,
+    timezoneMode
+  );
   const pageDataFilters = useMemo(
-    () => ({ endDate, startDate }),
-    [endDate, startDate]
+    () =>
+      splitPageDataSupported
+        ? buildBranchServerPageFilters({
+            filters: serverControls.filters,
+            page: serverControls.page,
+            pageSize: branchPageSize,
+            sortKey,
+            sortDir,
+            startDate,
+            endDate,
+          })
+        : {
+            ...(startDate ? { startDate } : {}),
+            ...(endDate ? { endDate } : {}),
+          },
+    [
+      endDate,
+      branchPageSize,
+      serverControls.filters,
+      serverControls.page,
+      splitPageDataSupported,
+      sortKey,
+      sortDir,
+      startDate,
+    ]
   );
   // Combined list + analytics read (FEA-3056 follow-up): the Branches screen
   // mounts the table and the summary cards together, so one query shares one
@@ -125,8 +281,46 @@ function BranchesViewContent() {
     data: pageData,
     isPending,
     isError,
+    error: listError,
+    isPlaceholderData,
     refetch,
+    analyticsPending,
+    analyticsError,
+    refetchAnalytics,
+    servedStatusOrdering,
   } = useBranchesPageData(pageDataFilters, {
+    // ISS-9692 (whitlockk review): hold the read until the saved view has restored
+    // AND `table-page-size-ladder` has answered — the two inputs that decide the
+    // `limit` this request carries. Ungated, desktop issued the default-size
+    // request first (earlier than web, which already held on `isViewReady`) and
+    // replaced it once the remembered 500 arrived. The composition lives in the
+    // hook so this shell and the web page cannot answer it differently.
+    //
+    // ISS-9725: and on `isActive`, the ISS-8055 gate `SessionsView` already
+    // applies (`canReadPageData`). Branches is kept mounted across navigation,
+    // so ungated it polled the cloud behind a hidden panel — which is not just
+    // wasted work now that the surface reports dead ends. `useDeadEndTelemetry`
+    // deliberately leaves its dedupe key untouched while hidden, so a read that
+    // recovered and re-failed out of sight would come back carrying the key
+    // already emitted, and the treatment the reader is actually looking at
+    // would be suppressed as a duplicate. Freezing the read while hidden is
+    // what makes the record honest, not merely cheaper.
+    // ISS-9437: no row exists before the status ordering this request carries
+    // has settled. The desktop assignment resolves once per account and every
+    // terminal non-answer (signed out, offline, no bridge) settles as
+    // `resolved: true`, so this waits on a live fetch only on the first
+    // Branches mount after sign-in, and
+    // `FEATURE_FLAG_RESOLUTION_DEADLINE_MS` bounds even that.
+    // ISS-9619 (whitlockk + codex review): and on the day-boundary gate. An
+    // unresolved assignment reads as UTC, so a reader whose stored mode is
+    // `local` read this page against the UTC window and refetched it under the
+    // Local one once the account's assignment arrived — the same double read the
+    // two gates above already wait out, settling from the same answer.
+    enabled:
+      serverControls.isReadReady &&
+      isActive &&
+      statusOrderingGate.isReady &&
+      isTimezoneModeReady,
     // FEA-4177: the combined query only errors when the LIST half fails (the
     // analytics half is best-effort — see `BranchesPageData`), so `isError` drives
     // the table alone. The summary cards get their own error below so an
@@ -137,15 +331,44 @@ function BranchesViewContent() {
     // loads, instead of blanking the table via isPending on every switch.
     placeholderData: keepPreviousData,
   });
-  const data = pageData?.list;
-  // ISS-5477: the same cutover explanation the Dashboard and Sessions show.
-  const readSourceBadge = useCloudReadCutoverBadge(data?.readSource);
+  const presentedPageData = selectPresentedBranchPageData(pageData, {
+    isPlaceholderData,
+    isViewReady,
+  });
+  const pageDataPresentationPending = isBranchPageDataPresentationPending({
+    isPending,
+    isPlaceholderData,
+    isError,
+    isViewReady,
+    pageData,
+  });
+  const data = presentedPageData?.list;
+  const serverPageActive = isBranchServerPageResponse(data);
+  const serverControlsActive = shouldUseBranchServerControls(
+    isPending,
+    isPlaceholderData,
+    serverPageActive
+  );
+  // ISS-10350 (codex review): the REQUEST clock is retired, but the producer
+  // still stamps its own instant on the RESPONSE. Judge rows against that, not
+  // the viewer's browser clock — a system clock trailing the API's makes a
+  // genuinely recent `lastActivityAt` look like a future timestamp, which the
+  // adapter drops to an em-dash and the last-active facets then exclude.
+  const evaluationNow = useMemo(
+    () =>
+      resolveBranchCohortEvaluationNow(
+        data?.lastActiveCohort?.evaluationNow,
+        data?.pageInfo?.now
+      ),
+    [data]
+  );
   const rows = useMemo(
     () =>
       adaptBranchRows(data?.items ?? [], {
+        now: evaluationNow,
         preferCanonicalLastActive: true,
       }),
-    [data]
+    [data, evaluationNow]
   );
 
   // Every row links into the branch-detail route (`/branches/:id`); the port
@@ -155,42 +378,60 @@ function BranchesViewContent() {
   // tab (`/branches/:id?tab=sessions-timeline`), which lists exactly that
   // branch's sessions.
   const getSessionsHref = desktopBranchSessionsHref;
+  // ISS-8972: a Linked Sessions CHIP opens that Session's OWN detail — unlike
+  // the count chip beside it, which opens this branch's Sessions tab.
+  const getSessionHref = desktopBranchSessionChipHref;
 
-  const {
-    sortKey,
-    sortDir,
-    visibleColumns,
-    hiddenColumns,
-    columnOrder,
-    setColumnOrder,
-    columnWidths,
-    setColumnWidth,
-    setSort,
-    toggleColumn,
-    resetColumns,
-    applyArrangement,
-  } = useBranchViewState("desktop", true);
-
-  // Column-header clicks set both the sort key and direction.
-  const handleSort = (column: string, direction: SortDirection) =>
-    setSort(column as BranchSortKey, direction as BranchSortDir);
-
-  // Every branch (merged, agent-worktree, bot) always shows — the client-side
-  // window is the only pre-sort narrowing. Window → sort → filter → paginate.
-  const visibleRows = useMemo(
-    () => filterBranchRowsByWindow(rows, startDate, endDate),
-    [rows, startDate, endDate]
+  // ISS-9437: ONE read of the key on this surface — the SAME PostHog key the
+  // web page reads, resolved from the signed-in account's assignment — turned
+  // straight into a whole ordering. Nothing downstream sees the boolean.
+  const statusOrdering =
+    statusOrderingGate.isReady && statusOrderingGate.enabled
+      ? ROOT_FIRST_BRANCH_STATUS_ORDERING
+      : DEFAULT_BRANCH_STATUS_ORDERING;
+  // ISS-9437: a producer that changes the order it serves has re-partitioned
+  // every page, so the reader's offset now names a different slice. Absent on
+  // the local desktop source, which issues no evaluation clock — that is the
+  // no-reset case, not a missing one.
+  useBranchServedStatusOrderingReset(
+    servedStatusOrdering,
+    serverControls.setPage
   );
 
-  // Client-side sort feeds the filter/pagination hook (window → sort → filter →
-  // paginate).
-  const sortedRows = useMemo(
-    () => sortBranchRows(visibleRows, sortKey, sortDir, true),
-    [visibleRows, sortKey, sortDir]
+  // Every branch class (merged, agent-worktree, bot) remains eligible. The
+  // complete-list fallback applies the window locally; server-page producers
+  // return rows already narrowed for the requested window.
+  const { visibleRows, sortedRows } = useMemo(
+    () =>
+      resolveBranchDisplayRows(rows, {
+        serverPageActive,
+        startDate,
+        endDate,
+        sortKey,
+        sortDir,
+        statusOrdering,
+      }),
+    [
+      endDate,
+      rows,
+      serverPageActive,
+      sortDir,
+      sortKey,
+      startDate,
+      statusOrdering,
+    ]
   );
 
   // FEA-3560: seed-from-URL + URL write-through live inside the hook, shared
   // with the web Branches page so the glue can't drift per surface.
+  const legacyState = useUrlSyncedBranchFilterState(
+    sortedRows,
+    branchPageSize,
+    true,
+    evaluationNow,
+    serverControls.writeViewParams,
+    showTagsColumn
+  );
   const {
     filters,
     page,
@@ -199,13 +440,88 @@ function BranchesViewContent() {
     pagedRows,
     total,
     totalPages,
-    from,
-    to,
+    pageSize: resolvedPageSize,
     handleFiltersChange,
-  } = useUrlSyncedBranchFilterState(
-    sortedRows,
-    APPROVED_BRANCH_PAGE_SIZE,
-    true
+    handleGroupingChange,
+    handleCollapsedGroupsChange,
+  } = resolveBranchPageState({
+    serverPageActive,
+    serverControlsActive,
+    server: serverControls,
+    legacy: legacyState,
+    data,
+    rows,
+    pageSize: branchPageSize,
+  });
+  const hasCompletePopulation = branchListHasCompletePopulation(data);
+  const bulkActions = useBranchesBulkTagActions(pagedRows, !isOnline);
+  // ISS-12663: custom-field columns read the cloud rows' values; local rows
+  // carry none, so the controller stays off outside cloud mode.
+  const isCloudMode = useDesktopAppCoreMode() === DesktopAppCoreMode.Cloud;
+  const customFields = useDesktopBranchesCustomFieldsController(
+    isCloudMode,
+    pagedRows
+  );
+  const legacyTotalPages = legacyState.totalPages;
+  const setLegacyPage = legacyState.setPage;
+  const legacyUrlPageAppliedRef = useRef(false);
+  useEffect(() => {
+    if (
+      legacyUrlPageAppliedRef.current ||
+      serverPageActive ||
+      pageDataPresentationPending ||
+      isError ||
+      isPlaceholderData ||
+      serverControls.page <= 0
+    ) {
+      return;
+    }
+    if (legacyTotalPages <= 1) {
+      return;
+    }
+    legacyUrlPageAppliedRef.current = true;
+    setLegacyPage(Math.min(serverControls.page, legacyTotalPages - 1));
+  }, [
+    isError,
+    isPlaceholderData,
+    legacyTotalPages,
+    pageDataPresentationPending,
+    serverControls.page,
+    serverPageActive,
+    setLegacyPage,
+  ]);
+  // Column-header clicks set both the sort key and direction.
+  const handleSort = (column: string, direction: SortDirection) => {
+    setSort(column as BranchSortKey, direction as BranchSortDir);
+    legacyState.setPage(0);
+    serverControls.setPage(0);
+  };
+  const cohortNotice = useMemo(
+    () =>
+      resolveBranchCohortNotice({
+        rows: filteredRows,
+        total,
+        hasData: presentedPageData !== undefined,
+        hasFiniteWindow: startDate !== undefined,
+        isPlaceholderData,
+        placeholderFailed: isPlaceholderData && isError,
+        completeCorpus: hasCompletePopulation,
+        renderNow: evaluationNow,
+        cohortKey: branchListCohortKey(pageDataFilters),
+        producerCohort: data?.lastActiveCohort,
+      }),
+    [
+      data,
+      evaluationNow,
+      filteredRows,
+      hasCompletePopulation,
+      isError,
+      isPlaceholderData,
+      pageDataFilters,
+      presentedPageData,
+      startDate,
+      total,
+    ]
   );
 
   // FEA-4180: named saved views (order + visibility + sort + filters). On
@@ -214,34 +530,35 @@ function BranchesViewContent() {
   // view routes its `dateRange` through the shared `setDateRange` while sort +
   // columns + order go through `applyArrangement`. Capture reads the same shared
   // `dateRange`, so a saved-then-switched view round-trips the window too.
+  const { applyArrangement } = serverControls;
   const applySavedArrangement = useCallback(
-    (arrangement: {
-      sortKey: BranchSortKey;
-      sortDir: BranchSortDir;
-      dateRange: DateRange;
-      hiddenColumns: string[];
-      columnOrder: string[];
-    }) => {
+    (arrangement: BranchAppliedArrangement) => {
       applyArrangement(arrangement);
       setDateRange(arrangement.dateRange);
     },
     [applyArrangement, setDateRange]
   );
   const savedViews = useBranchSavedViews(
-    "desktop",
+    savedViewsStore,
     {
       sortKey,
       sortDir,
       dateRange,
       hiddenColumns,
-      columnOrder: [],
+      columnOrder,
+      // ISS-9447 M5: captured here for the same reason as on web, and from the
+      // same two hook values, so the two shells cannot record different views of
+      // the same gesture.
+      columnWidths,
+      pageSize: savedPageSize,
       filters,
+      grouping: serverControls.grouping,
+      collapsedGroups: serverControls.collapsedGroups,
     },
     {
       applyArrangement: applySavedArrangement,
       applyFilters: handleFiltersChange,
-    },
-    true
+    }
   );
 
   const filteredWireRows = useMemo(
@@ -252,16 +569,25 @@ function BranchesViewContent() {
     () => selectVisibleWireRows(data?.items ?? [], visibleRows),
     [data?.items, visibleRows]
   );
+  // ISS-8127 (davetho review): desktop's window comes from the SHARED
+  // `useSharedDateRange` store, which `isViewReady` does not track at all, and a
+  // named active view's range lands one commit later via `applySavedArrangement`.
+  // Gating presentation alone therefore left the producer reachable under the
+  // pre-application range on a warm cache. A null request is the surface's
+  // existing "no cohort yet" state.
+  const cohortArrangementSettled = savedViews.isArrangementSettled;
   const cohortRequest = useMemo(
     () =>
-      buildApprovedBranchCohortRequest({
-        filteredRows: filteredWireRows,
-        unfilteredRows: unfilteredWireRows,
-        filters,
-        dateRange,
-        startDate,
-        endDate,
-      }),
+      serverPageActive || !cohortArrangementSettled
+        ? null
+        : buildApprovedBranchCohortRequest({
+            filteredRows: filteredWireRows,
+            unfilteredRows: unfilteredWireRows,
+            filters,
+            dateRange,
+            startDate,
+            endDate,
+          }),
     [
       filteredWireRows,
       unfilteredWireRows,
@@ -269,6 +595,8 @@ function BranchesViewContent() {
       dateRange,
       startDate,
       endDate,
+      serverPageActive,
+      cohortArrangementSettled,
     ]
   );
   const {
@@ -277,7 +605,7 @@ function BranchesViewContent() {
     isPending: cohortIsPending,
     refetch: refetchCohort,
   } = useBranchCohortAnalytics(cohortRequest, {
-    enabled: pageData?.analytics !== undefined,
+    enabled: presentedPageData?.analytics !== undefined,
     refetchOnWindowFocus: true,
     staleTime: DESKTOP_BRANCHES_LIST_STALE_TIME_MS,
   });
@@ -286,38 +614,75 @@ function BranchesViewContent() {
   // exact date-windowed, facet-filtered Branch IDs before pagination. A missing
   // or mismatched producer response retains only row-provable values and never
   // substitutes whole-list Session spend for the selected cohort.
-  const filteredAnalytics = useMemo(
-    () =>
-      bindApprovedBranchCohortAnalytics({
-        analytics: pageData?.analytics,
-        filteredRows: filteredWireRows,
-        unfilteredRows: unfilteredWireRows,
-        filters,
-        sessionCostUsd: data?.sessionCostUsd,
-        request: cohortRequest,
-        response: cohortResponse,
-      }),
-    [
-      pageData?.analytics,
-      filteredWireRows,
-      unfilteredWireRows,
+  const filteredAnalytics = useMemo(() => {
+    if (serverPageActive) {
+      return {
+        analytics: presentedPageData?.analytics,
+        comparisonSuppressedByFilter: false,
+        // The server paged and scoped this response, so its figures are the
+        // producer's own.
+        metricsDerivedLocally: false,
+      };
+    }
+    // The gate is read once above and picks a WHOLE binder HERE, at the read
+    // site: the binders never learn a flag exists, and no helper takes one as a
+    // parameter (root AGENTS.md, "One read site per feature flag" — the
+    // receiving half, which the gate cannot see).
+    const bind = partialCohortMetricsEnabled
+      ? bindApprovedBranchCohortAnalyticsOverFilteredRowsWithPartialCohort
+      : bindApprovedBranchCohortAnalyticsOverFilteredRows;
+    return bind({
+      analytics: presentedPageData?.analytics,
+      filteredRows: filteredWireRows,
+      unfilteredRows: unfilteredWireRows,
       filters,
-      data?.sessionCostUsd,
-      cohortRequest,
-      cohortResponse,
-    ]
-  );
+      sessionCostUsd: data?.sessionCostUsd,
+      request: cohortRequest,
+      response: cohortResponse,
+    });
+  }, [
+    presentedPageData?.analytics,
+    filteredWireRows,
+    unfilteredWireRows,
+    filters,
+    data?.sessionCostUsd,
+    cohortRequest,
+    cohortResponse,
+    serverPageActive,
+    partialCohortMetricsEnabled,
+  ]);
 
   // FEA-4177: the analytics half is best-effort — when only it fails the combined
   // read still resolves the list (`isError` stays false so the table renders) and
   // flags `analyticsError`. Surface that as the summary cards' own error so they
   // degrade to "Unavailable" while the table keeps rendering. Guard on missing
   // analytics so a partial resolve never renders stale-zero KPIs.
-  const summaryAnalyticsErrored =
-    ((pageData?.analyticsError ?? false) && !pageData?.analytics) ||
-    (cohortRequest !== null && cohortIsError);
-  const summaryAnalyticsPending =
-    isPending || (cohortRequest !== null && cohortIsPending);
+  const summaryAnalyticsErrored = resolveBranchesSummaryErrored({
+    analyticsError,
+    cohortErrored: cohortRequest !== null && cohortIsError,
+    listError: false,
+    pageDataAnalyticsError: presentedPageData?.analyticsError === true,
+  });
+  const summaryCardsErrored = resolveBranchesSummaryErrored({
+    analyticsError,
+    cohortErrored: cohortRequest !== null && cohortIsError,
+    listError: isError,
+    pageDataAnalyticsError: presentedPageData?.analyticsError === true,
+  });
+  const summaryAnalyticsPending = resolveBranchesSummaryPending({
+    analyticsPending,
+    // The un-settled arrangement counts as PENDING, not as "no cohort asked
+    // for": with the request withheld the cards would otherwise fall through to
+    // row-provable values for a commit and flash a number built from the
+    // pre-application window — the same lie in a shorter frame (ISS-8127).
+    // Scoped to the cohort path; the server-page path reads page analytics and
+    // never builds a cohort request at all.
+    cohortPending:
+      !(serverPageActive || cohortArrangementSettled) ||
+      (cohortRequest !== null && cohortIsPending),
+    listPending: pageDataPresentationPending,
+    hasData: data !== undefined,
+  });
 
   // Reset pagination when dateRange changes — covers both local toolbar changes
   // AND cross-tab StorageEvent updates from Dashboard/Sessions.
@@ -325,161 +690,206 @@ function BranchesViewContent() {
   useEffect(() => {
     if (dateRangeRef.current !== dateRange) {
       dateRangeRef.current = dateRange;
-      setPage(0);
+      legacyState.setPage(0);
+      serverControls.setPage(0);
     }
-  }, [dateRange, setPage]);
+  }, [dateRange, legacyState, serverControls]);
 
   const handleDateRangeChange = (next: DateRange) => {
     setDateRange(next);
   };
 
-  // Distinguish in-flight / failed reads from a genuinely empty result. Without
-  // this, a pending or errored IPC read collapses into "No branches match…" with
-  // a "0-0 of 0" counter — reading as "you have no branches" rather than "still
-  // loading" / "load failed".
-  const isResolved = !(isPending || isError);
+  const handlePageSizeChange = (nextPageSize: number) => {
+    serverControls.setPageSize(nextPageSize);
+    legacyState.setPage(0);
+  };
 
-  // Informational banner derived from the WIRE rows (not the adapted render
-  // rows) via the shared rule: no repo identity → connect-GitHub; repos but no
-  // PR linkage → net-new. See `resolveBranchListBanner`.
-  const hasRows = rows.length > 0;
-  // Depends only on `data`, so memoize alongside rows/sortedRows —
-  // otherwise it re-iterates the corpus on every sort/filter/page render.
-  const banner = useMemo(
-    () => resolveBranchListBanner(data?.items ?? []),
-    [data]
-  );
+  useEffect(() => {
+    if (!(serverPageActive && data?.pageInfo) || isPlaceholderData) {
+      return;
+    }
+    const repairedPage = data.pageInfo.offset / data.pageInfo.limit;
+    if (repairedPage !== serverControls.page) {
+      serverControls.setPage(repairedPage);
+    }
+  }, [data?.pageInfo, isPlaceholderData, serverControls, serverPageActive]);
 
+  // ISS-9429: the ONE narrowing signal both hosts pass. This used to widen a
+  // desktop-local `hasRows` through a file-private `branchFiltersAreActive`,
+  // which is exactly why the web host — unable to import it — kept claiming a
+  // filtered-away result meant the org had no branches.
+  const hasActiveFilters = branchFiltersAreActive(filters);
+  // ISS-9725: the same signals the body branches on go to the dead-end
+  // classifier, so a failed read reaches the monitored `desktop:dead-end-telemetry`
+  // channel as `unavailable` rather than being indistinguishable from an org
+  // that genuinely has no branches. The wrapped handler is the one the list
+  // surface renders, so the `retryOffered: true` the record carries is always
+  // followed by a tracked attempt.
+  const { onRetry: handleListRetry } = useBranchesListDeadEndTelemetry({
+    hasActiveFilters,
+    hasWindow: startDate !== undefined,
+    isActive,
+    isError,
+    isPending: pageDataPresentationPending,
+    listError,
+    onRetry: refetch,
+    visibleRowCount: pagedRows.length,
+  });
+  // `handleListRetry` is wrapped rather than `refetch` so the dead-end record
+  // still sees every attempt; the recovery hook adds the in-flight dedupe and
+  // the elapsed-time phase the body reads.
+  const { handleRetry: handleListRetryWithStall, stallPhase } =
+    useBranchesListRecovery({
+      isBlockingLoad: pageDataPresentationPending,
+      refetch: handleListRetry,
+    });
+  // ISS-10645: what a stalled read may honestly ask for, resolved from this
+  // device's OWN two answers — a settled guest, and the connect action the
+  // GitHub status already produced. The shared slot decides which arm that is;
+  // this only reports.
+  //
+  // The outcome of this slot's handoff has to travel with it: `connectState`
+  // settles in this renderer, and this slot is the only one mounted while the
+  // blocking read has produced nothing. Once the list draws, the summary band's
+  // `githubConnectOutcome` reports the same state for the strip's own ask.
+  const stallCta: BranchesStallCta = {
+    connectOutcome: (
+      // `StalledList`, not `List`: this slot renders only while the blocking read
+      // has produced nothing, so the retained-data line the populated list
+      // surfaces show would describe content that is not on screen (ISS-11326).
+      <DesktopConnectStatus
+        state={connectState}
+        variant={DesktopGitHubConnectSurface.StalledList}
+      />
+    ),
+    createAccountAction: <BranchesStallAccountCta />,
+    githubConnect,
+    signals: resolveBranchesStallCtaSignals(githubConnectAction),
+  };
+  // ISS-9225: the v2 list surface renders its own `BranchesListToolbarV2` from
+  // this object, so filters, columns and saved views have one source here.
+  const toolbarProps: BranchesToolbarProps = {
+    approved: true,
+    dateRange,
+    facets: serverPageActive ? data?.facets : undefined,
+    filters,
+    hiddenSummaryCards,
+    now: evaluationNow,
+    onDateRangeChange: handleDateRangeChange,
+    onFiltersChange: handleFiltersChange,
+    onResetView: composeBranchResetView(resetView, {
+      handleCollapsedGroupsChange,
+      handleGroupingChange,
+    }),
+    onTimezoneModeChange: setTimezoneMode,
+    onToggleColumn: toggleColumn,
+    onToggleSummaryCard: toggleSummaryCard,
+    rows: visibleRows,
+    timezoneMode,
+    visibleColumns,
+  };
+  const summaryBandProps = {
+    cohortNotice,
+    comparisonSuppressedByFilter:
+      filteredAnalytics.comparisonSuppressedByFilter,
+    onSummaryRetry: () => {
+      refetchAnalytics().catch(() => undefined);
+      refetchCohort().catch(() => undefined);
+    },
+    summaryAnalyticsErrored,
+    summaryCards: filteredAnalytics.analytics,
+    summaryCardsErrored,
+    summaryCardsPending: summaryAnalyticsPending,
+    // ISS-9887: the same signal the web page folds in, from the same query
+    // option (`keepPreviousData`). The withholding above already makes the
+    // metrics undefined on this surface, so this is belt-and-braces today —
+    // and it is what keeps the two surfaces answering the reload question
+    // from the same input rather than agreeing by accident.
+    summaryCardsReloading: isPlaceholderData,
+    // ISS-10544: this shell's own answer, resolved at its own read site. The key
+    // graduated on web and still gates here (operator ruling, 2026-09-17), so
+    // the two hosts give the shared band two different answers to one question.
+    trendSparkline,
+  };
+  const onRenderCommit = useRenderCommitInstrumentation({
+    causeInputs: null,
+    itemCount: pagedRows.length,
+    resolveCause: resolveBranchesListCause,
+    view: RendererRenderView.BranchesList,
+  });
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
       <h1 className="sr-only">Branches</h1>
-      {/* Filter bar — flush to the top of the content area with a full-width
-          bottom border. Fixed (outside the scroll region) so it always stays. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3">
-        <BranchesToolbar
-          approved
-          dateRange={dateRange}
-          filters={filters}
-          onDateRangeChange={handleDateRangeChange}
-          onFiltersChange={handleFiltersChange}
-          onResetView={resetColumns}
-          onToggleColumn={toggleColumn}
-          readSource={data?.readSource}
-          readSourceDetail={readSourceBadge.detail}
-          readSourceIncomplete={readSourceBadge.incomplete}
-          rows={visibleRows}
-          savedViews={savedViews}
-          visibleColumns={visibleColumns}
-        />
-      </div>
-
-      {/* Scroll region — cards + banners + table share one bounded scroll
-          container (both axes). The cards scroll up and away; the GridTable's
-          sticky column header then pins to the top of the region, right under
-          the filter bar. The horizontal scrollbar sits at the region's bottom,
-          always visible. The cards reflect the window via the shared
-          `pageDataFilters`; the "vs. prior 30 days" delta only shows at the
-          30-day window. */}
-      <section
-        aria-label="Branches"
-        className="min-h-0 flex-1 overflow-auto"
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: COMMON-016 requires the two-axis scroll region itself to be keyboard-focusable.
-        tabIndex={0}
-      >
-        {/* `sticky left-0` pins the cards to the left during horizontal scroll
-            (so the wide table scrolls under them) while they still scroll away
-            vertically. */}
-        <div className="sticky left-0 flex flex-col gap-3 px-4 pt-4 pb-3">
-          <BranchesSummaryCards
-            analytics={filteredAnalytics.analytics}
-            approved
-            approvedComparisonSuppressedByFilter={
-              filteredAnalytics.comparisonSuppressedByFilter
-            }
-            cardClassName={DASHBOARD_METRIC_CARD_CLASS_NAME}
-            isError={isError || summaryAnalyticsErrored}
-            isPending={summaryAnalyticsPending}
-            onConnectGitHub={handleConnectGitHub}
-            showDelta={dateRange === "30d"}
-            wrapBelow
-          />
-          {/* FEA-4177: analytics-only failure (list fine). The cards degrade to
-              "Unavailable" above, but a silent dimmed row leaves the user with no
-              reason and no way back — mirror the list's own Retry with a short
-              honest line plus a retry that re-runs the same combined read. */}
-          {summaryAnalyticsErrored ? (
-            <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2 text-[var(--muted-foreground)] text-xs">
-              <span>Couldn't load the summary metrics.</span>
-              <Button
-                onClick={() => {
-                  refetch();
-                  refetchCohort();
-                }}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                Retry
-              </Button>
-            </div>
-          ) : null}
-          <DesktopConnectStatus state={connectState} variant="list" />
-          <DesktopCloudHydrationStatus rows={data?.items ?? []} />
-          {isResolved && banner === "connect-github" ? (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2">
-              <ConnectGitHubIndicator compact onConnect={handleConnectGitHub} />
-            </div>
-          ) : null}
-          {isResolved && banner === "net-new" ? (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2 text-[var(--muted-foreground)] text-xs">
-              These branches are tracked locally with no linked pull request yet
-              — the metrics shown are net-new.
-            </div>
-          ) : null}
-        </div>
-
-        <BranchesListBody
+      <Profiler id="branches_list" onRender={onRenderCommit}>
+        <BranchesListSurfaceV2
           allRows={filteredRows}
-          approved
+          bulkActions={bulkActions}
+          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+          collapsedGroups={serverControls.collapsedGroups}
           columnOrder={columnOrder}
           columnWidths={columnWidths}
+          customFields={customFields}
           getBranchHref={getBranchHref}
+          getSessionHref={getSessionHref}
           getSessionsHref={getSessionsHref}
-          hasRows={hasRows}
+          githubConnect={branchesSummaryConnectAsk({
+            connectAction: githubConnectAction,
+            connectTarget: githubConnect,
+            metricsDerivedLocally: filteredAnalytics.metricsDerivedLocally,
+          })}
+          githubConnectOutcome={
+            // Withheld while the blocking read has produced nothing, because
+            // `stallCta.connectOutcome` is the slot that renders in exactly
+            // that state — two banners reporting one handoff is the collision
+            // this gate avoids, not a second affordance.
+            pageDataPresentationPending ? undefined : (
+              <DesktopConnectStatus
+                state={connectState}
+                variant={DesktopGitHubConnectSurface.List}
+              />
+            )
+          }
+          grouping={serverControls.grouping}
+          hasActiveFilters={hasActiveFilters}
+          hasCompletePopulation={hasCompletePopulation}
           hasWindow={startDate !== undefined}
+          historyListTestId={DESKTOP_BRANCHES_HISTORY_LIST_TEST_ID}
+          includePriorityColumn={showPriorityColumn}
+          includeProjectColumn={showProjectColumn}
+          includeTagsColumn={showTagsColumn}
           isError={isError}
-          isPending={isPending}
+          isPending={pageDataPresentationPending}
+          isPlaceholderData={isPlaceholderData}
           items={pagedRows}
+          onCollapsedGroupsChange={handleCollapsedGroupsChange}
           onColumnOrderChange={setColumnOrder}
           onColumnWidthChange={setColumnWidth}
-          onRetry={() => {
-            refetch();
-          }}
+          onGroupingChange={handleGroupingChange}
+          onPageChange={setPage}
+          onPageSizeChange={handlePageSizeChange}
+          onRetry={handleListRetryWithStall}
           onShowAllTime={() => handleDateRangeChange("all")}
           onSort={handleSort}
+          page={page}
+          pageSize={resolvedPageSize}
           sortBy={sortKey}
           sortDir={sortDir}
+          stallCta={stallCta}
+          stallPhase={stallPhase}
+          {...summaryBandProps}
+          tableScrollAttributes={{
+            "aria-label": "Branches",
+            role: "region",
+            tabIndex: 0,
+          }}
+          tableScrollTestId={DESKTOP_BRANCHES_SCROLL_CONTAINER_TEST_ID}
           tagsReadOnly={!isOnline}
-          visibleColumns={visibleColumns}
-          windowedEmptyIsNoMatches={
-            startDate !== undefined && visibleRows.length === 0
-          }
-        />
-      </section>
-
-      {/* Fixed footer — page controls, always visible (8px horizontal padding).
-          ISS-4681: the shared `TablePaginationFooter` shell, with the desktop
-          list's tighter padding and `shrink-0` as the only delta. The approved
-          List reports its client-filtered cohort in the readout. */}
-      {isResolved && total > 0 ? (
-        <TablePaginationFooter
-          className="shrink-0 px-2 py-2"
-          onPageChange={setPage}
-          page={page}
-          readout={`${from}–${to} of ${total}`}
+          toolbar={toolbarProps}
+          total={total}
           totalPages={totalPages}
+          visibleColumns={visibleColumns}
         />
-      ) : null}
+      </Profiler>
     </div>
   );
 }

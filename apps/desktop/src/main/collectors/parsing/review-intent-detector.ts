@@ -90,7 +90,7 @@ export const REVIEW_REQUEST_PROMPT_CUE =
  *
  * {@link REVIEW_REQUEST_PROMPT_CUE} cannot reach this shape: it requires a
  * possessive/article plus a work object AFTER `review`, and here there is nothing
- * after it. The corpus cost of the gap was total — in `b50de790` the human turn
+ * after it. The corpus cost of the gap was total — in `6d6d2e80` the human turn
  * "re-run the review; I now have more tokens" opened the session's only
  * SUCCESSFUL review execution, and all ~11 minutes of it carried no review label
  * at all.
@@ -122,7 +122,7 @@ export function isReviewRequestPrompt(text: string): boolean {
  * MAIN-THREAD ONLY. A skill invoked inside a spawned subagent carries that
  * agent's `subagentId`, and it declares what the SUBAGENT was asked to do — which
  * is the subagent-purpose pass's business, not a phase transition for the parent.
- * The corpus makes the shape concrete: in `f216298d` two depth-1 reviewers each
+ * The corpus makes the shape concrete: in `3870c244` two depth-1 reviewers each
  * invoke the review skill internally, and both landed as main-session request
  * instants. It was harmless there only because the parent was already reviewing;
  * in a session whose parent never requested one, a subagent's internal

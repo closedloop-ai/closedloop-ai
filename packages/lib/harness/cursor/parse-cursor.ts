@@ -22,6 +22,7 @@
  * deriving the session id from the transcript path and stamping the source-file
  * mtime — stay in the desktop shell, mirroring the Claude/Codex cores (FEA-2717).
  */
+import { estimateAgentComponentFootprintTokens } from "@repo/api/src/types/agent-component-footprint";
 import {
   baseName,
   collectArtifacts,
@@ -33,6 +34,7 @@ import {
   truncateText,
 } from "../parser-utils";
 import { readStorageTokenCountAlias } from "../token-counts";
+import { recordToolResultFacts } from "../tool-result-facts";
 import type {
   NormalizedApiError,
   NormalizedMessage,
@@ -131,10 +133,13 @@ type CursorAccumulator = {
   tokenSeries: NormalizedTokenRecord[];
   // CR-5: Track per-turn model from turn_context
   currentTurnModel: string | null;
+  /** ISS-12552 (PRD-800 "Rollout"): record each result's facts. */
+  attributionEvidence: boolean;
 };
 
-function createAccumulator(): CursorAccumulator {
+function createAccumulator(attributionEvidence: boolean): CursorAccumulator {
   return {
+    attributionEvidence,
     cwd: null,
     model: null,
     version: null,
@@ -339,7 +344,16 @@ const handleToolResult: CursorHandler = (acc, payload, iso) => {
   // CR-3: Attach output + isError to the most recent tool use
   const lastTool = acc.toolUses.length > 0 ? acc.toolUses.at(-1) : null;
   if (lastTool) {
-    lastTool.output = truncateText(resolveToolResultOutput(payload), 4096);
+    const cursorResultText = resolveToolResultOutput(payload);
+    if (acc.attributionEvidence) {
+      recordToolResultFacts(lastTool, cursorResultText, isErr);
+    }
+    lastTool.output = truncateText(cursorResultText, 4096);
+    // ISS-10736: counted before the cap, for the same reason as the Claude lane.
+    if (cursorResultText !== null && cursorResultText !== undefined) {
+      lastTool.outputFootprintTokens =
+        estimateAgentComponentFootprintTokens(cursorResultText);
+    }
     if (isErr) {
       lastTool.isError = true;
     }
@@ -488,7 +502,10 @@ function buildCursorSession(
   acc: CursorAccumulator,
   sessionId: string
 ): NormalizedSession {
-  const tokensByModel: NormalizedSession["tokensByModel"] = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const tokensByModel: NormalizedSession["tokensByModel"] = Object.create(null);
   if (
     acc.tokenInput ||
     acc.tokenOutput ||
@@ -528,7 +545,9 @@ function buildCursorSession(
     endedAt: acc.lastTimestamp,
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
-    tokensByModel,
+    // ISS-8565: spread restores a normal prototype (spread defines, so an
+    // own `__proto__` key survives the copy) for downstream consumers.
+    tokensByModel: { ...tokensByModel },
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
     apiErrors: acc.apiErrors,
@@ -555,10 +574,14 @@ function buildCursorSession(
  */
 export async function parseCursorTranscript(
   lines: AsyncIterable<string> | Iterable<string>,
-  options: { sessionId: string }
+  options: {
+    sessionId: string;
+    /** ISS-12552: off, the parse is the one before PRD-800; default on. */
+    attributionEvidence?: boolean;
+  }
 ): Promise<NormalizedSession | null> {
   const sessionId = options.sessionId;
-  const acc = createAccumulator();
+  const acc = createAccumulator(options.attributionEvidence ?? true);
   const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
 
   for await (const line of lines) {

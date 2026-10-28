@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { test } from "node:test";
 import { MEMBER_PACK_INSTALL_PATH } from "@repo/api/src/types/member-pack-install";
+import { test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import {
   type MemberPackInstaller,
@@ -216,4 +216,45 @@ test("does not register the route when no installer is wired (version-skew → 5
   });
 
   assert.equal(handled, false);
+});
+
+// Moved out of a generic `gateway-*-coverage` bucket (ISS-9170) so these
+// cases sit with the module's own suite.
+test("member-pack-install: rejects a non-string packId even with a valid harness", async () => {
+  let installCalled = false;
+  const dispatcher = makeDispatcher(() => {
+    installCalled = true;
+    return Promise.resolve({ started: true });
+  });
+  const capture = makeMockResponse();
+
+  const handled = await dispatch(dispatcher, capture.serverResponse, {
+    packId: 123,
+    harness: "claude",
+  });
+
+  assert.equal(handled, true);
+  assert.equal(capture.statusCode, 400);
+  assert.equal(installCalled, false);
+  assert.equal(
+    (JSON.parse(capture.body) as { code: string }).code,
+    "invalid_pack_install_request"
+  );
+});
+
+test("member-pack-install: rejects a body with no harness field at all", async () => {
+  let installCalled = false;
+  const dispatcher = makeDispatcher(() => {
+    installCalled = true;
+    return Promise.resolve({ started: true });
+  });
+  const capture = makeMockResponse();
+
+  const handled = await dispatch(dispatcher, capture.serverResponse, {
+    packId: "gstack",
+  });
+
+  assert.equal(handled, true);
+  assert.equal(capture.statusCode, 400);
+  assert.equal(installCalled, false);
 });

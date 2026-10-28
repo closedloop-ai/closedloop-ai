@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Session metadata cloud-sync queue (FEA-3473); read only by the sync lanes and the sync-progress count."
+}

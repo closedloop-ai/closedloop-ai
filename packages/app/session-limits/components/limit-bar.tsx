@@ -132,7 +132,7 @@ const DESTRUCTIVE_UTILIZATION = 90;
  * these bars live permanently in the sidebar footer: two saturated bars sitting
  * there at 20% used spend the loudest colour in the scale on its least urgent
  * state, and leave the step up to amber with much less to say. Starting neutral
- * means a coloured bar is itself the signal (wongk, PR #4572).
+ * means a coloured bar is itself the signal (whitlockk, PR #4572).
  *
  * A non-finite value is Neutral for a different reason: `Progress` renders it as
  * an indeterminate hatch, and tinting an amount we never measured with ANY

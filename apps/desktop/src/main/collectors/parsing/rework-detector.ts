@@ -56,6 +56,8 @@
  * text is inspected on-device with fixed cue regexes (bounded deterministic cue
  * matching, PLN-1201 §2.4 — NOT the opt-in linguistic layer FEA-2274).
  */
+
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import {
   EvidenceLayer,
   type EvidenceUnit,
@@ -71,7 +73,6 @@ import {
   sameRunByLabel,
   splitAtCuts,
 } from "./activity-segment-relabel.js";
-import { ACTIVITY_PHASE } from "./activity-taxonomy.js";
 
 // ── Calibration surface (Q-004 tuning knobs; all named, versioned by
 // ACTIVITY_CLASSIFIER_VERSION) ───────────────────────────────────────────────
@@ -168,7 +169,7 @@ export function isReviewFixPrompt(text: string): boolean {
  * comment on PR #1946 explaining why", "leave a comment on the PR".
  *
  * Writing a comment is an OUTPUT of the work, not a request to fix findings, but
- * it satisfies {@link REVIEW_COMMENT_REFERENCE_CUE} verbatim. In `c980bd56` this
+ * it satisfies {@link REVIEW_COMMENT_REFERENCE_CUE} verbatim. In `f04b2b82` this
  * fragment supplied half of a false rework span that erased the session's entire
  * implement/validate structure.
  */

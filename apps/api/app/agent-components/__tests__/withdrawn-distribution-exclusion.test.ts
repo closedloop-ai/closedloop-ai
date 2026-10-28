@@ -22,7 +22,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  requireOrgAdmin: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -31,7 +31,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  requireOrgAdmin: mocks.requireOrgAdmin,
 }));
 
 import { complianceService } from "../compliance/service";

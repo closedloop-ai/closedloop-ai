@@ -8,12 +8,19 @@ import "server-only";
  */
 import { z } from "zod";
 import {
-  desktopContractError,
+  DesktopConnectRejectionCause,
+  DesktopConnectStage,
+  desktopConnectRejected,
   desktopContractSuccess,
   type OnboardingAttemptResponse,
 } from "@/app/desktop/contract";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { resolveSessionUser } from "@/lib/auth/session-user";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopOnboardingAttemptsService } from "./service";
 
 const onboardingAttemptRequestValidator = z
@@ -23,33 +30,50 @@ const onboardingAttemptRequestValidator = z
   })
   .strict();
 
-function invalidRequestResponse() {
-  return desktopContractError(400, "INVALID_ONBOARDING_ATTEMPT_REQUEST", false);
+function invalidRequestResponse(orgId: string) {
+  return desktopConnectRejected(
+    400,
+    "INVALID_ONBOARDING_ATTEMPT_REQUEST",
+    false,
+    { stage: DesktopConnectStage.OnboardingAttempt, orgId }
+  );
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   let session: Awaited<ReturnType<typeof resolveSessionUser>>;
   try {
     session = await resolveSessionUser();
   } catch {
     // The contract exposes a single retryable 503 bucket for server-side failures.
-    return desktopContractError(503, "ONBOARDING_ATTEMPT_PERSIST_FAILED", true);
+    // `cause` keeps the counter from reading an auth-provider outage as a
+    // confirmed persistence failure — the wire code cannot tell them apart.
+    return desktopConnectRejected(
+      503,
+      "ONBOARDING_ATTEMPT_PERSIST_FAILED",
+      true,
+      {
+        stage: DesktopConnectStage.OnboardingAttempt,
+        cause: DesktopConnectRejectionCause.SessionLookupFaulted,
+      }
+    );
   }
 
   if (!session) {
-    return desktopContractError(401, "SESSION_REQUIRED", false);
+    return desktopConnectRejected(401, "SESSION_REQUIRED", false, {
+      stage: DesktopConnectStage.OnboardingAttempt,
+    });
   }
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return invalidRequestResponse();
-  }
+  const orgId = session.user.organizationId;
+
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
 
   const parsedBody = onboardingAttemptRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
-    return invalidRequestResponse();
+    return invalidRequestResponse(orgId);
   }
 
   const webAppOrigin = canonicalizeTrustedOrigin(parsedBody.data.webAppOrigin);
@@ -59,12 +83,15 @@ export async function POST(request: Request) {
     : null;
 
   if (!(webAppOrigin && requestOrigin && requestOrigin === webAppOrigin)) {
-    return desktopContractError(403, "ONBOARDING_ATTEMPT_FORBIDDEN", false);
+    return desktopConnectRejected(403, "ONBOARDING_ATTEMPT_FORBIDDEN", false, {
+      stage: DesktopConnectStage.OnboardingAttempt,
+      orgId,
+    });
   }
 
   try {
     const attempt = await desktopOnboardingAttemptsService.create({
-      organizationId: session.user.organizationId,
+      organizationId: orgId,
       userId: session.user.id,
       webAppOrigin,
     });
@@ -74,6 +101,17 @@ export async function POST(request: Request) {
       expiresAt: attempt.expiresAt.toISOString(),
     });
   } catch {
-    return desktopContractError(503, "ONBOARDING_ATTEMPT_PERSIST_FAILED", true);
+    return desktopConnectRejected(
+      503,
+      "ONBOARDING_ATTEMPT_PERSIST_FAILED",
+      true,
+      {
+        stage: DesktopConnectStage.OnboardingAttempt,
+        orgId,
+        cause: DesktopConnectRejectionCause.AttemptPersistFaulted,
+      }
+    );
   }
 }
+
+export const POST = withRequestCompleted(handlePost);

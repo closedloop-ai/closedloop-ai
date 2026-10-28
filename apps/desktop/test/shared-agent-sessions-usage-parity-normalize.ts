@@ -90,10 +90,17 @@ export function normalizeUsage(summary: SharedAgentSessionUsageSummary) {
     // epsilon treatment (see `COST_SPLIT_FIELDS`). Absent stays absent.
     meteredEstimatedCost: roundOptionalCost(summary.meteredEstimatedCost),
     unknownEstimatedCost: roundOptionalCost(summary.unknownEstimatedCost),
-    byModel: sortBy(summary.byModel, (row) => row.model).map((row) => ({
-      ...row,
-      estimatedCost: roundCost(row.estimatedCost),
-    })),
+    // ISS-8554 made this OPTIONAL, so absent stays absent here for the same
+    // reason the cost halves above do: normalising it to `[]` would compare a
+    // producer that omits the field against one that computed no rows, and
+    // report them equal.
+    byModel:
+      summary.byModel === undefined
+        ? undefined
+        : sortBy(summary.byModel, (row) => row.model).map((row) => ({
+            ...row,
+            estimatedCost: roundCost(row.estimatedCost),
+          })),
     byHarness: sortBy(summary.byHarness, (row) => row.harness).map((row) => ({
       ...row,
       estimatedCost: roundCost(row.estimatedCost),

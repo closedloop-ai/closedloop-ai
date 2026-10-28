@@ -1,9 +1,10 @@
-import { encodeDesktopGatewayPublicKey } from "@repo/api/src/types/desktop-authorize-url";
-import { describe, expect, it } from "vitest";
 import {
-  isLoopbackRedirectUri,
-  parseDesktopAuthorizeParams,
-} from "../desktop-authorize-params";
+  DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DESKTOP_BOOTSTRAP_SUPPORTED_TRUE,
+  encodeDesktopGatewayPublicKey,
+} from "@repo/api/src/types/desktop-authorize-url";
+import { describe, expect, it } from "vitest";
+import { parseDesktopAuthorizeParams } from "../desktop-authorize-params";
 
 const LOOPBACK = "http://127.0.0.1:49152/cb";
 
@@ -23,7 +24,7 @@ function validParams(overrides: SearchParams = {}): SearchParams {
     redirect_uri: LOOPBACK,
     gateway_id: "gateway-1",
     gateway_public_key: encodeDesktopGatewayPublicKey(SAMPLE_PUBLIC_KEY_PEM),
-    device_name: "Kris's MacBook",
+    device_name: "Kerensa's MacBook",
     platform: "darwin",
     ...overrides,
   };
@@ -38,16 +39,42 @@ describe("parseDesktopAuthorizeParams", () => {
       throw new Error("expected ok");
     }
     expect(result.params).toEqual({
+      bootstrapSupported: false,
       codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
       codeChallengeMethod: "S256",
       state: "state-123",
       redirectUri: LOOPBACK,
       gatewayId: "gateway-1",
       gatewayPublicKeyPem: SAMPLE_PUBLIC_KEY_PEM,
-      deviceName: "Kris's MacBook",
+      deviceName: "Kerensa's MacBook",
       platform: "darwin",
     });
   });
+
+  it.each([
+    { value: undefined, expected: false },
+    { value: DESKTOP_BOOTSTRAP_SUPPORTED_TRUE, expected: true },
+    { value: "0", expected: false },
+    { value: "true", expected: false },
+    { value: "", expected: false },
+    { value: [DESKTOP_BOOTSTRAP_SUPPORTED_TRUE, "0"], expected: true },
+    { value: ["0", DESKTOP_BOOTSTRAP_SUPPORTED_TRUE], expected: false },
+  ])(
+    "parses bootstrap capability $value as $expected",
+    ({ value, expected }) => {
+      const result = parseDesktopAuthorizeParams(
+        validParams({
+          [DESKTOP_AUTHORIZE_QUERY_PARAMS.bootstrapSupported]: value,
+        })
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error("expected ok");
+      }
+      expect(result.params.bootstrapSupported).toBe(expected);
+    }
+  );
 
   it("decodes the base64url device key back to its spaces-and-newlines PEM", () => {
     // Regression: a raw multi-line PEM in the query param is corrupted by the
@@ -141,21 +168,5 @@ describe("parseDesktopAuthorizeParams", () => {
     );
 
     expect(result).toEqual({ ok: false, reason: "invalid_redirect_uri" });
-  });
-});
-
-describe("isLoopbackRedirectUri", () => {
-  it("accepts IP-literal loopback over http on any port", () => {
-    expect(isLoopbackRedirectUri("http://127.0.0.1:1/cb")).toBe(true);
-    expect(isLoopbackRedirectUri("http://127.0.0.1:65535/x")).toBe(true);
-    expect(isLoopbackRedirectUri("http://[::1]:49152/cb")).toBe(true);
-  });
-
-  it("rejects localhost, https, foreign hosts, and embedded credentials", () => {
-    expect(isLoopbackRedirectUri("http://localhost:49152/cb")).toBe(false);
-    expect(isLoopbackRedirectUri("https://127.0.0.1:49152/cb")).toBe(false);
-    expect(isLoopbackRedirectUri("http://10.0.0.5:49152/cb")).toBe(false);
-    expect(isLoopbackRedirectUri("http://user:pass@127.0.0.1/cb")).toBe(false);
-    expect(isLoopbackRedirectUri("nonsense")).toBe(false);
   });
 });

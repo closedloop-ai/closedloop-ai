@@ -61,17 +61,18 @@ describe(`${MIGRATION_DIR} DDL contract`, () => {
     expect(names).toEqual(expectedNames);
   });
 
-  it.each(
-    EXPECTED_COLUMNS
-  )("adds %s as %s, nullable with no default", (columnName, columnType) => {
-    const parsed = parseAddColumns(MIGRATION_SQL);
-    const column = parsed.find((entry) => entry.name === columnName);
-    expect(column, `expected ADD COLUMN for ${columnName}`).toBeDefined();
-    expect(column?.type).toBe(columnType);
-    // Additive contract: no NOT NULL, no DEFAULT — legacy rows stay NULL.
-    expect(column?.qualifiers.toUpperCase()).not.toContain("NOT NULL");
-    expect(column?.qualifiers.toUpperCase()).not.toContain("DEFAULT");
-  });
+  it.each(EXPECTED_COLUMNS)(
+    "adds %s as %s, nullable with no default",
+    (columnName, columnType) => {
+      const parsed = parseAddColumns(MIGRATION_SQL);
+      const column = parsed.find((entry) => entry.name === columnName);
+      expect(column, `expected ADD COLUMN for ${columnName}`).toBeDefined();
+      expect(column?.type).toBe(columnType);
+      // Additive contract: no NOT NULL, no DEFAULT — legacy rows stay NULL.
+      expect(column?.qualifiers.toUpperCase()).not.toContain("NOT NULL");
+      expect(column?.qualifiers.toUpperCase()).not.toContain("DEFAULT");
+    }
+  );
 });
 
 function parseAddColumns(sql: string): ParsedColumn[] {

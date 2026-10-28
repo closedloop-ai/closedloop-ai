@@ -8,11 +8,14 @@ import {
   type BranchUsageSummary,
   branchCostEvidenceByteBudget,
   branchCostEvidenceFixedRowBytes,
+  branchCostEvidenceHasSubtotal,
   branchCostEvidenceRetainedBytes,
+  branchCostSubtotalsReconcile,
 } from "./branch-usage";
 import {
   TokenCostBasis,
   TokenCostCompleteness,
+  TokenCostCompletenessReason,
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "./token-cost-provenance";
@@ -308,6 +311,417 @@ describe("aggregateBranchCostCompleteness", () => {
       completeness: BranchCostCompleteness.Unavailable,
       reason: BranchCostCompletenessReason.Malformed,
     });
+  });
+
+  it("uses a directly supplied adapter-observed reason instead of deriving pricing incompleteness", () => {
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("direct-reason"),
+          reason: BranchCostCompletenessReason.ClassificationIncomplete,
+        },
+      ])
+    ).toEqual({
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.ClassificationIncomplete,
+    });
+  });
+
+  it("treats a missing source identity the same as an explicit null identity", () => {
+    const expected = {
+      completeness: BranchCostCompleteness.Partial,
+      reason: BranchCostCompletenessReason.SourceIdentityUnavailable,
+      subtotalUsd: 5,
+    };
+    expect(
+      aggregateBranchCostCompleteness([{ fallbackSubtotalUsd: 5 }])
+    ).toEqual(expected);
+    expect(
+      aggregateBranchCostCompleteness([
+        { sourceIdentity: null, fallbackSubtotalUsd: 5 },
+      ])
+    ).toEqual(expected);
+  });
+
+  it("maps every TokenCostCompletenessReason on an Unavailable cost summary to its Branch reason equivalent", () => {
+    const cases: [TokenCostCompletenessReason, BranchCostCompletenessReason][] =
+      [
+        [
+          TokenCostCompletenessReason.LegacyRecord,
+          BranchCostCompletenessReason.LegacyRecord,
+        ],
+        [
+          TokenCostCompletenessReason.UnsupportedSource,
+          BranchCostCompletenessReason.UnsupportedSource,
+        ],
+        [
+          TokenCostCompletenessReason.SourceIdentityUnavailable,
+          BranchCostCompletenessReason.SourceIdentityUnavailable,
+        ],
+        [
+          TokenCostCompletenessReason.ClassificationIncomplete,
+          BranchCostCompletenessReason.ClassificationIncomplete,
+        ],
+        [
+          TokenCostCompletenessReason.PricingIncomplete,
+          BranchCostCompletenessReason.PricingIncomplete,
+        ],
+        [
+          TokenCostCompletenessReason.Malformed,
+          BranchCostCompletenessReason.Malformed,
+        ],
+        [
+          TokenCostCompletenessReason.Unknown,
+          BranchCostCompletenessReason.Unknown,
+        ],
+      ];
+    for (const [costReason, branchReason] of cases) {
+      expect(
+        aggregateBranchCostCompleteness([
+          {
+            sourceIdentity: availableIdentity(`cost-${costReason}`),
+            costSummary: {
+              completeness: TokenCostCompleteness.Unavailable,
+              reason: costReason,
+            },
+          },
+        ])
+      ).toEqual({
+        completeness: BranchCostCompleteness.Unavailable,
+        reason: branchReason,
+      });
+    }
+  });
+
+  it("rejects malformed fallback subtotal shapes", () => {
+    const malformed = {
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Malformed,
+    };
+    expect(
+      aggregateBranchCostCompleteness([
+        { sourceIdentity: availableIdentity("s1"), fallbackSubtotalUsd: "5" },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("s2"),
+          fallbackSubtotalUsd: Number.NaN,
+        },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        { sourceIdentity: availableIdentity("s3"), fallbackSubtotalUsd: -1 },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("s4"),
+          fallbackSubtotalUsd: Number.POSITIVE_INFINITY,
+        },
+      ])
+    ).toEqual(malformed);
+  });
+
+  it("maps every TokenSourceIdentityUnavailableReason to its Branch reason equivalent", () => {
+    const cases: [
+      TokenSourceIdentityUnavailableReason,
+      BranchCostCompletenessReason,
+    ][] = [
+      [
+        TokenSourceIdentityUnavailableReason.LegacyRecord,
+        BranchCostCompletenessReason.LegacyRecord,
+      ],
+      [
+        TokenSourceIdentityUnavailableReason.UnsupportedSource,
+        BranchCostCompletenessReason.UnsupportedSource,
+      ],
+      // pins current behavior; looks odd because MissingSourceRecordId has no
+      // dedicated Branch reason and silently falls back to the generic
+      // SourceIdentityUnavailable bucket
+      [
+        TokenSourceIdentityUnavailableReason.MissingSourceRecordId,
+        BranchCostCompletenessReason.SourceIdentityUnavailable,
+      ],
+      [
+        TokenSourceIdentityUnavailableReason.Malformed,
+        BranchCostCompletenessReason.Malformed,
+      ],
+      [
+        TokenSourceIdentityUnavailableReason.Unknown,
+        BranchCostCompletenessReason.Unknown,
+      ],
+    ];
+    for (const [identityReason, branchReason] of cases) {
+      expect(
+        aggregateBranchCostCompleteness([
+          {
+            sourceIdentity: {
+              availability: TokenSourceIdentityAvailability.Unavailable,
+              reason: identityReason,
+            },
+          },
+        ])
+      ).toEqual({
+        completeness: BranchCostCompleteness.Unavailable,
+        reason: branchReason,
+      });
+    }
+  });
+
+  it("keys a Partial cost summary's own reason field into its evidence signature", () => {
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("partial-cost"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Partial,
+            reason: TokenCostCompletenessReason.ClassificationIncomplete,
+            subtotalUsd: 4,
+          },
+        },
+      ])
+    ).toEqual({
+      completeness: BranchCostCompleteness.Partial,
+      reason: BranchCostCompletenessReason.ClassificationIncomplete,
+      subtotalUsd: 4,
+    });
+  });
+
+  it("treats a non-object source identity or cost summary as malformed, not forward-compatible", () => {
+    const malformed = {
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Malformed,
+    };
+    expect(
+      aggregateBranchCostCompleteness([{ sourceIdentity: "not-an-object" }])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("cs1"),
+          costSummary: "not-an-object",
+        },
+      ])
+    ).toEqual(malformed);
+  });
+
+  it("treats a cost summary missing its completeness discriminant as malformed", () => {
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("no-completeness"),
+          costSummary: { subtotalUsd: 5 },
+        },
+      ])
+    ).toEqual({
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Malformed,
+    });
+  });
+
+  it("recognizes forward-compatible cost summaries carrying a known discriminant plus an unrecognized extra field as unknown, not malformed", () => {
+    const unknown = {
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Unknown,
+    };
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("unavailable-bad-reason"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Unavailable,
+            reason: "totally_bogus_reason",
+          },
+        },
+      ])
+    ).toEqual(unknown);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("complete-extra-field"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Complete,
+            subtotalUsd: 5,
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(unknown);
+    // pins current behavior; looks odd because the embedded reason literally
+    // says "malformed" yet the extra field routes the whole summary through
+    // the forward-compatible path, which discards that inner reason
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("partial-known-reason-extra-field"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Partial,
+            reason: TokenCostCompletenessReason.Malformed,
+            subtotalUsd: 5,
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(unknown);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: {
+            availability: TokenSourceIdentityAvailability.Unavailable,
+            reason: TokenSourceIdentityUnavailableReason.LegacyRecord,
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(unknown);
+  });
+
+  it("rejects forward-compatible cost summaries that still fail structural validation", () => {
+    const malformed = {
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Malformed,
+    };
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("partial-missing-reason"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Partial,
+            subtotalUsd: 5,
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("bad-subtotal-type"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Complete,
+            subtotalUsd: "nope",
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("lanes-not-array"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Complete,
+            subtotalUsd: 5,
+            lanes: "nope",
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(malformed);
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("lanes-mismatch"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Complete,
+            subtotalUsd: 5,
+            lanes: [{ basis: "custom_basis", subtotalUsd: 999 }],
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual(malformed);
+  });
+
+  it("recognizes forward-compatible lanes that reconcile to the declared subtotal as unknown", () => {
+    expect(
+      aggregateBranchCostCompleteness([
+        {
+          sourceIdentity: availableIdentity("lanes-match"),
+          costSummary: {
+            completeness: TokenCostCompleteness.Complete,
+            subtotalUsd: 5,
+            lanes: [{ basis: "custom_basis", subtotalUsd: 5 }],
+            extraField: true,
+          },
+        },
+      ])
+    ).toEqual({
+      completeness: BranchCostCompleteness.Unavailable,
+      reason: BranchCostCompletenessReason.Unknown,
+    });
+  });
+});
+
+describe("branchCostEvidenceHasSubtotal", () => {
+  it("returns true when a validated cost summary carries a subtotal", () => {
+    expect(
+      branchCostEvidenceHasSubtotal({
+        costSummary: {
+          completeness: TokenCostCompleteness.Complete,
+          subtotalUsd: 3,
+        },
+      })
+    ).toBe(true);
+  });
+
+  it("returns false when a validated cost summary has no subtotal and no fallback exists", () => {
+    expect(
+      branchCostEvidenceHasSubtotal({
+        costSummary: {
+          completeness: TokenCostCompleteness.Unavailable,
+          reason: TokenCostCompletenessReason.Unknown,
+        },
+      })
+    ).toBe(false);
+  });
+
+  it("falls back to a valid fallback subtotal when the cost summary fails validation", () => {
+    expect(
+      branchCostEvidenceHasSubtotal({
+        costSummary: { bad: true },
+        fallbackSubtotalUsd: 7,
+      })
+    ).toBe(true);
+  });
+
+  it("accepts a zero fallback subtotal as a valid observed value", () => {
+    expect(branchCostEvidenceHasSubtotal({ fallbackSubtotalUsd: 0 })).toBe(
+      true
+    );
+  });
+
+  it("rejects a negative, non-numeric, or missing fallback subtotal", () => {
+    expect(branchCostEvidenceHasSubtotal({})).toBe(false);
+    expect(branchCostEvidenceHasSubtotal({ fallbackSubtotalUsd: -1 })).toBe(
+      false
+    );
+    expect(branchCostEvidenceHasSubtotal({ fallbackSubtotalUsd: "3" })).toBe(
+      false
+    );
+  });
+});
+
+describe("branchCostSubtotalsReconcile", () => {
+  it("treats two null subtotals as reconciled", () => {
+    expect(branchCostSubtotalsReconcile(null, null)).toBe(true);
+  });
+
+  it("treats one null and one non-null subtotal as not reconciled", () => {
+    expect(branchCostSubtotalsReconcile(null, 5)).toBe(false);
+    expect(branchCostSubtotalsReconcile(5, null)).toBe(false);
+  });
+
+  it("reconciles subtotals within the shared float tolerance", () => {
+    expect(branchCostSubtotalsReconcile(0.1 + 0.2, 0.3)).toBe(true);
+  });
+
+  it("does not reconcile subtotals outside the shared float tolerance", () => {
+    expect(branchCostSubtotalsReconcile(5, 6)).toBe(false);
   });
 });
 

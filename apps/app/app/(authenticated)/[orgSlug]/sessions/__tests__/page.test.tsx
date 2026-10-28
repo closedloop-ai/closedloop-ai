@@ -1,10 +1,8 @@
 import { AgentSessionComparisonMode } from "@repo/api/src/types/agent-session-usage-comparison";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { SessionStatusFacetValue } from "@repo/app/agents/lib/session-status-filters";
-import {
-  SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
-  SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY,
-} from "@repo/app/shared/lib/feature-flags";
+import { SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { expectCriticalAxeClean } from "@repo/app/test/a11y/axe";
 import {
   A11yTheme,
@@ -39,16 +37,31 @@ import {
   useAgentSessionUsageMock,
 } from "../../../__tests__/sessions-page-test-helpers";
 import SessionsPage from "../page";
+import { SessionsPageTestProviders } from "./sessions-page-test-providers";
+import {
+  SESSIONS_OWNER_FACET_OPTION_NAME,
+  SESSIONS_OWNER_FACET_USER_ID,
+  sessionsChipRemoveName,
+  sessionsOwnerFacetUsageEntry,
+  sortSessionsColumn,
+  toggleSessionsFacetOption,
+} from "./sessions-v2-toolbar-driver";
 
-// The Status sort-header button's accessible name is exactly "Status". Anchor
-// the match so it does not also resolve the GridTable column-reorder handle,
-// whose aria-label is "Reorder Status column, use arrow keys" (FEA-4021/4150).
-const STATUS_BUTTON_NAME_REGEX = /^Status$/;
 // ISS-5975: deliberately loose. The removed control's accessible name was
 // "Refresh sessions" with a visible "Refresh" label, so matching the word
 // anywhere catches a reintroduction under either spelling.
 const REFRESH_BUTTON_NAME_REGEX = /refresh/i;
 const A11Y_THEMES = [A11yTheme.Light, A11yTheme.Dark] as const;
+/**
+ * The `?userId=` scope's chip, as the shipped chip row labels it.
+ *
+ * ISS-10301: this replaces the retired "User filtered" badge, which lived only in
+ * the deleted v1 host. The value is the raw id because these suites mock the org
+ * roster to `undefined`, which is `resolveOwnerChipLabel`'s documented fallback —
+ * never a fabricated name.
+ */
+const SCOPE_USER_ID = "user-123";
+const SCOPE_CHIP_LABEL = `Owner: ${SCOPE_USER_ID}`;
 
 describe("org sessions page wrapper", () => {
   beforeEach(() => {
@@ -63,7 +76,8 @@ describe("org sessions page wrapper", () => {
   });
 
   // FEA-4155: the P0 blank-render bug was this page gating its whole body behind
-  // the `DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY` flag via `<FeatureFlagged>`
+  // the `desktop-agent-session-sync` flag via `<FeatureFlagged>` (ISS-8022
+  // has since retired that flag entirely)
   // whose default fallback is `null`. Flags are being wound down, so once that
   // flag resolved to a real false/absent the surface blanked. The surface is now
   // always-on — its content renders directly, no flag gate. This test proves the
@@ -75,14 +89,18 @@ describe("org sessions page wrapper", () => {
     const previousTitle = document.title;
     document.title = "Closedloop.ai";
     try {
-      const flaggedOff = render(<SessionsPage />);
+      const flaggedOff = render(<SessionsPage />, {
+        wrapper: SessionsPageTestProviders,
+      });
       expect(document.title).toBe("Closedloop.ai");
       flaggedOff.unmount();
 
       enableSessionsPageFeatureFlag(
         SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY
       );
-      render(<SessionsPage />);
+      render(<SessionsPage />, {
+        wrapper: SessionsPageTestProviders,
+      });
       expect(document.title).toBe("Sessions | Closedloop.ai");
     } finally {
       document.title = previousTitle;
@@ -90,7 +108,9 @@ describe("org sessions page wrapper", () => {
   });
 
   it("renders session rows directly with no feature-flag gate (FEA-4155)", () => {
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     const sessionLink = screen.getByRole("link", { name: sessionLinkName });
 
@@ -108,7 +128,9 @@ describe("org sessions page wrapper", () => {
     vi.setSystemTime(new Date("2026-08-07T12:00:00.000Z"));
 
     try {
-      const first = render(<SessionsPage />);
+      const first = render(<SessionsPage />, {
+        wrapper: SessionsPageTestProviders,
+      });
       const firstWindow = lastSessionsTableCallArgs();
       const firstStartDate =
         typeof firstWindow?.startDate === "string"
@@ -148,7 +170,9 @@ describe("org sessions page wrapper", () => {
       first.unmount();
       vi.setSystemTime(new Date("2026-08-07T23:59:59.999Z"));
 
-      const sameDay = render(<SessionsPage />);
+      const sameDay = render(<SessionsPage />, {
+        wrapper: SessionsPageTestProviders,
+      });
       expect(lastSessionsTableCallArgs()?.startDate).toBe(firstStartDate);
       expect(lastSessionsTableCallArgs()?.endDate).toBe(firstEndDate);
       vi.setSystemTime(new Date("2026-08-08T00:00:00.000Z"));
@@ -170,36 +194,50 @@ describe("org sessions page wrapper", () => {
     }
   });
 
+  /**
+   * ISS-10301: the "User filtered" badge this also asserted is RETIRED — it was
+   * rendered by the deleted v1 host and by nothing else. What the scope surfaces
+   * as now is the chip the next case pins; this case keeps the half the badge was
+   * never about, the `?userId=` READ contract.
+   */
   it("preserves selected-user query filtering", () => {
-    setSelectedSessionUser("user-123");
+    setSelectedSessionUser(SCOPE_USER_ID);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
-    expect(screen.getByText("User filtered")).toBeInTheDocument();
     expect(useAgentSessionsMock).toHaveBeenCalledWith(
       expect.objectContaining(selectedUserSessionsPageHookArgs),
       expect.anything()
     );
   });
 
-  // ISS-4728: with the flag ON the selected-user scope moves OUT of the legacy
-  // badge and INTO the active-filter chip row. What must not move is the URL
-  // contract: `?userId=` still narrows the read, and a link from another surface
-  // still lands on the same rows.
+  // ISS-4728: the selected-user scope moves OUT of the legacy badge and INTO the
+  // active-filter chip row. What must not move is the URL contract: `?userId=`
+  // still narrows the read, and a link from another surface still lands on the
+  // same rows.
+  //
+  // ISS-10301: no longer gated. `sessions-owner-scope-chip`'s OFF arm was the v1
+  // host's badge and nothing else, so with v1 deleted the chip is the ONLY thing
+  // that can name this narrower — see `sessions-v2-page.tsx`. Read off the real
+  // chip rather than the retired v1 toolbar stand-in's `toolbar-scope-user-id`
+  // prop marker.
   it("folds the selected-user scope into the chip row without changing the ?userId query contract", () => {
-    enableSessionsPageFeatureFlag(SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY);
-    setSelectedSessionUser("user-123");
+    setSelectedSessionUser(SCOPE_USER_ID);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
-    expect(screen.queryByText("User filtered")).not.toBeInTheDocument();
+    expect(screen.getByText(SCOPE_CHIP_LABEL)).toBeInTheDocument();
     expect(
-      screen.queryByText("Showing sessions for the selected user.")
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId("toolbar-scope-user-id")).toHaveTextContent(
-      "user-123"
-    );
-    // The read is byte-identical to the flag-OFF path above.
+      screen.getByRole("button", {
+        name: sessionsChipRemoveName(SCOPE_CHIP_LABEL),
+      })
+    ).toBeInTheDocument();
+    // The read is byte-identical to the case above, which asserts it without
+    // looking at the chip at all.
     expect(useAgentSessionsMock).toHaveBeenCalledWith(
       expect.objectContaining(selectedUserSessionsPageHookArgs),
       expect.anything()
@@ -208,14 +246,17 @@ describe("org sessions page wrapper", () => {
 
   it("removing the scope chip strips ONLY ?userId, keeping the active facets", async () => {
     const user = userEvent.setup();
-    enableSessionsPageFeatureFlag(SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY);
-    setSelectedSessionUser("user-123");
+    setSelectedSessionUser(SCOPE_USER_ID);
     setSessionsFacetQuery("status", [SessionStatusFacetValue.Inactive]);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     await user.click(
-      screen.getByRole("button", { name: "Remove selected user scope" })
+      screen.getByRole("button", {
+        name: sessionsChipRemoveName(SCOPE_CHIP_LABEL),
+      })
     );
 
     // `?userId` is gone; the Status facet the user set here survives. A remove
@@ -228,18 +269,23 @@ describe("org sessions page wrapper", () => {
 
   it("removing the MERGED owner chip strips ?userId AND the owner facet in one write", async () => {
     const user = userEvent.setup();
-    enableSessionsPageFeatureFlag(SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY);
     // The same person is both the deep-link scope and a selected Owner facet
-    // value, which is the case the chip row collapses into ONE chip.
-    setSelectedSessionUser("user-123");
-    setSessionsFacetQuery("owner", ["user-123"]);
+    // value, which is the case the chip row collapses into ONE chip. The single
+    // remove control below IS that collapse: two chips reading `Owner: user-123`
+    // would resolve `getByRole` to two elements and throw.
+    setSelectedSessionUser(SCOPE_USER_ID);
+    setSessionsFacetQuery("owner", [SCOPE_USER_ID]);
     setSessionsFacetQuery("status", [SessionStatusFacetValue.Inactive]);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     const replacesBeforeClick = navigationReplaceMock.mock.calls.length;
     await user.click(
-      screen.getByRole("button", { name: "Remove merged owner scope" })
+      screen.getByRole("button", {
+        name: sessionsChipRemoveName(SCOPE_CHIP_LABEL),
+      })
     );
 
     // ONE write for the whole gesture. Two replaces is the defect itself: both
@@ -262,26 +308,15 @@ describe("org sessions page wrapper", () => {
     expect(lastUrl).not.toContain("owner");
   });
 
-  it("forwards no scope to the toolbar when the flag is off", () => {
-    setSelectedSessionUser("user-123");
-
-    render(<SessionsPage />);
-
-    expect(
-      screen.queryByTestId("toolbar-scope-user-id")
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Remove selected user scope" })
-    ).not.toBeInTheDocument();
-  });
-
   it("uses the page query for API offset and writes pagination through the route", async () => {
     const user = userEvent.setup();
     setSessionsPageQuery("2");
     setSelectedSessionUser("user-123");
     setSessionsTotal(50);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(useAgentSessionsMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -306,7 +341,9 @@ describe("org sessions page wrapper", () => {
   it("bounds summary cards and pagination inside the shared scroll surface", () => {
     setSessionsTotal(50);
 
-    const { container } = render(<SessionsPage />);
+    const { container } = render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     const summarySurface = container.querySelector(".sticky.left-0");
     expect(summarySurface).toBeInTheDocument();
@@ -319,7 +356,9 @@ describe("org sessions page wrapper", () => {
     setSessionsPageQuery("2");
     setSessionsTotal(10);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(useAgentSessionsMock).toHaveBeenCalledWith(
       expect.objectContaining({ offset: 25 }),
@@ -341,15 +380,19 @@ describe("org sessions page wrapper", () => {
     setSessionsPageQuery("2");
     setSessionsTotal(50);
 
-    const { rerender } = render(<SessionsPage />);
+    const { rerender } = render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
     expect(useAgentSessionsMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ offset: 25 }),
       expect.anything()
     );
 
-    await user.click(
-      screen.getByRole("button", { name: STATUS_BUTTON_NAME_REGEX })
-    );
+    // ISS-10301: the v2 grid sorts from the per-column options menu, not from a
+    // header button whose accessible name is the bare column word — that was the
+    // v1 `SortableColumnHeader`. Same gesture for the reader, same page reset
+    // under test.
+    await sortSessionsColumn(user, "Status");
 
     expect(navigationReplaceMock).toHaveBeenCalledWith("/acme/sessions", {
       scroll: false,
@@ -372,19 +415,30 @@ describe("org sessions page wrapper", () => {
     const user = userEvent.setup();
     setSessionsPageQuery("2");
     setSessionsTotal(50);
+    seedSessionsOwnerFacetOption();
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
     expect(useAgentSessionsMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ offset: 25 }),
       expect.anything()
     );
 
-    await user.click(screen.getByRole("button", { name: "Filter owner Ada" }));
+    // ISS-10301: narrowed through the REAL Owner submenu. The retired v1 toolbar
+    // stand-in rendered a "Filter owner Ada" button that called `onFiltersChange`
+    // directly; the option below only exists because the seeded usage carries the
+    // owner, which is how the shipped facet list is built.
+    await toggleSessionsFacetOption(
+      user,
+      "Owner",
+      SESSIONS_OWNER_FACET_OPTION_NAME
+    );
 
     // FEA-3560: the same replace that resets the page mirrors the facet into
     // the URL, so a later detail→back restores the filtered view.
     expect(navigationReplaceMock).toHaveBeenCalledWith(
-      "/acme/sessions?owner=user-e2e",
+      `/acme/sessions?owner=${SESSIONS_OWNER_FACET_USER_ID}`,
       { scroll: false }
     );
     await waitFor(() =>
@@ -403,13 +457,27 @@ describe("org sessions page wrapper", () => {
     setSessionsPageQuery("2");
     setSessionsTotal(50);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
     expect(lastSessionsTableCallArgs()).toEqual(
       expect.objectContaining({ offset: 25, statuses: [] })
     );
 
-    await user.click(
-      screen.getByRole("button", { name: "Apply lifecycle filters" })
+    // ISS-10301: two toggles through the REAL Status submenu, in place of the
+    // retired stand-in's single "Apply lifecycle filters" button. ISS-4696's point
+    // is preserved by construction rather than by a hand-written array — the
+    // submenu can only offer what `SESSION_STATUS_FILTER_OPTIONS` holds, so a
+    // retired value is not selectable here at all.
+    await toggleSessionsFacetOption(
+      user,
+      "Status",
+      SESSION_STATUS_LABELS[SessionStatusFacetValue.Active]
+    );
+    await toggleSessionsFacetOption(
+      user,
+      "Status",
+      SESSION_STATUS_LABELS[SessionStatusFacetValue.Inactive]
     );
 
     // FEA-3560: the page-resetting replace carries the selected statuses.
@@ -439,7 +507,9 @@ describe("org sessions page wrapper", () => {
   // an absent `quality` to `all` (fail-open), so every session shows regardless
   // of substantive/idle.
   it("never sends a quality filter to the list or the summary usage read", () => {
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
     expect(lastSessionsTableCallArgs()).not.toHaveProperty("quality");
     // The paginated list read (FEA-4177 split query) omits quality.
     expect(useAgentSessionsMock).toHaveBeenLastCalledWith(
@@ -467,7 +537,9 @@ describe("org sessions page wrapper", () => {
     setSessionsPageQuery("2");
     setSessionsTotal(50);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(lastSessionsTableCallArgs()).toEqual(
       expect.objectContaining({
@@ -483,7 +555,9 @@ describe("org sessions page wrapper", () => {
     setSessionsFacetQuery("owner", ["user-e2e"]);
     setSessionsTotal(50);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     await user.click(
       within(screen.getByRole("navigation", { name: "pagination" })).getByText(
@@ -500,21 +574,27 @@ describe("org sessions page wrapper", () => {
   it("passes loading state into the real shared list renderer", () => {
     mockSessionsPageLoadingState();
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(document.querySelector(".animate-pulse")).toBeInTheDocument();
   });
 
-  it("passes empty results into the real shared list renderer", () => {
+  it("passes empty results into the real shared list renderer", async () => {
     mockSessionsPageEmptyState("organization");
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
-    expect(screen.getByText(sessionsEmptyTitle)).toBeInTheDocument();
+    // Awaited: ISS-11913 holds an empty default-window list on its loading
+    // treatment until the outside-window probe answers.
+    expect(await screen.findByText(sessionsEmptyTitle)).toBeInTheDocument();
     expect(screen.getByText(sessionsEmptyDescription)).toBeInTheDocument();
   });
 
-  // FEA-4177 (wongk): an INITIAL list-read rejection must render an honest error,
+  // FEA-4177 (whitlockk): an INITIAL list-read rejection must render an honest error,
   // not the "No sessions found" empty state (which lies that the filters matched
   // nothing). ISS-4534: the errored card's single action is "Clear filters and
   // reload" (a superset of a bare retry), not a standalone Retry.
@@ -522,7 +602,9 @@ describe("org sessions page wrapper", () => {
     const refetch = vi.fn();
     mockSessionsPageListErrorState(refetch);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(screen.getByText("Couldn't load sessions")).toBeInTheDocument();
     expect(screen.queryByText(sessionsEmptyTitle)).not.toBeInTheDocument();
@@ -540,9 +622,11 @@ describe("org sessions page wrapper", () => {
   it("errored list read offers a 'Clear filters and reload' recovery link that clears filters back to the list root", async () => {
     const refetch = vi.fn();
     setSelectedSessionUser("user-123");
-    mockSessionsPageListErrorState(refetch);
+    const { usageRefetch } = mockSessionsPageListErrorState(refetch);
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     expect(screen.getByText("Couldn't load sessions")).toBeInTheDocument();
     const recovery = screen.getByRole("link", {
@@ -556,6 +640,78 @@ describe("org sessions page wrapper", () => {
     const lastReplace = navigationReplaceMock.mock.calls.at(-1)?.[0] as string;
     expect(lastReplace).toBe("/acme/sessions");
     expect(refetch).not.toHaveBeenCalled();
+    // ISS-7414 (whitlockk review): the POSITIVE CONTROL for the summary half. The
+    // `userId` narrower moves the summary key too, so clearing it reloads the
+    // cards on its own — and an explicit refetch here would re-run the pre-clear
+    // failing scope. A fix that just refetched both queries unconditionally on
+    // every press would pass the two cases below and fail HERE.
+    expect(usageRefetch).not.toHaveBeenCalled();
+  });
+
+  // ISS-7414: the same recovery Link pressed from an ALREADY-DEFAULT scope — no
+  // facets, default range, no `?userId=`, first page — which is what a general
+  // read failure actually looks like. Every setter then writes the value it
+  // already held, no query key moves, and the key change the filtered branch
+  // above relies on never happens, so the press started and ended no read at
+  // all. Desktop fixed this in ISS-7249 (`useSessionsListRecovery`); the web
+  // adapter never got the branch, which is why the control was reported as "not
+  // working". With nothing to clear, the reload IS the whole action.
+  it("errored list read on an already-default scope reloads, because clearing filters alone moves no query key", async () => {
+    // Resolves, because the real `refetch()` returns a promise the recovery
+    // handler attaches its self-catch to. A bare `vi.fn()` returning undefined
+    // is a shape the query contract cannot produce.
+    const refetch = vi.fn().mockResolvedValue(undefined);
+    const { usageRefetch } = mockSessionsPageListErrorState(refetch);
+
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
+
+    expect(screen.getByText("Couldn't load sessions")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("link", { name: "Clear filters and reload" })
+    );
+
+    expect(refetch).toHaveBeenCalledTimes(1);
+    // ISS-7414 (whitlockk review): and the SUMMARY read too. The cards and the
+    // toolbar's facet counts read that one query, a general outage errors it
+    // beside the list, and on this scope nothing moves its key either — so
+    // reloading only the rows hands back a table under figures still describing
+    // the failed read, with nothing on screen saying they are stale. ISS-5975
+    // fixed exactly this shape for focus (`useQueryFreshnessGroup`, and the
+    // focus test below); the recovery control owes the same contract.
+    expect(usageRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  // ISS-7414: the other half of the same predicate. A non-zero page is a real
+  // key change even with no facet active — `markPageReset()` drops
+  // `effectivePageIndex` to 0, which moves `offset` in `listFilters` — so the
+  // reset reloads on its own and the explicit refetch must NOT also fire. Firing
+  // it would re-run the pre-clear page-N read, the failing scope the user is
+  // escaping. Without this case, dropping `&& effectivePageIndex === 0` from the
+  // predicate leaves every other test in this file green.
+  it("errored list read on a non-default page does not refetch the pre-clear scope", async () => {
+    const refetch = vi.fn().mockResolvedValue(undefined);
+    setSessionsPageQuery("2");
+    const { usageRefetch } = mockSessionsPageListErrorState(refetch);
+
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
+
+    expect(screen.getByText("Couldn't load sessions")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("link", { name: "Clear filters and reload" })
+    );
+
+    expect(refetch).not.toHaveBeenCalled();
+    // ISS-7414 (whitlockk review): the two predicates are NOT the same predicate,
+    // and this is the scope that proves it. Pagination is deliberately absent
+    // from the summary key (FEA-4177), so the page reset that reloads the LIST
+    // here moves nothing for the summary — leaving the cards errored unless this
+    // fires. No filter is active, so what it re-reads is the scope the user is
+    // landing on, not a narrowed one they are escaping.
+    expect(usageRefetch).toHaveBeenCalledTimes(1);
   });
 
   // FEA-4181 (review cid 3653717604): a filtered-away zero-row result on the
@@ -566,38 +722,52 @@ describe("org sessions page wrapper", () => {
     setSelectedSessionUser("user-123");
     mockSessionsPageEmptyState("organization");
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
-    expect(screen.getByText("No matching sessions")).toBeInTheDocument();
+    const emptyState = screen.getByText("No matching sessions");
+    expect(emptyState).toBeInTheDocument();
     expect(screen.queryByText(sessionsEmptyTitle)).not.toBeInTheDocument();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Clear filters" })
-    );
+    // ISS-10301: the EMPTY STATE's recovery action specifically. With an active
+    // narrower on screen the toolbar renders its own ICON-ONLY "Clear filters"
+    // beside the Filter button, so a bare `getByRole` resolves two; the one under
+    // test is the labelled button the empty state offers, which is the only one
+    // carrying the words.
+    const clearFilters = screen
+      .getAllByRole("button", { name: "Clear filters" })
+      .filter((button) => button.textContent?.includes("Clear filters"));
+    expect(clearFilters).toHaveLength(1);
+    await userEvent.click(clearFilters[0] as HTMLElement);
 
     const lastReplace = navigationReplaceMock.mock.calls.at(-1)?.[0] as string;
     expect(lastReplace).toBe("/acme/sessions");
   });
 
-  it.each([
-    A11yTheme.Light,
-    A11yTheme.Dark,
-  ])("keeps sessions route critical a11y and contrast clean in %s theme", async (theme) => {
-    setSelectedSessionUser("user-123");
+  it.each([A11yTheme.Light, A11yTheme.Dark])(
+    "keeps sessions route critical a11y and contrast clean in %s theme",
+    async (theme) => {
+      setSelectedSessionUser(SCOPE_USER_ID);
 
-    const { container } = render(
-      <A11yThemeRoot theme={theme}>
-        <SessionsPage />
-      </A11yThemeRoot>
-    );
+      const { container } = render(
+        <A11yThemeRoot theme={theme}>
+          <SessionsPage />
+        </A11yThemeRoot>,
+        { wrapper: SessionsPageTestProviders }
+      );
 
-    await expectCriticalAxeClean(container);
-    expect(screen.getByText("User filtered")).toBeInTheDocument();
-    expectElementContrast(screen.getByText("Session"), {
-      background: themeBackground(theme),
-      label: `sessions route row ${theme}`,
-    });
-  });
+      await expectCriticalAxeClean(container);
+      // ISS-10301: the scope's own affordance, which is the chip now that the v1
+      // "User filtered" badge is gone. Asserted here for the same reason it always
+      // was — it proves the axe sweep above actually covered the scoped state.
+      expect(screen.getByText(SCOPE_CHIP_LABEL)).toBeInTheDocument();
+      expectElementContrast(screen.getByText("Session"), {
+        background: themeBackground(theme),
+        label: `sessions route row ${theme}`,
+      });
+    }
+  );
 
   it.each([
     [
@@ -608,34 +778,40 @@ describe("org sessions page wrapper", () => {
     [
       "empty",
       () => mockSessionsPageEmptyState("organization"),
-      () => screen.getByText(sessionsEmptyTitle),
+      // Found, not got: see "passes empty results into the real shared list
+      // renderer" (ISS-11913).
+      () => screen.findByText(sessionsEmptyTitle),
     ],
     [
       "selected-user",
-      () => setSelectedSessionUser("user-123"),
-      () => screen.getByText("User filtered"),
+      () => setSelectedSessionUser(SCOPE_USER_ID),
+      () => screen.getByText(SCOPE_CHIP_LABEL),
     ],
     ["populated", () => undefined, () => screen.getByText("Session")],
-  ])("keeps sessions %s state a11y and contrast clean", async (_state, setup, getTarget) => {
-    for (const theme of A11Y_THEMES) {
-      setup();
+  ])(
+    "keeps sessions %s state a11y and contrast clean",
+    async (_state, setup, getTarget) => {
+      for (const theme of A11Y_THEMES) {
+        setup();
 
-      const { container, unmount } = render(
-        <A11yThemeRoot theme={theme}>
-          <SessionsPage />
-        </A11yThemeRoot>
-      );
+        const { container, unmount } = render(
+          <A11yThemeRoot theme={theme}>
+            <SessionsPage />
+          </A11yThemeRoot>,
+          { wrapper: SessionsPageTestProviders }
+        );
 
-      const target = getTarget();
-      expect(target).toBeInstanceOf(Element);
-      await expectCriticalAxeClean(container);
-      expectElementContrast(target as Element, {
-        background: themeBackground(theme),
-        label: `sessions ${_state} ${theme}`,
-      });
-      unmount();
+        const target = await getTarget();
+        expect(target).toBeInstanceOf(Element);
+        await expectCriticalAxeClean(container);
+        expectElementContrast(target as Element, {
+          background: themeBackground(theme),
+          label: `sessions ${_state} ${theme}`,
+        });
+        unmount();
+      }
     }
-  });
+  );
 
   // ISS-5975: the manual Refresh control is gone from the Sessions LIST, on both
   // surfaces. It was only ever needed because the web shell had no automatic
@@ -651,7 +827,9 @@ describe("org sessions page wrapper", () => {
   it("renders no Refresh control in the sessions page header", () => {
     mockSessionsPageRefetchSpies("organization");
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
 
     // The header still renders (breadcrumbs), so this is a real absence check
     // against a mounted surface rather than a page that failed to render.
@@ -661,27 +839,98 @@ describe("org sessions page wrapper", () => {
     ).not.toBeInTheDocument();
   });
 
-  // ISS-5975 (wongk review): removing the button removed the one thing that
-  // re-read BOTH halves of this page at once. `useQueryFreshnessGroup`'s own
-  // suite proves the grouping rule; this proves THIS PAGE takes it — deleting
-  // the hook call from `page.tsx` leaves that suite green and fails this.
-  //
-  // The scenario is the mixed one, which is the only one that discriminates:
-  // the list's 60-second window has elapsed and the usage read's has not,
-  // because their fetches resolved at different instants. Ungrouped, focus
-  // refetches the rows alone and the cards keep describing the old population.
-  it("re-reads the summary aggregates on focus even when only the list is stale", () => {
+  // ISS-12286 (PRD-792): a focus re-reads only the stale half. This proves
+  // THIS PAGE wires the freshness group — deleting the hook call from
+  // `page.tsx` leaves the hook's own suite green and fails the list assertion
+  // here — and that the fresh summary is no longer re-read on the list's
+  // account, which the rule this replaced did.
+  it("re-reads only the stale list on focus, leaving the fresh summary alone", () => {
     const { listRefetch, usageRefetch } = mockSessionsPageRefetchSpies(
       "organization",
       { listIsStale: true, usageIsStale: false }
     );
 
-    render(<SessionsPage />);
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
     // `focusManager` notifies on a CHANGE, so the blur is load-bearing.
     focusManager.setFocused(false);
     focusManager.setFocused(true);
 
     expect(listRefetch).toHaveBeenCalled();
-    expect(usageRefetch).toHaveBeenCalled();
+    expect(usageRefetch).not.toHaveBeenCalled();
+  });
+
+  // ISS-9074: the API's list endpoint refuses an offset past
+  // SESSION_LIST_MAX_OFFSET (10,000), so a stale bookmark or a hand-edited
+  // `?page=` far past the real result set must not be forwarded verbatim. The
+  // page clamps the OFFSET synchronously — the very first request is already
+  // safe — and a follow-up effect repairs the URL to match.
+  it("caps the offset at SESSION_LIST_MAX_OFFSET when the URL page exceeds the API ceiling", async () => {
+    setSessionsPageQuery("500");
+    setSessionsTotal(30_000);
+
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
+
+    // ?page=500 is index 499, but the ceiling is index 400 (10,000 / 25 per
+    // page) — the synchronous clamp sends offset 10,000, never the raw
+    // 499 * 25 = 12,475.
+    expect(useAgentSessionsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 10_000 }),
+      expect.anything()
+    );
+    // The clamp effect repairs the URL to the capped page (index 400 → "401").
+    await waitFor(() =>
+      expect(navigationReplaceMock).toHaveBeenCalledWith(
+        "/acme/sessions?page=401",
+        { scroll: false }
+      )
+    );
+  });
+
+  // ISS-9074: the sibling of the offset cap above. 30,000 rows at 25/page is
+  // 1,200 raw pages, but the API will never serve past offset 10,000 (page
+  // index 400), so the paginator must not advertise pages nobody can reach.
+  it("caps the advertised page count so the paginator never offers unreachable pages", () => {
+    setSessionsTotal(30_000);
+
+    render(<SessionsPage />, {
+      wrapper: SessionsPageTestProviders,
+    });
+
+    // Landing on the default (first) page still reads offset 0.
+    expect(useAgentSessionsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 0 }),
+      expect.anything()
+    );
+    // The paginator's last-page link is capped at index 400 ("401"), never the
+    // raw 1,200 pages the uncapped total would produce.
+    const pagination = screen.getByRole("navigation", { name: "pagination" });
+    expect(within(pagination).getByText("401")).toBeInTheDocument();
+    expect(within(pagination).queryByText("1200")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * REPLACES the usage fixture with one carrying the `byUser` row the Owner facet
+ * builds {@link SESSIONS_OWNER_FACET_OPTION_NAME} from.
+ *
+ * Replaces rather than extends, and says so: `resetSessionsPageTestState` sets a
+ * plain `mockReturnValue` whose whole payload is the two summary fields restated
+ * below, so there is no per-args implementation to preserve — and the one case
+ * that calls this asserts the LIST read's `offset`/`userIds`, never a summary
+ * figure. The row itself comes from the shared driver, so this suite and
+ * `page-v2-footer.test.tsx` cannot drift on the owner's id or option label.
+ */
+function seedSessionsOwnerFacetOption() {
+  useAgentSessionUsageMock.mockReturnValue({
+    data: {
+      totalSessions: 1,
+      totalEstimatedCost: 0,
+      byUser: [sessionsOwnerFacetUsageEntry()],
+    },
+    isLoading: false,
+  });
+}

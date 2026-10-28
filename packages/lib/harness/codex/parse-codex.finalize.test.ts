@@ -228,16 +228,13 @@ describe("parseCodexRollout — burst session is filtered (Branch 260[0])", () =
     // - user message sets pendingTurnStartedAt
     // - assistant message pushes 1 message + 1 turnDuration
     for (let i = 0; i < 10; i++) {
-      // user response_item/message
+      // A user response_item/message, then the assistant's.
       burstLines.push(
         JSON.stringify({
           type: "response_item",
           timestamp: ts2,
           payload: { type: "message", role: "user", content: `prompt ${i}` },
-        })
-      );
-      // assistant response_item/message
-      burstLines.push(
+        }),
         JSON.stringify({
           type: "response_item",
           timestamp: ts2,

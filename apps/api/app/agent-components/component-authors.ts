@@ -1,7 +1,9 @@
-import type { withDb } from "@repo/database";
+import type { Prisma, withDb } from "@repo/database";
+import { escapeSqlLikeLiteral } from "@/lib/sql-like";
 import { displayUserName } from "@/lib/user-display-name";
 import { authorFingerprintsOf } from "./family-collapse";
-import { isCloudAuthoredRow, type MergedComponent } from "./identity";
+import type { MergedComponent } from "./identity";
+import { installerUserIdsOf } from "./installer-roster";
 
 // ---------------------------------------------------------------------------
 // Agent-component AUTHORS resolution (extracted from service.ts, FEA-4267).
@@ -10,9 +12,9 @@ import { isCloudAuthoredRow, type MergedComponent } from "./identity";
 // `DefinitionVersionEditor` lineage for a set of version fingerprints, union it
 // across a collapsed family or a detail page's whole version history, and fall
 // back to the observing compute-target owner when a row has no lineage
-// (FEA-4247). Pulled into its own module so the grandfathered service.ts shrinks
+// (FEA-4247). Pulled into its own module so service.ts shrinks
 // and the authorship contract has a focused home; service.ts consumes the named
-// exports. Org scoping is enforced in every query here (AC-019 / wongk).
+// exports. Org scoping is enforced in every query here (AC-019 / whitlockk).
 // ---------------------------------------------------------------------------
 
 type Db = Parameters<Parameters<typeof withDb>[0]>[0];
@@ -59,31 +61,7 @@ export async function resolveCollaboratorsByDefinitionHash(
   if (hashes.length === 0) {
     return byHash;
   }
-  const rows = await db.definitionVersionEditor.findMany({
-    where: {
-      definitionVersion: {
-        organizationId,
-        definitionHash: { in: hashes },
-      },
-    },
-    select: {
-      userId: true,
-      firstEditedAt: true,
-      definitionVersion: { select: { definitionHash: true } },
-      user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-        },
-      },
-    },
-    // Discoverer-first: the earliest lineage row per hash is the discoverer, so
-    // the ordered fold below emits it as the leading author. `id` breaks ties
-    // deterministically across requests.
-    orderBy: [{ firstEditedAt: "asc" }, { id: "asc" }],
-  });
+  const rows = await readLineageRowChunks(db, organizationId, hashes);
 
   const seenUserByHash = new Map<string, Set<string>>();
   for (const row of rows) {
@@ -99,7 +77,7 @@ export async function resolveCollaboratorsByDefinitionHash(
       byHash.set(hash, collaborators);
       seenUserByHash.set(hash, seen);
     }
-    // codex P2 (wongk): dedupe on the stable USER ID, never the display name —
+    // codex P2 (whitlockk): dedupe on the stable USER ID, never the display name —
     // two distinct org users can share a name, so a name-keyed set would collapse
     // them into one collaborator and undercount authors. The id is carried on the
     // resolved shape so the cross-version union downstream
@@ -161,7 +139,7 @@ export function collaboratorsOf(
  * A single query over the deduped id set (never one query per component) keeps
  * the fallback pool-safe under the bounded-fan-out rule.
  *
- * wongk: the lookup MUST be org-scoped. `AgentComponent` and `ComputeTarget`
+ * whitlockk: the lookup MUST be org-scoped. `AgentComponent` and `ComputeTarget`
  * carry independent `organizationId` foreign keys, so the upstream component
  * filter does not by itself prove the observing user belongs to the requested
  * org — a user id sourced from a cross-org compute target could otherwise leak a
@@ -204,53 +182,92 @@ export function authorsWithFallback(
   if (lineageAuthors.length > 0) {
     return [...lineageAuthors];
   }
-  // wongk: dedupe by USER ID, never by display name. `computeTargetUserIds` is
-  // already deduped by id upstream, so emit one name per distinct id — two
-  // different people who happen to share a display name must both appear (the
-  // lineage path preserves this via id-dedup too; the fallback must match). An
-  // id that resolved to no name (outside the org, or missing) is dropped.
-  const fallback: string[] = [];
-  for (const userId of computeTargetUserIds) {
-    const name = ownerNameByUserId.get(userId);
+  return namesForUserIds(computeTargetUserIds, ownerNameByUserId);
+}
+
+/**
+ * Display names for user ids, in id order, dropping any id the org-scoped read
+ * could not resolve — a user outside the organization, or missing.
+ *
+ * whitlockk: dedupe by USER ID, never by display name. The ids arrive already
+ * deduped by id, so this emits one name per distinct id: two different people
+ * who happen to share a display name must both appear (the lineage path
+ * preserves this via id-dedup too; the fallback must match).
+ */
+export function namesForUserIds(
+  userIds: readonly string[],
+  nameByUserId: Map<string, string>
+): string[] {
+  const names: string[] = [];
+  for (const userId of userIds) {
+    const name = nameByUserId.get(userId);
     if (name !== undefined) {
-      fallback.push(name);
+      names.push(name);
     }
   }
-  return fallback;
+  return names;
 }
 
 /**
  * FEA-4098 (Slice 3): the ORDERED `definitionHash`es of every revision that
  * backs this name-level component's authors lineage, newest-first.
  *
- * wongk: the caller must NOT derive this from the prompt-history DTO — that DTO
+ * whitlockk: the caller must NOT derive this from the prompt-history DTO — that DTO
  * is capped at 20 rows (`PROMPT_HISTORY_LIMIT`), so an author who only touched
  * revision 21+ would silently vanish from the detail's Collaborators. This is a
  * dedicated LIGHTWEIGHT identity read (fingerprints only, no bodies) over the
- * component's whole linked `AgentComponentVersion` history, so the authors set
- * is complete while the prompt selector keeps its 20-body cap. Bounded by
- * `maxOrgInventoryRows` so a pathological history can't grow unbounded.
+ * component's whole linked `AgentComponentVersion` history via keyset
+ * pagination, so the authors set is complete regardless of population size.
  * Org-scoped (AC-019). Newest-first (matching the prompt history) so the most
  * recent version's discoverer leads the deduped union.
+ *
+ * ISS-9867: keyset-walks the read on `id` at `pageSize` rows per statement
+ * until a short page, so author 5,001 is reachable, then orders the complete
+ * set `lastSeenAt` DESC (nulls last), `id` ASC — the same order the detail's
+ * canonical-row read uses. The fold is a Set dedupe, so the return type is
+ * unchanged.
  */
 export async function loadLineageDefinitionHashes(
   db: Db,
   organizationId: string,
   kind: string,
   key: string,
-  maxOrgInventoryRows: number
+  pageSize: number
 ): Promise<string[]> {
-  const rows = await db.agentComponentVersion.findMany({
-    where: {
-      organizationId,
-      componentKind: kind,
-      componentKey: { equals: key, mode: "insensitive" },
-      definitionVersionId: { not: null },
-    },
-    select: { definitionVersion: { select: { definitionHash: true } } },
-    orderBy: [{ lastSeenAt: "desc" }, { id: "asc" }],
-    take: maxOrgInventoryRows,
-  });
+  const where = {
+    organizationId,
+    componentKind: kind,
+    // ISS-6757: escaped, so this is case-insensitive EQUALITY and not the
+    // ILIKE pattern Prisma otherwise emits — a `mcp__closedloop__ping` lineage
+    // must not collect `mcpXXclosedloopYYping`'s authors.
+    componentKey: { equals: escapeSqlLikeLiteral(key), mode: "insensitive" },
+    definitionVersionId: { not: null },
+  } as const;
+  const take = Math.max(1, pageSize);
+  const rows: LineageVersionRow[] = [];
+  let cursor: string | undefined;
+
+  for (;;) {
+    const page = await db.agentComponentVersion.findMany({
+      where,
+      select: LINEAGE_VERSION_SELECT,
+      // Walk on the IMMUTABLE primary key (codex P2): `lastSeenAt` is rewritten
+      // by sync (`widenVersionObservationWindows`) between pages, so a keyset on
+      // it can skip a row that moved past the cursor or revisit one that moved
+      // behind it. The newest-first order the callers rely on is applied in
+      // memory below, over the complete set.
+      orderBy: { id: "asc" },
+      take,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    });
+    rows.push(...page);
+    if (page.length < take) {
+      break;
+    }
+    cursor = page.at(-1)!.id;
+  }
+  rows.sort(compareNewestFirst);
+
   const hashes: string[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
@@ -318,7 +335,14 @@ export async function resolveDetailAuthors(
   kind: string,
   key: string,
   typedRows: readonly AuthorFallbackRow[],
-  maxOrgInventoryRows: number
+  maxOrgInventoryRows: number,
+  /**
+   * The org-scoped names for `installerUserIdsOf(typedRows)`, resolved by the
+   * caller. The owner fallback and the ISS-6768 installer roster fold the SAME
+   * id set, so the caller resolves it once and both read that map rather than
+   * issuing two identical `User` reads back to back.
+   */
+  ownerNameByUserId: Map<string, string>
 ): Promise<string[]> {
   const detailCollaborators = await resolveDetailCollaborators(
     db,
@@ -331,28 +355,114 @@ export async function resolveDetailAuthors(
       maxOrgInventoryRows
     )
   );
-  const fallbackUserIds: string[] = [];
-  for (const row of typedRows) {
-    // wongk (FEA-4247): skip cloud-authored (sentinel-owned) rows — their
-    // `computeTarget.userId` is the org's earliest active user, not the creator,
-    // so it must not feed the owner fallback (mirrors `mergeComponentRows`).
-    if (
-      !(
-        isCloudAuthoredRow(row) ||
-        fallbackUserIds.includes(row.computeTarget.userId)
-      )
-    ) {
-      fallbackUserIds.push(row.computeTarget.userId);
-    }
-  }
-  const ownerNameByUserId = await resolveOwnerFallbackByUserId(
-    db,
-    organizationId,
-    fallbackUserIds
-  );
+  // whitlockk (FEA-4247): skip cloud-authored (sentinel-owned) rows — their
+  // `computeTarget.userId` is the org's earliest active user, not the creator,
+  // so it must not feed the owner fallback (mirrors `mergeComponentRows`). That
+  // rule has one definition, in `installerUserIdsOf`.
   return authorsWithFallback(
     detailCollaborators,
-    fallbackUserIds,
+    installerUserIdsOf(typedRows),
     ownerNameByUserId
   );
+}
+
+/**
+ * Hashes per `definitionHash: { in: … }` predicate.
+ *
+ * ISS-9867 (codex + whitlockk review): the lineage handed to
+ * {@link resolveCollaboratorsByDefinitionHash} is no longer capped at 5,000
+ * once {@link loadLineageDefinitionHashes} walks the whole history, and Prisma
+ * binds one parameter per `in` element, so a long enough history would push
+ * one statement past `POSTGRES_MAX_BIND_PARAMETERS` (`@/lib/postgres-bind-parameters`,
+ * the SSOT for that ceiling — do not restate the number here) and turn the
+ * detail read into a 500. Sized like `SESSION_LOC_ID_CHUNK_SIZE` and
+ * `ID_CHUNK_SIZE` in this directory.
+ */
+export const LINEAGE_HASH_CHUNK_SIZE = 1000;
+
+const LINEAGE_EDITOR_SELECT = {
+  userId: true,
+  firstEditedAt: true,
+  definitionVersion: { select: { definitionHash: true } },
+  user: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+    },
+  },
+} satisfies Prisma.DefinitionVersionEditorSelect;
+
+type LineageEditorRow = Prisma.DefinitionVersionEditorGetPayload<{
+  select: typeof LINEAGE_EDITOR_SELECT;
+}>;
+
+/**
+ * The `definitionVersionEditor` rows for a hash set, read in
+ * {@link LINEAGE_HASH_CHUNK_SIZE} slices and concatenated. A hash's rows all
+ * come from ONE statement, so the discoverer-first order each statement
+ * returns holds per hash across the concatenation; the fold in the caller
+ * never compares rows of different hashes. Sequential on purpose: an unbounded
+ * chunk count must not become an unbounded fan-out over the pool.
+ */
+async function readLineageRowChunks(
+  db: Db,
+  organizationId: string,
+  hashes: readonly string[]
+): Promise<LineageEditorRow[]> {
+  const rows: LineageEditorRow[] = [];
+  for (let start = 0; start < hashes.length; start += LINEAGE_HASH_CHUNK_SIZE) {
+    const chunk = hashes.slice(start, start + LINEAGE_HASH_CHUNK_SIZE);
+    const page = await db.definitionVersionEditor.findMany({
+      where: {
+        definitionVersion: {
+          organizationId,
+          definitionHash: { in: chunk },
+        },
+      },
+      select: LINEAGE_EDITOR_SELECT,
+      // Discoverer-first: the earliest lineage row per hash is the discoverer,
+      // so the ordered fold in the caller emits it as the leading author. `id`
+      // breaks ties deterministically across requests.
+      orderBy: [{ firstEditedAt: "asc" }, { id: "asc" }],
+    });
+    rows.push(...page);
+  }
+  return rows;
+}
+
+const LINEAGE_VERSION_SELECT = {
+  id: true,
+  lastSeenAt: true,
+  definitionVersion: { select: { definitionHash: true } },
+} satisfies Prisma.AgentComponentVersionSelect;
+
+type LineageVersionRow = Prisma.AgentComponentVersionGetPayload<{
+  select: typeof LINEAGE_VERSION_SELECT;
+}>;
+
+/** `lastSeenAt` DESC with nulls last, then `id` ASC — the detail's canonical order. */
+function compareNewestFirst(
+  a: LineageVersionRow,
+  b: LineageVersionRow
+): number {
+  const aSeen = a.lastSeenAt?.getTime();
+  const bSeen = b.lastSeenAt?.getTime();
+  if (aSeen !== bSeen) {
+    if (aSeen === undefined) {
+      return 1;
+    }
+    if (bSeen === undefined) {
+      return -1;
+    }
+    return bSeen - aSeen;
+  }
+  if (a.id < b.id) {
+    return -1;
+  }
+  if (a.id > b.id) {
+    return 1;
+  }
+  return 0;
 }

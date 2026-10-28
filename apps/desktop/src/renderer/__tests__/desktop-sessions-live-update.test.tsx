@@ -6,6 +6,10 @@ import type {
   AgentSessionsPageData,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import {
+  SESSIONS_METRIC_CARD_LABEL,
+  TOTAL_TOKENS_METRIC_CARD_LABEL,
+} from "@repo/app/agents/components/sessions/sessions-summary-card-labels";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import {
   afterEach,
@@ -24,6 +28,49 @@ import {
 } from "../navigation/desktop-adapter";
 import { DesktopAppCoreProvider } from "../shared-agent-sessions/desktop-app-core-provider";
 import type { AgentMonitorUrl } from "../types/desktop-api";
+import { setupContainerWidthStub } from "./container-width-fixture";
+import { setupReturningInstallStorage } from "./local-storage-fixture";
+
+// ISS-8121: the desktop provider applies background refetch polls on the
+// agentSessionKeys.pageDataRoot() (2 s) and agentSessionKeys.details() (5 s)
+// key families.  This file asserts exact call counts driven by the
+// `desktop:db:changed` bridge, so the poll must not contribute calls —
+// otherwise an assertion that pins "called once" can silently become "called
+// twice" when the render crosses the poll interval on a contended runner (false
+// red), and an assertion that pins "called twice" can be supplied by a poll tick
+// instead of the bridge (false green).  Replacing the function with a no-op
+// makes the counts mean what their names claim: bridge-driven only.
+// ISS-10195: the guided-onboarding host is stubbed OUT of this Sessions suite.
+// It is mounted app-wide by the sidebar and calls
+// `useOnboardingSessionDiscovery(true)`, which reads
+// `agentSessionsApi.usage(ALL_LOCAL_SESSIONS)` — an empty-filter read that has
+// nothing to do with the Sessions toolbar. Retiring the workspace-experience
+// gate removed the root resolver's boot-boundary hold, so that read now lands
+// during this suite's assertions and trips the FEA-4177 check below, which is
+// about the TOOLBAR's facet-scoped read staying deduped (and which cannot fire
+// here at all: `localFallbackReadEnabled` requires Cloud mode). Stubbing the
+// unrelated consumer keeps that assertion meaning exactly what it says rather
+// than widening it to tolerate a second caller.
+vi.mock(
+  "../components/onboarding/desktop-guided-onboarding-dialog-host",
+  () => ({
+    DesktopGuidedOnboardingDialogHost: () => null,
+  })
+);
+
+vi.mock(
+  "../shared-agent-sessions/sessions-list-poll-defaults",
+  async (importOriginal) => {
+    const original =
+      await importOriginal<
+        typeof import("../shared-agent-sessions/sessions-list-poll-defaults")
+      >();
+    return {
+      ...original,
+      applyDesktopSessionsListPollDefaults: vi.fn(),
+    };
+  }
+);
 
 type DbChangePayload = { sessionId?: string };
 type ToolDetail = { detail: string; err: boolean; label: string };
@@ -48,7 +95,15 @@ const emitDbChange = (payload: DbChangePayload = {}) => {
   }
 };
 
-describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
+setupContainerWidthStub();
+
+describe("Desktop Sessions live updates (FEA-1834)", {
+  concurrent: false,
+}, () => {
+  // This suite asserts the app shell, so it must not launch as a first run:
+  // the guided onboarding modal covers the shell when no first-run key is stored.
+  setupReturningInstallStorage();
+
   beforeAll(() => {
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,
@@ -335,9 +390,7 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
       // blank/error wipe, no skeleton. Recovery on the next event is covered by
       // the bridge-level failure→recovery test.
       expect(screen.getByText("Alpha Session")).toBeDefined();
-      expect(
-        screen.queryByText("Sessions are temporarily unavailable.")
-      ).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
     },
     rendererTestTimeoutMs
   );
@@ -366,7 +419,7 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
             model: "gpt-5.5",
             name: "Uploaded Cloud Session Detail",
             outputTokens: 3200,
-            repositoryFullName: "closedloop-ai/symphony-alpha",
+            repositoryFullName: "closedloop-ai/closedloop-ai",
             tokenUsageByModel: [
               {
                 cacheReadTokens: 900,
@@ -398,7 +451,7 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
         ).toHaveLength(2);
       });
       expect(
-        screen.getAllByText("closedloop-ai/symphony-alpha").length
+        screen.getAllByText("closedloop-ai/closedloop-ai").length
       ).toBeGreaterThan(0);
       expect(screen.getAllByText("exec_command")).toHaveLength(2);
       expect(screen.queryByText("pnpm test before")).toBeNull();
@@ -411,11 +464,11 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
 // card (FEA-3937: the hoisted composite renamed the desktop's "Total Sessions"
 // card to the ratified "Sessions" label).
 function totalSessionsMetricValue(): string | null {
-  return metricValue("Sessions");
+  return metricValue(SESSIONS_METRIC_CARD_LABEL);
 }
 
 function totalTokensMetricValue(): string | null {
-  return metricValue("Total Tokens");
+  return metricValue(TOTAL_TOKENS_METRIC_CARD_LABEL);
 }
 
 // True while the shared summary bar is in its whole-row loading state.
@@ -433,10 +486,10 @@ function totalTokensMetricValue(): string | null {
 // are non-empty, so this stays a real discriminator rather than a check that
 // passes on any render.
 function summaryCardsAreLoading(): boolean {
-  if (findMetricCardLabel("Sessions") === null) {
+  if (findMetricCardLabel(SESSIONS_METRIC_CARD_LABEL) === null) {
     return true;
   }
-  return (metricValue("Sessions") ?? "").trim() === "";
+  return (metricValue(SESSIONS_METRIC_CARD_LABEL) ?? "").trim() === "";
 }
 
 // Finds the MetricCard `card-description` element whose text matches the given
@@ -516,7 +569,7 @@ function installDesktopApi() {
       },
       getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
       getAgentMonitorUrl: vi.fn(() => Promise.resolve(agentMonitorUrl)),
-      getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
+      notifyRendererReady: vi.fn(),
       onDbChanged: vi.fn((cb: (payload: DbChangePayload) => void) => {
         dbChangeSubscribers.add(cb);
         return () => {
@@ -565,7 +618,7 @@ function agentSessionListItem(id: string, name: string): AgentSessionListItem {
     name,
     outputTokens: 20,
     project: null,
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     slug: null,
     sourceArtifact: null,
     sourceArtifactId: null,
@@ -575,7 +628,7 @@ function agentSessionListItem(id: string, name: string): AgentSessionListItem {
     toolUseCount: 1,
     updatedAt: timestamp,
     user: null,
-    worktreePath: "/tmp/symphony-alpha",
+    worktreePath: "/tmp/closedloop-ai",
   };
 }
 
@@ -604,7 +657,6 @@ function agentSessionDetail(
     prsMerged: 0,
     span: null,
     throttles: [],
-    timeline: [],
     tokenUsageByModel: [],
     turnItems: [
       {

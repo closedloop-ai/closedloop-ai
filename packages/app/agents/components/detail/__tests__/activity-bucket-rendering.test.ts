@@ -164,25 +164,49 @@ describe("getUnreadFromIndex", () => {
 });
 
 describe("getBucketReachClass", () => {
-  it("marks a bucket that has a transcript anchor when the flag is on", () => {
-    expect(getBucketReachClass(bucket({ tl0: 4 }), true)).toBe("reach");
+  it("marks a bucket that has a transcript anchor", () => {
+    expect(getBucketReachClass(bucket({ tl0: 4 }), false)).toBe("reach");
+    // `disabled` defaults false, so the live strip is the default answer.
+    expect(getBucketReachClass(bucket({ tl0: 4 }))).toBe("reach");
   });
 
-  it("leaves an anchorless bucket unmarked even when the flag is on", () => {
+  it("leaves an anchorless bucket unmarked", () => {
     // ISS-5548: the bar has nowhere to send a click, so growing its hit box
     // would only make ISS-5479's inert target bigger.
     expect(getBucketReachClass(bucket({ tl0: null }), false)).toBe("");
     expect(getBucketReachClass(bucket({ tl0: null }), true)).toBe("");
   });
 
-  it("leaves an anchored bucket unmarked while the flag is off", () => {
-    expect(getBucketReachClass(bucket({ tl0: 4 }), false)).toBe("");
-  });
-
   it("treats row 0 as a real anchor rather than a falsy miss", () => {
     // `tl0: 0` is the first transcript row — the bucket most likely to be the
     // session's opening prompt, and the one a `!bucket.tl0` test would drop.
-    expect(getBucketReachClass(bucket({ tl0: 0 }), true)).toBe("reach");
+    expect(getBucketReachClass(bucket({ tl0: 0 }), false)).toBe("reach");
+  });
+
+  it("leaves a bucket unmarked when its anchored jump cannot land", () => {
+    // ISS-8727: the third case. `tl0` is a real row, so the anchor test above
+    // passes — but `getBucketJumpBlock` answers `NotInReadTranscript`, which is
+    // what a partial or `subagent:{id}` transcript produces, and the bar is
+    // already `aria-disabled` with `.no-jump`. Growing its target rebuilds
+    // ISS-5479's dead control at ten times the size.
+    expect(
+      getBucketReachClass(
+        bucket({ tl0: 4 }),
+        false,
+        BucketJumpBlock.NotInReadTranscript
+      )
+    ).toBe("");
+    // The positive control on the SAME anchor: resolvable, so it keeps the
+    // full-column target and the negative above is not vacuous.
+    expect(getBucketReachClass(bucket({ tl0: 4 }), false, null)).toBe("reach");
+  });
+
+  it("withholds the target for every block reason", () => {
+    // Exhaustive over the union so a third reason added later cannot silently
+    // inherit the enlarged target.
+    for (const block of Object.values(BucketJumpBlock)) {
+      expect(getBucketReachClass(bucket({ tl0: 4 }), false, block)).toBe("");
+    }
   });
 
   it("leaves a disabled bar unmarked even when it has an anchor", () => {
@@ -193,12 +217,8 @@ describe("getBucketReachClass", () => {
     // `.reach` box on a dead control would put a click cursor over the full
     // column and light the 6px sliver from 50px away. The class is withheld
     // rather than patched in CSS so all three signals settle on one answer.
-    expect(getBucketReachClass(bucket({ tl0: 4 }), true, true)).toBe("");
-    expect(getBucketReachClass(bucket({ tl0: 0 }), true, true)).toBe("");
-  });
-
-  it("still marks an anchored bar when the strip is explicitly enabled", () => {
-    expect(getBucketReachClass(bucket({ tl0: 4 }), true, false)).toBe("reach");
+    expect(getBucketReachClass(bucket({ tl0: 4 }), true)).toBe("");
+    expect(getBucketReachClass(bucket({ tl0: 0 }), true)).toBe("");
   });
 });
 
@@ -337,7 +357,7 @@ describe("bar label and tooltip header agree about one bucket", () => {
 });
 
 /**
- * ISS-5843 (criteria 3 and 13). Mike chose option 2 — silent for `NoTurn`, an
+ * ISS-5843 (criteria 3 and 13). Marisol chose option 2 — silent for `NoTurn`, an
  * at-rest non-toast signal for `NotInReadTranscript` — and that is ALREADY what
  * ISS-5479 shipped, so this ticket verifies the behaviour rather than rebuilding
  * it. These pin the three answers as three DISTINCT sentences so a later refactor

@@ -27,7 +27,7 @@
  * from-the-future migration row) rather than mocking the runner, so they also
  * pin that the catch covers every refusal kind, not just the one shape.
  *
- * The `.catch(() => undefined)` is driven directly (wongk review): the last two
+ * The `.catch(() => undefined)` is driven directly (whitlockk review): the last two
  * tests inject a boot handle whose `close()` REJECTS, via the
  * `openMigrationDatabase` seam on `OpenSqliteAgentDatabaseOptions`. Without that
  * seam a real handle always closes cleanly, so the catch's `.catch(...)` never
@@ -45,7 +45,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { MIGRATIONS } from "../src/main/database/migration/migrations-manifest.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";

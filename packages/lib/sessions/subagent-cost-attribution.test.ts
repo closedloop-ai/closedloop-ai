@@ -510,7 +510,7 @@ describe("attributeTokenEventCosts — sub-agent cost label (FEA-4178)", () => {
     expect(sub2.tokens).toBeNull();
   });
 
-  it("renders a sub-cent sub-agent cost precisely rather than flooring it to $0.00 (wongk review)", () => {
+  it("renders a sub-cent sub-agent cost precisely rather than flooring it to $0.00 (whitlockk review)", () => {
     const subStart = Date.parse("2026-06-17T00:00:00.000Z");
     const agents: SyncedAgentSessionAgent[] = [
       agent({
@@ -587,17 +587,17 @@ describe("attributeTokenEventCosts — sub-agent cost label (FEA-4178)", () => {
     //     key is a map miss anyway, so the null-check is behaviorally
     //     indistinguishable from omitting it.
 
+    const nulledAgent: SyncedAgentSessionAgent = {
+      externalAgentId: "",
+      name: "Nulled",
+      type: "subagent",
+      status: "completed",
+      startedAt: "2026-06-17T00:00:00.000Z",
+      endedAt: "2026-06-17T00:01:00.000Z",
+    };
     // Force null into the typed string field to exercise the null-owner branch.
-    const externalAgentId: string = null as any;
     const agents: SyncedAgentSessionAgent[] = [
-      {
-        externalAgentId,
-        name: "Nulled",
-        type: "subagent",
-        status: "completed",
-        startedAt: "2026-06-17T00:00:00.000Z",
-        endedAt: "2026-06-17T00:01:00.000Z",
-      },
+      Object.assign(nulledAgent, { externalAgentId: null }),
     ];
     const items = projectAgentSessionTurnItems({
       ...baseInput,

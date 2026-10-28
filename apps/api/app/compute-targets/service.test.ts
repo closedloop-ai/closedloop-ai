@@ -1,20 +1,17 @@
 import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
-import type { HealthCheckResponse } from "@repo/api/src/types/compute-target";
 import {
   COMMAND_SIGNING_CAPABILITY_KEY,
   COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
   DesktopSecurityStatus,
   HarnessType,
-  PluginUpdateOutcome,
 } from "@repo/api/src/types/compute-target";
-import { beforeEach, describe, expect, it, test, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
 import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
   loadActiveDesktopManagedGatewayIds: vi.fn(),
-  isAgentSessionSyncSupportedForUser: vi.fn(),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   deleteTranscriptObjects: vi.fn(),
   logError: vi.fn(),
@@ -28,7 +25,7 @@ vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/transcript-storage", () => ({
   deleteTranscriptObjects: mocks.deleteTranscriptObjects,
 }));
 
@@ -50,10 +47,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
   loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
 }));
 
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
-}));
-
 import {
   computeTargetsService,
   isComputeTargetGatewayConflictResult,
@@ -69,7 +62,7 @@ function buildTarget(overrides: Record<string, unknown> = {}) {
     machineName: "machine-1",
     platform: "darwin",
     capabilities: { desktopSecurityUpgradeProtocolVersion: 1 },
-    supportedOperations: ["symphony_plan_loop"],
+    supportedOperations: ["git_action"],
     lastSeenAt: now,
     isOnline: true,
     isSharedWithOrg: false,
@@ -106,15 +99,13 @@ describe("computeTargetsService security status", () => {
       gatewayIds: new Set<string>(),
       reason: "feature_disabled",
     });
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
-  // FEA-3299: `listAvailableForOrg` reads every target in the org shared with
-  // the caller (no `take`), then fans out per DISTINCT OWNER. That set grows
-  // with org headcount — nothing in the schema or the query caps it — so a large
-  // org could demand more than the whole 20-connection pool from a single GET on
-  // a hot authenticated path, and each task holds its connection across a
-  // co-scheduled PostHog flag check, widening the hold window (PRD-528).
+  // FEA-3299: the record mapper fans out per DISTINCT OWNER. `listAvailableForOrg`
+  // is owner-only since ISS-12617, so it hands the mapper one owner today; this
+  // case feeds the mapper a multi-owner list through that entry point to pin the
+  // bound that keeps a multi-owner input from demanding more than the whole
+  // connection pool from a single GET (PRD-528).
   it("bounds concurrent per-owner capability lookups as an org grows", async () => {
     // Sized off the bound, not hardcoded: must always exceed
     // DB_FANOUT_MAX_CONCURRENCY or the assertion has no power.
@@ -161,7 +152,7 @@ describe("computeTargetsService security status", () => {
       OWNER_COUNT
     );
     // ...but an unbounded Promise.all would have peaked at 12 — one pooled
-    // connection per org member sharing a target.
+    // connection per owner.
     expect(peakInFlight).toBeLessThanOrEqual(DB_FANOUT_MAX_CONCURRENCY);
     expect(peakInFlight).toBeGreaterThan(1);
   });
@@ -366,9 +357,6 @@ describe("computeTargetsService security status", () => {
               gatewayIds: new Set<string>(),
             }
     );
-    mocks.isAgentSessionSyncSupportedForUser.mockImplementation(
-      async (identity) => identity.userId === "owner-2"
-    );
     installDb({
       computeTarget: {
         findMany: vi.fn().mockResolvedValue(targets),
@@ -385,7 +373,12 @@ describe("computeTargetsService security status", () => {
     );
     const byId = new Map(result.map((target) => [target.id, target]));
 
-    expect(byId.get("viewer-target")?.serverCapabilities).toBeUndefined();
+    // ISS-8022: `agentSessionSync` is unconditional now, so an owner with no
+    // signing-eligible gateway still gets a capability blob — what this case
+    // pins is that `computeTargetSigning` is absent for that owner.
+    expect(byId.get("viewer-target")?.serverCapabilities).toEqual({
+      agentSessionSync: true,
+    });
     expect(byId.get("shared-target")?.serverCapabilities).toEqual({
       computeTargetSigning: true,
       agentSessionSync: true,
@@ -402,14 +395,6 @@ describe("computeTargetsService security status", () => {
       clerkUserId: "clerk-owner-2",
       gatewayIds: ["gateway-shared"],
     });
-    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
-      userId: "user-1",
-      clerkUserId: "clerk-user-1",
-    });
-    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
-      userId: "owner-2",
-      clerkUserId: "clerk-owner-2",
-    });
   });
 
   it("merges protocol-only updates into the existing capabilities blob", async () => {
@@ -423,20 +408,13 @@ describe("computeTargetsService security status", () => {
         },
       })
     );
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({
-          capabilities: {
-            pluginVersion: "0.13.22",
-            socketProtocolVersion: 2,
-          },
-        }),
-        update,
+    installUpdateOwnedDb(
+      {
+        pluginVersion: "0.13.22",
+        socketProtocolVersion: 2,
       },
-      apiKey: {
-        findMany: vi.fn(),
-      },
-    });
+      update
+    );
 
     await computeTargetsService.updateOwned(
       "target-1",
@@ -471,20 +449,13 @@ describe("computeTargetsService security status", () => {
         },
       })
     );
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({
-          capabilities: {
-            [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: "engineer", // legacy namespace value — LEGACY_DESKTOP_API_NAMESPACE was deleted in this PR
-            pluginVersion: "1.10.0",
-          },
-        }),
-        update,
+    installUpdateOwnedDb(
+      {
+        [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: "engineer", // legacy namespace value — LEGACY_DESKTOP_API_NAMESPACE was deleted in this PR
+        pluginVersion: "1.10.0",
       },
-      apiKey: {
-        findMany: vi.fn(),
-      },
-    });
+      update
+    );
 
     await computeTargetsService.updateOwned(
       "target-1",
@@ -522,21 +493,14 @@ describe("computeTargetsService security status", () => {
         },
       })
     );
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({
-          capabilities: {
-            [COMMAND_SIGNING_CAPABILITY_KEY]: true,
-            [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
-            pluginVersion: "1.11.3",
-          },
-        }),
-        update,
+    installUpdateOwnedDb(
+      {
+        [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
+        pluginVersion: "1.11.3",
       },
-      apiKey: {
-        findMany: vi.fn(),
-      },
-    });
+      update
+    );
 
     await computeTargetsService.updateOwned(
       "target-1",
@@ -590,7 +554,7 @@ describe("computeTargetsService gateway reconciliation", () => {
       platform: "darwin",
       gatewayId: "gateway-1",
       capabilities: {},
-      supportedOperations: ["symphony_plan_loop"],
+      supportedOperations: ["git_action"],
     });
 
     expect(update).toHaveBeenCalledWith(
@@ -630,7 +594,7 @@ describe("computeTargetsService gateway reconciliation", () => {
       platform: "darwin",
       gatewayId: "gateway-1",
       capabilities: {},
-      supportedOperations: ["symphony_plan_loop"],
+      supportedOperations: ["git_action"],
     });
 
     expect(update).toHaveBeenCalledWith(
@@ -660,7 +624,7 @@ describe("computeTargetsService gateway reconciliation", () => {
       platform: "darwin",
       gatewayId: "gateway-1",
       capabilities: {},
-      supportedOperations: ["symphony_plan_loop"],
+      supportedOperations: ["git_action"],
     });
 
     expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
@@ -692,20 +656,7 @@ describe("computeTargetsService gateway reconciliation", () => {
   });
 
   it("maps a gateway DB unique-constraint violation to a gateway conflict result", async () => {
-    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
-      code: "P2002",
-      meta: { target: "compute_targets_gateway_id_unique_idx" },
-    });
-    const findFirst = vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ capabilities: {} });
-    installDb({
-      computeTarget: {
-        findFirst,
-        update: vi.fn().mockRejectedValue(gatewayP2002),
-      },
-    });
+    installGatewayUniqueViolationDb("compute_targets_gateway_id_unique_idx");
 
     const result = await computeTargetsService.updateOwned(
       "target-1",
@@ -719,20 +670,7 @@ describe("computeTargetsService gateway reconciliation", () => {
   });
 
   it("maps a gateway DB unique-constraint violation reported by field array", async () => {
-    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
-      code: "P2002",
-      meta: { target: ["gatewayId"] },
-    });
-    const findFirst = vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ capabilities: {} });
-    installDb({
-      computeTarget: {
-        findFirst,
-        update: vi.fn().mockRejectedValue(gatewayP2002),
-      },
-    });
+    installGatewayUniqueViolationDb(["gatewayId"]);
 
     const result = await computeTargetsService.updateOwned(
       "target-1",
@@ -746,20 +684,7 @@ describe("computeTargetsService gateway reconciliation", () => {
   });
 
   it("maps a gateway DB unique-constraint violation reported by column array", async () => {
-    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
-      code: "P2002",
-      meta: { target: ["gateway_id"] },
-    });
-    const findFirst = vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ capabilities: {} });
-    installDb({
-      computeTarget: {
-        findFirst,
-        update: vi.fn().mockRejectedValue(gatewayP2002),
-      },
-    });
+    installGatewayUniqueViolationDb(["gateway_id"]);
 
     const result = await computeTargetsService.updateOwned(
       "target-1",
@@ -894,195 +819,6 @@ describe("computeTargetsService health-check snapshots", () => {
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
   });
 
-  it("upserts the latest health-check snapshot for an accessible target", async () => {
-    const checkedAt = new Date("2026-05-08T16:00:00.000Z");
-    const upsert = vi.fn().mockResolvedValue({
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt,
-      expectedMcpUrl: "https://mcp.example.com",
-      latestVersion: "1.2.3",
-      pluginAutoUpdateEnabled: true,
-      result: {
-        checks: [
-          { id: "git", label: "Git", required: true, passed: true },
-          {
-            id: "plugin-code",
-            label: "Symphony Plugin",
-            required: true,
-            passed: false,
-            enableAttempted: true,
-            enableOutcome: PluginUpdateOutcome.Failed,
-            enablePluginIds: ["code@closedloop-ai"],
-          },
-        ],
-        allRequiredPassed: false,
-      },
-      allRequiredPassed: false,
-      requiredFailureIds: ["plugin-code"],
-      schemaVersion: 1,
-      createdAt: checkedAt,
-      updatedAt: checkedAt,
-    });
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(buildTarget()),
-      },
-      computeTargetHealthCheck: {
-        upsert,
-      },
-    });
-
-    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
-      "org-1",
-      "user-1",
-      "target-1",
-      {
-        expectedMcpUrl: "https://mcp.example.com",
-        latestVersion: "1.2.3",
-        pluginAutoUpdateEnabled: true,
-        result: {
-          checks: [
-            { id: "git", label: "Git", required: true, passed: true },
-            {
-              id: "plugin-code",
-              label: "Symphony Plugin",
-              required: true,
-              passed: false,
-              enableAttempted: true,
-              enableOutcome: PluginUpdateOutcome.Failed,
-              enablePluginIds: ["code@closedloop-ai"],
-            },
-          ],
-          allRequiredPassed: true,
-        },
-      }
-    );
-
-    expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { computeTargetId: "target-1" },
-        create: expect.objectContaining({
-          allRequiredPassed: false,
-          pluginAutoUpdateEnabled: true,
-          requiredFailureIds: ["plugin-code"],
-          result: expect.objectContaining({
-            checks: [
-              { id: "git", label: "Git", required: true, passed: true },
-              expect.objectContaining({
-                enableAttempted: true,
-                enableOutcome: PluginUpdateOutcome.Failed,
-                enablePluginIds: ["code@closedloop-ai"],
-              }),
-            ],
-          }),
-        }),
-        update: expect.objectContaining({
-          allRequiredPassed: false,
-          pluginAutoUpdateEnabled: true,
-          requiredFailureIds: ["plugin-code"],
-        }),
-      })
-    );
-    expect(snapshot?.requiredFailureIds).toEqual(["plugin-code"]);
-    expect(snapshot?.result.checks[1]).toEqual(
-      expect.objectContaining({
-        enableOutcome: PluginUpdateOutcome.Failed,
-        enablePluginIds: ["code@closedloop-ai"],
-      })
-    );
-    expect(snapshot?.pluginAutoUpdateEnabled).toBe(true);
-  });
-
-  it("coerces enabled plugin auto-update snapshots from shared targets to disabled", async () => {
-    const checkedAt = new Date("2026-05-08T16:00:00.000Z");
-    const upsert = vi.fn().mockResolvedValue({
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt,
-      expectedMcpUrl: "https://mcp.example.com",
-      latestVersion: "1.2.3",
-      pluginAutoUpdateEnabled: false,
-      result: {
-        checks: [{ id: "git", label: "Git", required: true, passed: true }],
-        allRequiredPassed: true,
-      },
-      allRequiredPassed: true,
-      requiredFailureIds: [],
-      schemaVersion: 1,
-      createdAt: checkedAt,
-      updatedAt: checkedAt,
-    });
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(
-          buildTarget({
-            isSharedWithOrg: true,
-            userId: "owner-user",
-          })
-        ),
-      },
-      computeTargetHealthCheck: {
-        upsert,
-      },
-    });
-
-    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
-      "org-1",
-      "shared-user",
-      "target-1",
-      {
-        latestVersion: "1.2.3",
-        pluginAutoUpdateEnabled: true,
-        result: {
-          checks: [{ id: "git", label: "Git", required: true, passed: true }],
-          allRequiredPassed: true,
-        },
-      }
-    );
-
-    expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          pluginAutoUpdateEnabled: false,
-        }),
-        update: expect.objectContaining({
-          pluginAutoUpdateEnabled: false,
-        }),
-      })
-    );
-    expect(snapshot?.pluginAutoUpdateEnabled).toBe(false);
-  });
-
-  it("returns null when upserting a snapshot for an inaccessible target", async () => {
-    const upsert = vi.fn();
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-      computeTargetHealthCheck: {
-        upsert,
-      },
-    });
-
-    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
-      "org-1",
-      "user-1",
-      "target-2",
-      {
-        result: {
-          checks: [],
-          allRequiredPassed: true,
-        },
-      }
-    );
-
-    expect(snapshot).toBeNull();
-    expect(upsert).not.toHaveBeenCalled();
-  });
-
   it("clears a snapshot when owned target metadata changes", async () => {
     const deleteMany = vi.fn();
     installDb({
@@ -1179,403 +915,6 @@ describe("computeTargetsService health-check snapshots", () => {
   });
 });
 
-describe("computeTargetsService deleteOwned", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("deletes session transcripts before the compute target", async () => {
-    const artifactDeleteMany = vi.fn().mockResolvedValue({ count: 2 });
-    const transcriptFindMany = vi.fn().mockResolvedValue([]);
-    const transcriptDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const targetDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        deleteMany: targetDeleteMany,
-      },
-      artifact: {
-        deleteMany: artifactDeleteMany,
-      },
-      sessionTranscript: {
-        findMany: transcriptFindMany,
-        deleteMany: transcriptDeleteMany,
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    expect(deleted).toBe(true);
-    // The RESTRICT FK on session_transcript.compute_target_id requires the
-    // transcript rows to be cleared before the target row (FEA-2807).
-    expect(transcriptDeleteMany).toHaveBeenCalledWith({
-      where: { computeTargetId: "target-1" },
-    });
-    expect(transcriptDeleteMany.mock.invocationCallOrder[0]).toBeLessThan(
-      targetDeleteMany.mock.invocationCallOrder[0]
-    );
-  });
-
-  it("purges the collected transcript objects after the rows are deleted", async () => {
-    const transcriptFindMany = vi.fn().mockResolvedValue([
-      { objectStorageKey: "transcripts/org-1/a.jsonl" },
-      { objectStorageKey: "transcripts/org-1/b.jsonl" },
-      // An empty key is filtered out so it never reaches the purge call.
-      { objectStorageKey: "" },
-    ]);
-    const transcriptDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const targetDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
-    mocks.deleteTranscriptObjects.mockResolvedValue(undefined);
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        deleteMany: targetDeleteMany,
-      },
-      artifact: {
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-      sessionTranscript: {
-        findMany: transcriptFindMany,
-        deleteMany: transcriptDeleteMany,
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    expect(deleted).toBe(true);
-    // Keys are collected before the rows carrying them are dropped.
-    expect(transcriptFindMany).toHaveBeenCalledWith({
-      where: { computeTargetId: "target-1" },
-      select: { objectStorageKey: true },
-    });
-    expect(transcriptFindMany.mock.invocationCallOrder[0]).toBeLessThan(
-      transcriptDeleteMany.mock.invocationCallOrder[0]
-    );
-    // The S3 objects are purged with exactly the non-empty collected keys.
-    expect(mocks.deleteTranscriptObjects).toHaveBeenCalledTimes(1);
-    expect(mocks.deleteTranscriptObjects).toHaveBeenCalledWith([
-      "transcripts/org-1/a.jsonl",
-      "transcripts/org-1/b.jsonl",
-    ]);
-  });
-
-  it("does not purge transcript objects when there are none", async () => {
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      sessionTranscript: {
-        findMany: vi.fn().mockResolvedValue([]),
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    expect(deleted).toBe(true);
-    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
-  });
-
-  it("still reports success and logs the orphaned keys when the object purge fails", async () => {
-    mocks.deleteTranscriptObjects.mockRejectedValue(new Error("s3 down"));
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      sessionTranscript: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([
-            { objectStorageKey: "transcripts/org-1/a.jsonl" },
-          ]),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    // The FK-ordering fix must not be corrupted by an S3 failure: the target
-    // row is already gone, so the delete still reports success.
-    expect(deleted).toBe(true);
-    expect(mocks.logError).toHaveBeenCalledTimes(1);
-    expect(mocks.logError.mock.calls[0][1]).toMatchObject({
-      computeTargetId: "target-1",
-      objectStorageKeys: ["transcripts/org-1/a.jsonl"],
-    });
-  });
-
-  it("does not purge transcript objects when the target row was not deleted", async () => {
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        // A concurrent delete won the race: count 0.
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      sessionTranscript: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([
-            { objectStorageKey: "transcripts/org-1/a.jsonl" },
-          ]),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    expect(deleted).toBe(false);
-    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
-  });
-
-  it("returns false without deleting when the target is not owned", async () => {
-    const artifactDeleteMany = vi.fn();
-    const transcriptFindMany = vi.fn();
-    const transcriptDeleteMany = vi.fn();
-    const targetDeleteMany = vi.fn();
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        deleteMany: targetDeleteMany,
-      },
-      artifact: {
-        deleteMany: artifactDeleteMany,
-      },
-      sessionTranscript: {
-        findMany: transcriptFindMany,
-        deleteMany: transcriptDeleteMany,
-      },
-    });
-
-    const deleted = await computeTargetsService.deleteOwned(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
-
-    expect(deleted).toBe(false);
-    expect(artifactDeleteMany).not.toHaveBeenCalled();
-    expect(transcriptFindMany).not.toHaveBeenCalled();
-    expect(transcriptDeleteMany).not.toHaveBeenCalled();
-    expect(targetDeleteMany).not.toHaveBeenCalled();
-    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
-  });
-});
-
-describe("upsertHealthCheckSnapshot auto-default harness selection", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  function buildHealthCheckResult(
-    claudeAvailable: boolean,
-    codexAvailable: boolean
-  ): HealthCheckResponse {
-    return {
-      checks: [],
-      allRequiredPassed: true,
-      mcpServers: {
-        claude: {
-          available: claudeAvailable,
-          serverName: null,
-          matchedUrl: null,
-          checkedAt: "2026-06-09T00:00:00.000Z",
-        },
-        codex: {
-          available: codexAvailable,
-          serverName: null,
-          matchedUrl: null,
-          checkedAt: "2026-06-09T00:00:00.000Z",
-        },
-      },
-    };
-  }
-
-  const cases: {
-    label: string;
-    currentSelectedHarness: string;
-    claudeAvailable: boolean;
-    codexAvailable: boolean;
-    expectsHarnessUpdate: boolean;
-    expectedHarness?: string;
-  }[] = [
-    {
-      label:
-        "current selectedHarness is available → no update to selectedHarness",
-      currentSelectedHarness: HarnessType.Claude,
-      claudeAvailable: true,
-      codexAvailable: true,
-      expectsHarnessUpdate: false,
-    },
-    {
-      label:
-        "current selectedHarness becomes unavailable but claude is available → sets to claude",
-      currentSelectedHarness: HarnessType.Codex,
-      claudeAvailable: true,
-      codexAvailable: false,
-      expectsHarnessUpdate: true,
-      expectedHarness: HarnessType.Claude,
-    },
-    {
-      label:
-        "current selectedHarness becomes unavailable and only codex is available → sets to codex",
-      currentSelectedHarness: HarnessType.Claude,
-      claudeAvailable: false,
-      codexAvailable: true,
-      expectsHarnessUpdate: true,
-      expectedHarness: HarnessType.Codex,
-    },
-    {
-      label: "neither harness is available → selectedHarness left unchanged",
-      currentSelectedHarness: HarnessType.Claude,
-      claudeAvailable: false,
-      codexAvailable: false,
-      expectsHarnessUpdate: false,
-    },
-    {
-      label:
-        "current selectedHarness was codex and only claude becomes available → switches to claude",
-      currentSelectedHarness: HarnessType.Codex,
-      claudeAvailable: true,
-      codexAvailable: false,
-      expectsHarnessUpdate: true,
-      expectedHarness: HarnessType.Claude,
-    },
-  ];
-
-  test.each(cases)("$label", async ({
-    currentSelectedHarness,
-    claudeAvailable,
-    codexAvailable,
-    expectsHarnessUpdate,
-    expectedHarness,
-  }) => {
-    const computeTargetUpdate = vi.fn().mockResolvedValue(
-      buildTarget({
-        selectedHarness: expectedHarness ?? currentSelectedHarness,
-      })
-    );
-    const healthCheckUpsert = vi.fn().mockResolvedValue({
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt: new Date(),
-      expectedMcpUrl: null,
-      latestVersion: null,
-      pluginAutoUpdateEnabled: false,
-      result: buildHealthCheckResult(claudeAvailable, codexAvailable),
-      allRequiredPassed: true,
-      requiredFailureIds: [],
-      schemaVersion: 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    installDb({
-      computeTarget: {
-        findFirst: vi
-          .fn()
-          .mockResolvedValue(
-            buildTarget({ selectedHarness: currentSelectedHarness })
-          ),
-        update: computeTargetUpdate,
-      },
-      computeTargetHealthCheck: {
-        upsert: healthCheckUpsert,
-      },
-    });
-
-    await computeTargetsService.upsertHealthCheckSnapshot(
-      "org-1",
-      "user-1",
-      "target-1",
-      {
-        result: buildHealthCheckResult(claudeAvailable, codexAvailable),
-      }
-    );
-
-    if (expectsHarnessUpdate) {
-      expect(computeTargetUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: "target-1" },
-          data: { selectedHarness: expectedHarness },
-        })
-      );
-    } else {
-      expect(computeTargetUpdate).not.toHaveBeenCalled();
-    }
-  });
-
-  it("does not mutate selectedHarness when a shared target health check is stored", async () => {
-    const computeTargetUpdate = vi.fn();
-    const healthCheckUpsert = vi.fn().mockResolvedValue({
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt: new Date(),
-      expectedMcpUrl: null,
-      latestVersion: null,
-      pluginAutoUpdateEnabled: false,
-      result: buildHealthCheckResult(true, false),
-      allRequiredPassed: true,
-      requiredFailureIds: [],
-      schemaVersion: 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(
-          buildTarget({
-            userId: "owner-user",
-            isSharedWithOrg: true,
-            selectedHarness: HarnessType.Codex,
-          })
-        ),
-        update: computeTargetUpdate,
-      },
-      computeTargetHealthCheck: {
-        upsert: healthCheckUpsert,
-      },
-    });
-
-    await computeTargetsService.upsertHealthCheckSnapshot(
-      "org-1",
-      "viewer-user",
-      "target-1",
-      {
-        result: buildHealthCheckResult(true, false),
-      }
-    );
-
-    expect(healthCheckUpsert).toHaveBeenCalledOnce();
-    expect(computeTargetUpdate).not.toHaveBeenCalled();
-  });
-});
-
 // ---------------------------------------------------------------------------
 // FEA-2923 (Gap A): device-facing listings must exclude the synthetic per-org
 // "cloud" sentinel compute target that owns backfilled cloud-authored agents.
@@ -1651,7 +990,7 @@ describe("computeTargetsService cloud-sentinel exclusion", () => {
   });
 
   // PRD-536 §5: the Sessions onboarding empty-state signal must be ORG-wide, so
-  // a teammate's unshared desktop still counts as "connected" for another user.
+  // a teammate's desktop still counts as "connected" for another user.
   it("hasAnyForOrg queries the whole org (no userId filter) and excludes the sentinel", async () => {
     const findFirst = vi.fn().mockResolvedValue({ id: "target-1" });
     installDb({ computeTarget: { findFirst } });
@@ -1680,3 +1019,47 @@ describe("computeTargetsService cloud-sentinel exclusion", () => {
     );
   });
 });
+
+/**
+ * The `updateOwned` fixture: a stored target whose capabilities blob is
+ * `storedCapabilities`, plus the `update` double the case asserts on.
+ * `apiKey.findMany` is present because the read path reaches for it and no case
+ * here asserts on it.
+ */
+function installUpdateOwnedDb(
+  storedCapabilities: Record<string, unknown>,
+  update: ReturnType<typeof vi.fn>
+): void {
+  installDb({
+    computeTarget: {
+      findFirst: vi
+        .fn()
+        .mockResolvedValue({ capabilities: storedCapabilities }),
+      update,
+    },
+    apiKey: { findMany: vi.fn() },
+  });
+}
+
+/**
+ * The gateway-conflict fixture: the pre-write read finds no holder, then the
+ * write raises Prisma's P2002 carrying `target` — the three shapes Prisma
+ * reports a unique violation in (index name, field array, column array) are
+ * what the cases vary.
+ */
+function installGatewayUniqueViolationDb(target: string | string[]): void {
+  installDb({
+    computeTarget: {
+      findFirst: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ capabilities: {} }),
+      update: vi.fn().mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target },
+        })
+      ),
+    },
+  });
+}

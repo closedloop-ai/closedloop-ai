@@ -5,6 +5,7 @@
 import type {
   BranchPageDetail,
   BranchPrCommentsResponse,
+  BranchSelectedPullRequestDetail,
   BranchSession,
 } from "@repo/api/src/types/branch";
 import { BranchCommentsState, BranchStatus } from "@repo/api/src/types/branch";
@@ -14,6 +15,8 @@ import type {
   TraceCommentTarget,
 } from "@repo/api/src/types/comment";
 import { TraceCommentKind } from "@repo/api/src/types/comment";
+import { GitHubPRState } from "@repo/api/src/types/github-status";
+import type { BranchesDataSource } from "../../data-source/branches-data-source";
 import type { BranchDetailPageProps } from "../branch-detail-page";
 
 function makeCommentsResponse(branchId: string): BranchPrCommentsResponse {
@@ -148,10 +151,62 @@ function makeTraceComment(
   };
 }
 
+/**
+ * The selected pull request the PR-scoped evidence panels gate on:
+ * `BranchPrStatusPanel` returns null without it, and `BranchDeliveredPanel`'s
+ * PR row renders nothing, so a spec that needs either to mount supplies one.
+ */
+function makeSelectedPullRequest(
+  overrides: Partial<BranchSelectedPullRequestDetail> = {}
+): BranchSelectedPullRequestDetail {
+  return {
+    id: "pr-42",
+    repositoryFullName: "owner/repo",
+    number: 42,
+    title: "Add x",
+    url: "https://github.com/owner/repo/pull/42",
+    state: GitHubPRState.Open,
+    isDraft: false,
+    reviewDecision: null,
+    openedAt: "2026-06-17T09:00:00.000Z",
+    closedAt: null,
+    mergedAt: null,
+    body: "PR body",
+    headRefOid: null,
+    mergeCommitSha: null,
+    changedFiles: null,
+    additions: null,
+    deletions: null,
+    ...overrides,
+  };
+}
+
+/**
+ * A source for a suite that only needs the detail tree to MOUNT. Every method
+ * rejects, so a spec that starts depending on served data fails naming the
+ * method instead of asserting against a silent empty.
+ */
+function inertBranchesDataSource(): BranchesDataSource {
+  const refuse = (method: string) => () =>
+    Promise.reject(new Error(`inertBranchesDataSource: ${method} is unserved`));
+  return {
+    scope: "inert",
+    analytics: refuse("analytics"),
+    comments: refuse("comments"),
+    detail: refuse("detail"),
+    list: refuse("list"),
+    pageData: refuse("pageData"),
+    trace: refuse("trace"),
+    usage: refuse("usage"),
+  };
+}
+
 export {
   baseProps,
+  inertBranchesDataSource,
   makeCommentsResponse,
   makeDetail,
+  makeSelectedPullRequest,
   makeSession,
   makeTraceComment,
 };

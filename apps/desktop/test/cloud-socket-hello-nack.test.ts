@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import ts from "typescript6";
+import { afterEach, describe, test } from "vitest";
 import {
   HELLO_NACK_MESSAGES,
   UNRECOGNIZED_HELLO_NACK_MESSAGE,
@@ -13,6 +13,7 @@ import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import {
   createStubOptions,
   FakeSocket,
+  rearmHandshake,
 } from "./helpers/cloud-socket-fixtures.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";
@@ -62,11 +63,6 @@ function armServiceAfterHello(): Harness {
   internals.awaitingHelloAck = true;
   protoOf(service).registerSocketHandlers.call(service, socket);
   return { service, socket, statuses };
-}
-
-/** Re-arms an outstanding handshake without going through a socket recycle. */
-function rearmHandshake(service: CloudSocketService): void {
-  (service as unknown as Record<string, unknown>).awaitingHelloAck = true;
 }
 
 /**
@@ -664,6 +660,115 @@ describe("ISS-6126: connect() installs the socket handlers", () => {
       registers,
       "connect() must call this.registerSocketHandlers(socket), or no live socket ever gets the desktop.hello.nack listener"
     );
+  });
+});
+
+/**
+ * ISS-8142 BUG 1: `connect_error` had no back-off at all.
+ *
+ * Socket.IO's own retry is off (`reconnection: false`), so the only thing that
+ * re-arms a failed connect is `scheduleSocketReconnect`, and the `connect_error`
+ * arm called it with the DEFAULT 1s cadence and nothing else. A revoked or wrong
+ * API key therefore produced one relay connect attempt per second, forever —
+ * ~86,400/day per install, against a credential that will never start working.
+ *
+ * The fix reuses the `desktop.hello.nack` streak machinery already in this file
+ * rather than adding a second scheduler. These tests assert the OBSERVABLE
+ * cadence (`socket.connectCalls` after a tick), not the private counter, so they
+ * fail if the streak is kept but never reaches `scheduleSocketReconnect`.
+ */
+describe("ISS-8142: connect_error backs off instead of retrying forever at 1s", () => {
+  test("the first two failures keep the 1s cadence; the third pauses to 60s", async () => {
+    nodeTestTimers.enable(["setTimeout"]);
+    const { service, socket } = armServiceAfterHello();
+
+    socket.emit("connect_error", new Error("xhr poll error"));
+    nodeTestTimers.tick(1000);
+    await flushMicrotasks();
+    assert.equal(socket.connectCalls, 1, "first retry uses the 1s cadence");
+
+    socket.emit("connect_error", new Error("xhr poll error"));
+    nodeTestTimers.tick(1000);
+    await flushMicrotasks();
+    assert.equal(socket.connectCalls, 2, "second retry uses the 1s cadence");
+
+    socket.emit("connect_error", new Error("xhr poll error"));
+    nodeTestTimers.tick(1000);
+    await flushMicrotasks();
+    assert.equal(
+      socket.connectCalls,
+      2,
+      "the third consecutive failure must NOT retry at the 1s cadence"
+    );
+
+    nodeTestTimers.tick(59_000);
+    await flushMicrotasks();
+    assert.equal(
+      socket.connectCalls,
+      3,
+      "the backed-off retry must still fire, so a transient outage self-heals"
+    );
+
+    service.stop();
+  });
+
+  test("a successful connect clears the streak, so the next failure retries fast", async () => {
+    // Without this, an install that flaps would inherit a 60s cadence it had
+    // already earned its way out of.
+    nodeTestTimers.enable(["setTimeout"]);
+    const { service, socket } = armServiceAfterHello();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      socket.emit("connect_error", new Error("xhr poll error"));
+      nodeTestTimers.tick(60_000);
+      await flushMicrotasks();
+    }
+    const backedOffCalls = socket.connectCalls;
+
+    socket.emit("connect");
+    socket.emit("connect_error", new Error("xhr poll error"));
+    nodeTestTimers.tick(1000);
+    await flushMicrotasks();
+
+    assert.equal(
+      socket.connectCalls,
+      backedOffCalls + 1,
+      "a failure after a good connect must retry at 1s, not stay backed off"
+    );
+
+    service.stop();
+  });
+
+  test("a single connect_error does not downgrade a back-off the cloud already armed", async () => {
+    // The nack arm sets the pending delay and the connect_error arm consumes the
+    // same field. Assigning on BOTH branches of the connect_error streak would
+    // let one transport blip reset a rejection the cloud told us to back off
+    // from, which is the loop ISS-6126 closed.
+    nodeTestTimers.enable(["setTimeout"]);
+    const { service, socket } = armServiceAfterHello();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      rearmHandshake(service);
+      socket.emit("desktop.hello.nack", {
+        reason: DesktopHelloNackReason.InternalError,
+      });
+    }
+
+    // One transport failure — streak 1, well below the back-off threshold.
+    socket.emit("connect_error", new Error("xhr poll error"));
+    nodeTestTimers.tick(1000);
+    await flushMicrotasks();
+    assert.equal(
+      socket.connectCalls,
+      0,
+      "the cloud-armed 60s pause must survive a single transport failure"
+    );
+
+    nodeTestTimers.tick(59_000);
+    await flushMicrotasks();
+    assert.equal(socket.connectCalls, 1, "the paused retry still fires");
+
+    service.stop();
   });
 });
 

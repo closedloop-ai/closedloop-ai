@@ -1,14 +1,18 @@
 import {
   BranchDataState,
+  BranchKpiState,
   BranchLinkedArtifactCollectionProvenance,
   BranchLinkedArtifactCollectionState,
   BranchLinkedArtifactEvidenceKind,
 } from "@repo/api/src/types/branch";
 import { BranchAssociatedPullRequestSelectionReason } from "@repo/api/src/types/branch-associated-pull-request";
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { ArtifactType } from "@repo/database";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -57,6 +61,10 @@ import {
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("branchReadService associated PR selection", () => {
   let mockDb: ReturnType<typeof createMockDb>;
 
@@ -96,7 +104,7 @@ describe("branchReadService associated PR selection", () => {
       prNumber: null,
       prTitle: null,
       prUrl: null,
-      multiPrWarning: false,
+      multiPrWarning: true,
     });
     const select = mockDb.artifact.findMany.mock.calls.at(-1)?.[0]?.select;
     expect(select?.pullRequestDetails?.where).toBeUndefined();
@@ -132,6 +140,162 @@ describe("branchReadService associated PR selection", () => {
 
     expect(response.activePrCount).toMatchObject({ value: 1 });
     expect(response.mergedCount).toMatchObject({ value: 0 });
+  });
+
+  it("reports an unwitnessed PR's state as unobserved, keeping its number and link (ISS-8422)", async () => {
+    mockBranchCandidatePage(mockDb, [branchId]);
+    mockDb.artifact.findMany.mockResolvedValue([
+      makeBranchRow({
+        pullRequestDetails: [
+          // The real desktop stub: server-derived identity and not one
+          // measured fact. A row carrying a title or LOC was fetched from the
+          // provider and is NOT this case.
+          makeCurrentPullRequestDetail({
+            number: 7,
+            prState: GitHubPRState.Open,
+            title: null,
+            githubCreatedAt: null,
+            closedAt: null,
+            mergedAt: null,
+          }),
+        ],
+      }),
+    ]);
+    mockDb.artifactLink.findMany.mockResolvedValue([]);
+
+    const response = await branchReadService.listBranches(organizationId, {
+      limit: 10,
+      offset: 0,
+    });
+
+    // `pr_state` is NOT NULL with a `@default(OPEN)`, so a row nobody observed
+    // reads Open. The row reports null instead of restating that default — and
+    // keeps the number and URL, because the PR does exist.
+    expect(response.items[0]).toMatchObject({
+      prNumber: 7,
+      prState: null,
+      prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/7",
+    });
+  });
+
+  it("leaves an unwitnessed PR out of the active-PR KPI (ISS-8422)", async () => {
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockDb.artifact.findMany.mockResolvedValue([
+      makeBranchRow({
+        pullRequestDetails: [
+          makeCurrentPullRequestDetail({
+            number: 7,
+            prState: GitHubPRState.Open,
+            title: null,
+            githubCreatedAt: null,
+          }),
+        ],
+      }),
+    ]);
+    mockDb.artifactLink.findMany.mockResolvedValue([]);
+
+    const response = await branchReadService.getBranchAnalytics(
+      organizationId,
+      { limit: 10, offset: 0 }
+    );
+
+    expect(response.activePrCount).toMatchObject({ value: 0 });
+    expect(response.mergedCount).toMatchObject({ value: 0 });
+  });
+
+  it("does not let a foreign default PR classify the Branch analytics status", async () => {
+    mockBranchCandidateIds(mockDb, [branchId]);
+    const foreignMerged = makeCurrentPullRequestDetail({
+      id: "foreign-merged-pr-detail",
+      repositoryId: "repo-2",
+      repositoryFullName: "closedloop-ai/foreign-repository",
+      repository: {
+        fullName: "closedloop-ai/foreign-repository",
+        githubRepoId: "gh-repo-2",
+      },
+      prState: GitHubPRState.Merged,
+      closedAt: now,
+      mergedAt: now,
+    });
+    mockDb.artifact.findMany.mockResolvedValue([
+      makeBranchRow({
+        status: GitHubPRState.Open,
+        currentPullRequestDetail: foreignMerged,
+        pullRequestDetails: [foreignMerged],
+      }),
+    ]);
+    mockDb.artifactLink.findMany.mockResolvedValue([]);
+
+    const response = await branchReadService.getBranchAnalytics(
+      organizationId,
+      { limit: 10, offset: 0 }
+    );
+
+    expect(response.activeBranchCount).toMatchObject({ value: 1 });
+  });
+
+  it("excludes ambiguous multi-PR branches from legacy analytics outcome cohorts", async () => {
+    const singleClosedBranchId = "33333333-3333-4333-8333-333333333333";
+    const selectedMerged = makeCurrentPullRequestDetail({
+      id: "selected-merged-pr-detail",
+      branchArtifactId: branchId,
+      number: 12,
+      prState: GitHubPRState.Merged,
+      closedAt: now,
+      mergedAt: now,
+    });
+    const historicalClosed = makeCurrentPullRequestDetail({
+      id: "historical-closed-pr-detail",
+      branchArtifactId: branchId,
+      number: 11,
+      prState: GitHubPRState.Closed,
+      closedAt: new Date("2026-07-02T05:00:00.000Z"),
+      mergedAt: null,
+    });
+    const singleClosed = makeCurrentPullRequestDetail({
+      id: "single-closed-pr-detail",
+      branchArtifactId: singleClosedBranchId,
+      number: 13,
+      prState: GitHubPRState.Closed,
+      closedAt: now,
+      mergedAt: null,
+    });
+    mockBranchCandidateIds(mockDb, [branchId, singleClosedBranchId]);
+    mockDb.artifact.findMany.mockResolvedValue([
+      makeBranchRow({
+        id: branchId,
+        status: GitHubPRState.Merged,
+        currentPullRequestDetail: selectedMerged,
+        pullRequestDetails: [historicalClosed, selectedMerged],
+        fileChanges: [{ additions: 80, deletions: 20, path: "multi.ts" }],
+      }),
+      makeBranchRow({
+        id: singleClosedBranchId,
+        status: GitHubPRState.Closed,
+        currentPullRequestDetail: singleClosed,
+        pullRequestDetails: [singleClosed],
+        fileChanges: [{ additions: 5, deletions: 5, path: "single.ts" }],
+      }),
+    ]);
+    mockDb.artifactLink.findMany.mockResolvedValue([]);
+
+    const response = await branchReadService.getBranchAnalytics(
+      organizationId,
+      { limit: 10, offset: 0 }
+    );
+
+    expect(response.mergeRate).toMatchObject({
+      state: BranchKpiState.Available,
+      value: 0,
+    });
+    expect(response.mergedCount).toMatchObject({
+      state: BranchKpiState.Available,
+      value: 0,
+    });
+    expect(response.medianPrSize).toMatchObject({
+      state: BranchKpiState.Unavailable,
+      value: null,
+    });
   });
 
   it("loads body and reviews only for the PR chosen from summary history", async () => {
@@ -180,7 +344,7 @@ describe("branchReadService associated PR selection", () => {
       prNumber: 7,
       prBody: "Selected body",
       associatedPullRequests: {
-        selectedId: "closedloop-ai/symphony-alpha#7",
+        selectedId: "closedloop-ai/closedloop-ai#7",
         items: [{ number: 6 }, { number: 7 }],
       },
     });
@@ -214,7 +378,7 @@ describe("branchReadService associated PR selection", () => {
       branchId,
       undefined,
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 6,
       }
     );
@@ -225,7 +389,7 @@ describe("branchReadService associated PR selection", () => {
       headSha: "a".repeat(40),
       branchHeadSha: "c".repeat(40),
       associatedPullRequests: {
-        selectedId: "closedloop-ai/symphony-alpha#6",
+        selectedId: "closedloop-ai/closedloop-ai#6",
         selectionReason: BranchAssociatedPullRequestSelectionReason.Explicit,
       },
       selectedPullRequest: {
@@ -297,7 +461,7 @@ describe("branchReadService associated PR selection", () => {
       expect.objectContaining({
         artifactId: "document-2",
         slug: "PRD-600",
-        href: "/prds/PRD-600",
+        href: `/${DOCUMENT_ROUTE_PREFIX}/PRD-600`,
       }),
     ]);
     expect(detail?.linkedArtifactsCollection).toEqual({

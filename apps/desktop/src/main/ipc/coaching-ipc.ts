@@ -1,5 +1,5 @@
+import { CoachingIpcChannel } from "../../shared/coaching-ipc-channel.js";
 import type { CoachingPackInfo } from "../../shared/coaching-pack-contract.js";
-import { DistributionsIpcChannel } from "../../shared/distributions-channel.js";
 import {
   generateCoachingTips,
   installCoachingArtifact,
@@ -7,24 +7,6 @@ import {
 import { installCoachingPack } from "../agent-monitor/agent-coaching-packs.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const CoachingIpcChannel = {
-  Generate: "desktop:agent-coaching:generate",
-  Install: "desktop:agent-coaching:install",
-  GetPack: "desktop:agent-coaching:get-pack",
-  InstallPack: "desktop:agent-coaching:install-pack",
-  // Opt-in distribution channels are single-sourced in the shared
-  // distributions-channel contract so the preload cannot drift from the handler.
-  CoachingInstall: DistributionsIpcChannel.CoachingInstall,
-  // FEA-4050: durably record a decline of an org-distributed opt-in pack so the
-  // reconcile no longer re-surfaces it after an app restart.
-  DistributionDecline: DistributionsIpcChannel.Decline,
-  // ISS-5123: pre-install revalidation for a withdrawn-but-still-on-screen offer.
-  DistributionEnsureAssigned: DistributionsIpcChannel.EnsureAssigned,
-} as const;
-
-export type CoachingIpcChannel =
-  (typeof CoachingIpcChannel)[keyof typeof CoachingIpcChannel];
 
 type IpcMainLike = {
   handle: (
@@ -40,7 +22,7 @@ type CoachingIpcDeps = {
   isCoachingPacksEnabled: () => boolean;
   getActiveCoachingPackSeeded: () => CoachingPackInfo | null;
   coachingPacksDir: () => string;
-  getTraceCommentComputeTargetId: () => string | null;
+  getCloudReadComputeTargetId: () => string | null;
   installCoachingDistributionById: (
     computeTargetId: string,
     distributionId: string
@@ -73,6 +55,11 @@ type CoachingIpcDeps = {
    */
   assertDistributionAssigned: (
     computeTargetId: string,
+    distributionId: string
+  ) => Promise<void>;
+  /** Clear and refresh the bounded opt-in snapshot after a successful install. */
+  acknowledgeOptInHandled: (
+    computeTargetId: string | null,
     distributionId: string
   ) => Promise<void>;
 };
@@ -208,7 +195,7 @@ export function registerCoachingIpcHandlers(
       if (typeof distributionId !== "string" || distributionId.length === 0) {
         throw new Error("coachingInstall requires a distribution id.");
       }
-      const computeTargetId = deps.getTraceCommentComputeTargetId();
+      const computeTargetId = deps.getCloudReadComputeTargetId();
       if (!computeTargetId) {
         throw new Error("Not connected — cannot resolve the distribution.");
       }
@@ -240,7 +227,7 @@ export function registerCoachingIpcHandlers(
       if (typeof distributionId !== "string" || distributionId.length === 0) {
         throw new Error("declineDistribution requires a distribution id.");
       }
-      const computeTargetId = deps.getTraceCommentComputeTargetId();
+      const computeTargetId = deps.getCloudReadComputeTargetId();
       if (!computeTargetId) {
         // Not connected: persist the id-only decline durably now; the cloud
         // audit fields backfill on the next connected decline (if any).
@@ -273,11 +260,24 @@ export function registerCoachingIpcHandlers(
           "ensureDistributionAssigned requires a distribution id."
         );
       }
-      const computeTargetId = deps.getTraceCommentComputeTargetId();
+      const computeTargetId = deps.getCloudReadComputeTargetId();
       if (!computeTargetId) {
         throw new Error("Not connected — cannot confirm the distribution.");
       }
       return deps.assertDistributionAssigned(computeTargetId, distributionId);
+    }
+  );
+  ipcMainLike.handle(
+    CoachingIpcChannel.DistributionHandled,
+    (event, distributionId) => {
+      assertTrustedIpcSender(deps.isTrustedSender, event);
+      if (typeof distributionId !== "string" || distributionId.length === 0) {
+        throw new Error("distributionHandled requires a distribution id.");
+      }
+      return deps.acknowledgeOptInHandled(
+        deps.getCloudReadComputeTargetId(),
+        distributionId
+      );
     }
   );
 }

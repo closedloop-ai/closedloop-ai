@@ -14,7 +14,12 @@
  * over the connection pool), and the load as a whole FAILS OPEN (many statements
  * that can each time out must not turn optional enrichment fatal).
  */
-import { LOC_SOURCE_GIT } from "@repo/api/src/utils/session-loc";
+import { BranchParticipationKind } from "@repo/api/src/types/branch";
+import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
+import {
+  LOC_SOURCE_BRANCH_FALLBACK,
+  LOC_SOURCE_GIT,
+} from "@repo/api/src/utils/session-loc";
 import { log } from "@repo/observability/log";
 import { describe, expect, it, vi } from "vitest";
 
@@ -29,11 +34,11 @@ vi.mock("@repo/observability/log", () => ({
   log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
+import { POSTGRES_MAX_BIND_PARAMETERS } from "@/lib/postgres-bind-parameters";
 import {
   loadSessionLocCost,
   SESSION_LOC_ID_CHUNK_SIZE,
 } from "../loc-per-dollar";
-import { POSTGRES_MAX_BIND_PARAMETERS } from "../org-population-reads";
 
 const ORG = "org-1";
 const CHUNK_READ_FAILURE = "canceling statement due to statement timeout";
@@ -78,13 +83,13 @@ function makeFakeDb(options: { rejectAtCall?: number } = {}) {
       estimatedCost: 2,
       locSource: LOC_SOURCE_GIT,
       repositoryFullName: "acme/repo",
-      branch: "main",
     }));
   });
   return {
-    db: { sessionDetail: { findMany } } as unknown as Parameters<
-      typeof loadSessionLocCost
-    >[0],
+    db: {
+      artifactLink: { findMany: vi.fn() },
+      sessionDetail: { findMany },
+    } as unknown as Parameters<typeof loadSessionLocCost>[0],
     findMany,
     peak,
   };
@@ -156,11 +161,129 @@ describe("loadSessionLocCost id chunking (ISS-5738)", () => {
       expect(result.get(id)).toEqual({
         loc: 15,
         cost: 2,
+        costMeasured: true,
         locSource: LOC_SOURCE_GIT,
         repositoryFullName: "acme/repo",
-        branch: "main",
+        branch: null,
+        // ISS-10467: this fixture's rows carry no token columns, so the total is
+        // honestly NOT MEASURED. Pinned as `null` rather than widened out of the
+        // comparison: the first cut of `tokens` coerced the absent columns with a
+        // bare `Number()` and put `NaN` on the row, which this whole-object
+        // `toEqual` is the only thing in the suite that would have caught.
+        tokens: null,
       });
     }
+  });
+
+  it("derives branch-fallback identity from SessionBranch links", async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        artifactId: "s1",
+        linesAdded: 10,
+        linesRemoved: 5,
+        estimatedCost: 2,
+        locSource: LOC_SOURCE_BRANCH_FALLBACK,
+        repositoryFullName: "fallback/repo",
+      },
+    ]);
+    const artifactLinkFindMany = vi.fn().mockResolvedValue([
+      {
+        sourceId: "s1",
+        targetId: "b1",
+        branchParticipation: BranchParticipationKind.Wrote,
+        lastContributedAt: new Date("2026-07-01T00:00:00.000Z"),
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        metadata: { linkKind: SessionArtifactLinkKind.SessionBranch },
+        target: {
+          name: "fallback-name",
+          branch: {
+            branchName: "feat/linked",
+            repositoryFullName: "acme/repo",
+          },
+        },
+      },
+    ]);
+    const db = {
+      artifactLink: { findMany: artifactLinkFindMany },
+      sessionDetail: { findMany },
+    } as unknown as Parameters<typeof loadSessionLocCost>[0];
+
+    const result = await loadSessionLocCost(db, ORG, ["s1"]);
+
+    expect(artifactLinkFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: ORG,
+          sourceId: { in: ["s1"] },
+        }),
+      })
+    );
+    expect(result.get("s1")).toEqual({
+      loc: 15,
+      cost: 2,
+      costMeasured: true,
+      locSource: LOC_SOURCE_BRANCH_FALLBACK,
+      repositoryFullName: "acme/repo",
+      branch: "feat/linked",
+      // Same honest absence as above — no token columns on this fixture's row.
+      tokens: null,
+    });
+  });
+
+  it("chooses the latest authored branch link for branch-fallback identity", async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        artifactId: "s1",
+        linesAdded: 10,
+        linesRemoved: 5,
+        estimatedCost: 2,
+        locSource: LOC_SOURCE_BRANCH_FALLBACK,
+        repositoryFullName: "fallback/repo",
+      },
+    ]);
+    const artifactLinkFindMany = vi.fn().mockResolvedValue([
+      {
+        sourceId: "s1",
+        targetId: "b-old",
+        branchParticipation: BranchParticipationKind.Wrote,
+        lastContributedAt: new Date("2026-07-01T00:00:00.000Z"),
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        metadata: { linkKind: SessionArtifactLinkKind.SessionBranch },
+        target: {
+          name: "old-name",
+          branch: {
+            branchName: "aaa-lexical-first",
+            repositoryFullName: "acme/old",
+          },
+        },
+      },
+      {
+        sourceId: "s1",
+        targetId: "b-new",
+        branchParticipation: BranchParticipationKind.Wrote,
+        lastContributedAt: new Date("2026-07-02T00:00:00.000Z"),
+        createdAt: new Date("2026-07-02T00:00:00.000Z"),
+        metadata: { linkKind: SessionArtifactLinkKind.SessionBranch },
+        target: {
+          name: "new-name",
+          branch: {
+            branchName: "zzz-latest-write",
+            repositoryFullName: "acme/new",
+          },
+        },
+      },
+    ]);
+    const db = {
+      artifactLink: { findMany: artifactLinkFindMany },
+      sessionDetail: { findMany },
+    } as unknown as Parameters<typeof loadSessionLocCost>[0];
+
+    const result = await loadSessionLocCost(db, ORG, ["s1"]);
+
+    expect(result.get("s1")).toMatchObject({
+      repositoryFullName: "acme/new",
+      branch: "zzz-latest-write",
+    });
   });
 
   it("stays bind-safe and complete for an id set past the bind ceiling", async () => {

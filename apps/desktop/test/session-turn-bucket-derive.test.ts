@@ -27,11 +27,17 @@
 process.env.TZ = "America/Chicago";
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { deriveAgentTurnTimestamps } from "@repo/lib/agent-sessions/agent-turn-timestamps.js";
+import { deriveHumanTurnTimestamps } from "@repo/lib/agent-sessions/human-turn-timestamps.js";
+import { test } from "vitest";
 import { deriveSessionTurnBuckets } from "../src/main/database/turn-buckets.js";
+import {
+  meta,
+  NO_TOKEN_EVENTS,
+  SYNCED_TOKEN_EVENTS,
+  tokenRecord as ts,
+} from "./session-turn-bucket-test-helpers.js";
 
-const meta = (o: Record<string, unknown>) => JSON.stringify(o);
-const ts = (v: string) => ({ timestamp: v, model: "m", input: 1, output: 1 });
 /** The canonical instant shape `toCanonicalIso` emits, for the ISS-5395
  * reconciliation test's INDEPENDENT count of placeable round-trips. */
 const CANONICAL_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -49,7 +55,8 @@ test("interactive session: human from $.messages, agent from $.tokenSeries", () 
         { role: "assistant", timestamp: "2026-07-01T10:01:00Z" },
       ],
       tokenSeries: [ts("2026-07-01T10:01:00.000Z")],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   assert.deepEqual(rows, [
     {
@@ -86,7 +93,8 @@ test("ISS-5395: subagent-attributed tokenSeries entries ROLL UP to the parent", 
         },
         ts("2026-07-01T10:04:00.000Z"),
       ],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   const agent = rows
     .filter((r) => r.turnKind === "agent")
@@ -112,7 +120,8 @@ test("ISS-5395: a session whose work is ENTIRELY delegated is not lost", () => {
   }));
   const rows = deriveSessionTurnBuckets(
     "delegator",
-    meta({ entrypoint: "cli", messages: [], tokenSeries: delegated })
+    meta({ entrypoint: "cli", messages: [], tokenSeries: delegated }),
+    SYNCED_TOKEN_EVENTS
   );
   const agent = rows
     .filter((r) => r.turnKind === "agent")
@@ -143,7 +152,8 @@ test("ISS-5395: reconciliation — derived agent turns equal the round-trips pre
   ).length;
   const derived = deriveSessionTurnBuckets(
     "recon",
-    meta({ entrypoint: "cli", messages: [], tokenSeries: series })
+    meta({ entrypoint: "cli", messages: [], tokenSeries: series }),
+    SYNCED_TOKEN_EVENTS
   )
     .filter((r) => r.turnKind === "agent")
     .reduce((s, r) => s + r.turnCount, 0);
@@ -161,7 +171,8 @@ test("ISS-5395: a genuine zero still derives zero", () => {
         entrypoint: "cli",
         messages: [],
         ...(tokenSeries === undefined ? {} : { tokenSeries }),
-      })
+      }),
+      SYNCED_TOKEN_EVENTS
     );
     assert.deepEqual(
       rows.filter((r) => r.turnKind === "agent"),
@@ -187,7 +198,8 @@ test("ISS-5395: activity on day 1 and day 2 yields buckets on BOTH days", () => 
         { ...ts("2026-08-06T14:21:40.159Z"), subagentId: "agent-b" },
         { ...ts("2026-08-06T18:00:00.000Z"), subagentId: "agent-c" },
       ],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   const byDay = new Map<string, number>();
   for (const row of rows.filter((r) => r.turnKind === "agent")) {
@@ -219,7 +231,8 @@ test("headless: suppression still works, and agent rows come from tokenSeries", 
         entrypoint,
         messages: [{ role: "human", timestamp: "2026-07-02T09:00:00Z" }],
         tokenSeries: [ts("2026-07-02T09:01:00.000Z")],
-      })
+      }),
+      SYNCED_TOKEN_EVENTS
     );
     assert.equal(
       rows.filter((r) => r.turnKind === "human").length,
@@ -238,19 +251,38 @@ test("headless: suppression still works, and agent rows come from tokenSeries", 
       entrypoint: "cli",
       permissionMode: "bypassPermissions",
       messages: [{ role: "human", timestamp: "2026-07-02T09:00:00Z" }],
-    })
+    }),
+    false
   );
-  assert.deepEqual(bypass, [], "bypassPermissions suppresses the human row");
+  // EXPECTATION CHANGED BY ISS-8259. This seed carries NO tokenSeries, so it
+  // takes the legacy `$.messages` fallback, where the headless→Agent PROMOTION
+  // is restored: the injected prompt is suppressed on the human side and homed
+  // on the agent side instead of vanishing from the grid entirely. FEA-3616's
+  // actual guarantee — a headless turn must never report as human-steered — is
+  // the `turnKind !== "human"` half and is unchanged.
+  assert.deepEqual(
+    bypass,
+    [
+      {
+        sessionId: "b",
+        ts: "2026-07-02T09:00:00.000Z",
+        turnKind: "agent",
+        turnCount: 1,
+      },
+    ],
+    "bypassPermissions suppresses the human row and promotes the turn to agent"
+  );
   // FEA-3616 GUARD: `codex_sdk_ts` is the Codex VS Code / Conductor IDE
-  // transport — it carries `sdk` but is a HUMAN typing (golden 019effc3 /
-  // 019f0041), so it must NOT be demoted.
+  // transport — it carries `sdk` but is a HUMAN typing (golden f04610b7 /
+  // 8bbdbfab), so it must NOT be demoted.
   for (const entrypoint of ["codex_sdk_ts", "codex-tui", "codex_vscode"]) {
     const [interactive] = deriveSessionTurnBuckets(
       "i",
       meta({
         entrypoint,
         messages: [{ role: "human", timestamp: "2026-07-02T09:00:00Z" }],
-      })
+      }),
+      false
     );
     assert.equal(
       interactive?.turnKind,
@@ -271,7 +303,8 @@ test("FEA-3597: tokenSeries populated + $.messages ABSENT still yields agent row
         entrypoint: "cli",
         ...(messages === undefined ? {} : { messages }),
         tokenSeries: [ts("2026-07-01T10:00:00.000Z")],
-      })
+      }),
+      SYNCED_TOKEN_EVENTS
     );
     assert.equal(
       rows.filter((r) => r.turnKind === "agent").length,
@@ -281,9 +314,99 @@ test("FEA-3597: tokenSeries populated + $.messages ABSENT still yields agent row
   }
 });
 
-test("FEA-3597: messages present + tokenSeries EMPTY yields 0 agent rows", () => {
-  // Ruling §6 case 1. Correct under this rule: no billable round-trip, no agent
-  // turn. Human rows are unaffected.
+test("ISS-8259: synthesized token events suppress the fallback", () => {
+  // The shape a metadata-only gate cannot see. When `$.tokenSeries` is empty but
+  // `$.tokensByModel` is not, `import-session-context.ts` synthesizes one
+  // `token_events` row per model; those rows sync, so the CLOUD has token events
+  // and takes its round-trip arm, not its `$.messages` fallback. Firing here
+  // would over-count the desktop — this ticket's own bug with the sign flipped.
+  // `tokensByModel` is not persisted into `metadata`, which is exactly why the
+  // caller passes the answer in rather than the derivation inferring it.
+  const messages = [
+    { role: "assistant", timestamp: "2026-07-01T10:01:00.000Z" },
+  ];
+  const suppressed = deriveSessionTurnBuckets(
+    "syn",
+    meta({ entrypoint: "cli", messages, tokenSeries: [] }),
+    true
+  );
+  assert.deepEqual(suppressed, [], "token events present ⇒ no fallback rows");
+  // Same metadata, no token events: the fallback is the only thing that differs.
+  const counted = deriveSessionTurnBuckets(
+    "syn",
+    meta({ entrypoint: "cli", messages, tokenSeries: [] }),
+    false
+  );
+  assert.equal(
+    counted.filter((r) => r.turnKind === "agent").length,
+    1,
+    "the flag is load-bearing, not decorative"
+  );
+});
+
+test("ISS-8259: an OFFSET-bearing instant is rejected by the fallback only", () => {
+  // Both surfaces ACCEPT this spelling and then disagree: PostgreSQL's cast to a
+  // zone-less `timestamp` DISCARDS the offset (buckets 23:30 on the 15th) while
+  // `toCanonicalIso` converts it (04:30 on the 16th). One turn, two days. The
+  // `$.tokenSeries` arm keeps counting it — the cloud reads that half from a real
+  // `event_created_at` column, so there is no disagreement to avoid there.
+  const offset = "2026-06-15T23:30:00+02:00";
+  const viaMessages = deriveSessionTurnBuckets(
+    "off",
+    meta({
+      entrypoint: "cli",
+      messages: [{ role: "assistant", timestamp: offset }],
+      tokenSeries: [],
+    }),
+    false
+  );
+  assert.deepEqual(viaMessages, [], "offset form contributes no fallback cell");
+  const viaSeries = deriveSessionTurnBuckets(
+    "off",
+    meta({ entrypoint: "cli", tokenSeries: [ts(offset)] }),
+    SYNCED_TOKEN_EVENTS
+  );
+  assert.deepEqual(viaSeries, [
+    {
+      sessionId: "off",
+      ts: "2026-06-15T21:30:00.000Z",
+      turnKind: "agent",
+      turnCount: 1,
+    },
+  ]);
+});
+
+test("ISS-8259: the fallback NORMALIZES a non-canonical instant", () => {
+  // The agent half stores `toCanonicalIso(ts)`, so a no-millis `Z` form must land
+  // on the canonical spelling — the property the equivalence suite's SQL oracle
+  // relies on when it compares the raw seed value.
+  const rows = deriveSessionTurnBuckets(
+    "norm",
+    meta({
+      entrypoint: "cli",
+      messages: [{ role: "assistant", timestamp: "2026-07-01T10:01:00Z" }],
+      tokenSeries: [],
+    }),
+    false
+  );
+  assert.deepEqual(rows, [
+    {
+      sessionId: "norm",
+      ts: "2026-07-01T10:01:00.000Z",
+      turnKind: "agent",
+      turnCount: 1,
+    },
+  ]);
+});
+
+test("ISS-8259: messages present + tokenSeries EMPTY falls back to $.messages", () => {
+  // EXPECTATION CHANGED BY ISS-8259. FEA-3597 ruling §6 case 1 pinned 0 agent
+  // rows for this shape, on the reading "no billable round-trip, no agent turn".
+  // The cloud never adopted that reading — `agentLegacyMessageRowsSql` keeps
+  // counting `$.messages` for a session with no `agent_session_token_events` —
+  // so the desktop rendered a busy day as idle while the web rendered it lit.
+  // The assistant row is now an Agent turn, NORMALIZED like every agent `ts`;
+  // the human row is still verbatim and unaffected.
   const rows = deriveSessionTurnBuckets(
     "z",
     meta({
@@ -293,7 +416,8 @@ test("FEA-3597: messages present + tokenSeries EMPTY yields 0 agent rows", () =>
         { role: "assistant", timestamp: "2026-07-01T10:01:00Z" },
       ],
       tokenSeries: [],
-    })
+    }),
+    false
   );
   assert.deepEqual(rows, [
     {
@@ -302,7 +426,85 @@ test("FEA-3597: messages present + tokenSeries EMPTY yields 0 agent rows", () =>
       turnKind: "human",
       turnCount: 1,
     },
+    {
+      sessionId: "z",
+      ts: "2026-07-01T10:01:00.000Z",
+      turnKind: "agent",
+      turnCount: 1,
+    },
   ]);
+});
+
+test("ISS-8259: a POPULATED tokenSeries keeps $.messages off the agent half", () => {
+  // The disjointness gate, asserted as its own case rather than inferred from
+  // the seed above. FEA-3597's actual fix — one assistant round-trip split
+  // across text/tool_use/thinking blocks must count ONCE, not per block — is
+  // this assertion, and the ISS-8259 fallback must not reopen it. Three
+  // assistant MESSAGES over one round-trip still yield exactly one agent row.
+  const rows = deriveSessionTurnBuckets(
+    "d",
+    meta({
+      entrypoint: "cli",
+      messages: [
+        { role: "assistant", timestamp: "2026-07-01T10:01:00.000Z" },
+        { role: "assistant", timestamp: "2026-07-01T10:01:00.000Z" },
+        { role: "assistant", timestamp: "2026-07-01T10:01:00.000Z" },
+      ],
+      tokenSeries: [ts("2026-07-01T10:01:00.000Z")],
+    }),
+    SYNCED_TOKEN_EVENTS
+  );
+  assert.deepEqual(rows, [
+    {
+      sessionId: "d",
+      ts: "2026-07-01T10:01:00.000Z",
+      turnKind: "agent",
+      turnCount: 1,
+    },
+  ]);
+});
+
+test("ISS-8259: the fallback's exclusions match the cloud's jsonb predicate", () => {
+  // Every element below is dropped, on a session that DOES take the fallback —
+  // so a green here means the guards fired, not that the arm never ran.
+  const rows = deriveSessionTurnBuckets(
+    "x",
+    meta({
+      entrypoint: "cli",
+      messages: [
+        { role: "tool", timestamp: "2026-07-06T09:00:00.000Z" },
+        // Not headless, so a `human` row stays Human and is never promoted.
+        { role: "human", timestamp: "2026-07-06T09:01:00.000Z" },
+        // A NUMBER: the cloud requires `jsonb_typeof(m->'timestamp')='string'`.
+        // Only the HUMAN arm takes a number (FEA-3597 byte-identity).
+        { role: "assistant", timestamp: 1_781_000_000_000 },
+        // ISS-8398 REMOVED the zone-less `2026-07-06T09:02:00` from this list.
+        // The expectation changed because the BEHAVIOR changed: that arm now
+        // names the omitted zone as UTC instead of rejecting the value, so the
+        // element is counted and no longer belongs in a fixture asserting zero
+        // agent rows. It is pinned as an ACCEPTED, normalized instant in
+        // session-turn-bucket-zone-less-instant.test.ts — the exclusion did not
+        // stop being tested, it stopped being true. Every other exclusion here
+        // is untouched.
+        { role: "assistant", timestamp: "not-a-timestamp" },
+        { role: "assistant" },
+        ["not-an-object"],
+        null,
+      ],
+      tokenSeries: [],
+    }),
+    false
+  );
+  assert.deepEqual(
+    rows.filter((r) => r.turnKind === "agent"),
+    [],
+    "no excluded element may reach the agent half"
+  );
+  assert.equal(
+    rows.filter((r) => r.turnKind === "human").length,
+    1,
+    "the non-headless human row is still counted as Human"
+  );
 });
 
 test("FEA-3597: ambiguous timestamps are REJECTED; unambiguous ones are NORMALIZED", () => {
@@ -316,7 +518,8 @@ test("FEA-3597: ambiguous timestamps are REJECTED; unambiguous ones are NORMALIZ
   ]) {
     const [row] = deriveSessionTurnBuckets(
       "ok",
-      meta({ entrypoint: "cli", tokenSeries: [ts(raw)] })
+      meta({ entrypoint: "cli", tokenSeries: [ts(raw)] }),
+      SYNCED_TOKEN_EVENTS
     );
     assert.equal(
       row?.ts,
@@ -339,7 +542,8 @@ test("FEA-3597: ambiguous timestamps are REJECTED; unambiguous ones are NORMALIZ
   ]) {
     const rows = deriveSessionTurnBuckets(
       "bad",
-      meta({ entrypoint: "cli", tokenSeries: [ts(raw)] })
+      meta({ entrypoint: "cli", tokenSeries: [ts(raw)] }),
+      SYNCED_TOKEN_EVENTS
     );
     assert.deepEqual(rows, [], `${JSON.stringify(raw)} must be rejected`);
   }
@@ -348,7 +552,8 @@ test("FEA-3597: ambiguous timestamps are REJECTED; unambiguous ones are NORMALIZ
   assert.deepEqual(
     deriveSessionTurnBuckets(
       "num",
-      meta({ entrypoint: "cli", tokenSeries: [{ ...ts(""), timestamp: 1 }] })
+      meta({ entrypoint: "cli", tokenSeries: [{ ...ts(""), timestamp: 1 }] }),
+      SYNCED_TOKEN_EVENTS
     ),
     []
   );
@@ -364,7 +569,8 @@ test("FEA-3597: entries normalizing to the same instant collapse, preserving the
         ts("2026-07-01T12:00:00Z"),
         ts("2026-07-01T07:00:00-05:00"),
       ],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   assert.deepEqual(rows, [
     {
@@ -387,7 +593,8 @@ test("cursor shared-timestamp pileup collapses onto one ts", () => {
       tokenSeries: Array.from({ length: 25 }, () =>
         ts("2026-07-01T12:00:00.000Z")
       ),
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   assert.deepEqual(rows, [
     {
@@ -409,7 +616,8 @@ test("duplicate (ts, kind) collapse into turnCount", () => {
         ts("2026-07-01T10:16:00.000Z"),
         ts("2026-07-01T10:16:00.000Z"),
       ],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   assert.deepEqual(rows, [
     {
@@ -443,7 +651,8 @@ test("excludes non-qualifying elements (role, missing ts, non-object)", () => {
         42,
         { model: "m" }, // no timestamp
       ],
-    })
+    }),
+    SYNCED_TOKEN_EVENTS
   );
   assert.deepEqual(rows, [
     {
@@ -456,19 +665,20 @@ test("excludes non-qualifying elements (role, missing ts, non-object)", () => {
 });
 
 test("malformed / absent / non-array metadata yields [] (never throws)", () => {
-  assert.deepEqual(deriveSessionTurnBuckets("a", null), []);
-  assert.deepEqual(deriveSessionTurnBuckets("b", ""), []);
-  assert.deepEqual(deriveSessionTurnBuckets("c", "{not valid json"), []);
-  assert.deepEqual(deriveSessionTurnBuckets("d", "[]"), []); // top-level not object
-  assert.deepEqual(deriveSessionTurnBuckets("e", "{}"), []); // neither source
+  assert.deepEqual(deriveSessionTurnBuckets("a", null, false), []);
+  assert.deepEqual(deriveSessionTurnBuckets("b", "", false), []);
+  assert.deepEqual(deriveSessionTurnBuckets("c", "{not valid json", false), []);
+  assert.deepEqual(deriveSessionTurnBuckets("d", "[]", false), []); // top-level not object
+  assert.deepEqual(deriveSessionTurnBuckets("e", "{}", false), []); // neither source
   assert.deepEqual(
-    deriveSessionTurnBuckets("f", meta({ entrypoint: "cli" })),
+    deriveSessionTurnBuckets("f", meta({ entrypoint: "cli" }), false),
     []
   ); // no messages, no tokenSeries
   assert.deepEqual(
     deriveSessionTurnBuckets(
       "g",
-      meta({ entrypoint: "cli", messages: "nope", tokenSeries: "nope" })
+      meta({ entrypoint: "cli", messages: "nope", tokenSeries: "nope" }),
+      SYNCED_TOKEN_EVENTS
     ),
     []
   ); // neither is an array
@@ -483,7 +693,8 @@ test("human numeric timestamp is coerced to string (stored verbatim as TEXT)", (
     meta({
       entrypoint: "cli",
       messages: [{ role: "human", timestamp: 1_720_000_000 }],
-    })
+    }),
+    false
   );
   assert.equal(row?.ts, "1720000000");
 });
@@ -504,7 +715,8 @@ test("crash repro: a 5,000-entry session derives without json_each and stays fas
   }
   const rows = deriveSessionTurnBuckets(
     "big",
-    meta({ entrypoint: "cli", messages, tokenSeries })
+    meta({ entrypoint: "cli", messages, tokenSeries }),
+    SYNCED_TOKEN_EVENTS
   );
 
   // 2500 human + 2500 agent units, each minute reused ~42x per kind -> at most
@@ -524,4 +736,129 @@ test("crash repro: a 5,000-entry session derives without json_each and stays fas
     .reduce((s, r) => s + r.turnCount, 0);
   assert.equal(humans, 2500);
   assert.equal(agents, 2500);
+});
+
+// ISS-7896: the cloud heatmap's human half now reads
+// `metadata.humanTurnTimestamps`, derived by the sync producer, while THIS
+// derivation still feeds the desktop chart. The module doc claims the two
+// "cannot disagree about which turns count" because both call the shared
+// `collectHumanTurnUnits` — but nothing pinned that, so a filter added to either
+// wrapper would fork the desktop chart from the cloud key with a green suite.
+// Pin the identity itself, off one metadata string, rather than the shared call.
+test("ISS-7896: the derived key length equals this derivation's own human rows", () => {
+  const messages = [
+    ...Array.from({ length: 250 }, (_, i) => ({
+      role: "human",
+      timestamp: `2026-06-15T${String(i % 24).padStart(2, "0")}:00:00.000Z`,
+    })),
+    { role: "assistant", timestamp: "2026-06-15T23:00:00.000Z" },
+  ];
+  const metadataText = JSON.stringify({ entrypoint: "cli", messages });
+
+  const bucketedHumans = deriveSessionTurnBuckets("s1", metadataText, false)
+    .filter((row) => row.turnKind === "human")
+    .reduce((sum, row) => sum + row.turnCount, 0);
+  const derived = deriveHumanTurnTimestamps(JSON.parse(metadataText));
+
+  assert.equal(bucketedHumans, 250);
+  assert.equal(derived?.length, bucketedHumans);
+});
+
+test("ISS-7896: a headless session yields no human rows and an empty derived key", () => {
+  const metadataText = JSON.stringify({
+    entrypoint: "codex exec",
+    messages: [{ role: "human", timestamp: "2026-06-15T10:00:00.000Z" }],
+  });
+
+  const bucketedHumans = deriveSessionTurnBuckets(
+    "s1",
+    metadataText,
+    false
+  ).filter((row) => row.turnKind === "human");
+  assert.equal(bucketedHumans.length, 0);
+  assert.deepEqual(deriveHumanTurnTimestamps(JSON.parse(metadataText)), []);
+});
+
+test("ISS-9864: the legacy arm reads the WHOLE local array, not the cloud's old 100-message window", () => {
+  // EXPECTATION CHANGED BY ISS-9864. ISS-8259 pinned 100 here because the cloud
+  // read synced metadata that compactMetadataForPreview had truncated, and the
+  // desktop sliced its untruncated local blob to match — both surfaces agreeing
+  // on an undercount. The cloud now reads the derived
+  // `metadata.agentTurnTimestamps` key on this population, so the window is
+  // gone on both sides and the desktop counts every row it holds.
+  const messages = Array.from({ length: 150 }, (_, i) => ({
+    role: "assistant",
+    timestamp: `2026-07-01T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+  }));
+  const rows = deriveSessionTurnBuckets(
+    "uncapped",
+    meta({ entrypoint: "cli", messages, tokenSeries: [] }),
+    NO_TOKEN_EVENTS
+  );
+  const agent = rows
+    .filter((r) => r.turnKind === "agent")
+    .reduce((sum, r) => sum + r.turnCount, 0);
+  // 150, not 100: the array, not the window.
+  assert.equal(agent, 150);
+});
+
+// ISS-9864: the cloud heatmap's legacy agent arm now reads
+// `metadata.agentTurnTimestamps`, derived by the sync producer, while THIS
+// derivation still feeds the desktop chart. Pin the identity itself, off one
+// metadata string, so a filter added to either wrapper cannot fork the desktop
+// chart from the cloud key with a green suite — the same pin the human half has.
+test("ISS-9864: the derived agent key length equals this derivation's own agent rows", () => {
+  const messages = [
+    ...Array.from({ length: 250 }, (_, i) => ({
+      role: "assistant",
+      timestamp: `2026-06-15T${String(i % 24).padStart(2, "0")}:${String(Math.floor(i / 24)).padStart(2, "0")}:00.000Z`,
+    })),
+    { role: "human", timestamp: "2026-06-15T23:00:00.000Z" },
+    { role: "tool", timestamp: "2026-06-15T23:00:00.000Z" },
+    {
+      role: "assistant",
+      timestamp: "2026-06-15T23:30:00.000Z",
+      isForkReplayed: true,
+    },
+  ];
+  for (const entrypoint of ["cli", "codex exec"]) {
+    const metadataText = JSON.stringify({ entrypoint, messages });
+    const bucketedAgents = deriveSessionTurnBuckets(
+      "s1",
+      metadataText,
+      NO_TOKEN_EVENTS
+    )
+      .filter((row) => row.turnKind === "agent")
+      .reduce((sum, row) => sum + row.turnCount, 0);
+    const derived = deriveAgentTurnTimestamps(JSON.parse(metadataText));
+    // 250 assistant rows, plus the one human prompt on the headless run.
+    assert.equal(bucketedAgents, entrypoint === "cli" ? 250 : 251, entrypoint);
+    assert.equal(derived?.length, bucketedAgents, entrypoint);
+  }
+});
+
+test("ISS-8259: token events choose the ROUND-TRIP basis, absence chooses $.messages", () => {
+  // The mixed-series/no-event parity case (ISS-8259 review, davetho), at the
+  // derivation level. The cloud splits on token-event presence ALONE, so the
+  // same metadata must yield the series count when token events exist and the
+  // $.messages count when they do not — never a blend, and never both.
+  const metadata = meta({
+    entrypoint: "cli",
+    messages: [
+      { role: "assistant", timestamp: "2026-07-01T10:00:00.000Z" },
+      { role: "assistant", timestamp: "2026-07-01T10:05:00.000Z" },
+      { role: "assistant", timestamp: "2026-07-01T10:09:00.000Z" },
+    ],
+    tokenSeries: [ts("2026-07-01T10:01:00.000Z")],
+  });
+  const agentTotal = (hasTokenEvents: boolean) =>
+    deriveSessionTurnBuckets("mixed", metadata, hasTokenEvents)
+      .filter((r) => r.turnKind === "agent")
+      .reduce((sum, r) => sum + r.turnCount, 0);
+
+  // Token events present: the ONE round-trip, not the three assistant messages.
+  assert.equal(agentTotal(SYNCED_TOKEN_EVENTS), 1);
+  // Token events absent: the three assistant messages, which is what the cloud
+  // counts for this session — not the series, and not 1 + 3.
+  assert.equal(agentTotal(NO_TOKEN_EVENTS), 3);
 });

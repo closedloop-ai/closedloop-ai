@@ -3,9 +3,10 @@ import {
   SessionPrLifecycleStatus,
 } from "@repo/api/src/types/agent-session";
 import { classifySessionProvenance } from "@repo/api/src/types/branch";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
 import {
-  deriveCostAvailability,
+  CostAvailability,
+  costLabelIsFigure,
+  deriveReportedCost,
   formatCostLabel,
   getCostTooltip,
 } from "@repo/app/agents/lib/cost-availability";
@@ -13,8 +14,10 @@ import { resolveDisplayedSessionStatusWithWaiting } from "@repo/app/agents/lib/s
 import {
   resolveSessionDurationWindow,
   resolveSessionWallClockLabel,
+  resolveSessionWallClockMs,
   toSessionInstant,
 } from "@repo/app/agents/lib/session-duration";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import {
   resolveSessionRepositoryDisplay,
   resolveSessionRepositoryFullName,
@@ -55,7 +58,7 @@ export function resolveSessionRepoLabel(
  * every seam that already forwards render-boundary options — including
  * `detail-data.ts` and `agent-component-session-adapter.ts` — carries the clock
  * too and the Agent-detail Sessions tab cannot resolve a row under a different
- * rule than the main list (wongk, PR #4324).
+ * rule than the main list (whitlockk, PR #4324).
  */
 export function agentSessionToSessionTableRow(
   item: AgentSessionListItem,
@@ -77,23 +80,22 @@ export function agentSessionToSessionTableRow(
   // session DETAIL applies runs here too. Without it a row stored `active` with
   // `awaitingInputSince` set and silent past the cutoff folded to Stale and
   // emptied its Duration cell while the detail kept timing it — the split
-  // ISS-5575 closed, re-opened for exactly that population. The desktop LOCAL
-  // producer serves that shape whenever the `sessions-displayed-status-parity`
-  // Labs gate is off, and the local Status facet already gathers those rows
-  // under Waiting.
+  // ISS-5575 closed, re-opened for exactly that population.
   const displayedStatus = resolveDisplayedSessionStatusWithWaiting({
     awaitingInputSince: item.awaitingInputSince,
     // ISS-4654: a straggler terminal row that still carries the timestamp is not
-    // waiting. RAW (wongk, #5099 review), because `toSessionInstant` collapses an
+    // waiting. RAW (whitlockk, #5099 review), because `toSessionInstant` collapses an
     // unparseable end instant to the same `null` as an absent one and the
     // projection must not read corrupt evidence as "no end recorded".
     endedAt: item.endedAt,
     status: item.status,
     lastActivityAt,
-    // wongk (#4324): the staleness clock falls back to the start time when the
-    // activity timestamp is absent or unparseable, mirroring the reaper's own
-    // `lastActivityAt ?? sessionStartedAt`. Without it the least-evidenced rows
-    // were the ones exempted from the fold.
+    // The staleness clock falls back to the start time when the activity
+    // timestamp is absent or unparseable; without it the least-evidenced rows
+    // are the ones exempted from the fold. This mirrored the cloud reaper's own
+    // `lastActivityAt ?? sessionStartedAt` (whitlockk, #4324) until ISS-6463 made
+    // that column NOT NULL and removed it. It stays here because this row can
+    // still come from desktop's local store or a version-skewed payload.
     startedAt,
     now,
   });
@@ -115,37 +117,74 @@ export function agentSessionToSessionTableRow(
   // inputs TanStack structural sharing keeps referentially stable across
   // unchanged polls, so a resolver reading its own clock would freeze a running
   // Duration at the last real data change while captioning it "Start to now".
+  //
+  // ISS-8013: the window and the CLOCK READING are hoisted so the number and the
+  // string are two formattings of one measurement. `resolveSessionWallClockLabel`
+  // resolves the span itself, from `resolveSessionWallClockMs` — the same
+  // derivation `durationMs` calls — so what actually has to be shared is the
+  // inputs, and `(now ?? new Date())` is the one that moves: evaluated per call,
+  // a RUNNING session's sort value and its cell would be measured against two
+  // different instants.
+  const durationWindow = resolveSessionDurationWindow(displayedStatus, endedAt);
+  const nowMs = (now ?? new Date()).getTime();
+  const durationMs = resolveSessionWallClockMs(
+    startedAt,
+    durationWindow,
+    nowMs
+  );
   const durationLabel = resolveSessionWallClockLabel(
     startedAt,
-    resolveSessionDurationWindow(displayedStatus, endedAt),
-    (now ?? new Date()).getTime()
+    durationWindow,
+    nowMs
   );
 
-  const costAvailability = deriveCostAvailability({
-    estimatedCost: toSafeNumber(item.estimatedCost),
-    billingMode: item.billingMode,
-    turns: item.turns,
-    inputTokens: toSafeNumber(item.inputTokens),
-    outputTokens: toSafeNumber(item.outputTokens),
-    cacheReadTokens: toSafeNumber(item.cacheReadTokens),
-    cacheWriteTokens: toSafeNumber(item.cacheWriteTokens),
-    toolUseCount: toSafeNumber(item.toolUseCount),
-    model: item.model,
-  });
+  // ISS-9431: a present-but-unusable input makes the Cost cell unavailable only
+  // when the answer turns on it. Coercing one to `0` printed a subscription row
+  // as `$0.00` and let a negative figure through as a price.
+  const reportedCost = deriveReportedCost(item);
+  const costAvailability =
+    reportedCost?.availability ?? CostAvailability.Unavailable;
+
+  const recordUpdatedAt = toSessionInstant(item.recordUpdatedAt);
 
   return {
     autonomy: item.autonomy ?? null,
     costAvailability,
     costLabel: formatCostLabel(
       costAvailability,
-      toSafeNumber(item.estimatedCost)
+      reportedCost?.estimatedCost ?? 0
     ),
-    costTooltip: getCostTooltip(costAvailability),
+    // No tooltip over unusable inputs: `Unavailable`'s sentence blames an
+    // unpriced model, which is not what happened here.
+    costTooltip:
+      reportedCost === null ? null : getCostTooltip(costAvailability),
+    // ISS-8013: the FIGURE the label above formats, for the Cost sort — and
+    // `null` on every availability whose label is a dash rather than a figure.
+    // Keyed on `costLabelIsFigure`, the same predicate `formatCostLabel` asks,
+    // so a row showing no price is unranked instead of ranking as the cheapest
+    // run on the page. A `Subscription` row prints its dollars, so it carries
+    // its value too.
+    costValue: costLabelIsFigure(costAvailability)
+      ? (reportedCost?.estimatedCost ?? null)
+      : null,
     durationLabel,
+    durationMs,
     harness: item.harness,
     id: item.id,
+    // ISS-8712: carried through verbatim, absence included. A `?? []` here would
+    // turn "this producer never loaded the relation" into "this session has no
+    // tags" — the exact collapse `tagAvailability` exists to prevent, and the
+    // cell reads the pair together to tell them apart.
+    tags: item.tags,
+    tagAvailability: item.tagAvailability,
+    tagPermissions: item.tagPermissions,
+    // ISS-10332: verbatim, absence included, for the reason the tag pair above
+    // is — a `?? null` would turn "this producer never served the field" into
+    // "this session has no priority" and hand the editor a guard nobody read.
+    ...(item.priority === undefined ? {} : { priority: item.priority }),
     branch: item.branch ?? null,
     lastActivityLabel: resolveTimestampLabel(lastActivityAt),
+    lastActivityAtMs: toTimestampMs(lastActivityAt),
     model: item.model,
     name: item.name ?? item.externalSessionId ?? "Unknown session",
     provenance: classifySessionProvenance({
@@ -161,34 +200,37 @@ export function agentSessionToSessionTableRow(
     // ever resolved) and malformed (a stored value carrying no identity) are
     // different facts and get different glyphs.
     repositoryDisplay: resolveSessionRepositoryDisplay(item),
+    rawStatus: item.rawStatus === undefined ? item.status : item.rawStatus,
     startedLabel: resolveTimestampLabel(startedAt),
+    startedAtMs: toTimestampMs(startedAt),
     // ISS-6005: record-mutation recency (`recordUpdatedAt`), NOT the wire
     // `updatedAt` — that field carries the desktop-reported
     // `session_updated_at` recompute time, the lookalike the `Updated` column
     // must not borrow. A producer that omits the field (version skew) yields
     // `null` and the cell renders the shared empty glyph.
-    updatedLabel: resolveTimestampLabel(toSessionInstant(item.recordUpdatedAt)),
+    updatedLabel: resolveTimestampLabel(recordUpdatedAt),
+    // ISS-8013: from `recordUpdatedAt`, the SAME instant the label above reads —
+    // not `lastActivityAt`. The two columns sit beside each other and mostly
+    // agree, which is what makes a sort silently ranking one by the other's
+    // clock hard to see.
+    updatedAtMs: toTimestampMs(recordUpdatedAt),
     // ISS-4997 / ISS-4998: the DISPLAYED status. An unrecognized value folds to
     // the honest "Unknown"; an `active` run silent past the staleness cutoff
     // folds to "Stale". Two different facts, two different words — neither is
     // allowed to claim the agent is running. Resolved once above so the Duration
     // cell reads the identical value. See `resolveDisplayedSessionStatus`.
     status: displayedStatus,
-    user: item.user
-      ? {
-          avatarUrl: item.user.avatarUrl,
-          // #4480: carry the identity, not just the spelling — Owner grouping
-          // keys on it so two different users who share a display name stay two
-          // bands.
-          id: item.user.id,
-          name: getUserDisplayName(item.user),
-        }
-      : null,
+    // #4480: both carry the identity, not just the spelling, so two people who
+    // share a display name stay two Owner bands. `user` is the recording user;
+    // `owner` is the assignee, set only when the producer serves `assignee`.
+    // Every Owner reader resolves through `session-owner.ts`: the assignee,
+    // falling back to `user` only when `assignee` is omitted (AC-012: older
+    // APIs); a null assignee is unassigned (ISS-12251).
+    user: toSessionTableRowPerson(item.user),
+    ...(item.assignee === undefined
+      ? {}
+      : { owner: toSessionTableRowPerson(item.assignee) }),
   };
-}
-
-function toSafeNumber(value: number | null | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function toSessionTablePullRequests(
@@ -278,6 +320,20 @@ function resolveTimestampLabel(timestamp: Date | null): string | null {
 }
 
 /**
+ * ISS-8013: the instant behind a {@link resolveTimestampLabel} label, as epoch
+ * milliseconds, so the Started / Updated / Last active columns rank on the
+ * timestamp rather than on the coarse relative phrase it renders as.
+ *
+ * Takes the already-normalized `Date | null` its label twin takes — NOT the raw
+ * wire value — so a present-but-unparseable timestamp is `null` here for the
+ * same reason the cell shows an em dash, and one row cannot be unlabelled and
+ * still ranked.
+ */
+function toTimestampMs(timestamp: Date | null): number | null {
+  return timestamp === null ? null : timestamp.getTime();
+}
+
+/**
  * Render-boundary options for {@link agentSessionToSessionTableRow} and
  * {@link toSessionTableRowWithSyncFold}.
  *
@@ -305,3 +361,15 @@ export type SessionRowResolutionOptions = Readonly<{
    */
   now?: Date;
 }>;
+
+function toSessionTableRowPerson(
+  person: AgentSessionListItem["user"]
+): SessionTableRow["user"] {
+  return person
+    ? {
+        avatarUrl: person.avatarUrl,
+        id: person.id,
+        name: getUserDisplayName(person),
+      }
+    : null;
+}

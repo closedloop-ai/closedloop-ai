@@ -3,9 +3,16 @@ import {
   BranchMetricAvailability,
   type BranchMetricResult,
 } from "@repo/api/src/types/branch-metrics";
-import { calculateBranchLastActiveMetric } from "@repo/lib/branches/branch-list-metrics";
+import {
+  type BranchLinkedSessionActivity,
+  resolveBranchLastActiveMetric,
+} from "@repo/lib/branches/branch-last-active";
 import type { BranchCanonicalActivityRow } from "../database/branch-activity-read.js";
-import type { BranchCommitRow, BranchPrRow } from "../database/branch-reads.js";
+import type {
+  BranchCommitRow,
+  BranchLinkRow,
+  BranchPrRow,
+} from "../database/branch-reads.js";
 
 /** One operation-scoped canonical Last-active result per encoded Branch id. */
 export type DesktopBranchLastActiveProjection = ReadonlyMap<
@@ -14,15 +21,17 @@ export type DesktopBranchLastActiveProjection = ReadonlyMap<
 >;
 
 /**
- * Combine persisted monitored activity, commits, and PR lifecycle instants.
- * Session/link/import/request/passive and generic update times never enter this
- * boundary, so every downstream consumer can safely share the result.
+ * Combine persisted monitored activity, commits, and PR lifecycle instants, and
+ * resolve them through the shared Branch Last-active definition, which falls
+ * back to linked Session last activity (ISS-11915). Link/import/request/passive
+ * update times stay excluded.
  */
 export function projectDesktopBranchLastActive(
   branchIds: readonly string[],
   activityRows: readonly BranchCanonicalActivityRow[],
   pullRequests: readonly BranchPrRow[],
-  commits: readonly BranchCommitRow[]
+  commits: readonly BranchCommitRow[],
+  links: readonly BranchLinkRow[] = []
 ): DesktopBranchLastActiveProjection {
   const eventsByBranch = new Map<string, BranchActivityEvent[]>();
   for (const branchId of branchIds) {
@@ -59,15 +68,22 @@ export function projectDesktopBranchLastActive(
     });
   }
 
+  const sessionsByBranch = new Map<string, BranchLinkedSessionActivity[]>();
+  for (const link of links) {
+    const branchId = encodeBranchId(link);
+    const sessions = sessionsByBranch.get(branchId) ?? [];
+    sessions.push({
+      sessionId: link.sessionId,
+      lastActivityAt: link.sessionLastActivityAt,
+    });
+    sessionsByBranch.set(branchId, sessions);
+  }
   return new Map(
     branchIds.map((branchId) => [
       branchId,
-      calculateBranchLastActiveMetric(
+      resolveBranchLastActiveMetric(
         eventsByBranch.get(branchId) ?? [],
-        // Desktop's persisted sources do not prove complete historical
-        // coverage. A timestamp is therefore Partial, while no evidence stays
-        // Unavailable, matching the cloud projection's conservative contract.
-        false
+        sessionsByBranch.get(branchId) ?? []
       ),
     ])
   );

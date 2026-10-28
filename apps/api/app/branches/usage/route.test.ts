@@ -1,4 +1,9 @@
 import { BranchViewerScope } from "@repo/api/src/types/branch";
+import {
+  LIST_QUERY_EXPRESSION_PARAM,
+  LIST_QUERY_EXPRESSION_VERSION,
+  ListQueryRefusal,
+} from "@repo/api/src/types/list-query-expression";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -118,3 +123,29 @@ function branchUsage() {
     ],
   };
 }
+
+// PRD-721: the usage read shares the list's `listQuery` boundary, so its
+// refusals carry the same code.
+describe("GET /branches/usage listQuery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getBranchUsage.mockResolvedValue(branchUsage());
+  });
+
+  it("answers an expression it cannot read with a coded 400", async () => {
+    const params = new URLSearchParams({
+      [LIST_QUERY_EXPRESSION_PARAM]: JSON.stringify({
+        version: LIST_QUERY_EXPRESSION_VERSION + 1,
+      }),
+    });
+    const response = await GET(
+      request(`https://api.example.test/branches/usage?${params.toString()}`),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe(ListQueryRefusal.UnsupportedVersion);
+    expect(mocks.getBranchUsage).not.toHaveBeenCalled();
+  });
+});

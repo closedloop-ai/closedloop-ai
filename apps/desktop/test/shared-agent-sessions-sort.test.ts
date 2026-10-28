@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { sessionCostIsNumeric } from "@repo/api/src/agent-session-filters";
 import {
   resolveSessionDurationLifecycle,
+  SESSION_STATUS,
   SessionDurationLifecycle,
 } from "@repo/api/src/types/session-status";
+import { describe, it } from "vitest";
 import type {
   SyncedAgentSession,
   SyncedAgentSessionTokenUsage,
 } from "../src/main/agent-sync/agent-session-sync-contract.js";
-import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/main/agent-sync/session-date-window.js";
+import { localSubstantiveCounts } from "../src/main/session/session-usage-totals.js";
 import { sortSyncedSessions } from "../src/main/session/session-working-set-sort.js";
-import {
-  displayedSharedStatusRank,
-  isKnownSharedStatus,
-  projectDisplayedSharedStatus,
-  resolveDisplayedSharedSessionStatus,
-} from "../src/main/session/shared-agent-session-status.js";
+import { resolveDisplayedSharedSessionStatus } from "../src/main/session/shared-agent-session-status.js";
 import type { SanitizedQuery } from "../src/main/session/shared-agent-sessions-query.js";
+import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/shared/session-date-window-contract.js";
 
 // FEA-4426: the decorate-sort-undecorate rewrite of `sortSyncedSessions` must
 // emit the SAME order as the previous comparator, which derived each row's sort
@@ -159,21 +157,33 @@ describe("sortSyncedSessions decorate-sort-undecorate parity", () => {
     //
     // ISS-5131 closes it: the cell and the comparator now read the SAME two
     // inputs (status + `endedAt`), so this row both RENDERS and SORTS as 5h.
+    //
+    // ISS-10364: `status` is now pinned EXPLICITLY to a genuinely terminal
+    // value on every row. The fixture default (`"completed"`, an unrecognized
+    // spelling) used to land these rows on the Indeterminate lifecycle, which
+    // is exactly the evidence-bounded-by-`endedAt` path this test claims to
+    // pin — but that spelling now fails open to Active/Running instead
+    // (ISS-10364), which ignores `endedAt` entirely and would have made this
+    // assertion pass on ties with the real wall clock rather than on the
+    // claimed contract.
     const sessions = [
       session({
         externalSessionId: "ended-10h",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: "2026-01-01T10:00:00.000Z",
         endedAt: "2026-01-01T10:00:00.000Z",
       }),
       session({
         externalSessionId: "eventless-ended-5h",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: null,
         endedAt: "2026-01-01T05:00:00.000Z",
       }),
       session({
         externalSessionId: "ended-1h",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: "2026-01-01T01:00:00.000Z",
         endedAt: "2026-01-01T01:00:00.000Z",
@@ -194,20 +204,27 @@ describe("sortSyncedSessions decorate-sort-undecorate parity", () => {
   it("ISS-5131: floats a terminal row with no end instant to the end in BOTH directions", () => {
     // Its Duration cell renders blank, so it must never interleave with the rows
     // that show a number.
+    //
+    // ISS-10364: `status` is pinned EXPLICITLY to a genuinely terminal value —
+    // see the note on the sibling case above for why the fixture default no
+    // longer produces the Ended/blank lifecycle this test is about.
     const sessions = [
       session({
         externalSessionId: "ended-5h",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T05:00:00.000Z",
       }),
       session({
         externalSessionId: "no-end-instant",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: null,
         endedAt: null,
       }),
       session({
         externalSessionId: "ended-1h",
+        status: SESSION_STATUS.INACTIVE,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T01:00:00.000Z",
       }),
@@ -237,7 +254,7 @@ describe("sortSyncedSessions decorate-sort-undecorate parity", () => {
     // With no org directory warmed every owner resolves to null → every pair
     // ties → incoming order is preserved (the cloud cold-directory contract).
     const sessions = [
-      session({ externalSessionId: "s-peter", userId: "user-peter" }),
+      session({ externalSessionId: "s-perrin", userId: "user-perrin" }),
       session({ externalSessionId: "s-alex", userId: "user-alex" }),
       session({ externalSessionId: "s-zara", userId: "user-zara" }),
     ];
@@ -246,7 +263,7 @@ describe("sortSyncedSessions decorate-sort-undecorate parity", () => {
       ids(
         sortSyncedSessions(sessions, query({ sortBy: "user", sortDir: "asc" }))
       ),
-      ["s-peter", "s-alex", "s-zara"]
+      ["s-perrin", "s-alex", "s-zara"]
     );
   });
 
@@ -299,10 +316,17 @@ function referenceSort(
         sortDir
       );
     }
-    // ISS-5592: `status` owns its own direction too — unknown-last in BOTH
-    // directions, so it cannot ride the uniform `* factor` flip.
-    if (sortBy === "status") {
-      return referenceCompareStatus(a, b, sortDir);
+    // ISS-9479: `model` and `cost` joined them — no recorded model, or a Cost
+    // cell with no figure, sorts LAST in both directions, the cloud's NULLS LAST.
+    if (sortBy === "model") {
+      return compareNullsLast(a.model ?? null, b.model ?? null, sortDir);
+    }
+    if (sortBy === "cost") {
+      return compareNumericNullsLast(
+        referenceCost(a),
+        referenceCost(b),
+        sortDir
+      );
     }
     return referenceCompare(a, b, sortBy) * factor;
   });
@@ -314,17 +338,20 @@ function referenceCompare(
   sortBy: string
 ): number {
   switch (sortBy) {
-    // NOTE: "status", "repo" and "duration" are handled by referenceSort
+    // NOTE: "repo", "duration", "model" and "cost" are handled by referenceSort
     // directly (each owns its own direction) — none reaches this
     // ascending-then-flip path.
+    // ISS-9939 / ISS-10262: "status" no longer owns its own direction either —
+    // it is a plain persisted-string comparison now, like harness/model, so it
+    // rides the uniform `* factor` flip. RAW, no `normalizeSessionStatus` fold
+    // (marisolashgrove, #7289 review): cloud's `artifacts.status` can genuinely
+    // still carry the literal "waiting" (ISS-5981 leaves a live-and-anchorless
+    // session that way, permanently), so folding only here reopened the
+    // cross-surface drift on that one population instead of closing it.
+    case "status":
+      return a.status.localeCompare(b.status);
     case "harness":
       return (a.harness ?? "").localeCompare(b.harness ?? "");
-    case "model":
-      return (a.model ?? "").localeCompare(b.model ?? "");
-    case "cost":
-      return referenceCost(a) - referenceCost(b);
-    // NOTE: "duration" is handled by referenceSort directly (nulls-last, both
-    // directions) — it never reaches this ascending-then-flip path.
     case "lastActivity":
       return (
         timestamp(a.lastActivityAt ?? a.startedAt) -
@@ -335,11 +362,21 @@ function referenceCompare(
   }
 }
 
-function referenceCost(session: SyncedAgentSession): number {
-  return session.tokenUsageByModel.reduce(
-    (total, model) => total + (model.estimatedCostUsd ?? 0),
+/**
+ * The summed cost, or `null` where the Cost cell shows no figure: the shared
+ * numeric-vs-unknown rule over the same signals the row renders through.
+ */
+function referenceCost(session: SyncedAgentSession): number | null {
+  const cost = session.tokenUsageByModel.reduce(
+    (total, row) => total + (row.estimatedCostUsd ?? 0),
     0
   );
+  const numeric = sessionCostIsNumeric({
+    estimatedCost: cost,
+    billingMode: session.billingMode ?? null,
+    ...localSubstantiveCounts(session),
+  });
+  return numeric ? cost : null;
 }
 
 function referenceDuration(session: SyncedAgentSession): number | null {
@@ -355,9 +392,9 @@ function referenceDuration(session: SyncedAgentSession): number | null {
   // as Stale and renders a blank Duration cell, while both this reference and
   // the production comparator measured it against `now` and ranked a seven-month
   // phantom span first on a Duration-descending page. Deriving through the same
-  // shared resolver the row does is the posture `referenceCompareStatus` already
-  // took for the Status column (#5075): a second IMPLEMENTATION of one rule, not
-  // a second RULE.
+  // shared resolver the row does is the same posture `referenceCompare`'s
+  // "status" case takes: a second IMPLEMENTATION of one rule, not a second
+  // RULE.
   const running =
     resolveSessionDurationLifecycle(
       resolveDisplayedSharedSessionStatus(session)
@@ -374,36 +411,6 @@ function referenceDuration(session: SyncedAgentSession): number | null {
 function timestamp(value: string): number {
   const ms = new Date(value).getTime();
   return Number.isNaN(ms) ? 0 : ms;
-}
-
-/**
- * The status column's reference order, derived from scratch on BOTH operands the
- * way the pre-FEA-4426 comparator did — which for this column means recomputing
- * the DISPLAYED rank, not alphabetizing.
- *
- * It used to alphabetize `canonicalStatus`. That agreed with production only by
- * coincidence: `active` < `completed` < `failed` reads the same alphabetically
- * as by rank. ISS-5592 unranked `completed`, the coincidence broke, and the
- * "reference" turned out to be a different ALGORITHM rather than a second
- * implementation of the same one — so it could never have caught a real rank
- * regression either (#5075).
- */
-function referenceCompareStatus(
-  a: SyncedAgentSession,
-  b: SyncedAgentSession,
-  sortDir: "asc" | "desc"
-): number {
-  const displayedA = projectDisplayedSharedStatus(a);
-  const displayedB = projectDisplayedSharedStatus(b);
-  const knownA = isKnownSharedStatus(displayedA);
-  const knownB = isKnownSharedStatus(displayedB);
-  if (knownA !== knownB) {
-    return knownA ? -1 : 1;
-  }
-  const delta =
-    displayedSharedStatusRank(displayedA) -
-    displayedSharedStatusRank(displayedB);
-  return sortDir === "asc" ? delta : -delta;
 }
 
 // FEA-4299 (merged): repo identity is the resolved Git remote `repositoryFullName`
@@ -463,7 +470,7 @@ function mixedSessions(): SyncedAgentSession[] {
       model: "opus",
       cwd: "/repo/zeta",
       // FEA-4299: a resolved remote drives the repo sort; the `cwd` is ignored.
-      attribution: { repositoryFullName: "closedloop-ai/symphony-alpha" },
+      attribution: { repositoryFullName: "closedloop-ai/closedloop-ai" },
       startedAt: "2026-01-05T00:00:00.000Z",
       lastActivityAt: "2026-01-06T00:00:00.000Z",
       endedAt: "2026-01-05T01:00:00.000Z",
@@ -488,7 +495,7 @@ function mixedSessions(): SyncedAgentSession[] {
       harness: "claude",
       model: "haiku",
       cwd: "/repo/mid",
-      attribution: { repositoryFullName: "closedloop-ai/cl-tofu-aws-live" },
+      attribution: { repositoryFullName: "example-org/infrastructure" },
       startedAt: "2026-01-10T00:00:00.000Z",
       lastActivityAt: "2026-01-11T00:00:00.000Z",
       endedAt: "2026-01-10T03:00:00.000Z",

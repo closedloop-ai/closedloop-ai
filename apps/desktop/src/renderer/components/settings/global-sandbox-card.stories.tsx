@@ -2,7 +2,7 @@ import type { SandboxInspectResult } from "../../types/desktop-api";
 import { GlobalSandboxSection } from "./global-sandbox-card";
 
 /**
- * ISS-4577 (wongk story review): the global sandbox editor has a real spread of
+ * ISS-4577 (whitlockk story review): the global sandbox editor has a real spread of
  * visual states worth pinning on a canvas — the settled default, the unset
  * ("Not set") state, the loading state before settings resolve, a risky-root
  * error, a missing-directory error, and the git-repo hint. Each story installs
@@ -23,7 +23,8 @@ type SandboxApiScenario = {
 };
 
 const meta = {
-  title: "Desktop/Settings/Global Sandbox Section",
+  title: "Composites v1.0/Desktop Shell/Global Sandbox Card",
+  tags: ["deprecated"],
   component: GlobalSandboxSection,
   parameters: {
     layout: "centered",

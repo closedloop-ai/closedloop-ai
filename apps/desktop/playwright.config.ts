@@ -12,35 +12,32 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
+import {
+  selectionFromEnv,
+  shardFromEnv,
+  workersFromEnv,
+} from "./test/e2e-selection.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   testDir: path.join(__dirname, "test/e2e"),
+  // ISS-10407 — change-scoped selection, `undefined` (the full suite) unless the
+  // lane explicitly narrowed. Decided here rather than as a CLI argument because
+  // the CI step runs this suite through `dbus-run-session` and `xvfb-run`, whose
+  // option parsers are documented in e2e-test.yml as mangling flags they did not
+  // expect. See test/e2e-selection.ts for why every ambiguous input fails open.
+  grep: selectionFromEnv(),
+  // ISS-9871: the post-merge lane's leg, null (the whole suite) everywhere else.
+  shard: shardFromEnv(),
   timeout: 60_000,
   outputDir: path.join(__dirname, "test-results-e2e"),
   retries: process.env.CI ? 1 : 0,
-  // ISS-5723: the suite is dominated by per-test `_electron.launch` startup, so
-  // its only real lever is running launches concurrently. Bounded at 2 on
-  // purpose — N concurrent Electron instances is a MEMORY question on the
-  // 4-vCPU/16GB `ubuntu-latest` runner, not a CPU one, and the gateway server's
-  // candidate scan (`PORT_PROBE_ORDER`) only has four ports to walk, so 4 is a
-  // hard ceiling regardless. Raising this further needs a CI measurement, not a
-  // local one: `desktop-e2e` needs a real display server and cannot be timed
-  // off-CI.
-  //
-  // Safe because every per-launch resource a spec can OBSERVE is isolated: a
-  // `mkdtemp` user-data dir (so SQLite, electron-store, the persistent log and
-  // Electron's own single-instance lock are per test), port-0 fixture servers,
-  // and — as of this change — the two fixed loopback listeners, via
-  // `E2E_EPHEMERAL_LOOPBACK_PORTS_ARG`. One shared write remains and is
-  // deliberately left alone: the gateway discovery file at
-  // `~/.closedloop-ai/electron-port` is `$HOME`-rooted rather than user-data
-  // rooted, so concurrent launches race it last-write-wins. That race predates
-  // this change (a single e2e launch already overwrote an operator's file), no
-  // spec reads it back, and fixing it means threading `discoveryFilePath`
-  // through `DesktopGatewayServer.createDefault` — its own change.
-  workers: 2,
+  // ISS-9871: 2 stays the default. Full validation and its matching attribution
+  // probe explicitly request 14; smoke and shard selection remain independent.
+  // The shared test gateway assigns ephemeral ports and profile-owned discovery
+  // writes, leaving production probe ports unchanged.
+  workers: workersFromEnv(),
   reporter: [
     ["list"],
     ["html", { outputFolder: path.join(__dirname, "playwright-report-e2e") }],
@@ -58,6 +55,18 @@ export default defineConfig({
           "playwright-report-e2e",
           "results.json"
         ),
+      },
+    ],
+    // ISS-10132: the same gate needs Datadog's quarantine verdict, and the JSON
+    // report above does not carry it — dd-trace suppresses a quarantined
+    // failure inside the runner without rewriting `stats.unexpected` or the
+    // test's `annotations`, so the gate reddened the REQUIRED `desktop-e2e`
+    // context on failures the runner had already absorbed. This writes the
+    // `_ddIsQuarantined` tags beside `results.json` for it to read.
+    [
+      path.join(__dirname, "scripts", "dd-quarantine-reporter.ts"),
+      {
+        outputDir: path.join(__dirname, "playwright-report-e2e"),
       },
     ],
   ],

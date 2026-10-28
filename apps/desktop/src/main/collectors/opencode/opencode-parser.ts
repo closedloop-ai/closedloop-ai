@@ -13,11 +13,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { estimateAgentComponentFootprintTokens } from "@repo/api/src/types/agent-component-footprint";
 import { OpencodeDefaultModel } from "@repo/lib/harness/synthetic-model-keys";
-import {
-  addStorageTokenCounts,
-  readStorageTokenCount,
-} from "../../cost/token-counts.js";
+import { recordToolResultFacts } from "@repo/lib/harness/tool-result-facts";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
 import {
   collectArtifacts,
   computeUnifiedDiffDelta,
@@ -43,7 +42,9 @@ import {
   type NormalizedTurnDuration,
 } from "../types.js";
 import { resolveOpencodeDiffStats } from "./opencode-diff-stats.js";
+import { opencodeFileCreatedAt } from "./opencode-file-created-at.js";
 import { getOpenCodeDbPath } from "./opencode-home.js";
+import { opencodeMessageApiError } from "./opencode-message-error.js";
 import {
   classifyOpencodeParseFailure,
   describeOpencodeParseFailure,
@@ -53,6 +54,7 @@ import {
   resolveSummaryColumnProbeFailure,
 } from "./opencode-parse-failure.js";
 import { extractOpenCodeTokenCounts } from "./opencode-token-extract.js";
+import { buildTokensByModel } from "./opencode-tokens-by-model.js";
 
 type Row = Record<string, unknown>;
 
@@ -65,8 +67,7 @@ function parseJsonCell(value: unknown): unknown {
 }
 
 // Token-count extraction (including the nested OpenCode `tokens.cache` shape,
-// ISS-4380) lives in `opencode-token-extract.ts` so this grandfathered parser
-// stays smaller.
+// ISS-4380) lives in `opencode-token-extract.ts` so this parser stays smaller.
 function extractTokenCounts(
   raw: Record<string, unknown>,
   context: string
@@ -131,12 +132,30 @@ function collectToolUse(
   let isError = false;
   const errorMessage = extractErrorMessage(state?.error ?? part.error);
 
+  // ISS-10736 (whitlockk review): the context footprint of the FULL result, taken
+  // here because every `output` below is capped at 4 KiB and a count over a
+  // capped prefix under-states the injection systematically. `undefined` when
+  // this call produced no result at all.
+  let outputFootprintTokens: number | undefined;
+  // ISS-12552: the same full result, for the facts read before the cap.
+  let fullResultText: string | undefined;
+
   if (status === "failed" || status === "error" || errorMessage) {
     isError = true;
-    const outputStr =
+    // Hoisted out of the ternary it used to sit in: that spelling `.slice(0,
+    // 500)`'d the non-string branch BEFORE `truncateText`, so counting the value
+    // as written would have under-stated an error payload by construction.
+    const rawOutputStr =
       typeof stateOutput === "string"
         ? stateOutput
-        : JSON.stringify(stateOutput ?? part.state ?? part).slice(0, 500);
+        : JSON.stringify(stateOutput ?? part.state ?? part);
+    const outputStr =
+      typeof stateOutput === "string"
+        ? rawOutputStr
+        : rawOutputStr.slice(0, 500);
+    const injected = errorMessage || rawOutputStr || "OpenCode tool error";
+    fullResultText = injected;
+    outputFootprintTokens = estimateAgentComponentFootprintTokens(injected);
     output = truncateText(
       errorMessage || outputStr || "OpenCode tool error",
       4096
@@ -154,10 +173,12 @@ function collectToolUse(
       typeof stateOutput === "string"
         ? stateOutput
         : JSON.stringify(stateOutput);
+    fullResultText = outputStr;
+    outputFootprintTokens = estimateAgentComponentFootprintTokens(outputStr);
     output = truncateText(outputStr, 4096);
   }
 
-  toolUses.push({
+  const toolUse: NormalizedToolUse = {
     name:
       (typeof part.tool === "string" ? part.tool : null) ||
       (typeof part.name === "string" ? part.name : null) ||
@@ -165,8 +186,17 @@ function collectToolUse(
     timestamp,
     input: safeJson(input),
     output,
+    ...(outputFootprintTokens === undefined ? {} : { outputFootprintTokens }),
     isError: isError || undefined,
-  });
+  };
+  // ISS-12552 (PRD-800 "Rollout"): result facts only under the policy.
+  if (
+    fullResultText !== undefined &&
+    effectiveParsePolicy().attributionEvidence
+  ) {
+    recordToolResultFacts(toolUse, fullResultText, isError);
+  }
+  toolUses.push(toolUse);
 }
 
 /**
@@ -521,13 +551,9 @@ function processMessageRows(acc: SessionAccumulator, messageRows: Row[]): void {
       messageRoleHandlers[role](acc, ctx);
     }
 
-    const errorMessage = extractErrorMessage(data.error);
-    if (errorMessage) {
-      acc.apiErrors.push({
-        type: "error",
-        message: errorMessage,
-        timestamp: ctx.iso,
-      });
+    const apiError = opencodeMessageApiError(data.error, ctx.iso);
+    if (apiError) {
+      acc.apiErrors.push(apiError);
     }
   }
 }
@@ -550,101 +576,6 @@ function processPartRows(acc: SessionAccumulator, partRows: Row[]): void {
       partTypeHandlers[part.type](acc, { iso, partRow, part });
     }
   }
-}
-
-/**
- * FEA-4183: fall back to the accumulated per-message/step token series when the
- * session-row aggregate carried no usage. `importPhaseTokenUsage` writes the
- * `token_usage` rows (and thus the authoritative `sessions.cost_usd_estimated`
- * rollup, which `updateSessionCostRollup` derives EXCLUSIVELY from
- * `token_usage`) from `tokensByModel` — NOT from `tokenSeries`. So a session
- * whose only usage lives in message/step rows (zero session token columns)
- * would still record a null cost even though the series captured the tokens.
- * Summing the series under the single synthetic `opencode-default` key (matching
- * the series' own fallback attribution) gives that session a priceable
- * `token_usage` row so a non-zero cost derives. Marked `inferred` because the
- * key is a synthetic fallback, not a model id read from the store.
- */
-function tokensByModelFromSeries(
-  tokenSeries: readonly NormalizedTokenRecord[]
-): Record<string, NormalizedTokenCounts> {
-  const tokensByModel: Record<string, NormalizedTokenCounts> = {};
-  if (tokenSeries.length === 0) {
-    return tokensByModel;
-  }
-  const total: NormalizedTokenCounts = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    inferred: true,
-  };
-  for (const record of tokenSeries) {
-    total.input += record.input;
-    total.output += record.output;
-    total.cacheRead += record.cacheRead;
-    total.cacheWrite += record.cacheWrite;
-  }
-  if (total.input || total.output || total.cacheRead || total.cacheWrite) {
-    tokensByModel[OpencodeDefaultModel] = total;
-  }
-  return tokensByModel;
-}
-
-/**
- * Build the per-model session-level token totals (5 token-column reads), falling
- * back to the accumulated token series when the session-row aggregate is empty
- * (see {@link tokensByModelFromSeries}).
- */
-function buildTokensByModel(
-  sessionRow: Row,
-  sessionModel: string | null,
-  tokenSeries: readonly NormalizedTokenRecord[]
-): Record<string, NormalizedTokenCounts> {
-  const tokensByModel: Record<string, NormalizedTokenCounts> = {};
-  const tokenInput = readStorageTokenCount(
-    sessionRow.tokens_input,
-    "opencode.session.input"
-  );
-  const tokenOutput = readStorageTokenCount(
-    sessionRow.tokens_output,
-    "opencode.session.output"
-  );
-  const tokenReasoning = readStorageTokenCount(
-    sessionRow.tokens_reasoning,
-    "opencode.session.reasoning"
-  );
-  const tokenCacheRead = readStorageTokenCount(
-    sessionRow.tokens_cache_read,
-    "opencode.session.cache_read"
-  );
-  const tokenCacheWrite = readStorageTokenCount(
-    sessionRow.tokens_cache_write,
-    "opencode.session.cache_write"
-  );
-  if (
-    tokenInput ||
-    tokenOutput ||
-    tokenReasoning ||
-    tokenCacheRead ||
-    tokenCacheWrite
-  ) {
-    const agent =
-      typeof sessionRow.agent === "string" ? sessionRow.agent : null;
-    const key = sessionModel || agent || OpencodeDefaultModel;
-    tokensByModel[key] = {
-      input: tokenInput,
-      output: addStorageTokenCounts(
-        tokenOutput,
-        tokenReasoning,
-        "opencode.session.output_with_reasoning"
-      ),
-      cacheRead: tokenCacheRead,
-      cacheWrite: tokenCacheWrite,
-    };
-    return tokensByModel;
-  }
-  return tokensByModelFromSeries(tokenSeries);
 }
 
 /**
@@ -772,7 +703,14 @@ function parseSessionRow(
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
     apiErrors: acc.apiErrors,
-    fileModifiedAt: Number(sessionRow.time_updated || 0) || null,
+    fileModifiedAt: readFileModifiedAt(sessionRow.time_updated, (message) =>
+      ctx.report(sessionIdStr, message)
+    ),
+    ...opencodeFileCreatedAt(
+      sessionRow.time_created,
+      sessionRow.time_updated,
+      (message) => ctx.report(sessionIdStr, message)
+    ),
     turnDurations: acc.turnDurations,
     entrypoint: "opencode",
     permissionMode,
@@ -867,7 +805,7 @@ function extractMessageText(data: Record<string, unknown>): string | null {
  * the unchanged-DB gate. A genuinely legacy DB answers the PRAGMA successfully
  * and still reads as `false`, unchanged.
  *
- * ISS-5238 (wongk review) splits that refusal rather than throwing on every
+ * ISS-5238 (whitlockk review) splits that refusal rather than throwing on every
  * failure: {@link resolveSummaryColumnProbeFailure} owns the split — a RETRYABLE
  * failure rethrows so the fingerprint stays put and the tick retries, while a
  * DURABLE one falls back to the legacy shape but SAYS SO on the monitored
@@ -1198,4 +1136,48 @@ function readSessionsFromDb(
   } finally {
     db.close();
   }
+}
+
+/**
+ * ISS-8883: the one `Number(cell || 0)` on the session row ISS-5238 left
+ * behind. `||` catches NaN and 0 but neither `Infinity` nor a negative, and
+ * SQLite is dynamically typed, so a third-party-written `time_updated` can
+ * hold either. `Infinity` is not a parse failure here — it dies at the worker
+ * wire (`z.number()` rejects non-finite), which fails the WHOLE store's parsed
+ * response and drops every valid sibling. A negative persisted as a confident
+ * 1969 mtime. A finite value past `Date`'s ±8.64e15 ms range is the same
+ * class — `toIso` already refuses it for the session's own timestamps, and
+ * downstream activity math would read it as "modified in the far future". All
+ * of those are `null`, the same absence every other collector emits when it
+ * has no mtime; `0` → `null` is today's behaviour and stays.
+ *
+ * A `null` here is two different facts, so only one of them reports: an absent
+ * cell (and the `0` sentinel) is an ordinary missing mtime, while a value that
+ * is present and unusable is corruption in a foreign store, and coercing that
+ * away silently would leave it indistinguishable from the absence. It goes to
+ * the monitored per-session sink, which the loader has already scoped to the
+ * session id and the `opencode.db` path.
+ */
+function readFileModifiedAt(
+  cell: unknown,
+  report: (message: string) => void
+): number | null {
+  if (cell === null || cell === undefined) {
+    return null;
+  }
+  const value = Number(cell);
+  if (value === 0) {
+    return null;
+  }
+  if (
+    !Number.isFinite(value) ||
+    value < 0 ||
+    Number.isNaN(new Date(value).getTime())
+  ) {
+    report(
+      `session.time_updated ${String(cell)} is not a usable epoch; fileModifiedAt is null`
+    );
+    return null;
+  }
+  return value;
 }

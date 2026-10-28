@@ -19,7 +19,7 @@ vi.mock("@repo/observability/telemetry/metrics", async () => {
   return telemetryModuleMock();
 });
 
-// FEA-4303 (thread wongk): pin the Model facet wiring through the real
+// FEA-4303 (thread whitlockk): pin the Model facet wiring through the real
 // `getUsageSummary`. `modelFilterOptions` must come from the PRIMARY-model
 // `sessionDetail.groupBy({ by: ["model"] })` (the value the table's Model column
 // paints), and `byModel` from the per-token-usage
@@ -48,13 +48,11 @@ describe("agentSessionsService.getUsageSummary — Model facet vs byModel (FEA-4
         }),
         groupBy: vi
           .fn()
-          // byUser
-          .mockResolvedValueOnce([])
           // byHarness
           .mockResolvedValueOnce([])
           // byRepository
           .mockResolvedValueOnce([])
-          // cost split (sourceLoopId + billingMode)
+          // cost split (legacyLoopCostLedger + billingMode)
           .mockResolvedValueOnce([])
           // FEA-4303: primary-model facet groupBy (by `model`). TWO primary
           // models — the ONLY values the Model column can show.
@@ -111,7 +109,14 @@ describe("agentSessionsService.getUsageSummary — Model facet vs byModel (FEA-4
     ]);
 
     // byModel: the token-usage set, which carries the subagent-only model.
-    expect(summary.byModel.map((entry) => entry.model)).toEqual([
+    //
+    // ISS-8554 O2 made this field OPTIONAL because the TypedSQL producer drops
+    // it. The LIVE producer under test here still emits it, and asserting that
+    // is the point — a narrowing that let `undefined` pass would turn this
+    // parity check into a test that cannot fail.
+    expect(summary.byModel).toBeDefined();
+    const byModel = summary.byModel ?? [];
+    expect(byModel.map((entry) => entry.model)).toEqual([
       "claude-opus",
       "claude-haiku",
     ]);
@@ -120,7 +125,7 @@ describe("agentSessionsService.getUsageSummary — Model facet vs byModel (FEA-4
     // is only a subagent model appears in byModel but NEVER as a facet option.
     const facetModels = summary.modelFilterOptions?.map((o) => o.model) ?? [];
     expect(facetModels).not.toContain("claude-haiku");
-    const byModelModels = summary.byModel.map((entry) => entry.model);
+    const byModelModels = byModel.map((entry) => entry.model);
     expect(byModelModels).toContain("claude-haiku");
     expect(byModelModels).not.toContain("claude-sonnet");
   });

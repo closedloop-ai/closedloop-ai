@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterAll, test } from "vitest";
 import { compareMigrationDirNames } from "../scripts/migration-order.mjs";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 
@@ -32,7 +32,7 @@ const TELEMETRY_COLUMNS = [
 
 const tempDirs: string[] = [];
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );

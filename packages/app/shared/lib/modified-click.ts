@@ -8,7 +8,7 @@ import type { MouseEvent } from "react";
  * opens the link's `href` on its own, and the current tab's state must be left
  * untouched.
  *
- * ISS-4534 (wongk): the Sessions recovery Link ran its "clear filters + reload"
+ * ISS-4534 (whitlockk): the Sessions recovery Link ran its "clear filters + reload"
  * side effect on EVERY click, so a Cmd/Ctrl-click that opened the clean Sessions
  * URL in a new tab ALSO wiped the filters in the tab the user meant to keep. Gate
  * the side effect behind `!isModifiedClick(event)` so a modified click only

@@ -2,13 +2,23 @@ import {
   AgentComponentKind,
   ComponentResolvedState,
 } from "@repo/api/src/types/agent-component";
-import {
-  AGENT_SESSION_SYNC_SCHEMA_VERSION,
-  AgentSessionSyncMode,
-  type SyncedAgentSession,
-  type SyncedComponentUsage,
-} from "@repo/api/src/types/agent-session";
+import type { SyncedComponentUsage } from "@repo/api/src/types/agent-session";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  buildComponentUsage,
+  buildPayload,
+  buildSyncedSession,
+  buildUpsertSessionsContext,
+  createInstallDb,
+  PERSISTED_SESSION_ID,
+  SESSION_STARTED_AT,
+  SESSION_UPDATED_AT,
+  usageUpsertCreates,
+} from "@/__tests__/support/agent-sessions/component-usage-sync.test-harness";
+import {
+  INDEX_KEY_MAX_BYTES,
+  projectIndexKey,
+} from "@/lib/index-key-projection";
 
 const mocks = vi.hoisted(() => ({
   dbNull: Symbol("db-null"),
@@ -64,201 +74,7 @@ vi.mock("@repo/observability/telemetry/metrics", () => ({
 
 import { agentSessionsService } from "../service";
 
-const SESSION_STARTED_AT = new Date("2026-05-01T10:00:00.000Z");
-const SESSION_UPDATED_AT = new Date("2026-05-01T10:30:00.000Z");
-const PERSISTED_SESSION_ID = "persisted-session-uuid-1";
-const COMPUTE_TARGET_ID = "target-sync-1";
-const ORG_ID = "org-sync-1";
-const USER_ID = "user-sync-1";
-
-function installDb(overrides: Record<string, unknown> = {}) {
-  const hasExecuteRawOverride = Object.hasOwn(overrides, "$executeRaw");
-  const dbWithDefaults = {
-    $executeRaw: vi.fn().mockResolvedValue(undefined),
-    $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
-    $queryRawUnsafe: vi
-      .fn()
-      .mockResolvedValue([{ toolUseCount: 0n, errorCount: 0n }]),
-    computeTarget: {
-      findFirst: vi.fn().mockResolvedValue({ id: COMPUTE_TARGET_ID }),
-      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-    },
-    organization: {
-      findUnique: vi.fn().mockResolvedValue({ settings: null }),
-    },
-    slugCounter: {
-      upsert: vi.fn().mockResolvedValue({ currentValue: 1 }),
-    },
-    sessionDetail: {
-      findUnique: vi.fn().mockResolvedValue(null),
-      upsert: vi.fn().mockResolvedValue({ artifactId: PERSISTED_SESSION_ID }),
-      update: vi.fn().mockResolvedValue({}),
-      findMany: vi.fn().mockResolvedValue([]),
-    },
-    agentSessionEvent: {
-      count: vi.fn().mockResolvedValue(0),
-      aggregate: vi.fn().mockResolvedValue({ _max: { eventCreatedAt: null } }),
-    },
-    agentSessionTokenUsage: {
-      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-      createMany: vi.fn().mockResolvedValue({ count: 0 }),
-    },
-    artifactLink: {
-      findFirst: vi.fn().mockResolvedValue(null),
-      findMany: vi.fn().mockResolvedValue([]),
-    },
-    sessionTranscript: {
-      findMany: vi.fn().mockResolvedValue([]),
-    },
-    agentComponent: {
-      findMany: vi.fn().mockResolvedValue([]),
-    },
-    agentComponentSessionUsage: {
-      upsert: vi.fn().mockResolvedValue({}),
-      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-    },
-    ...overrides,
-  };
-
-  // Tests that override `agentComponentSessionUsage` typically supply only
-  // `upsert`; keep the FEA-2990 prune `deleteMany` available so the flow never
-  // dies on an undefined method.
-  const usageStore = dbWithDefaults.agentComponentSessionUsage as {
-    deleteMany?: unknown;
-    upsert?: (input: unknown) => unknown;
-  };
-  if (!usageStore.deleteMany) {
-    usageStore.deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-  }
-  if (!hasExecuteRawOverride) {
-    dbWithDefaults.$executeRaw = vi.fn(
-      async (
-        _strings: TemplateStringsArray | readonly string[],
-        ...expressions: unknown[]
-      ) => {
-        const values = expressions.flatMap((expression) =>
-          expression &&
-          Array.isArray((expression as { values?: unknown[] }).values)
-            ? (expression as { values: unknown[] }).values
-            : [expression]
-        );
-        for (let index = 0; index < values.length; index += 12) {
-          const [
-            ,
-            agentSessionId,
-            componentKind,
-            componentKey,
-            gitBranch,
-            agentComponentId,
-            harness,
-            invocationCount,
-            errorCount,
-            componentVersionHash,
-            firstInvokedAt,
-            lastInvokedAt,
-          ] = values.slice(index, index + 12);
-          if (componentKind === undefined) {
-            continue;
-          }
-          await usageStore.upsert?.({
-            create: {
-              agentComponentId,
-              agentSessionId,
-              componentKind,
-              componentKey,
-              componentVersionHash,
-              errorCount,
-              firstInvokedAt,
-              gitBranch,
-              harness,
-              invocationCount,
-              lastInvokedAt,
-            },
-            update: {
-              agentComponentId,
-              componentVersionHash,
-              errorCount,
-              firstInvokedAt,
-              harness,
-              invocationCount,
-              lastInvokedAt,
-            },
-            where: {
-              agentSessionId_componentKind_componentKey_gitBranch: {
-                agentSessionId,
-                componentKind,
-                componentKey,
-                gitBranch,
-              },
-            },
-          });
-        }
-      }
-    );
-  }
-
-  mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
-    callback(dbWithDefaults)
-  );
-  mocks.withDb.tx.mockImplementation((callback: (db: unknown) => unknown) =>
-    callback(dbWithDefaults)
-  );
-
-  return dbWithDefaults;
-}
-
-function buildSyncedSession(
-  overrides: Partial<SyncedAgentSession> = {}
-): SyncedAgentSession {
-  return {
-    externalSessionId: "ext-sess-1",
-    name: "Test Session",
-    status: "active",
-    harness: "claude",
-    cwd: "/tmp/project",
-    model: "claude-sonnet-4",
-    startedAt: SESSION_STARTED_AT.toISOString(),
-    updatedAt: SESSION_UPDATED_AT.toISOString(),
-    agents: [],
-    events: [],
-    tokenUsageByModel: [],
-    ...overrides,
-  };
-}
-
-function buildComponentUsage(
-  overrides: Partial<SyncedComponentUsage> = {}
-): SyncedComponentUsage {
-  return {
-    componentKind: "skill",
-    componentKey: "my-skill",
-    externalComponentId: "skill::my-skill",
-    harness: "claude",
-    invocations: 5,
-    errorCount: 0,
-    firstInvokedAt: SESSION_STARTED_AT.toISOString(),
-    lastInvokedAt: SESSION_UPDATED_AT.toISOString(),
-    ...overrides,
-  };
-}
-
-function buildUpsertSessionsContext() {
-  return {
-    organizationId: ORG_ID,
-    userId: USER_ID,
-    computeTargetId: COMPUTE_TARGET_ID,
-  };
-}
-
-function buildPayload(sessions: SyncedAgentSession[]) {
-  return {
-    schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-    batchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    syncMode: AgentSessionSyncMode.Incremental,
-    sessionCount: sessions.length,
-    sessions,
-  };
-}
+const installDb = createInstallDb(mocks.withDb);
 
 describe("upsertSessions — persistSessionComponentUsage", () => {
   beforeEach(() => {
@@ -369,6 +185,123 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
     expect(upsertArgs?.update?.agentComponentId).toBe(EXISTING_COMPONENT_ID);
   });
 
+  /**
+   * ISS-8200 (review): driven through the PRODUCTION entry point, because the
+   * narrow `loadComponentInventoryRows` cases pin only the bind shape. Two
+   * production edits live between that helper and the FK that lands on the row
+   * — which usages the lookup is built from, and how the returned rows are
+   * keyed — and reverting either leaves those narrow cases green.
+   *
+   * The inventory double FILTERS on what the statement actually asked for, so
+   * it cannot answer the same way regardless of the candidates under test.
+   */
+  it("resolves agentComponentId against an inventory row still stored under its RAW key", async () => {
+    const LEGACY_COMPONENT_ID = "legacy-raw-component-uuid";
+    const rawExternalId = `skill::${"e".repeat(INDEX_KEY_MAX_BYTES)}`;
+    const usageUpsert = vi.fn().mockResolvedValue({});
+    const findMany = vi.fn(
+      async (input: {
+        where: {
+          OR: Array<{ componentKind: string; externalComponentId: string }>;
+        };
+      }) =>
+        input.where.OR.some(
+          (pair) =>
+            pair.componentKind === "skill" &&
+            pair.externalComponentId === rawExternalId
+        )
+          ? [
+              {
+                id: LEGACY_COMPONENT_ID,
+                componentKind: "skill",
+                externalComponentId: rawExternalId,
+              },
+            ]
+          : []
+    );
+    installDb({
+      agentComponent: { findMany },
+      agentComponentSessionUsage: { upsert: usageUpsert },
+    });
+
+    await agentSessionsService.upsertSessions(
+      buildUpsertSessionsContext(),
+      buildPayload([
+        buildSyncedSession({
+          components: [
+            buildComponentUsage({
+              componentKind: "skill",
+              componentKey: "my-skill",
+              externalComponentId: rawExternalId,
+            }),
+          ],
+        }),
+      ])
+    );
+
+    // The raw candidate really was asked for — otherwise this passes on a
+    // double that would have answered anything.
+    expect(
+      findMany.mock.calls[0]?.[0].where.OR.map(
+        (pair) => pair.externalComponentId
+      )
+    ).toContain(rawExternalId);
+    // And the FK actually landed on the legacy row.
+    expect(usageUpsertCreates(usageUpsert)[0]?.agentComponentId).toBe(
+      LEGACY_COMPONENT_ID
+    );
+  });
+
+  it("prefers the PROJECTED inventory row when a legacy raw sibling also exists", async () => {
+    // ISS-8200 (review): both rows fold onto one lookup key and the statement
+    // has no ORDER BY, so without a deterministic tie-break the FK is decided
+    // by whatever order Postgres returned — the same component resolving to a
+    // different inventory row between syncs. Asserted in BOTH return orders, so
+    // a fold that merely happens to take the last row cannot pass.
+    const rawExternalId = `skill::${"e".repeat(INDEX_KEY_MAX_BYTES)}`;
+    const projectedExternalId = projectIndexKey(rawExternalId).value;
+    const legacyRow = {
+      id: "legacy-raw-uuid",
+      componentKind: "skill",
+      externalComponentId: rawExternalId,
+    };
+    const projectedRow = {
+      id: "projected-uuid",
+      componentKind: "skill",
+      externalComponentId: projectedExternalId,
+    };
+
+    for (const rows of [
+      [legacyRow, projectedRow],
+      [projectedRow, legacyRow],
+    ]) {
+      const usageUpsert = vi.fn().mockResolvedValue({});
+      installDb({
+        agentComponent: { findMany: vi.fn().mockResolvedValue(rows) },
+        agentComponentSessionUsage: { upsert: usageUpsert },
+      });
+
+      await agentSessionsService.upsertSessions(
+        buildUpsertSessionsContext(),
+        buildPayload([
+          buildSyncedSession({
+            components: [
+              buildComponentUsage({
+                componentKind: "skill",
+                componentKey: "my-skill",
+                externalComponentId: rawExternalId,
+              }),
+            ],
+          }),
+        ])
+      );
+
+      expect(usageUpsertCreates(usageUpsert)[0]?.agentComponentId).toBe(
+        projectedRow.id
+      );
+    }
+  });
+
   it("resolves agentComponentId to null when no matching AgentComponent row exists", async () => {
     const usageUpsert = vi.fn().mockResolvedValue({});
     installDb({
@@ -399,43 +332,11 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
     expect(upsertArgs?.update?.agentComponentId).toBeNull();
   });
 
-  it("is a no-op when session.components[] is absent (older desktop builds)", async () => {
-    const usageUpsert = vi.fn().mockResolvedValue({});
-    installDb({
-      agentComponentSessionUsage: {
-        upsert: usageUpsert,
-      },
-    });
-
-    // Session without components field (older desktop build)
-    const session = buildSyncedSession(); // no `components` field
-
-    await agentSessionsService.upsertSessions(
-      buildUpsertSessionsContext(),
-      buildPayload([session])
-    );
-
-    // AgentComponentSessionUsage upsert should NOT be called
-    expect(usageUpsert).not.toHaveBeenCalled();
-  });
-
-  it("is a no-op when session.components[] is empty", async () => {
-    const usageUpsert = vi.fn().mockResolvedValue({});
-    installDb({
-      agentComponentSessionUsage: {
-        upsert: usageUpsert,
-      },
-    });
-
-    const session = buildSyncedSession({ components: [] });
-
-    await agentSessionsService.upsertSessions(
-      buildUpsertSessionsContext(),
-      buildPayload([session])
-    );
-
-    expect(usageUpsert).not.toHaveBeenCalled();
-  });
+  // ISS-6659: the `components` absent / empty no-ops moved to
+  // `component-usage-guards.test.ts`. Asserting only "no row was written" for a
+  // session that reports nothing stays green for an early return that fires on a
+  // VALID payload too, so those cases now run beside a neighbour session that
+  // must still be persisted.
 
   it("writes usage rows for multiple components in a single session", async () => {
     const usageUpsert = vi.fn().mockResolvedValue({});
@@ -752,7 +653,8 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
     // Built-in tool without externalComponentId should resolve to null
     expect(toolCall?.[0].create.agentComponentId).toBeNull();
 
-    // agentComponent.findMany should only be called ONCE (batched), not per-usage
+    // The inventory fixture should be queried once for the non-null external id,
+    // not once per usage row.
     expect(agentComponentFindMany).toHaveBeenCalledTimes(1);
   });
 });
@@ -786,23 +688,6 @@ function resolvedSkillIdRow() {
   };
 }
 
-type UsageCreateArgs = {
-  componentKind: string;
-  componentKey: string;
-  gitBranch: string;
-  invocationCount: number;
-  errorCount: number;
-  agentComponentId: string | null;
-  firstInvokedAt: Date | null;
-  lastInvokedAt: Date | null;
-};
-
-function usageUpsertCreates(upsert: ReturnType<typeof vi.fn>) {
-  return (upsert.mock.calls as [{ create: UsageCreateArgs }][]).map(
-    ([args]) => args.create
-  );
-}
-
 describe("upsertSessions — ISS-4778 skill-shadowed command usage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -814,7 +699,7 @@ describe("upsertSessions — ISS-4778 skill-shadowed command usage", () => {
       .fn()
       // 1st call: the skill-shadow inventory lookup.
       .mockResolvedValueOnce([resolvedSkillRow()])
-      // 2nd call: the agentComponentId batch resolution.
+      // 2nd call: the raw FK lookup fixture decoded by the test harness.
       .mockResolvedValueOnce([resolvedSkillIdRow()]);
     installDb({
       agentComponent: { findMany: agentComponentFindMany },
@@ -868,6 +753,7 @@ describe("upsertSessions — ISS-4778 skill-shadowed command usage", () => {
     const agentComponentFindMany = vi
       .fn()
       .mockResolvedValueOnce([resolvedSkillRow()])
+      // 2nd call: the raw FK lookup fixture decoded by the test harness.
       .mockResolvedValueOnce([resolvedSkillIdRow()]);
     installDb({
       agentComponent: { findMany: agentComponentFindMany },
@@ -957,7 +843,7 @@ describe("upsertSessions — ISS-4778 skill-shadowed command usage", () => {
             {
               componentKey: GENUINE_KEY,
               componentKind: AgentComponentKind.Command,
-              // ISS-4923 (wongk review): the inventory read no longer filters
+              // ISS-4923 (whitlockk review): the inventory read no longer filters
               // COMMAND rows to `resolved` in SQL — it reads every state and
               // splits on `resolvedState` / `content` in code, so the fixture
               // has to carry both columns the split reads.

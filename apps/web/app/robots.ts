@@ -1,24 +1,20 @@
+import { siteUrl } from "@repo/seo/site-url";
 import type { MetadataRoute } from "next";
 
-function getBaseUrl() {
-  const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+export default function robots(): MetadataRoute.Robots {
+  const rules = {
+    userAgent: "*",
+    allow: "/",
+  };
+  const baseUrl = siteUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
 
-  if (productionUrl) {
-    const protocol = productionUrl.startsWith("https") ? "https" : "http";
-    return new URL(`${protocol}://${productionUrl}`);
+  // `Sitemap:` takes an absolute URL, so with no base there is none to name.
+  if (!baseUrl) {
+    return { rules };
   }
 
-  return new URL("http://localhost:3001");
-}
-
-export default function robots(): MetadataRoute.Robots {
-  const baseUrl = getBaseUrl();
-
   return {
-    rules: {
-      userAgent: "*",
-      allow: "/",
-    },
+    rules,
     sitemap: new URL("/sitemap.xml", baseUrl).href,
   };
 }

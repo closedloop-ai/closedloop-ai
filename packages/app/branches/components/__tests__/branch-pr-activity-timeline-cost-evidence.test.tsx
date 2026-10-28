@@ -32,7 +32,7 @@
  * is now its own rendered outcome (item 4 below), so pairing it with this shape
  * would prove the absent-evidence rule and quietly stop proving this one.
  *
- * wongk review — three states where the marker was still on or off for the wrong
+ * whitlockk review — three states where the marker was still on or off for the wrong
  * reason, each covered below:
  *
  * 1. A loaded trace makes `detailForLoadedTimelineSessions` rewrite that legacy
@@ -49,7 +49,7 @@
  *    the total shown is the charted spend beside a figure reading "Unavailable".
  *    It is now set only when a non-null chartable figure was actually selected.
  *
- * shafty023 review — the fourth state, and the one the fixtures above were
+ * davetho review — the fourth state, and the one the fixtures above were
  * silently standing on:
  *
  * 4. A trace that never arrived was read as `!== Incomplete`, the same answer a
@@ -68,7 +68,7 @@ import {
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   makeBranchDetail,
@@ -76,14 +76,20 @@ import {
 } from "../../__tests__/branch-fixtures";
 import { BranchPrActivityTimeline } from "../branch-pr-activity-timeline";
 import {
+  detailForLoadedTimelineSessions,
+  formatTimelineEvidenceValue,
   resolveTimelineCostEvidence,
   TimelineTraceEvidence,
 } from "../branch-pr-activity-timeline-helpers";
+import { costStat } from "./branch-timeline-header-stats.test-helpers";
 
 const TIMING_UNAVAILABLE_RE = /Timing is unavailable for SES-2/;
 const UNPRICED_BRANCH_RE = /no attributed cost of its own/;
 const INCOMPLETE_EVIDENCE_RE = /trace evidence could not be loaded/;
-
+const UNAVAILABLE_FIGURE = formatTimelineEvidenceValue(
+  "",
+  TimelineTraceEvidence.Unavailable
+);
 function loadedTraceState(artifactIds: readonly string[]): BranchTraceState {
   return {
     sessions: artifactIds.map((artifactId) => ({
@@ -106,7 +112,7 @@ function chartableSession(over: Partial<ReturnType<typeof makeBranchSession>>) {
     startedAt: "2026-06-10T10:00:00.000Z",
     endedAt: "2026-06-10T11:00:00.000Z",
     estimatedCostUsd: 5,
-    ownerUserName: "Chris",
+    ownerUserName: "Cosimo",
     ...over,
   });
 }
@@ -154,6 +160,58 @@ function mixedTraceState(): BranchTraceState {
   };
 }
 
+function unstampedOnlyLoadedTraceState(): BranchTraceState {
+  return {
+    sessions: [
+      {
+        identity: {
+          artifactId: "s1",
+          name: "Stamped Session",
+          navigableRef: "SES-1",
+          slug: "SES-1",
+        },
+        reason: BranchTraceUnavailableReason.Permission,
+        state: BranchTraceSessionHydrationState.Unavailable,
+      },
+      {
+        identity: {
+          artifactId: "s2",
+          name: "Unstamped Session",
+          navigableRef: "SES-2",
+          slug: "SES-2",
+        },
+        state: BranchTraceSessionHydrationState.Loaded,
+      },
+    ],
+    qualifyingSessionCount: 2,
+    completeness: { state: BranchTraceCompletenessState.Incomplete },
+    aggregateCompleteness: { state: BranchTraceCompletenessState.Incomplete },
+  };
+}
+
+function allSessionsLoadedTruncatedTraceState(): BranchTraceState {
+  return {
+    sessions: ["s1", "s2"].map((artifactId) => ({
+      identity: {
+        artifactId,
+        name: artifactId,
+        navigableRef: artifactId,
+        slug: artifactId,
+      },
+      state: BranchTraceSessionHydrationState.Loaded,
+    })),
+    qualifyingSessionCount: 2,
+    completeness: {
+      eventsTruncated: true,
+      state: BranchTraceCompletenessState.Incomplete,
+    },
+    aggregateCompleteness: {
+      eventsTruncated: true,
+      state: BranchTraceCompletenessState.Incomplete,
+    },
+  };
+}
+
 /** A priced Branch whose second Session's trace evidence never loaded. */
 function mixedEvidenceDetail() {
   return makeBranchDetail({
@@ -181,19 +239,11 @@ function mixedEvidenceDetail() {
 }
 
 /**
- * The legacy shape whose TWO cost candidates genuinely differ — the only shape
- * on which a gate-closed assertion can tell the shipped selection apart from
- * the one this change introduces.
+ * The legacy shape whose loaded trace used to fabricate a numeric subtotal from
+ * all-unpriced loaded Sessions.
  *
- * No attributed total, the null-on-zero raw total, and a bucketable Session
- * that is itself unpriced. A loaded trace makes
- * `detailForLoadedTimelineSessions` rewrite the Branch total to the
- * loaded-Session subtotal (`0`), while no rendered segment has a known cost so
- * `chartableCostUsd` stays `null`. Timing is complete and the trace reports
- * Complete, so neither of the older fallback reasons is in play: the ONLY
- * question the render answers here is which candidate the value selection
- * picked. Shipped picks the rewritten `0` and renders "$0.00"; reaching for the
- * chartable candidate renders "Unavailable".
+ * Timing is complete and the trace reports Complete, so this fixture isolates
+ * the loaded-cost evidence path.
  */
 function unpricedSessionLegacyBranchDetail() {
   return makeBranchDetail({
@@ -204,6 +254,42 @@ function unpricedSessionLegacyBranchDetail() {
       chartableSession({
         sessionId: "s1",
         slug: "SES-1",
+        estimatedCostUsd: null,
+      }),
+    ],
+  });
+}
+
+/** Legacy producer with a loaded Session whose cost is known to be zero. */
+function zeroCostSessionLegacyBranchDetail() {
+  return makeBranchDetail({
+    additions: 100,
+    deletions: 0,
+    estimatedCostUsd: null,
+    sessions: [
+      chartableSession({
+        sessionId: "s1",
+        slug: "SES-1",
+        estimatedCostUsd: 0,
+      }),
+    ],
+  });
+}
+
+function mixedZeroAndUnpricedSessionLegacyBranchDetail() {
+  return makeBranchDetail({
+    additions: 100,
+    deletions: 0,
+    estimatedCostUsd: null,
+    sessions: [
+      chartableSession({
+        sessionId: "s1",
+        slug: "SES-1",
+        estimatedCostUsd: 0,
+      }),
+      chartableSession({
+        sessionId: "s2",
+        slug: "SES-2",
         estimatedCostUsd: null,
       }),
     ],
@@ -238,6 +324,30 @@ function pricedBranchDetail() {
   });
 }
 
+/** A complete trace whose Branch total must govern mixed stamped rows. */
+function mixedStampedBranchDetail() {
+  return makeBranchDetail({
+    additions: 100,
+    attributedCostUsd: 15,
+    deletions: 0,
+    estimatedCostUsd: 20,
+    sessions: [
+      chartableSession({
+        sessionId: "s1",
+        slug: "SES-1",
+        estimatedCostUsd: 10,
+        evenSplitCostUsd: 10,
+      }),
+      chartableSession({
+        sessionId: "s2",
+        slug: "SES-2",
+        estimatedCostUsd: 10,
+        ownerUserName: "Tamsin",
+      }),
+    ],
+  });
+}
+
 /** A priced Branch with one loaded Session that cannot produce a bar. */
 function timingIncompleteDetail() {
   return makeBranchDetail({
@@ -253,7 +363,7 @@ function timingIncompleteDetail() {
         startedAt: "2026-06-10T12:00:00.000Z",
         endedAt: "2026-06-10T12:00:00.000Z",
         estimatedCostUsd: 7,
-        ownerUserName: "Thadeus",
+        ownerUserName: "Tamsin",
       }),
     ],
   });
@@ -280,6 +390,47 @@ function renderTimeline({
     </FeatureFlagAdapterProvider>
   );
 }
+
+describe("detailForLoadedTimelineSessions", () => {
+  it("keeps all-unpriced loaded Session evidence at the legacy zero without the gated rewrite", () => {
+    const renderedDetail = detailForLoadedTimelineSessions(
+      unpricedSessionLegacyBranchDetail(),
+      loadedTraceState(["s1"])
+    );
+
+    expect(renderedDetail.estimatedCostUsd).toBe(0);
+  });
+
+  it("keeps all-unpriced loaded Session evidence unavailable with the gated rewrite", () => {
+    const renderedDetail = detailForLoadedTimelineSessions(
+      unpricedSessionLegacyBranchDetail(),
+      loadedTraceState(["s1"]),
+      { requireKnownLoadedCost: true }
+    );
+
+    expect(renderedDetail.estimatedCostUsd).toBeNull();
+  });
+
+  it("keeps known zero loaded Session evidence distinct from unavailable", () => {
+    const renderedDetail = detailForLoadedTimelineSessions(
+      zeroCostSessionLegacyBranchDetail(),
+      loadedTraceState(["s1"]),
+      { requireKnownLoadedCost: true }
+    );
+
+    expect(renderedDetail.estimatedCostUsd).toBe(0);
+  });
+
+  it("keeps mixed zero and unpriced loaded Session evidence unavailable with the gated rewrite", () => {
+    const renderedDetail = detailForLoadedTimelineSessions(
+      mixedZeroAndUnpricedSessionLegacyBranchDetail(),
+      loadedTraceState(["s1", "s2"]),
+      { requireKnownLoadedCost: true }
+    );
+
+    expect(renderedDetail.estimatedCostUsd).toBeNull();
+  });
+});
 
 describe("resolveTimelineCostEvidence", () => {
   it("returns the authoritative total and marks nothing", () => {
@@ -338,7 +489,7 @@ describe("resolveTimelineCostEvidence", () => {
     });
   });
 
-  // wongk 1 at the predicate itself: the figure handed in is a settled number
+  // whitlockk 1 at the predicate itself: the figure handed in is a settled number
   // (a loaded trace rewrote it), and only the separately-carried source absence
   // can still reach the fallback reason.
   it("says so from source absence even when the figure was rewritten to a number", () => {
@@ -360,7 +511,7 @@ describe("resolveTimelineCostEvidence", () => {
     });
   });
 
-  // wongk 2: the reason that marks a figure inside `formatTimelineEvidenceValue`
+  // whitlockk 2: the reason that marks a figure inside `formatTimelineEvidenceValue`
   // has to come back out of this predicate, or the marker it puts on the figure
   // has no describedby and no sentence.
   it("carries aggregate trace incompleteness as its own disclosed reason", () => {
@@ -469,12 +620,12 @@ describe("resolveTimelineCostEvidence", () => {
     });
   });
 
-  // wongk 3 \u2014 CHANGED EXPECTATION. This case used to assert
+  // whitlockk 3 \u2014 CHANGED EXPECTATION. This case used to assert
   // `unpricedBranchFallback: true`, which set a sentence claiming the total
   // shown is the spend charted above while the figure resolved to nothing and
   // rendered "Unavailable". No chartable figure was selected, so that reason is
   // now off; the value being null is the whole and honest claim.
-  // shafty023 — absent evidence is its own state. The ONLY difference from the
+  // davetho — absent evidence is its own state. The ONLY difference from the
   // first case in this suite is the boundary answer, and it has to be enough to
   // change the outcome; a `traceEvidenceIncomplete` boolean gave `false` here
   // and for a confirmed-complete trace alike.
@@ -561,7 +712,7 @@ describe("resolveTimelineCostEvidence", () => {
 });
 
 describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
-  // shafty023 — the trace that never arrived. `BranchSessionsTimelineTab` passes
+  // davetho — the trace that never arrived. `BranchSessionsTimelineTab` passes
   // `traceQuery.data ?? null` and renders this once the query settles, so a
   // legacy or failed trace response is a real, reachable window. It used to be
   // indistinguishable from a confirmed-complete trace: this same fixture pinned
@@ -594,9 +745,11 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: false,
     });
 
-    expect(screen.getByText("$5.00", { exact: true })).toBeInTheDocument();
+    expect(
+      within(costStat()).getByText("$5.00", { exact: true })
+    ).toBeInTheDocument();
     expect(screen.queryByText("$5.00*")).not.toBeInTheDocument();
-    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText(UNAVAILABLE_FIGURE)).not.toBeInTheDocument();
     expect(screen.queryByText(UNPRICED_BRANCH_RE)).not.toBeInTheDocument();
     expect(screen.queryByText(TIMING_UNAVAILABLE_RE)).not.toBeInTheDocument();
   });
@@ -608,8 +761,62 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: true,
     });
 
-    expect(screen.getByText("$5.00", { exact: true })).toBeInTheDocument();
+    expect(
+      within(costStat()).getByText("$5.00", { exact: true })
+    ).toBeInTheDocument();
     expect(screen.queryByText("$5.00*")).not.toBeInTheDocument();
+  });
+
+  it("keeps a complete trace reconciled to the authoritative Branch cost when stamped and unstamped rows mix", () => {
+    renderTimeline({
+      detail: mixedStampedBranchDetail(),
+      traceState: loadedTraceState(["s1", "s2"]),
+      markerEnabled: true,
+    });
+
+    expect(
+      within(costStat()).getByText("$15.00", { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("$20.00", { exact: true })
+    ).not.toBeInTheDocument();
+    expect(screen.getByTitle("Cosimo · $10.00")).toBeInTheDocument();
+    expect(screen.getByTitle("Tamsin · $5.00")).toBeInTheDocument();
+    expect(screen.queryByTitle("Tamsin · $10.00")).not.toBeInTheDocument();
+  });
+
+  it("uses the full source residual scale when only the unstamped row loaded", () => {
+    renderTimeline({
+      detail: mixedStampedBranchDetail(),
+      traceState: unstampedOnlyLoadedTraceState(),
+      markerEnabled: true,
+    });
+
+    expect(within(costStat()).getByText("$5.00*")).toHaveAccessibleDescription(
+      INCOMPLETE_EVIDENCE_RE
+    );
+    expect(screen.queryByText("$10.00*")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Cosimo · $10.00")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Tamsin · $5.00")).toBeInTheDocument();
+    expect(screen.queryByTitle("Tamsin · $10.00")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Branch cost authoritative when every session loaded but trace events were truncated", () => {
+    renderTimeline({
+      detail: mixedStampedBranchDetail(),
+      traceState: allSessionsLoadedTruncatedTraceState(),
+      markerEnabled: true,
+    });
+
+    expect(within(costStat()).getByText("$15.00*")).toHaveAccessibleDescription(
+      INCOMPLETE_EVIDENCE_RE
+    );
+    expect(
+      screen.queryByText("$17.50*", { exact: true })
+    ).not.toBeInTheDocument();
+    expect(screen.getByTitle("Cosimo · $10.00")).toBeInTheDocument();
+    expect(screen.getByTitle("Tamsin · $5.00")).toBeInTheDocument();
+    expect(screen.queryByTitle("Tamsin · $7.50")).not.toBeInTheDocument();
   });
 
   it("keeps marking — and disclosing — the timing-incomplete fallback under both gate states", () => {
@@ -620,14 +827,14 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
         markerEnabled,
       });
 
-      expect(screen.getByText("$5.00*")).toHaveAccessibleDescription(
-        TIMING_UNAVAILABLE_RE
-      );
+      expect(
+        within(costStat()).getByText("$5.00*")
+      ).toHaveAccessibleDescription(TIMING_UNAVAILABLE_RE);
       unmount();
     }
   });
 
-  // wongk 1 — the null-to-loaded transition. `detailForLoadedTimelineSessions`
+  // whitlockk 1 — the null-to-loaded transition. `detailForLoadedTimelineSessions`
   // rewrites this legacy Branch's null `estimatedCostUsd` to the loaded-Session
   // subtotal, so the figure handed to the predicate is a normal settled number.
   // Only source absence read from the UNREWRITTEN detail can keep the marker on,
@@ -639,7 +846,7 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: true,
     });
 
-    expect(screen.getByText("$5.00*")).toHaveAccessibleDescription(
+    expect(within(costStat()).getByText("$5.00*")).toHaveAccessibleDescription(
       UNPRICED_BRANCH_RE
     );
     expect(screen.getByText(UNPRICED_BRANCH_RE)).toBeInTheDocument();
@@ -659,7 +866,9 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: false,
     });
 
-    expect(screen.getByText("$5.00", { exact: true })).toBeInTheDocument();
+    expect(
+      within(costStat()).getByText("$5.00", { exact: true })
+    ).toBeInTheDocument();
     expect(screen.queryByText("$5.00*")).not.toBeInTheDocument();
     expect(screen.queryByText(UNPRICED_BRANCH_RE)).not.toBeInTheDocument();
     // The LOC/$ marker is gated with the cost's, so neither figure can leak the
@@ -668,13 +877,9 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
     expect(screen.queryByText("20*")).not.toBeInTheDocument();
   });
 
-  // The gate-closed control the rest of this suite could not supply. Every
-  // other one pins a fixture whose two cost candidates are the SAME number
-  // (`traceState: null` makes both `null`; the loaded-trace legacy fixture
-  // makes both `5`), so none of them can fail when the value selection changes
-  // — only when the marker does. On this fixture the candidates are `0` and
-  // `null`, so the closed gate is actually load-bearing on the figure.
-  it("renders the shipped figure with the gate closed when the two candidates differ", () => {
+  // ISS-5747 — the unavailable-cost selection is behind the same closed-by-default
+  // rollout that gates the Branch timeline fallback-cost behavior.
+  it("leaves all-unpriced loaded Sessions on the legacy zero while the gate is closed", () => {
     renderTimeline({
       detail: unpricedSessionLegacyBranchDetail(),
       traceState: loadedTraceState(["s1"]),
@@ -683,14 +888,38 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
 
     expect(screen.getByText("$0.00", { exact: true })).toBeInTheDocument();
     expect(screen.queryByText("$0.00*")).not.toBeInTheDocument();
-    expect(screen.queryAllByText("Unavailable")).toHaveLength(0);
+    expect(screen.queryByText(UNAVAILABLE_FIGURE)).not.toBeInTheDocument();
     expect(screen.queryByText(UNPRICED_BRANCH_RE)).not.toBeInTheDocument();
   });
 
-  // Its positive control: the same fixture with the gate OPEN. The new reason
-  // IS a user-visible change to the figure, which is exactly why it may only
-  // land here. No chartable figure was selected, so no sentence claims one was.
-  it("prefers the chartable candidate on that same fixture once the gate is open", () => {
+  it("still renders known zero loaded Session cost as zero once the gate is open", () => {
+    renderTimeline({
+      detail: zeroCostSessionLegacyBranchDetail(),
+      traceState: loadedTraceState(["s1"]),
+      markerEnabled: true,
+    });
+
+    expect(within(costStat()).getByText("$0.00*")).toHaveAccessibleDescription(
+      UNPRICED_BRANCH_RE
+    );
+    expect(screen.queryByText(UNAVAILABLE_FIGURE)).not.toBeInTheDocument();
+  });
+
+  it("keeps mixed zero and unpriced loaded Sessions unavailable once the gate is open", () => {
+    renderTimeline({
+      detail: mixedZeroAndUnpricedSessionLegacyBranchDetail(),
+      traceState: loadedTraceState(["s1", "s2"]),
+      markerEnabled: true,
+    });
+
+    expect(
+      screen.queryByText("$0.00", { exact: true })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByText(UNPRICED_BRANCH_RE)).not.toBeInTheDocument();
+  });
+
+  it("keeps that fixture unavailable once the gate is open", () => {
     renderTimeline({
       detail: unpricedSessionLegacyBranchDetail(),
       traceState: loadedTraceState(["s1"]),
@@ -704,7 +933,7 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
     expect(screen.queryByText(UNPRICED_BRANCH_RE)).not.toBeInTheDocument();
   });
 
-  // wongk 2 — the marker `formatTimelineEvidenceValue` adds from aggregate trace
+  // whitlockk 2 — the marker `formatTimelineEvidenceValue` adds from aggregate trace
   // incompleteness used to bypass this predicate entirely, so the figure carried
   // an asterisk with no `aria-describedby` and no paragraph to point at.
   it("resolves the marker aggregate trace incompleteness puts on the figure", () => {
@@ -714,7 +943,7 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: true,
     });
 
-    const cost = screen.getByText("$2.00*");
+    const cost = within(costStat()).getByText("$2.00*");
     expect(cost).toHaveAccessibleDescription(INCOMPLETE_EVIDENCE_RE);
     // The description must resolve to a node that is actually rendered — an
     // `aria-describedby` pointing at nothing is worse than no marker at all.
@@ -747,11 +976,13 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: false,
     });
 
-    expect(screen.getByText("$2.00*")).toHaveAccessibleDescription("");
+    expect(within(costStat()).getByText("$2.00*")).toHaveAccessibleDescription(
+      ""
+    );
     expect(screen.queryByText(INCOMPLETE_EVIDENCE_RE)).not.toBeInTheDocument();
   });
 
-  // wongk 3 — with no cost resolvable at either end the figure reads
+  // whitlockk 3 — with no cost resolvable at either end the figure reads
   // "Unavailable", so a sentence claiming the total shown is the charted spend
   // describes a total that was never shown.
   // The trace is LOADED here on purpose: with a null trace the figure would now
@@ -777,7 +1008,7 @@ describe("BranchPrActivityTimeline headline cost (ISS-5951)", () => {
       markerEnabled: true,
     });
 
-    expect(screen.getByText("$5.00*")).toBeInTheDocument();
+    expect(within(costStat()).getByText("$5.00*")).toBeInTheDocument();
     expect(screen.queryByText("$12.00*")).not.toBeInTheDocument();
     expect(screen.queryByText("$12.00")).not.toBeInTheDocument();
   });

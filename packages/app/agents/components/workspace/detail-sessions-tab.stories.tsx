@@ -8,7 +8,7 @@ import { makeComponent } from "./agent-component-fixtures";
 import { DetailSessionsTab } from "./detail-sessions-tab";
 
 /**
- * ISS-4979 (wongk review, #4291): canvas for the agent-component detail Sessions
+ * ISS-4979 (whitlockk review, #4291): canvas for the agent-component detail Sessions
  * tab, which had no story anywhere.
  *
  * The child `SessionsTable` has its own story, but none of the states THIS
@@ -18,7 +18,7 @@ import { DetailSessionsTab } from "./detail-sessions-tab";
  *   - the SPLIT empty states: a true zero (nothing has invoked this component)
  *     vs. details-unavailable (a source reports usage it cannot hydrate into
  *     rows). Collapsing those two into one "no sessions yet" is the lying empty
- *     state wongk caught in #3688;
+ *     state whitlockk caught in #3688;
  *   - the `Showing N of M sessions` truncation footer past `AGENTS_PAGE_SIZE`;
  *   - the optional Version column, which only appears when version attribution
  *     resolves;
@@ -181,7 +181,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail Sessions Tab",
+  title: "Composites v1.0/Agents/Workspace/Detail Sessions Tab",
+  tags: ["deprecated"],
   component: DetailSessionsTab,
   parameters: { layout: "fullscreen" },
   args: {

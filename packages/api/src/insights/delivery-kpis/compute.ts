@@ -3,7 +3,7 @@
 // `computeDeliveryKpis` is the SINGLE walker over the declarative registry. It is
 // pure: given NormalizedDeliveryRows it resolves each KPI definition through the
 // same pipeline — population → filter (onlyEnriched) → measure → aggregate →
-// transform → round — then attaches display metadata. Derived KPIs read from the
+// round — then attaches display metadata. Derived KPIs read from the
 // value table populated by the base pass. No surface-specific logic lives here;
 // all the variation is DATA in registry.ts.
 //
@@ -27,7 +27,7 @@ import {
   sessionPopulations,
 } from "./populations.ts";
 import type { DeliveryKpiDefinition, DeliveryKpiKey } from "./registry.ts";
-import { DELIVERY_KPI_REGISTRY, KpiTransform } from "./registry.ts";
+import { DELIVERY_KPI_REGISTRY } from "./registry.ts";
 
 /** One computed delivery KPI. `value` is null when the metric is unavailable. */
 export type DeliveryKpi = {
@@ -66,29 +66,6 @@ export type DeliveryKpiResult = {
   /** Every computed raw value, including internal KPIs, for parity checks. */
   values: DeliveryKpiValues;
 };
-
-/**
- * Applies a post-aggregate transform to a non-null value. Exhaustive over
- * `KpiTransform`: the `default` arm is compile-time `never`-checked, so adding a
- * new transform without handling it here is a typecheck error rather than a
- * silent pass-through.
- */
-function applyTransform(
-  value: number,
-  transform: KpiTransform | undefined
-): number {
-  if (transform === undefined) {
-    return value;
-  }
-  switch (transform) {
-    case KpiTransform.PerThousand:
-      return value / 1000;
-    default: {
-      const exhaustive: never = transform;
-      throw new Error(`Unhandled KPI transform: ${String(exhaustive)}`);
-    }
-  }
-}
 
 /** Restricts a PR population to enriched rows when the definition demands it. */
 function applyEnrichedFilter(
@@ -143,8 +120,8 @@ function resolvePrPopulation(
 }
 
 /**
- * Measures a base (non-derived) KPI to its raw aggregate value (pre-transform,
- * pre-round). Returns null for an empty population unless the aggregation is
+ * Measures a base (non-derived) KPI to its raw, pre-round aggregate value.
+ * Returns null for an empty population unless the aggregation is
  * `count` (which is 0 on empty by definition). Nulls produced per-row by a
  * measure (e.g. mergeLatencyMs on an unmerged PR) are dropped before aggregating.
  */
@@ -204,35 +181,17 @@ function collectRawValues(
 }
 
 /**
- * Applies a base KPI's transform to its raw aggregate WITHOUT rounding. This is
- * the value derived KPIs consume: rounding is display-only, so a derived ratio
- * must divide by the true (pre-round) base value, not a display-rounded one
- * (otherwise e.g. a small window whose KLOC rounds to 0.0 would zero out the
- * tokens-per-KLOC denominator despite real underlying lines). See
- * `computeDeliveryKpiResult` for the two-table split.
+ * Rounds a base KPI's raw aggregate for DISPLAY only. Null-safe; a definition
+ * with no `round` is passed through unchanged.
  */
-function transformBase(
+function roundBaseForDisplay(
   raw: number | null,
   def: Extract<DeliveryKpiDefinition, { source: "pr" | "branch" | "session" }>
 ): number | null {
-  if (raw === null) {
-    return null;
+  if (raw === null || def.round === undefined) {
+    return raw;
   }
-  return applyTransform(raw, def.transform);
-}
-
-/**
- * Rounds a transform-applied base value for DISPLAY only. Null-safe; a
- * definition with no `round` is passed through unchanged.
- */
-function roundBaseForDisplay(
-  transformed: number | null,
-  def: Extract<DeliveryKpiDefinition, { source: "pr" | "branch" | "session" }>
-): number | null {
-  if (transformed === null || def.round === undefined) {
-    return transformed;
-  }
-  return round(transformed, def.round);
+  return round(raw, def.round);
 }
 
 /**
@@ -272,7 +231,7 @@ function validateDerivedReferencesBase(
 
 /**
  * Computes a derived KPI from already-computed base values. Reads its
- * numerator/denominator from the RAW (transform-applied, pre-round) base table
+ * numerator/denominator from the RAW (pre-round) base table
  * so the ratio divides by the true value, not the display-rounded one — then
  * applies its OWN `round` to the final ratio.
  */
@@ -325,9 +284,11 @@ validateDerivedReferencesBase(DELIVERY_KPI_REGISTRY);
  * initialization above.
  *
  * RAW-vs-DISPLAY VALUE INVARIANT: pass 1 keeps TWO tables for each base KPI — a
- * `rawValues` map holding the transform-applied but UN-rounded value (what
- * derived KPIs consume, so ratios divide by the true denominator, not a
- * display-rounded 0.0), and the public `values`/`kpis` display value which stays
+ * `rawValues` map holding the UN-rounded aggregate (what derived KPIs consume,
+ * so ratios divide by the true denominator, not a display-rounded 0.0 — a small
+ * window whose base rounds to 0.0 must not zero out the tokens-per-LOC
+ * denominator despite real underlying lines), and the public `values`/`kpis`
+ * display value which stays
  * rounded exactly as before. Derived KPIs read `rawValues` and apply their own
  * round to the final ratio.
  *
@@ -337,7 +298,7 @@ function computeDeliveryKpiResult(
   rows: NormalizedDeliveryRows
 ): DeliveryKpiResult {
   const values: DeliveryKpiValues = new Map();
-  // Transform-applied, pre-round base values — the denominators/numerators that
+  // Pre-round base values — the denominators/numerators that
   // derived KPIs divide by. Kept separate from the rounded display `values`.
   const rawValues: Map<DeliveryKpiKey, number | null> = new Map();
   const kpis: DeliveryKpis = {};
@@ -352,12 +313,9 @@ function computeDeliveryKpiResult(
     if (def.source === "derived") {
       continue;
     }
-    const transformed = transformBase(
-      measureBase(def, rows, populationCache),
-      def
-    );
-    rawValues.set(def.key, transformed);
-    const displayed = roundBaseForDisplay(transformed, def);
+    const raw = measureBase(def, rows, populationCache);
+    rawValues.set(def.key, raw);
+    const displayed = roundBaseForDisplay(raw, def);
     values.set(def.key, displayed);
     if (!def.internal) {
       kpis[def.key] = toKpi(def, displayed);
@@ -390,7 +348,6 @@ function computeDeliveryKpis(rows: NormalizedDeliveryRows): DeliveryKpis {
 }
 
 export {
-  applyTransform,
   computeDeliveryKpiResult,
   computeDeliveryKpis,
   computeDerived,

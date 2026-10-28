@@ -1,15 +1,31 @@
 import {
+  BranchParticipationKind,
   BranchStatus,
   BranchTagAvailability,
   classifyBranchProvenance,
   type BranchRow as WireBranchRow,
 } from "@repo/api/src/types/branch";
+import {
+  type BranchPerson,
+  branchPersonKey,
+} from "@repo/api/src/types/branch-identity";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
-import { isSupportedBranchProjectionVersion } from "@repo/api/src/types/branch-projection";
+import {
+  type BranchMembershipSession,
+  isSupportedBranchProjectionVersion,
+} from "@repo/api/src/types/branch-projection";
+import {
+  PROVENANCE_RELATIONSHIP_KIND_LABELS,
+  ProvenanceRelationshipKind,
+} from "@repo/api/src/types/provenance-relationship";
+import {
+  isRecognizedSessionStatus,
+  SESSION_STATUS,
+} from "@repo/api/src/types/session-status";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import {
+  type BranchRowSession,
   BranchRowStatus,
-  branchPersonKey,
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
   type BranchRow as RenderBranchRow,
@@ -98,16 +114,25 @@ export function adaptBranchRow(
     id: row.id,
     branchName: row.branchName,
     ...optionalDataState(dataState),
-    baseBranch: row.baseBranch ?? RENDER_MISSING,
+    // ISS-8155: `||`, not `??`. The cloud PR projection now reports an unmeasured
+    // base ref as `""`, and the Desktop overlay forwards it here; a nullish-only
+    // guard rendered that as a blank cell — the hidden absence rather than the
+    // named one this placeholder exists to give.
+    baseBranch: row.baseBranch || RENDER_MISSING,
     repo,
     owner,
     ownerKey,
+    ...optionalOwnerAvatar(ownerPerson),
     collaborators,
     tags: [...tags],
     tagAvailability,
     tagPermissions: projection?.common.tags.permissions ?? row.tagPermissions,
     artifactId: projection?.common.identity.artifactId ?? row.artifactId,
+    ...optionalProject(row, projection),
+    ...optionalCustomFields(row.customFields),
+    ...optionalPriority(row.priority),
     status: toRenderStatus(row.status),
+    rawStatus: row.status,
     prNumber: row.prNumber,
     prTitle: row.prTitle,
     prUrl: row.prUrl,
@@ -123,7 +148,8 @@ export function adaptBranchRow(
     ahead: row.ahead,
     additions: row.additions,
     deletions: row.deletions,
-    sessionCount: row.sessionIds.length,
+    sessionCount: branchSessionCount(row, projection),
+    ...optionalRowSessions(projection?.common.membership.sessions),
     commentCount: null,
     // FEA-3285: derive provenance from the branch name at the shared read
     // boundary — one SSOT classifier both surfaces call, so a branch buckets
@@ -208,6 +234,38 @@ function resolveLastActivityAt({
 }
 
 /** Preserve omission when an older producer does not send list freshness. */
+/**
+ * ISS-10332: verbatim, absence included — a `?? null` would turn "this
+ * producer never served the field" into "this branch has no priority".
+ */
+function optionalPriority(
+  priority: WireBranchRow["priority"]
+): Pick<RenderBranchRow, "priority"> {
+  return priority === undefined ? {} : { priority };
+}
+
+/**
+ * ISS-12453: verbatim, absence included — same contract as
+ * {@link optionalPriority}. Reads off the projection when one is present
+ * rather than falling back with `??`, because a projection's `null` ("no
+ * project") is a real answer `??` would otherwise collapse into `row`'s.
+ */
+function optionalProject(
+  row: WireBranchRow,
+  projection: NonNullable<WireBranchRow["canonicalProjection"]> | undefined
+): Pick<RenderBranchRow, "projectId" | "projectName"> {
+  const projectId = projection
+    ? projection.common.identity.projectId
+    : row.projectId;
+  const projectName = projection
+    ? projection.common.identity.projectName
+    : row.projectName;
+  return {
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(projectName === undefined ? {} : { projectName }),
+  };
+}
+
 function optionalDataState(
   dataState: WireBranchRow["dataState"]
 ): Pick<RenderBranchRow, "dataState"> {
@@ -215,4 +273,121 @@ function optionalDataState(
     return { dataState };
   }
   return {};
+}
+
+const BRANCH_SESSION_CONTRIBUTION_LABEL =
+  PROVENANCE_RELATIONSHIP_KIND_LABELS[ProvenanceRelationshipKind.Contribution];
+const EMAIL_LIKE_OWNER_NAME = /^[^@\s]+@[^@\s]+$/u;
+
+function branchSessionCount(
+  row: WireBranchRow,
+  projection: NonNullable<WireBranchRow["canonicalProjection"]> | undefined
+): number {
+  const describedCount =
+    projection?.common.membership.sessions?.filter(
+      (session) =>
+        session.participation !== BranchParticipationKind.Reviewed &&
+        nonBlankString(session.artifactId) !== null
+    ).length ?? 0;
+  const canonicalCount = projection?.common.membership.qualifyingSessionCount;
+  if (
+    canonicalCount !== undefined &&
+    Number.isSafeInteger(canonicalCount) &&
+    canonicalCount >= describedCount &&
+    canonicalCount >= 0
+  ) {
+    return canonicalCount;
+  }
+  return Math.max(row.sessionIds.length, describedCount);
+}
+
+function optionalRowSessions(
+  sessions: readonly BranchMembershipSession[] | undefined
+): { sessions: BranchRowSession[] } | Record<string, never> {
+  if (!sessions) {
+    return {};
+  }
+  const adapted = sessions.flatMap(
+    (session) => toBranchRowSession(session) ?? []
+  );
+  return adapted.length > 0 ? { sessions: adapted } : {};
+}
+
+function toBranchRowSession(
+  session: BranchMembershipSession
+): BranchRowSession | null {
+  const id = nonBlankString(session.artifactId);
+  const occurredAt = validIsoInstant(session.lastInteractionAt);
+  if (
+    !(id && session.displayedStatus && occurredAt) ||
+    session.participation !== BranchParticipationKind.Wrote
+  ) {
+    return null;
+  }
+  const slug =
+    nonBlankString(session.slug) ?? nonBlankString(session.name) ?? id;
+  const navigableRef =
+    nonBlankString(session.navigableRef) ?? nonBlankString(session.slug) ?? id;
+  const ownerName = safeOwnerName(session.ownerName);
+  const ownerUnavailable =
+    session.ownerUnavailable === true ||
+    (session.ownerName != null && ownerName === null);
+  // ISS-10364: an unrecognized wire value (an older or newer producer's
+  // `displayedStatus`) fails open to ACTIVE, like every other fold in this
+  // vocabulary — there is no longer a display-only "we don't know" word to
+  // fall back to.
+  const status = isRecognizedSessionStatus(session.displayedStatus)
+    ? session.displayedStatus
+    : SESSION_STATUS.ACTIVE;
+  return {
+    id,
+    slug,
+    navigableRef,
+    ownerName,
+    ...(ownerUnavailable ? { ownerUnavailable: true } : {}),
+    ...(session.ownerAvatarUrl
+      ? { ownerAvatarUrl: session.ownerAvatarUrl }
+      : {}),
+    ...(session.rawStatus === undefined
+      ? {}
+      : { rawStatus: session.rawStatus }),
+    status,
+    relationshipLabel: BRANCH_SESSION_CONTRIBUTION_LABEL,
+    occurredAt,
+  };
+}
+
+function nonBlankString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function validIsoInstant(value: string | undefined): string | null {
+  const trimmed = nonBlankString(value);
+  return trimmed && Number.isFinite(Date.parse(trimmed)) ? trimmed : null;
+}
+
+function safeOwnerName(value: string | null | undefined): string | null {
+  const name = nonBlankString(value);
+  return name && !EMAIL_LIKE_OWNER_NAME.test(name) ? name : null;
+}
+
+/** Keep absent photos omitted for older Branches row producers. */
+function optionalOwnerAvatar(person: BranchPerson | null | undefined): {
+  ownerAvatarUrl?: string;
+} {
+  if (person?.avatarUrl) {
+    return { ownerAvatarUrl: person.avatarUrl };
+  }
+  return {};
+}
+
+/**
+ * ISS-12663: carried unchanged, and omitted when the producer omitted it, so
+ * "values not loaded" stays distinct from a loaded row with none.
+ */
+function optionalCustomFields(
+  customFields: WireBranchRow["customFields"]
+): Pick<RenderBranchRow, "customFields"> {
+  return customFields === undefined ? {} : { customFields };
 }

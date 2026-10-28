@@ -3,17 +3,19 @@
  * logic is unit-testable via injected dependencies (migrate.ts self-invokes
  * `main()` at import, so it cannot be imported by a test without side effects).
  *
- * Pipeline order (unchanged): ensureSchemaExists → upsertSchemaRegistry →
- * [FEA-3071 at-head probe] → serialize gate (prestamp → migrate) → clone → seed.
+ * Pipeline order: ensureSchemaExists → upsertSchemaRegistry → [FEA-3071 at-head
+ * probe] → serialize gate (prestamp → migrate) → seed. An empty non-merge-queue
+ * preview schema is migrated around a clone of `public` instead (ISS-11785,
+ * `preview-clone-first.ts`), unless it is a vibe environment, which is migrated
+ * empty and never seeded here (ISS-12056, `vibe-environment-build.ts`).
  */
 
-import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
-import { MERGE_QUEUE_REF_PREFIX } from "./cleanup-preview-schemas-lib";
-import { cloneDataFromPublic } from "./clone-schema";
-import { readMigrationSql } from "./db-utils";
+import { CloneFailedError, cloneDataFromPublic } from "./clone-schema";
 import { type InvalidIndex, sweepInvalidIndexes } from "./invalid-index-sweep";
-import { recoverMigrateDeployFailure } from "./migrate-deploy-recovery";
+import {
+  type PreviewResetMode,
+  recoverMigrateDeployFailure,
+} from "./migrate-deploy-recovery";
 import {
   isPrismaAdvisoryLockError,
   isTransientConnectionError,
@@ -24,9 +26,12 @@ import {
 import {
   createMigrateRunRecorder,
   type MigrateDeployEvent,
+  MigrateExecutor,
+  MigrateGateOutcome,
   MigrateOutcome,
   type MigrateResetKind,
   readMigrateTelemetryEnv,
+  type TerminalMigrateOutcome,
 } from "./migrate-telemetry";
 import {
   type SerializeLockContendedMode,
@@ -34,22 +39,48 @@ import {
   withMigrationSerializeLock,
 } from "./migration-lock";
 import { assertMigrateRoleOwnsSchema } from "./ownership-preflight";
+import { probePreviewSchemaAtHead } from "./preview-at-head";
 import {
-  defaultListMigrationDirs,
-  probePreviewSchemaAtHead,
-} from "./preview-at-head";
+  clearIncompletePreviewBuild,
+  PreviewBuildState,
+  readIncompletePreviewBuild,
+} from "./preview-build-state";
+import {
+  isCloneFirstSchema,
+  populateEmptySchema,
+  replayResetSchema,
+  withPreviewBuildLock,
+} from "./preview-clone-first";
 import { plainBuildPreviewConcurrentIndexes } from "./preview-plain-index";
 import {
   type PrestampDeps,
   prestampSkippableMigrationsViaSql,
 } from "./preview-prestamp";
+import { selectPreviewResetMode } from "./preview-reset-policy";
 import {
+  dropSchema,
   ensureSchemaExists,
   isPreviewSchema,
   resetSchema,
   upsertSchemaRegistry,
 } from "./preview-schema";
 import { runPreviewSeed } from "./preview-seed";
+import { replayPendingMigrationsViaSql } from "./preview-sql-replay";
+import {
+  type MigrationFileReaders,
+  migrationFileReaders,
+  type PrismaCliOptions,
+  runPrismaCli,
+  writeCliOutput,
+} from "./prisma-cli";
+import {
+  readVibeEnvironmentMarker,
+  type VibeEnvironmentMarker,
+  type VibeEnvironmentMode,
+  writeVibeEnvironmentMarker,
+} from "./vibe-environment";
+import { ensureSchemaForBuild } from "./vibe-environment-build";
+import { isVibeEnvironmentSchema } from "./vibe-environment-retention";
 
 /**
  * Telemetry callbacks threaded into a single migrate (ISS-4392). Optional and
@@ -71,7 +102,7 @@ export type MigrateTelemetryHooks = {
 };
 
 /** Classify a terminal migrate error into the telemetry outcome. */
-function classifyMigrateOutcome(caught: unknown): MigrateOutcome {
+function classifyMigrateOutcome(caught: unknown): TerminalMigrateOutcome {
   if (caught === undefined) {
     return MigrateOutcome.Ok;
   }
@@ -130,8 +161,9 @@ async function resolveFailedMigration(
 /**
  * Attempts to run prisma migrate deploy with automatic recovery:
  *
- * - Preview schemas: P3005/P3009/P3018 → drop and recreate schema, then retry.
- *   Reset is always safe for ephemeral preview schemas, and covers cases like a
+ * - Ordinary preview schemas: P3005/P3009/P3018 reset and retry. Retained vibe
+ *   schemas refuse destructive recovery unless an explicit build just recreated
+ *   them empty. Recovery for ephemeral previews covers cases like a
  *   migration directory being renamed/regenerated after it was already applied,
  *   which leaves the schema state mismatched with `_prisma_migrations`.
  * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back
@@ -165,9 +197,12 @@ export function runMigrateWithRetry(
   // cannot run the CLI from a different config directory than the migrate it is
   // recovering. The recovery deps bag keeps its existing arity; these closures
   // are what carry the option across it.
-  cli: PrismaCliOptions = {}
+  cli: PrismaCliOptions = {},
+  // ISS-12135: omission uses retention policy; explicit builders pass a chosen mode.
+  previewReset?: PreviewResetMode
 ): Promise<boolean> {
   const deploy = (url: string) => runMigrateDeploy(url, cli);
+  const resetMode = previewReset ?? selectPreviewResetMode({ schema, branch });
   return withRetry(() => deploy(databaseUrl), isTransientMigrateDeployError, {
     ...MIGRATE_DEPLOY_RETRY,
     onAttempts: hooks.onAttempts,
@@ -198,6 +233,7 @@ export function runMigrateWithRetry(
               freshSchema: true,
             }),
           onResetKind: hooks.onResetKind,
+          previewReset: resetMode,
         }
       )
     );
@@ -233,6 +269,7 @@ export type MigrationPipelineDeps = {
       databaseUrl: string;
       onContended?: SerializeLockContendedMode;
       budgetMs?: number;
+      lockKey?: number;
       // ISS-4392: optional telemetry callback; existing mocks omit it harmlessly.
       onOutcome?: (outcome: SerializeLockOutcome, waitMs: number) => void;
     },
@@ -263,6 +300,17 @@ export type MigrationPipelineDeps = {
     schema: string | null,
     opts?: { budgetMs?: number }
   ) => Promise<InvalidIndex[] | null>;
+  // ISS-8039: on a schema created in THIS run, apply the pending migrations
+  // directly over one pg connection instead of spawning `prisma migrate deploy`.
+  // Same files, same order, so the resulting schema is identical; what goes away
+  // is the per-migration CLI round trip, which is what had grown `migrate_ms` to
+  // 258s of a 290s route budget. Returns false to fall back to the CLI.
+  replayPendingMigrationsViaSql: (
+    databaseUrl: string,
+    schema: string | null,
+    // ISS-11785: `appliedInSchema` limits the replay to `public`'s level.
+    readers?: MigrationFileReaders & { appliedInSchema?: string }
+  ) => Promise<boolean>;
   runMigrate: (
     databaseUrl: string,
     schema: string | null,
@@ -271,16 +319,29 @@ export type MigrationPipelineDeps = {
     hooks?: RunMigrateHooks,
     // ISS-6403: the Prisma CLI spawn options for THIS run; 4-arg mocks stay
     // assignable.
-    cli?: PrismaCliOptions
+    cli?: PrismaCliOptions,
+    // Omission uses retention-aware policy; ordinary previews retain Remigrate.
+    previewReset?: PreviewResetMode
   ) => Promise<boolean>;
-  // Returns true on a fully successful clone, false when the clone was attempted
-  // but failed (swallowed, schema starts empty). Callers use it to avoid counting
-  // a reset-with-failed-clone as a clean success.
-  cloneDataFromPublic: (
-    databaseUrl: string,
-    schema: string
-  ) => Promise<boolean>;
+  // Resolves on a complete clone; rejects with a `CloneFailedError` carrying the
+  // cause when it failed, which fails the run (ISS-11785, ISS-11867).
+  cloneDataFromPublic: (databaseUrl: string, schema: string) => Promise<void>;
+  // ISS-11785: drops a preview schema whose clone failed, so the next deploy
+  // creates it anew instead of finding it empty and at head.
+  dropSchema: (databaseUrl: string, schema: string | null) => Promise<void>;
   runPreviewSeed: (databaseUrl: string, schema: string | null) => void;
+  // ISS-12056: the schema-comment marker that makes a preview a vibe environment.
+  readVibeEnvironmentMarker: (
+    databaseUrl: string,
+    schema: string | null
+  ) => Promise<VibeEnvironmentMarker | null>;
+  writeVibeEnvironmentMarker: (
+    databaseUrl: string,
+    schema: string,
+    marker: VibeEnvironmentMarker
+  ) => Promise<void>;
+  readIncompletePreviewBuild: typeof readIncompletePreviewBuild;
+  clearIncompletePreviewBuild: typeof clearIncompletePreviewBuild;
   withRetry: (
     fn: () => Promise<void>,
     isTransient: (error: unknown) => boolean,
@@ -322,14 +383,31 @@ const DEFAULT_PIPELINE_DEPS: MigrationPipelineDeps = {
   withMigrationSerializeLock,
   prestampSkippableMigrationsViaSql: (databaseUrl, schema, readers) =>
     prestampSkippableMigrationsViaSql(databaseUrl, schema, readers),
+  replayPendingMigrationsViaSql: (databaseUrl, schema, readers) =>
+    replayPendingMigrationsViaSql(databaseUrl, schema, readers),
   plainBuildPreviewConcurrentIndexes,
   sweepInvalidIndexes,
   // Adapter so the telemetry `hooks` (4th dep arg) map to runMigrateWithRetry's
   // 5th arg without displacing its `recoveryUpsert` default (4th arg).
-  runMigrate: (databaseUrl, schema, branch, hooks, cli) =>
-    runMigrateWithRetry(databaseUrl, schema, branch, undefined, hooks, cli),
+  runMigrate: (databaseUrl, schema, branch, hooks, cli, previewReset) =>
+    runMigrateWithRetry(
+      databaseUrl,
+      schema,
+      branch,
+      undefined,
+      hooks,
+      cli,
+      previewReset
+    ),
   cloneDataFromPublic,
+  dropSchema,
   runPreviewSeed,
+  readVibeEnvironmentMarker: (databaseUrl, schema) =>
+    readVibeEnvironmentMarker(databaseUrl, schema),
+  writeVibeEnvironmentMarker: (databaseUrl, schema, marker) =>
+    writeVibeEnvironmentMarker(databaseUrl, schema, marker),
+  readIncompletePreviewBuild,
+  clearIncompletePreviewBuild,
   withRetry,
   assertMigrateRoleOwnsSchema: (databaseUrl, schema, readers) =>
     assertMigrateRoleOwnsSchema(databaseUrl, schema, readers),
@@ -352,9 +430,8 @@ const DEFAULT_PIPELINE_DEPS: MigrationPipelineDeps = {
  * wait (the walk threads its remaining admission deadline so no schema blocks on
  * the lock past it); omitted → the gate's default budget.
  * `opts.isNew` skips the at-head probe for a freshly-created schema (it must migrate).
- * Returns `didReset` and `cloneFailed` (a post-(reset|new) clone was attempted and
- * failed) so a caller can classify a reset-with-failed-clone distinctly, plus
- * `invalidIndexes` from the ISS-4601 post-deploy sweep (`null` = sweep did not run).
+ * Returns `didReset` plus `invalidIndexes` from the ISS-4601 post-deploy sweep
+ * (`null` = sweep did not run). A failed clone throws (ISS-11785).
  */
 export async function applyMigrationsToSchema(
   databaseUrl: string,
@@ -366,16 +443,24 @@ export async function applyMigrationsToSchema(
     serializeBudgetMs?: number;
     /** ISS-4392: injected only in tests; real callers use env + the default sink. */
     telemetry?: MigrateTelemetryHooks;
+    /**
+     * ISS-12056: the schema carries a vibe environment marker, so it is never
+     * cloned from `public`. The caller reads the marker under the build lock.
+     */
+    vibeEnvironment?: boolean;
+    /** Only the explicit mode-request builder sets this after recreating the schema. */
+    vibeEnvironmentRebuilt?: boolean;
   },
   overrides: Partial<MigrationPipelineDeps> = {}
 ): Promise<{
   didReset: boolean;
-  cloneFailed: boolean;
   invalidIndexes: InvalidIndex[] | null;
 }> {
   const deps = { ...DEFAULT_PIPELINE_DEPS, ...overrides };
   const { isNew } = opts;
+  const vibeEnvironment = opts.vibeEnvironment ?? false;
   const serializeMode = opts.serializeMode ?? "run";
+  const cloneFirst = isCloneFirstSchema(schema, branch) && !vibeEnvironment;
 
   // ISS-4392: one telemetry event per schema-migrate. A FRESH recorder per call
   // (the walk migrates N schemas per process); emits in the `finally` so a thrown
@@ -393,8 +478,28 @@ export async function applyMigrationsToSchema(
   // ISS-6810: one set of readers for every step of THIS run that opens a
   // migration file, so none of them can silently fall back to cwd alone.
   const readers = migrationFileReaders(deps.prismaCli ?? {});
+  const emptySchemaContext = schema && {
+    databaseUrl,
+    schema,
+    branch,
+    deps,
+    readers,
+    recorder,
+    serializeMode,
+    serializeBudgetMs: opts.serializeBudgetMs,
+    postCloneUrl: () =>
+      refreshedOrOriginalUrl(databaseUrl, deps.refreshDatabaseUrl),
+    vibeEnvironment,
+  };
 
   try {
+    await assertExistingPreviewBuildComplete(
+      databaseUrl,
+      schema,
+      branch,
+      isNew,
+      deps
+    );
     // FEA-3071 Slice 1: lock-free at-head probe. An EXISTING preview schema that
     // is already at migration head skips the gate + migrate entirely, taking ZERO
     // acquisitions of Prisma's per-DB migration advisory lock (72707369) — the
@@ -416,25 +521,34 @@ export async function applyMigrationsToSchema(
     // FEA-3065: serialize the migrate against concurrent api deploys on the same
     // database through our own advisory lock, so Prisma's per-DB migration lock
     // (72707369) is uncontended. Wraps ONLY the lock-taking steps (ensure/registry
-    // run in runMigrationPipeline; clone runs below, all outside the gate).
+    // run in runMigrationPipeline; the clone runs outside it).
     //
     // `didReset` stays false when the at-head probe skipped the migrate: no reset
-    // happened, so the clone below must NOT run (the existing preview keeps its
-    // data). Only the gated migrate path can report a reset.
+    // happened, so no clone runs (the existing preview keeps its data). An empty
+    // clone-first preview skips this block; `populateEmptySchema` migrates it.
     let didReset = false;
-    if (!previewAtHead) {
+    if (!(previewAtHead || (cloneFirst && isNew))) {
       // ISS-5952: ownership preflight BEFORE the gate and before any DDL. For a
       // non-preview schema with foreign-owned tables AND pending migrations this
       // throws — a clean pre-DDL failure instead of a mid-file 42501 partial
       // commit. Outside the serialize gate on purpose: it is one read-only
       // catalog query and must not extend the lock hold. No-op for previews.
       await deps.assertMigrateRoleOwnsSchema(databaseUrl, schema, readers);
+      // ISS-8039: the gate FAILS OPEN by default (`onContended: "run"`), so the
+      // callback below can run with no serialize lock held. `migrate deploy`
+      // survives that because Prisma takes its OWN per-database migration lock
+      // (72707369) underneath; the direct SQL replay takes no lock at all, so on
+      // a fail-open it must not run — see where this is read below.
+      let gateOutcome: SerializeLockOutcome | null = null;
       didReset = await deps.withMigrationSerializeLock(
         {
           databaseUrl,
           onContended: serializeMode,
           budgetMs: opts.serializeBudgetMs,
-          onOutcome: (outcome, waitMs) => recorder.setGate(outcome, waitMs),
+          onOutcome: (outcome, waitMs) => {
+            gateOutcome = outcome;
+            recorder.setGate(outcome, waitMs);
+          },
         },
         async () => {
           // On ephemeral preview schemas, pre-stamp the CONCURRENTLY perf-index
@@ -460,7 +574,34 @@ export async function applyMigrationsToSchema(
           });
           recorder.markMigrateStart();
           try {
-            return await deps.runMigrate(
+            // ISS-8039: a schema created in THIS run has no history worth
+            // preserving and no data to protect, so its migrations are applied
+            // over one connection rather than through 344 CLI round trips.
+            // Bracketed by the same telemetry marks, so `migrate_ms` stays
+            // comparable across both paths; `migrate_executor` is what tells
+            // them apart afterwards. Fail-open: `false` falls through to the CLI.
+            //
+            // REQUIRES THE GATE TO HAVE BEEN ACQUIRED. Two first deployments of
+            // one preview otherwise replay the same DDL and history rows into
+            // the same schema concurrently, and one of them then falls into the
+            // CLI/reset path while the other is still building it. `migrate
+            // deploy` is safe on that path only because Prisma's own migration
+            // lock serializes it underneath; this replay holds no lock, so on a
+            // fail-open it declines and leaves the CLI to run instead.
+            if (
+              isNew &&
+              gateOutcome === MigrateGateOutcome.Acquired &&
+              (await deps.replayPendingMigrationsViaSql(
+                databaseUrl,
+                schema,
+                readers
+              ))
+            ) {
+              recorder.setMigrateExecutor(MigrateExecutor.SqlReplay);
+              return false;
+            }
+            recorder.setMigrateExecutor(MigrateExecutor.PrismaCli);
+            const reset = await deps.runMigrate(
               databaseUrl,
               schema,
               branch,
@@ -468,8 +609,19 @@ export async function applyMigrationsToSchema(
                 onAttempts: (attempt) => recorder.setAttempts(attempt),
                 onResetKind: (kind) => recorder.setResetKind(kind),
               },
-              deps.prismaCli
+              deps.prismaCli,
+              selectPreviewResetMode({
+                schema,
+                branch,
+                cloneFirst,
+                isNew,
+                vibeEnvironmentRebuilt: opts.vibeEnvironmentRebuilt,
+              })
             );
+            if (reset && cloneFirst && emptySchemaContext) {
+              await replayResetSchema(emptySchemaContext, gateOutcome);
+            }
+            return reset;
           } finally {
             // Capture migrate_ms even when the migrate throws — the P1002/failed
             // cohort is exactly what this telemetry exists to analyze.
@@ -479,24 +631,8 @@ export async function applyMigrationsToSchema(
       );
     }
 
-    let cloneFailed = false;
-    if ((isNew || didReset) && schema) {
-      if (branch?.startsWith(MERGE_QUEUE_REF_PREFIX)) {
-        // ISS-5285: fresh or reset queue schemas would re-clone the full stage
-        // `public` data (an eject+requeue while main is unchanged reuses the
-        // byte-identical queue branch name, so it maps to the SAME schema and
-        // arrives here via reset, not creation) — concurrent queue waves hang
-        // past Vercel's 45-min build cap and wedge the queue. Nobody browses a
-        // queue preview: migrations still run (above), but the schema
-        // intentionally starts empty. Skipped ≠ failed — `cloneFailed` stays
-        // false so the deploy is not classified as a reset-with-failed-clone.
-        console.log(
-          `↪ Merge-queue ref ${branch} — skipping preview data clone; schema starts empty by design (ISS-5285)`
-        );
-      } else {
-        const cloned = await deps.cloneDataFromPublic(databaseUrl, schema);
-        cloneFailed = !cloned;
-      }
+    if ((isNew || didReset) && emptySchemaContext) {
+      await populateEmptySchema(emptySchemaContext, didReset);
     }
 
     // ISS-4437: plain-build the CONCURRENTLY correctness indexes a preview needs
@@ -504,8 +640,9 @@ export async function applyMigrationsToSchema(
     // prestamp above skipped. OUTSIDE the serialize gate (raw pg, no Prisma lock).
     //
     // AFTER the clone (not before): if this throws after a fresh/reset migrate, the
-    // clone has already persisted, so the retry — which sees the schema at head and
-    // skips both migrate and clone — still has its data and just rebuilds the index.
+    // clone has already persisted, so an ordinary preview retry at head keeps its
+    // data and rebuilds the index. Retained incomplete candidates require explicit
+    // rebuild instead (ISS-12135).
     // Building on the freshly-cloned table is duplicate-safe because `public`
     // enforces the same unique constraint, so cloned rows never collide.
     //
@@ -569,7 +706,8 @@ export async function applyMigrationsToSchema(
       recorder.setInvalidIndexes(invalidIndexes.map((index) => index.name));
     }
 
-    return { didReset, cloneFailed, invalidIndexes };
+    await completePreviewBuild(postCloneUrl, schema, branch, isNew, deps);
+    return { didReset, invalidIndexes };
   } catch (error) {
     caught = error;
     throw error;
@@ -585,61 +723,101 @@ export async function applyMigrationsToSchema(
  * Returns the ISS-4601 sweep result so the caller can qualify its terminal
  * success line: `null` means the sweep did not run (state unverified), `[]` means
  * verified clean, and a non-empty list means the deploy left invalid indexes.
+ *
+ * ISS-12056: `request.vibeEnvironment` builds the schema as an empty vibe
+ * environment of that mode (`vibe-environment-build.ts`); the result reports
+ * the schema's marker and whether it was rebuilt.
  */
 export async function runMigrationPipeline(
   databaseUrl: string,
   schema: string | null,
   branch: string | undefined,
-  overrides: Partial<MigrationPipelineDeps> = {}
-): Promise<{ invalidIndexes: InvalidIndex[] | null }> {
+  overrides: Partial<MigrationPipelineDeps> = {},
+  request: { vibeEnvironment?: VibeEnvironmentMode } = {}
+): Promise<{
+  invalidIndexes: InvalidIndex[] | null;
+  vibeEnvironment: VibeEnvironmentMarker | null;
+  rebuilt: boolean;
+}> {
   const deps = { ...DEFAULT_PIPELINE_DEPS, ...overrides };
 
-  console.log("↪ Ensuring schema exists...");
-  const isNew = await deps.ensureSchemaExists(databaseUrl, schema);
-  /**
-   * Ordering invariant: ensureSchemaExists → upsertSchemaRegistry → runMigrate → cloneDataFromPublic.
-   * ensureSchemaExists must run first so the schema row exists before we write the registry entry.
-   * upsertSchemaRegistry must complete before runMigrate so that any mid-migration failure
-   * leaves a registered (reapable) orphan rather than a silent unregistered one.
-   * If all retries are exhausted, runMigrationPipeline throws, the deploy fails loudly, and the
-   * schema created by ensureSchemaExists is left unregistered — the FEA-1082 orphan reaper will
-   * clean it up on its next run.
-   * IAM token note: retries reuse the original IAM-signed databaseUrl; the 15-minute RDS token
-   * validity is the implicit upper bound on total retry time (irrelevant at zero-delay/3 attempts,
-   * but relevant if delay or attempt count is increased in future).
-   */
-  await deps.withRetry(
-    () => deps.upsertSchemaRegistry(databaseUrl, schema, branch),
-    isTransientConnectionError,
-    { attempts: 3 }
-  );
+  // ISS-11785: the build lock covers the ensure, so a run that finds the schema
+  // already created waits until the run that created it has built it.
+  const { invalidIndexes, vibeEnvironment, rebuilt } =
+    await withPreviewBuildLock(
+      deps.withMigrationSerializeLock,
+      { databaseUrl, schema, branch },
+      async () => {
+        console.log("↪ Ensuring schema exists...");
+        const built = await ensureSchemaForBuild(
+          deps,
+          databaseUrl,
+          schema,
+          request.vibeEnvironment
+        );
+        const { isNew } = built;
+        /**
+         * Ordering invariant: ensureSchemaExists → upsertSchemaRegistry → runMigrate → cloneDataFromPublic.
+         * ensureSchemaExists must run first so the schema row exists before we write the registry entry.
+         * upsertSchemaRegistry must complete before runMigrate so that any mid-migration failure
+         * leaves a registered (reapable) orphan rather than a silent unregistered one.
+         * If all retries are exhausted, runMigrationPipeline throws, the deploy fails loudly, and the
+         * schema created by ensureSchemaExists is left unregistered. FEA-1082 reaps ordinary
+         * orphans; ISS-12135 retains vibe-prefix candidates until explicit cleanup.
+         * IAM token note: retries reuse the original IAM-signed databaseUrl; the 15-minute RDS token
+         * validity is the implicit upper bound on total retry time (irrelevant at zero-delay/3 attempts,
+         * but relevant if delay or attempt count is increased in future).
+         */
+        await deps.withRetry(
+          () => deps.upsertSchemaRegistry(databaseUrl, schema, branch),
+          isTransientConnectionError,
+          { attempts: 3 }
+        );
 
-  // Probe → serialize gate (prestamp + migrate) → clone. Fail-open gate (user
-  // deploys must not be blocked). Shared verbatim with the migrator walk.
-  const { invalidIndexes } = await applyMigrationsToSchema(
-    databaseUrl,
-    schema,
-    branch,
-    { isNew, serializeMode: "run" },
-    overrides
-  );
+        // Probe → serialize gate (prestamp + migrate) → clone. Fail-open gate (user
+        // deploys must not be blocked). Shared verbatim with the migrator walk.
+        const applied = await applyMigrationsToSchema(
+          databaseUrl,
+          schema,
+          branch,
+          {
+            isNew,
+            serializeMode: "run",
+            vibeEnvironment: built.vibeEnvironment !== null,
+            vibeEnvironmentRebuilt:
+              request.vibeEnvironment !== undefined && built.rebuilt,
+          },
+          overrides
+        );
+        return {
+          invalidIndexes: applied.invalidIndexes,
+          vibeEnvironment: built.vibeEnvironment,
+          rebuilt: built.rebuilt,
+        };
+      }
+    );
 
   // Seed preview schemas with synthetic data (FEA-1715). Intentionally OUTSIDE
   // the (isNew || didReset) gate above: the seed is idempotent and non-blocking,
   // so running it after every successful migration makes a prior non-blocking
-  // seed failure recoverable on the next deploy (review: shafty023). No-op for
+  // seed failure recoverable on the next deploy (review: davetho). No-op for
   // non-preview schemas.
   //
   // ISS-5285: the seed spawns a subprocess whose DATABASE_URL is built from the
   // URL passed here, so it needs the same post-clone re-mint the index build
   // gets. No-op when the dep is absent.
-  const seedUrl = await refreshedOrOriginalUrl(
-    databaseUrl,
-    deps.refreshDatabaseUrl
-  );
-  deps.runPreviewSeed(seedUrl, schema);
+  //
+  // ISS-12056: never into a vibe environment, which is seeded by its own
+  // workflow or deliberately left blank.
+  if (vibeEnvironment === null) {
+    const seedUrl = await refreshedOrOriginalUrl(
+      databaseUrl,
+      deps.refreshDatabaseUrl
+    );
+    deps.runPreviewSeed(seedUrl, schema);
+  }
 
-  return { invalidIndexes };
+  return { invalidIndexes, vibeEnvironment, rebuilt };
 }
 
 /**
@@ -668,240 +846,41 @@ async function refreshedOrOriginalUrl(
   }
 }
 
-/**
- * Absolute path of the bundled Prisma CLI entrypoint, for a caller that cannot
- * reach the CLI through `PATH`. Read here and set by
- * `apps/api/app/preview-schemas/ensure` — the env var is the contract between
- * them, so neither side spells it as a literal.
- */
-export const PRISMA_CLI_ENTRY_ENV = "PRISMA_CLI_ENTRY";
-
-/**
- * How to spawn the Prisma CLI: found on `PATH` (the build), or run as an
- * explicit entrypoint under the current `node` (a deployed function).
- *
- * ISS-6403. The build has pnpm's `.bin` on `PATH`, so a bare `prisma` resolves.
- * A deployed serverless bundle only LOOKS like it does: Next file tracing copies
- * the `.bin/prisma` shim and the CLI's files in the pnpm store, but not the
- * symlink between them, so the shim's `<bin>/../prisma/build/index.js` is
- * MODULE_NOT_FOUND and the CLI dies before it opens a connection. A caller that
- * has located the real entrypoint in its own bundle passes it here instead.
- *
- * BOTH `prisma` spawns in this module route through this helper deliberately.
- * The rolled-back recovery has to run wherever the migrate itself does — a
- * migrate that can spawn and a recovery that cannot is the worse failure, since
- * it strands `_prisma_migrations` mid-migration.
- *
- * ISS-6781: an entrypoint spawn also takes `cli.preload` as node's `--import`.
- * `NODE_PATH` (ISS-6728) makes the CLI's CommonJS `require`s resolve out of the
- * symlink-free bundle; its config loader then `import`s ES modules, which node
- * resolves without ever consulting `NODE_PATH`. The preload is the ESM half of
- * that bridge. Passed as an argument, not through `NODE_OPTIONS`: it belongs to
- * this spawn, and the env would carry it into every child of this process. The
- * PATH spawn ignores it — the build's install has its symlinks.
- */
-function prismaCliInvocation(
-  args: string[],
-  cli: PrismaCliOptions
-): {
-  command: string;
-  args: string[];
-  cwd: string | undefined;
-} {
-  // Empty/whitespace reads as unset: a blank cwd names no directory, and
-  // spawning into one would only guarantee the CLI fails.
-  const cwd = cli.cwd?.trim() || undefined;
-  const entry = process.env[PRISMA_CLI_ENTRY_ENV];
-  if (!entry) {
-    return { command: "prisma", args, cwd };
-  }
-  const preload = cli.preload?.trim();
-  const preloadArgs = preload ? ["--import", pathToFileURL(preload).href] : [];
-  return {
-    command: process.execPath,
-    args: [...preloadArgs, entry, ...args],
-    cwd,
-  };
-}
-
-/**
- * How to spawn the Prisma CLI for ONE pipeline run.
- *
- * `cwd` is the directory the CLI discovers `prisma.config.mjs` from (Prisma 7
- * reads `datasource.url` only from a config file), for a caller whose OWN cwd is
- * not where that config lives — today `apps/api/app/preview-schemas/ensure`.
- * Absent → the child inherits this process's cwd, which is what the build and
- * the migrator walk want.
- *
- * ISS-6403 Finding 5. That caller first `process.chdir()`d into the config
- * directory, then passed it through a `PRISMA_CLI_CWD` env var. Neither is
- * per-invocation: `chdir` moved the cwd of every OTHER request on a warm Fluid
- * Compute instance for the rest of its life, and an env var is the same
- * process-global reach one indirection later — every build and migrator caller
- * reads whatever was last written to it, so a stale inherited value silently
- * runs Prisma from the wrong config directory. A value that belongs to one run
- * travels as an argument of that run (review: shafty023).
- */
-export type PrismaCliOptions = {
-  cwd?: string;
-  /**
-   * Absolute path of an ES module for node's `--import`, honored only on an
-   * entrypoint spawn (`PRISMA_CLI_ENTRY`). Today the ensure route's
-   * `esm-store-resolver.mjs`; see `prismaCliInvocation`.
-   */
-  preload?: string;
-  /**
-   * ISS-6810: the migrations directory THIS run's in-process readers use — the
-   * at-head probe, the pre-stamp (and its recovery re-run), the plain-index
-   * build and the ownership preflight all read `prisma/migrations` themselves,
-   * off `process.cwd()` by default. The CLI finds the same directory through
-   * `prisma.config.mjs`; these readers have no config, so a caller whose cwd is
-   * not the Prisma project names it here. Absent → cwd-relative, as the build.
-   */
-  migrationsDir?: string;
-};
-
-/**
- * The migration-file readers a run's `migrationsDir` implies, or nothing when
- * it is unset so every callee keeps its own cwd-relative default.
- */
-export type MigrationFileReaders = {
-  readMigrationSql?: (migrationName: string) => string;
-  listMigrationDirs?: () => string[];
-};
-
-function migrationFileReaders(cli: PrismaCliOptions): MigrationFileReaders {
-  const migrationsDir = cli.migrationsDir?.trim();
-  if (!migrationsDir) {
-    return {};
-  }
-  return {
-    readMigrationSql: (migrationName) =>
-      readMigrationSql(migrationName, migrationsDir),
-    listMigrationDirs: () => defaultListMigrationDirs(migrationsDir),
-  };
-}
-
-/**
- * What both CLI wrappers branch on: the child's exit status, the spawn error if
- * it never started, and its drained output.
- */
-type PrismaCliResult = {
-  status: number | null;
-  error: Error | undefined;
-  stdout: string;
-  stderr: string;
-};
-
-/**
- * Ceiling on the CLI output held in memory, across both streams, per spawn.
- *
- * ISS-6403: `spawnSync` enforced a 1 MB `maxBuffer` by default and killed the
- * child past it; the async drain that replaced it accumulated into JS strings
- * with no bound at all, so a verbose or runaway migration could grow the SHARED
- * api process heap until unrelated requests died with it — and overlapping
- * ensure requests multiply that (review: shafty023). Counted in UTF-16 units
- * rather than bytes, which bounds the heap by construction and is the same
- * number for the CLI's ASCII output.
- */
-const MAX_PRISMA_CLI_OUTPUT_CHARS = 1_000_000;
-
-/** Kept in the bounded output so an operator sees diagnostics END, not stop. */
-const PRISMA_CLI_OUTPUT_TRUNCATED_MARKER =
-  "\n[output truncated: exceeded the Prisma CLI output ceiling]\n";
-
-/** Forwards the CLI's captured output to this process's streams, as before. */
-function writeCliOutput(result: PrismaCliResult): void {
-  if (result.stdout) {
-    process.stdout.write(result.stdout);
-  }
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
-}
-
-/**
- * Spawns the Prisma CLI and resolves once it has exited and its output is
- * drained.
- *
- * ISS-6403 Finding 4: this was `spawnSync`. Correct for the build script it was
- * written for, and wrong once `apps/api` reached it from a REQUEST HANDLER —
- * `spawnSync` blocks the Node event loop for the child's entire lifetime, so a
- * `migrate deploy` froze every other request Fluid Compute had multiplexed onto
- * that instance. This is the BFF that serves all product traffic.
- *
- * Resolves rather than rejects on failure: the callers above own the error
- * shapes (recovery classifies P3009/P3018 off `stdout`/`stderr` attached to the
- * thrown error), and a rejection here would flatten that distinction. `close`
- * fires after the stdio streams end, so nothing is lost by resolving on it; a
- * process that never starts emits `error` instead and reports a null status.
- *
- * Output is bounded — see `MAX_PRISMA_CLI_OUTPUT_CHARS`. Past the ceiling the
- * child is terminated and the run FAILS, carrying the output captured up to
- * that point plus a truncation marker: the diagnostics are the whole reason
- * this output is captured (recovery classifies off them, and the sanitizer
- * exists to let them reach an operator), so the ceiling truncates them rather
- * than discarding them.
- */
-function runPrismaCli(
-  args: string[],
+/** ISS-12135: retained partial clones cannot take the at-head success shortcut. */
+async function assertExistingPreviewBuildComplete(
   databaseUrl: string,
-  cli: PrismaCliOptions
-): Promise<PrismaCliResult> {
-  const invocation = prismaCliInvocation(args, cli);
-  return new Promise((resolve) => {
-    const child = spawn(invocation.command, invocation.args, {
-      stdio: "pipe",
-      cwd: invocation.cwd,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-    });
+  schema: string | null,
+  branch: string | undefined,
+  isNew: boolean,
+  deps: MigrationPipelineDeps
+): Promise<void> {
+  if (
+    isNew ||
+    !schema ||
+    !isPreviewSchema(schema) ||
+    !isVibeEnvironmentSchema(schema, branch)
+  ) {
+    return;
+  }
+  if (await deps.readIncompletePreviewBuild(databaseUrl, schema)) {
+    throw new CloneFailedError(schema, new Error(PreviewBuildState.Incomplete));
+  }
+}
 
-    let stdout = "";
-    let stderr = "";
-    let overflow: Error | undefined;
-
-    // One budget across both streams: the heap is what is being bounded, and it
-    // does not care which stream filled it.
-    const capture = (append: (text: string) => void) => (chunk: string) => {
-      if (overflow) {
-        return;
-      }
-      const remaining =
-        MAX_PRISMA_CLI_OUTPUT_CHARS - (stdout.length + stderr.length);
-      if (chunk.length <= remaining) {
-        append(chunk);
-        return;
-      }
-      append(chunk.slice(0, Math.max(0, remaining)));
-      append(PRISMA_CLI_OUTPUT_TRUNCATED_MARKER);
-      overflow = new Error(
-        `prisma ${args[0] ?? "cli"} produced more than ${MAX_PRISMA_CLI_OUTPUT_CHARS} characters of output and was terminated`
-      );
-      child.kill();
-    };
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on(
-      "data",
-      capture((text) => {
-        stdout += text;
-      })
-    );
-    child.stderr.on(
-      "data",
-      capture((text) => {
-        stderr += text;
-      })
-    );
-
-    child.on("error", (error) => {
-      resolve({ status: null, error: overflow ?? error, stdout, stderr });
-    });
-    // An overflow is a FAILURE however the killed child exits: the output the
-    // callers classify off is incomplete, so it must not be reported as success.
-    child.on("close", (status) => {
-      resolve({ status, error: overflow, stdout, stderr });
-    });
-  });
+/** Completion is durable only after clone, branch migration and correctness indexes succeed. */
+async function completePreviewBuild(
+  databaseUrl: string,
+  schema: string | null,
+  branch: string | undefined,
+  isNew: boolean,
+  deps: MigrationPipelineDeps
+): Promise<void> {
+  if (
+    schema &&
+    isPreviewSchema(schema) &&
+    isVibeEnvironmentSchema(schema, undefined) &&
+    (isNew || !isVibeEnvironmentSchema(schema, branch))
+  ) {
+    await deps.clearIncompletePreviewBuild(databaseUrl, schema);
+  }
 }

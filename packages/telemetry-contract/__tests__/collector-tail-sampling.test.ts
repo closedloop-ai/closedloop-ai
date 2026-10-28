@@ -68,7 +68,7 @@ describe("collector tail-sampling codegen", () => {
     expect(policies.map((policy) => policy.type)).toEqual([
       "status_code",
       "numeric_attribute",
-      "numeric_attribute",
+      "latency",
       "probabilistic",
     ]);
   });
@@ -95,20 +95,41 @@ describe("collector tail-sampling codegen", () => {
     expect(serverErrors.probabilistic).toBeUndefined();
   });
 
-  it("retains slow/p99 traces at 100% via child duration_ms, not root duration", () => {
+  it("retains slow traces at 100% via whole-trace latency, not a duration_ms attribute", () => {
     const { policies } = parseFragment(renderCollectorTailSamplingFragment());
     const slow = policyByName(
       policies,
       CollectorTailSamplingPolicy.policyNames.slow
     );
-    expect(slow.numeric_attribute).toEqual({
-      key: CollectorTailSamplingPolicy.slowLatencyAttributeKey,
-      min_value: CollectorTailSamplingPolicy.slowLatencyThresholdMs,
-      max_value: CollectorTailSamplingPolicy.slowLatencyMaxMs,
-    });
-    expect(slow.numeric_attribute?.max_value).toBe(86_400_000);
-    expect(slow.latency).toBeUndefined();
+    // Literals, written independently of both the fragment and the policy
+    // module: ISS-9254 measured 240s off cl-desktop trace durations, and a
+    // fragment that renders anything else must fail here rather than agree with
+    // whatever the SSOT was last edited to say.
+    expect(slow.latency).toEqual({ threshold_ms: 240_000 });
+    expect(slow.numeric_attribute).toBeUndefined();
     expect(slow.probabilistic).toBeUndefined();
+  });
+
+  it("keeps the slow threshold inside the decision window so keep-slow can fire", () => {
+    // A desktop activity root is exported when it closes, so one that outlives
+    // the decision window is voted on before it arrives and only its children —
+    // spanning at most the buffering window — are in the buffer. A threshold at
+    // or above the window therefore leaves keep-slow configured, green, and
+    // permanently silent on this producer. 240s vs 310s.
+    expect(CollectorTailSamplingPolicy.slowTraceLatencyThresholdMs).toBe(
+      240_000
+    );
+    expect(
+      CollectorTailSamplingPolicy.slowTraceLatencyThresholdMs
+    ).toBeLessThan(CollectorTailSamplingPolicy.decisionWaitSeconds * 1000);
+  });
+
+  it("buffers for the desktop activity-window cap plus export slack", () => {
+    // 310 = 300s DESKTOP_ACTIVITY_ROOT_MAX_AGE_MS + 10s. Pinned as literals so
+    // a change to either half has to be argued for here; ISS-9254 accepted the
+    // 14.9% of roots that still outlive 310s as a measured limit, not a bug.
+    expect(CollectorTailSamplingPolicy.decisionWaitSeconds).toBe(310);
+    expect(CollectorTailSamplingPolicy.decisionWaitSeconds).toBe(300 + 10);
   });
 
   it("sizes the decision buffer for the decision wait and expected trace rate", () => {
@@ -183,10 +204,13 @@ describe("collector tail-sampling policy validation", () => {
       "out-of-range sampling percentage",
       withPolicy({ baselineSamplingPercentage: 101 }),
     ],
-    ["negative latency threshold", withPolicy({ slowLatencyThresholdMs: -1 })],
     [
-      "inverted slow latency range",
-      withPolicy({ slowLatencyThresholdMs: 10, slowLatencyMaxMs: 9 }),
+      "negative latency threshold",
+      withPolicy({ slowTraceLatencyThresholdMs: -1 }),
+    ],
+    [
+      "a slow threshold the buffered window can never accumulate",
+      withPolicy({ slowTraceLatencyThresholdMs: 310_000 }),
     ],
     ["zero num_traces", withPolicy({ numTraces: 0 })],
     [
@@ -219,6 +243,20 @@ describe("collector tail-sampling policy validation", () => {
     ],
   ])("rejects %s", (_label, policy) => {
     expect(() => assertValidPolicy(policy)).toThrow();
+  });
+
+  it("rejects a blank policy name", () => {
+    const policy = withPolicy({
+      policyNames: {
+        errorStatus: "keep-errors",
+        serverErrors: "  ",
+        slow: "keep-slow",
+        baseline: "baseline",
+      },
+    });
+    expect(() => assertValidPolicy(policy)).toThrow(
+      "policy names must be non-empty."
+    );
   });
 });
 

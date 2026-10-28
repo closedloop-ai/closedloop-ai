@@ -18,8 +18,8 @@
  * The fix does NOT simply lower the floor. Below 260px the longest label the
  * strip shipped when ISS-5068 was written, "Non-subscription Cost", took a THIRD
  * line, overshot the two-line region ISS-4787 reserved, and dropped that card's
- * value off the shared baseline. That is the regression
- * `sessions-summary-strip-baseline.spec.ts` guards. (That label has since been
+ * value off the shared baseline. The shared-only baseline duplicate was
+ * removed in ISS-10527. (That label has since been
  * shortened to "cost" and no label the strip ships wraps at this width any more,
  * so the reservation the row derives is one line rather than two — the guard
  * below is written against the two-line CEILING, which is the invariant, not
@@ -36,7 +36,9 @@
  * them, which is the only place the wrap is visible.
  *
  * ONE unconditional pass, since ISS-5366 retired the `summary-strip-density`
- * Labs toggle and the compact strip is simply what ships. This spec used to run
+ * Labs toggle and the compact strip is simply what ships — and since ISS-10540
+ * the listing strips PIN Compact rather than measuring their way to it, so the
+ * floor asserted below is the pinned one at every desktop width. This spec used to run
  * BOTH sides of that gate, and leaned on the gate-OFF pass — which reproduced
  * the defect verbatim, more than one rank — to prove the gate-ON "exactly one
  * rank" assertion was a real measurement rather than a locator that never
@@ -110,12 +112,12 @@ import {
  * app was asking for 1400. The `desktop-e2e` job therefore sizes its virtual
  * screen past the default window (`--server-args="-screen 0 …"` in
  * `.github/workflows/e2e-test.yml`), and
- * `scripts/lint/desktop-e2e-display-geometry.test.ts` holds the two together, so
+ * `scripts/lint/desktop-e2e-display-geometry.test.ts` (DELETED by ISS-10525 — no longer runs) holds the two together, so
  * the strip below is measured at the width users get rather than at whatever the
  * display was willing to grant.
  *
  * This is the EXPECTED launched geometry, asserted against the real
- * `BrowserWindow` bounds — NOT a viewport this spec sets. #4445 review (wongk):
+ * `BrowserWindow` bounds — NOT a viewport this spec sets. #4445 review (whitlockk):
  * it used to be handed to `page.setViewportSize()`, which overwrote the launched
  * renderer size with a synthetic one built from these same two constants, so
  * both flag paths measured a viewport the spec had just imposed rather than the
@@ -129,10 +131,15 @@ const EXPECTED_LAUNCH_BOUNDS = {
 // The Cost card's label, whose wrap point set the per-card floor (ISS-4787) and
 // which is still the card to name in a failure: it carries the info trigger
 // after the text, so it is the first to need a second line as the interior
-// tightens. It is no longer the LONGEST label the strip ships — at this width
-// "Total Tokens" is — so nothing here may assume it wraps; the assertions on it
-// bound its line count instead of pinning one.
-const COST_CARD_LABEL = "cost";
+// tightens.
+//
+// The operator ruling of 2026-09-20 put this card on ruling 7's alias, so it is
+// no longer the longest label the strip ships — "Total Tokens" and "PRs Shipped"
+// both are. It stays the NAMED card because it is the only one carrying a
+// trailing info trigger, which is what turns a long label into a second line box
+// (ISS-5366), and because desktop's default 1400px window is inside the width
+// band where the canonical phrase did exactly that.
+const COST_CARD_LABEL = "Cost";
 
 // The roomy floor. The compact floor must come in UNDER it, otherwise the
 // density resolved comfortable and the one-rank assertion below would be
@@ -250,8 +257,7 @@ test.describe("Sessions summary strip density (ISS-5068)", () => {
  * reads the seeded corpus at boot.
  *
  * CLAUDE_HOME / CODEX_HOME are empty temp dirs so the boot collectors ingest
- * nothing and the only rows are the seeded ones (mirrors
- * `sessions-summary-strip-baseline.spec.ts`).
+ * nothing and the only rows are the seeded ones.
  */
 async function withSeededDesktopProfile(
   { prefix }: { prefix: string },
@@ -300,7 +306,7 @@ async function withSeededDesktopProfile(
  * measure the same strip the same way.
  *
  * The bounds assertion runs FIRST and no `viewport` is passed, which is the
- * whole point (#4445 review, wongk): the strip is measured at the size the
+ * whole point (#4445 review, whitlockk): the strip is measured at the size the
  * `BrowserWindow` actually launched with, and a window that opened at some other
  * size fails here by name instead of being silently resized into agreement.
  */

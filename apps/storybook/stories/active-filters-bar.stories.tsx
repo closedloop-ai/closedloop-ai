@@ -14,6 +14,7 @@ import {
   TableDatePreset,
   type TableFilterOption,
 } from "@repo/design-system/components/ui/table-filters";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { UserIcon } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
@@ -25,7 +26,6 @@ const defaultViewModel: DocumentTableFiltersViewModel = {
       id: "__unassigned__",
       label: "Unassigned",
       count: 1,
-      icon: <UserIcon className="size-4 text-muted-foreground" />,
       searchText: "unassigned",
     },
     {
@@ -46,13 +46,11 @@ const defaultViewModel: DocumentTableFiltersViewModel = {
       id: DocumentStatus.Draft,
       label: "Draft",
       count: 5,
-      icon: <StatusIcon size={16} status="draft" />,
     },
     {
       id: DocumentStatus.InReview,
       label: "In Review",
       count: 7,
-      icon: <StatusIcon size={16} status="active" />,
     },
   ] satisfies TableFilterOption<DocumentStatus>[],
   priorityOptions: [
@@ -60,13 +58,11 @@ const defaultViewModel: DocumentTableFiltersViewModel = {
       id: Priority.Medium,
       label: "Medium",
       count: 4,
-      icon: <PriorityIcon priority={Priority.Medium} size={16} />,
     },
     {
       id: Priority.High,
       label: "High",
       count: 6,
-      icon: <PriorityIcon priority={Priority.High} size={16} />,
     },
   ] satisfies TableFilterOption<Priority>[],
   tagOptions: [
@@ -245,10 +241,16 @@ function SurfaceChip({ label }: { label: string }) {
   return <FilterChip label={label} onRemove={() => undefined} />;
 }
 
+/**
+ * This exercises the shared `active-filters-bar.tsx` champion through its
+ * classic document-table configuration. Current Grid Table list surfaces use
+ * the same component once the `gridview-adoption` flag is open;
+ * until then they render the `-v2` fork.
+ */
 const meta = {
-  title: "Design System/Primitives/Active Filters Bar",
+  title: "Composites v1.0/Inputs/Active Filters Bar",
   component: ActiveFiltersBarDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },
@@ -256,6 +258,9 @@ const meta = {
     initialState: defaultState,
     viewModel: defaultViewModel,
   },
+  render: (args) => (
+    <ActiveFiltersBarDemo key={remountKey(args.initialState)} {...args} />
+  ),
 } satisfies Meta<typeof ActiveFiltersBarDemo>;
 
 export default meta;
@@ -267,6 +272,34 @@ export const Default: Story = {};
 export const Empty: Story = {
   args: {
     initialState: emptyState,
+  },
+};
+
+export const AdditionalRangeAndMultiSelectFacets: Story = {
+  args: {
+    viewModel: {
+      ...defaultViewModel,
+      additionalFacetGroups: [
+        {
+          id: "model",
+          label: "Model",
+          options: [
+            { id: "opus", label: "Opus" },
+            { id: "sonnet", label: "Sonnet" },
+          ],
+          selectedValues: ["opus", "sonnet"],
+          onToggle: () => undefined,
+        },
+        {
+          kind: "range",
+          id: "cost",
+          label: "Cost",
+          min: 10,
+          max: 50,
+          onChange: () => undefined,
+        },
+      ],
+    },
   },
 };
 

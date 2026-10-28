@@ -267,7 +267,7 @@ describe("migrateSavedColumnOrder (ISS-4890)", () => {
 });
 
 /**
- * ISS-4890 (wongk cid 3700596174, stage cid 3700576420, codex cid 3700572376):
+ * ISS-4890 (whitlockk cid 3700596174, stage cid 3700576420, codex cid 3700572376):
  * a relative anchor alone can land Cost PAST the fold, because the anchor itself
  * may be past it. The migration then stamps version 1, so the arrangement is
  * treated as repaired forever — a permanent regression for that user, and the
@@ -303,7 +303,7 @@ function columnEndPx(
 
 describe("relocateColumnToCanonicalSlot fold budget (ISS-4890 review)", () => {
   it("clamps left of an anchor that itself sits past the fold", () => {
-    // wongk's case: Repository and Branch dragged to the front pushes Status —
+    // whitlockk's case: Repository and Branch dragged to the front pushes Status —
     // Cost's last surviving predecessor — out past the fold, so anchoring after
     // it would leave Cost past the fold too and the clamp has to walk left.
     //
@@ -509,6 +509,9 @@ describe("ISS-6005: migrateSavedHiddenColumns", () => {
       "started",
       "projects",
       "issues",
+      // ISS-8712 added `tags` as a default-hidden column with its own v3 step,
+      // so an unversioned view now takes all three steps.
+      "tags",
     ]);
     expect(result.version).toBe(SESSIONS_SAVED_VIEW_HIDDEN_VERSION);
   });
@@ -530,21 +533,25 @@ describe("ISS-6005: migrateSavedHiddenColumns", () => {
     expect(result.version).toBe(SESSIONS_SAVED_VIEW_HIDDEN_VERSION);
   });
 
-  it("leaves a NEWER build's payload untouched but clamps its version to this build's stamp", () => {
-    // BEHAVIOUR CHANGE (ISS-6065, wongk): this previously returned `futureVersion`
-    // verbatim, on the reasoning that a future migration must never silently
-    // re-run. That reasoning does not survive the round trip. The shared
-    // `usePersistedTableViewState` restore drops every hidden id outside this
-    // build's `columnIds` and re-persists the filtered set with the marker
-    // untouched, so preserving the stamp certifies a v+1 payload this build has
-    // already destroyed — and the newer build then skips the step that would
-    // restore it. The payload is still never rewritten here; only the stamp this
-    // build is willing to vouch for is. Covered end to end through the hook in
-    // `use-sessions-view-state.test.tsx`.
+  it("PRESERVES a NEWER build's stamp along with its payload", () => {
+    // DELIBERATE BEHAVIOUR CHANGE (ISS-9447 M3): this returned
+    // SESSIONS_SAVED_VIEW_HIDDEN_VERSION until now — a clamp, which made every
+    // step below the newer build's stamp run again on its next load.
+    //
+    // ISS-6065 added that clamp to answer a round trip that DESTROYED the newer
+    // build's ids: the shared restore dropped every hidden id outside this
+    // build's `columnIds` and re-persisted the filtered set with the marker
+    // untouched, so preserving the stamp certified a payload this build had
+    // already destroyed, and the forced re-run was what put the ids back.
+    // ISS-9447 D1 removed the erasure — the restore carries those ids and writes
+    // them back — so there is nothing left to heal, and the clamp's own cost (a
+    // column deliberately re-shown on the newer build, hidden again on its
+    // return) was all that remained. Same policy as `migrateSavedColumnOrder`
+    // now, which never clamped.
     const futureVersion = SESSIONS_SAVED_VIEW_HIDDEN_VERSION + 1;
     const result = migrateSavedHiddenColumns(["model"], futureVersion);
     expect(result.hiddenColumns).toEqual(["model"]);
-    expect(result.version).toBe(SESSIONS_SAVED_VIEW_HIDDEN_VERSION);
+    expect(result.version).toBe(futureVersion);
   });
 
   it("returns a new array; the input is never mutated", () => {
@@ -562,7 +569,8 @@ describe("ISS-6065: every default-hidden column is migrated", () => {
   it("hides started/projects/issues for a view already stamped at v1", () => {
     // The population ISS-6065 is actually about: anyone who loaded Sessions
     // after ISS-6005 carries version 1, so widening the v1 payload would have
-    // skipped them entirely. Only the v2 ids append; the v1 ids are not redone.
+    // skipped them entirely. Only the LATER ids append; the v1 ids are not
+    // redone.
     const result = migrateSavedHiddenColumns(
       ["pr", "merge", "updated"],
       SESSIONS_HIDDEN_MIGRATION_V1_VERSION
@@ -574,6 +582,25 @@ describe("ISS-6065: every default-hidden column is migrated", () => {
       "started",
       "projects",
       "issues",
+      // ISS-8712's v3 step, which a v1-stamped view has also not taken.
+      "tags",
+    ]);
+    expect(result.version).toBe(SESSIONS_SAVED_VIEW_HIDDEN_VERSION);
+  });
+
+  it("adds only the v3 hidden column to a v2 view that re-enabled Issues", () => {
+    const result = migrateSavedHiddenColumns(
+      ["pr", "merge", "updated", "started", "projects"],
+      2
+    );
+
+    expect(result.hiddenColumns).toEqual([
+      "pr",
+      "merge",
+      "updated",
+      "started",
+      "projects",
+      "tags",
     ]);
     expect(result.version).toBe(SESSIONS_SAVED_VIEW_HIDDEN_VERSION);
   });
@@ -596,6 +623,8 @@ describe("ISS-6065: every default-hidden column is migrated", () => {
       "started",
       "projects",
       "issues",
+      // ISS-8712's v3 step, which a v1-stamped view has also not taken.
+      "tags",
     ]);
   });
 
@@ -621,6 +650,10 @@ describe("ISS-6065: every default-hidden column is migrated", () => {
     expect(SESSIONS_HIDDEN_MIGRATION_STEPS).toEqual([
       { version: 1, columnIds: ["pr", "merge", "updated"] },
       { version: 2, columnIds: ["started", "projects", "issues"] },
+      // ISS-8712: `tags` ships default-hidden, and this guard is precisely why
+      // it arrives as a NEW step rather than being appended to v2 — a view
+      // already stamped 2 short-circuits and would never hide it.
+      { version: 3, columnIds: ["tags"] },
     ]);
   });
 
@@ -630,7 +663,7 @@ describe("ISS-6065: every default-hidden column is migrated", () => {
     // SESSIONS_SAVED_VIEW_HIDDEN_VERSION, so its ids would never be applied.
     //
     // Asserted as strictly-increasing versions whose LAST entry equals the
-    // stamp, not as `Math.max(...) === stamp` (ISS-6065, wongk). A max only
+    // stamp, not as `Math.max(...) === stamp` (ISS-6065, whitlockk). A max only
     // proves SOME step matches the stamp, which a new step reusing version 2
     // also satisfies: the subset guard sees its ids, the pin above is updated
     // alongside it, every assertion stays green, and yet every view already

@@ -1,15 +1,20 @@
 import { INSIGHTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/insights";
-import { ROUTINES_FEATURE_FLAG_KEY } from "@repo/api/src/types/routines";
 import {
+  AGENTS_NAV_FEATURE_FLAG_KEY,
   ArtifactFlag,
   LABS_NAV_SECTION_FEATURE_FLAG_KEY,
-  SESSIONS_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
 import { PRIMARY_NAV_DESTINATIONS } from "@repo/app/shared/lib/primary-nav-destinations";
+import { ShellNavigationRouteId } from "@repo/app/shared/lib/shell-navigation-contract";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type React from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { CommandPalette } from "../command-palette";
+import { primaryNavTitle } from "./primary-nav-title.test-helpers";
+
+const INSIGHTS_COMMAND_TITLE = "Insights";
+const JUDGES_COMMAND_TITLE = "Judges";
 
 const flagResult = (flag: string, enabled: boolean) => ({
   key: flag,
@@ -40,7 +45,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 // Render the command primitives inline so jsdom can query item text and the
-// dialog honors the `open` prop (matches loop-dispatch-target-selector.test).
+// dialog honors the `open` prop.
 vi.mock("@repo/design-system/components/ui/command", () => ({
   CommandDialog: ({
     open,
@@ -97,6 +102,44 @@ const pressCommandK = () => {
   fireEvent.keyDown(document, { key: "k", metaKey: true });
 };
 
+/*
+ * ISS-7493. The listener under test is a bare `document.addEventListener`, and
+ * `fireEvent.keyDown` cannot express this input: jsdom's `KeyboardEvent`
+ * constructor coerces `key` to a string, so the EventInit route always yields
+ * one. Overwriting the own property after construction is what a password
+ * manager or extension shim actually does, and is the only way to reproduce
+ * what RUM observed.
+ */
+const dispatchChordWithKey = (key: unknown) => {
+  const event = new KeyboardEvent("keydown", { bubbles: true, metaKey: true });
+  Object.defineProperty(event, "key", { configurable: true, value: key });
+  document.dispatchEvent(event);
+};
+
+/*
+ * jsdom does not let a listener's exception escape `dispatchEvent` — it reports
+ * it as an uncaught error on `window` instead. A throw-only assertion around
+ * the dispatch is therefore green either way, so the error event is what this
+ * suite actually watches.
+ */
+const captureUncaughtErrors = () => {
+  const seen: string[] = [];
+  const onError = (event: ErrorEvent) => {
+    seen.push(event.message);
+  };
+  window.addEventListener("error", onError);
+  return {
+    seen,
+    stop: () => window.removeEventListener("error", onError),
+  };
+};
+
+const UNUSABLE_CHORD_KEYS: ReadonlyArray<readonly [string, unknown]> = [
+  ["absent", undefined],
+  ["null", null],
+  ["a non-string", 42],
+];
+
 describe("CommandPalette", () => {
   beforeEach(() => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
@@ -116,7 +159,7 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, false)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
 
     pressCommandK();
 
@@ -124,7 +167,7 @@ describe("CommandPalette", () => {
   });
 
   test("opens on cmd+k and lists navigation commands", () => {
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
@@ -138,7 +181,7 @@ describe("CommandPalette", () => {
   test("does not surface the retired Loops destination (ISS-4477)", () => {
     // Loops is removed from nav & UI, so the command palette must no longer
     // offer it as a navigation command.
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
@@ -150,12 +193,12 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, flag !== INSIGHTS_FEATURE_FLAG_KEY)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
-    expect(screen.queryByText("Insights")).not.toBeInTheDocument();
+    expect(screen.queryByText(INSIGHTS_COMMAND_TITLE)).not.toBeInTheDocument();
   });
 
   // ISS-5037 (ISS-4779 closed-by-default): the Labs container gate. Driven with
@@ -166,12 +209,12 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, flag !== LABS_NAV_SECTION_FEATURE_FLAG_KEY)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.queryByText("Insights")).not.toBeInTheDocument();
-    expect(screen.queryByText("Judges")).not.toBeInTheDocument();
+    expect(screen.queryByText(INSIGHTS_COMMAND_TITLE)).not.toBeInTheDocument();
+    expect(screen.queryByText(JUDGES_COMMAND_TITLE)).not.toBeInTheDocument();
     // Non-Labs destinations are untouched — the gate removed a section, not
     // the palette.
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
@@ -182,53 +225,27 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, true)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
-    expect(screen.getByText("Insights")).toBeInTheDocument();
-    expect(screen.getByText("Judges")).toBeInTheDocument();
-  });
-
-  test("lists Routines when the routines flag is ON (FEA-4348)", () => {
-    // Routines is gated behind the PostHog `routines` flag until GA. Palette on,
-    // routines flag on → the destination surfaces.
-    mockUseFeatureFlag.mockImplementation((flag: string) =>
-      flagResult(flag, true)
-    );
-    render(<CommandPalette />);
-    pressCommandK();
-
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("Routines")).toBeInTheDocument();
-  });
-
-  test("hides Routines when the routines flag is OFF (FEA-4348)", () => {
-    // Palette on, but the `routines` flag off → Routines must not surface. This
-    // is the default-off, pre-GA state the gate exists to enforce.
-    mockUseFeatureFlag.mockImplementation((flag: string) =>
-      flagResult(flag, flag !== ROUTINES_FEATURE_FLAG_KEY)
-    );
-    render(<CommandPalette />);
-    pressCommandK();
-
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.queryByText("Routines")).not.toBeInTheDocument();
+    expect(screen.getByText(INSIGHTS_COMMAND_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(JUDGES_COMMAND_TITLE)).toBeInTheDocument();
   });
 
   test("lists Branches/Sessions even with their old nav flag off (FEA-4155)", () => {
     // FEA-4155: Branches/Sessions are always-on now (their nav destinations
-    // carry no featureFlag), so turning their retired nav flags off must not
-    // hide them from the palette. Reference the canonical constants
-    // (SESSIONS_FEATURE_FLAG_KEY / ArtifactFlag.Branches) instead of the literal
-    // keys so a rename cannot silently make this stop exercising the real
-    // contract (codex review #3789).
+    // carry no featureFlag), so turning Branches' retired nav flag off must not
+    // hide it from the palette. Reference the canonical constant instead of the
+    // literal key so a rename cannot silently make this stop exercising the real
+    // contract (codex review #3789). Sessions rides along only as proof the
+    // palette rendered its command list at all: this mock answers `enabled` for
+    // every key that is not Branches, so it cannot see a gate reintroduced on
+    // Sessions. That one is pinned structurally in
+    // `packages/app/shared/lib/__tests__/primary-nav-destinations.test.ts`.
     mockUseFeatureFlag.mockImplementation((flag: string) =>
-      flagResult(
-        flag,
-        flag !== SESSIONS_FEATURE_FLAG_KEY && flag !== ArtifactFlag.Branches
-      )
+      flagResult(flag, flag !== ArtifactFlag.Branches)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByText("Sessions")).toBeInTheDocument();
@@ -241,27 +258,42 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, true)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.queryByText("Agent Monitoring")).not.toBeInTheDocument();
   });
 
-  test("lists Documents with every flag off (FEA-4140, always-on)", () => {
-    // The org-level Documents index shipped (FEA-4140) and its primary-nav
-    // affordance is restored always-on (no flag), consistent with Agents.
-    // Every artifact flag off is the strongest condition proving the Documents
-    // command is not gated: the palette, the third nav entry point alongside
-    // the sidebar and mobile nav, must list it.
+  test("lists Documents behind its own flag, independent of Issues", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
-      flagResult(flag, false)
+      flagResult(flag, flag === ArtifactFlag.Documents)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("Documents")).toBeInTheDocument();
+    expect(
+      screen.getByText(primaryNavTitle(ShellNavigationRouteId.Documents))
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(primaryNavTitle(ShellNavigationRouteId.Issues))
+    ).toBeNull();
+  });
+
+  test("hides Documents when its flag is off", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, flag !== ArtifactFlag.Documents)
+    );
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
+    pressCommandK();
+
+    expect(
+      screen.getByText(primaryNavTitle(ShellNavigationRouteId.Issues))
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(primaryNavTitle(ShellNavigationRouteId.Documents))
+    ).toBeNull();
   });
 
   test("lists every primary-nav destination, sourced from the shared registry", () => {
@@ -271,7 +303,7 @@ describe("CommandPalette", () => {
     mockUseFeatureFlag.mockImplementation((flag: string) =>
       flagResult(flag, true)
     );
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     for (const destination of PRIMARY_NAV_DESTINATIONS) {
@@ -279,8 +311,41 @@ describe("CommandPalette", () => {
     }
   });
 
+  // ISS-5041/ISS-7835. The registry test above turns EVERY flag on, so it would
+  // pass whether or not the palette resolves `agentsNav` at all — its
+  // `enabledByFlag` map is hand-maintained, and a missing key reads `undefined`,
+  // which hides the command from everyone rather than gating it. These two turn
+  // the one flag independently, which is the only way to see that.
+  test("omits the Agents command when agentsNav is OFF", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, flag !== AGENTS_NAV_FEATURE_FLAG_KEY)
+    );
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
+    pressCommandK();
+
+    expect(
+      screen.queryByText(primaryNavTitle(ShellNavigationRouteId.Agents))
+    ).not.toBeInTheDocument();
+    // A sibling destination proves the palette rendered its command list at
+    // all, so the absence above is the gate and not an empty dialog.
+    expect(screen.getByText("Sessions")).toBeInTheDocument();
+  });
+
+  test("offers the Agents command when agentsNav is ON", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, flag === AGENTS_NAV_FEATURE_FLAG_KEY)
+    );
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
+    pressCommandK();
+
+    // The positive sibling: same locator, only the flag differs. Without it the
+    // assertion above could be proving the absence of a label that never
+    // rendered under any flag state.
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+  });
+
   test("navigates to the org-scoped href and closes on select", () => {
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     fireEvent.click(screen.getByText("Dashboard"));
@@ -294,7 +359,7 @@ describe("CommandPalette", () => {
     // box owns searching real content. Now that every user has the shortcut
     // (ISS-4693), the prompt and the empty state must not promise a search the
     // palette cannot perform.
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
     pressCommandK();
 
     expect(screen.getByPlaceholderText("Jump to a page…")).toBeInTheDocument();
@@ -302,8 +367,37 @@ describe("CommandPalette", () => {
     expect(screen.getByText("Pages")).toBeInTheDocument();
   });
 
+  // ISS-7493 (whitlockk review, PR #7424). Every other case in this file sends a
+  // well-formed `key: "k"`, so the guard this ticket adds could be deleted
+  // without one of them failing. These are the cases that hold it: the listener
+  // is mounted on `document` for every authenticated page, and a synthetic
+  // keydown carrying no usable `key` reached `.toLowerCase()` and threw a
+  // TypeError into RUM from whatever route the user was on.
+  test.each(UNUSABLE_CHORD_KEYS)(
+    "a Meta chord with %s key neither opens the palette nor throws",
+    (_label, key) => {
+      render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
+      const errors = captureUncaughtErrors();
+
+      try {
+        dispatchChordWithKey(key);
+
+        expect(errors.seen).toEqual([]);
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } finally {
+        errors.stop();
+      }
+
+      // The positive control, same render: a real ⌘K still opens. Without it the
+      // assertions above would also pass for a palette that never bound its
+      // listener at all.
+      pressCommandK();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    }
+  );
+
   test("toggles closed on a second cmd+k", () => {
-    render(<CommandPalette />);
+    render(<CommandPalette />, { wrapper: WebFeatureFlagProvider });
 
     pressCommandK();
     expect(screen.getByRole("dialog")).toBeInTheDocument();

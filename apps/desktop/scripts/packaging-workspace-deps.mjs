@@ -1,9 +1,6 @@
 // Pure helpers shared by stage-packaging-app.mjs, extracted so the subtle
 // workspace-spec parsing can be unit-tested without running the full stager.
 
-import { createRequire } from "node:module";
-import path from "node:path";
-
 // Canonical Desktop runtime workspace import closure (SSOT).
 //
 // These are the workspace packages that must end up as real files in the
@@ -12,33 +9,33 @@ import path from "node:path";
 // packed as a tarball and installed so the asar carries its real files.
 //
 //   - @closedloop-ai/telemetry-contract — imported by Desktop OTel bootstrap
-//     via its `exports` subpaths and left external by electron-vite, so packaged
+//     via its `exports` subpaths and left external by the main build, so packaged
 //     Desktop needs its built files in node_modules at runtime. It is the only
 //     remaining external workspace member — the sole package still published and
 //     pre-built to `dist`.
 //
-// NOT listed — bundled from source by electron-vite (PLN-999), so they never
+// NOT listed — bundled from source by the main build (PLN-999), so they never
 // resolve from node_modules at runtime and are excluded from the packaged
 // closure by isBundledWorkspaceDependency in stage-packaging-app.mjs:
-//   - @repo/api — main/preload inline it from source (electron.vite.config.ts
+//   - @repo/api — main/preload inline it from source (vite.main.config.ts
 //     aliases it to packages/api). Its transitive `@repo/shared-platform`
 //     (FEA-1513) is inlined with it.
 //   - @repo/lib — surface-agnostic business logic incl. the harness parser
 //     cores (FEA-2717); main inlines it from source, same as @repo/api
-//     (WORKSPACE_INLINE + alias in electron.vite.config.ts).
+//     (WORKSPACE_INLINE + alias in vite.main.config.ts).
 //   - @closedloop-ai/loops-api — its `exports` now resolve to `.ts` source (it is no
 //     longer published/pre-built), so main inlines it from source; its only
 //     runtime dep `@pydantic/genai-prices` is bundled with it (not externalized),
 //     so it needs no closure entry.
-//   - @repo/crewd — the audit/scheduler core; its `exports` resolve to `.ts`
-//     source (never published), so main inlines it from source (WORKSPACE_INLINE
-//     in electron.vite.config.ts) and it needs no closure entry.
 //   - @repo/cost — the canonical token-cost engine (genai-cost +
 //     harness-cost-parity); its `exports` resolve to `.ts` source (never
 //     published), so main inlines it from source (WORKSPACE_INLINE in
-//     electron.vite.config.ts). Its runtime dep `@pydantic/genai-prices` is a
+//     vite.main.config.ts). Its runtime dep `@pydantic/genai-prices` is a
 //     direct apps/desktop registry dependency (externalized, resolved from
 //     node_modules), not carried by the inline, so it needs no closure entry.
+//   - @repo/realtime-client, @repo/realtime-contract — `exports` resolve to
+//     `.ts` source, so main inlines them (WORKSPACE_INLINE); the client's
+//     `socket.io-client` is a direct apps/desktop registry dependency.
 //   - @repo/app, @closedloop-ai/design-system — renderer-only; Vite bundles them.
 //
 // `packages/api/**`, `packages/shared-platform/**`, `packages/loops-api/**`, and
@@ -66,7 +63,7 @@ const WORKSPACE_PLAIN_RANGE_PATTERN = /^[*^~\d]/;
  * Plain ranges (`workspace:*`, `workspace:^1.2.3`, `link:../x`) install under the
  * dependency key. An aliased spec (`workspace:@scope/name@range` or
  * `workspace:name@range`) installs the named target package under the key — e.g.
- * `"@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*"` installs
+ * `"@repo/shared-platform": "workspace:@repo/shared-platform@*"` installs
  * the `@repo/shared-platform` package, imported as `@repo/shared-platform`.
  *
  * @param {string} dependencyKey The package.json dependency key.
@@ -99,21 +96,4 @@ export function isWorkspaceProtocolSpec(spec) {
     typeof spec === "string" &&
     (spec.startsWith("workspace:") || spec.startsWith("link:"))
   );
-}
-
-/**
- * Resolve a production runtime file from a staged Desktop app directory.
- *
- * @param {string} stageAppDir Directory containing the staged package.json.
- * @param {string} packageName Bare package name, such as `@repo/api`.
- * @param {string} relativeFile Package-relative runtime file path.
- * @returns {string} Absolute resolved file path.
- */
-export function resolveStagedPackageRuntimeFile(
-  stageAppDir,
-  packageName,
-  relativeFile
-) {
-  const stageRequire = createRequire(path.join(stageAppDir, "package.json"));
-  return stageRequire.resolve(path.posix.join(packageName, relativeFile));
 }

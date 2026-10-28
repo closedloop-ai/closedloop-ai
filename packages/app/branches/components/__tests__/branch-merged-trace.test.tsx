@@ -57,7 +57,7 @@ const traceItems: MergedTraceItem[] = [
 ];
 
 describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
-  it("renders two actor initials in the right gutter using the Branch color domain", () => {
+  it("renders two actor initials in the right gutter on the shared avatar colours", () => {
     const actorDomain = buildActorColorDomain(["alice", "bob"]);
     render(
       <BranchMergedTrace
@@ -81,14 +81,14 @@ describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
     const bob = screen.getByLabelText("bob");
     expect(alice).toHaveTextContent("A");
     expect(bob).toHaveTextContent("B");
-    expect(alice.firstElementChild).toHaveStyle({
-      background: actorDomain.colorPairFor("alice").soft,
-      color: actorDomain.colorPairFor("alice").strong,
-    });
-    expect(bob.firstElementChild).toHaveStyle({
-      background: actorDomain.colorPairFor("bob").soft,
-      color: actorDomain.colorPairFor("bob").strong,
-    });
+    // The shared avatar colours (Nerys, 2026-10-22): the actor's colour stays
+    // on the timeline and legend, not on its avatar.
+    for (const avatar of [alice, bob]) {
+      const fallback = avatar.firstElementChild as HTMLElement;
+      expect(fallback).toHaveClass("bg-avatar-placeholder");
+      expect(fallback.style.background).toBe("");
+      expect(fallback.style.color).toBe("");
+    }
   });
 
   it("renders via the shared SessionTrace (st-* markup) with the trace content", () => {
@@ -461,6 +461,121 @@ describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
     captured.notify?.(2);
     expect(scrollSpy).toHaveBeenCalled();
     expect(intoViewSpy).not.toHaveBeenCalled();
+  });
+
+  it("requests a later page when every loaded row was filtered out", () => {
+    const scroller = document.createElement("div");
+    const onRequestMore = vi.fn();
+    render(
+      <BranchMergedTrace
+        onRequestMore={onRequestMore}
+        scrollElementRef={{ current: scroller }}
+        traceItems={[]}
+      />
+    );
+    expect(onRequestMore).toHaveBeenCalledOnce();
+  });
+
+  it("requests another page only near the scroll boundary", () => {
+    const scroller = document.createElement("div");
+    Object.defineProperties(scroller, {
+      clientHeight: { value: 400 },
+      scrollHeight: { value: 2400 },
+    });
+    const onRequestMore = vi.fn();
+    const { unmount } = render(
+      <BranchMergedTrace
+        onRequestMore={onRequestMore}
+        scrollElementRef={{ current: scroller }}
+        traceItems={traceItems}
+      />
+    );
+    expect(onRequestMore).not.toHaveBeenCalled();
+    scroller.scrollTop = 1600;
+    fireEvent.scroll(scroller);
+    expect(onRequestMore).toHaveBeenCalledOnce();
+    unmount();
+    fireEvent.scroll(scroller);
+    expect(onRequestMore).toHaveBeenCalledOnce();
+  });
+
+  it("loads an unseen timeline target before scrolling to its row", () => {
+    const captured: { notify?: (row: number) => void } = {};
+    const registerScroll = (notify: (row: number) => void) => {
+      captured.notify = notify;
+      return () => {
+        captured.notify = undefined;
+      };
+    };
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const scrollTo = vi.fn();
+    scroller.scrollTo = scrollTo;
+    const scrollElementRef = { current: scroller };
+    const onRequestMore = vi.fn();
+    const { rerender } = render(
+      <BranchMergedTrace
+        onRequestMore={onRequestMore}
+        registerScroll={registerScroll}
+        scrollElementRef={scrollElementRef}
+        traceItems={traceItems.slice(0, 2)}
+        traceOverview={traceItems}
+      />,
+      { container: scroller }
+    );
+    scrollTo.mockClear();
+    captured.notify?.(2);
+    expect(onRequestMore).toHaveBeenCalledOnce();
+    expect(scrollTo).not.toHaveBeenCalled();
+    rerender(
+      <BranchMergedTrace
+        registerScroll={registerScroll}
+        scrollElementRef={scrollElementRef}
+        traceItems={traceItems}
+        traceOverview={traceItems}
+      />
+    );
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it("cancels a pending positional jump when the trace snapshot changes", () => {
+    const captured: { notify?: (row: number) => void } = {};
+    const registerScroll = (notify: (row: number) => void) => {
+      captured.notify = notify;
+      return () => {
+        captured.notify = undefined;
+      };
+    };
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const scrollTo = vi.fn();
+    scroller.scrollTo = scrollTo;
+    const scrollElementRef = { current: scroller };
+    const onRequestMore = vi.fn();
+    const { rerender } = render(
+      <BranchMergedTrace
+        onRequestMore={onRequestMore}
+        registerScroll={registerScroll}
+        scrollElementRef={scrollElementRef}
+        traceItems={traceItems.slice(0, 2)}
+        traceOverview={traceItems}
+      />,
+      { container: scroller }
+    );
+    scrollTo.mockClear();
+    captured.notify?.(2);
+    expect(onRequestMore).toHaveBeenCalledOnce();
+    expect(scrollTo).not.toHaveBeenCalled();
+    const replacementOverview = traceItems.map((item) => ({ ...item }));
+    rerender(
+      <BranchMergedTrace
+        registerScroll={registerScroll}
+        scrollElementRef={scrollElementRef}
+        traceItems={traceItems}
+        traceOverview={replacementOverview}
+      />
+    );
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
   it("forwards optional trace-comment props to the shared SessionTrace", async () => {

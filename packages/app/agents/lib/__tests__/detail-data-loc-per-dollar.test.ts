@@ -2,7 +2,7 @@
  * FEA-4052 — the component-detail metric grid hides the LOC/$ card for a kind
  * with no reliable per-component attribution (skill/command/plugin/mcp/tool/…)
  * and keeps it for a verifiable kind (only `subagent` today — skill/command are
- * session-level, excluded until session partitioning, wongk PR #3720). No dead
+ * session-level, excluded until session partitioning, whitlockk PR #3720). No dead
  * "—" LOC/$ card on a tab whose column is hidden.
  */
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
@@ -32,14 +32,15 @@ const hasKlocCard = (detail: AgentComponentDetail): boolean =>
   componentMetrics(detail).some((metric) => metric.key === "loc-per-dollar");
 
 describe("componentMetrics LOC/$ gating (FEA-4052)", () => {
-  it.each([
-    AgentComponentKind.Subagent,
-  ])("shows the LOC/$ card for verifiable kind %s", (kind) => {
-    expect(hasKlocCard(makeDetail({ kind, locPerDollar: 2.5 }))).toBe(true);
-  });
+  it.each([AgentComponentKind.Subagent])(
+    "shows the LOC/$ card for verifiable kind %s",
+    (kind) => {
+      expect(hasKlocCard(makeDetail({ kind, locPerDollar: 2.5 }))).toBe(true);
+    }
+  );
 
   it.each([
-    // skill/command excluded until session partitioning (wongk, PR #3720).
+    // skill/command excluded until session partitioning (whitlockk, PR #3720).
     AgentComponentKind.Skill,
     AgentComponentKind.Command,
     AgentComponentKind.Plugin,

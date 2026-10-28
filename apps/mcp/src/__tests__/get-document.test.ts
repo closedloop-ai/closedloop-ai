@@ -33,6 +33,11 @@ describe("shapeGetDocumentPayload", () => {
       title: "My Feature",
       type: DocumentType.Feature,
       status: IssueStatus.Triage,
+      statusMutation: {
+        allowedStatuses: [IssueStatus.Triage, IssueStatus.Done],
+        expectedStatusField: "expectedStatus",
+        expectedStatusByIdField: "expectedStatusById",
+      },
       projectId: "project-1",
       priority: Priority.High,
       dueDate: "2026-07-24T00:00:00.000Z",
@@ -90,6 +95,11 @@ describe("shapeGetDocumentPayload", () => {
     expect(result.tags).toEqual([
       { id: "tag-1", name: "groomed", color: TagColor.Green },
     ]);
+    expect(result.statusMutation).toEqual({
+      allowedStatuses: [IssueStatus.Triage, IssueStatus.Done],
+      expectedStatusField: "expectedStatus",
+      expectedStatusByIdField: "expectedStatusById",
+    });
     expect(result.repositorySnapshot).toEqual({
       source: SnapshotSource.LoopSelection,
       repositories: [{ fullName: "org/repo", role: "primary", position: 0 }],
@@ -117,6 +127,7 @@ describe("shapeGetDocumentPayload", () => {
     expect(result.approver).toBeNull();
     expect(result.tags).toEqual([]);
     expect(result.repositorySnapshot).toBeNull();
+    expect(Object.hasOwn(result, "statusMutation")).toBe(false);
   });
 
   it("preserves empty tags when the API returns no tag relations", () => {
@@ -150,6 +161,101 @@ describe("shapeGetDocumentPayload", () => {
     expect(result.id).toBe("doc-wrapped");
     expect(result.slug).toBe("ISS-5");
     expect(result.title).toBe("Wrapped Document");
+  });
+
+  it.each([
+    {
+      name: "empty",
+      content: "",
+      limit: 4,
+      expectedContent: "",
+      expectedLength: 0,
+      expectedReturned: 0,
+      expectedTruncated: false,
+    },
+    {
+      name: "exactly at the limit",
+      content: "abcd",
+      limit: 4,
+      expectedContent: "abcd",
+      expectedLength: 4,
+      expectedReturned: 4,
+      expectedTruncated: false,
+    },
+    {
+      name: "one UTF-16 code unit over the limit",
+      content: "abcde",
+      limit: 4,
+      expectedContent: "abcd...[truncated]",
+      expectedLength: 5,
+      expectedReturned: 4,
+      expectedTruncated: true,
+    },
+    {
+      name: "astral and CJK content with a custom limit",
+      content: "😀漢",
+      limit: 2,
+      expectedContent: "😀...[truncated]",
+      expectedLength: 3,
+      expectedReturned: 2,
+      expectedTruncated: true,
+    },
+  ])(
+    "reports source-body completeness for $name",
+    ({
+      content,
+      limit,
+      expectedContent,
+      expectedLength,
+      expectedReturned,
+      expectedTruncated,
+    }) => {
+      const result = shapeGetDocumentPayload(
+        { version: { ...baseVersion, content } },
+        { includeContent: true, contentMaxChars: limit }
+      );
+
+      expect(result.version.content).toBe(expectedContent);
+      expect(result.version.contentLength).toBe(expectedLength);
+      expect(result.version.returnedChars).toBe(expectedReturned);
+      expect(result.version.contentTruncated).toBe(expectedTruncated);
+      expect(result.version.returnedChars).toBeLessThanOrEqual(limit);
+      if (expectedTruncated) {
+        expect(result.version.content?.endsWith("...[truncated]")).toBe(true);
+        expect(result.version.content?.length).toBeGreaterThan(limit);
+      } else {
+        expect(result.version.content?.endsWith("...[truncated]")).toBe(false);
+      }
+    }
+  );
+
+  it("omits completeness fields when source content is not requested", () => {
+    const result = shapeGetDocumentPayload({
+      version: { ...baseVersion, content: "abcde" },
+    });
+
+    expect(result.version.contentLength).toBe(5);
+    expect(result.version).not.toHaveProperty("content");
+    expect(result.version).not.toHaveProperty("contentTruncated");
+    expect(result.version).not.toHaveProperty("returnedChars");
+  });
+
+  it("keeps completeness metadata scoped to source content, not resolved inline-image content", () => {
+    const source = `![img](attachment://${MOCK_ATTACHMENT_ID})`;
+    const result = shapeGetDocumentPayload(
+      { version: { ...baseVersion, content: source } },
+      {
+        includeContent: true,
+        contentMaxChars: source.length,
+        contentWithResolvedInlineImages:
+          "![img](https://example.com/a-much-longer-signed-image-url)",
+      }
+    );
+
+    expect(result.version.contentLength).toBe(source.length);
+    expect(result.version.returnedChars).toBe(source.length);
+    expect(result.version.contentTruncated).toBe(false);
+    expect(result.contentWithResolvedInlineImages).toContain("https://");
   });
 });
 

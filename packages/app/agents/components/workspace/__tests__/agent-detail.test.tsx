@@ -1,15 +1,21 @@
 import {
   type AgentComponentDetail,
   AgentComponentKind,
-  ComponentResolvedState,
   Harness,
-  SourceType,
 } from "@repo/api/src/types/agent-component";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
+import { useNavigation } from "@repo/navigation/use-navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
@@ -20,76 +26,17 @@ import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import type { AgentComponentsDataSource } from "../../../data-source/agent-components-data-source";
 import { AgentComponentsDataSourceProvider } from "../../../data-source/provider";
 import { agentComponentKeys } from "../../../hooks/use-agent-components";
+import { agentDetailSource, makeDetail } from "../agent-component-fixtures";
 import { AgentDetail } from "../agent-detail";
 
-// ---------------------------------------------------------------------------
 // Fixture helpers
-// ---------------------------------------------------------------------------
-
-function makeDetail(
-  overrides: Partial<AgentComponentDetail> = {}
-): AgentComponentDetail {
-  return {
-    id: "uuid-detail-1",
-    slug: "subagent::my-orchestrator-agent",
-    name: "My Orchestrator Agent",
-    kind: AgentComponentKind.Subagent,
-    sourceType: SourceType.Repo,
-    source: "acme/repo",
-    harness: Harness.Claude,
-    invocations: 42,
-    sessions: 7,
-    locPerDollar: 3.14,
-    trend: [1, 2, 3],
-    collaborators: ["bob"],
-    computeTargetIds: ["target-1"],
-    firstSeenAt: "2026-01-01T00:00:00.000Z",
-    lastSeenAt: "2026-06-01T00:00:00.000Z",
-    properties: {
-      path: ".claude/agents/orchestrator.md",
-      format: "md",
-    },
-    prompt:
-      "You are an expert orchestrator agent. Coordinate work efficiently.",
-    versions: [],
-    resolvedState: ComponentResolvedState.Unresolved,
-    sessionsTab: [],
-    sessionsTabTruncated: false,
-    branchesTab: [],
-    branchesTabTruncated: false,
-    provenance: [],
-    usageSessions: [],
-    locDelta: null,
-    successRate: null,
-    successDelta: null,
-    tokenEfficiencyDelta: null,
-    efficiencyTrend: [],
-    mergedPrs: null,
-    qualityScore: null,
-    qualityDelta: null,
-    ...overrides,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Test data source factory
-// ---------------------------------------------------------------------------
-
-function testDetailSource(
-  detail: AgentComponentDetail
-): AgentComponentsDataSource {
-  return {
-    scope: "test-detail",
-    list: () => Promise.reject(new Error("list unused in detail tests")),
-    detail: () => Promise.resolve(detail),
-  };
-}
 
 // A genuine 404: the HTTP/local sources reject a missing slug with an
 // `ApiError(status 404)`, which `classifyDetailError` reads as NotPresent.
 function notFoundSource(): AgentComponentsDataSource {
   return {
     scope: "test-not-found",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused")),
     // A genuine 404 arrives as an ApiError(status: 404) — the detail hook's
     // contract (throwOnError:false) surfaces it as isError with this error,
@@ -104,6 +51,7 @@ function notFoundSource(): AgentComponentsDataSource {
 function providerErrorSource(): AgentComponentsDataSource {
   return {
     scope: "test-provider-error",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused")),
     detail: () => Promise.reject(new ApiError("Service Unavailable", 503)),
   };
@@ -114,6 +62,7 @@ function providerErrorSource(): AgentComponentsDataSource {
 function pendingSource(): AgentComponentsDataSource {
   return {
     scope: "test-pending",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused")),
     detail: () => new Promise<AgentComponentDetail>(() => undefined),
   };
@@ -135,9 +84,7 @@ function Wrapper({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Top-level regex constants (biome/performance/useTopLevelRegex)
-// ---------------------------------------------------------------------------
 
 /**
  * ISS-4805: any rendered text still rooted on the capturing machine. Asserting
@@ -145,9 +92,6 @@ function Wrapper({
  * makes the disclosure guard hold for a path the fixture did not anticipate.
  */
 const RE_MACHINE_ROOTED_PATH = /(^|\s)(\/Users\/|\/home\/|~\/|[A-Za-z]:\\)/;
-const RE_SESSIONS_TAB = /sessions/i;
-const RE_BRANCHES_TAB = /branches/i;
-const RE_EVIDENCE_TAB = /evidence/i;
 const RE_PROMPT_TEXT = /You are an expert orchestrator agent/;
 const RE_NO_CONTENT = /no definition captured/i;
 const RE_REVISION_NAMED_EMPTY =
@@ -162,21 +106,20 @@ const RE_ORCHESTRATES = /orchestrates/i;
 const RE_MAX_CONCURRENCY = /max concurrency/i;
 const RE_SERVER_URL = /server url/i;
 
-// ---------------------------------------------------------------------------
 // T-10.7: AgentDetail component tests
-// ---------------------------------------------------------------------------
 
 describe("AgentDetail", () => {
   it("renders the Properties panel with key fields", async () => {
     const detail = makeDetail();
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
     // Properties panel header
+    await userEvent.click(await screen.findByRole("tab", { name: "Details" }));
     expect(await screen.findByText("Properties")).toBeInTheDocument();
 
     // Kind label rendered in the Properties panel (there may be multiple, use getAllBy)
@@ -202,11 +145,12 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
+    await userEvent.click(await screen.findByRole("tab", { name: "Details" }));
     expect(await screen.findByText("Properties")).toBeInTheDocument();
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getByText(RE_ALLOWED_TOOLS)).toBeInTheDocument();
@@ -225,11 +169,12 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
+    await userEvent.click(await screen.findByRole("tab", { name: "Details" }));
     expect(await screen.findByText("Properties")).toBeInTheDocument();
     expect(screen.queryByText(RE_ALLOWED_TOOLS)).not.toBeInTheDocument();
     expect(screen.queryByText(RE_SERVER_URL)).not.toBeInTheDocument();
@@ -237,9 +182,8 @@ describe("AgentDetail", () => {
 
     // Source value lives in the Properties panel.
     expect(screen.getByText("acme/repo")).toBeInTheDocument();
-    // FEA-4255: the harness label is NOT restated in Properties (the header
-    // eyebrow owns it now, and Properties defaults open — a Harness row would
-    // print it twice above the fold). It appears exactly once, in the eyebrow.
+    // Harness identity belongs to the Artifact header, not the property rows.
+    await userEvent.click(screen.getByRole("tab", { name: "Artifact" }));
     const claudeLabels = screen.getAllByText("Claude");
     expect(claudeLabels).toHaveLength(1);
   });
@@ -256,20 +200,21 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    const heading = await screen.findByRole("heading", { name: "Deep Review" });
-    // The eyebrow is the heading's preceding sibling in the header column.
-    const eyebrow = heading.parentElement?.previousElementSibling;
+    // The visible header title; the page h1 is the hidden PageHeading.
+    const title = await screen.findByText("Deep Review", { selector: "p" });
+    // The eyebrow is the title row's preceding sibling in the header column.
+    const eyebrow = title.parentElement?.previousElementSibling;
     expect(eyebrow?.textContent).toContain("Command");
     // `Both` surfaces as "Multiple harnesses" (T3/T9), not "Claude + Codex".
     expect(eyebrow?.textContent).toContain("Multiple harnesses");
   });
 
-  // wongk review: the harness value is NOT closed to the `Harness` union at
+  // whitlockk review: the harness value is NOT closed to the `Harness` union at
   // runtime — desktop's `toHarness` passes arbitrary non-empty collector strings
   // through. A stored harness that collides with an Object.prototype key
   // (`constructor`, `toString`, …) must NOT take the HARNESS_META branch via the
@@ -284,13 +229,13 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    const heading = await screen.findByRole("heading", { name: "Odd Harness" });
-    const eyebrow = heading.parentElement?.previousElementSibling;
+    const title = await screen.findByText("Odd Harness", { selector: "p" });
+    const eyebrow = title.parentElement?.previousElementSibling;
     // The eyebrow prints the raw fallback, not a blank segment.
     expect(eyebrow?.textContent).toContain("Command");
     expect(eyebrow?.textContent).toContain("constructor");
@@ -300,23 +245,19 @@ describe("AgentDetail", () => {
     const detail = makeDetail();
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    await screen.findByText("Properties");
+    await screen.findByRole("tab", { name: "Artifact" });
 
-    // Sessions and Branches tabs
-    expect(
-      screen.getByRole("tab", { name: RE_SESSIONS_TAB })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("tab", { name: RE_BRANCHES_TAB })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("tab", { name: RE_EVIDENCE_TAB })
-    ).toBeInTheDocument();
+    const invocations = screen.getByRole("tablist", { name: "Invocations" });
+    for (const name of ["Sessions", "Branches", "Evidence"]) {
+      expect(
+        within(invocations).getByRole("tab", { name })
+      ).toBeInTheDocument();
+    }
   });
 
   it("renders the Definition panel for Subagent kind (has invocation signal)", async () => {
@@ -327,7 +268,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -364,7 +305,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -394,7 +335,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -416,7 +357,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -449,7 +390,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -488,7 +429,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -509,12 +450,12 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    await screen.findByText("Properties");
+    await screen.findByRole("tab", { name: "Artifact" });
 
     // No Definition section for Config kind
     expect(
@@ -529,12 +470,12 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    await screen.findByText("Properties");
+    await screen.findByRole("tab", { name: "Artifact" });
     expect(
       screen.queryByRole("heading", { name: "Definition" })
     ).not.toBeInTheDocument();
@@ -544,12 +485,12 @@ describe("AgentDetail", () => {
     const detail = makeDetail();
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    await screen.findByText("Properties");
+    await screen.findByRole("tab", { name: "Artifact" });
 
     // Should render metric card labels (from componentMetrics).
     // There may be multiple elements (metric card + tab trigger both say "Sessions")
@@ -630,13 +571,13 @@ describe("AgentDetail", () => {
     const detail = makeDetail({ name: "Expert Python Reviewer" });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
     expect(
-      await screen.findByText("Expert Python Reviewer")
+      await screen.findByText("Expert Python Reviewer", { selector: "p" })
     ).toBeInTheDocument();
   });
 
@@ -649,20 +590,23 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    const title = await screen.findByRole("heading", {
-      name: "My Orchestrator Agent",
+    const title = await screen.findByText("My Orchestrator Agent", {
+      selector: "p",
     });
     // The path is shown as the subtitle and is not the title element.
     const subtitle = screen.getByText(".claude/agents/orchestrator.md");
     expect(subtitle).toBeInTheDocument();
     expect(subtitle).not.toBe(title);
-    // The name appears exactly once (title only), never duplicated as subtitle.
-    expect(screen.getAllByText("My Orchestrator Agent")).toHaveLength(1);
+    // The name is shown once (title only), never duplicated as subtitle. The
+    // hidden page h1 carries it too, so it is excluded from the count.
+    expect(
+      screen.getAllByText("My Orchestrator Agent", { ignore: VISIBLE_ONLY })
+    ).toHaveLength(1);
   });
 
   // ISS-4805: the header still names a location for the common production case
@@ -679,7 +623,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -705,7 +649,7 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
@@ -728,14 +672,16 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
-    await screen.findByText("Properties");
-    // Title renders the name once.
-    expect(screen.getAllByText("Add comment to issue")).toHaveLength(1);
+    await screen.findByRole("tab", { name: "Artifact" });
+    // Title renders the name once (the hidden page h1 excluded).
+    expect(
+      screen.getAllByText("Add comment to issue", { ignore: VISIBLE_ONLY })
+    ).toHaveLength(1);
     // Subtitle is the identity key — distinct, and not the `kind::` identity.
     const subtitle = screen.getByText("_add_comment_to_issue");
     expect(subtitle).toBeInTheDocument();
@@ -745,8 +691,8 @@ describe("AgentDetail", () => {
   // FEA-3520 regression: a Skill-component detail page crashed on web because a
   // record whose `versions[].hash` / `usageSessions[].versionHash` reached the
   // renderer as a non-string threw `TypeError: …slice is not a function` from
-  // the version-label path — caught by the top-level LiveblocksErrorBoundary →
-  // crash-spiral (same class as the #3208 `sessionStartedAt` fix). The whole
+  // the version-label path (same class as the #3208 `sessionStartedAt` fix,
+  // and until ISS-10202 a freeze rather than an error page). The whole
   // detail page (Definition panel + Sessions "Version" column) must render without
   // throwing for such a malformed Skill record.
   it("renders a Skill detail with malformed non-string version hashes without crashing", async () => {
@@ -786,13 +732,15 @@ describe("AgentDetail", () => {
     });
 
     render(
-      <Wrapper dataSource={testDetailSource(detail)}>
+      <Wrapper dataSource={agentDetailSource(detail)}>
         <AgentDetail backHref="/acme/agents" slug={detail.id} />
       </Wrapper>
     );
 
     // The page renders (header + Definition panel) rather than the degraded state.
-    expect(await screen.findByText("claude-api")).toBeInTheDocument();
+    expect(
+      await screen.findByText("claude-api", { selector: "p" })
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Definition" })
     ).toBeInTheDocument();
@@ -802,7 +750,7 @@ describe("AgentDetail", () => {
     expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
 
-  // wongk review: the Definition panel's `selectedHash` is local state that must
+  // whitlockk review: the Definition panel's `selectedHash` is local state that must
   // NOT survive same-component navigation. On desktop the detail view can swap
   // `data` in place (cached B replaces A without unmounting AgentDetail). If A's
   // selection carries over to B, B's Select value is not one of B's options and
@@ -872,7 +820,7 @@ describe("AgentDetail", () => {
       ],
     });
 
-    // Reproduce wongk's exact "navigate to CACHED B" path: preseed both details
+    // Reproduce whitlockk's exact "navigate to CACHED B" path: preseed both details
     // into the QueryClient (infinite staleTime) so the A→B swap is SYNCHRONOUS —
     // no loading gap unmounts the subtree. AgentDetail and the Definition panel
     // stay mounted while `data` swaps, so a leaked `selectedHash` would carry
@@ -881,6 +829,7 @@ describe("AgentDetail", () => {
     const scope = "test-inplace-nav";
     const source: AgentComponentsDataSource = {
       scope,
+      honorsDateWindow: false,
       list: () => Promise.reject(new Error("list unused")),
       // Never actually hit — both details are cache hits.
       detail: () => Promise.reject(new Error("detail should be cache-served")),
@@ -925,9 +874,7 @@ describe("AgentDetail", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // FEA-3557/FEA-3294: Invocations tab permalink
-// ---------------------------------------------------------------------------
 
 /**
  * A nav-configurable wrapper (the shared `AppCoreStoryProviders` fixes its own
@@ -955,7 +902,7 @@ function renderDetailWithNav(options: {
         <AuthAdapterProvider adapter={createStaticAuthAdapter()}>
           <ApiAdapterProvider adapter={apiAdapter}>
             <AgentComponentsDataSourceProvider
-              dataSource={testDetailSource(options.detail)}
+              dataSource={agentDetailSource(options.detail)}
             >
               {children}
             </AgentComponentsDataSourceProvider>
@@ -968,7 +915,8 @@ function renderDetailWithNav(options: {
     <AgentDetail backHref="/acme/agents" slug={options.detail.id} />,
     { wrapper }
   );
-  return { nav, ...view };
+  const { result } = renderHook(() => useNavigation(), { wrapper });
+  return { nav, history: result.current, ...view };
 }
 
 function tabQuery(href: string): string | null {
@@ -976,86 +924,91 @@ function tabQuery(href: string): string | null {
   return new URLSearchParams(q === -1 ? "" : href.slice(q + 1)).get("tab");
 }
 
-describe("AgentDetail invocations-tab permalink (FEA-3557)", () => {
-  it("defaults to Sessions with no ?tab= param", async () => {
+describe("AgentDetail artifact shell routing (ISS-12645)", () => {
+  it("lands on Artifact without consuming collection columns or metrics", async () => {
     const { nav } = renderDetailWithNav({
       detail: makeDetail(),
-      initialPath: "/agents/detail",
+      initialPath:
+        "/agents/detail?columns=owner,status&metrics=components,authors&tab=artifact",
     });
-
-    await screen.findByText("Properties");
-
-    expect(screen.getByRole("tab", { name: RE_SESSIONS_TAB })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    expect(tabQuery(nav.getCurrentHref())).toBeNull();
-  });
-
-  it("deep-links to the Branches tab from ?tab=branches", async () => {
-    renderDetailWithNav({
-      detail: makeDetail(),
-      initialPath: "/agents/detail?tab=branches",
-    });
-
-    await screen.findByText("Properties");
-
-    expect(screen.getByRole("tab", { name: RE_BRANCHES_TAB })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-  });
-
-  it("deep-links to the Evidence tab from ?tab=evidence", async () => {
-    renderDetailWithNav({
-      detail: makeDetail(),
-      initialPath: "/agents/detail?tab=evidence",
-    });
-
-    await screen.findByText("Properties");
-
-    expect(screen.getByRole("tab", { name: RE_EVIDENCE_TAB })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
     expect(
-      screen.getByText(
-        "This data source does not record exact invocation evidence."
-      )
+      await screen.findByRole("tab", { name: "Artifact" })
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("heading", { name: "Definition" })
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+    expect(nav.getCurrentHref()).toContain("metrics=components,authors");
+  });
+
+  it.each(["branches", "evidence"])(
+    "preserves the legacy %s permalink",
+    async (tab) => {
+      renderDetailWithNav({
+        detail: makeDetail(),
+        initialPath: `/agents/detail?tab=${tab}`,
+      });
+      const invocations = await screen.findByRole("tablist", {
+        name: "Invocations",
+      });
+      expect(
+        within(invocations).getByRole("tab", {
+          name: tab === "branches" ? "Branches" : "Evidence",
+        })
+      ).toHaveAttribute("aria-selected", "true");
+      expect(
+        screen.getByRole("tablist", { name: "Artifact detail sections" })
+      ).toBeInTheDocument();
+    }
+  );
+
+  it("writes independent shell/subview params and follows browser navigation", async () => {
+    const user = userEvent.setup();
+    const { nav, history } = renderDetailWithNav({
+      detail: makeDetail(),
+      initialPath: "/agents/detail?columns=owner&metrics=authors",
+    });
+    const shell = await screen.findByRole("tablist", {
+      name: "Artifact detail sections",
+    });
+    await user.click(within(shell).getByRole("tab", { name: "Details" }));
+    await screen.findByText("Properties");
+    expect(tabQuery(nav.getCurrentHref())).toBe("details");
+    expect(nav.getHistory()).toHaveLength(2);
+    await user.click(within(shell).getByRole("tab", { name: "Sessions" }));
+    const invocations = screen.getByRole("tablist", { name: "Invocations" });
+    await user.click(
+      within(invocations).getByRole("tab", { name: "Evidence" })
+    );
+    expect(tabQuery(nav.getCurrentHref())).toBe("sessions");
+    expect(nav.getCurrentHref()).toContain("view=evidence");
+    expect(nav.getCurrentHref()).toContain("columns=owner");
+    expect(nav.getCurrentHref()).toContain("metrics=authors");
+    act(() => history.back());
+    await screen.findByText("Properties");
+    act(() => history.forward());
+    expect(screen.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    act(() => history.back());
+    await screen.findByText("Properties");
+    act(() => history.back());
+    expect(
+      await screen.findByRole("heading", { name: "Definition" })
     ).toBeInTheDocument();
   });
 
-  it("falls back to Sessions for an invalid ?tab= value", async () => {
+  it("falls back to Artifact for an unknown tab", async () => {
     renderDetailWithNav({
       detail: makeDetail(),
       initialPath: "/agents/detail?tab=bogus",
     });
-
-    await screen.findByText("Properties");
-
-    expect(screen.getByRole("tab", { name: RE_SESSIONS_TAB })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-  });
-
-  it("writes ?tab=branches on switch and cleans it selecting Sessions", async () => {
-    const user = userEvent.setup();
-    const { nav } = renderDetailWithNav({
-      detail: makeDetail(),
-      initialPath: "/agents/detail",
-    });
-
-    await screen.findByText("Properties");
-
-    await user.click(screen.getByRole("tab", { name: RE_BRANCHES_TAB }));
-    await waitFor(() => {
-      expect(tabQuery(nav.getCurrentHref())).toBe("branches");
-    });
-
-    await user.click(screen.getByRole("tab", { name: RE_SESSIONS_TAB }));
-    await waitFor(() => {
-      expect(tabQuery(nav.getCurrentHref())).toBeNull();
-    });
+    expect(
+      await screen.findByRole("tab", { name: "Artifact" })
+    ).toHaveAttribute("aria-selected", "true");
   });
 });
+
+/** Text queries that skip the hidden page h1 above the shell. */
+const VISIBLE_ONLY = "script, style, h1";

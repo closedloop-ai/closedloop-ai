@@ -1,5 +1,4 @@
 /**
- * @file help-view.test.tsx
  * @description Component tests for the desktop two-pane Help view (FEA-3844 /
  * PRD-555 M2). Drives the view off a mocked `window.desktopApi.docsHelp` bridge
  * and asserts:
@@ -7,9 +6,11 @@
  *      in the reader.
  *   2. Clicking a search hit that matched a heading jumps to that page and
  *      requests its body (search-jump).
- *   3. Flag OFF → the view renders null (the `hiddenNavIds` sidebar guard's
- *      defense-in-depth partner).
- *   4. An unavailable bundle shows the dark "view online" state.
+ *   3. An unavailable bundle shows the dark "view online" state.
+ *
+ * ISS-9731 removed the destination-gate cases: this view no longer self-guards,
+ * because the shell withdraws the ROUTE (see
+ * `renderer/__tests__/labs-route-withdrawal.test.tsx`).
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
@@ -64,8 +65,9 @@ vi.mock(
   })
 );
 
+import { DOCS_HELP_SEARCH_FAILED_TITLE } from "@repo/app/help/lib/docs-help-labels";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY } from "../../../../shared/desktop-docs-help-flag";
+import { HELP_COMPLETE_SURFACE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type {
   DocsHelpGetPageResult,
   DocsHelpNavResult,
@@ -75,8 +77,22 @@ import type {
 import { HelpView } from "../help-view";
 
 const flagMock = vi.mocked(useFeatureFlagEnabled);
+
+/**
+ * PRD-555's destination gates ON, ISS-10005's `help-complete-surface` OFF — the
+ * branch this file covers. Written as a key-aware implementation rather than a
+ * blanket `true`: a blanket true now resolves the complete-surface key as well
+ * and every case below would silently retarget onto `HelpSurfaceV2`, which has
+ * its own suite and its own state ladder.
+ */
+function enableLegacyHelp(): void {
+  flagMock.mockImplementation(
+    (key: string) => key !== HELP_COMPLETE_SURFACE_FEATURE_FLAG_KEY
+  );
+}
 const LOOPS_HIT_NAME_RE = /Loops/;
 const VIEW_ONLINE_NAME_RE = /View online/;
+const NO_RESULTS_RE = /No results for/;
 
 const NAV: DocsHelpNavResult = {
   groups: [
@@ -192,9 +208,9 @@ afterEach(() => {
   }
 });
 
-describe("desktop HelpView (FEA-3844)", () => {
+describe("desktop HelpView, help-complete-surface OFF (FEA-3844)", () => {
   it("renders the meta.json nav tree and loads the first page when the flag is on", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     installDocsHelp();
     render(<HelpView />);
 
@@ -214,7 +230,7 @@ describe("desktop HelpView (FEA-3844)", () => {
   });
 
   it("jumps to a page + heading anchor from a search hit (search-jump)", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     const api = installDocsHelp({
       search: vi.fn(
         async (): Promise<DocsHelpSearchResult> => ({
@@ -257,7 +273,7 @@ describe("desktop HelpView (FEA-3844)", () => {
   });
 
   it("opens the page from a ?page=&heading= deep link (command-palette Docs pick, M3)", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     searchParamsMock.current = new URLSearchParams({
       page: "concepts/loops",
       heading: "lifecycle",
@@ -283,7 +299,7 @@ describe("desktop HelpView (FEA-3844)", () => {
   });
 
   it("scrolls to the heading on the TARGET page after a cross-page search-jump (not the stale page)", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     installDocsHelp({
       // Page A carries a DIFFERENT heading ("overview") than the jump target's
       // "lifecycle", so a scroll against the stale page A would be observable as
@@ -349,28 +365,8 @@ describe("desktop HelpView (FEA-3844)", () => {
     expect(scrollIntoViewSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("renders nothing when the docsHelp flag is off", () => {
-    flagMock.mockReturnValue(false);
-    installDocsHelp();
-    const { container } = render(<HelpView />);
-    expect(container.childElementCount).toBe(0);
-  });
-
-  // ISS-5037 (wongk review on PR #4341): `docsHelp` stays TRUE here — the Labs
-  // container gate above it is what is off, and a direct #/help hash must stay
-  // dark rather than mounting the reader the shell has withdrawn.
-  it("renders nothing when docsHelp is on but the Labs container gate is off", () => {
-    flagMock.mockImplementation(
-      (key: string) => key === DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY
-    );
-    const api = installDocsHelp();
-    const { container } = render(<HelpView />);
-    expect(container.childElementCount).toBe(0);
-    expect(api.nav).not.toHaveBeenCalled();
-  });
-
   it("shows the offline-unavailable state when the bundle isn't available", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     installDocsHelp({
       status: vi.fn(async () => ({ ...STATUS, available: false })),
       nav: vi.fn(async (): Promise<DocsHelpNavResult> => ({ groups: [] })),
@@ -386,7 +382,7 @@ describe("desktop HelpView (FEA-3844)", () => {
   });
 
   it("falls back to the unavailable state when an available bundle has no navigable pages", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     // `available: true` but an empty nav is a broken/empty snapshot: there is no
     // page to auto-select, so the view must not sit on an unreachable idle prompt.
     installDocsHelp({
@@ -399,8 +395,72 @@ describe("desktop HelpView (FEA-3844)", () => {
     expect(screen.queryByText("Select a page to start reading.")).toBeNull();
   });
 
+  it("keeps the shipped body alive when the docs index arrives malformed", async () => {
+    // AC2 on the branch EVERY user is on. Desktop's only error boundary is the
+    // root one, so an unguarded `group.pages.map` replaces the whole application
+    // rather than blanking the Help pane. First position reaches both readers.
+    enableLegacyHelp();
+    installDocsHelp({
+      nav: vi.fn(
+        async (): Promise<DocsHelpNavResult> =>
+          ({
+            groups: [{ group: "Corrupted" }, ...NAV.groups],
+          }) as unknown as DocsHelpNavResult
+      ),
+    });
+
+    render(<HelpView />);
+
+    // The intact groups still reached the reader...
+    expect(
+      await screen.findByRole("button", { name: "Overview" })
+    ).toBeTruthy();
+    expect(screen.getByText("Concepts")).toBeTruthy();
+    // ...the refused one did not...
+    expect(screen.queryByText("Corrupted")).toBeNull();
+    // ...and the bundle was not written off wholesale, which is what the
+    // unguarded host did: it threw, caught, and reported the whole snapshot
+    // unavailable while two readable groups sat in the payload.
+    expect(screen.queryByText("Docs aren't available offline")).toBeNull();
+  });
+
+  /**
+   * davetho review. This body used to hand `pageState.page` to `HelpReader`
+   * unguarded, so `renderBody ?? body` reached the markdown pipeline raw — and a
+   * non-nullish non-string throws there, taking down the Help route on the
+   * DEFAULT branch, which is the one every flag-off user is on.
+   */
+  it("refuses a corrupt page instead of taking the route down with it", async () => {
+    enableLegacyHelp();
+    installDocsHelp({
+      getPage: vi.fn(
+        async (path: string): Promise<DocsHelpGetPageResult> =>
+          ({
+            kind: "found",
+            page: {
+              path,
+              title: "Overview",
+              headings: [],
+              body: "readable",
+              // A version-skewed producer: an object where markdown wants text.
+              renderBody: { md: "## Lifecycle" },
+            },
+          }) as unknown as DocsHelpGetPageResult
+      ),
+    });
+
+    render(<HelpView />);
+
+    await waitFor(() =>
+      expect(screen.getByText("This page can't be displayed")).toBeTruthy()
+    );
+    // The shell is still answering beside the refusal — "did not crash" is not
+    // observable on its own.
+    expect(screen.queryByTestId("markdown-body")).toBeNull();
+  });
+
   it("renders the markdown-renderable body (renderBody) when present, not the flattened search body", async () => {
-    flagMock.mockReturnValue(true);
+    enableLegacyHelp();
     installDocsHelp({
       getPage: vi.fn(
         async (path: string): Promise<DocsHelpGetPageResult> => ({
@@ -422,5 +482,81 @@ describe("desktop HelpView (FEA-3844)", () => {
     expect(screen.getByTestId("markdown-body").textContent).not.toContain(
       "Flattened prose for search"
     );
+  });
+});
+
+/**
+ * ISS-10044 on the DEFAULT branch. `help-complete-surface` is OFF, so this body
+ * is the one every reader is actually on — and the collapse the ticket exists to
+ * remove was only ever visible here. The v2 surface's own suite injects the new
+ * states straight into a `DocsHelpSource`; these two drive them through the real
+ * hook and the real IPC, which is the only way a regression in either direction
+ * reddens.
+ */
+describe("desktop HelpView, help-complete-surface OFF, a transport that failed (ISS-10044)", () => {
+  it("says the page read failed rather than that the snapshot lacks the page", async () => {
+    enableLegacyHelp();
+    installDocsHelp({
+      getPage: vi.fn(() => Promise.reject(new Error("ipc down"))),
+    });
+    render(<HelpView />);
+
+    expect(await screen.findByText("Couldn't load this page")).toBeTruthy();
+    expect(screen.queryByText("Page not found")).toBeNull();
+  });
+
+  it("still says a genuinely absent page is not in the snapshot", async () => {
+    // The positive sibling. Without it the assertion above is satisfied by a
+    // body that had simply stopped rendering not-found at all.
+    enableLegacyHelp();
+    installDocsHelp({
+      getPage: vi.fn(
+        async (): Promise<DocsHelpGetPageResult> => ({ kind: "missing" })
+      ),
+    });
+    render(<HelpView />);
+
+    expect(await screen.findByText("Page not found")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load this page")).toBeNull();
+  });
+
+  it("says the search failed rather than that the query matched nothing", async () => {
+    enableLegacyHelp();
+    installDocsHelp({
+      search: vi.fn(() => Promise.reject(new Error("index unreadable"))),
+    });
+    render(<HelpView />);
+    await screen.findByText("Getting Started");
+
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Search documentation" }),
+      { target: { value: "kubernetes" } }
+    );
+
+    expect(await screen.findByText(DOCS_HELP_SEARCH_FAILED_TITLE)).toBeTruthy();
+    expect(screen.queryByText(NO_RESULTS_RE)).toBeNull();
+  });
+
+  it("still says a search that ran and matched nothing matched nothing", async () => {
+    // The positive sibling for the search half.
+    enableLegacyHelp();
+    installDocsHelp({
+      search: vi.fn(
+        async (): Promise<DocsHelpSearchResult> => ({
+          query: "kubernetes",
+          hits: [],
+        })
+      ),
+    });
+    render(<HelpView />);
+    await screen.findByText("Getting Started");
+
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Search documentation" }),
+      { target: { value: "kubernetes" } }
+    );
+
+    expect(await screen.findByText(NO_RESULTS_RE)).toBeTruthy();
+    expect(screen.queryByText(DOCS_HELP_SEARCH_FAILED_TITLE)).toBeNull();
   });
 });

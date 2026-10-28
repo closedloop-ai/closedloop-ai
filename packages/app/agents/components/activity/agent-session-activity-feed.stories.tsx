@@ -18,7 +18,8 @@ const storyApiRoutes: FixtureRoute[] = [
 const meta: Meta<typeof AgentSessionActivityFeed> = {
   component: AgentSessionActivityFeed,
   parameters: { appCore: { apiRoutes: storyApiRoutes } },
-  title: "App Core/Agents/Session Activity Feed",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Agents/General/Agent Session Activity Feed",
 };
 
 export default meta;

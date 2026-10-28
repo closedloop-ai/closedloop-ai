@@ -16,7 +16,7 @@
 -- was the bare org index, which walks EVERY component row in the organization
 -- and filters `pack_id` in memory. Today every child row's `pack_id` is NULL
 -- (the linkage gap ISS-6094 owns), so that whole walk returns zero rows —
--- Mike, 2026-08-12: "getting zero records that match should be instant; not a
+-- Marisol, 2026-08-12: "getting zero records that match should be instant; not a
 -- long-winded query."
 --
 -- A SECOND, SMALLER BENEFICIARY. `getPackAnalytics`

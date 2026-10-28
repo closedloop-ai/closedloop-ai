@@ -14,10 +14,11 @@ vi.mock("@repo/app/agents/hooks/use-catalog", () => ({
 }));
 
 const RE_REPO = /Repository/;
-const RE_SUMMARY_WITH_INVALID =
-  /Imported 3 components, skipped 1 already present, dropped 2 invalid/;
+const INVALID_WORD = "invalid";
+const RE_SUMMARY_WITH_INVALID = new RegExp(
+  `Imported 3 components, skipped 1 already present, dropped 2 ${INVALID_WORD}`
+);
 const RE_SUMMARY_CLEAN = /Imported 2 components/;
-const RE_INVALID = /invalid/;
 
 async function importFrom(result: {
   created: number;
@@ -60,6 +61,8 @@ describe("ImportRepoDialog", () => {
     await importFrom({ created: 2, skipped: 0, invalid: 0 });
 
     expect(await screen.findByText(RE_SUMMARY_CLEAN)).toBeInTheDocument();
-    expect(screen.queryByText(RE_INVALID)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(INVALID_WORD, { exact: false })
+    ).not.toBeInTheDocument();
   });
 });

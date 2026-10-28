@@ -4,15 +4,19 @@ import type {
   AgentSessionListItem,
   SessionLinkedArtifact,
 } from "@repo/api/src/types/agent-session";
-import { SessionsTable } from "@repo/app/agents/components/sessions/sessions-table";
+import { SessionsTable } from "@repo/app/agents/components/sessions/session-detail-table";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useCoarseNow } from "@repo/app/shared/hooks/use-coarse-now";
+import { SESSIONS_COMMENT_COUNT_TAG_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
-  GridEmptyValue,
-  type GridTableMode,
-} from "@repo/design-system/components/ui/grid-table";
+  CountCell,
+  isCountCellEmpty,
+} from "@repo/design-system/components/ui/count-cell";
+import type { GridTableMode } from "@repo/design-system/components/ui/grid-table";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
+import type { CountNoun } from "@repo/design-system/lib/count-noun";
 import { Link } from "@repo/navigation/link";
-import { FolderIcon, TicketIcon } from "lucide-react";
+import { MessageSquareIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, useMemo } from "react";
 import { SESSION_DURATION_TICK_MS } from "../../lib/session-duration";
 import {
@@ -20,17 +24,12 @@ import {
   SessionGroupBy,
 } from "../../lib/session-grouping";
 import {
-  resolveSessionIssueChips,
-  resolveSessionProjectChips,
-  SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID,
-  SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID,
-  type SessionLinkedEntityChip,
-} from "../../lib/session-linked-entity-chips";
-import {
   isSyncStateFoldActive,
   toSessionTableRowWithSyncFold,
 } from "../../lib/session-status-fold";
-import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
+import { renderSessionPriorityCell } from "./session-priority-cell";
+import { renderSessionTagsCell } from "./session-tags-cell";
+import { useSessionLinkedEntitySeams } from "./use-session-linked-entity-seams";
 
 /**
  * Props for the shared synced agent-session table. Route-owned wrappers keep
@@ -65,7 +64,8 @@ export type SyncedSessionsTableProps = {
    */
   hostScroll?: boolean;
   /**
-   * ISS-5315: the View menu's "Group by" dimension. Bands the rows ON THIS PAGE
+   * ISS-5315: the toolbar's "Group by" dimension (the Group menu since
+   * ISS-10361 retired the View menu). Bands the rows ON THIS PAGE
    * — see `session-grouping` for why a band never carries a count.
    */
   groupBy?: SessionGroupBy;
@@ -90,7 +90,7 @@ export type SyncedSessionsTableProps = {
    * `item.linkedArtifacts`) are projected by the CLOUD list only, so a host fed
    * by the desktop LOCAL producer would render two tracks of em dashes.
    *
-   * "Cloud list", not "web surface" (wongk review): the gate is the DATA SOURCE,
+   * "Cloud list", not "web surface" (whitlockk review): the gate is the DATA SOURCE,
    * and the desktop has both. Its cloud mode reads the same HTTP list the web
    * app does (`createHttpAgentSessionsDataSource`) and its rows carry both
    * fields, so the desktop Sessions view opts in per MODE — see
@@ -101,6 +101,26 @@ export type SyncedSessionsTableProps = {
    * already had in hand.
    */
   showLinkedEntityColumns?: boolean;
+  /**
+   * ISS-8712: mount the org-tag picker in the `Tags` column.
+   *
+   * Opt-in per HOST rather than derived here, and deliberately NOT folded into
+   * `showLinkedEntityColumns` above: that opt-in answers "does this mount hold
+   * the cloud linked-entity fields", this one answers "may this mount host a
+   * write control". The column is additionally gated by its own PostHog flag
+   * inside `SessionsTable`, so opting in here does not make it appear.
+   */
+  showTagsColumn?: boolean;
+  /**
+   * ISS-10332: mount the priority editor in the `Priority` column.
+   *
+   * Opt-in per HOST like `showTagsColumn`, and for the same two reasons stated
+   * there plus one more: only a source that projects `priority` can fill the
+   * column, so the host that knows its source (the web list always; the desktop
+   * shell per mode) is the one to say. The cell itself reads the write through
+   * the active data source (`useUpdateSessionPriority`).
+   */
+  showPriorityColumn?: boolean;
   /**
    * Route builder for a linked-issue chip. The surface owns it because the
    * destination is surface-shaped: web joins its org slug onto
@@ -140,6 +160,8 @@ export function SyncedSessionsTable({
   groupBy = SessionGroupBy.None,
   mode,
   showLinkedEntityColumns = false,
+  showTagsColumn = false,
+  showPriorityColumn = false,
   getIssueHref,
 }: SyncedSessionsTableProps) {
   const itemById = useMemo(
@@ -148,7 +170,7 @@ export function SyncedSessionsTable({
   );
   // ISS-4848: the fold needs the Status column to be on screen to have anywhere
   // to render. See `isSyncStateFoldActive`.
-  // #4480 (wongk): judged against the columns the grid will ACTUALLY render, so
+  // #4480 (whitlockk): judged against the columns the grid will ACTUALLY render, so
   // banding by Status — which removes the Status column — stands the fold down
   // and hands the sync signal back to the Name cell, instead of folding it into
   // a cell that is no longer on screen and dropping it from the grid entirely.
@@ -171,6 +193,13 @@ export function SyncedSessionsTable({
   // of them `now`. Both consumers now ship ungated. See
   // `SESSION_DURATION_TICK_MS`.
   const now = useCoarseNow(SESSION_DURATION_TICK_MS);
+  // FEA-4204: read once for the whole table rather than per row. The OPTIONAL
+  // hook because this component mounts without a flag provider in Storybook and
+  // in the shared tests, where an adapter-requiring hook would throw; absent, it
+  // resolves closed, which is the state this gate defaults to anyway.
+  const commentTagEnabled = useFeatureFlagEnabledOptional(
+    SESSIONS_COMMENT_COUNT_TAG_FEATURE_FLAG_KEY
+  );
   const rows = useMemo(
     () =>
       items.map((item) =>
@@ -181,35 +210,16 @@ export function SyncedSessionsTable({
     [items, foldActive, now]
   );
 
-  // FEA-4209 / FEA-4210: the linked-entity chips for EVERY row, derived once per
-  // render for the same structural reason the qualifiers are — the seam has to
-  // be able to hand the grid the shared `GridEmptyValue` sentinel for a row with
-  // nothing to link, and that means knowing whether a row has chips BEFORE
-  // rendering its cell. Keyed by row id and read from `itemById`, because the
-  // derivations need the raw record, not the display-ready row.
-  const linkedChipsByRowId = useMemo(() => {
-    const byRowId = new Map<
-      string,
-      Readonly<{
-        projects: readonly SessionLinkedEntityChip[];
-        issues: readonly SessionLinkedEntityChip[];
-      }>
-    >();
-    if (!showLinkedEntityColumns) {
-      return byRowId;
-    }
-    for (const row of rows) {
-      const item = itemById.get(row.id);
-      if (!item) {
-        continue;
-      }
-      byRowId.set(row.id, {
-        projects: resolveSessionProjectChips(item),
-        issues: resolveSessionIssueChips(item, getIssueHref),
-      });
-    }
-    return byRowId;
-  }, [rows, itemById, showLinkedEntityColumns, getIssueHref]);
+  // FEA-4209 / FEA-4210. ISS-7052 Part A moved the derivation into a shared hook
+  // when the v2 surface became a second host for the same two columns — the chip
+  // logic has one owner so the two hosts cannot render a linked entity
+  // differently.
+  const { renderIssues, renderProjects } = useSessionLinkedEntitySeams({
+    getIssueHref,
+    itemById,
+    rows,
+    showLinkedEntityColumns,
+  });
 
   if (rows.length === 0 && emptyState) {
     return emptyState;
@@ -232,34 +242,16 @@ export function SyncedSessionsTable({
             }
           : undefined
       }
-      renderIssues={
-        showLinkedEntityColumns
-          ? (row, { uncapped }) => {
-              const chips = linkedChipsByRowId.get(row.id)?.issues;
-              // The shared empty sentinel returned DIRECTLY, not a component
-              // that renders one: the card fallback drops a field whose cell is
-              // empty and decides that with `isEmptyCellValue`, which matches a
-              // `GridEmptyValue` ELEMENT. Handing it a wrapper would leave every
-              // card with a dead field on exactly the rows with nothing in it.
-              if (!chips || chips.length === 0) {
-                return <GridEmptyValue />;
-              }
-              return (
-                <SessionLinkedChipsCell
-                  chips={chips}
-                  icon={<TicketIcon aria-hidden />}
-                  overflowNoun="issue"
-                  testId={SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID}
-                  uncapped={uncapped}
-                />
-              );
-            }
-          : undefined
-      }
+      renderIssues={renderIssues}
       renderName={(row, className) => {
         const item = itemById.get(row.id);
+        // `gap-1.5` matches the wrapper this render lands inside
+        // (`SessionsTable`'s own lead span) and `SessionCard`'s header, so name →
+        // comment tag → provenance chip reads as one rhythm on the agent-detail
+        // tab where all three render. It was `gap-2` while this span had a single
+        // child and the gap never painted.
         return (
-          <span className="flex min-w-0 items-center gap-2">
+          <span className="flex min-w-0 items-center gap-1.5">
             {/* FEA-4051: surface-agnostic `@repo/navigation` `Link` (renders a
                 real anchor) drives the active adapter on both web (Next router)
                 and the desktop renderer (hash-store adapter). A raw `<a href>`
@@ -277,35 +269,34 @@ export function SyncedSessionsTable({
             ) : (
               <span className={`${className} min-w-0`}>{row.name}</span>
             )}
-            {/* ISS-5666 / ISS-5770: nothing else goes in this cell. ISS-5666
-                cleared it and ISS-5770 removed the `Signals` column the chips
-                had moved to; neither is a licence to put one back here. The
-                row-state facts survive elsewhere — `Awaiting input` is projected
-                into Status as `Waiting`, an uploading row's sync state folds
-                into the Status pill, and the transcript verdicts sit on Session
-                Detail's Properties panel. */}
+            {/* ISS-5666 / ISS-5770 cleared this cell to the name and removed the
+                `Signals` column the chips had moved to, and that still holds for
+                every ROW-STATE fact — `Awaiting input` is projected into Status
+                as `Waiting`, an uploading row's sync state folds into the Status
+                pill, and the transcript verdicts sit on Session Detail's
+                Properties panel. None of them comes back here.
+
+                FEA-4204 / PRD-557 is the one deliberate exception, and it IS a
+                reversal — written down here rather than left for the next reader
+                to find as drift. Two things separate it from the chips: a comment
+                count restates nothing else on the row (no column carries it), and
+                it is the only way to find a discussed session from the list at
+                all. Gated closed on both surfaces
+                (`sessions-comment-count-tag`), and rendered ONLY for a session
+                that HAS comments, so a quiet row is byte-for-byte what it is
+                today. The PR carries the open question of whether this belongs
+                in the lead cell or in a column of its own; it is not restated
+                here, because a copy in source goes stale the day it is answered.
+                If the answer is "column", this is the seam to remove. */}
+            {commentTagEnabled ? renderCommentTag(item) : null}
           </span>
         );
       }}
-      renderProjects={
-        showLinkedEntityColumns
-          ? (row, { uncapped }) => {
-              const chips = linkedChipsByRowId.get(row.id)?.projects;
-              if (!chips || chips.length === 0) {
-                return <GridEmptyValue />;
-              }
-              return (
-                <SessionLinkedChipsCell
-                  chips={chips}
-                  icon={<FolderIcon aria-hidden />}
-                  overflowNoun="project"
-                  testId={SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID}
-                  uncapped={uncapped}
-                />
-              );
-            }
-          : undefined
+      renderPriority={
+        showPriorityColumn ? renderSessionPriorityCell : undefined
       }
+      renderProjects={renderProjects}
+      renderTags={showTagsColumn ? renderSessionTagsCell : undefined}
       sortBy={sortBy}
       sortDir={sortDir}
       visibleColumns={visibleColumns}
@@ -330,3 +321,50 @@ export function SyncedSessionsTable({
     </div>
   );
 }
+
+/**
+ * FEA-4204: the Sessions lead cell's comment-count tag, or nothing.
+ *
+ * Nothing is the answer for THREE different rows and the distinction matters
+ * upstream even though it collapses here. A row with a computed `0` has no
+ * comments; a row whose producer never counted omits `commentCount` entirely
+ * (the desktop LOCAL read has no batched per-session count, and its trace-comment
+ * store is only hydrated for sessions someone has already opened, so any number
+ * it produced would be a partial one); and a row carrying a negative, fractional
+ * or non-finite value is corrupt. None of the three may render "0" beside a
+ * speech bubble — that is a confident claim about a count nobody has, which is
+ * why the gate is `isCountCellEmpty` and not `> 0`.
+ *
+ * `isCountCellEmpty` rather than a hand-written predicate so the gate and the
+ * cell read the SAME `resolveCountCellState`: a bound the design system tightens
+ * later cannot leave this call site rendering a value the cell would refuse.
+ * `loading` is `false` because the rows are already here — a row we are still
+ * fetching has no lead cell to hang a skeleton off.
+ *
+ * `CountCell` owns the accessible name ("3 comments" as an `sr-only` sibling of
+ * the `aria-hidden` digits), so the count is never a bare numeral next to an
+ * icon, and never encoded in the icon alone.
+ *
+ * The icon size is passed here only because `CountCell` — unlike `Chip` and
+ * `Badge`, which carry `[&>svg]:size-*` per size — sizes nothing, so an unsized
+ * lucide glyph would render at its 24px default. `size-3.5` is the DS pairing for
+ * the cell's `text-sm`. When the primitive learns to size its own glyph, this
+ * `className` comes off and the call matches the bare `<TicketIcon aria-hidden />`
+ * a few lines up.
+ */
+function renderCommentTag(item: AgentSessionListItem | undefined): ReactNode {
+  const count = item?.commentCount;
+  if (isCountCellEmpty(count, false)) {
+    return null;
+  }
+  return (
+    <CountCell
+      count={count}
+      icon={<MessageSquareIcon aria-hidden className="size-3.5 shrink-0" />}
+      noun={SESSION_COMMENTS_NOUN}
+    />
+  );
+}
+
+/** Plural forms for the lead cell's comment tag (FEA-4204). */
+const SESSION_COMMENTS_NOUN: CountNoun = { one: "comment", other: "comments" };

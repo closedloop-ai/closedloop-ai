@@ -17,34 +17,30 @@ const sharedPlatformSrc = path.resolve(
 );
 
 export const sharedPlatformAliases: Record<string, string> = {
+  "@closedloop-ai/shared-platform/detection-store": path.join(
+    sharedPlatformSrc,
+    "detection-store.ts"
+  ),
   "@repo/shared-platform/detection-store": path.join(
     sharedPlatformSrc,
     "detection-store.ts"
   ),
-  "@repo/shared-platform/routing-store": path.join(
+  "@closedloop-ai/shared-platform/gateway-probe": path.join(
     sharedPlatformSrc,
-    "routing-store.ts"
+    "gateway-probe.ts"
   ),
   "@repo/shared-platform/gateway-probe": path.join(
     sharedPlatformSrc,
     "gateway-probe.ts"
   ),
+  "@closedloop-ai/shared-platform/storage": path.join(
+    sharedPlatformSrc,
+    "storage.ts"
+  ),
   "@repo/shared-platform/storage": path.join(sharedPlatformSrc, "storage.ts"),
+  "@closedloop-ai/shared-platform/types": path.join(
+    sharedPlatformSrc,
+    "types.ts"
+  ),
   "@repo/shared-platform/types": path.join(sharedPlatformSrc, "types.ts"),
-  "@repo/shared-platform/relay-request-model": path.join(
-    sharedPlatformSrc,
-    "relay-request-model.ts"
-  ),
-  "@repo/shared-platform/gateway-dispatch": path.join(
-    sharedPlatformSrc,
-    "gateway-dispatch.ts"
-  ),
-  "@repo/shared-platform/gateway-fetch-shim": path.join(
-    sharedPlatformSrc,
-    "gateway-fetch-shim.ts"
-  ),
-  "@repo/shared-platform/gateway-constants": path.join(
-    sharedPlatformSrc,
-    "gateway-constants.ts"
-  ),
 };

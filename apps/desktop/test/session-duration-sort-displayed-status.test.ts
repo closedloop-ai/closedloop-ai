@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "node:test";
 import { UNRECOGNIZED_SESSION_STATUS } from "@repo/api/src/agent-session-displayed-status-parity.test-fixtures";
 import {
   DURATION_SORT_PARITY_CASES,
@@ -7,12 +6,11 @@ import {
   expectedDurationSortIds,
 } from "@repo/api/src/session-duration-sort-parity.test-fixtures";
 import {
-  DISPLAYED_SESSION_STATUS,
   resolveDisplayedSessionStatus,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
+import { afterEach, beforeEach, describe, it } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
-import { setDisplayedStatusParityResolver } from "../src/main/session/displayed-status-parity-gate.js";
 import {
   sessionDurationMs,
   sortSyncedSessions,
@@ -42,7 +40,7 @@ import { nodeTestTimers } from "./support/node-test-fake-timers.js";
  */
 
 /**
- * wongk (#5111): a fixed instant, and the clock the suite FREEZES to it.
+ * whitlockk (#5111): a fixed instant, and the clock the suite FREEZES to it.
  *
  * `sortSyncedSessions` takes no clock — a running row's key is measured against
  * `Date.now()` inside `sessionDurationMs`, and the staleness fold behind it
@@ -85,7 +83,7 @@ function syncedSession(
 const MALFORMED_ACTIVITY_ID = "d-malformed-activity";
 
 /**
- * wongk (#5111): a row whose PERSISTED `lastActivityAt` does not parse, on a
+ * whitlockk (#5111): a row whose PERSISTED `lastActivityAt` does not parse, on a
  * start time recent enough that the start time alone is NOT stale.
  *
  * That combination is what separates the two projections: the producer parses
@@ -141,9 +139,6 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
 
   afterEach(() => {
     nodeTestTimers.reset();
-    // The gate module holds a process-wide resolver; restore the fail-closed
-    // default so a case that flips it cannot leak into the next one.
-    setDisplayedStatusParityResolver(() => false);
   });
 
   it("descending: no row whose Duration cell is BLANK outranks a measured span", () => {
@@ -160,15 +155,21 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
     );
   });
 
-  it("keeps the stale-folded row from outranking every measured row", () => {
+  it("keeps the long-silent row timing WITH the measured rows, not blanked below them (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): the Indeterminate lifecycle this
+    // pinned is gone — a long-silent `active` row now DISPLAYS active and
+    // keeps timing rather than folding to Stale, so it no longer collects
+    // below the measured rows. Inverted rather than deleted: the stale row
+    // being outranked by every measured row would mean the old staleness
+    // cutoff came back.
     const order = sortedIds("desc");
     const stalePosition = order.indexOf("d-stale-40h");
     for (const measured of DURATION_SORT_PARITY_CASES.filter(
-      (c) => c.displayedSpanMs !== null
+      (c) => c.displayedSpanMs !== null && c.id !== "d-stale-40h"
     )) {
       assert.ok(
-        stalePosition > order.indexOf(measured.id),
-        `stale row outranked ${measured.id}`
+        stalePosition <= order.indexOf(measured.id),
+        `stale row was unexpectedly outranked by ${measured.id}`
       );
     }
   });
@@ -183,8 +184,8 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
     // `AgentSessionListItem.status`. This comparator runs one layer earlier,
     // on `SyncedAgentSession.status`, where the value is always the raw stored
     // one; feeding a display-only spelling in here would assert idempotence of
-    // the fold rather than the gate variance it claimed to (test-strategist,
-    // this PR's review). The real gate variance is covered by the case below.
+    // the fold rather than the projection it claimed to (test-strategist,
+    // ISS-6270 review).
     for (const testCase of DURATION_SORT_PARITY_CASES) {
       assert.equal(
         sessionDurationMs(syncedSession(testCase, testCase.rawStatus), NOW_MS),
@@ -195,7 +196,7 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
   });
 
   it("keys the DEFAULT clock path to that same span, not only the injected one", () => {
-    // wongk (#5111): assertable only because the clock above is pinned.
+    // whitlockk (#5111): assertable only because the clock above is pinned.
     // `sessionDurationMs` defaults `nowMs` to `Date.now()`, and every other
     // exact-value case injects an instant instead — so the branch
     // `sortSyncedSessions` actually calls, the one that reads the clock itself,
@@ -211,13 +212,13 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
     }
   });
 
-  it("measures the staleness fold against the INJECTED clock, gate ON or OFF", () => {
+  it("measures the staleness fold against the INJECTED clock", () => {
     // ISS-6270 review (bug_hunter_a / bug_hunter_b / unified_auditor, all
-    // three independently): with the parity gate ON the staleness fold runs
-    // inside the SERVED projection, so a `now` threaded only into the client
-    // fold left the gate-ON path reading an ambient `Date.now()` — one row
-    // judged by two clocks, the same defect this ticket fixed on the cloud
-    // comparator's default clock.
+    // three independently): the staleness fold runs inside the SERVED
+    // projection, so a `now` threaded only into the client fold left that
+    // projection reading an ambient `Date.now()` — one row judged by two
+    // clocks, the same defect this ticket fixed on the cloud comparator's
+    // default clock.
     //
     // The instant is pinned TEN DAYS in the past while the row is live
     // relative to it. Against the wall clock the row is long silent and folds
@@ -239,32 +240,24 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
       sessionDurationMs(liveAtPinned, pinned.getTime()),
       2 * 3_600_000
     );
-    setDisplayedStatusParityResolver(() => true);
-    assert.equal(
-      sessionDurationMs(liveAtPinned, pinned.getTime()),
-      2 * 3_600_000
-    );
   });
 
-  it("holds with the displayed-status-parity Labs gate ON", () => {
-    // ON, the producer serves the folded/projected status; OFF, it serves the
-    // raw one. The renderer applies the client fold either way, so the sort key
-    // — and therefore the page order — must be identical in both states.
-    //
-    // wongk (#5111 review): the row that can make this FAIL is
-    // `d-awaiting-40h`. It is the only case whose served status the gate
-    // actually moves (`active` off, `waiting` on), and `waiting` is the one
-    // spelling EXEMPT from the staleness fold — so if the gated projection
-    // stopped producing it, this row would fold to Stale and key blank while its
-    // cell went on rendering 40h. Every other case is served a status the fold
-    // is idempotent over, which is why a table with no awaiting-input row made
-    // this assertion vacuously true.
+  it("keeps the awaiting-input row in the shared oracle, still timing", () => {
+    // whitlockk (#5111 review): `d-awaiting-40h` is the row that makes the per-case
+    // loop above non-vacuous. It is the only case the Waiting projection moves
+    // (raw `active`, served `waiting`), and `waiting` is the one spelling EXEMPT
+    // from the staleness fold — so if the projection stopped producing it, this
+    // row would fold to Stale and key blank while its cell went on rendering
+    // 40h. Every other case is served a status the fold is idempotent over,
+    // which is why an oracle with no awaiting-input row would make that loop
+    // pass without exercising the projection at all. These guards fail if the
+    // case is ever dropped or drained of its evidence.
     const awaiting = DURATION_SORT_PARITY_CASES.find(
       (c) => c.id === "d-awaiting-40h"
     );
     assert.ok(
       awaiting,
-      "the gate-variant population must still be in the shared oracle"
+      "the projection-variant population must still be in the shared oracle"
     );
     assert.notEqual(
       awaiting.awaitingInputSinceBeforeMs,
@@ -274,28 +267,21 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
     assert.notEqual(
       awaiting.displayedSpanMs,
       null,
-      "and must render a measured span, or the gate cannot move its key"
+      "and must render a measured span, or the projection cannot move its key"
     );
-    const off = sortedIds("desc");
-    setDisplayedStatusParityResolver(() => true);
-    assert.deepEqual(sortedIds("desc"), off);
     assert.equal(
       sessionDurationMs(syncedSession(awaiting, awaiting.rawStatus), NOW_MS),
       awaiting.displayedSpanMs,
-      "the awaiting-input row keeps timing with the gate ON"
+      "the awaiting-input row keeps timing rather than folding to a blank"
     );
   });
 
-  it("keys a MALFORMED lastActivityAt to the blank its served row displays", () => {
-    // wongk (#5111): the persisted-value case the two projections used to
-    // answer differently. `mapListItem` serves `lastActivityAt` through
-    // `parseSessionDate`, whose NaN→epoch fallback puts `1970-01-01` on the
-    // wire, so the renderer's fold reads Stale and the Duration cell is BLANK.
-    // The comparator's mirror passed the RAW strings to
-    // `resolveDisplayedSessionStatus`, which resolves the first PARSEABLE of
-    // the two, skipped the malformed value, landed on the recent `startedAt`,
-    // read `active`, and keyed on a span growing against the clock — a blank
-    // cell sorting as the longest run on the page.
+  it("keys a MALFORMED lastActivityAt to the running span its served row now displays (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): `resolveDisplayedSessionStatus`
+    // no longer reads `lastActivityAt` at all, so the epoch-floored malformed
+    // value this case used to pin — the one that folded the row to Stale and
+    // blanked its Duration cell — can no longer do that. The row stores
+    // `active`, so it displays Active and keeps timing from its (valid) start.
     //
     // Asserted through the PRODUCER, not against a restated expectation: the
     // served row is what the renderer folds, so the fold is run over
@@ -314,49 +300,33 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
         startedAt: served.startedAt,
         now: new Date(NOW_MS),
       }),
-      DISPLAYED_SESSION_STATUS.STALE,
-      "the served row DISPLAYS as stale, so its Duration cell is blank"
+      SESSION_STATUS.ACTIVE,
+      "the served row DISPLAYS active regardless of the malformed activity timestamp"
     );
     assert.equal(
       sessionDurationMs(malformed, NOW_MS),
-      null,
-      "the sort key must be the same blank, not a span growing against the clock"
+      2 * 3_600_000,
+      "the sort key keeps timing from the start; the malformed timestamp no longer blanks it"
     );
   });
 
-  it("keys an UNRECOGNIZED status awaiting input to the blank its served row displays", () => {
-    // ISS-6270 (wongk, #5111 review): the case that pins `isLiveSharedStatus`'s
-    // narrowing. That gate asks "does this build know the status means the run
-    // is RUNNING", not the facet's wider "is this row not finished", and the
-    // difference is only observable on this shape: a status this build does not
-    // recognize, awaiting input, never ended, silent past the cutoff. Widened to
-    // `!TERMINAL_SHARED_STATUSES.has(canonicalSharedStatus(status))` the mirror
-    // projects Waiting, the key starts timing against the clock, and the served
-    // row's cell goes on rendering blank — a fresh instance of the very
-    // cell-disagrees-with-comparator defect this ticket closes.
+  it("keys an UNRECOGNIZED status to the running span its served row now displays (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): an unrecognized spelling now
+    // takes `normalizeSessionStatus`'s fail-open to Active instead of folding
+    // to the display-only Unknown, so it keeps timing from its start rather
+    // than rendering blank.
     //
-    // WHY IT IS NOT IN `DURATION_SORT_PARITY_CASES`, which is where a Duration
-    // case belongs by default: that oracle carries ONE `displayedSpanMs` per
-    // shape, and this shape does not have one. The cloud's
-    // `projectDisplayedSessionStatus` reaches its Waiting branch through the
-    // wide non-terminal test, so cloud SERVES `waiting` and its cell renders a
-    // growing span (measured: `resolveDisplayDurationMs` keys 144000000) — the
-    // deliberate gap that projection's own docstring records as held shut by
-    // evidence rather than closed. The desktop gate-ON producer
-    // (`projectDisplayedSharedStatus`) mirrors that wide test and serves
-    // `waiting` too. Only the gate-OFF producer serves the unrecognized
-    // spelling, and only there does the cell render blank. Adding the case to
-    // the shared table reds the `apps/api` order assertions and the gate-ON
-    // parity assertion above — not because either comparator is wrong, but
-    // because the table cannot state two answers. So it is pinned HERE, against
-    // the producer, exactly as the malformed-timestamp case below is.
+    // ISS-7019: deliberately NO `awaitingInputSince` — kept from the original
+    // case, though the awaiting-input/unrecognized ordering it isolated is no
+    // longer the point; this case still pins the unrecognized-status shape on
+    // its own.
     const session = {
-      externalSessionId: "d-unknown-awaiting-40h",
+      externalSessionId: "d-unknown-40h",
       status: UNRECOGNIZED_SESSION_STATUS,
       startedAt: new Date(NOW_MS - 40 * 3_600_000).toISOString(),
       lastActivityAt: new Date(NOW_MS - 30 * 3_600_000).toISOString(),
       endedAt: null,
-      awaitingInputSince: new Date(NOW_MS - 30 * 3_600_000).toISOString(),
+      awaitingInputSince: null,
       updatedAt: new Date(NOW_MS).toISOString(),
       agents: [],
       events: [],
@@ -365,13 +335,13 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
     } as unknown as SyncedAgentSession;
 
     // Asserted through the PRODUCER rather than against a restated expectation:
-    // the served status is what the renderer folds, so the claim "its cell is
-    // blank" is read off `mapListItem`'s own output.
+    // the served status is what the renderer folds, so the claim about what it
+    // displays is read off `mapListItem`'s own output.
     const served = mapListItem(session);
     assert.equal(
-      served.status,
+      served.rawStatus,
       UNRECOGNIZED_SESSION_STATUS,
-      "gate OFF, the producer serves the unrecognized spelling, not waiting"
+      "the producer preserves the raw lifecycle evidence beside its display fold"
     );
     assert.equal(
       resolveDisplayedSessionStatus({
@@ -380,71 +350,67 @@ describe("desktop Duration sort keys on the DISPLAYED status (ISS-6270)", () => 
         startedAt: served.startedAt,
         now: new Date(NOW_MS),
       }),
-      DISPLAYED_SESSION_STATUS.UNKNOWN,
-      "the served row DISPLAYS as unknown, so its Duration cell is blank"
+      SESSION_STATUS.ACTIVE,
+      "the served row DISPLAYS active, folding open like any other unrecognized spelling"
     );
     assert.equal(
       sessionDurationMs(session, NOW_MS),
-      null,
-      "the sort key must be that same blank, not a span growing against the clock"
+      40 * 3_600_000,
+      "the sort key keeps timing from the start rather than blanking"
     );
   });
 
-  it("sorts the MALFORMED-lastActivityAt row below every measured span", () => {
-    // The order consequence of the case above: a nulls-last key collects with
-    // the blanks in BOTH directions. Ordering is asserted separately from the
-    // key because a comparator could produce the right key and still place it
-    // wrongly (the FEA-4330 direction-flip shape).
-    //
-    // The fixture's start time is deliberately RECENT (2h): a start time old
-    // enough to be stale on its own would let the pre-fix comparator reach the
-    // same blank by the wrong route, and this case would pass either way.
+  it("keeps the MALFORMED-lastActivityAt row from collecting with a genuinely blank one (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): the malformed row is no longer
+    // blank (see the case above), so it no longer belongs at the bottom of
+    // EVERY measured row — that premise is retired. What still must hold: it
+    // does not collapse back into the nulls-last group with a row whose cell
+    // is genuinely blank (`d-terminal-no-end`, no end instant recorded),
+    // which is the FEA-4330 direction-flip shape this suite guards.
     const malformed = malformedActivitySession();
-    const measured = DURATION_SORT_PARITY_CASES.filter(
-      (c) => c.displayedSpanMs !== null
+    const blank = DURATION_SORT_PARITY_CASES.find(
+      (c) => c.id === "d-terminal-no-end"
     );
-    const sessions = [
-      malformed,
-      ...measured.map((testCase) =>
-        syncedSession(testCase, testCase.rawStatus)
-      ),
-    ];
+    assert.equal(
+      blank?.displayedSpanMs,
+      null,
+      "the oracle control for this case must still be genuinely blank"
+    );
+    const sessions = [malformed, syncedSession(blank!, blank!.rawStatus)];
 
     for (const dir of ["desc", "asc"] as const) {
       const order = sortSyncedSessions(
         sessions,
         sessionSortQuery("duration", dir)
       ).map((session) => session.externalSessionId);
-      for (const testCase of measured) {
-        assert.ok(
-          order.indexOf(MALFORMED_ACTIVITY_ID) > order.indexOf(testCase.id),
-          `${dir}: the malformed row outranked ${testCase.id}`
-        );
-      }
+      assert.ok(
+        order.indexOf(MALFORMED_ACTIVITY_ID) < order.indexOf(blank!.id),
+        `${dir}: the malformed row collected with the genuinely blank one`
+      );
     }
   });
 
-  it("still measures a live run and a stale run that recorded an end", () => {
-    // The two controls that keep the fix from being a blanket "unended means
-    // blank": a fresh `active` run keeps timing against `now`, and a stale row
-    // carrying its own `endedAt` still measures that end.
+  it("still measures a live run; a row served the legacy `stale` spelling now times unbounded (ISS-10364)", () => {
+    // The control that survives: a fresh `active` run keeps timing against
+    // `now`.
     const live = DURATION_SORT_PARITY_CASES.find(
       (c) => c.id === "d-running-2h"
-    );
-    const staleEnded = DURATION_SORT_PARITY_CASES.find(
-      (c) => c.id === "d-stale-ended-1h"
     );
     assert.equal(live?.rawStatus, SESSION_STATUS.ACTIVE);
     assert.equal(
       sessionDurationMs(syncedSession(live!, live!.rawStatus), NOW_MS),
       live?.displayedSpanMs
     );
+
+    // ISS-10364: `resolveDisplayedSessionStatus` folds the legacy `stale`
+    // spelling straight to Active, and Active always times against the clock.
+    const staleEnded = DURATION_SORT_PARITY_CASES.find(
+      (c) => c.id === "d-stale-ended-1h"
+    );
     assert.equal(
-      sessionDurationMs(
-        syncedSession(staleEnded!, DISPLAYED_SESSION_STATUS.STALE),
-        NOW_MS
-      ),
-      staleEnded?.displayedSpanMs
+      sessionDurationMs(syncedSession(staleEnded!, "stale"), NOW_MS),
+      staleEnded?.startedBeforeMs,
+      "a row served the legacy `stale` spelling times unbounded against now, not its own recorded end"
     );
   });
 });

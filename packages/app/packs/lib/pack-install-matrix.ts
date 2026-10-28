@@ -27,7 +27,7 @@
  * canonical FEA-4083 vocabulary (`./install-state`), so every packs surface
  * describes a cell with the same words and renders it the same way.
  *
- * Honesty over optimism (the FEA-4072 / FEA-4088 Parker principle):
+ * Honesty over optimism (the FEA-4072 / FEA-4088 Pascoe principle):
  *  - An offline / unreachable target is a real `Offline` cell — stale-but-honest,
  *    never silent success. Reachability overrides the last-known install status:
  *    a device that was `installed` but is now offline reads `Offline`, because we

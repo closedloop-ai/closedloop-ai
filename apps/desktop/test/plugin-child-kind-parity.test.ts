@@ -29,12 +29,12 @@
  * separately in `pack-scan-post-steps.test.ts`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentKind,
   Harness,
   PLUGIN_CHILD_KINDS,
 } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { projectPacksToComponents } from "../src/main/packs/component-scanner.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 

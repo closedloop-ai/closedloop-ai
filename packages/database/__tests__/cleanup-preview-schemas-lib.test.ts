@@ -510,20 +510,19 @@ describe("isMergeQueuePreview", () => {
     ).toBe(true);
   });
 
-  it.each([
-    "",
-    "   ",
-    "\t\n",
-  ])("treats a blank branch (%j) as absent and falls back to the name", (blank) => {
-    // `upsertSchemaRegistry` writes `branch ?? null` straight from
-    // VERCEL_GIT_COMMIT_REF, which preserves an empty string. Taking `""` as
-    // an authoritative non-queue branch would both deny the schema its short
-    // TTL and hand it to the branch-aware pass, where no live branch can ever
-    // match `""` — dropping a queue preview early on a liveness check.
-    expect(
-      isMergeQueuePreview({ schemaName: QUEUE_SCHEMA, branch: blank })
-    ).toBe(true);
-  });
+  it.each(["", "   ", "\t\n"])(
+    "treats a blank branch (%j) as absent and falls back to the name",
+    (blank) => {
+      // `upsertSchemaRegistry` writes `branch ?? null` straight from
+      // VERCEL_GIT_COMMIT_REF, which preserves an empty string. Taking `""` as
+      // an authoritative non-queue branch would both deny the schema its short
+      // TTL and hand it to the branch-aware pass, where no live branch can ever
+      // match `""` — dropping a queue preview early on a liveness check.
+      expect(
+        isMergeQueuePreview({ schemaName: QUEUE_SCHEMA, branch: blank })
+      ).toBe(true);
+    }
+  );
 
   it("does not queue-classify a blank-branch ordinary preview", () => {
     expect(

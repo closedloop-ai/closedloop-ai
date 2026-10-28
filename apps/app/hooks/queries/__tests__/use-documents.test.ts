@@ -57,7 +57,7 @@ describe("Artifact Query Hooks", () => {
       expect(expectedKey).toEqual(["documents", "list", searchParams]);
     });
 
-    test("the bare-array hook rejects the includeTotal discriminator at compile time (shafty023)", () => {
+    test("the bare-array hook rejects the includeTotal discriminator at compile time (davetho)", () => {
       // includeTotal selects the ENVELOPE response arm; a caller that passed it
       // to useDocuments (which promises DocumentWithProject[]) would get the
       // envelope back and fail on .map. It lives on DocumentListPageParams, not
@@ -117,7 +117,7 @@ describe("Artifact Query Hooks", () => {
       );
     });
 
-    test("normalizes an older API's legacy bare array into an honest one-page envelope (version skew, shafty023)", async () => {
+    test("normalizes an older API's legacy bare array into an honest one-page envelope (version skew, davetho)", async () => {
       // An API that predates `includeTotal` strips the unknown param and returns
       // the legacy `DocumentWithProject[]` — and it ignored the `limit` too, so
       // the array is the WHOLE matching set. Without normalization the board read

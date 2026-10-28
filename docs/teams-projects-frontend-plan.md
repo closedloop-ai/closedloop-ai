@@ -172,7 +172,7 @@ Your Teams [+]
 - Chronological list of actions
 - Each activity item shows:
   - User avatar
-  - Action description (e.g., "Kaiti Carpenter created a new PRD called Check-ins v2 PRD 1: Time bucketed checklists")
+  - Action description (e.g., "Kaito Castellane created a new PRD called Check-ins v2 PRD 1: Time bucketed checklists")
   - Timestamp
 
 ---

@@ -27,7 +27,10 @@
  */
 
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
-import { encodeComponentSlug } from "@repo/api/src/types/agent-component-analytics";
+import {
+  encodeComponentSlug,
+  normalizeComponentKey,
+} from "@repo/api/src/types/agent-component-analytics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +48,10 @@ vi.mock("../../agent-sessions/service", () => ({
   agentSessionsService: { listByArtifactIds: mocks.listByArtifactIds },
 }));
 
+import {
+  orgWideInventoryReads,
+  orphanUsageFindManyCalls,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 import { loadUsageGroupsLinkedElsewhere } from "../org-population";
 import { agentComponentsService } from "../service";
 
@@ -69,6 +76,14 @@ type UsageRow = {
   agentSessionId: string;
   componentKind: string;
   componentKey: string;
+  /**
+   * ISS-6756: the persisted `lower(btrim(component_key))` fold the identity
+   * lanes now match on. Derived here the way the table's BEFORE INSERT/UPDATE
+   * trigger derives it, never set by a fixture — a fixture free to state a fold
+   * that disagrees with its own `componentKey` could make a lane look correct
+   * on a row the database can never produce.
+   */
+  componentKeyNormalized: string;
   invocationCount: number;
   errorCount: number;
   gitBranch: string;
@@ -89,7 +104,7 @@ type InventoryRow = {
   /**
    * FEA-4086 tombstone. Non-null means the scanner can no longer see the row, so
    * `orgInventoryWhere` excludes it from the list's population — and therefore
-   * from the detail's elsewhere-linked lane too (ISS-5363, wongk review).
+   * from the detail's elsewhere-linked lane too (ISS-5363, whitlockk review).
    */
   uninstalledAt?: Date | null;
 };
@@ -382,8 +397,10 @@ function installDb(fixture: Fixture) {
   return built;
 }
 
-function usageRow(overrides: Partial<UsageRow> & { id: string }): UsageRow {
-  return {
+function usageRow(
+  overrides: Partial<Omit<UsageRow, "componentKeyNormalized">> & { id: string }
+): UsageRow {
+  const row = {
     agentComponentId: null,
     agentSessionId: `session-${overrides.id}`,
     componentKind: AgentComponentKind.Skill,
@@ -396,6 +413,12 @@ function usageRow(overrides: Partial<UsageRow> & { id: string }): UsageRow {
     definitionVersionId: null,
     lastInvokedAt: SEEN_AT,
     ...overrides,
+  };
+  // ISS-6756: the trigger's fold, applied AFTER the overrides, so a fixture that
+  // sets a mixed-case `componentKey` gets the column the database would give it.
+  return {
+    ...row,
+    componentKeyNormalized: normalizeComponentKey(row.componentKey),
   };
 }
 
@@ -439,7 +462,7 @@ function elsewhereLinkedFixture(): Fixture {
 }
 
 /**
- * ISS-6180 (wongk review on #5039): `create-feat` was also installed on a device
+ * ISS-6180 (whitlockk review on #5039): `create-feat` was also installed on a device
  * the scanner can no longer see. That row is TOMBSTONED, not deleted, and its
  * usage still carries the FK — so EVERY FK lane misses it (all of them are
  * bounded by the ids of an `uninstalledAt: null` inventory read) and the orphan
@@ -481,7 +504,7 @@ function tombstonedFkFixture(): Fixture {
 }
 
 /**
- * ISS-6180 (shafty023 review on #5039): a plugin whose child is installed on TWO
+ * ISS-6180 (davetho review on #5039): a plugin whose child is installed on TWO
  * devices under ONE `(kind, key)` — one live, one TOMBSTONED — with usage
  * FK-linked to each.
  *
@@ -545,7 +568,7 @@ function pluginTombstonedChildFixture(): Fixture {
  * The PRODUCTION list read (`agentComponentsService.listForOrg`) against the SAME
  * `where`-evaluating double, and the row it produced for one component.
  *
- * wongk (ISS-5363 review): this used to be a hand-written reimplementation of the
+ * whitlockk (ISS-5363 review): this used to be a hand-written reimplementation of the
  * list's fold. A reimplementation makes the reconciliation vacuous — `listForOrg`
  * could regress and this suite would stay green comparing the detail against a
  * copy that never moved. Running the real derivation is what makes
@@ -671,7 +694,7 @@ describe("ISS-5363 — detail/list invocation reconciliation", () => {
   });
 
   it("reports a plugin with no resolvable children as the same 0 the list reports", async () => {
-    // wongk (ISS-5363 review). A plugin has no direct usage rows: its totals are
+    // whitlockk (ISS-5363 review). A plugin has no direct usage rows: its totals are
     // the sum over its candidate packs' CHILD inventory. When no child inventory
     // resolves, that sum is empty — and the LIST reaches it through the very same
     // short-circuit (`loadChildUsageByPackId` returns an empty map on an empty
@@ -704,7 +727,7 @@ describe("ISS-5363 — detail/list invocation reconciliation", () => {
     expect(detail?.sessions).toBe(0);
   });
 
-  it("keeps a tombstoned child out of its plugin's rollup when a LIVE sibling shares its identity (ISS-6180, shafty023)", async () => {
+  it("keeps a tombstoned child out of its plugin's rollup when a LIVE sibling shares its identity (ISS-6180, davetho)", async () => {
     installDb(pluginTombstonedChildFixture());
 
     const pluginDetail = await agentComponentsService.getDetailForOrg(
@@ -765,7 +788,7 @@ describe("ISS-5363 — detail/list invocation reconciliation", () => {
   });
 
   it("counts usage FK-linked to a tombstoned inventory row on BOTH surfaces (ISS-6180)", async () => {
-    // BEHAVIOR CHANGE (wongk review on #5039). Under ISS-5363 this row was
+    // BEHAVIOR CHANGE (whitlockk review on #5039). Under ISS-5363 this row was
     // dropped by both surfaces: the elsewhere-linked lane is bounded by the
     // LIST's own CURRENT inventory ids, its FK lane reads only `uninstalledAt:
     // null` rows, and the orphan lane demanded a NULL FK. That reconciled, but
@@ -809,7 +832,7 @@ describe("ISS-5363 — detail/list invocation reconciliation", () => {
 
 describe("loadUsageGroupsLinkedElsewhere — content-scoped identity bound", () => {
   /**
-   * wongk (ISS-5363 review): `usageContentScopeWhere` returns its OWN `OR`, so
+   * whitlockk (ISS-5363 review): `usageContentScopeWhere` returns its OWN `OR`, so
    * SPREADING it beside the componentKey `OR` REPLACED the name predicate on
    * every content-hash route — the lane then grouped every same-kind row in that
    * content scope. This drives the real function against a `where`-evaluating
@@ -893,7 +916,7 @@ function installSnapshotDb(fixture: Fixture) {
 }
 
 /**
- * ISS-6180 (shafty023 review on #5039): wire the pooled client and the
+ * ISS-6180 (davetho review on #5039): wire the pooled client and the
  * transactional client to DIFFERENT fixtures, modelling a commit that landed
  * BETWEEN a pooled read and the transaction's snapshot.
  *
@@ -954,18 +977,6 @@ function tombstoneBoundaryFixture(deadRowUninstalledAt: Date | null): Fixture {
   };
 }
 
-/** The usage-only-lane calls a usage `findMany` recorded (ISS-6180 shape). */
-function orphanReadCalls(findMany: { mock: { calls: unknown[][] } }) {
-  return findMany.mock.calls.filter(([args]) =>
-    ((args as { where?: Filter })?.where?.AND as Filter[] | undefined)?.some(
-      (clause) =>
-        (clause.OR as Filter[] | undefined)?.some(
-          (arm) => arm.agentComponentId === null
-        )
-    )
-  );
-}
-
 const REPEATABLE_READ = "RepeatableRead";
 // Matches `DETAIL_USAGE_SNAPSHOT_TX_TIMEOUT_MS` in
 // `../service/detail-usage-identity` — the same generous ceiling the list's
@@ -980,7 +991,7 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
   });
 
   it("reads all three usage lanes on the SAME transaction client, not the pooled connection", async () => {
-    // wongk (ISS-5363 review): the FK lanes are disjoint only WITHIN one
+    // whitlockk (ISS-5363 review): the FK lanes are disjoint only WITHIN one
     // snapshot. Run on the pool, a concurrent `agentComponentId` relink is
     // visible to both lanes or to neither, and the orphan read was a third
     // snapshot again.
@@ -992,15 +1003,15 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
     expect(tx.usageGroupBy).toHaveBeenCalledTimes(2);
     // … and the usage-only lane issued its row read
     // there too, rather than on a later pooled snapshot.
-    expect(orphanReadCalls(tx.usageFindMany)).toHaveLength(1);
+    expect(orphanUsageFindManyCalls(tx.usageFindMany)).toHaveLength(1);
     expect(pooled.usageGroupBy).not.toHaveBeenCalled();
     // The pooled client still serves the detail's other usage reads (the
     // per-session version attribution), so assert on the ORPHAN LANE
     // specifically rather than on the delegate as a whole.
-    expect(orphanReadCalls(pooled.usageFindMany)).toHaveLength(0);
+    expect(orphanUsageFindManyCalls(pooled.usageFindMany)).toHaveLength(0);
   });
 
-  it("reads the LIVE-INVENTORY BOUND in the same snapshot as the usage lanes (ISS-6180, shafty023)", async () => {
+  it("reads the LIVE-INVENTORY BOUND in the same snapshot as the usage lanes (ISS-6180, davetho)", async () => {
     // The bound and the usage-only lane partition on the SAME fact once that
     // lane keys on `agentComponent.uninstalledAt`. Resolved on the pool ahead of
     // the transaction it is a second snapshot, so a tombstone committing in
@@ -1010,13 +1021,16 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
 
     await agentComponentsService.getDetailForOrg(ORGANIZATION_ID, SKILL_SLUG);
 
-    // `readOrgInventoryIds` is the only issuer of the inventory identity spine on
-    // this path, so where that read landed is where the bound was resolved.
-    expect(tx.inventoryGroupBy).toHaveBeenCalled();
-    expect(pooled.inventoryGroupBy).not.toHaveBeenCalled();
+    // `readOrgInventoryIds` is the only UNFACETED inventory read on this path —
+    // every other one is scoped to the single component the detail answers for —
+    // so where that read landed is where the bound was resolved. ISS-6891 removed
+    // the identity spine that used to be its own delegate and therefore its own
+    // marker; the predicate is the marker now.
+    expect(orgWideInventoryReads(tx.inventoryFindMany)).not.toHaveLength(0);
+    expect(orgWideInventoryReads(pooled.inventoryFindMany)).toHaveLength(0);
   });
 
-  it("counts a component once when a TOMBSTONE commits between the two reads (ISS-6180, shafty023)", async () => {
+  it("counts a component once when a TOMBSTONE commits between the two reads (ISS-6180, davetho)", async () => {
     // Pooled snapshot: the second row is still live. Transaction snapshot: it has
     // been tombstoned. With the bound read on the pool, its id stayed in the FK
     // lane's `in` list (which returns u2) while the transaction ALSO saw
@@ -1035,7 +1049,7 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
     expect(list?.sessions).toBe(2);
   });
 
-  it("counts a component once when a RESTORE commits between the two reads (ISS-6180, shafty023)", async () => {
+  it("counts a component once when a RESTORE commits between the two reads (ISS-6180, davetho)", async () => {
     // The same race pointed the other way, which a tombstone-only test would miss
     // entirely. Pooled snapshot: the second row is tombstoned, so its id was
     // absent from the bound and the FK lane never read u2. Transaction snapshot:
@@ -1053,7 +1067,7 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
     expect(list?.sessions).toBe(2);
   });
 
-  it("counts the DETAIL once when a TOMBSTONE commits between the two reads (ISS-6180, shafty023 re-review)", async () => {
+  it("counts the DETAIL once when a TOMBSTONE commits between the two reads (ISS-6180, davetho re-review)", async () => {
     // The OWN-FAMILY half of the same partition, which moving `readOrgInventoryIds`
     // alone did not close: the detail resolves `inventoryRows` on the pool and
     // hands their IDS down, where they bound both `ownIds` and the inventory lane.

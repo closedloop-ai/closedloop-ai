@@ -1,0 +1,58 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index e4a07ed6a23c37e4569206dd214438ec7bcaef62..09d72cf4063410c417e98d7896b07cf1ee4d5623 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -1,5 +1,6 @@
+ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+ let _tiptap_core = require("@tiptap/core");
++let _tiptap_pm_model = require("@tiptap/pm/model");
+ let marked = require("marked");
+ //#region src/utils.ts
+ /**
+@@ -347,6 +348,7 @@ var MarkdownManager = class {
+ 		this.codeTypes = /* @__PURE__ */ new Set();
+ 		this.schemaParseDomTagsCache = null;
+ 		this.inlineNodeTypesCache = null;
++		this.htmlParseSchemaCache = null;
+ 		this.lastParseResult = null;
+ 		this.markedInstance = (_options$marked = options === null || options === void 0 ? void 0 : options.marked) !== null && _options$marked !== void 0 ? _options$marked : marked.marked;
+ 		this.indentStyle = (_options$indentation$ = options === null || options === void 0 || (_options$indentation = options.indentation) === null || _options$indentation === void 0 ? void 0 : _options$indentation.style) !== null && _options$indentation$ !== void 0 ? _options$indentation$ : "space";
+@@ -891,7 +893,8 @@ var MarkdownManager = class {
+ 		if (this.isUnrecognizedHtml(html)) return this.htmlAsLiteralText(html, !!token.block);
+ 		if (typeof window === "undefined" || typeof window.DOMParser === "undefined") return this.htmlAsLiteralText(html, !!token.block);
+ 		try {
+-			const parsed = (0, _tiptap_core.generateJSON)(html, this.baseExtensions);
++			if (!this.htmlParseSchemaCache) this.htmlParseSchemaCache = (0, _tiptap_core.getSchema)(this.baseExtensions);
++			const parsed = _tiptap_pm_model.DOMParser.fromSchema(this.htmlParseSchemaCache).parse((0, _tiptap_core.elementFromString)(html)).toJSON();
+ 			if (parsed.type === "doc" && parsed.content) {
+ 				if (token.block) return parsed.content;
+ 				const inlineContent = this.toInlineContent(parsed.content);
+diff --git a/dist/index.js b/dist/index.js
+index 76a9e773a58fd94f08b3b861118a536082d55e60..0c44cd2938c8d41656e9da44a5cf36b42b5a9c7a 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,4 +1,5 @@
+-import { Extension, attrsEqual, callOrReturn, commands, decodeHtmlEntities, encodeHtmlEntities, flattenExtensions, generateJSON, getExtensionField, getSchema, marksEqual, sortExtensions } from "@tiptap/core";
++import { Extension, attrsEqual, callOrReturn, commands, decodeHtmlEntities, elementFromString, encodeHtmlEntities, flattenExtensions, getExtensionField, getSchema, marksEqual, sortExtensions } from "@tiptap/core";
++import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
+ import { marked } from "marked";
+ //#region src/utils.ts
+ /**
+@@ -346,6 +347,7 @@ var MarkdownManager = class {
+ 		this.codeTypes = /* @__PURE__ */ new Set();
+ 		this.schemaParseDomTagsCache = null;
+ 		this.inlineNodeTypesCache = null;
++		this.htmlParseSchemaCache = null;
+ 		this.lastParseResult = null;
+ 		this.markedInstance = (_options$marked = options === null || options === void 0 ? void 0 : options.marked) !== null && _options$marked !== void 0 ? _options$marked : marked;
+ 		this.indentStyle = (_options$indentation$ = options === null || options === void 0 || (_options$indentation = options.indentation) === null || _options$indentation === void 0 ? void 0 : _options$indentation.style) !== null && _options$indentation$ !== void 0 ? _options$indentation$ : "space";
+@@ -890,7 +892,8 @@ var MarkdownManager = class {
+ 		if (this.isUnrecognizedHtml(html)) return this.htmlAsLiteralText(html, !!token.block);
+ 		if (typeof window === "undefined" || typeof window.DOMParser === "undefined") return this.htmlAsLiteralText(html, !!token.block);
+ 		try {
+-			const parsed = generateJSON(html, this.baseExtensions);
++			if (!this.htmlParseSchemaCache) this.htmlParseSchemaCache = getSchema(this.baseExtensions);
++			const parsed = ProseMirrorDOMParser.fromSchema(this.htmlParseSchemaCache).parse(elementFromString(html)).toJSON();
+ 			if (parsed.type === "doc" && parsed.content) {
+ 				if (token.block) return parsed.content;
+ 				const inlineContent = this.toInlineContent(parsed.content);

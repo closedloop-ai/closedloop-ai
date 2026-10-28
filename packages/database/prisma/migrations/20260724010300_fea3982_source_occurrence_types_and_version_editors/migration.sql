@@ -1,4 +1,4 @@
--- FEA-3982 (Slice 1 + Mike-approved edit-lineage capture).
+-- FEA-3982 (Slice 1 + Marisol-approved edit-lineage capture).
 --
 -- Fully ADDITIVE / zero-downtime:
 --   1. ALTER TYPE ... ADD VALUE — extends `source_occurrence_type` with the

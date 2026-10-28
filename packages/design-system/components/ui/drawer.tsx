@@ -4,6 +4,7 @@ import * as React from "react"
 import { Drawer as DrawerPrimitive } from "vaul"
 
 import { cn } from "@closedloop-ai/design-system/lib/utils"
+import { ModalDialogOpenMarker } from "@closedloop-ai/design-system/hooks/use-modal-dialog-open"
 
 function Drawer({
   ...props
@@ -67,6 +68,7 @@ function DrawerContent({
       >
         <div className="bg-muted mx-auto mt-4 hidden h-2 w-[100px] shrink-0 rounded-full group-data-[vaul-drawer-direction=bottom]/drawer-content:block" />
         {children}
+        <ModalDialogOpenMarker />
       </DrawerPrimitive.Content>
     </DrawerPortal>
   )

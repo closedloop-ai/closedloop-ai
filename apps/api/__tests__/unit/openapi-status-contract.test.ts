@@ -20,6 +20,13 @@
  * (ISS-4615) owns that schema and converts it to discriminated `oneOf`
  * branches, so a structural assertion on it would fight that PR. The enum
  * guards above still protect the canonical schemas the create surface refs.
+ *
+ * ISS-9559 adds a second, same-shaped guard below: the status-mutation
+ * capability's `permissions` object is another hand-copy, of
+ * `DocumentStatusMutationOperation`, and an external client can only discover
+ * the read-vs-write capability the detail reads return if the reference keeps
+ * naming every operation — and keeps the field OPTIONAL, since every producer
+ * without a credential omits it.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -27,6 +34,7 @@ import {
   DOCUMENT_STATUS_OPTIONS,
   ISSUE_STATUS_OPTIONS,
 } from "@closedloop-ai/loops-api/document";
+import { DocumentStatusMutationOperation } from "@repo/api/src/types/document-status-mutation";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
@@ -43,6 +51,7 @@ type OpenApiDoc = {
       string,
       {
         enum?: string[];
+        required?: string[];
         properties?: Record<string, StatusSurface>;
       }
     >;
@@ -104,5 +113,30 @@ describe("openapi.json status vocabulary contract (ISS-4616)", () => {
       expect(surface?.enum).toBeUndefined();
       expect(anyOfRefs(surface)).toEqual(expectedRefs);
     }
+  });
+});
+
+describe("openapi.json status-mutation permissions contract (ISS-9559)", () => {
+  it("documents every status-mutation operation the SSOT defines", () => {
+    const permissions =
+      openApi.components.schemas.DocumentStatusMutationPermissions;
+    const operations = [
+      ...Object.values(DocumentStatusMutationOperation),
+    ].sort();
+
+    expect(Object.keys(permissions.properties ?? {}).sort()).toEqual(
+      operations
+    );
+    expect([...(permissions.required ?? [])].sort()).toEqual(operations);
+  });
+
+  it("publishes permissions on the capability, and publishes it as optional", () => {
+    const capability =
+      openApi.components.schemas.DocumentStatusMutationCapability;
+
+    expect(capability.properties?.permissions).toBeDefined();
+    // Optional is the contract, not an oversight: only the detail reads hold a
+    // credential to resolve it, and absence means "not resolved", not "denied".
+    expect(capability.required ?? []).not.toContain("permissions");
   });
 });

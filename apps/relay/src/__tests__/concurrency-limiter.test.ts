@@ -33,17 +33,15 @@ describe("createConcurrencyLimiter", () => {
     expect(limiter.tryAcquire()).toBe(false);
   });
 
-  it.each([
-    0,
-    -5,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-  ])("clamps a non-positive/non-finite max (%s) to at least 1 so it is never a no-op", (bad) => {
-    const limiter = createConcurrencyLimiter(bad as number);
-    expect(limiter.max).toBe(1);
-    expect(limiter.tryAcquire()).toBe(true);
-    expect(limiter.tryAcquire()).toBe(false);
-  });
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "clamps a non-positive/non-finite max (%s) to at least 1 so it is never a no-op",
+    (bad) => {
+      const limiter = createConcurrencyLimiter(bad as number);
+      expect(limiter.max).toBe(1);
+      expect(limiter.tryAcquire()).toBe(true);
+      expect(limiter.tryAcquire()).toBe(false);
+    }
+  );
 
   it("floors a fractional max", () => {
     const limiter = createConcurrencyLimiter(2.9);

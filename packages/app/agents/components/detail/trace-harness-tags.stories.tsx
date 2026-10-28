@@ -6,9 +6,9 @@ import {
 } from "./trace-harness-tags";
 
 const meta = {
-  title: "App Core/Agents/Trace Tag Chip",
+  title: "Composites v1.0/Agents/Detail/Trace Harness Tags",
   component: TraceTagChip,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     name: "local-command-stdout",

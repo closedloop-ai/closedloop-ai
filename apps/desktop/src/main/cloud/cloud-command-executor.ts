@@ -1,9 +1,14 @@
 import { URL } from "node:url";
-import { COMMAND_SIGNING_REJECTION_REASONS } from "../../shared/contracts.js";
-import type { CommandSignatureVerifier } from "../command-signing/command-signature-verifier.js";
+import { COMMAND_ACK_REJECTION_REASONS } from "../../shared/ack-reasons.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { Observability } from "../telemetry/observability.js";
 import { asRecord } from "../util/api-response-utils.js";
+import {
+  applyApprovalHeaders,
+  isSafeHeaderValue,
+  isValidUuid,
+  safeHeaderEntries,
+} from "./cloud-command-headers.js";
 import type {
   CommandEventRecord,
   DesktopCancelEvent,
@@ -54,22 +59,9 @@ const MAX_BUFFERED_EVENTS_PER_COMMAND = 10_000;
 // watchdog bounds only the wait for response headers; it is disarmed the moment
 // headers arrive so a legitimately long-running streamed response runs unbounded.
 //
-// The bound is route-aware. Streaming Engineer/child-process commands open their
-// response (SSE/ndjson headers) promptly, so the short default catches a wedge
-// quickly with no risk. The synchronous loop-launch/kill routes instead do heavy
-// setup — repo/worktree preparation, callback posting, binary resolution, process
-// spawn — BEFORE emitting their JSON response, so a slow-but-valid auto-clone can
-// legitimately exceed the short bound; they get a generous backstop that only
-// trips a truly hung handler, never a valid slow start.
+// Streaming Engineer/child-process commands open their response (SSE/ndjson
+// headers) promptly, so the short default catches a wedge quickly with no risk.
 const GATEWAY_RESPONSE_TIMEOUT_MS = 60_000;
-const GATEWAY_SLOW_SETUP_RESPONSE_TIMEOUT_MS = 10 * 60_000;
-
-// Non-streaming gateway routes whose handler completes heavy synchronous setup
-// before responding; they use the generous backstop instead of the short default.
-const SLOW_SETUP_COMMAND_PATHS = new Set([
-  "/api/gateway/symphony/loop",
-  "/api/gateway/symphony/loop/kill",
-]);
 
 export type CloudCommandExecutorOptions = {
   getGatewayPort: () => number;
@@ -85,8 +77,6 @@ export type CloudCommandExecutorOptions = {
     activeCommands: number;
     queueDepth: number;
   }) => void;
-  commandSignatureVerifier?: CommandSignatureVerifier;
-  isCommandSigningEnforced?: () => boolean;
   prepareCommandForExecution?: (
     command: DesktopCommandEvent
   ) => Promise<DesktopCommandEvent>;
@@ -161,39 +151,6 @@ export class CloudCommandExecutor {
       return;
     }
 
-    const signatureBodyOverride = getSignatureBodyOverride(command);
-    if (this.options.isCommandSigningEnforced?.()) {
-      const verification = this.options.commandSignatureVerifier?.verify(
-        command,
-        signatureBodyOverride
-      ) ?? {
-        ok: false as const,
-        reason: COMMAND_SIGNING_REJECTION_REASONS.noKeysAuthorized,
-      };
-      if (!verification.ok) {
-        gatewayLog.warn(
-          "command-executor",
-          `Rejected command ${command.commandId}: ${verification.reason}`
-        );
-        this.options.sendCommandAck({
-          commandId: command.commandId,
-          accepted: false,
-          state: "failed",
-          reason: verification.reason,
-        });
-        return;
-      }
-    } else if (
-      command.signature ||
-      command.signaturePayload ||
-      command.publicKeyFingerprint
-    ) {
-      gatewayLog.debug(
-        "command-executor",
-        `Ignoring command signature fields for ${command.commandId}; server support is disabled`
-      );
-    }
-
     const validationError = validateCommand(command);
     if (validationError) {
       gatewayLog.warn(
@@ -260,16 +217,18 @@ export class CloudCommandExecutor {
       return;
     }
 
-    // If the tracked command already reached a terminal state (e.g. the stream
-    // emitted its own done/error and markTerminal ran) while its in-flight entry
-    // is still draining, there is nothing to cancel. emitTrackedEvent and
-    // markTerminal already short-circuit on terminal, but Observability.command
-    // Cancelled is not guarded and would otherwise fire a spurious cancellation
-    // event for a command that actually finished. Skip the finalize sequence and
-    // only abort so the idle socket tears down; execute()'s finally frees the slot.
-    // Mark cancelRequested so the abort-driven fetch rejection is attributed to an
-    // intentional cancel (the quiet branch in execute()'s catch) rather than
-    // misreported as a command *failure* via Observability.commandFailed.
+    /*
+     * If the tracked command already reached a terminal state (e.g. the stream
+     * emitted its own done/error and markTerminal ran) while its in-flight entry
+     * is still draining, there is nothing to cancel. emitTrackedEvent and
+     * markTerminal already short-circuit on terminal, but Observability.command
+     * Cancelled is not guarded and would otherwise fire a spurious cancellation
+     * event for a command that actually finished. Skip the finalize sequence and
+     * only abort so the idle socket tears down; execute()'s finally frees the slot.
+     * Mark cancelRequested so the abort-driven fetch rejection is attributed to an
+     * intentional cancel (the quiet branch in execute()'s catch) rather than
+     * misreported as a command *failure* via Observability.commandFailed.
+     */
     const tracked = this.trackedByCommandId.get(cancelEvent.commandId);
     if (tracked?.state === "terminal") {
       running.cancelRequested = true;
@@ -561,7 +520,7 @@ export class CloudCommandExecutor {
     const requestUrl = new URL(command.path, `http://127.0.0.1:${port}`);
     applyQuery(requestUrl, command.query);
 
-    const headers = new Headers(command.headers);
+    const headers = new Headers(safeHeaderEntries(command.headers));
     headers.set("x-desktop-gateway-token", this.options.getGatewayAuthToken());
     headers.set("x-desktop-source", "cloud-socket");
     if (isValidUuid(command.commandId)) {
@@ -570,12 +529,9 @@ export class CloudCommandExecutor {
     if (isSafeHeaderValue(command.operationId)) {
       headers.set("x-desktop-operation-id", command.operationId);
     }
-    if (command.requiresApproval) {
-      headers.set("x-desktop-force-approval", "1");
-      if (command.approvalReason) {
-        headers.set("x-desktop-approval-reason", command.approvalReason);
-      }
-    }
+    applyApprovalHeaders(headers, command, (message) =>
+      gatewayLog.warn("command-executor", message)
+    );
 
     const method = command.method.toUpperCase();
     const body = serializeBody(command.body, headers, method);
@@ -588,12 +544,8 @@ export class CloudCommandExecutor {
     // signal (cancel + optional command timeout). It aborts the fetch if headers
     // never arrive, and is cleared as soon as they do so the streamed body — which
     // may legitimately run far longer — stays governed only by the caller's signal.
-    // Slow-setup routes always take the generous backstop: the `gatewayResponse
-    // TimeoutMs` override is a test-only knob for the short prompt-headers bound,
-    // and must not shrink a valid slow loop launch below its intended backstop.
-    const responseTimeoutMs = SLOW_SETUP_COMMAND_PATHS.has(command.path)
-      ? GATEWAY_SLOW_SETUP_RESPONSE_TIMEOUT_MS
-      : (this.options.gatewayResponseTimeoutMs ?? GATEWAY_RESPONSE_TIMEOUT_MS);
+    const responseTimeoutMs =
+      this.options.gatewayResponseTimeoutMs ?? GATEWAY_RESPONSE_TIMEOUT_MS;
     const responseWatchdog = new AbortController();
     const watchdogTimer = setTimeout(() => {
       responseWatchdog.abort(new Error("gateway response timeout"));
@@ -893,13 +845,13 @@ type RunningCommand = {
 
 function validateCommand(command: DesktopCommandEvent): string | null {
   if (!command.commandId.trim()) {
-    return "commandId is required";
+    return COMMAND_ACK_REJECTION_REASONS.missingCommandId;
   }
   if (!SUPPORTED_HTTP_METHODS.has(command.method.toUpperCase())) {
-    return "unsupported method";
+    return COMMAND_ACK_REJECTION_REASONS.unsupportedMethod;
   }
   if (!command.path.startsWith("/api/gateway/")) {
-    return "path must start with /api/gateway/";
+    return COMMAND_ACK_REJECTION_REASONS.pathOutsideGateway;
   }
   return null;
 }
@@ -928,19 +880,6 @@ function deriveLockKey(command: DesktopCommandEvent): string | null {
     return null;
   }
   return `${command.operationId}:${scopedPath}`;
-}
-
-function getSignatureBodyOverride(command: DesktopCommandEvent): unknown {
-  if (
-    command.path === "/api/gateway/symphony/loop" ||
-    command.path === "/api/gateway/symphony/loop/kill"
-  ) {
-    const body = asRecord(command.body);
-    if (body.userIntent !== undefined) {
-      return body.userIntent;
-    }
-  }
-  return undefined;
 }
 
 function asNonEmptyString(value: unknown): string | null {
@@ -1068,18 +1007,4 @@ function resolveTerminalState(
 
 function isTerminalState(state: TerminalCommandState | undefined): boolean {
   return state !== undefined;
-}
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isValidUuid(value: string): boolean {
-  return UUID_REGEX.test(value);
-}
-
-/** Allow any non-empty printable ASCII string without CRLF (header injection guard). */
-const SAFE_HEADER_VALUE_REGEX = /^[\x20-\x7e]+$/;
-
-function isSafeHeaderValue(value: string): boolean {
-  return SAFE_HEADER_VALUE_REGEX.test(value);
 }

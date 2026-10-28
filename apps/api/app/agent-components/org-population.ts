@@ -1,10 +1,8 @@
 import "server-only";
 
-import {
-  AGENT_COMPONENT_INVENTORY_CAP,
-  AgentComponentKind,
-} from "@repo/api/src/types/agent-component";
+import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import { Prisma, withDb } from "@repo/database";
+import { countPredicateBindParameters } from "@/lib/postgres-bind-parameters";
 import {
   type UsageContentScope,
   usageContentScopeWhere,
@@ -13,7 +11,12 @@ import {
   inventoryVersionIdentityKey,
   resolveDefinitionHashes,
   resolveInventoryDefinitionHashes,
+  withRedactedRevisionDefinitionHashes,
 } from "./definition-hash-resolution";
+import {
+  foldedIdentityKeys,
+  usageNameIdentityWhere,
+} from "./detail-usage-reads";
 import {
   buildInventorySlugById,
   collectNameMatchedIdentities,
@@ -27,8 +30,9 @@ import {
 import {
   loadOrphanUsageRows,
   readOrgInventoryRows,
+  SEARCH_IDENTITY_ARM_BIND_WIDTH,
   type UsageSearchFacet,
-  usageSearchWhere,
+  usageSearchWherePasses,
 } from "./org-population-reads";
 import {
   loadPluginChildUsage,
@@ -38,6 +42,10 @@ import {
   type UsageWindow,
   usageWindowWhere,
 } from "./plugin-child-usage";
+import {
+  INVENTORY_USAGE_ID_CHUNK_SIZE,
+  orArmsPerStatement,
+} from "./usage-bind-budget";
 
 // ---------------------------------------------------------------------------
 // ISS-4635: the ONE org-level agent-component population.
@@ -62,24 +70,6 @@ import {
 // `uninstalledAt: null` scope, and every usage lane are single-sourced and
 // cannot drift again.
 // ---------------------------------------------------------------------------
-
-/**
- * Hard cap on the number of merged version BUCKETS the usage folds may
- * synthesize on top of the inventory-seeded population, so usage rows for
- * components with no surviving inventory row cannot grow the working set without
- * bound (FEA-2923 review).
- *
- * ISS-4797: this is no longer the read cap. The inventory and orphan-usage READS
- * are bounded by distinct component identity in `./org-population-reads`
- * (`MAX_ORG_POPULATION_COMPONENTS`), because a raw-row cap applied after the
- * request's facets made a stricter filter return MORE data. This constant now
- * bounds only the fold's synthetic-bucket growth, which is already
- * identity-shaped (`mergedMap.size`).
- *
- * Shared `AGENT_COMPONENT_INVENTORY_CAP` so this bound, the validator's max
- * request `limit`, and the desktop local clamp stay one value.
- */
-export const MAX_ORG_INVENTORY_ROWS = AGENT_COMPONENT_INVENTORY_CAP;
 
 /**
  * Bucket grouped-usage rows by their (non-null) `agentComponentId` so each
@@ -129,7 +119,7 @@ export function loadUsageGroupsForInventory(
   // name-level key (whole name-level identity, as before), matching the shared
   // token-trend read.
   contentScope: UsageContentScope | null = null,
-  // ISS-4635 (shafty023 review): the requested `?kind=` facet. Because
+  // ISS-4635 (davetho review): the requested `?kind=` facet. Because
   // `foldFkUsageIntoMerged` now attributes FK-linked usage by the usage row's OWN
   // `(componentKind, componentKey)` (ISS-4630) — and SEEDS a synthetic bucket for
   // an identity absent from the kind-filtered inventory — a usage row FK-linked to
@@ -140,7 +130,7 @@ export function loadUsageGroupsForInventory(
   // kind-filtering does not apply).
   kinds: readonly string[] | undefined = undefined,
   // ISS-4660 (item 3): the requested `?search=` facet, mirroring the orphan lane
-  // through the shared `usageSearchWhere`. Same rationale as `kinds` above: the
+  // through the shared `usageSearchWherePasses`. Same rationale as `kinds` above: the
   // fold seeds a synthetic bucket from the usage row's OWN identity, so without
   // this a row FK-linked to a search-matching inventory row but carrying a
   // different, non-matching own key leaks into a `?search=` response. Null ⇒ no
@@ -150,9 +140,16 @@ export function loadUsageGroupsForInventory(
   if (inventoryIds.length === 0) {
     return Promise.resolve([]);
   }
-  return runUsageGroupBy(db, organizationId, {
-    agentComponentId: { in: inventoryIds },
-    // ISS-4635 (shafty023 review): scope the FK groups to the requested `?kind=`
+  const whereForChunk = (
+    idChunk: string[],
+    // ISS-8932: the `?search=` fragment this statement asks under — one DISJOINT
+    // pass of `usageSearchWherePasses`, or `{}` when the request carries no
+    // search. It arrives as a parameter rather than closed over so the sizing
+    // below can measure the predicate WITHOUT it and hand the arms a budget.
+    searchPass: Prisma.AgentComponentSessionUsageWhereInput
+  ): Prisma.AgentComponentSessionUsageWhereInput => ({
+    agentComponentId: { in: idChunk },
+    // ISS-4635 (davetho review): scope the FK groups to the requested `?kind=`
     // so a mismatched-FK usage row (own kind ≠ the selected kind) can't seed a
     // cross-kind synthetic bucket into a kind-filtered response. The usage
     // table's `componentKind` is NON-null (schema `String`, not `String?`), so
@@ -164,16 +161,140 @@ export function loadUsageGroupsForInventory(
     // ISS-4660: the SAME `search` predicate the orphan lane applies, from the
     // one shared derivation, so a mismatched-FK usage row cannot seed a
     // synthetic bucket the search facet excluded.
-    ...usageSearchWhere(searchFacet),
+    //
     // FEA-4335: for a content-hash route, keep only usage rows that carried the
     // requested content version at invocation (shared `usageContentScopeWhere`),
     // so a device that moved A→B does not fold its A usage into B's URI.
-    ...usageContentScopeWhere(contentScope),
+    //
+    // ISS-6756: BOTH of these own an `OR` key, so spreading them as siblings
+    // meant the second silently REPLACED the first — the identical collision
+    // whitlockk caught in `loadUsageGroupsLinkedElsewhere` (ISS-5363) and the one
+    // this change fixes in the token-trend read. Unreachable today (no caller
+    // passes a `search` facet and a content scope at once), which is precisely
+    // why it would have shipped: combined under `AND` so it cannot become
+    // reachable later without being correct.
+    ...combineOrOwningPredicates([
+      searchPass,
+      usageContentScopeWhere(contentScope),
+    ]),
     // FEA-3160 / FEA-3178: window usage by invocation time so
     // invocationCount / session counts include only in-window usage. Both
     // bounds (start/end) apply; absent window ⇒ no predicate ⇒ all-time.
     ...usageWindowWhere(window),
   });
+  return runUsageGroupByPasses(
+    db,
+    organizationId,
+    inventoryIds,
+    whereForChunk,
+    searchFacet
+  );
+}
+
+/**
+ * ISS-8932: run the FK usage rollup once per DISJOINT `?search=` pass and
+ * concatenate, so the readmission `OR` can be split without double-counting.
+ *
+ * The arms get HALF the statement's remaining budget, for the reason
+ * {@link identityKeyChunks} splits evenly: this loop MULTIPLIES with the id
+ * chunking inside {@link runUsageGroupByChunked}, and handing the arms everything
+ * but one slot would leave {@link inventoryUsageIdChunkSize} floored at a single
+ * id — one statement per inventory row inside a bounded interactive transaction.
+ * Below half the arms are one pass and the ids keep every remaining slot, so a
+ * request this product actually serves issues exactly the statements it does
+ * today.
+ *
+ * SOUND TO CONCATENATE WITH NO DEDUPE. `usageSearchWherePasses` returns passes
+ * whose predicates are mutually exclusive as a function of
+ * `(componentKind, componentKey)` alone — the `contains` arm, then identity arms
+ * under an explicit `NOT` of it — and BOTH of those columns are in this rollup's
+ * `by` key, so every row of a given group satisfies the same one pass and no
+ * group can span two. (The id chunks partition independently, so the product of
+ * the two loops is a partition as well.)
+ */
+function runUsageGroupByPasses(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  organizationId: string,
+  inventoryIds: string[],
+  whereForChunk: (
+    idChunk: string[],
+    searchPass: Prisma.AgentComponentSessionUsageWhereInput
+  ) => Prisma.AgentComponentSessionUsageWhereInput,
+  searchFacet: UsageSearchFacet | null
+): Promise<UsageGroupRow[]> {
+  const armBudget = orArmsPerStatement(
+    countPredicateBindParameters(whereForChunk([], {})),
+    SEARCH_IDENTITY_ARM_BIND_WIDTH,
+    2
+  );
+  return runUsageGroupByPassList(
+    db,
+    organizationId,
+    inventoryIds,
+    whereForChunk,
+    usageSearchWherePasses(searchFacet, armBudget)
+  );
+}
+
+/** The sequential half of {@link runUsageGroupByPasses}, split for complexity. */
+async function runUsageGroupByPassList(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  organizationId: string,
+  inventoryIds: string[],
+  whereForChunk: (
+    idChunk: string[],
+    searchPass: Prisma.AgentComponentSessionUsageWhereInput
+  ) => Prisma.AgentComponentSessionUsageWhereInput,
+  passes: readonly Prisma.AgentComponentSessionUsageWhereInput[]
+): Promise<UsageGroupRow[]> {
+  const rows: UsageGroupRow[] = [];
+  for (const searchPass of passes) {
+    const passRows = await runUsageGroupByChunked(
+      db,
+      organizationId,
+      inventoryIds,
+      (idChunk) => whereForChunk(idChunk, searchPass)
+    );
+    // Appended one at a time, for the reason `runUsageGroupByChunked` gives at
+    // its own accumulator: a spread passes every element as its own ARGUMENT and
+    // throws `RangeError` past the engine's argument limit.
+    for (const row of passRows) {
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+/**
+ * ISS-6756: combine predicates that each own a top-level `OR` without either
+ * clobbering the other.
+ *
+ * Spreading two `OR`-owning fragments into one object literal keeps only the
+ * last — a silent widening, because the predicate that vanished was the NARROWING
+ * one. Nesting under `AND` is the shape `detailOrphanUsageWhere` and
+ * `loadUsageGroupsLinkedElsewhere` already use for the same reason.
+ *
+ * Nests ONLY when there is something to collide with. Zero or one present
+ * fragment spreads exactly as before, so every predicate this call site can emit
+ * today is byte-identical to what it emitted before — the `AND` appears only on
+ * the combination that used to lose a predicate outright. The remaining siblings
+ * there (`agentComponentId`, `componentKind`, `usageWindowWhere`) are all
+ * scalar-keyed, so a lone `OR` cannot collide with them.
+ */
+function combineOrOwningPredicates(
+  fragments: readonly (
+    | Prisma.AgentComponentSessionUsageWhereInput
+    | undefined
+  )[]
+): Prisma.AgentComponentSessionUsageWhereInput {
+  const present = fragments.filter(
+    (fragment): fragment is Prisma.AgentComponentSessionUsageWhereInput =>
+      fragment !== undefined && Object.keys(fragment).length > 0
+  );
+  if (present.length <= 1) {
+    return present[0] ?? {};
+  }
+  return { AND: present };
 }
 
 /**
@@ -198,7 +319,7 @@ export function loadUsageGroupsForInventory(
  * `agentComponentId` cannot be `in` two disjoint sets. Callers concatenate the
  * two and run `filterUsageGroupsToDetailIdentity` over the union.
  *
- * wongk (ISS-5363 review): the bound is an `in` over the list's current org
+ * whitlockk (ISS-5363 review): the bound is an `in` over the list's current org
  * inventory ids (`readOrgInventoryIds`), NOT a `notIn` of this family's ids. A
  * `notIn` is BROADER than the list: it admits usage FK-linked to a current row
  * the identity cap truncated away, which the list can load through neither its FK
@@ -219,7 +340,7 @@ export function loadUsageGroupsForInventory(
  * with no derivable key has nothing to ask for) or no other inventory row to
  * look at.
  */
-export function loadUsageGroupsLinkedElsewhere(
+export async function loadUsageGroupsLinkedElsewhere(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string,
   kind: string,
@@ -234,31 +355,273 @@ export function loadUsageGroupsLinkedElsewhere(
   contentScope: UsageContentScope | null = null
 ): Promise<UsageGroupRow[]> {
   if (keys.length === 0 || otherInventoryIds.length === 0) {
-    return Promise.resolve([]);
+    return [];
   }
-  // Case-insensitive, mirroring `fetchDetailOrphanUsage` — the list's fold
-  // normalizes through `encodeComponentSlug`, which lowercases. Over-matching a
-  // raw variant is safe: `filterUsageGroupsToDetailIdentity` re-checks every
-  // group against the authoritative normalized slug set.
-  const nameWhere: Prisma.AgentComponentSessionUsageWhereInput = {
-    OR: keys.map((k) => ({
-      componentKey: { equals: k, mode: "insensitive" as const },
-    })),
-  };
-  // wongk (ISS-5363 review): `usageContentScopeWhere` owns an `OR` key of its
+  // whitlockk (ISS-5363 review): `usageContentScopeWhere` owns an `OR` key of its
   // own, so SPREADING it here silently REPLACED the name predicate above on
   // every content-hash route — leaving an unbounded groupBy over every
   // same-kind row in that content scope. Both predicates are combined under
   // `AND` instead, the same reason `loadOrphanUsageRows` nests its recency
   // bound rather than spreading it.
   const contentWhere = usageContentScopeWhere(contentScope);
-  return runUsageGroupBy(db, organizationId, {
-    // `in` already excludes NULLs in SQL — the null-FK rows are the ORPHAN
-    // lane's, and double-reading them here would double-count them.
-    agentComponentId: { in: [...otherInventoryIds] },
+  const rows: UsageGroupRow[] = [];
+  // ISS-5516: chunked for the same reason the list's FK lane is — `otherInventoryIds`
+  // comes from `readOrgInventoryIds`, which no longer truncates to fit one
+  // statement's bind budget.
+  //
+  // ISS-7284 (whitlockk review): the ALIAS list is chunked too, and the id chunking
+  // then sizes itself against whichever alias slice it is running under.
+  for (const keyChunk of identityKeyChunks(keys, kind, contentWhere)) {
+    // Case-insensitive, mirroring `fetchDetailOrphanUsage` — the list's fold
+    // normalizes through `encodeComponentSlug`, which lowercases. Over-matching
+    // a raw variant is safe: `filterUsageGroupsToDetailIdentity` re-checks every
+    // group against the authoritative normalized slug set.
+    //
+    // ISS-6756: the SAME `usageNameIdentityWhere` the orphan lane uses, not a
+    // hand-copied twin. `detailUsageNameKeys` exists because these lanes have to
+    // ask under one name set; folding one lane onto the persisted normalized key
+    // and leaving the other on `ILIKE` would have re-opened that divergence from
+    // the inside, since the fold trims and `ILIKE` does not.
+    const nameWhere: Prisma.AgentComponentSessionUsageWhereInput =
+      usageNameIdentityWhere(keyChunk);
+    const chunkRows = await runUsageGroupByChunked(
+      db,
+      organizationId,
+      [...otherInventoryIds],
+      (idChunk) => ({
+        // `in` already excludes NULLs in SQL — the null-FK rows are the ORPHAN
+        // lane's, and double-reading them here would double-count them.
+        agentComponentId: { in: idChunk },
+        componentKind: kind,
+        AND: contentWhere ? [nameWhere, contentWhere] : [nameWhere],
+      })
+    );
+    // Appended one at a time, for the reason `runUsageGroupByChunked` gives at
+    // its own accumulator: this array is already every id chunk's groups
+    // concatenated, so `push(...chunkRows)` passes each of possibly far more
+    // than 100k groups as its own ARGUMENT and throws `RangeError`.
+    for (const row of chunkRows) {
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+/**
+ * ISS-7284 (whitlockk review): split this lane's ALIAS predicate into slices narrow
+ * enough that a statement carrying one of them still has room for an id.
+ *
+ * {@link inventoryUsageIdChunkSize} narrows the id `IN` by what the rest of the
+ * predicate binds, but it FLOORS at one id, and a floor is not a bound: once the
+ * non-id half alone crosses {@link POSTGRES_MAX_ACCEPTED_BIND_PARAMETERS}, that
+ * floor still emits a statement — one id plus an over-limit alias `IN` — and
+ * Postgres refuses it. That floor's own docstring argues nothing in the product
+ * reaches that band, and for the `?search=` facet it is right. It is NOT right
+ * here: this lane's `keys` are `resolveContentHashIdentity`'s alias set, one per
+ * distinct `componentKey` among the `AgentComponentVersion` rows sharing a
+ * fingerprint, and that lookup takes no `take`. Nothing between it and this
+ * predicate caps the width.
+ *
+ * Splitting rather than truncating, for the reason `postgres-bind-parameters.ts`
+ * gives: dropping aliases would make the usage this detail reports depend on
+ * which names survived the cut, which is the ISS-5516 defect wearing a different
+ * hat.
+ *
+ * SOUND TO CONCATENATE WITH NO DEDUPE, on the same argument the id chunking
+ * uses. A usage row carries exactly ONE `componentKeyNormalized`, and
+ * `foldedIdentityKeys` de-duplicates before the slice, so the chunks PARTITION
+ * the alias set and a row matches at most one of them. (The id chunks partition
+ * independently, so the product of the two loops is a partition as well.)
+ *
+ * The remaining binds — this lane's `componentKind` and the content scope's
+ * `OR` — are counted off the predicate object rather than hand-tallied, and what
+ * is left is the budget the alias list and the id list SHARE. An alias chunk
+ * therefore takes at most HALF of it: the two loops multiply, so handing the
+ * aliases everything but one slot leaves `inventoryUsageIdChunkSize` floored at
+ * a single id and turns the lane into one statement PER INVENTORY ROW inside a
+ * bounded interactive transaction. Splitting the shared budget evenly bounds the
+ * product at roughly `⌈A/½B⌉ × ⌈I/½B⌉` instead of `⌈A/B⌉ × I`. Below half, an
+ * alias chunk is the whole (small) alias set and the ids keep every remaining
+ * slot, so the realistic case is unchanged at one chunk and full width.
+ *
+ * Floors at one alias — and THAT floor is not a bound either, which is this same
+ * defect one level up rather than a graceful tail (cosimoc).
+ * `nonAliasBindCount` counts the predicate CONTAINING `contentWhere`, and
+ * {@link countPredicateBindParameters} counts an `in:` elementwise, so a wide
+ * enough `contentScope.contentHashes` drives `sharedBudget` negative on its own;
+ * the floor then emits one alias per statement while that statement is STILL
+ * over the ceiling. The cursor moves, but a refused statement is not
+ * degradation, so {@link USAGE_SNAPSHOT_TX_TIMEOUT_MS} never gets to bound
+ * anything. Reachability is if anything stronger than the alias case: both sets
+ * come off the same untaken `versions` read in `resolveContentHashIdentity`, and
+ * content churns where names do not, so `|contentHashes| >= |keys|` is the
+ * ordinary shape.
+ *
+ * KNOWN OPEN, TRACKED SEPARATELY FROM ISS-7284, deliberately not folded in here:
+ * splitting `contentHashes` needs a group-key dedupe this lane does not have —
+ * its `OR` repeats a `definitionVersion.definitionHash` arm that matches in
+ * EVERY slice, so concatenated `groupBy` rows double-count — and that changes
+ * what the fold RETURNS, which must not ride inside a bind-budget fix that may
+ * need a clean revert.
+ *
+ * The detail's other alias consumer, `detailOrphanUsageWhere`, is deferred for a
+ * DIFFERENT reason, and not a partitioning one: that predicate DOES partition
+ * (a usage row carries exactly one `componentKeyNormalized`, and its content
+ * scope sits as an `AND` conjunct rather than repeating as an `OR` arm), so
+ * slicing its name keys alone is sound. The blocker is the `take`: each slice
+ * would get its own `MAX_ORG_ORPHAN_USAGE_ROWS` ordered `lastInvokedAt desc`, so
+ * N slices retain up to N × cap and the truncation flag
+ * `fetchDetailOrphanUsageLanes` reports — the flag that licenses the
+ * `foldUsageSeenBounds` fast path — stops meaning what it says. Recovering
+ * unsliced semantics is merge / re-sort / re-truncate globally (the bounds
+ * aggregate half is free: min-of-mins, max-of-maxes), a retention and
+ * memory-profile design call rather than a bind-budget one.
+ */
+function identityKeyChunks(
+  keys: readonly string[],
+  kind: string,
+  contentWhere: Prisma.AgentComponentSessionUsageWhereInput | undefined
+): string[][] {
+  const folded = foldedIdentityKeys(keys);
+  const nonAliasBindCount = countPredicateBindParameters({
     componentKind: kind,
-    AND: contentWhere ? [nameWhere, contentWhere] : [nameWhere],
+    ...(contentWhere ? { AND: [contentWhere] } : {}),
   });
+  const sharedBudget = INVENTORY_USAGE_ID_CHUNK_SIZE - nonAliasBindCount;
+  const chunkSize = Math.max(1, Math.floor(sharedBudget / 2));
+  const chunks: string[][] = [];
+  for (let offset = 0; offset < folded.length; offset += chunkSize) {
+    chunks.push(folded.slice(offset, offset + chunkSize));
+  }
+  return chunks;
+}
+
+/**
+ * ISS-7271: the id chunk width THIS request may use —
+ * {@link INVENTORY_USAGE_ID_CHUNK_SIZE}, narrowed by the bind parameters its own
+ * facets actually spend.
+ *
+ * `whereForChunk` is asked for the predicate at an EMPTY chunk, so what is
+ * measured is exactly the non-id remainder of the lane predicate: the `?kinds=`
+ * arm, every `?search=` readmission arm, the window bounds and the content
+ * scope. Whatever that comes to is subtracted ON TOP of
+ * {@link BIND_PARAMETERS_RESERVED_PER_STATEMENT}, which keeps holding back the
+ * statement's own uncounted remainder — the org id and Prisma's implicit binds —
+ * so the margin over the ceiling is the same for a faceted request as for a
+ * facet-free one.
+ *
+ * Measuring the predicate rather than restating its width is the point: the
+ * fixed reserve this replaces was a hand-maintained account of "what the facets
+ * bind", and it went stale the moment one of them grew an arm per name-matched
+ * identity. A facet added later is counted with nothing to keep in step.
+ *
+ * NOT `bindParameterChunkSize` from the sibling write lanes, deliberately: that
+ * helper reserves `PRISMA_IMPLICIT_BIND_PARAMETERS` off the raw ceiling and
+ * nothing else, so calling it here would discard the 767-slot reserve this lane
+ * keeps and silently rewrite the statement width every org already issues. The
+ * budget model is the same; the reserve this lane holds is its own.
+ *
+ * Floors at 1 rather than going negative, so the loop always advances instead of
+ * slicing empty chunks forever. That floor is a LIVENESS guard, not a bind-budget
+ * one: a facet wide enough to consume the whole chunk budget cannot be made to
+ * fit by narrowing the id list at all, and would still be refused one id at a
+ * time. So it is reachable only if some facet is unbounded.
+ *
+ * `?kinds=` is bounded, by the enum's cardinality — which holds only because the
+ * list validator DEDUPES the repeated param (ISS-7271, davetho review).
+ * Undeduped it was the counterexample: 32k repetitions of one valid kind are 32k
+ * binds, and narrowing the id list to a single id does not bring that statement
+ * back under the ceiling.
+ *
+ * `?search=` STOPPED BEING BOUNDED, AND IS AGAIN. ISS-7271 could lean on the
+ * 5,000-identity population cap to bound `nameMatchedIdentities` at 10,001 slots
+ * against a 31,999-slot budget; ISS-6891 removed that cap, so the readmission
+ * arms followed the org's matching inventory with no ceiling and an org with more
+ * than ~16k name-matching components floored this at 1 while still emitting a
+ * statement the driver refuses. ISS-8932 answers it where it arises — the arms
+ * are split UPSTREAM into disjoint passes ({@link usageSearchWherePasses}), each
+ * narrow enough that this narrowing has something left to narrow.
+ *
+ * A NAIVE split of that `OR` would have been worse than the refusal, which is why
+ * the passes are built the way they are. Chunking it directly overlaps groups —
+ * one usage row can satisfy both the `componentKey contains` arm and an identity
+ * arm — so concatenating chunk results double-counts invocations and sessions,
+ * a silently inflated usage total. The passes carry an explicit `NOT` of the
+ * `contains` arm instead, which makes the split a PARTITION of the same row set;
+ * see {@link runUsageGroupByPasses} for why no group can then span two passes.
+ *
+ * ISS-7284 (whitlockk review): the DETAIL lane's alias set is a SECOND unbounded
+ * predicate, independent of the `?search=` ceiling above —
+ * `resolveContentHashIdentity` takes no `take`, so the floor was already
+ * reachable there, and past it this returned one id riding on an over-limit
+ * alias `IN` that Postgres refuses outright. Unlike the readmission `OR`, this
+ * one IS safe to chunk: the alias list narrows `componentKeyNormalized`, which
+ * partitions cleanly because a usage row carries exactly one, so no group spans
+ * two chunks and concatenation cannot double-count. The bound therefore lives at
+ * the caller — {@link loadUsageGroupsLinkedElsewhere} splits the alias list
+ * itself before reaching here, see {@link identityKeyChunks}.
+ */
+function inventoryUsageIdChunkSize(
+  whereForChunk: (
+    idChunk: string[]
+  ) => Prisma.AgentComponentSessionUsageWhereInput
+): number {
+  return Math.max(
+    1,
+    INVENTORY_USAGE_ID_CHUNK_SIZE -
+      countPredicateBindParameters(whereForChunk([]))
+  );
+}
+
+/**
+ * {@link runUsageGroupBy} over an id list too long for one prepared statement.
+ *
+ * Chunks run SEQUENTIALLY and the chunk count is deliberately unbounded, matching
+ * `loadSessionLocCost`: a fan-out would demand one pooled connection per chunk
+ * while this read already runs inside the population snapshot's interactive
+ * transaction, and a work budget would be the truncation this whole change
+ * removes.
+ *
+ * NOT fail-open, unlike the LOC/$ enrichment that shares this shape. These groups
+ * ARE the org's usage totals, so a dropped chunk would silently understate every
+ * component it covered — a plausible wrong number, which is the one outcome worse
+ * than an error. The rejection propagates to the caller.
+ *
+ * Chunking is safe for this rollup specifically because `agentComponentId` is in
+ * the `groupBy` key: a given group belongs to exactly ONE id and therefore to
+ * exactly one chunk, so concatenating the chunks reproduces the single-statement
+ * result with no group split across chunks and nothing to re-aggregate.
+ */
+async function runUsageGroupByChunked(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  organizationId: string,
+  inventoryIds: string[],
+  whereForChunk: (
+    idChunk: string[]
+  ) => Prisma.AgentComponentSessionUsageWhereInput
+): Promise<UsageGroupRow[]> {
+  const rows: UsageGroupRow[] = [];
+  // ISS-7271: sized from THIS request's facet width, not from the constant. A
+  // `?search=` facet binds two parameters per name-matched identity, so a broad
+  // search over a large org spends thousands of slots the fixed reserve never
+  // held back.
+  const chunkSize = inventoryUsageIdChunkSize(whereForChunk);
+  for (let offset = 0; offset < inventoryIds.length; offset += chunkSize) {
+    const idChunk = inventoryIds.slice(offset, offset + chunkSize);
+    const chunkRows = await runUsageGroupBy(
+      db,
+      organizationId,
+      whereForChunk(idChunk)
+    );
+    // Appended one at a time rather than spread. A chunk of 1,000 components can
+    // return far more than 100k per-session groups, and `push(...rows)` passes
+    // every element as its own ARGUMENT — past the engine's argument limit that
+    // throws `RangeError`, turning a large org's catalog read into a 500.
+    for (const row of chunkRows) {
+      rows.push(row);
+    }
+  }
+  return rows;
 }
 
 /**
@@ -275,7 +638,7 @@ async function runUsageGroupBy(
   const groups = await db.agentComponentSessionUsage.groupBy({
     // FEA-3758: `harness` joins the grouping key so the rollup can attribute the
     // component's harness per session (see resolveComponentHarness).
-    // FEA-3982 (wongk decision): `componentVersionHash` + `definitionVersionId`
+    // FEA-3982 (whitlockk decision): `componentVersionHash` + `definitionVersionId`
     // join the key so each group carries the version identity the usage was
     // recorded against, and the fold attributes it to the MATCHING version
     // bucket (a device that moved hash A→B keeps its A sessions on A). The
@@ -316,7 +679,7 @@ async function runUsageGroupBy(
     _sum: { invocationCount: true, errorCount: true },
     _max: { lastInvokedAt: true },
   });
-  // FEA-3982 (wongk decision): resolve each group's `definitionVersionId` link to
+  // FEA-3982 (whitlockk decision): resolve each group's `definitionVersionId` link to
   // its exact provenance-free `definitionHash` (the F1 fingerprint), so the fold
   // attributes on the exact server version when linked and falls back to the
   // coarse `componentVersionHash` when it isn't (the legacy fallback the contract
@@ -397,11 +760,11 @@ async function applyPluginChildUsageRollup(
     window
   );
 
-  // FEA-3982 (wongk decision): a plugin's usage is its CHILDREN's pack rollup,
+  // FEA-3982 (whitlockk decision): a plugin's usage is its CHILDREN's pack rollup,
   // which carries no plugin-version dimension — the children aren't tied to the
   // plugin's content hash. So a plugin name that split into several version
   // buckets (e.g. a plugin.json updated A->B) must NOT have the full pack total
-  // REPLACED into every version bucket (the double-count wongk flagged). Apply the
+  // REPLACED into every version bucket (the double-count whitlockk flagged). Apply the
   // rollup to ONE canonical bucket per plugin name; the sibling version buckets
   // zero out (their child usage already lives on the canonical one).
   const seenPluginSlugs = new Set<string>();
@@ -528,7 +891,7 @@ export async function buildOrgComponentPopulation(
   // truncated away, so per-kind totals summed ABOVE the All total and a stricter
   // filter grew the count.
   //
-  // ISS-6180 (shafty023 review on #5039): this read is INSIDE the usage snapshot
+  // ISS-6180 (davetho review on #5039): this read is INSIDE the usage snapshot
   // below, not pooled ahead of it. Its ids bound the FK lane, and the usage-only
   // lane now evaluates `agentComponent.uninstalledAt` — so the two lanes are
   // partitioned by the same fact, and reading it on a different snapshot lets a
@@ -540,26 +903,25 @@ export async function buildOrgComponentPopulation(
   const { inventoryRows, usageGroups, orphanUsageRows } =
     await readUsageSnapshot(organizationId, { kinds, search }, window);
 
-  // 1b. FEA-3982 (wongk): resolve each inventory row's coarse `contentHash` to
+  // 1b. FEA-3982 (whitlockk): resolve each inventory row's coarse `contentHash` to
   // its exact linked `definitionHash`, so the seeded version bucket keys on the
   // same fingerprint the usage fold computes. `DefinitionVersion` rows are
   // immutable version provenance — neither the FK relink nor the tombstone the
   // snapshot above guards — so this read deliberately stays OUTSIDE the
   // usage-snapshot transaction rather than lengthening it.
-  const inventoryDefinitionHashByIdentity =
-    await resolveInventoryDefinitionHashes(
-      db,
-      organizationId,
-      inventoryRows.map((row) => ({
-        componentKind: row.componentKind,
-        componentKey: row.componentKey,
-        contentHash: row.contentHash,
-      }))
-    );
+  const inventoryDefinitionHashes = await resolveInventoryDefinitionHashes(
+    db,
+    organizationId,
+    inventoryRows.map((row) => ({
+      componentKind: row.componentKind,
+      componentKey: row.componentKey,
+      contentHash: row.contentHash,
+    }))
+  );
   const typedInventoryRows: InventoryRow[] = inventoryRows.map((row) => ({
     ...row,
     definitionHash: row.contentHash
-      ? (inventoryDefinitionHashByIdentity.get(
+      ? (inventoryDefinitionHashes.byIdentity.get(
           inventoryVersionIdentityKey(
             row.componentKind,
             row.componentKey,
@@ -569,19 +931,23 @@ export async function buildOrgComponentPopulation(
       : null,
   }));
 
-  const usageByComponentId = groupUsageByComponentId(usageGroups);
+  const usageByComponentId = groupUsageByComponentId(
+    withRedactedRevisionDefinitionHashes(
+      usageGroups,
+      inventoryDefinitionHashes.byUsageScopeHash
+    )
+  );
 
   // 2. Seed the version buckets from inventory (no usage folded yet).
   const mergedMap = mergeComponentRows(typedInventoryRows);
 
-  // 2a. FEA-3982 (wongk decision): fold FK-linked usage into the version bucket
+  // 2a. FEA-3982 (whitlockk decision): fold FK-linked usage into the version bucket
   // the usage row's OWN carried hash points at, not whichever inventory row
   // currently holds its FK.
   foldFkUsageIntoMerged(
     mergedMap,
     buildInventorySlugById(typedInventoryRows),
-    usageByComponentId,
-    MAX_ORG_INVENTORY_ROWS
+    usageByComponentId
   );
 
   // 2b. Fold in orphaned usage — the rows no live inventory row owns — so
@@ -589,7 +955,13 @@ export async function buildOrgComponentPopulation(
   // inventory row, before the component-sync lane linked the FK, or after the
   // linked row was tombstoned (ISS-6180). Read above in the same snapshot as the
   // FK lane (ISS-4669).
-  foldOrphanUsageIntoMerged(mergedMap, orphanUsageRows, MAX_ORG_INVENTORY_ROWS);
+  foldOrphanUsageIntoMerged(
+    mergedMap,
+    withRedactedRevisionDefinitionHashes(
+      orphanUsageRows,
+      inventoryDefinitionHashes.byUsageScopeHash
+    )
+  );
 
   // 2c. Roll up child usage into plugin-kind entries by pack_id. Plugins are
   // never invoked directly (no own usage rows), so their invocations/sessions are
@@ -609,11 +981,29 @@ export async function buildOrgComponentPopulation(
 
 /**
  * ISS-4669: interactive-transaction timeout for the shared FK-usage + orphan-usage
- * snapshot read in `buildOrgComponentPopulation`. Both reads are row-capped
- * aggregates that previously ran on the pool with no transaction timeout; wrapping
- * them in one `RepeatableRead` transaction otherwise inherits Prisma's 5s default.
- * 30s leaves generous headroom over the caps' real cost so the consistency fix
- * never regresses a large org into a transaction timeout.
+ * snapshot read in `buildOrgComponentPopulation`. These reads previously ran on
+ * the pool with no transaction timeout; wrapping them in one `RepeatableRead`
+ * transaction otherwise inherits Prisma's 5s default, so the ceiling is raised
+ * generously to keep the consistency fix from regressing a large org into a
+ * timeout.
+ *
+ * ISS-5516 removed the raw-row caps that used to justify this number, and
+ * ISS-6891 removed the identity cap that replaced them — every one of those
+ * truncations was evaluated after the request's facets, which is what made a
+ * narrower filter return records the broader one hid. What bounds the cost now is
+ * the chunk sizing alone: the FK lane's id list is chunked at
+ * {@link INVENTORY_USAGE_ID_CHUNK_SIZE}, set AT the driver's bind budget so the
+ * statement COUNT inside this transaction stays the same as before for any org
+ * that fit the old ceiling, and grows only one statement per further 32k
+ * inventory rows. The wall-clock risk this leaves is a genuinely enormous org's
+ * scan volume, not a chunk-count explosion — and that org is REPORTED by
+ * `warnOnOversizePopulation` rather than silently served a truncated answer.
+ *
+ * ISS-7271 narrows that chunk by the request's own facet width, so a broad
+ * `?search=` spends part of the chunk on its readmission arms and pays
+ * proportionally more round trips. That measurement is what keeps the statement
+ * under the driver's bind ceiling now that ISS-6891 has removed the identity cap
+ * the reserve used to lean on; the alternative was a refused statement.
  */
 const USAGE_SNAPSHOT_TX_TIMEOUT_MS = 30_000;
 
@@ -630,7 +1020,7 @@ const USAGE_SNAPSHOT_TX_TIMEOUT_MS = 30_000;
  * (invocations + errors double-counted, since the per-session Set dedups only the
  * session COUNT, not the summed totals).
  *
- * ISS-6180 (shafty023 review on #5039) pulled the INVENTORY read in as well. Once
+ * ISS-6180 (davetho review on #5039) pulled the INVENTORY read in as well. Once
  * the usage-only lane began partitioning on `agentComponent.uninstalledAt`, the
  * live-inventory bound stopped being "which rows exist" — a fact the usage
  * snapshot did not need — and became the very predicate that separates the two
@@ -686,13 +1076,12 @@ async function readUsageSnapshot(
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
-      // These reads (each an identity-capped aggregate — see
-      // MAX_ORG_POPULATION_COMPONENTS) ran on the pool with no transaction timeout
-      // before ISS-4669. Wrapping them in an interactive transaction bounds them by
-      // Prisma's 5s default, so a pathological (but still capped) org that
-      // previously returned slowly could start erroring. Raise the ceiling
-      // generously so the consistency fix does not regress large orgs; the row caps
-      // keep the real cost far below this.
+      // These reads ran on the pool with no transaction timeout before ISS-4669.
+      // Wrapping them in an interactive transaction bounds them by Prisma's 5s
+      // default, so a pathological org that previously returned slowly could start
+      // erroring. Raise the ceiling generously so the consistency fix does not
+      // regress large orgs — see USAGE_SNAPSHOT_TX_TIMEOUT_MS for what bounds the
+      // cost now that ISS-5516 and ISS-6891 have removed every population cap.
       timeout: USAGE_SNAPSHOT_TX_TIMEOUT_MS,
     }
   );

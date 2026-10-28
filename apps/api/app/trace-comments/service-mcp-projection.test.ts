@@ -1,13 +1,23 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   TRACE_COMMENT_METADATA_KIND,
   TRACE_COMMENT_SCHEMA_VERSION,
-  TraceCommentSurface,
-  TraceCommentTargetType,
   traceCommentDraftSchema,
   traceTextAnchorSchema,
 } from "@repo/api/src/types/comment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock(
+  "@/app/comments/service/comment-thread-signal",
+  async (importOriginal) => {
+    const { createCommentThreadSignalMockModule } = await import(
+      "../../__tests__/fixtures/mock-modules"
+    );
+    return createCommentThreadSignalMockModule(importOriginal);
+  }
+);
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -17,9 +27,6 @@ vi.mock("@repo/database", async () => {
     ArtifactType: {
       SESSION: "SESSION",
       BRANCH: "BRANCH",
-    },
-    Prisma: {
-      JsonNull: null,
     },
   });
 });
@@ -34,7 +41,7 @@ vi.mock("@/lib/mention-notifications", () => ({
   dispatchMentionNotifications: vi.fn(),
 }));
 
-import { getMockWithDb } from "../../__tests__/utils/db-helpers";
+import { getMockWithDb, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { traceCommentsService } from "./service";
 
 const mockWithDb = getMockWithDb();
@@ -54,12 +61,13 @@ const anchor = {
   actor: { name: "codex", human: null },
 };
 
+const storedAnchor = { v: 1, kind: "trace", ...anchor };
+
 const metadata = {
   kind: TRACE_COMMENT_METADATA_KIND,
   schemaVersion: TRACE_COMMENT_SCHEMA_VERSION,
-  targetType: TraceCommentTargetType.Session,
-  surface: TraceCommentSurface.SessionDetail,
-  anchor,
+  targetType: CommentTargetType.Session,
+  surface: CommentSurface.SessionDetail,
 };
 
 beforeEach(() => {
@@ -79,10 +87,12 @@ describe("traceCommentsService MCP projection contracts", () => {
     expect(draft.anchor).not.toHaveProperty("anchorType");
 
     mockSessionTarget();
-    let persistedMetadata: unknown;
+    let persistedAnchor: unknown;
     const threadCreate = vi.fn((args) => {
-      persistedMetadata = args.data.metadata;
-      return Promise.resolve(thread({ metadata: persistedMetadata }));
+      persistedAnchor = args.data.anchor;
+      return Promise.resolve(
+        thread({ metadata: args.data.metadata, anchor: persistedAnchor })
+      );
     });
     mockWithDb.tx.mockImplementation((callback) =>
       callback({
@@ -95,17 +105,17 @@ describe("traceCommentsService MCP projection contracts", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft,
     });
 
-    expect(created?.anchor).not.toHaveProperty("anchorType");
-    expect(persistedMetadata).toMatchObject({ anchor });
-    expect(
-      (persistedMetadata as { anchor?: unknown }).anchor
-    ).not.toHaveProperty("anchorType");
+    expect(created).toHaveProperty("anchor");
+    expect(created).not.toHaveProperty("anchor.anchorType");
+    // ISS-11212: the anchor is persisted in the `anchor` column's v1 envelope.
+    expect(persistedAnchor).toEqual(storedAnchor);
+    expect(persistedAnchor).not.toHaveProperty("anchorType");
   });
 
   it("projects nullable resolver metadata through create replay, reply, and update", async () => {
@@ -119,6 +129,7 @@ describe("traceCommentsService MCP projection contracts", () => {
     mockWithDb.tx.mockImplementationOnce((callback) =>
       callback({
         commentThread: {
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
           findUnique: vi.fn().mockResolvedValue(replayedThread),
           create: vi.fn(),
         },
@@ -130,7 +141,7 @@ describe("traceCommentsService MCP projection contracts", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "Persisted note", clientId: "local-comment-1" },
@@ -152,6 +163,7 @@ describe("traceCommentsService MCP projection contracts", () => {
     mockWithDb.tx.mockImplementationOnce((callback) =>
       callback({
         commentThread: {
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
           findFirst: vi
             .fn()
             .mockResolvedValueOnce(parentThread)
@@ -166,7 +178,7 @@ describe("traceCommentsService MCP projection contracts", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-reply",
@@ -178,9 +190,15 @@ describe("traceCommentsService MCP projection contracts", () => {
     mockWithDb.tx.mockImplementationOnce((callback) =>
       callback({
         commentThread: {
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
           findFirst: vi
             .fn()
             .mockResolvedValueOnce(parentThread)
+            // ISS-11216 (#8875): `findThreadOrigin` reads the opening comment.
+            .mockResolvedValueOnce({
+              createdById: null,
+              comments: parentThread.comments.slice(0, 1),
+            })
             .mockResolvedValueOnce(replayedThread),
         },
         comment: {
@@ -195,7 +213,7 @@ describe("traceCommentsService MCP projection contracts", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-reply",
@@ -206,22 +224,23 @@ describe("traceCommentsService MCP projection contracts", () => {
   });
 
   it("projects resolver metadata and null fallbacks through aggregate listAll", async () => {
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findMany: vi.fn().mockResolvedValue([
-            thread({
-              id: "resolved",
-              resolvedById: "resolver-1",
-              resolvedAt,
-            }),
-            thread({ id: "open", status: ThreadStatus.Open }),
-          ]),
-          count: vi.fn().mockResolvedValue(2),
-        },
-        user: { findMany: vi.fn().mockResolvedValue([author(), resolver()]) },
-      })
-    );
+    mockWithDbTx({
+      $queryRaw: vi.fn().mockResolvedValueOnce([
+        { id: "resolved", count: 2n },
+        { id: "open", count: 2n },
+      ]),
+      commentThread: {
+        findMany: vi.fn().mockResolvedValue([
+          thread({
+            id: "resolved",
+            resolvedById: "resolver-1",
+            resolvedAt,
+          }),
+          thread({ id: "open", status: ThreadStatus.Open }),
+        ]),
+      },
+      user: { findMany: vi.fn().mockResolvedValue([author(), resolver()]) },
+    });
 
     const response = await traceCommentsService.listAll({
       organizationId: "org-1",
@@ -262,6 +281,7 @@ function thread(
     resolvedAt?: Date | null;
     resolvedById?: string | null;
     metadata?: unknown;
+    anchor?: unknown;
   } = {}
 ) {
   const rootComment = {
@@ -288,6 +308,8 @@ function thread(
     resolvedAt: overrides.resolvedAt ?? null,
     resolvedById: overrides.resolvedById ?? null,
     metadata: overrides.metadata ?? metadata,
+    anchor: overrides.anchor ?? storedAnchor,
+    syncStates: [],
     createdAt,
     updatedAt,
     comments,

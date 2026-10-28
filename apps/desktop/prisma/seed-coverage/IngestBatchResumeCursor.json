@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Single-row resume point for an interrupted OpenCode batch import (ISS-9839)."
+}

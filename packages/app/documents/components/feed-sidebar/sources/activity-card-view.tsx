@@ -3,15 +3,22 @@
 import { formatRelativeTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import { Link } from "@repo/navigation/link";
 import { ArrowRight } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ActivityChange } from "./activity-formatting";
 
 /**
  * One Asana-style activity row, presentation only. Header: the actor slot +
- * relative timestamp. Body: a plain-language action headline, then an optional
- * before→after pair rendered as two chips joined by an arrow. Built entirely
- * from design-system primitives + tokens — no hand-rolled surfaces.
+ * relative timestamp. Body: the action headline, then an optional before→after
+ * pair rendered as two chips joined by an arrow. Built entirely from
+ * design-system primitives + tokens — no hand-rolled surfaces.
+ *
+ * ISS-12117: this is the comments rail's look of an activity row. The
+ * container now passes the adapter's phrase as the headline (status, priority
+ * and tag pills inline, the same parts the Activity tab draws), so the rail no
+ * longer needs the before→after chips; `change` stays for a host that has only
+ * a raw pair to show.
  *
  * Split out of `ActivityCard` so the row's presentational contract (chip
  * truncation, the pending skeleton's reserved geometry, the conditional arrow,
@@ -23,15 +30,26 @@ export function ActivityCardView({
   actor,
   createdAt,
   headline,
-  change,
-  pending,
+  change = NO_CHANGE,
+  pending = false,
+  link,
+  now,
 }: Readonly<{
   actor: ReactNode;
   createdAt: Date;
-  headline: string;
-  change: ActivityChange;
+  /** The action phrase: plain text, or the adapter's parts (`ActivityParts`). */
+  headline: ReactNode;
+  change?: ActivityChange;
   /** A directory lookup this row's values depend on has not settled yet. */
-  pending: boolean;
+  pending?: boolean;
+  /**
+   * A read-only pointer to what the row stands for, e.g. the comment a
+   * "commented" row records (ISS-10843). The row only links out: it carries no
+   * reply, reaction or other action.
+   */
+  link?: { href: string; label: string };
+  /** The clock the relative time is measured against; stories pin it. */
+  now?: Date | number;
 }>) {
   const hasChange = change.before !== null || change.after !== null;
 
@@ -43,10 +61,18 @@ export function ActivityCardView({
           className="shrink-0 text-muted-foreground text-xs"
           dateTime={createdAt.toISOString()}
         >
-          {formatRelativeTimeOrFallback(createdAt)}
+          {formatRelativeTimeOrFallback(createdAt, { now })}
         </time>
       </div>
-      <p className="mt-2 text-foreground text-sm">{headline}</p>
+      <p className="mt-2 text-foreground text-sm leading-6">{headline}</p>
+      {link ? (
+        <Link
+          className="mt-1 inline-block text-muted-foreground text-sm underline-offset-2 hover:text-foreground hover:underline"
+          href={link.href}
+        >
+          {link.label}
+        </Link>
+      ) : null}
       {hasChange ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <ChangeValue pending={pending} replaced value={change.before} />
@@ -62,6 +88,8 @@ export function ActivityCardView({
     </div>
   );
 }
+
+const NO_CHANGE: ActivityChange = { before: null, after: null };
 
 /**
  * One side of a before→after pair. `replaced` is the struck-through "before"

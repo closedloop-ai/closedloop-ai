@@ -1,11 +1,15 @@
 import "server-only";
 
+import { normalizeComponentKey } from "@repo/api/src/types/agent-component-analytics";
 import type { Prisma, withDb } from "@repo/database";
-import { log } from "@repo/observability/log";
 import {
   type UsageContentScope,
   usageContentScopeWhere,
 } from "./content-hash-identity";
+import {
+  DetailUsageAggregateFailedEvent,
+  reportDetailUsageAggregateFailure,
+} from "./detail-usage-failure-telemetry";
 import {
   MAX_ORG_ORPHAN_USAGE_ROWS,
   usageWithoutLiveInventoryWhere,
@@ -14,12 +18,12 @@ import {
 // ---------------------------------------------------------------------------
 // FEA-4335: the org-scoped detail usage reads that back `buildOrphanOnlyDetail`
 // and the inventory-present detail path in `service.ts` — extracted into this
-// sibling so the (grandfathered, shrink-only) `service.ts` shrinks as it accretes
+// sibling so `service.ts` shrinks as it accretes
 // the content-hash-routing fix. These are pure Prisma reads with no service
-// coupling; they resolve the orphan (no live inventory row owns it) and
-// moved-inventory (live-FK-linked) usage a content-hash detail must fold — a
-// partition, so the two never return the same row. See `content-hash-identity.ts`
-// for the shared `UsageContentScope`.
+// coupling; they resolve the two populations a used-only detail must fold — the
+// usage no live inventory row owns, and the moved-inventory usage a live one
+// still owns — as a partition, so the two never return the same row. See
+// `content-hash-identity.ts` for the shared `UsageContentScope`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -36,11 +40,17 @@ export type DetailOrphanUsageRow = {
   // here so the per-(session, branch) fold in `getDetailForOrg` can split orphan
   // usage by branch too, not just the aggregate fold.
   gitBranch: string;
-  // FEA-4098 (wongk): the F1 `DefinitionVersion` this usage ran against, so the
+  // FEA-4098 (whitlockk): the F1 `DefinitionVersion` this usage ran against, so the
   // orphan-only detail can resolve the authors lineage (its list-view row
   // already shows authors via this link) instead of hardcoding an empty set.
   // Null until the F1 backfill lands, or for a hash-less legacy row.
   definitionVersionId: string | null;
+  // ISS-10467: the coarse hash-at-invocation. ADDITIVE, and read for exactly one
+  // question the per-version drill-down has to answer — does this row name ANY
+  // version — so the family usage that belongs to no revision can be counted and
+  // disclosed instead of silently dropped. It is NOT a version-scope predicate:
+  // narrowing to a version is `usageContentScopeWhere` and only ever that.
+  componentVersionHash: string | null;
   // ISS-5577: the observation window this row itself witnessed, so an untruncated
   // lane can fold the identity's real `firstSeenAt`/`lastSeenAt` without a second
   // query. Both nullable — a collector may leave either unset.
@@ -88,9 +98,12 @@ export function fetchDetailOrphanUsage(
       harness: true,
       // FEA-2990: per-event branch attribution for precise splitting.
       gitBranch: true,
-      // FEA-4098 (wongk): the F1 version link so the orphan-only detail can
+      // FEA-4098 (whitlockk): the F1 version link so the orphan-only detail can
       // resolve authors from the lineage (see `buildOrphanOnlyDetail`).
       definitionVersionId: true,
+      // ISS-10467: the coarse hash-at-invocation, for the drill-down's
+      // "does this row name any version at all" partition.
+      componentVersionHash: true,
       // ISS-5577: the per-row observation window the untruncated fold reads.
       firstInvokedAt: true,
       lastInvokedAt: true,
@@ -108,7 +121,7 @@ export function fetchDetailOrphanUsage(
       { id: "asc" },
     ],
     // Bound the fan-out to match the other org-scoped orphan/child usage reads
-    // (`loadChildUsageByPackId`, `buildPluginChildInvCountBySession`, and the
+    // (`loadChildUsageByPackId`, `loadDetailChildUsageRows`, and the
     // list-view orphan query): a popular orphan skill/command has one usage row
     // per session, so a busy org would otherwise materialize unboundedly with
     // session volume. Downstream branch attribution is already capped by the
@@ -118,43 +131,45 @@ export function fetchDetailOrphanUsage(
 }
 
 /**
- * FEA-4335 (wongk): recover FK-LINKED usage for a content-hash route whose
- * current inventory row has moved on. The list synthesizes a hash-A route from
- * FK-linked historical usage (`foldFkUsageIntoMerged`) even when the live
- * inventory has since moved A→B, so an A-fingerprint detail can land in the
- * orphan-only path with NO inventory row for A. `fetchDetailOrphanUsage` reads
- * only rows no live inventory row owns, so that A usage — still attached to the
- * (now-B, still-installed) inventory row via `agentComponentId` but carrying
- * `componentVersionHash == A` — would be missed and the family's own list link
- * would 404.
+ * FEA-4335 (whitlockk): recover FK-LINKED usage a used-only detail must still fold.
+ * The list synthesizes a hash-A route from FK-linked historical usage
+ * (`foldFkUsageIntoMerged`) even when the live inventory has since moved A→B, so
+ * an A-fingerprint detail can land in the used-only path with NO inventory row
+ * for A. `fetchDetailOrphanUsage` reads only rows no live inventory row owns, so
+ * that usage — still attached to the (now-B, still-installed) inventory row via
+ * `agentComponentId` — would be missed and the family's own list link would 404.
  *
- * Read the FK-linked rows purely by (org, kind, {@link UsageContentScope}) — NOT
- * by an inventory-id list, since the id moved — and shape them like the orphan
- * rows so `buildOrphanOnlyDetail` folds both. Bounded and content-scoped; returns
- * `[]` when there is no content scope (a legacy name route has no fingerprint to
- * recover a moved row by, and already reads its whole name-level identity).
+ * Read those rows purely by (org, kind, identity) — NOT by an inventory-id list,
+ * since the id moved — and shape them like the orphan rows so
+ * `buildOrphanOnlyDetail` folds both.
+ *
+ * ISS-10469: the identity is {@link usedOnlyUsageIdentityWhere}'s, the SAME one
+ * the no-live-owner arm carries, so this arm widened from one content version to
+ * the whole family without ever admitting a row that arm also admits. A null
+ * identity keeps this arm out of the read entirely: with no identity of its own
+ * it would be the org-wide live-FK population for the kind, and a predicate whose
+ * job is to narrow fails closed.
  */
-export function fetchDetailLinkedUsageByContentScope(
+export function fetchDetailLiveInventoryUsage(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string,
   kind: string,
-  contentScope: UsageContentScope | null
+  identityWhere: Prisma.AgentComponentSessionUsageWhereInput | null
 ): Promise<DetailOrphanUsageRow[]> {
-  if (!contentScope) {
+  if (!identityWhere) {
     return Promise.resolve([]);
   }
   return db.agentComponentSessionUsage.findMany({
-    where: detailLinkedUsageByContentScopeWhere(
-      organizationId,
-      kind,
-      contentScope
-    ),
+    where: detailLiveInventoryUsageWhere(organizationId, kind, identityWhere),
     select: {
       agentSessionId: true,
       invocationCount: true,
       harness: true,
       gitBranch: true,
       definitionVersionId: true,
+      // ISS-10467: the coarse hash-at-invocation, for the drill-down's
+      // "does this row name any version at all" partition.
+      componentVersionHash: true,
       // ISS-5577: the per-row observation window the untruncated fold reads.
       firstInvokedAt: true,
       lastInvokedAt: true,
@@ -182,10 +197,92 @@ export function detailUsageNameKeys(
   key: string,
   keys: readonly string[]
 ): string[] {
-  if (keys.length > 0) {
-    return [...keys];
-  }
-  return key ? [key] : [];
+  // ISS-6756: names that FOLD to nothing are dropped, not just the empty string
+  // and not just the empty list. `resolveContentHashIdentity` builds `keys` with
+  // `(componentKey ?? "").toLowerCase().trim()`, so a version row carrying no
+  // key at all contributes `""` to an otherwise-populated alias set — and `""`
+  // in the folded `IN` matches every row still on the column's
+  // `ADD COLUMN … DEFAULT ''` value. A `length > 0` gate at the caller cannot
+  // see that; dropping them here is what makes the gate mean what it says.
+  const named = keys.length > 0 ? [...keys] : [key];
+  return named.filter((name) => normalizeComponentKey(name).length > 0);
+}
+
+/**
+ * ISS-6756: the folded, de-duplicated identity set — every name that folds to
+ * something, exactly once. The ONE place the drop-empties rule lives, so the
+ * detail lanes, the token trend and the search readmission arm cannot each
+ * decide it differently.
+ */
+export function foldedIdentityKeys(names: readonly string[]): string[] {
+  return [
+    ...new Set(
+      names
+        .map((name) => normalizeComponentKey(name))
+        .filter((folded) => folded.length > 0)
+    ),
+  ];
+}
+
+/**
+ * ISS-6756: the indexable spelling of "this usage row says it is one of these
+ * names", shared by every identity-scoped usage lane so they cannot drift apart.
+ *
+ * The lanes used to ask for `componentKey: { equals: k, mode: "insensitive" }`,
+ * which Prisma compiles to `component_key ILIKE $n`. No btree can serve an
+ * `ILIKE` — not even a `LOWER(component_key)` expression index, which is exactly
+ * the distinction migration 20260815120000 (ISS-6452) turns on, where the
+ * predicates were raw `LOWER(col) IN (…)`. These lanes bind neither
+ * `agentComponentId` nor `agentSessionId` first, and the table carries no
+ * `organization_id` column (org arrives through the `session.artifact` join), so
+ * the ILIKE left them scanning the same-kind partition of EVERY tenant and
+ * discarding the rest with a post-scan filter.
+ *
+ * `componentKeyNormalized` is the persisted fold the table's BEFORE
+ * INSERT/UPDATE trigger maintains (migration 20260820120000), so an `IN` over
+ * the folded names is an equality the
+ * `(component_kind, component_key_normalized)` index serves. Both sides go
+ * through the SAME cross-surface codec — `normalizeComponentKey`, which the
+ * trigger mirrors.
+ *
+ * THE ROW SET MOVES, IN BOTH DIRECTIONS. This is not a pure re-spelling, and the
+ * two deltas point opposite ways:
+ *
+ *   • WIDER: the fold trims and `ILIKE` did not, so a stored key with
+ *     surrounding whitespace matched nothing before and matches its trimmed
+ *     identity now. That is the desktop's long-standing behaviour
+ *     (`shared-agent-components-api.ts` folds stored keys through this same
+ *     function), so this brings the cloud to parity.
+ *   • NARROWER: Prisma binds the key as the ILIKE PATTERN, unescaped (verified
+ *     against the engine: `component_key ILIKE $1`, `$1 = 'mcp__x__y'`), so `_`
+ *     and `%` in a key were WILDCARDS. Component keys carry `_` constantly —
+ *     `mcp__closedloop__ping`, `web_search` — so `mcp__closedloop__ping` also
+ *     matched `mcpXXclosedloopYYping`, i.e. a DIFFERENT component's rows. An
+ *     equality does not. Counts for keys containing `_` or `%` can therefore
+ *     DROP, and that is the repair: the list has always grouped these
+ *     identities exactly, so the over-match was detail/trend inflating against
+ *     it.
+ *
+ * PRECONDITION: `nameKeys` must contain at least one name that FOLDS to
+ * something. An empty fold set emits `{ in: [] }`, which selects NOTHING rather
+ * than "no identity filter", so every caller gates on `detailUsageNameKeys`
+ * being non-empty first. Names that fold away are dropped rather than passed
+ * through: `{ in: [""] }` would match every row still carrying the column's
+ * `ADD COLUMN … DEFAULT ''` value — the widest possible predicate wearing the
+ * shape of the narrowest — and failing CLOSED (selecting nothing) is the safe
+ * direction for a predicate whose job is to narrow.
+ *
+ * NOT every predicate on this table folds this way. `usageSearchWhere`'s facet
+ * (`org-population-reads.ts`) stays on the raw column: its main arm is a
+ * substring `contains`, a different question from identity, and its
+ * name-matched arm is re-checked in JS by `filterUsageGroupsToDetailIdentity`.
+ * That lane therefore still trims differently from this one — a known residual,
+ * not an oversight.
+ */
+export function usageNameIdentityWhere(
+  nameKeys: readonly string[]
+): Prisma.AgentComponentSessionUsageWhereInput {
+  return { componentKeyNormalized: { in: foldedIdentityKeys(nameKeys) } };
 }
 
 /**
@@ -203,7 +300,7 @@ export function detailOrphanUsageWhere(
   contentScope: UsageContentScope | null
 ): Prisma.AgentComponentSessionUsageWhereInput {
   const nameKeys = detailUsageNameKeys(key, keys);
-  // wongk (ISS-5363 review), applied to this lane too: `usageContentScopeWhere`
+  // whitlockk (ISS-5363 review), applied to this lane too: `usageContentScopeWhere`
   // returns its own `OR`, so spreading it beside the name `OR` REPLACED the name
   // predicate on every content-hash route. Combine both under `AND`.
   // Match every name that shares the content; a single-name legacy key resolves
@@ -217,11 +314,7 @@ export function detailOrphanUsageWhere(
     usageWithoutLiveInventoryWhere(),
   ];
   if (nameKeys.length > 0) {
-    identityWhere.push({
-      OR: nameKeys.map((k) => ({
-        componentKey: { equals: k, mode: "insensitive" as const },
-      })),
-    });
+    identityWhere.push(usageNameIdentityWhere(nameKeys));
   }
   const contentWhere = usageContentScopeWhere(contentScope);
   if (contentWhere) {
@@ -239,24 +332,25 @@ export function detailOrphanUsageWhere(
 }
 
 /**
- * The identity predicate for the MOVED-INVENTORY (FK-linked, content-scoped)
- * detail usage lane. Same extraction rationale as
- * {@link detailOrphanUsageWhere}.
+ * The identity predicate for the LIVE-INVENTORY (FK-linked) used-only usage lane.
+ * Same extraction rationale as {@link detailOrphanUsageWhere}.
+ *
+ * `agentComponent: { uninstalledAt: null }` is this arm's HALF of the partition
+ * (ISS-6180) — see {@link usedOnlyUsageIdentityWhere} for the whole invariant.
+ * `identityWhere` is nested under `AND` rather than spread: it can itself be an
+ * `OR` (the content-scope shape), and spreading one beside a sibling `OR` silently
+ * replaces it — the ISS-5363 collision `detailOrphanUsageWhere` already carries a
+ * note about.
  */
-export function detailLinkedUsageByContentScopeWhere(
+export function detailLiveInventoryUsageWhere(
   organizationId: string,
   kind: string,
-  contentScope: UsageContentScope
+  identityWhere: Prisma.AgentComponentSessionUsageWhereInput
 ): Prisma.AgentComponentSessionUsageWhereInput {
   return {
-    // ISS-6180: a LIVE FK target only. `fetchDetailOrphanUsage` now claims the
-    // tombstoned-FK rows, and `buildOrphanOnlyDetail` folds both lanes, so
-    // leaving this one at "any non-null FK" would count those rows twice.
     agentComponent: { uninstalledAt: null },
     componentKind: kind,
-    // Only rows carrying the requested content version (shared with the linked
-    // and orphan reads), regardless of which inventory row now holds the FK.
-    ...usageContentScopeWhere(contentScope),
+    AND: [identityWhere],
     session: {
       artifact: {
         organizationId,
@@ -264,6 +358,63 @@ export function detailLinkedUsageByContentScopeWhere(
     },
   };
 }
+
+/**
+ * ISS-10469: the ONE identity BOTH used-only detail usage lanes carry, and the
+ * one place that decides it.
+ *
+ * "Was this route addressed by a content hash" and "narrow this population by
+ * content version" are different questions. Conflating them is what left the
+ * used-only detail version-scoped after ISS-10341 made every other aggregate on
+ * the page family-scoped: a fingerprint that resolved version rows resolved their
+ * NAMES with them, and those names ARE the family, so there the fingerprint is
+ * only the address. It is the identity solely when it resolved no name at all —
+ * the orphan-only content-hash route, where there is no family to be narrower
+ * than.
+ *
+ * DISJOINTNESS INVARIANT — the contract every caller must honor (ISS-6180). The
+ * two used-only lanes carry THIS SAME predicate and differ on exactly one term:
+ * `usageWithoutLiveInventoryWhere()` versus `agentComponent: { uninstalledAt:
+ * null }`. Those are exact complements over a usage row — it either has a live
+ * inventory owner or it does not, decided in SQL by the FK and its target's
+ * tombstone, never in JS — so no row satisfies both arms and their union can
+ * never double-count. Before ISS-10469 the arms carried DIFFERENT identities
+ * (names-and-content versus content-alone), and the complement was the only thing
+ * holding them apart; giving the FK-linked arm an identity of its own is what
+ * lets it widen to the whole family without ever overlapping the other.
+ */
+export function usedOnlyUsageIdentityWhere(
+  key: string,
+  keys: readonly string[],
+  contentScope: UsageContentScope | null
+): UsedOnlyUsageIdentity {
+  const nameKeys = detailUsageNameKeys(key, keys);
+  if (nameKeys.length > 0) {
+    return {
+      where: usageNameIdentityWhere(nameKeys),
+      orphanContentScope: null,
+    };
+  }
+  return {
+    where: usageContentScopeWhere(contentScope) ?? null,
+    orphanContentScope: contentScope,
+  };
+}
+
+/** The resolved used-only identity — see {@link usedOnlyUsageIdentityWhere}. */
+export type UsedOnlyUsageIdentity = {
+  /**
+   * The predicate both arms carry, or null when the route resolved neither a
+   * name nor a fingerprint. Null keeps the FK-linked arm out of the read.
+   */
+  where: Prisma.AgentComponentSessionUsageWhereInput | null;
+  /**
+   * What the no-live-owner arm passes {@link detailOrphanUsageWhere} as its
+   * content narrow — null whenever a name resolved, so the arms cannot end up
+   * asking different questions.
+   */
+  orphanContentScope: UsageContentScope | null;
+};
 
 /**
  * The observation window an orphan-only identity actually has evidence for:
@@ -304,18 +455,14 @@ export async function fetchDetailUsageSeenBounds(
   keys: readonly string[] = [],
   contentScope: UsageContentScope | null = null
 ): Promise<DetailUsageSeenBounds> {
-  const lanes: Prisma.AgentComponentSessionUsageWhereInput[] = [
-    detailOrphanUsageWhere(organizationId, kind, key, keys, contentScope),
-  ];
-  // Mirrors `fetchDetailLinkedUsageByContentScope`'s fail-closed guard: a legacy
-  // name route has no fingerprint to recover a moved row by, so it must never
-  // widen these bounds to the org-wide linked-usage population.
-  if (contentScope) {
-    lanes.push(
-      detailLinkedUsageByContentScopeWhere(organizationId, kind, contentScope)
-    );
-  }
-  // wongk (ISS-5577 review): `AgentComponentSessionUsage.firstInvokedAt` carries
+  const lanes = detailUsageLaneWheres(
+    organizationId,
+    kind,
+    key,
+    keys,
+    contentScope
+  );
+  // whitlockk (ISS-5577 review): `AgentComponentSessionUsage.firstInvokedAt` carries
   // no index, so this aggregate is the one statement here that can realistically
   // time out on a pathological org. Letting it reject turned a window the
   // response can honestly report as UNKNOWN into a 500 for the whole detail, so
@@ -334,15 +481,24 @@ export async function fetchDetailUsageSeenBounds(
     };
   } catch (error) {
     // Server-side, so the monitored path IS a structured error-level log — the
-    // same alerting lane `warnOnRowCeiling` uses for the adjacent
-    // pathological-population signal in `org-population-reads.ts`.
-    log.error("agent_components_detail_seen_bounds_aggregate_failed", {
-      contentScoped: contentScope != null,
-      error: error instanceof Error ? error.message : String(error),
-      kind,
-      laneCount: lanes.length,
+    // same alerting lane `warnOnOversizePopulation` uses for the adjacent
+    // pathological-population signal in `org-population-reads.ts` — bound per
+    // org because any org member can refresh into this failure.
+    reportDetailUsageAggregateFailure(
+      DetailUsageAggregateFailedEvent.SeenBounds,
       organizationId,
-    });
+      {
+        // ISS-10469: what the lanes ACTUALLY narrowed by, not what the caller
+        // passed — a fingerprint route that resolved names drops the content
+        // narrow, and an on-call reader needs to know which shape timed out.
+        contentScoped:
+          usedOnlyUsageIdentityWhere(key, keys, contentScope)
+            .orphanContentScope != null,
+        error: error instanceof Error ? error.message : String(error),
+        kind,
+        laneCount: lanes.length,
+      }
+    );
     return { firstSeenAt: null, lastSeenAt: null };
   }
 }
@@ -369,7 +525,7 @@ export type DetailOrphanUsageLanes = {
 /**
  * Read both lanes for an orphan-only identity as one bounded unit.
  *
- * FEA-4335 (wongk): fold BOTH the orphan lane (usage no LIVE inventory row owns)
+ * FEA-4335 (whitlockk): fold BOTH the orphan lane (usage no LIVE inventory row owns)
  * AND FK-linked usage that carries the requested content version but whose
  * inventory row has since moved (A→B). Orphan rows alone would 404 a family that
  * links to hash A from the FK-linked usage the list routed it from.
@@ -382,21 +538,49 @@ export async function fetchDetailOrphanUsageLanes(
   keys: string[] = [],
   contentScope: UsageContentScope | null = null
 ): Promise<DetailOrphanUsageLanes> {
-  const [orphanLaneUsages, linkedByHashUsages] = await Promise.all([
-    fetchDetailOrphanUsage(db, organizationId, kind, key, keys, contentScope),
-    fetchDetailLinkedUsageByContentScope(
+  const identity = usedOnlyUsageIdentityWhere(key, keys, contentScope);
+  const [orphanLane, liveInventoryUsages] = await Promise.all([
+    fetchDetailOrphanUsageLane(
       db,
       organizationId,
       kind,
-      contentScope
+      key,
+      keys,
+      identity.orphanContentScope
     ),
+    fetchDetailLiveInventoryUsage(db, organizationId, kind, identity.where),
   ]);
   return {
-    rows: [...orphanLaneUsages, ...linkedByHashUsages],
+    rows: [...orphanLane.rows, ...liveInventoryUsages],
     truncated:
-      orphanLaneUsages.length >= MAX_ORG_ORPHAN_USAGE_ROWS ||
-      linkedByHashUsages.length >= MAX_ORG_ORPHAN_USAGE_ROWS,
+      orphanLane.truncated ||
+      liveInventoryUsages.length >= MAX_ORG_ORPHAN_USAGE_ROWS,
   };
+}
+
+/**
+ * ISS-9852: the ORPHAN lane alone, with its own `take` bound reported — the
+ * inventory-present detail reads only this lane (its FK-linked usage arrives
+ * through the inventory-id lanes), so it needs the truncation signal without
+ * the content-scope lane {@link fetchDetailOrphanUsageLanes} adds.
+ */
+export async function fetchDetailOrphanUsageLane(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  organizationId: string,
+  kind: string,
+  key: string,
+  keys: string[] = [],
+  contentScope: UsageContentScope | null = null
+): Promise<DetailOrphanUsageLanes> {
+  const rows = await fetchDetailOrphanUsage(
+    db,
+    organizationId,
+    kind,
+    key,
+    keys,
+    contentScope
+  );
+  return { rows, truncated: rows.length >= MAX_ORG_ORPHAN_USAGE_ROWS };
 }
 
 /**
@@ -427,4 +611,44 @@ export function foldUsageSeenBounds(
     }
   }
   return { firstSeenAt, lastSeenAt };
+}
+
+/**
+ * ISS-9852: the predicates of BOTH orphan-only detail usage lanes, in the order
+ * the row reads issue them. The seen-bounds aggregate and the totals aggregate
+ * (`detail-usage-totals.ts`) both read over `{ OR: lanes }`, so this is the one
+ * place that decides which populations a rowless read over "this identity"
+ * covers. The FK-linked lane is included only when
+ * {@link usedOnlyUsageIdentityWhere} resolved an identity, mirroring
+ * `fetchDetailLiveInventoryUsage`'s fail-closed guard: an arm carrying no
+ * identity of its own would be the org-wide live-FK population for the kind.
+ *
+ * ISS-10469: the two lanes here are the same partition the row reads issue, so
+ * a rowless aggregate over `{ OR: lanes }` sums each row exactly once — the
+ * arms' identity predicates are identical and only their FK-liveness terms
+ * differ, which are complements.
+ */
+export function detailUsageLaneWheres(
+  organizationId: string,
+  kind: string,
+  key: string,
+  keys: readonly string[],
+  contentScope: UsageContentScope | null
+): Prisma.AgentComponentSessionUsageWhereInput[] {
+  const identity = usedOnlyUsageIdentityWhere(key, keys, contentScope);
+  const lanes: Prisma.AgentComponentSessionUsageWhereInput[] = [
+    detailOrphanUsageWhere(
+      organizationId,
+      kind,
+      key,
+      keys,
+      identity.orphanContentScope
+    ),
+  ];
+  if (identity.where) {
+    lanes.push(
+      detailLiveInventoryUsageWhere(organizationId, kind, identity.where)
+    );
+  }
+  return lanes;
 }

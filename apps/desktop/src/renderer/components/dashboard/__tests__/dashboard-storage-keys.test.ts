@@ -3,7 +3,8 @@
  *
  * A present `localStorage` whose `getItem`/`setItem` throws is a real state —
  * Safari private browsing, a blocked or quota-exhausted store — and these flags
- * are read during the render of the landing gate and the first-launch dashboard.
+ * are read during the render of the guided onboarding host and the first-launch
+ * dashboard.
  * An exception there takes the whole renderer down, which is why the guard has
  * to cover the operation and not only the property access.
  */

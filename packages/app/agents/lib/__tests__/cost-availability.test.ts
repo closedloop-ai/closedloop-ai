@@ -95,6 +95,25 @@ describe("deriveCostAvailability", () => {
     ).toBe(CostAvailability.NoUsage);
   });
 
+  it("returns NoTokenUsage, not NoUsage, for an invocation-only session (ISS-5801)", () => {
+    // A slash-command/skill/subagent/hook-only session DID run (it is
+    // substantive), but consumed zero tokens — so its dash must explain "no
+    // token usage recorded to price", never render as an idle row's NoUsage.
+    expect(
+      deriveCostAvailability({
+        estimatedCost: 0,
+        billingMode: null,
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        toolUseCount: 0,
+        componentInvocationCount: 2,
+      })
+    ).toBe(CostAvailability.NoTokenUsage);
+  });
+
   it("treats undefined billingMode as non-subscription", () => {
     expect(
       deriveCostAvailability({
@@ -117,39 +136,41 @@ describe("deriveCostAvailability", () => {
     ).toBe(CostAvailability.Unavailable);
   });
 
-  it.each(
-    SUBSCRIPTION_MODE_CASES
-  )("recognizes subscription mode when the session did work: %s", (mode) => {
-    expect(
-      deriveCostAvailability({
-        estimatedCost: 0,
-        billingMode: mode,
-        inputTokens: 5000,
-        outputTokens: 1000,
-      })
-    ).toBe(CostAvailability.Subscription);
-  });
+  it.each(SUBSCRIPTION_MODE_CASES)(
+    "recognizes subscription mode when the session did work: %s",
+    (mode) => {
+      expect(
+        deriveCostAvailability({
+          estimatedCost: 0,
+          billingMode: mode,
+          inputTokens: 5000,
+          outputTokens: 1000,
+        })
+      ).toBe(CostAvailability.Subscription);
+    }
+  );
 
   // ISS-4418: a zero-usage session (no tokens, no tool uses, no model, cost
   // <= 0) renders `—` for EVERY billing mode. Subscription mode alone must not
   // manufacture `$0.00` for a session that never ran.
-  it.each(
-    SUBSCRIPTION_MODE_CASES
-  )("returns NoUsage for a zero-usage subscription session (%s), not Subscription", (mode) => {
-    expect(
-      deriveCostAvailability({
-        estimatedCost: 0,
-        billingMode: mode,
-        turns: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        toolUseCount: 0,
-        model: null,
-      })
-    ).toBe(CostAvailability.NoUsage);
-  });
+  it.each(SUBSCRIPTION_MODE_CASES)(
+    "returns NoUsage for a zero-usage subscription session (%s), not Subscription",
+    (mode) => {
+      expect(
+        deriveCostAvailability({
+          estimatedCost: 0,
+          billingMode: mode,
+          turns: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          toolUseCount: 0,
+          model: null,
+        })
+      ).toBe(CostAvailability.NoUsage);
+    }
+  );
 
   it("returns Subscription for a subscription session that consumed only cache tokens", () => {
     expect(
@@ -189,7 +210,7 @@ describe("deriveCostAvailability", () => {
     ).toBe(CostAvailability.Subscription);
   });
 
-  // ISS-4418 / wongk + codex: a non-blank `model` is NOT proof of work. The
+  // ISS-4418 / whitlockk + codex: a non-blank `model` is NOT proof of work. The
   // Claude parser persists a `/model`-switch display fallback for a model-
   // switch-only transcript with no assistant turns or token usage, so a
   // zero-turn / zero-token / zero-tool subscription session that carries only a
@@ -278,7 +299,8 @@ describe("deriveCostAvailability", () => {
 
   // Code review: the counters are typed `number` but arrive across a JSON
   // boundary, and the DETAIL path hands `deriveCostAvailability` the raw API
-  // record rather than a `toSafeNumber`-normalized copy the way the list does.
+  // record rather than reading it through `deriveReportedCost` the way the list
+  // does.
   // A producer that omits a counter used to make `inputTokens + outputTokens`
   // evaluate to `NaN`; `NaN === 0` is false, so the session fell through to
   // `Unavailable` and was told its MODEL was unpriced — the exact confusion
@@ -421,4 +443,48 @@ describe("getCostTooltip", () => {
       expect(getCostTooltip(availability)).not.toBeUndefined();
     }
   });
+});
+
+/**
+ * ISS-9431: `deriveReportedCost` settles an unusable counter by deriving once
+ * with it at 0 and once at 1. That covers every value the counter could have
+ * held only while this derivation reads each counter as zero-versus-positive and
+ * nothing finer, so pin exactly that: any positive count answers the same as 1.
+ */
+describe("deriveCostAvailability counter reads (ISS-9431)", () => {
+  const COUNTERS = [
+    "turns",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "toolUseCount",
+    "componentInvocationCount",
+  ] as const;
+  const BASES = [
+    { estimatedCost: 0, billingMode: "api", inputTokens: 0, outputTokens: 0 },
+    { estimatedCost: 0, billingMode: "pro", inputTokens: 0, outputTokens: 0 },
+    { estimatedCost: 4.2, billingMode: "api", inputTokens: 0, outputTokens: 0 },
+    {
+      estimatedCost: 0,
+      billingMode: "api",
+      inputTokens: 0,
+      outputTokens: 0,
+      turns: 1,
+    },
+  ];
+
+  it.each(COUNTERS)(
+    "answers the same for %s at 1 as at any larger count",
+    (counter) => {
+      for (const base of BASES) {
+        const atOne = deriveCostAvailability({ ...base, [counter]: 1 });
+        for (const larger of [2, 999, 1_000_000]) {
+          expect(deriveCostAvailability({ ...base, [counter]: larger })).toBe(
+            atOne
+          );
+        }
+      }
+    }
+  );
 });

@@ -10,7 +10,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import { SessionTrace } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 // The inline trace composer pulls org members for its @-mention picker; stub it
 // so the sub-agent trace under test mounts without a live users query.
@@ -200,7 +201,7 @@ describe("SessionTrace sub-agent collapse", () => {
 
   it("omits the count and renders a static (non-expandable) head when a sub-agent carries no activity lines", () => {
     // The branch merged trace supplies sub-agent items with an empty body; the
-    // block must not render a misleading "(0 events)" label there, and — wongk
+    // block must not render a misleading "(0 events)" label there, and — whitlockk
     // review — must not offer a chevron/disclosure that only opens to "No
     // transcript captured." A body-less row is a static head with no button.
     const { container } = render(
@@ -295,7 +296,7 @@ describe("SessionTrace sub-agent collapse", () => {
 
     const meta = container.querySelector(".st-sub-meta")?.textContent ?? "";
     expect(meta).toBe("1m 30s · $0.20");
-    // wongk review: cost carries its own part class so it can take full
+    // whitlockk review: cost carries its own part class so it can take full
     // `--foreground` contrast (matching the session-level gutter cost) rather
     // than sitting flat-muted; the cost part — and only it — is the `.cost` span.
     const costPart = container.querySelector(".st-sub-meta-part.cost");
@@ -306,7 +307,7 @@ describe("SessionTrace sub-agent collapse", () => {
     expect(durationPart?.textContent).toBe("1m 30s");
   });
 
-  it("titles the cost part to name it as attributed, not metered, so a bare dollar amount does not overpromise (FEA-4178 wongk review)", () => {
+  it("titles the cost part to name it as attributed, not metered, so a bare dollar amount does not overpromise (FEA-4178 whitlockk review)", () => {
     // The sub-agent cost is attributed by timestamp overlap with the main-agent
     // turns, not metered per sub-agent, so the collapsed box names what the
     // figure is on hover — mirroring the gutter cost's `Cumulative: $X` title.

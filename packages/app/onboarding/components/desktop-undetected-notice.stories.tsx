@@ -34,7 +34,8 @@ const meta: Meta<typeof DesktopUndetectedNotice> = {
       </div>
     ),
   ],
-  title: "App Core/Onboarding/Desktop Undetected Notice",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Onboarding/Desktop Undetected Notice",
 };
 
 export default meta;

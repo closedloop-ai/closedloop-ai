@@ -8,13 +8,16 @@
  * Bumping EXTRACTOR_VERSION triggers re-derivation via backfill.
  */
 import { createHash } from "node:crypto";
-// FEA-1684: the ref-classification value sets are canonicalized as
-// const-object enums in @repo/api (the SSOT shared by cloud + desktop).
-// Import the derived value-types here instead of re-declaring the same
-// literal unions inline. Per the repo "Never duplicate types" rule in AGENTS.md.
 import type { ArtifactRefRelation } from "@repo/api/src/types/session-artifact-link";
-import { ArtifactRefMethod } from "@repo/api/src/types/session-artifact-link";
+import {
+  ArtifactRefMethod,
+  parsePullRequestNumber,
+} from "@repo/api/src/types/session-artifact-link";
 import { buildSlugPrefixAlternation } from "@repo/api/src/types/slug-prefix";
+import {
+  collectSessionToolUses,
+  type IndexedToolUse,
+} from "@repo/lib/harness/session-tool-uses";
 import {
   BRANCH_PUSH_METHOD_VALUES,
   BRANCH_WRITE_METHOD_VALUES,
@@ -22,11 +25,44 @@ import {
 import { isValidBranchName } from "../../enrichment/branch-validation.js";
 import type { NormalizedSession, NormalizedToolUse } from "../types.js";
 import {
+  BRANCH_COMMAND_PATTERNS,
+  GH_PR_HEAD_FLAG_RE,
+  GIT_PUSH_CMD_RE,
+  GIT_PUSH_DELETE_RE,
+  GIT_PUSH_OUTPUT_REF_RE,
+  GIT_PUSH_UPSTREAM_OUTPUT_RE,
+} from "./artifact-ref-branch-patterns.js";
+import {
+  GH_PR_CREATE_REGEX,
+  GH_PR_FEEDBACK_WRITE_CMD_RE,
+  GH_PR_REVIEW_CMD_RE,
+} from "./artifact-ref-command-patterns.js";
+import {
+  type BranchWriteEvent,
+  createdPrHeadFromGhOutput,
+  resolveCreatedPrBaseRef,
+  resolveCreatedPrHeadBranch,
+} from "./artifact-ref-created-pr-evidence.js";
+import { EXTRACTOR_VERSION } from "./artifact-ref-extractor-version.js";
+import {
+  CLOSEDLOOP_SLUG_RE,
+  extractMcpToolInputSlugs,
+  extractMcpToolOutputSlugs,
+  isClosedloopMcpTool,
+} from "./artifact-ref-mcp-slugs.js";
+import {
   resolveRefObservedAt,
   resolveSessionObservedAt,
 } from "./artifact-ref-observed-at.js";
 import { extractProseMentionRefs } from "./artifact-ref-prose-refs.js";
 import type { ArtifactRefRecord } from "./artifact-ref-record.js";
+import {
+  matchOutsideQuotes,
+  type QuotedSpan,
+  shellQuotedSpans,
+  stripNeutralizedContent,
+  stripQuotedContent,
+} from "./artifact-ref-shell-quotes.js";
 import {
   attachMonitoredSessionActivity,
   MonitoredSessionCliRefMethod,
@@ -36,191 +72,11 @@ import {
   FIXTURE_OWNER_RE,
   flattenTextValues,
   GITHUB_PR_URL_RE,
+  isShellCommandToolUse,
   PR_TOOL_PATTERNS,
-  SHELL_TOOL_NAMES,
   shellCommand,
-  shellCommandArgv,
 } from "./parser-utils.js";
-import {
-  collectSessionToolUses,
-  type IndexedToolUse,
-} from "./session-tool-uses.js";
 
-// PRD-486: bumped 2 → 3 for the new GIT_COMMIT_SUBJECT_RE regex and the commit
-// `message`/`committedAt` fields. The bump makes the backfill re-derive already-
-// imported sessions, so their pre-existing commit artifacts get committed_at/title
-// filled (otherwise they stay NULL and never render a rail dot). Per AGENTS.md
-// §Idempotent Re-Processing, EXTRACTOR_VERSION must bump when a new regex is added.
-// Bumped 3 → 4: 'created' PR refs now carry the head branch active at `gh pr
-// create` time (NormalizedToolUse.gitBranch), so the backfill re-derives links
-// and PR head-ref attribution for already-imported sessions.
-// Bumped 4 → 5: multi-harness shell-tool detection — shellCommand() now
-// normalizes array-shaped commands (e.g. Codex's ["git","push",...]) so the
-// branch/commit/PR regexes run on harnesses that don't pass a bare string. The
-// bump re-derives already-imported sessions whose array-shaped git calls were
-// previously dropped.
-// Bumped 5 → 6: created-PR heads historically rejected conventional default
-// names from the unreliable tool gitBranch fallback. ISS-5828 removes the name
-// heuristic while retaining the stronger rule that CWD context is never a head.
-// Bumped 6 → 7 (FEA-2531): branch refs now split by evidence — write methods
-// (git_push/gh_pr_create/git_commit) emit `relation: "created"`, read methods
-// (git_checkout/git_worktree_add) and the session start branch stay `workspace`;
-// a failed push (tu.isError) emits no branch ref — see the 9 → 10 bump below,
-// which extends this from git_push to every push method; branch refs stamp their
-// own event time (tu.timestamp) instead of scan time; the start-branch ref's
-// method is renamed to "start_branch". The bump re-derives already-imported
-// sessions so their branch links carry the new relation/method/time.
-// Bumped 7 → 8 (FEA-2531 hardening): (a) shell-quote-aware git detection —
-// the branch/commit/push regexes no longer match git text embedded inside
-// ANOTHER command's quoted argument (rg patterns, inline `-e` scripts), the
-// source of phantom pushed branches like `feat/x','git`; (b) tightened
-// isValidBranchName rejects quote/comma/shell-metacharacter debris;
-// (c) created-PR head refs resolve from the session's own write evidence
-// (gh pr create output/--head flag, else the nearest preceding branch write)
-// BEFORE falling back to per-line tu.gitBranch, which is CWD-derived and
-// wrong for every worktree session. The bump re-derives history: poisoned
-// branch links drop on delete-then-reinsert, and worktree-created PRs heal
-// their pull_requests.branch_name via the import-authoritative upsert.
-// Bumped 8 → 9: v8 resolved created-PR head branches during backfill but the
-// backfill persists only link rows + push markers — the resolved head ref
-// never reached pull_requests.branch_name for already-imported sessions, so
-// historical worktree PRs stayed unlinked on the Branches page.
-// persistArtifactLinks now fill-only writes the re-derived head branch to the
-// created session's pull_requests row; the bump re-runs the backfill so the
-// fill lands everywhere.
-// Bumped 9 → 10 (FEA-2789): the FEA-2531 failed-push gate now covers every push
-// method, not just git_push — a failed `gh pr create` (tu.isError) mints no
-// branch ref and is no created-PR head evidence, exactly as a failed `git push`.
-// The bump re-derives already-imported sessions so phantom "created"/pushed
-// branches minted by past failed `gh pr create` calls drop on the backfill's
-// delete-and-rederive (and their first_pushed_at push markers clear with them).
-// Bumped 10 → 11 (FEA-2791): the FEA-2531 shell-quote-aware git detection now
-// covers argv-shaped commands too — a bundled non-first argv element with
-// internal whitespace (Codex's `["rg", "git push origin feat/x"]`) is treated as
-// a quoted argument, so command text inside one arg no longer matches the push
-// (or unanchored commit) regex and mints a phantom `feat/x` branch or phantom
-// commit refs from echoed SHAs. The bump re-derives already-imported sessions so
-// such phantom branch/commit links (and push markers) drop on the backfill's
-// delete-and-rederive.
-// Bumped 11 → 12: commit refs now carry the branch they landed on, parsed from
-// the `[<branch> <sha>]` git-commit summary line with the SAME regex +
-// isValidBranchName gate as the branch-detection pass (the branch was previously
-// captured only for the branch ref and discarded for the commit ref). The cloud
-// commit contract requires a branch and the desktop sync payload drops a
-// branchless commit ref, so every desktop commit was silently dropped before
-// reaching CommitDetail. The bump re-derives already-imported sessions so their
-// commit artifacts get branch_name filled and finally sync.
-// Bumped 12 → 13: the commit-subject parse now requires the short-sha inside the
-// summary-line bracket, so it stops grabbing husky/lint-staged status lines
-// (`[STARTED] …`, `[COMPLETED] …`) as the commit message. The bump re-derives
-// already-imported sessions so their commit artifacts get the real subject.
-// Bumped 13 → 14: commit refs are now minted ONLY for the sha in a `[<branch>
-// <sha>] <subject>` summary line (GIT_COMMIT_SUMMARY_RE), not for every hex token
-// in the output, and branch + sha + subject are read PER summary line from the
-// same match (GIT_COMMIT_SUMMARY_RE, matchAll) rather than once for the whole
-// output. The v11 branch attachment made both prior behaviours unsafe: (a) a
-// noise sha (a husky/lint-staged stash-backup sha, a tree/object hash)
-// co-occurring with a real summary line inherited that commit's branch, cleared
-// the sync gate, and upserted a phantom CommitDetail that never reconciles with a
-// push webhook; (b) a second commit in the same output (two `git commit` runs, a
-// rebase/cherry-pick echo) was mislabeled with the FIRST line's branch, joining
-// it to the wrong branch row. The bump re-derives already-imported sessions so
-// those spurious/branchless/mislabeled commit artifacts heal on the backfill's
-// delete-and-rederive (this also clears the ~pre-existing local over-mint noise).
-// Bumped 15 → 16 (FEA-3585): PR-review sessions now mint a `reviewed`-relation
-// PR ref for the PR named on a `gh pr view/diff/review/checkout/comment <n>`
-// command — a bare-number positional (previously producing NO ref, so a merely-
-// mentioned PR URL was linked instead) or a URL positional (previously mislabeled
-// `referenced`). The bump re-derives already-imported sessions so historical
-// review sessions drop the wrong `referenced` link and gain the correct
-// `reviewed` one on the backfill's delete-and-rederive.
-// Bumped 16 → 17 (FEA-3627): the PR / commit / branch passes (and the created-PR
-// head-branch write-evidence collector) now ALSO scan sidecar sub-agent tool
-// uses (`session.subagents[].toolUses`), attributing a Task-spawned sub-agent's
-// `gh pr create` / `git commit` / `git push` to the PARENT session — previously
-// those tool uses were merged only into `subagent.toolUses`, never
-// `session.toolUses`, so sub-agent-authored PRs, commits, and branches (and the
-// LOC that follows from their commit/branch refs) were silently dropped from the
-// parent's landed code. In-line sidechain tool uses are deduped by tool-use id
-// so they are not double-counted. The bump re-derives already-imported
-// orchestrator/night-crew sessions so their sub-agent PR/branch/commit links —
-// and the LOC git enrichment derives from them — finally attach to the parent.
-// Bumped 17 → 18 (FEA-3420): `session.subagents[]` now also includes Claude
-// WORKFLOW agents nested under subagents/workflows/<id>/agent-*.jsonl, which the
-// parser's previously one-level discovery never folded in. Because
-// `collectSessionToolUses` scans `session.subagents[].toolUses`, a nested
-// workflow sub-agent's `gh pr create` / `git commit` / `git push` now attributes
-// to the parent too (deduped by tool-use id, same no-double-count guard). The
-// bump re-derives already-imported sessions so their nested-workflow PR/branch/
-// commit links attach to the parent on the backfill's delete-and-rederive.
-// Bumped 18 → 19 (FEA-3635): a CREATED pull_request ref now stamps its
-// `observedAt` from the create tool-use event time (tu.timestamp) instead of the
-// scan/import `now` — mirroring the branch and commit passes. This anchors the
-// "PR #N opened" timeline dot to the transcript turn where the PR was opened
-// (the pre-enrichment fallback in session-artifact-markers, below the
-// authoritative pull_requests.opened_at), instead of bunching every PR marker at
-// the synthetic per-import scan time. `referenced` PR mentions keep scan-time
-// observedAt (they mint no marker), so a later re-mention can't move the open
-// dot. The bump re-derives already-imported sessions so their created-PR links
-// gain the transcript-anchored observed_at on the delete-and-rederive backfill.
-// FEA-3803 adds optional lifecycle sync metadata without backfilling historical
-// layer2 stores, so the extractor version stays at 19.
-// Bumped 19 → 20 (FEA-3851): a reviewed PR's method is now computed PER
-// SUB-COMMAND SEGMENT of a bundled command (`gh pr view <A> && gh pr review
-// <B>`) instead of from the whole command string. A merely-VIEWED PR no longer
-// inherits a sibling `gh pr review`'s `pr_review_feedback_command` method (the
-// over-attribution that minted a wrong cloud `ReviewFeedback` boundary), and a
-// failing unrelated sibling sub-command no longer demotes a genuine feedback
-// write (the mirror under-count). The bump re-derives already-imported sessions
-// so their reviewed-PR link methods are corrected on the backfill's
-// delete-and-rederive.
-// Bumped 20 → 21 (FEA-3851 review fixes): (1) the sub-command splitter no
-// longer treats a redirection `&` (`2>&1`, `>&2`, `&>file`) or an escaped `\&`
-// as a control operator, so a lone failed `gh pr review 42 --approve 2>&1` stays
-// ONE segment and is correctly demoted to read-only instead of splitting into
-// two and dodging the isError demotion. (2) A feedback write under a
-// whole-command error is promoted only when a later segment is chained AFTER it
-// with `&&` (proving it exited 0 before the failing suffix), replacing the
-// weaker `segments.length > 1` check that promoted a failing `A && gh pr review B`
-// even though B never ran or itself failed. The bump re-derives already-imported
-// sessions so their reviewed-PR link methods are corrected on the backfill's
-// delete-and-rederive.
-//
-// Bumped 21 → 22 (FEA-4137): the artifact formerly called "Feature" is now
-// "Issue". The slug regex accepts the canonical `ISS-` prefix and the URL regex
-// accepts the canonical `/issues/` route path, alongside the retained `FEA-` /
-// `/features/` compat aliases (both resolve to the same numeric identity). The
-// bump re-derives already-imported sessions so any ISS-###/`/issues/` refs they
-// contain are picked up on the backfill's delete-and-rederive.
-//
-// Bumped 22 → 23 (ISS-5236): `observed_at` is no longer the import wall clock —
-// every ref carries its own transcript event instant where it has one, else the
-// session's `startedAt` (see artifact-ref-observed-at.ts).
-//
-// This bump alone is NOT all-corpus convergence, and must not be read as it. It
-// drives `artifact-link-backfill.ts`, which enumerates transcript FILES: that
-// reaches only the three file-per-session harnesses that file lists, and it
-// deliberately preserves `launch_metadata` links. The `DATA_REVISION` 68 → 69
-// bump landed alongside is the harness-generic path that does converge the
-// corpus, and its changelog entry (`engine/data-revision.ts`) carries the full
-// reasoning for both.
-//
-// Bumped 23 → 24 (ISS-5764 + ISS-5763): a new `prose_mention` pass mints
-// `referenced` PR and branch refs for names that appear in PROSE adjacent to PR
-// / branch vocabulary, with no `gh`/`git` command behind them. Every previous
-// PR and branch recognizer in this file is command-anchored, so a session that
-// merely WROTE `#4710`, or laid its work out in a markdown table with a `PR`
-// column, produced no ref at all — the overwhelmingly common shape for an
-// orchestrator session and for a sub-agent's final report. The pass reads the
-// session's own messages, non-shell tool INPUT across the parent AND every
-// sidecar sub-agent (`collectSessionToolUses`, deduped by `tool_use.id`), and
-// delegation-tool OUTPUT (the only path by which a sub-agent's authored prose
-// reaches the parent). The bump re-derives already-imported sessions so their
-// prose-only PR/branch links appear on the backfill's delete-and-rederive.
-//
-// Bumped 24 → 25 (ISS-6060): exact user and agent Branch/PR activity now rides
-// bounded link evidence; DATA_REVISION 76 provides all-harness convergence.
-export const EXTRACTOR_VERSION = 25;
 export const LAUNCH_METADATA_REF_METHOD = "launch_metadata";
 
 // --- Per-harness capability gaps (documented per AC-13) ---
@@ -258,10 +114,6 @@ export const HARNESS_CAPABILITIES = {
 // this file — plus the cloud sync-schema validator and the branch-name parser —
 // stays in lockstep and a future prefix never has to be added in six places.
 const SLUG_PREFIX_ALT = buildSlugPrefixAlternation();
-const CLOSEDLOOP_SLUG_RE = new RegExp(
-  String.raw`\b(${SLUG_PREFIX_ALT})-(\d+)\b`,
-  "g"
-);
 
 // The `[a-zA-Z0-9_-]+` org-slug segment is matched but intentionally
 // discarded: slugs are resolved to artifacts scoped to the importing org
@@ -270,80 +122,21 @@ const CLOSEDLOOP_SLUG_RE = new RegExp(
 // alias path (legacy links keep resolving via a 302 redirect), so both are
 // accepted here alongside the ISS/FEA slug prefixes.
 const CLOSEDLOOP_URL_RE = new RegExp(
-  String.raw`https://app\.closedloop\.ai/[a-zA-Z0-9_-]+/(?:issues|features|plans|implementation-plans|prds|projects)/((${SLUG_PREFIX_ALT})-\d+)`,
+  String.raw`https://app\.closedloop\.ai/[a-zA-Z0-9_-]+/(?:documents|issues|features|plans|implementation-plans|prds|projects)/((${SLUG_PREFIX_ALT})-\d+)`,
   "g"
 );
 
-// Exported as the single `gh pr create` PATTERN (FEA-2270 shares the constant so
-// the spelling can't drift). NOTE the two modules apply it differently on
-// purpose: the extractor tests it AFTER stripQuotedContent to avoid minting
-// phantom BRANCHES from quoted mentions (a false-negative there is safe — no
-// branch); the rework detector tests it on the RAW command because
-// stripQuotedContent blanks a real trailing `gh pr create` whenever the command's
-// PR body has an unbalanced quote (e.g. an apostrophe in the body), which would
-// drop a genuine review-phase entry. The command-position anchor below already
-// rejects the common `echo "… gh pr create …"` mention (the mention is space-
-// preceded, not line-/`;&|(`-anchored), so the raw test stays high-precision.
-export const GH_PR_CREATE_REGEX =
-  /(?:^|[;&|(\n\t])\s*(?:\S+=\S+\s+)*gh\s+pr\s+create(?:$|[\s'"])/;
-
 const GIT_COMMIT_CMD_RE = /git\s+commit/;
 
-// FEA-3585: `gh pr` REVIEW subcommands that operate on a SPECIFIC PR the session
-// is reviewing (vs `create`, which authors one). The command-position anchor
-// (line/`;&|(` start, optional env assignments) mirrors GH_PR_CREATE_REGEX so an
-// `echo "gh pr view 5"` mention does not classify as a review. `merge` is
-// intentionally excluded — merging is a landing action on your own PR, not a
-// review of someone else's. The reviewed PR's identity (a bare number or a
-// github.com URL) is resolved separately from the command tail after this gate,
-// so flags between the subcommand and the positional don't need matching here.
-const GH_PR_REVIEW_CMD_RE =
-  /(?:^|[;&|(\n\t])\s*(?:\S+=\S+\s+)*gh\s+pr\s+(?:view|diff|review|checkout|comment)\b/;
-const GH_PR_FEEDBACK_WRITE_CMD_RE =
-  /(?:^|[;&|(\n\t])\s*(?:\S+=\S+\s+)*gh\s+pr\s+(?:review|comment)\b/;
 // The reviewed PR number as a bare positional token: `gh pr view 2990` /
 // `gh pr diff #2990`. Excludes flag tokens (leading `-`) via the caller's scan.
 const GH_PR_REVIEW_NUMBER_ARG_RE =
-  /gh\s+pr\s+(?:view|diff|review|checkout|comment)\b((?:\s+(?:-{1,2}\S+))*)\s+#?(\d+)\b/;
+  /gh\s+pr\s+(?:view|diff|review|checkout|comment)\b((?:\s+(?:-{1,2}\S+))*)\s+#?(\d+)(?=$|[\s;&|)])/;
 
 // FEA-3585 review fix: a valid `owner/repo` slug (mirrors db-helpers'
 // GITHUB_REPO_FULL_NAME_RE). Guards the bare-number reviewed-PR path from
 // borrowing a repo-less cwd basename as a PR identity.
 const OWNER_REPO_SLUG_RE = /^[\w.-]+\/[\w.-]+$/;
-
-// Git commands that reveal the working branch (session.gitBranch is stale —
-// set once at session start and never updated when the user creates worktrees,
-// checks out branches, or pushes to different remotes mid-session).
-const GIT_WORKTREE_ADD_RE =
-  /git\s+worktree\s+add\s+(?:"[^"]+"|'[^']+'|\S+)\s+(?:-b\s+)?(?:"([^"]+)"|'([^']+)'|(\S+))/;
-const GIT_CHECKOUT_RE =
-  /git\s+(?:checkout|switch)\s+(?:-[bBc]\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/;
-const GIT_PUSH_BRANCH_RE =
-  /git\s+push\s+(?:(?:-[a-zA-Z]+|--[\w-]+(?:=\S+)?)\s+)*(?:origin|upstream)\s+(?:"([^"]+)"|'([^']+)'|([^\s:;&|]+))/;
-const GIT_PUSH_CMD_RE = /git\s+push\b/;
-// Branch deletion pushes nothing to attribute — never push evidence.
-const GIT_PUSH_DELETE_RE = /\s(?:-d|--delete)\b/;
-// Success output names the remote ref: "abc123..def456  feat/x -> feat/x",
-// "* [new branch]  feat/x -> feat/x", or with -u "branch 'feat/x' set up to
-// track ...". Resolves HEAD/long-flag pushes the command regex can't name.
-const GIT_PUSH_OUTPUT_REF_RE =
-  /^\s*[+*!=]?\s*(?:\[[^\]]+\]|\S+\.{2,3}\S+)\s+(\S+)\s+->\s+(\S+)/m;
-const GIT_PUSH_UPSTREAM_OUTPUT_RE =
-  /branch\s+'([^']+)'\s+set\s+up\s+to\s+track/;
-const GH_PR_CREATE_BRANCH_RE = /gh\s+pr\s+create/;
-// gh pr create success output (stderr): "Creating pull request for feat/x
-// into main in owner/repo" — the head ref straight from gh itself, the
-// strongest created-PR head-branch evidence (FEA-2531).
-const GH_PR_CREATE_HEAD_OUTPUT_RE = /Creating pull request for (\S+) into \S+/;
-// gh pr create --head/-H flag names the head branch in the command itself.
-const GH_PR_HEAD_FLAG_RE =
-  /(?:^|\s)(?:--head|-H)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/g;
-// Global clones of the branch-command patterns for position-checked scanning:
-// a non-global .match() only ever sees the FIRST occurrence, which may sit
-// inside a quoted argument while a real git command follows later.
-const GIT_WORKTREE_ADD_ALL_RE = new RegExp(GIT_WORKTREE_ADD_RE.source, "g");
-const GIT_CHECKOUT_ALL_RE = new RegExp(GIT_CHECKOUT_RE.source, "g");
-const GIT_PUSH_BRANCH_ALL_RE = new RegExp(GIT_PUSH_BRANCH_RE.source, "g");
 
 const FENCE_OPEN_RE = /^(`{3,})/;
 const INLINE_CODE_RE = /`[^`]+`/g;
@@ -367,12 +160,26 @@ const CLOSEDLOOP_SLUG_BRANCH_RE = new RegExp(
 const TRAILING_SLASHES_RE = /\/+$/;
 const GH_PR_BRANCH_OUTPUT_RE = /branch\s+'([^']+)'/;
 // The branch-detection pass (Section 7) keys on this: the first bracket token
-// when a hex sha follows it — i.e. the `[<branch> <sha>]` shape only. It
-// deliberately does NOT match `[detached HEAD <sha>]` or `[<branch> (root-commit)
-// <sha>]` (sha not adjacent to the first token). The commit pass mints its branch
-// from the SAME shape (GIT_COMMIT_SUMMARY_RE alt A) so a commit resolves onto the
-// branch row this pass emits.
-const GIT_COMMIT_BRANCH_RE = /^\[([^\s\]]+)\s+[0-9a-f]/m;
+// when a full sha and the closing bracket follow it — i.e. the `[<branch> <sha>]`
+// shape only. It deliberately does NOT match `[detached HEAD <sha>]` or
+// `[<branch> (root-commit) <sha>]` (sha not adjacent to the first token).
+//
+// ISS-8751: the sha run and the `]` are both load-bearing. This pattern used to
+// require a SINGLE hex character and no closing bracket, which made any bracketed
+// log line whose second word merely STARTS with 0-9a-f a commit summary — so
+// `[lc diagnostics: errors=0, …]` in the output of a tool call that also ran a
+// `git commit` minted a phantom branch named `lc` with a write link, which then
+// reached the Branches surface and drew token attribution. Across the golden
+// corpus the old shape captured 53 distinct tokens (`Errno` from a Python
+// traceback, `List` and `Some` from prompt templates, …) against this shape's 4,
+// all of them real branches.
+//
+// Deliberately ONE notch looser than GIT_COMMIT_SUMMARY_RE alt A, which also
+// requires a non-empty subject after the `]`: this pass must never be NARROWER
+// than the commit pass, or a commit could mint with no branch row for it to
+// resolve onto. Looser in that one direction is safe; the two agree on every
+// line in the corpus.
+const GIT_COMMIT_BRANCH_RE = /^\[([^\s\]]+)\s+[0-9a-f]{7,40}\]/m;
 // One match per `git commit` summary line — `[<ref> <sha>] <subject>` — the
 // authoritative "a commit happened" record, parsed in a single pass so branch,
 // sha, and subject come from the SAME line (a multi-commit output must label each
@@ -425,185 +232,6 @@ export function stripCodeFences(text: string): string {
   return result.join("\n");
 }
 
-// --- Shell-quote awareness (FEA-2531 hardening) ---
-//
-// The branch/commit/push regexes historically matched git-command text
-// ANYWHERE in a shell command — including inside a quoted argument of a
-// DIFFERENT command (`rg "…git push origin feat|…"`, `tsx -e "…'git push
-// origin feat/x','git…'"`). Those matches minted phantom branches with real
-// push evidence. Captures are now position-checked against the command's
-// quoted spans; boolean command-shape gates run against a quote-stripped
-// copy. Command-boundary anchoring was rejected instead: wrappers like
-// `rtk git push …` (a Bash-hook rewrite present in real transcripts) sit
-// before the git token, so an anchor would drop genuine evidence.
-
-type QuotedSpan = { start: number; end: number };
-
-/**
- * Spans of `cmd` inside single-/double-quoted shell strings, inclusive of the
- * quote marks; `end` is exclusive. Two-state scanner: backslash escapes are
- * honored outside quotes and inside double quotes (POSIX-ish); single-quoted
- * content is literal until the closing quote. An unterminated quote extends
- * to end-of-string (conservative: everything after it is treated as quoted).
- */
-function findQuotedSpans(cmd: string): QuotedSpan[] {
-  const spans: QuotedSpan[] = [];
-  let i = 0;
-  while (i < cmd.length) {
-    const ch = cmd[i];
-    if (ch === "\\") {
-      i += 2;
-      continue;
-    }
-    if (ch !== "'" && ch !== '"') {
-      i += 1;
-      continue;
-    }
-    const start = i;
-    i += 1;
-    while (i < cmd.length && cmd[i] !== ch) {
-      i += ch === '"' && cmd[i] === "\\" ? 2 : 1;
-    }
-    i = i < cmd.length ? i + 1 : cmd.length;
-    spans.push({ start, end: i });
-  }
-  return spans;
-}
-
-function isInsideQuotedSpan(spans: QuotedSpan[], index: number): boolean {
-  return spans.some((s) => index >= s.start && index < s.end);
-}
-
-/**
- * `cmd` with quoted-span CONTENT blanked to spaces (quote marks kept, length
- * preserved) so command-shape gates like GIT_PUSH_CMD_RE cannot fire on text
- * embedded inside another command's argument.
- */
-function stripQuotedContent(cmd: string, spans: QuotedSpan[]): string {
-  if (spans.length === 0) {
-    return cmd;
-  }
-  const chars = cmd.split("");
-  for (const span of spans) {
-    const hasClosingQuote =
-      span.end - span.start >= 2 && cmd[span.end - 1] === cmd[span.start];
-    const contentEnd = hasClosingQuote ? span.end - 1 : span.end;
-    for (let j = span.start + 1; j < contentEnd; j++) {
-      chars[j] = " ";
-    }
-  }
-  return chars.join("");
-}
-
-/**
- * Quoted spans for a shell tool use: real shell quotes (findQuotedSpans) PLUS,
- * for argv-shaped input (Codex `exec_command`), each non-first argv element that
- * itself contains whitespace. `shellCommand`'s `join(" ")` erases argument
- * boundaries, so a bundled element like `"git push origin feat/x"` in
- * `["rg", "git push origin feat/x"]` reads as bare command structure and would
- * mint a phantom `feat/x` branch — the exact case the string form
- * (`rg "git push origin feat/x"`) rejects because the argument is quoted. Marking
- * such an element quoted neutralizes it identically. A spaceless element
- * (`["git","push","origin","feat/x"]`) is a plain token and stays visible, so
- * genuine argv git pushes are still detected (FEA-2791). The span begins at the
- * join separator preceding the element so `stripQuotedContent` — which preserves
- * a span's boundary chars as if they were quote marks — blanks the whole element.
- */
-function shellQuotedSpans(tu: NormalizedToolUse, cmd: string): QuotedSpan[] {
-  const spans = findQuotedSpans(cmd);
-  const argv = shellCommandArgv(tu);
-  if (!argv) {
-    return spans;
-  }
-  let offset = 0;
-  for (let k = 0; k < argv.length; k++) {
-    const element = argv[k];
-    if (k > 0 && ARGV_WHITESPACE_RE.test(element)) {
-      spans.push({ start: offset - 1, end: offset + element.length });
-    }
-    offset += element.length + 1; // element + the join separator
-  }
-  return spans;
-}
-
-/** Whitespace inside a single argv element — its presence marks a bundled arg. */
-const ARGV_WHITESPACE_RE = /\s/;
-
-/** First match of global `re` whose match START sits outside every quoted span. */
-function matchOutsideQuotes(
-  cmd: string,
-  re: RegExp,
-  spans: QuotedSpan[]
-): RegExpMatchArray | null {
-  for (const m of cmd.matchAll(re)) {
-    if (m.index !== undefined && !isInsideQuotedSpan(spans, m.index)) {
-      return m;
-    }
-  }
-  return null;
-}
-
-// --- Closedloop MCP tool detection ---
-
-/**
- * True when a tool call targets the ClosedLoop MCP server. Checks BOTH
- * conventions: the Claude-style `mcp__closedloop__` name prefix AND Codex's
- * separate `mcpServer === "closedloop"` field (Codex tool names carry no `mcp__`
- * prefix). The SSOT for this discrimination — a bare name-prefix check silently
- * misses every Codex ClosedLoop call.
- */
-export function isClosedloopMcpTool(tu: NormalizedToolUse): boolean {
-  return (
-    tu.name.startsWith("mcp__closedloop__") || tu.mcpServer === "closedloop"
-  );
-}
-
-function extractMcpToolInputSlugs(input: unknown): string[] {
-  if (!input || typeof input !== "object") {
-    return [];
-  }
-  const obj = input as Record<string, unknown>;
-  const slugs: string[] = [];
-  for (const key of [
-    "documentId",
-    "slug",
-    "projectId",
-    "loopId",
-    "artifactId",
-    "sourceId",
-    "targetId",
-  ]) {
-    const val = obj[key];
-    if (typeof val === "string") {
-      const m = val.match(CLOSEDLOOP_SLUG_RE);
-      CLOSEDLOOP_SLUG_RE.lastIndex = 0;
-      if (m) {
-        slugs.push(m[0]);
-      }
-    }
-  }
-  return slugs;
-}
-
-function extractMcpToolOutputSlugs(output: unknown): string[] {
-  if (!output) {
-    return [];
-  }
-  const texts = flattenTextValues(output);
-  const slugs: string[] = [];
-  const seen = new Set<string>();
-  for (const text of texts) {
-    for (const m of text.matchAll(CLOSEDLOOP_SLUG_RE)) {
-      const slug = m[0];
-      if (!seen.has(slug)) {
-        seen.add(slug);
-        slugs.push(slug);
-      }
-    }
-  }
-  return slugs;
-}
-
 // --- PR extraction helpers ---
 
 function extractPrUrlsFromTexts(
@@ -619,6 +247,10 @@ function extractPrUrlsFromTexts(
       if (!(owner && repo && num) || FIXTURE_OWNER_RE.test(owner)) {
         continue;
       }
+      const number = parsePullRequestNumber(num);
+      if (number === null) {
+        continue;
+      }
       const url = `https://github.com/${owner}/${repo}/pull/${num}`;
       if (seen.has(url)) {
         continue;
@@ -627,7 +259,7 @@ function extractPrUrlsFromTexts(
       refs.push({
         url,
         repo: `${owner}/${repo}`,
-        number: Number.parseInt(num, 10),
+        number,
       });
     }
   }
@@ -637,23 +269,21 @@ function extractPrUrlsFromTexts(
 // Shared shell/git-command guard used by the commit and branch passes: returns
 // the normalized command string for a shell-family tool use (possibly empty),
 // or null for non-shell tools. Callers skip a tool use when this is null.
-// Exported so FEA-2270's rework detector gates `gh pr create` on the SAME
-// shell-tool set as the extractor (SSOT) — a non-shell/MCP tool that merely
-// carries the string in an argument is not a shell command and must not count.
+// A non-shell tool that merely carries a command string in an argument is not a
+// shell command and must not count.
+// ISS-8268: the predicate is structural, so shell-through-MCP tools (an MCP
+// tool with an explicit `command`/`cmd` input field) qualify alongside the
+// builtin Bash/shell/exec_command set.
 export function shellCommandIfShellTool(tu: NormalizedToolUse): string | null {
-  return SHELL_TOOL_NAMES.has(tu.name) ? shellCommand(tu) : null;
+  return isShellCommandToolUse(tu) ? shellCommand(tu) : null;
 }
 
-// Exported as the single PR-create predicate (FEA-2270 reuses it so the rework
-// detector cannot re-derive a weaker, drift-prone `gh pr create` regex).
 export function isPrCreateCommand(tu: NormalizedToolUse): boolean {
-  if (SHELL_TOOL_NAMES.has(tu.name)) {
+  if (isShellCommandToolUse(tu)) {
     // Quote-stripped so `echo "… gh pr create …"` and friends don't classify
     // a merely-quoted mention as the create command (FEA-2531 hardening).
     const cmd = shellCommand(tu);
-    return GH_PR_CREATE_REGEX.test(
-      stripQuotedContent(cmd, findQuotedSpans(cmd))
-    );
+    return GH_PR_CREATE_REGEX.test(stripNeutralizedContent(cmd));
   }
   return PR_TOOL_PATTERNS.has(tu.name);
 }
@@ -861,15 +491,6 @@ function extractBareSlugRefs(
 
 // --- 4. PR refs with created-vs-referenced distinction ---
 
-// FEA-3627: `agentId` propagates the per-sub-agent boundary from the indexed
-// tool use so the head resolver can restrict its preceding-write walk to the
-// same block that raised the PR.
-type BranchWriteEvent = {
-  toolIndex: number;
-  branch: string;
-  agentId: string | null;
-};
-
 // Branch WRITE evidence per tool use — the same quote-aware detections the
 // branch pass (7) stores as links, reused so a created PR's head ref resolves
 // from the session's own write relationships (FEA-2531) instead of the
@@ -909,56 +530,17 @@ function collectBranchWriteEvents(
   return events;
 }
 
-// A CREATED PR's head ref resolves evidence-first (FEA-2531 — the
-// relationship model, never the stale CWD branch when better exists):
-//   1. write evidence AT the create tool-use itself — gh's own "Creating
-//      pull request for <head> into <base>" output line, the --head flag,
-//      or a push chained in the same command;
-//   2. the nearest PRECEDING branch write in this session (the branch was
-//      pushed moments before the PR was raised), gated to the PR's own repo
-//      AND to the SAME sub-agent block that raised the PR (FEA-3627) — a write
-//      from a different sub-agent (or the parent) is never borrowed, since
-//      `collectSessionToolUses` appends each sidecar agent's tool uses
-//      contiguously and a cross-block walk would attribute B's PR to A's branch;
-function resolveCreatedPrHeadBranch(
-  toolIndex: number,
-  createAgentId: string | null,
-  prRepo: string,
-  sessionRepo: string | null,
-  writeEvents: BranchWriteEvent[]
-): { branch: string; via: string } | null {
-  const sameTool = writeEvents
-    .filter((e) => e.toolIndex === toolIndex)
-    .at(-1)?.branch;
-  if (sameTool) {
-    return { branch: sameTool, via: "create_tool_evidence" };
-  }
-  const repoMatches = sessionRepo === null || prRepo === sessionRepo;
-  // FEA-3627: fence the preceding-write walk to the create tool-use's own
-  // sub-agent block. Without this, the nearest preceding write can cross a
-  // sub-agent boundary and borrow another agent's branch.
-  const preceding = repoMatches
-    ? writeEvents
-        .filter((e) => e.toolIndex < toolIndex && e.agentId === createAgentId)
-        .at(-1)?.branch
-    : undefined;
-  if (preceding) {
-    return { branch: preceding, via: "preceding_write" };
-  }
-  return null;
-}
-
 // FEA-3585: does this tool-use RUN a `gh pr` review subcommand (view/diff/
 // review/checkout/comment) against a specific PR? Tested on the quote-stripped
 // command so an `echo "gh pr view 5"` mention (the string sits inside a quoted
 // argument) does not classify as a review — the SAME hardening isPrCreateCommand
 // applies. Non-shell tools never run a review command.
 function isPrReviewCommand(tu: NormalizedToolUse): string | null {
-  if (!SHELL_TOOL_NAMES.has(tu.name)) {
+  if (!isShellCommandToolUse(tu)) {
     return null;
   }
   const cmd = shellCommand(tu);
-  const stripped = stripQuotedContent(cmd, findQuotedSpans(cmd));
+  const stripped = stripNeutralizedContent(cmd);
   return GH_PR_REVIEW_CMD_RE.test(stripped) ? cmd : null;
 }
 
@@ -973,7 +555,7 @@ function detectReviewedPrNumber(
 ): { repo: string; number: number } | null {
   // FEA-3585 review fix: a bare-number review (`gh pr view 2990`) borrows the
   // session repo for its identity, but session.artifacts.repo can be a bare cwd
-  // BASENAME (extractRepoFromCwd → path.basename(cwd), e.g. "symphony-alpha"
+  // BASENAME (extractRepoFromCwd → path.basename(cwd), e.g. "closedloop-ai"
   // with no owner). Synthesizing `basename#N` mints a repo-less/ambiguous PR
   // artifact that can never reconcile to a real GitHub PR. Require a full
   // owner/repo slug; skip the bare-number ref otherwise (a URL positional still
@@ -985,8 +567,8 @@ function detectReviewedPrNumber(
   if (!m) {
     return null;
   }
-  const num = Number.parseInt(m[2], 10);
-  return Number.isNaN(num) ? null : { repo: sessionRepo, number: num };
+  const number = parsePullRequestNumber(m[2]);
+  return number === null ? null : { repo: sessionRepo, number };
 }
 
 // FEA-3851: classify ONE sub-command segment's review method. A segment that
@@ -1163,7 +745,7 @@ function emitReviewedPrRefs(
   // neither a URL in `description` nor one echoed inside a quoted argument of
   // the review command can be substituted for the command's actual target
   // (same quote-stripping the bare-number path already applies).
-  const strippedCmd = stripQuotedContent(reviewCmd, findQuotedSpans(reviewCmd));
+  const strippedCmd = stripNeutralizedContent(reviewCmd);
   const eventTime = resolveRefObservedAt(tu.timestamp, ctx.observedAt);
   const toolUseIsError = tu.isError === true;
   const segments = splitShellSubcommands(strippedCmd);
@@ -1227,6 +809,9 @@ type PrRefContext = {
   eventTime: string;
   inOutput: boolean;
   inInput: boolean;
+  // ISS-8175: how many refs this tool-use will mark `created`, so a base can be
+  // bound only when gh printed exactly one create line per created PR.
+  createdRefCount: number;
   // Lazily-built branch-write evidence, shared across PRs in this session.
   getWriteEvents: () => BranchWriteEvent[];
 };
@@ -1249,6 +834,9 @@ function pushPullRequestRef(
         sessionRepo,
         prCtx.getWriteEvents()
       )
+    : null;
+  const baseRef = isCreated
+    ? resolveCreatedPrBaseRef(tu, prCtx.createdRefCount)
     : null;
 
   ctx.refs.push({
@@ -1281,6 +869,9 @@ function pushPullRequestRef(
     prNumber: pr.number,
     prUrl: pr.url,
     branchName: head?.branch,
+    // Omitted rather than nulled when gh named no base — an absent base is the
+    // honest unknown the cloud read already renders (ISS-8155).
+    ...(baseRef ? { baseRef } : {}),
   });
 }
 
@@ -1315,6 +906,20 @@ function extractPullRequestRefs(
     );
 
     const reviewedIdentities = emitReviewedPrRefs(ctx, tu, i, sessionRepo);
+    // ISS-8175: the same created-vs-referenced decision `pushPullRequestRef`
+    // makes per PR, counted up front — a base is bindable only when gh printed
+    // one create line for each ref this tool-use marks `created`. Membership in
+    // `allPrs` already implies the URL is in the output, so `!inputUrls.has`
+    // is exactly that function's `inOutput && !inInput`.
+    const createdRefCount = isPrCreateCommand(tu)
+      ? allPrs.filter(
+          (pr) =>
+            !(
+              inputUrls.has(pr.url) ||
+              reviewedIdentities.has(`${pr.repo}#${pr.number}`)
+            )
+        ).length
+      : 0;
 
     for (const pr of allPrs) {
       // Already emitted as `reviewed` above — don't also emit a `referenced`
@@ -1332,6 +937,7 @@ function extractPullRequestRefs(
           eventTime: resolveRefObservedAt(tu.timestamp, ctx.observedAt),
           inOutput: outputPrs.some((p) => p.url === pr.url),
           inInput: inputUrls.has(pr.url),
+          createdRefCount,
           getWriteEvents,
         },
         pr
@@ -1519,37 +1125,6 @@ const BRANCH_PUSH_METHODS: ReadonlySet<string> = new Set(
   BRANCH_PUSH_METHOD_VALUES
 );
 
-// Branch-revealing commands whose branch is named in the command itself, as
-// regex capture group 1 ?? 2 ?? 3 (the quoted/unquoted-name alternatives).
-const BRANCH_COMMAND_PATTERNS: ReadonlyArray<{
-  re: RegExp;
-  method: string;
-  reject?: (branch: string) => boolean;
-  skip?: (strippedCmd: string) => boolean;
-}> = [
-  // git worktree add <path> [-b] <branch>
-  {
-    re: GIT_WORKTREE_ADD_ALL_RE,
-    method: MonitoredSessionCliRefMethod.GitWorktreeAdd,
-  },
-  // git checkout/switch [-b] <branch>
-  {
-    re: GIT_CHECKOUT_ALL_RE,
-    method: MonitoredSessionCliRefMethod.GitCheckout,
-    reject: (b) => b === ".",
-  },
-  // git push [flags] origin <branch>. HEAD is resolved from the push OUTPUT
-  // (detectBranchesInOutput), never taken as a branch name; deletes are skipped.
-  // The skip runs on the quote-stripped command so a `--delete` inside e.g. a
-  // commit -m body cannot suppress a chained real push.
-  {
-    re: GIT_PUSH_BRANCH_ALL_RE,
-    method: MonitoredSessionCliRefMethod.GitPush,
-    reject: (b) => b === "HEAD",
-    skip: (strippedCmd) => GIT_PUSH_DELETE_RE.test(strippedCmd),
-  },
-];
-
 // Captures run position-checked against the ORIGINAL command (so quoted
 // branch names like `git checkout -b "my branch"` still capture — the git
 // keyword itself must sit outside quotes); shape gates run on the stripped
@@ -1575,7 +1150,7 @@ function detectBranchesInCommand(
   }
   // gh pr create --head/-H names the PR head branch in the command itself —
   // write evidence for the branch AND the created-PR head resolver (FEA-2531).
-  if (GH_PR_CREATE_BRANCH_RE.test(strippedCmd)) {
+  if (GH_PR_CREATE_REGEX.test(strippedCmd)) {
     const flag = matchOutsideQuotes(cmd, GH_PR_HEAD_FLAG_RE, spans);
     const branch = flag?.[1] ?? flag?.[2] ?? flag?.[3];
     if (branch && !branch.startsWith("-")) {
@@ -1604,7 +1179,7 @@ function detectBranchesInOutput(
 
   // gh pr create output names the head ref two ways: "branch 'feat/xxx'" and
   // gh's own "Creating pull request for <head> into <base>" line (FEA-2531).
-  if (GH_PR_CREATE_BRANCH_RE.test(strippedCmd)) {
+  if (GH_PR_CREATE_REGEX.test(strippedCmd)) {
     for (const text of outputTexts) {
       const match = text.match(GH_PR_BRANCH_OUTPUT_RE);
       if (match?.[1]) {
@@ -1613,10 +1188,10 @@ function detectBranchesInOutput(
           method: MonitoredSessionCliRefMethod.GhPrCreate,
         });
       }
-      const headMatch = text.match(GH_PR_CREATE_HEAD_OUTPUT_RE);
-      if (headMatch?.[1]) {
+      const ghHead = createdPrHeadFromGhOutput(text);
+      if (ghHead) {
         detected.push({
-          branch: headMatch[1],
+          branch: ghHead,
           method: MonitoredSessionCliRefMethod.GhPrCreate,
         });
       }
@@ -1756,8 +1331,8 @@ function extractHarnessPrLinkRefs(
   ctx: ExtractContext
 ): void {
   for (const pr of session.prLinks) {
-    const prNumber = Number(pr.number);
-    if (!pr.url || Number.isNaN(prNumber)) {
+    const prNumber = parsePullRequestNumber(pr.number);
+    if (!(pr.url && prNumber !== null)) {
       continue;
     }
     let repo = pr.repo;

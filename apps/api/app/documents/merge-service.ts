@@ -1,9 +1,18 @@
 import { escapeXmlClosingTags, generateText, models } from "@repo/ai/server";
+import { AuditAction, AuditObjectType } from "@repo/api/src/types/audit";
 import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import {
+  enqueueAuditEvent,
+  userAuditActor,
+} from "@/app/audit/audit-emit-service";
 import { documentTemplatesService } from "../templates/service";
+import {
+  DELETED_DOCUMENT_SELECT,
+  deletedDocumentAuditDetail,
+} from "./document-delete-service";
 import { documentService } from "./document-service";
 import { documentVersionService } from "./document-version-service";
 import { deleteDocumentRoom } from "./room-utils";
@@ -58,8 +67,14 @@ Please merge the primary and secondary artifacts into a single unified document.
   return prompt;
 }
 
-/** Reserved output budget for the merge completion. */
-const MERGE_MAX_OUTPUT_TOKENS = 4096;
+/**
+ * Reserved output budget for the merge completion. Set near what one
+ * generation can produce before `MERGE_REQUEST_TIMEOUT_MS` aborts it, so the
+ * reserve does not take input budget the abort would never let the model use;
+ * a longer merged document needs a streamed merge. A completion that hits
+ * either limit is rejected, not saved (ISS-11416).
+ */
+const MERGE_MAX_OUTPUT_TOKENS = 20_000;
 
 /**
  * Sampling temperature for the merge completion.
@@ -93,6 +108,33 @@ const MERGE_MAX_INPUT_TOKENS =
   MERGE_MODEL_CONTEXT_WINDOW_TOKENS -
   MERGE_MAX_OUTPUT_TOKENS -
   MERGE_TOKEN_SAFETY_MARGIN;
+
+/**
+ * Wall-clock ceiling for the merge completion, applied as an `abortSignal` on
+ * the `generateText` call.
+ *
+ * Without it a slow or hung generation is unbounded — the AI SDK retries a
+ * failed request up to its default 3 attempts, serially — so the request runs
+ * until the platform hard-kills the function and the caller gets an opaque 504
+ * instead of the JSON error envelope this route contract declares. With it the
+ * SDK throws, `merge` propagates, and the route's catch returns that envelope.
+ *
+ * Kept below the deployed route's platform function cap (Vercel `maxDuration`,
+ * 300s — set explicitly on apps/api/app/documents/merge/route.ts) with margin,
+ * so the abort fires first. The margin also absorbs the work outside this call
+ * that shares the same function budget: auth, body parsing, and the document /
+ * version reads before it, and the transaction that persists the merged version
+ * plus the best-effort Liveblocks room delete after it.
+ *
+ * The deadline is armed at the call, not at request start, so it bounds the
+ * generation rather than the request: a near-budget generation followed by a
+ * slow room delete (which has no deadline of its own) can still reach the
+ * platform kill, after the merge has committed. Giving the whole request a
+ * start-stamped budget — the pattern `preview-schemas/ensure` uses — is the
+ * stronger shape, and is deliberately left out of ISS-6774, which is about the
+ * unbounded LLM call.
+ */
+export const MERGE_REQUEST_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes (<300s cap)
 
 /** Average characters per token for ASCII/Latin text. */
 const ASCII_CHARS_PER_TOKEN = 4;
@@ -136,9 +178,10 @@ export const documentMergeService = {
    * Returns `Result.err(Status.NotFound)` when either artifact is missing or
    * the primary's detail row has been deleted mid-merge. Throws on caller
    * misuse (cross-project merge, TEMPLATE involved, combined content too large
-   * to merge within the model's context window) or when the LLM returns empty
-   * content — those are unrecoverable invariants/upstream errors that the route
-   * maps to 400/500.
+   * to merge within the model's context window), when the LLM returns empty
+   * content, or when the generation outlives
+   * {@link MERGE_REQUEST_TIMEOUT_MS} — those are unrecoverable
+   * invariants/upstream errors that the route maps to 400/500.
    */
   async merge(
     primaryDocumentId: string,
@@ -225,11 +268,20 @@ export const documentMergeService = {
       ],
       maxOutputTokens: MERGE_MAX_OUTPUT_TOKENS,
       temperature: MERGE_TEMPERATURE,
+      abortSignal: AbortSignal.timeout(MERGE_REQUEST_TIMEOUT_MS),
     });
 
     const mergedContent = result.text;
     if (!mergedContent?.trim()) {
       throw new Error("LLM returned empty merged content");
+    }
+    // Any stop other than a natural one (a length cap, a refusal the provider
+    // maps to content-filter) leaves a partial document; saving it would replace
+    // the primary with a fragment and delete the secondary (ISS-11416).
+    if (result.finishReason !== "stop") {
+      throw new Error(
+        `LLM merge output is incomplete (finish reason: ${result.finishReason})`
+      );
     }
 
     const sanitizedMergedContent = sanitizeAndLog(
@@ -265,8 +317,27 @@ export const documentMergeService = {
       ]);
 
       // ArtifactLink FK cascades on Artifact delete.
-      await tx.artifact.delete({
+      const deletedSecondary = await tx.artifact.delete({
         where: { id: secondary.id, organizationId },
+        select: DELETED_DOCUMENT_SELECT,
+      });
+
+      // A merge destroys the secondary as hard as a delete does, so it owes the
+      // same surviving record (ISS-10029). Enqueued in THIS transaction, from
+      // the row the delete itself returned, and throwing — so the merge cannot
+      // commit having silently erased a document. `mergedIntoId` is the one
+      // field the plain delete has no use for: it is the only thing that will
+      // ever say where the secondary's content went.
+      await enqueueAuditEvent({
+        organizationId,
+        actor: userAuditActor(userId),
+        action: AuditAction.DocumentDeleted,
+        objectType: AuditObjectType.Document,
+        objectId: secondary.id,
+        detail: {
+          ...deletedDocumentAuditDetail(deletedSecondary),
+          mergedIntoId: primary.id,
+        },
       });
 
       return Result.ok(undefined);

@@ -5,6 +5,12 @@ export const Status = {
   NotFound: 404,
   Conflict: 409,
   Error: 500,
+  /**
+   * A dependency the request needed could not be reached, so the server could
+   * not decide the request at all. Distinct from `Forbidden`, which IS a
+   * decision (ISS-8661).
+   */
+  ServiceUnavailable: 503,
 } as const;
 
 export type StatusCode = (typeof Status)[keyof typeof Status];

@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { ArrowUpRightIcon, SearchIcon } from "lucide-react";
 
@@ -66,7 +67,7 @@ function ExampleRow({
   return (
     <li>
       <button
-        className="group flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5 text-left hover:border-primary/40 hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className={`group flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5 text-left hover:border-primary/40 hover:bg-muted ${CHIP_FOCUS_RING_CLASS}`}
         onClick={() => onRun(example.query)}
         type="button"
       >

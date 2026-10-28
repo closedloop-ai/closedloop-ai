@@ -1,3 +1,6 @@
+import { GITHUB_CLERK_LINK_PATH } from "@repo/api/src/types/github-clerk-link";
+import { GOOGLE_OAUTH_CONNECT_PATH } from "@repo/api/src/types/integration-connect-routes";
+
 /**
  * Web-shell OAuth connect URLs.
  *
@@ -7,7 +10,7 @@
  * renderer would drive OAuth through a different flow (system browser +
  * loopback/custom-scheme callback) — so they intentionally live in `apps/app`
  * rather than the surface-agnostic `@repo/app` layer (FEA-1510). The portable
- * integration *data* hooks remain in `@repo/app/<github|google|linear>/hooks`.
+ * integration *data* hooks remain in `@repo/app/<github|google>/hooks`.
  */
 
 export function getGitHubConnectUrl(
@@ -22,16 +25,19 @@ export function getGitHubConnectUrl(
     params.set("returnTo", options.returnTo);
   }
   const query = params.toString();
+  // PLN-1742 M5: authorize mode targets the Clerk linking page,
+  // unconditionally — the in-house authorize route is retired (it redirects
+  // stale clients here). Install mode stays on the app route:
+  // `/apps/{slug}/installations/new` is the App-install entry point and
+  // survives the OAuth-client retirement.
+  const base =
+    mode === "authorize" ? GITHUB_CLERK_LINK_PATH : "/api/integrations/github";
   if (query) {
-    return `/api/integrations/github?${query}`;
+    return `${base}?${query}`;
   }
-  return "/api/integrations/github";
+  return base;
 }
 
 export function getGoogleOAuthUrl(): string {
-  return "/api/integrations/google";
-}
-
-export function getLinearOAuthUrl(): string {
-  return "/api/integrations/linear";
+  return GOOGLE_OAUTH_CONNECT_PATH;
 }

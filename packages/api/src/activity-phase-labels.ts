@@ -8,20 +8,17 @@
  * hand-copied "Other / unclassified" literal inside the session breakdown
  * fallback), so one concept read as three.
  *
- * It lives in `@repo/api` — not in `@repo/app` — because the label has FIVE
- * consumers spanning two dependency layers, and `@repo/lib` cannot import
- * `@repo/app`:
- *   - the session breakdown display map (`@repo/app` `session-activity-phases`),
+ * It lives in `@repo/api` — not in `@repo/app` — because the label has consumers
+ * spanning two dependency layers, and `@repo/lib` cannot import `@repo/app`:
  *   - the branch bar display map (`@repo/app` `activity-taxonomy-display`),
- *   - the session activity strip (`@repo/app` `session-activity-segments`),
- *   - the strip's legend, and
+ *   - `IDLE_CONCEPTS` (`@repo/api` `idle-concepts`), and
  *   - `phaseLabel()` in `@repo/lib/sessions/activity-segment-aggregation`, which
  *     serializes `ActivitySegment.label` onto the wire for API consumers.
- * Landing the map under `@repo/app` alone left that fifth (wire) site behind and
- * moved the drift one layer down instead of killing it. Both per-surface DISPLAY
- * maps take their labels from here and own only their own COLORS, which
- * legitimately differ (the session strip and the branch bar use different
- * palettes).
+ * Landing the map under `@repo/app` alone would leave that wire site behind and
+ * move the drift one layer down instead of killing it, so the placement holds
+ * even though ISS-7867 retired the session-side phase surfaces that were once
+ * the other consumers. The branch DISPLAY map takes its labels from here and
+ * owns only its own COLORS.
  *
  * Deliberately zero-dependency: this is imported by `"use client"` components on
  * both the web and desktop surfaces, so it stays a lightweight constants module

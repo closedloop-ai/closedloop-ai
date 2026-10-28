@@ -19,8 +19,8 @@
  *
  * So this lane normalizes POST-HASH: the hash check runs against the unmodified
  * staged rows, and only then — inside `resolveGenerationInvocations`, alongside
- * the resolution-derived columns `applyResolutionUpdates` already rewrites — is
- * the phantom's identity re-pointed at the real skill. NOTHING HERE FEEDS A
+ * the resolution-derived columns `persistedInvocation` already applies — is the
+ * phantom's identity re-pointed at the real skill. NOTHING HERE FEEDS A
  * CONTENT HASH: the desktop's `externalGenerationId` preimage is built from what
  * the desktop sent, and the server only ever re-derives it from the pre-rewrite
  * rows, so no existing record is re-identified by this normalization.
@@ -45,7 +45,7 @@ import type { StagedInvocationRow } from "./component-invocation-helpers";
  * it shadowed. `normalizedName` is OMITTED (never `null`) when the row's own
  * normalized name is not the phantom slash key — mirroring the backfill
  * migration's `CASE WHEN aci.normalized_name = m.phantom_key` guard, and letting
- * the UPDATE's `COALESCE` leave a caller-supplied normalized name untouched.
+ * `persistedInvocation` keep a caller-supplied normalized name untouched.
  */
 export type SkillShadowIdentityRewrite = {
   componentKind: string;
@@ -76,7 +76,7 @@ export type SkillShadowNormalization = {
  * for that slash key. A genuine `/deploy` — with or without a `deploy` skill
  * beside it — is always left alone.
  *
- * ISS-4923 (wongk review): "vouches" is BOTH command-side signals the sibling
+ * ISS-4923 (whitlockk review): "vouches" is BOTH command-side signals the sibling
  * inventory guard uses, not just resolution. `resolvedCommandKeys` covers a
  * command already promoted to `resolved`; `definedCommandKeys` covers a command
  * whose `.claude/commands/<name>.md` text synced but whose resolution has not
@@ -113,7 +113,7 @@ export async function normalizeSkillShadowedInvocations(
     const bareName = bareNameByInvocationId.get(row.id);
     // Exact command evidence excludes the row BEFORE the skill-inventory
     // fallback — see `isSkillShadowedPhantom`, the one predicate this lane and
-    // the usage fold share (ISS-4923 / wongk review).
+    // the usage fold share (ISS-4923 / whitlockk review).
     const isPhantom = isSkillShadowedPhantom(
       inventory,
       bareName ?? null,
@@ -148,7 +148,7 @@ export async function normalizeSkillShadowedInvocations(
  * The bare skill name this staged row could name, or null when it is not a
  * re-point candidate at all.
  *
- * ISS-5260 (wongk review): the ROW-LEVEL definition evidence is excluded here,
+ * ISS-5260 (whitlockk review): the ROW-LEVEL definition evidence is excluded here,
  * not left to the inventory. The shared contract states that a caller holding
  * per-invocation definition evidence must exclude it before the predicate runs,
  * and this lane holds exactly that — a staged row carries `definitionHash` and

@@ -11,12 +11,12 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationKind,
 } from "@repo/api/src/types/agent-component-invocation";
+import { test } from "vitest";
 import { getAgentComponentDetailLocal } from "../src/main/dashboard/shared-agent-components-api.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
@@ -56,7 +56,7 @@ function withZeroedInvocationCount(prisma: DesktopPrisma): DesktopPrisma {
 }
 
 /**
- * ISS-5520 (wongk review, #4716) — the producer boundary the client's
+ * ISS-5520 (whitlockk review, #4716) — the producer boundary the client's
  * incredible-count fallback stands on.
  *
  * This reader returned `undefined` on `total === 0`, and both call sites spread

@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { resolveInstalledPackVersion } from "../src/main/packs/installed-version.js";
 import type { InstalledPackDetail } from "../src/shared/agent-db-contract.js";
 

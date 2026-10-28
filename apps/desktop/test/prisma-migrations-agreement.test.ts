@@ -20,12 +20,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp as mkdtempAsync, rm as rmAsync } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { promisify } from "node:util";
+import { afterAll, test } from "vitest";
 import {
   compareMigrationDirNames,
-  legacyMigrationSortKeys,
-  migrationSortKey,
+  describeNewMigrationDirNameRule,
+  findMigrationDirNameViolations,
+  lastContiguousMigrationDirName,
 } from "../scripts/migration-order.mjs";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { ModelPricingSource } from "../src/main/model-pricing/model-pricing-fixture.js";
@@ -42,7 +43,7 @@ const LARGE_CACHE_READ_TOKENS = 2_192_635_647;
 
 const tempDirs: string[] = [];
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rmAsync(dir, { recursive: true, force: true }))
   );
@@ -190,7 +191,46 @@ test("committed migration history stores canonical pricing source", async () => 
   }
 });
 
-const MIGRATION_DIR_RE = /^(\d{4})_[a-z0-9][a-z0-9_]*$/;
+const MIGRATION_DIR_PREFIX_RE = /^(\d+)_[a-z0-9][a-z0-9_]*$/;
+
+/**
+ * A prose reference to a migration: the word, then the directory's numeric
+ * prefix, optionally followed by the rest of the directory name.
+ *
+ * The 14-digit alternative comes first because the alternation is ordered: with
+ * `\d{4}` first, "migration 20260916231500_foo" matches only "2026", which
+ * answers to no directory and reports a live reference as stale (ISS-10416).
+ *
+ * The separator admits comment-continuation characters, not just whitespace,
+ * because a full directory name is long enough to wrap — and the reference this
+ * guard was written for wraps in two of its three files. A separator of plain
+ * `\s+` reads the ` * ` or `// ` opening the next line as ordinary text and
+ * matches nothing, which is a silent hole rather than a missed diagnostic.
+ *
+ * Written at module scope for `useTopLevelRegex`, and re-`exec`'d with a reset
+ * `lastIndex` per file because the `g` flag makes the object stateful.
+ */
+const MIGRATION_PROSE_REFERENCE_RE =
+  /\bmigrations?[\s*/]{1,20}((?:\d{14}|\d{4})(?:_[a-z0-9][a-z0-9_]*)?)/g;
+const SOURCE_ROOTS = ["src", "test"] as const;
+const SOURCE_FILE_RE = /\.m?ts$/;
+/**
+ * Names a prose reference is allowed to make that no directory answers, because
+ * the reference is a FIXTURE rather than a claim about this repo's history:
+ * `db-host-migration-refusal-roundtrip.test.ts` builds a store whose migration
+ * the running build deliberately lacks, and the whole point of that string is
+ * that it names something that does not exist.
+ *
+ * The second entry is load-bearing in the other direction: it is the 14-digit
+ * example in this file's own regex docstring, and it is listed here because the
+ * scan CAPTURED it. Narrow the alternation back to `\d{4}` and the same prose
+ * yields `2026`, which is not a prefix any directory carries and is not in this
+ * set — so the reference stops being exempt and this guard reddens (ISS-10416).
+ */
+const SYNTHETIC_MIGRATION_REFERENCES: ReadonlySet<string> = new Set([
+  "0099_from_the_future",
+  "20260916231500_foo",
+]);
 const USER_PROMPT_INDEX_COLUMNS_RE = /"created_at" DESC, "session_id"/;
 const USER_PROMPT_INDEX_WHERE_RE = /WHERE event_type = 'UserPromptSubmit'/;
 const ARTIFACTS_BRANCH_TABLE_RE = /"artifacts"/;
@@ -204,35 +244,126 @@ const SESSIONS_UPDATED_AT_INDEX_COLUMNS_RE = /"updated_at" DESC, "id" DESC/;
 // the "gained an unintended partial WHERE" claim below needs its own assertion.
 const SESSIONS_UPDATED_AT_INDEX_PARTIAL_RE = /\bWHERE\b/i;
 
-test("committed migration directories use canonical names with only known legacy exceptions", () => {
-  const dirNames = readMigrationDirNames();
-  let previousSortKey = "";
-  let numericIndex = 0;
-  for (const dirName of dirNames) {
-    const sortKey = migrationSortKey(dirName);
-    assert.ok(
-      sortKey > previousSortKey,
-      `Migration directory ${dirName} must sort after ${previousSortKey}`
-    );
-    previousSortKey = sortKey;
-
-    if (legacyMigrationSortKeys.has(dirName)) {
-      continue;
+/**
+ * Every `.ts`/`.mts` file under the given `apps/desktop` roots, recursively.
+ *
+ * `node_modules` and build output are skipped; nothing else is, because a stale
+ * prose reference is exactly as misleading in a helper as in the module that
+ * owns the migration.
+ */
+function listSourceFiles(root: string): string[] {
+  const found: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) {
+      break;
     }
-
-    numericIndex += 1;
-    const expectedPrefix = String(numericIndex).padStart(4, "0");
-    const match = MIGRATION_DIR_RE.exec(dirName);
-    assert.ok(
-      match,
-      `Migration directory ${dirName} must use 000N_snake_case format`
-    );
-    assert.equal(
-      match[1],
-      expectedPrefix,
-      `Migration directory ${dirName} must use prefix ${expectedPrefix}`
-    );
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules" && entry.name !== "dist") {
+          stack.push(full);
+        }
+      } else if (SOURCE_FILE_RE.test(entry.name)) {
+        found.push(full);
+      }
+    }
   }
+  return found;
+}
+
+/** Every `migration NNNN[_slug]` reference in one file, with its line number. */
+function readMigrationReferences(
+  file: string
+): { reference: string; line: number }[] {
+  const text = readFileSync(file, "utf8");
+  const found: { reference: string; line: number }[] = [];
+  MIGRATION_PROSE_REFERENCE_RE.lastIndex = 0;
+  let match = MIGRATION_PROSE_REFERENCE_RE.exec(text);
+  while (match !== null) {
+    const reference = match[1];
+    if (reference !== undefined) {
+      found.push({
+        reference,
+        line: text.slice(0, match.index).split("\n").length,
+      });
+    }
+    match = MIGRATION_PROSE_REFERENCE_RE.exec(text);
+  }
+  return found;
+}
+
+/**
+ * ISS-7229. A prose reference to a migration by number goes stale the moment the
+ * migration is renumbered, and the renumber is ROUTINE — unrelated migrations
+ * land on `main` while a PR waits, and only the code constant gets updated. This
+ * PR shipped five comments still naming `0075` after its own step moved to
+ * `0077`, by which time `0075` had been taken by an unrelated feature: a reader
+ * following the reference lands on genuine SQL about something else, which is
+ * worse than a dangling one.
+ *
+ * WHAT THIS PINS, and what it deliberately does not. A reference that carries
+ * the full directory name is checked EXACTLY, so a renumber reddens here — that
+ * is the form new prose should use. A bare four-digit prefix can only be checked
+ * for existence, which catches a reference past the end of the history but NOT
+ * the shape above, where the number survives under a different owner. The five
+ * references this case was written for were converted to the full-name form (or
+ * to the module's own constant) for precisely that reason.
+ */
+test("prose references to migrations name a migration that exists", () => {
+  const dirNames = new Set(readMigrationDirNames());
+  const prefixes = new Set(
+    [...dirNames].map((name) => MIGRATION_DIR_PREFIX_RE.exec(name)?.[1] ?? name)
+  );
+  const stale: string[] = [];
+  for (const root of SOURCE_ROOTS) {
+    for (const file of listSourceFiles(path.join(APP_DIR, root))) {
+      for (const { reference, line } of readMigrationReferences(file)) {
+        if (SYNTHETIC_MIGRATION_REFERENCES.has(reference)) {
+          continue;
+        }
+        const known = reference.includes("_")
+          ? dirNames.has(reference)
+          : prefixes.has(reference);
+        if (!known) {
+          stale.push(`${path.relative(APP_DIR, file)}:${line} -> ${reference}`);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(
+    stale,
+    [],
+    "these comments name a migration that is not in apps/desktop/prisma/migrations — it was renumbered or renamed, so update the prose (prefer the full directory name, which this guard checks exactly)"
+  );
+});
+
+/**
+ * ISS-10416. The committed set obeys the two-scheme rule: the history keeps its
+ * `000N_` names, everything after `lastContiguousMigrationDirName` is
+ * timestamped, and the whole set still sorts strictly.
+ *
+ * The decision itself lives in `scripts/migration-order.mjs` so the same
+ * function can be driven against synthetic sets — including the pair of
+ * same-base PRs whose collision is the reason the scheme changed — in
+ * `migration-dir-names.test.ts`. This case is the production wiring: it is the
+ * only one that reads the real directory.
+ */
+test("committed migration directories obey the desktop migration naming rule", () => {
+  assert.deepEqual(
+    findMigrationDirNameViolations(readMigrationDirNames()),
+    [],
+    describeNewMigrationDirNameRule()
+  );
+});
+
+test("the recorded scheme boundary is a directory that exists", () => {
+  assert.ok(
+    readMigrationDirNames().includes(lastContiguousMigrationDirName),
+    `${lastContiguousMigrationDirName} names the last 000N migration and must stay a committed directory — a boundary pointing at a name nothing on disk carries silently reclassifies every migration around it`
+  );
 });
 
 test("committed migration history uses a UserPromptSubmit partial index, not a broad event_type index", async () => {

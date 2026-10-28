@@ -1,5 +1,11 @@
-import { normalizeAgentSlug } from "@repo/app/agents/lib/agent-slug-label";
+import {
+  CONTENT_HASH_CRUMB_FALLBACK,
+  normalizeAgentSlug,
+} from "@repo/app/agents/lib/agent-slug-label";
+import { AGENTS_NAV_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Metadata } from "next";
+import { FeatureFlagRouteGate } from "@/components/feature-flag-route-gate";
+import { RouteChromeFallback } from "@/components/route-chrome-fallback";
 import { AgentDetailHeader } from "./agent-detail-header";
 import { AgentDetailWithPromote } from "./agent-detail-with-promote";
 
@@ -24,8 +30,28 @@ export default async function AgentDetailPage({
   // lookup and the body renders "not found" — the crumb and body disagreeing.
   const slug = normalizeAgentSlug(rawSlug);
 
+  // ISS-5041 / ISS-7835: the DETAIL route carries the same gate as the index.
+  // Gating only the index would leave every `/agents/<slug>` deep link open,
+  // and those links are what a stale bookmark or a shared URL actually holds.
   return (
-    <>
+    <FeatureFlagRouteGate
+      flag={AGENTS_NAV_FEATURE_FLAG_KEY}
+      pending={
+        // The ancestor crumb carries its href here exactly as the loaded header
+        // does. Without it the crumb renders as a second `BreadcrumbPage` —
+        // full weight, `aria-current="page"`, no way back — and then demotes
+        // itself to a muted link when the flag lands, which is the handoff pop
+        // `RouteChromeFallback` exists to prevent. The leaf is the shared
+        // neutral fallback the resolved label settles on, so only its weight
+        // changes, never its text.
+        <RouteChromeFallback
+          breadcrumbs={[
+            { href: `/${orgSlug}/agents`, label: "Agents" },
+            { label: CONTENT_HASH_CRUMB_FALLBACK },
+          ]}
+        />
+      }
+    >
       {/* The route param is the org-identity slug (`kind::key`). The last crumb
           should read like the name the user clicked — matching the
           Sessions/Branches routes — so it shows the resolved component name,
@@ -35,9 +61,9 @@ export default async function AgentDetailPage({
           boundary because the name only exists after the detail read. */}
       <AgentDetailHeader orgSlug={orgSlug} slug={slug} />
       {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <AgentDetailWithPromote orgSlug={orgSlug} slug={slug} />
       </div>
-    </>
+    </FeatureFlagRouteGate>
   );
 }

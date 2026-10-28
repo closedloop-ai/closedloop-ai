@@ -7,7 +7,6 @@ import {
   isDesktopApiNamespace,
   isDesktopApiPath,
   rewriteDesktopApiPath,
-  withDesktopApiNamespaceCapability,
 } from "./desktop-api-namespace.ts";
 
 describe("desktop API namespace", () => {
@@ -38,18 +37,5 @@ describe("desktop API namespace", () => {
         [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: "engineer",
       })
     ).toBeNull();
-  });
-
-  it("deletes namespace capabilities while preserving unrelated values", () => {
-    expect(withDesktopApiNamespaceCapability(null, null)).toEqual({});
-    expect(
-      withDesktopApiNamespaceCapability(
-        {
-          [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: CURRENT_DESKTOP_API_NAMESPACE,
-          commandSigning: true,
-        },
-        null
-      )
-    ).toEqual({ commandSigning: true });
   });
 });

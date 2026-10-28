@@ -12,6 +12,23 @@ export const PROTOCOL_VERSION = "1";
 /** Maximum time (ms) any single async operation may take during the hello handshake. */
 export const HELLO_OPERATION_TIMEOUT_MS = 5000;
 
+/**
+ * The most in-flight commands the cloud will honour from a client-declared
+ * ceiling, whichever lane declared it.
+ *
+ * The declared value is not advice: it becomes the `take` of the dispatch drain's
+ * queue read and then the width of a `Promise.all` that opens one outbound relay
+ * POST per row. Unbounded, a single hello turns the next command completion into
+ * a fan-out the size of the whole queued backlog — the burst the drain exists to
+ * prevent. Bounding it here rather than at either call site keeps the socket lane
+ * and the relay lane agreeing on one number.
+ *
+ * 32x the stock desktop's declared 2 (`MAX_IN_FLIGHT_COMMANDS`,
+ * `apps/desktop/src/main/app.ts`), so a legitimately higher-throughput client is
+ * not throttled, while the fan-out stays bounded.
+ */
+export const MAX_IN_FLIGHT_COMMANDS_CEILING = 64;
+
 export type DesktopAuthContext = {
   organizationId: string;
   userId: string;
@@ -42,9 +59,7 @@ export type SocketConnectionContext = {
   targetId: string;
   organizationId: string;
   userId: string;
-  clerkUserId?: string | null;
   sessionId: string;
-  pluginVersion?: string;
   serverCapabilities?: ComputeTargetServerCapabilities;
   unsubscribeOperations: () => void;
   unsubscribeConnectionClose: () => void;
@@ -121,3 +136,17 @@ export type WithCorrelation<T> = T & {
   gatewaySessionId?: string;
   computeTargetId?: string;
 };
+
+/**
+ * Cadence at which a DIRECTLY connected desktop refreshes `lastSeenAt` — the
+ * per-socket heartbeat timer in `desktop-gateway-socket-server`.
+ *
+ * Declared here rather than beside that timer because `COMPUTE_TARGET_STALE_MS`
+ * is a timeout over it and has to outlast the slowest periodic writer of
+ * `lastSeenAt`. The relay transport paces its own writer from a separate knob
+ * (`RELAY_PRESENCE_HEARTBEAT_INTERVAL_MS`) that only happens to hold the same
+ * value, so a cadence private to the socket module left the cutoff derived from
+ * the OTHER transport's knob: retuning this one would flip live direct targets
+ * offline between their own check-ins with nothing red.
+ */
+export const SOCKET_HEARTBEAT_INTERVAL_MS = 30_000;

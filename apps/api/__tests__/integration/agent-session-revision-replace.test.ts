@@ -12,6 +12,7 @@ import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
   type DesktopAgentSessionsPayload,
+  MAX_SUPPORTED_DATA_REVISION,
   type SyncedAgentSession,
   type SyncedAgentSessionAgent,
   type SyncedAgentSessionEvent,
@@ -22,9 +23,9 @@ import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import {
-  autoRollbackTransaction,
   createTestOrganization,
   createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
 } from "../utils/db-helpers";
 
 const env = keys();
@@ -178,7 +179,7 @@ function sumPerModelTokenUsage(agentSessionId: string) {
 
 describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   it("replaces events and agents when resync carries a different dataRevision", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -243,7 +244,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   });
 
   it("appends events when resync carries the same dataRevision (no delete)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -292,7 +293,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   });
 
   it("appends events on both syncs when neither carries a dataRevision (backward-compatible)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -338,7 +339,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   });
 
   it("triggers replacement when stored dataRevision is NULL and resync brings a non-null revision", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -394,7 +395,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   });
 
   it("converges correctly across chunks: first chunk replaces, subsequent same-revision chunks append", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -456,7 +457,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   });
 
   it("recomputes toolUseCount and errorCount from the new event set after replacement", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -511,7 +512,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   // FEA-3477 AC-4: replay an OLDER batch after a NEWER one. Status must never
   // regress from a terminal value, and no session timestamp may move backward.
   it("never regresses status or timestamps when an older batch replays after a newer one", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -581,7 +582,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
 
   // FEA-3477 AC-4 (continued): a genuinely newer batch still advances the row.
   it("advances status and timestamps when a newer batch follows an older one", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -637,7 +638,7 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
   // rollup columns equal to the per-model table — never overwrite them with
   // zeros while the per-model rows are (correctly) preserved.
   it("keeps the rollup columns in sync with the per-model table when a later payload omits token usage", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -714,6 +715,201 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
       expect(Number(afterSecond?.estimatedCost)).toBe(
         Number(perModel._sum.estimatedCost)
       );
+    });
+  });
+});
+
+// ISS-8271: the write-path consequences of the per-session dataRevision
+// dispositions. The ingress no longer rejects out-of-window revisions (that
+// rejection was batch-wide and permanently dead-lettered sessions the desktop
+// parks at sentinel revisions mid-derivation); `upsert-session-slice` now folds
+// an unchunked sentinel 0 to a no-revision additive apply and HOLDS -1/too-new
+// (nothing written, id omitted from `persistedSessionIds` so the desktop
+// re-sends under its bounded ack_omitted budget). The disposition matrix itself
+// is pinned in `wire-data-revision.test.ts`.
+describeIfDb("sentinel dataRevision dispositions (ISS-8271)", () => {
+  it("folds an unchunked sentinel 0: additive apply, stored revision preserved, later reseal still supersedes", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      // Sealed at a real revision with one event.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            externalSessionId: "ext-sentinel-fold",
+            dataRevision: 88,
+            events: [makeEvent("sealed-evt-1")],
+          }),
+        ])
+      );
+
+      // Maintenance parked the row at 0 and the lane re-sent it. Must apply
+      // like an older desktop's no-revision payload: events union, revision
+      // column untouched, session acked as persisted.
+      const folded = await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            externalSessionId: "ext-sentinel-fold",
+            dataRevision: 0,
+            events: [makeEvent("sealed-evt-1"), makeEvent("reassert-evt-2")],
+          }),
+        ])
+      );
+      expect(folded.persistedSessionIds).toContain("ext-sentinel-fold");
+
+      const afterFold = await findSessionDetail(
+        computeTarget.id,
+        "ext-sentinel-fold"
+      );
+      expect(afterFold?.dataRevision).toBe(88);
+      const foldedEvents = await findEvents(afterFold?.artifactId ?? "");
+      const foldedIds = foldedEvents.map((e) => e.externalEventId);
+      expect(foldedIds).toContain("sealed-evt-1");
+      expect(foldedIds).toContain("reassert-evt-2");
+
+      // The rebuild reseals at a REAL higher revision — replace must still
+      // fire; the fold must not have poisoned the high-water mark.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            externalSessionId: "ext-sentinel-fold",
+            dataRevision: 89,
+            events: [makeEvent("resealed-evt-1")],
+          }),
+        ])
+      );
+      const resealed = await findSessionDetail(
+        computeTarget.id,
+        "ext-sentinel-fold"
+      );
+      expect(resealed?.dataRevision).toBe(89);
+      const resealedEvents = await findEvents(resealed?.artifactId ?? "");
+      expect(resealedEvents.map((e) => e.externalEventId)).toEqual([
+        "resealed-evt-1",
+      ]);
+    });
+  });
+
+  it("holds sentinel -1: writes nothing, omits the id, and batch siblings still persist", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      // One healthy + one import-pending session in ONE batch — the exact
+      // shape the old schema rejection 400'd wholesale. The hold requires the
+      // row-level ack (cr-15119 bha_p0_f0), so the batch opts in.
+      const result = await agentSessionsService.upsertSessions(ctx, {
+        ...buildPayload([
+          buildSyncedSession({
+            externalSessionId: "ext-healthy",
+            dataRevision: 90,
+            events: [makeEvent("healthy-evt")],
+          }),
+          buildSyncedSession({
+            externalSessionId: "ext-import-pending",
+            dataRevision: -1,
+            events: [makeEvent("partial-evt")],
+          }),
+        ]),
+        wantsAcceptedSessionIds: true,
+      });
+      expect(result.persistedSessionIds).toContain("ext-healthy");
+      expect(result.persistedSessionIds).not.toContain("ext-import-pending");
+
+      const healthy = await findSessionDetail(computeTarget.id, "ext-healthy");
+      expect(healthy?.dataRevision).toBe(90);
+
+      // Nothing of the held session may exist — not even a detail row.
+      const held = await findSessionDetail(
+        computeTarget.id,
+        "ext-import-pending"
+      );
+      expect(held).toBeNull();
+    });
+  });
+
+  it("holds a too-new revision: neither committed (poison) nor rejected (dead-letter)", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      const result = await agentSessionsService.upsertSessions(ctx, {
+        ...buildPayload([
+          buildSyncedSession({
+            externalSessionId: "ext-too-new",
+            dataRevision: MAX_SUPPORTED_DATA_REVISION + 1,
+            events: [makeEvent("future-evt")],
+          }),
+        ]),
+        wantsAcceptedSessionIds: true,
+      });
+      expect(result.persistedSessionIds).not.toContain("ext-too-new");
+
+      const held = await findSessionDetail(computeTarget.id, "ext-too-new");
+      expect(held).toBeNull();
+    });
+  });
+
+  it("rejects a non-opted-in batch carrying a held-class session before writing anything", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      // cr-15119 bha_p0_f0: without `wantsAcceptedSessionIds` the legacy
+      // whole-batch contract acks every sent id, so a hold would let the
+      // desktop clear an outbox row the server never wrote. The batch must
+      // reject up front — including the healthy sibling, which must not have
+      // been written either.
+      await expect(
+        agentSessionsService.upsertSessions(
+          ctx,
+          buildPayload([
+            buildSyncedSession({
+              externalSessionId: "ext-legacy-healthy",
+              dataRevision: 90,
+              events: [makeEvent("legacy-evt")],
+            }),
+            buildSyncedSession({
+              externalSessionId: "ext-legacy-pending",
+              dataRevision: -1,
+            }),
+          ])
+        )
+      ).rejects.toThrow("held_revision_requires_row_level_ack");
+
+      const healthy = await findSessionDetail(
+        computeTarget.id,
+        "ext-legacy-healthy"
+      );
+      expect(healthy).toBeNull();
     });
   });
 });

@@ -1,0 +1,38 @@
+-- ISS-7223: give the fleet-wide ack-timeout sweep an index it can seek.
+--
+-- WHAT ASKS FOR IT. `listCommandsCrossingAckDeadline`
+-- (apps/api/lib/desktop-command-dispatch-queries.ts) reads, every five minutes,
+-- the queued commands whose `queued_at` falls in a one-tick-wide age band,
+-- ordered by `(queued_at, id)` and capped by a LIMIT.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. `(compute_target_id, status,
+-- created_at)` and `desktop_commands_queued_by_target_idx` both LEAD on
+-- `compute_target_id`, and this read is fleet-wide — it supplies no target, so
+-- neither has a usable prefix. Measured at 200k queued rows, the planner did NOT
+-- fall back to the partial one on its predicate as expected: it chose a Parallel
+-- Seq Scan of the WHOLE table plus a Sort — 3285 shared buffers, 24.9ms — and
+-- the LIMIT cannot discard anything until that sort completes. The cost
+-- therefore grows with total command history, not even with backlog depth, on
+-- the tick whose entire job is to report what happens when the backlog is deep.
+-- The same query on this index is an Index Scan: 15 buffers, 0.14ms.
+--
+-- WHY THIS SHAPE. Leading on `queued_at` makes the band a range seek that stops
+-- at the far bound instead of reading to the end of the queue. Carrying `id`
+-- second matches the query's tiebreak, so the ordering is satisfied by the index
+-- and no sort node is planned; the LIMIT then stops the scan early. Keyset
+-- pagination through the band walks the same index forward from a cursor.
+--
+-- WHY PARTIAL. Queued rows are a small, self-draining fraction of a table that
+-- never sheds terminal rows, so restricting the index to them keeps it
+-- proportional to the live backlog rather than to all command history — the same
+-- reasoning as `desktop_commands_queued_by_target_idx` above it.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `desktop_commands` for
+-- the whole build, blocking the command writes this sweep exists to observe.
+-- `IF NOT EXISTS` is deliberately absent: with CONCURRENTLY a failed build
+-- leaves a same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+CREATE INDEX CONCURRENTLY "desktop_commands_queued_at_idx"
+  ON "desktop_commands" ("queued_at", "id")
+  WHERE (status = 'queued'::text);

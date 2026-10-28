@@ -10,8 +10,21 @@ import App from "./App";
 import { createRendererOtelRuntime } from "./app-otel-runtime";
 import { RenderCommitTelemetryProvider } from "./components/sessions/render-commit-telemetry-context";
 import { registerMainEntrypointExceptionCapture } from "./main-entrypoint-exception-capture";
+import {
+  type RendererExceptionReporter,
+  RendererExceptionReporterProvider,
+} from "./renderer-exception-reporter";
 import { RootErrorBoundary } from "./root-error-boundary";
+import { DesktopSurfaceAnalyticsProvider } from "./shared/desktop-surface-analytics-adapter";
 import { DesktopAppCoreProvider } from "./shared-agent-sessions/desktop-app-core-provider";
+
+if (isDesktopBrowserBridgeHost()) {
+  import("./desktop-browser-bridge")
+    .then(({ connectDesktopBrowserBridgeHost }) =>
+      connectDesktopBrowserBridgeHost(window.desktopApi)
+    )
+    .catch(() => undefined);
+}
 
 const rendererOtelRuntime = createRendererOtelRuntime({
   exportTelemetry: window.desktopApi.exportOtelTelemetry,
@@ -26,6 +39,13 @@ if (!rootElement) {
 
 rendererOtelRuntime.start().catch(() => undefined);
 
+// ONE exception path: the root boundary's catch and the Settings v2 panel
+// boundary (ISS-8370 D9) report through this same function.
+const reportRendererException: RendererExceptionReporter = (
+  error,
+  componentStack
+) => rendererOtelRuntime.reportException({ error, componentStack });
+
 createRoot(rootElement).render(
   <StrictMode>
     <DesignSystemProvider
@@ -34,21 +54,23 @@ createRoot(rootElement).render(
       disableTransitionOnChange
       enableSystem
     >
-      <RootErrorBoundary
-        reportException={(error, componentStack) =>
-          rendererOtelRuntime.reportException({ error, componentStack })
-        }
-      >
-        <DesktopAppCoreProvider>
-          <RenderCommitTelemetryProvider
-            reportRenderCommit={(event) =>
-              rendererOtelRuntime.reportRenderCommit(event)
-            }
-          >
-            <App />
-            <RendererReadySignal />
-          </RenderCommitTelemetryProvider>
-        </DesktopAppCoreProvider>
+      <RootErrorBoundary reportException={reportRendererException}>
+        <RendererExceptionReporterProvider
+          reportException={reportRendererException}
+        >
+          <DesktopAppCoreProvider>
+            <DesktopSurfaceAnalyticsProvider>
+              <RenderCommitTelemetryProvider
+                reportRenderCommit={(event) =>
+                  rendererOtelRuntime.reportRenderCommit(event)
+                }
+              >
+                <App />
+                <RendererReadySignal />
+              </RenderCommitTelemetryProvider>
+            </DesktopSurfaceAnalyticsProvider>
+          </DesktopAppCoreProvider>
+        </RendererExceptionReporterProvider>
       </RootErrorBoundary>
     </DesignSystemProvider>
   </StrictMode>
@@ -71,4 +93,12 @@ function RendererReadySignal() {
   }, []);
 
   return null;
+}
+
+function isDesktopBrowserBridgeHost(): boolean {
+  return (
+    import.meta.env.DEV === true &&
+    import.meta.env.VITE_DESKTOP_BROWSER_BRIDGE_ENABLED === "1" &&
+    globalThis.navigator.userAgent.includes("Electron")
+  );
 }

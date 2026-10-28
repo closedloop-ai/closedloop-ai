@@ -5,7 +5,7 @@ import {
 import {
   getRoutingSelection,
   resetRoutingSelectionForTests,
-  setRoutingManualSelection,
+  setRoutingAutoSelection,
 } from "@repo/shared-platform/routing-store";
 import { EngineerRoutingMode } from "@repo/shared-platform/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,10 @@ import {
   createDesktopRoutingAdapter,
   ensureDesktopRoutingSelection,
 } from "../desktop-routing-adapter";
+
+// The store's persisted key, written literally: it is the value an older
+// build left in the profile, not one this repo's code chooses.
+const ROUTING_SELECTION_STORAGE_KEY = "engineer-routing-selection:v1";
 
 type DispatchMock = ReturnType<typeof vi.fn>;
 
@@ -263,20 +267,22 @@ describe("createDesktopRoutingAdapter — response reconstruction", () => {
   // status outside 200-599, so a 1xx envelope throws a RangeError out of
   // `toResponse` before the null-body choice is ever used. Covered as-is rather
   // than pinned — see the PR note; asserting the RangeError would enshrine it.
-  it.each([
-    204, 205, 304,
-  ])("gives status %i no body, per the Fetch spec", async (status) => {
-    installDispatchMock(
-      vi.fn().mockResolvedValue({ status, body: "should be dropped" })
-    );
+  it.each([204, 205, 304])(
+    "gives status %i no body, per the Fetch spec",
+    async (status) => {
+      installDispatchMock(
+        vi.fn().mockResolvedValue({ status, body: "should be dropped" })
+      );
 
-    const response = await createDesktopRoutingAdapter().dispatchGatewayRequest(
-      "/api/gateway/git/status"
-    );
+      const response =
+        await createDesktopRoutingAdapter().dispatchGatewayRequest(
+          "/api/gateway/git/status"
+        );
 
-    expect(response.status).toBe(status);
-    await expect(response.text()).resolves.toBe("");
-  });
+      expect(response.status).toBe(status);
+      await expect(response.text()).resolves.toBe("");
+    }
+  );
 
   it("keeps the body on a status that permits one", async () => {
     installDispatchMock(
@@ -301,8 +307,31 @@ describe("ensureDesktopRoutingSelection", () => {
     resetRoutingSelectionForTests();
   });
 
-  it("repairs an unsupported persisted/manual CloudRelay selection to LocalElectron", () => {
-    setRoutingManualSelection(EngineerRoutingMode.CloudRelay, "target-1");
+  it("repairs an unsupported CloudRelay selection to LocalElectron", () => {
+    setRoutingAutoSelection(EngineerRoutingMode.CloudRelay, "target-1");
+    registerSurfaceRoutingAdapter(createDesktopRoutingAdapter());
+
+    ensureDesktopRoutingSelection();
+
+    expect(getRoutingSelection()).toMatchObject({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: "target-1",
+    });
+  });
+
+  // An older build could persist a MANUAL CloudRelay choice. ISS-12617 removed
+  // the manual source, so the store loads it as an ordinary selection and the
+  // repair replaces it without the `force` option that used to be needed.
+  it("repairs a CloudRelay selection an older build stored as manual", () => {
+    globalThis.localStorage.setItem(
+      ROUTING_SELECTION_STORAGE_KEY,
+      JSON.stringify({
+        mode: EngineerRoutingMode.CloudRelay,
+        computeTargetId: "target-1",
+        source: "manual",
+        updatedAt: 42,
+      })
+    );
     registerSurfaceRoutingAdapter(createDesktopRoutingAdapter());
 
     ensureDesktopRoutingSelection();
@@ -312,12 +341,13 @@ describe("ensureDesktopRoutingSelection", () => {
 
   it("leaves a supported LocalElectron selection untouched (idempotent)", () => {
     registerSurfaceRoutingAdapter(createDesktopRoutingAdapter());
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron, null);
+    const before = setRoutingAutoSelection(
+      EngineerRoutingMode.LocalElectron,
+      null
+    );
 
     ensureDesktopRoutingSelection();
 
-    const selection = getRoutingSelection();
-    expect(selection.mode).toBe(EngineerRoutingMode.LocalElectron);
-    expect(selection.source).toBe("manual");
+    expect(getRoutingSelection()).toBe(before);
   });
 });

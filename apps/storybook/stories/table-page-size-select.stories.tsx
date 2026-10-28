@@ -21,7 +21,8 @@ import { useState } from "react";
  * for assistive tech (WCAG 4.1.2).
  */
 const meta = {
-  title: "Design System/Primitives/Table Page Size Select",
+  title: "Composites v1.0/Data Display/Tables/Table Page Size Select",
+  tags: ["deprecated"],
   component: TablePageSizeSelect,
   parameters: {
     layout: "padded",
@@ -32,8 +33,18 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+/**
+ * Satisfies each story's `args` type. Every story renders through its own
+ * stateful harness, so nothing reads this at runtime.
+ */
+const DUMMY_PAGE_SIZE_ARGS = {
+  pageSize: DEFAULT_TABLE_PAGE_SIZE,
+  onPageSizeChange: () => undefined,
+};
+
 /** The shared 25/50/100 ladder, starting on the default every surface shipped. */
 export const Default: Story = {
+  args: DUMMY_PAGE_SIZE_ARGS,
   render: () => {
     const [pageSize, setPageSize] = useState<number>(DEFAULT_TABLE_PAGE_SIZE);
     return (
@@ -60,6 +71,7 @@ export const Default: Story = {
  * render can offer a shorter one.
  */
 export const CustomOptions: Story = {
+  args: DUMMY_PAGE_SIZE_ARGS,
   render: () => {
     const [pageSize, setPageSize] = useState(10);
     return (
@@ -81,6 +93,7 @@ export const CustomOptions: Story = {
  * page size the user just grew) claiming a range past the end of the data.
  */
 export const RangeReadoutCases: Story = {
+  args: DUMMY_PAGE_SIZE_ARGS,
   render: () => (
     <table className="w-full text-sm">
       <thead>
@@ -113,6 +126,7 @@ export const RangeReadoutCases: Story = {
 
 /** Every ladder value against one population, so the strip's density is visible. */
 export const EveryLadderSize: Story = {
+  args: DUMMY_PAGE_SIZE_ARGS,
   render: () => (
     <div className="flex flex-col gap-2">
       {TABLE_PAGE_SIZE_OPTIONS.map((option) => (

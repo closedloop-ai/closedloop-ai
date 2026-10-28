@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { type BranchRow, BranchStatus } from "@repo/api/src/types/branch";
 import {
   GITHUB_RESYNC_NUDGE_METHOD,
   GITHUB_RESYNC_NUDGE_OPERATION_ID,
@@ -8,21 +6,25 @@ import {
   GitHubDirtyFallbackReason,
   GitHubDirtyScopeKind,
 } from "@repo/api/src/types/github-dirty-scope";
+import { test } from "vitest";
 import type {
   DesktopCommandAckEvent,
   DesktopCommandEvent,
   DesktopCommandStreamEvent,
 } from "../src/main/cloud/cloud-protocol.js";
-import { resolveGitHubResyncBranchIds } from "../src/main/github/github-resync-branch-resolution.js";
 import {
   classifyGitHubResyncNudgeCommand,
-  GITHUB_RESYNC_NUDGE_TARGET_CONTEXT_MISMATCH_REASON,
+  GITHUB_RESYNC_NUDGE_CONTEXT_REJECTION_REASONS,
   handleGitHubResyncNudgeCommand,
+  handleGitHubResyncNudgeFromApp,
+  resolveGitHubResyncNudgeTargetContext,
 } from "../src/main/github/github-resync-nudge.js";
+import { BrowserCommandKeyTargetContextOutcome } from "../src/main/github/github-resync-nudge-target-context.js";
 
 const TARGET_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_TARGET_ID = "22222222-2222-4222-8222-222222222222";
 const GATEWAY_ID = "33333333-3333-4333-8333-333333333333";
+const OTHER_GATEWAY_ID = "44444444-4444-4444-8444-444444444444";
 
 test("GitHub resync nudge matcher is limited to exact reserved command", () => {
   assert.equal(classifyGitHubResyncNudgeCommand(makeNudgeCommand()), "match");
@@ -38,9 +40,9 @@ test("GitHub resync nudge matcher is limited to exact reserved command", () => {
   );
   assert.equal(
     classifyGitHubResyncNudgeCommand({
-      operationId: "symphony_status",
+      operationId: "git_local_changes",
       method: "GET",
-      path: "/api/gateway/symphony/status/FEA-1",
+      path: "/api/gateway/git/local-changes",
     }),
     "not_reserved"
   );
@@ -146,62 +148,171 @@ test("reserved GitHub resync nudge accepts unknown scopes with target context fa
   assert.deepEqual(events[0]?.data, { type: "done", fallback: true });
 });
 
-test("reserved GitHub resync nudge rejects mismatched target context", async () => {
+/**
+ * ISS-7486: each of these four rejected with ONE wire reason before the split,
+ * so the metric could not say which of them owned the 39,110 rejections that
+ * were 100% of production's rejected acks. Each case asserts its own reason, so
+ * collapsing any two back together fails here.
+ */
+const NUDGE_CONTEXT_REJECTION_CASES: readonly {
+  name: string;
+  body: Record<string, unknown>;
+  activeContext?: { computeTargetId: string; gatewayId?: string };
+  outcome: keyof typeof GITHUB_RESYNC_NUDGE_CONTEXT_REJECTION_REASONS;
+}[] = [
+  {
+    name: "the command carried no target context at all",
+    body: {
+      scopes: makeNudgeBody().scopes,
+    },
+    activeContext: { computeTargetId: TARGET_ID, gatewayId: GATEWAY_ID },
+    outcome: BrowserCommandKeyTargetContextOutcome.CommandContextAbsent,
+  },
+  {
+    name: "the desktop has no resolvable active context",
+    body: makeNudgeBody(),
+    activeContext: undefined,
+    outcome: BrowserCommandKeyTargetContextOutcome.ActiveContextUnresolved,
+  },
+  {
+    name: "the compute targets disagree",
+    body: { ...makeNudgeBody(), computeTargetId: OTHER_TARGET_ID },
+    activeContext: { computeTargetId: TARGET_ID, gatewayId: GATEWAY_ID },
+    outcome: BrowserCommandKeyTargetContextOutcome.ComputeTargetMismatch,
+  },
+  {
+    name: "the gateways disagree",
+    body: makeNudgeBody(),
+    activeContext: {
+      computeTargetId: TARGET_ID,
+      gatewayId: OTHER_TARGET_ID,
+    },
+    outcome: BrowserCommandKeyTargetContextOutcome.GatewayMismatch,
+  },
+];
+
+for (const nudgeCase of NUDGE_CONTEXT_REJECTION_CASES) {
+  test(`reserved GitHub resync nudge names its own reason when ${nudgeCase.name}`, async () => {
+    const acks: Pick<
+      DesktopCommandAckEvent,
+      "commandId" | "accepted" | "state" | "reason"
+    >[] = [];
+    let refreshCount = 0;
+
+    await handleGitHubResyncNudgeCommand(
+      makeNudgeCommand({ body: nudgeCase.body }),
+      {
+        getActiveTargetContext: () => nudgeCase.activeContext,
+        sendCommandAck: (event) => acks.push(event),
+        sendCommandEvent: () => {},
+        notifyRendererRefresh: () => {
+          refreshCount += 1;
+        },
+      }
+    );
+
+    assert.deepEqual(acks, [
+      {
+        commandId: "github-nudge-command",
+        accepted: false,
+        state: "failed",
+        reason:
+          GITHUB_RESYNC_NUDGE_CONTEXT_REJECTION_REASONS[nudgeCase.outcome],
+      },
+    ]);
+    assert.equal(refreshCount, 0);
+  });
+}
+
+test("the four nudge context reasons are distinct wire strings", () => {
+  // A duplicate would rebuild exactly the collapse ISS-7486 is splitting, and
+  // every per-case assertion above would still pass.
+  const reasons = Object.values(GITHUB_RESYNC_NUDGE_CONTEXT_REJECTION_REASONS);
+  assert.equal(new Set(reasons).size, reasons.length);
+});
+
+test("nudge target context is the connection identity (ISS-8049)", () => {
+  assert.deepEqual(
+    resolveGitHubResyncNudgeTargetContext({
+      onlineComputeTargetId: TARGET_ID,
+      gatewayId: GATEWAY_ID,
+    }),
+    { computeTargetId: TARGET_ID, gatewayId: GATEWAY_ID }
+  );
+  // Unknown gateway id stays absent so a gateway-less command still matches.
+  assert.deepEqual(
+    resolveGitHubResyncNudgeTargetContext({
+      onlineComputeTargetId: TARGET_ID,
+      gatewayId: null,
+    }),
+    { computeTargetId: TARGET_ID }
+  );
+  // Offline: no addressing identity at all — the handler must keep rejecting.
+  assert.equal(
+    resolveGitHubResyncNudgeTargetContext({
+      onlineComputeTargetId: null,
+      gatewayId: GATEWAY_ID,
+    }),
+    undefined
+  );
+});
+
+test("connection-identity fallback admits a correctly-addressed nudge end to end (ISS-8049)", async () => {
   const acks: Pick<
     DesktopCommandAckEvent,
     "commandId" | "accepted" | "state" | "reason"
   >[] = [];
-  let refreshCount = 0;
-
-  await handleGitHubResyncNudgeCommand(
-    makeNudgeCommand({
-      body: { ...makeNudgeBody(), computeTargetId: OTHER_TARGET_ID },
-    }),
-    {
-      getActiveTargetContext: () => ({
-        computeTargetId: TARGET_ID,
-        gatewayId: GATEWAY_ID,
-      }),
+  const refreshes: unknown[] = [];
+  const rendered: unknown[] = [];
+  await handleGitHubResyncNudgeFromApp(makeNudgeCommand(), {
+    getOnlineComputeTargetId: () => TARGET_ID,
+    cloudSocket: {
+      getHelloGatewayId: () => GATEWAY_ID,
       sendCommandAck: (event) => acks.push(event),
       sendCommandEvent: () => {},
-      notifyRendererRefresh: () => {
-        refreshCount += 1;
+    },
+    getAgentDashboard: () => ({
+      refreshGitHubBranches: (body: unknown) => {
+        refreshes.push(body);
+        return Promise.resolve(undefined as unknown);
       },
-    }
-  );
+    }),
+    sendResyncRefreshToRenderer: (payload) => rendered.push(payload),
+  });
+  assert.deepEqual(acks, [
+    { commandId: "github-nudge-command", accepted: true, state: "accepted" },
+  ]);
+  assert.equal(refreshes.length, 1);
+  // The fallback renderer payload is composed by the collaborator, not app.ts.
+  assert.equal(rendered.length, 1);
+});
 
+test("the nudge gateway check compares against the id the hello declared (ISS-12032)", async () => {
+  const acks: Pick<
+    DesktopCommandAckEvent,
+    "commandId" | "accepted" | "state" | "reason"
+  >[] = [];
+  await handleGitHubResyncNudgeFromApp(makeNudgeCommand(), {
+    getOnlineComputeTargetId: () => TARGET_ID,
+    cloudSocket: {
+      getHelloGatewayId: () => OTHER_GATEWAY_ID,
+      sendCommandAck: (event) => acks.push(event),
+      sendCommandEvent: () => {},
+    },
+    getAgentDashboard: () => undefined,
+    sendResyncRefreshToRenderer: () => {},
+  });
   assert.deepEqual(acks, [
     {
       commandId: "github-nudge-command",
       accepted: false,
       state: "failed",
-      reason: GITHUB_RESYNC_NUDGE_TARGET_CONTEXT_MISMATCH_REASON,
+      reason:
+        GITHUB_RESYNC_NUDGE_CONTEXT_REJECTION_REASONS[
+          BrowserCommandKeyTargetContextOutcome.GatewayMismatch
+        ],
     },
   ]);
-  assert.equal(refreshCount, 0);
-});
-
-test("GitHub resync scope resolution maps repo and PR number to branch id", () => {
-  const branch = makeBranchRow({
-    id: "branch-artifact-42",
-    repoFullName: "closedloop-ai/symphony-alpha",
-    branchName: "feat/nudge",
-    prNumber: 42,
-  });
-
-  assert.deepEqual(
-    resolveGitHubResyncBranchIds(
-      [
-        {
-          kind: GitHubDirtyScopeKind.Comment,
-          repositoryFullName: "closedloop-ai/symphony-alpha",
-          pullRequestNumber: 42,
-        },
-      ],
-      [branch]
-    ),
-    ["branch-artifact-42"]
-  );
 });
 
 function makeNudgeCommand(
@@ -224,40 +335,11 @@ function makeNudgeBody() {
       {
         kind: GitHubDirtyScopeKind.Branch,
         repositoryId: "repo-1",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         branchName: "feat/nudge",
       },
     ],
     computeTargetId: TARGET_ID,
     gatewayId: GATEWAY_ID,
-  };
-}
-
-function makeBranchRow(overrides: Partial<BranchRow>): BranchRow {
-  return {
-    id: "branch-id",
-    branchName: "main",
-    baseBranch: null,
-    repoFullName: "closedloop-ai/symphony-alpha",
-    owner: null,
-    status: BranchStatus.Open,
-    prNumber: null,
-    prTitle: null,
-    prState: null,
-    prUrl: null,
-    multiPrWarning: false,
-    checksStatus: null,
-    checksPassed: null,
-    checksTotal: null,
-    reviewDecision: null,
-    ahead: null,
-    behind: null,
-    additions: null,
-    deletions: null,
-    filesChanged: null,
-    estimatedCostUsd: null,
-    lastActivityAt: "2026-07-06T09:00:00.000Z",
-    sessionIds: [],
-    ...overrides,
   };
 }

@@ -12,7 +12,7 @@
  * poll loop or a wall-clock sleep (FEA-2399 `test:node` determinism).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { QuiesceOutcome } from "../src/main/lifecycle/sync-lane-quiesce.js";
 import {
   deferred,

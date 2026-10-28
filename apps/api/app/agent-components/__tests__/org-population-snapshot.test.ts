@@ -45,6 +45,7 @@ vi.mock("../../agent-sessions/service", () => ({
   agentSessionsService: { listByArtifactIds: vi.fn().mockResolvedValue([]) },
 }));
 
+import { orphanGroupByCalls } from "@/__tests__/support/agent-components/usage-lane-doubles";
 import { buildOrgComponentPopulation } from "../org-population";
 import {
   buildPopulationDb,
@@ -55,7 +56,6 @@ import {
   type PopulationFixtures,
   TARGET_1,
 } from "./org-population-fixtures";
-import { orphanGroupByCalls } from "./usage-lane-doubles";
 
 /**
  * Wire the pooled `withDb` and the transactional `withDb.tx` to DISTINCT fake
@@ -142,18 +142,19 @@ describe("buildOrgComponentPopulation — consistent usage snapshot (ISS-4669)",
     });
 
     // Both usage lanes landed on the transactional client's delegates. ISS-4799
-    // moved the orphan lane off `findMany` onto an identity-capped `groupBy`
-    // pair (spine + aggregate), so all three usage reads — the FK rollup plus
-    // the orphan spine and aggregate — arrive on the SAME `groupBy` delegate.
-    expect(tx.groupBy).toHaveBeenCalledTimes(3);
-    expect(orphanGroupByCalls({ groupBy: tx.groupBy })).toHaveLength(2);
+    // moved the orphan lane off `findMany` onto a `groupBy`, so both usage reads
+    // — the FK rollup and the orphan aggregate — arrive on the SAME `groupBy`
+    // delegate. (ISS-6891 removed the orphan lane's identity spine, which used to
+    // make that three reads rather than two.)
+    expect(tx.groupBy).toHaveBeenCalledTimes(2);
+    expect(orphanGroupByCalls({ groupBy: tx.groupBy })).toHaveLength(1);
     // …and NEITHER lane ran on the pooled connection, so they cannot straddle
     // two snapshots the way the pre-fix two-pooled-reads shape did.
     expect(pooled.groupBy).not.toHaveBeenCalled();
     expect(pooled.usageFindMany).not.toHaveBeenCalled();
   });
 
-  it("reads the org INVENTORY bound on that same transaction client (ISS-6180, shafty023)", async () => {
+  it("reads the org INVENTORY bound on that same transaction client (ISS-6180, davetho)", async () => {
     // The inventory read supplies the FK lane's `in` bound, and the usage-only
     // lane now partitions on `agentComponent.uninstalledAt` — the same fact. Left
     // on the pool it is a SECOND snapshot, so a tombstone committing in between
@@ -167,10 +168,13 @@ describe("buildOrgComponentPopulation — consistent usage snapshot (ISS-4669)",
       organizationId: ORG_A,
     });
 
-    expect(tx.inventoryGroupBy).toHaveBeenCalled();
     expect(tx.findMany).toHaveBeenCalled();
-    expect(pooled.inventoryGroupBy).not.toHaveBeenCalled();
     expect(pooled.findMany).not.toHaveBeenCalled();
+    // ISS-6891: and there is no longer a SECOND inventory read to place. The
+    // spine that used to resolve the population ahead of the row read is gone,
+    // so the row read is the whole of it — on either client.
+    expect(tx.inventoryGroupBy).not.toHaveBeenCalled();
+    expect(pooled.inventoryGroupBy).not.toHaveBeenCalled();
   });
 
   it("opens the usage-read transaction at RepeatableRead isolation with a raised timeout", async () => {
@@ -189,8 +193,10 @@ describe("buildOrgComponentPopulation — consistent usage snapshot (ISS-4669)",
     // Prisma's 5s default, so it must actually reach `withDb.tx`.
     expect(capturedTxOptions[0]?.timeout).toBe(EXPECTED_SNAPSHOT_TX_TIMEOUT_MS);
     // Guard the literal against a silent drift from the real Prisma enum member.
-    expect(REPEATABLE_READ).toBe(
-      mocks.Prisma.TransactionIsolationLevel.RepeatableRead
+    const { Prisma: actualPrisma } =
+      await vi.importActual<typeof import("@repo/database")>("@repo/database");
+    expect(actualPrisma.TransactionIsolationLevel.RepeatableRead).toBe(
+      REPEATABLE_READ
     );
   });
 

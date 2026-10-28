@@ -1,12 +1,11 @@
 import type { TurnActor } from "@repo/api/src/types/agent-session";
-import { buildActorColorDomain } from "@repo/app/branches/lib/branch-actor-domain";
 import type { Meta, StoryObj } from "@storybook/react";
 import { BranchTraceActorAvatar } from "./branch-trace-actor-avatar";
 
 const namedActor: TurnActor = {
   color: "",
-  human: "Kaiti",
-  name: "Kaiti",
+  human: "Kaito",
+  name: "Kaito",
   sessionId: "session-review",
 };
 
@@ -18,16 +17,13 @@ const harnessActor: TurnActor = {
   sessionId: "session-build",
 };
 
-const actorDomain = buildActorColorDomain(["Kaiti", "claude"]);
-
 const meta = {
-  title: "App Core/Branches/Trace Actor Avatar",
+  title: "Composites v1.0/Branches/Branch Trace Actor Avatar",
   component: BranchTraceActorAvatar,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     actor: namedActor,
-    actorDomain,
   },
 } satisfies Meta<typeof BranchTraceActorAvatar>;
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { coerceSharedBranchDetailRequest } from "../src/main/dashboard/agent-dashboard-ipc-coercion.js";
 
 describe("shared Branch detail IPC request coercion", () => {
@@ -17,13 +17,13 @@ describe("shared Branch detail IPC request coercion", () => {
       coerceSharedBranchDetailRequest({
         id: "branch-id",
         forceRefresh: true,
-        repositoryFullName: " /ClosedLoop-AI/Symphony-Alpha.git/ ",
+        repositoryFullName: " /ClosedLoop-AI/ClosedLoop-AI.git/ ",
         pullRequestNumber: "4473",
       }),
       {
         id: "branch-id",
         forceRefresh: true,
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 4473,
       }
     );
@@ -33,13 +33,13 @@ describe("shared Branch detail IPC request coercion", () => {
     assert.throws(() =>
       coerceSharedBranchDetailRequest({
         id: "branch-id",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       })
     );
     assert.throws(() =>
       coerceSharedBranchDetailRequest({
         id: "branch-id",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 0,
       })
     );

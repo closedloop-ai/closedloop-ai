@@ -1,9 +1,10 @@
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
+import { useNavigation } from "@repo/navigation/use-navigation";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, test } from "vitest";
-import { useTabParam } from "../use-tab-param";
+import { TabHistoryMode, useTabParam } from "../use-tab-param";
 
 /**
  * Navigation-port coverage for the migrated app-core hook (FEA-1510),
@@ -44,6 +45,26 @@ function renderAliasedTabParam(initialPath: string) {
         validTabs: ALIASED_VALID_TABS,
         tabAliases: { features: "issues" },
       }),
+    { wrapper }
+  );
+  return { nav, ...view };
+}
+
+function renderPushTabParam(initialPath: string) {
+  const nav = createMemoryNavigation({ initialPath });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+  );
+  const view = renderHook(
+    () => ({
+      ...useTabParam<TestTab>({
+        defaultTab: "overview",
+        historyMode: TabHistoryMode.Push,
+        tabAliases: { legacy: "activity" },
+        validTabs: VALID_TABS,
+      }),
+      navigation: useNavigation(),
+    }),
     { wrapper }
   );
   return { nav, ...view };
@@ -99,6 +120,68 @@ describe("useTabParam (navigation port)", () => {
     expect(params.get("tab")).toBeNull();
     expect(params.get("filter")).toBe("open");
     expect(result.current.activeTab).toBe("overview");
+    expect(nav.getHistory()).toEqual([
+      "/project?tab=settings&filter=open",
+      "/project?filter=open",
+    ]);
+  });
+
+  test("push mode preserves context and restores tabs through back and forward", () => {
+    const initial =
+      "/project?file=main&invocationAnchor=row-1&from=session&extra=kept";
+    const { result, nav } = renderPushTabParam(initial);
+
+    act(() => result.current.setActiveTab("activity"));
+    expect(result.current.activeTab).toBe("activity");
+    expect(queryOf(nav.getCurrentHref()).get("file")).toBe("main");
+    expect(queryOf(nav.getCurrentHref()).get("invocationAnchor")).toBe("row-1");
+    expect(queryOf(nav.getCurrentHref()).get("from")).toBe("session");
+    expect(queryOf(nav.getCurrentHref()).get("extra")).toBe("kept");
+    expect(nav.getHistory()).toHaveLength(2);
+
+    act(() => result.current.navigation.back());
+    expect(result.current.activeTab).toBe("overview");
+    expect(nav.getCurrentHref()).toBe(initial);
+    act(() => result.current.navigation.forward());
+    expect(result.current.activeTab).toBe("activity");
+    expect(nav.getHistory()).toHaveLength(2);
+  });
+
+  test("push mode avoids duplicate entries and replaces a legacy alias", () => {
+    const { result, nav } = renderPushTabParam("/project?tab=legacy&file=main");
+    expect(result.current.activeTab).toBe("activity");
+
+    act(() => result.current.setActiveTab("activity"));
+    expect(nav.getCurrentHref()).toBe("/project?tab=activity&file=main");
+    expect(nav.getHistory()).toHaveLength(2);
+    act(() => result.current.setActiveTab("activity"));
+    expect(nav.getHistory()).toHaveLength(2);
+
+    act(() => result.current.setActiveTab("unknown"));
+    expect(nav.getCurrentHref()).toBe("/project?tab=activity&file=main");
+  });
+
+  test("push mode omits the default and makes it a navigable history entry", () => {
+    const { result, nav } = renderPushTabParam(
+      "/project?tab=activity&file=main"
+    );
+
+    act(() => result.current.setActiveTab("overview"));
+    expect(nav.getCurrentHref()).toBe("/project?file=main");
+    expect(result.current.activeTab).toBe("overview");
+    act(() => result.current.navigation.back());
+    expect(result.current.activeTab).toBe("activity");
+  });
+
+  test("replace mode rejects invalid selections without changing URL context", () => {
+    const initial = "/project?tab=activity&file=main&from=session";
+    const { result, nav } = renderTabParam(initial);
+
+    act(() => result.current.setActiveTab("unknown"));
+
+    expect(result.current.activeTab).toBe("activity");
+    expect(nav.getCurrentHref()).toBe(initial);
+    expect(nav.getHistory()).toEqual([initial]);
   });
 
   // FEA-4137: a legacy `?tab=features` deep-link must resolve to the canonical

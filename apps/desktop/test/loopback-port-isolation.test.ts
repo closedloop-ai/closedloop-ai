@@ -25,16 +25,24 @@
 
 import assert from "node:assert/strict";
 import path from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript6";
+import { test, vi } from "vitest";
+import { vibeProfileLaunchEnv } from "../scripts/vibe-profile/launch-env.js";
 import type { AgentHookLifecycle } from "../src/main/agent-monitor/agent-monitor-listener.js";
-import { AgentHookListener } from "../src/main/agent-monitor/agent-monitor-listener.js";
+import {
+  AGENT_MONITOR_PORT_ENV,
+  AgentHookListener,
+} from "../src/main/agent-monitor/agent-monitor-listener.js";
+import { startAgentCaptureReceivers } from "../src/main/dashboard/agent-capture-receiver-startup.js";
+import { createAgentDashboardRuntimeLifecycle } from "../src/main/dashboard/agent-dashboard-runtime-lifecycle.js";
 import {
   E2E_EPHEMERAL_LOOPBACK_PORTS_ARG,
   resolveLoopbackListenerPort,
 } from "../src/main/lifecycle/loopback-port-isolation.js";
 import { OtlpHttpReceiver } from "../src/main/telemetry/otlp-http-receiver.js";
+import { DEFAULT_OTLP_RECEIVER_PORT } from "../src/main/telemetry/otlp-receiver-state.js";
+import { AGENT_MONITOR_PORT } from "../src/shared/contracts.js";
 import { e2eAppLaunchArgs } from "./e2e/helpers/desktop-app.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 
@@ -47,7 +55,7 @@ const COMPOSITION_ROOT_SOURCE =
   "src/main/dashboard/agent-dashboard-design-system-runtime.ts";
 const LAUNCHER_SOURCES = [
   "test/e2e/helpers/desktop-app.ts",
-  "test/e2e/helpers/branch-details-authenticated-cloud.ts",
+  "test/e2e/helpers/authenticated-desktop-app.ts",
 ];
 /** The composition root's local wrapper around `resolveLoopbackListenerPort`. */
 const LOOPBACK_PORT_HELPER = "loopbackPort";
@@ -135,7 +143,7 @@ const UNBOUND_PORT_STAND_IN = 4820;
  *
  * The colliding tests need a port something already OWNS. Reserving one by
  * binding and releasing left a window in which another node:test worker could
- * take it (wongk, PR #4923) — in a suite about port determinism, that is the
+ * take it (whitlockk, PR #4923) — in a suite about port determinism, that is the
  * exact flake being fixed. So the first listener binds port 0 and KEEPS it, and
  * the collider races that live owner rather than a recently-vacated number.
  * Nothing is ever unowned between the read and the collision.
@@ -279,7 +287,107 @@ test("ISS-5723: every E2E launch carries the ephemeral-loopback argument", () =>
   assert.ok(e2eAppLaunchArgs(true).includes(E2E_EPHEMERAL_LOOPBACK_PORTS_ARG));
 });
 
-// The assertion above only proves the HELPER returns the flag (wongk, PR #4923).
+test("ISS-12135: a vibe profile launch binds both listeners on ephemeral ports", async () => {
+  const { args } = vibeProfileLaunchEnv("/synthetic/vibe-profile", {
+    apiOrigin: "http://localhost:3202",
+    webOrigin: "http://localhost:3200",
+  });
+  const hookPort = resolveLoopbackListenerPort(AGENT_MONITOR_PORT, args, {
+    isPackaged: false,
+  });
+  const otlpPort = resolveLoopbackListenerPort(
+    DEFAULT_OTLP_RECEIVER_PORT,
+    args,
+    { isPackaged: false }
+  );
+  assert.equal(hookPort, 0);
+  assert.equal(otlpPort, 0);
+
+  const hookListener = new AgentHookListener({
+    lifecycle: INERT_LIFECYCLE,
+    port: hookPort,
+  });
+  const otlpReceiver = new OtlpHttpReceiver({ port: otlpPort });
+  try {
+    const [, otlpState] = await Promise.all([
+      hookListener.start(),
+      otlpReceiver.start(),
+    ]);
+    assert.equal(hookListener.isReady(), true);
+    assert.notEqual(boundPortOf(hookListener.getUrl()), AGENT_MONITOR_PORT);
+    assert.equal(otlpState.available, true);
+    assert.notEqual(otlpState.port, DEFAULT_OTLP_RECEIVER_PORT);
+  } finally {
+    await Promise.all([hookListener.stop(), otlpReceiver.stop()]);
+  }
+});
+
+test("ISS-12135: an ephemeral hook listener publishes its bound port for the agents it spawns", async () => {
+  const listener = new AgentHookListener({
+    lifecycle: INERT_LIFECYCLE,
+    port: 0,
+  });
+  const neverBound = new AgentHookListener({
+    lifecycle: INERT_LIFECYCLE,
+    port: 0,
+  });
+  const env: NodeJS.ProcessEnv = {};
+  const untouched: NodeJS.ProcessEnv = {};
+  try {
+    await listener.start();
+    listener.publishEphemeralPort(env);
+    neverBound.publishEphemeralPort(untouched);
+
+    assert.equal(
+      env[AGENT_MONITOR_PORT_ENV],
+      String(boundPortOf(listener.getUrl()))
+    );
+    assert.deepEqual(untouched, {});
+  } finally {
+    await listener.stop();
+  }
+});
+
+test("ISS-12135: capture startup publishes the bound hook port before starting Mesh", async () => {
+  const hookListener = new AgentHookListener({
+    lifecycle: INERT_LIFECYCLE,
+    port: 0,
+  });
+  const otlpReceiver = new OtlpHttpReceiver({ port: 0 });
+  const lifecycle = createAgentDashboardRuntimeLifecycle({
+    beginClosing: () => undefined,
+    close: async () => undefined,
+  });
+  vi.stubEnv(AGENT_MONITOR_PORT_ENV, String(UNBOUND_PORT_STAND_IN));
+  const onSessionMeshReady = vi.fn(() => {
+    assert.equal(hookListener.isReady(), true);
+    assert.equal(
+      process.env[AGENT_MONITOR_PORT_ENV],
+      String(boundPortOf(hookListener.getUrl()))
+    );
+  });
+  try {
+    await startAgentCaptureReceivers({
+      lifecycle,
+      golden: false,
+      hookListener,
+      otlpReceiver,
+      onSessionMeshReady,
+      reconcileSessionMeshHooks: () => undefined,
+      log: () => undefined,
+    });
+    assert.equal(onSessionMeshReady.mock.calls.length, 1);
+    assert.equal(
+      process.env[AGENT_MONITOR_PORT_ENV],
+      String(boundPortOf(hookListener.getUrl()))
+    );
+  } finally {
+    await Promise.all([hookListener.stop(), otlpReceiver.stop()]);
+    vi.unstubAllEnvs();
+  }
+});
+
+// The launch-argument helper test only proves it returns the flag (whitlockk, PR #4923).
 // Deleting its use from either launcher, or dropping either production port
 // injection, leaves it green while the isolation stops happening — the whole
 // mechanism reverts and every test in this file still passes. These two close

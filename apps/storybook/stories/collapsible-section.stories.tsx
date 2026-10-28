@@ -1,4 +1,5 @@
 import { CollapsibleSection } from "@repo/design-system/components/ui/collapsible-section";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 
@@ -29,10 +30,13 @@ function CollapsibleSectionStory({
 }
 
 const meta = {
-  title: "Design System/Primitives/Collapsible Section",
+  title: "Composites v1.0/Layout/Collapsible Section",
   component: CollapsibleSectionStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
+  render: (args) => (
+    <CollapsibleSectionStory key={remountKey(args.defaultOpen)} {...args} />
+  ),
 } satisfies Meta<typeof CollapsibleSectionStory>;
 
 export default meta;

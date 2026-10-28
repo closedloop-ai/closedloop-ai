@@ -11,7 +11,7 @@
 --
 -- Before these indexes neither predicate was covered — `compute_targets` carried
 -- only the `(organization_id, user_id …)` / `(user_id, is_online)` shapes — so
--- both scans were sequential (wongk + Codex, #4127; apps/api/AGENTS.md: an
+-- both scans were sequential (whitlockk + Codex, #4127; apps/api/AGENTS.md: an
 -- unindexed WHERE filter on a growing table means a sequential scan, add the
 -- index in the same PR). PARTIAL indexes, so each is scoped to exactly the rows
 -- its scan reads and stays small:

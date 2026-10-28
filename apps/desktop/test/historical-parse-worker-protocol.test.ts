@@ -1,39 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { z } from "zod";
-import { HistoricalParseWorkerLimits } from "../src/main/collectors/engine/historical-parse-worker-limits.js";
+import { test } from "vitest";
+import { HistoricalParseWorkerLimits } from "../src/main/collectors/engine/historical-parse-worker-limits-and-clamping.js";
 import {
-  createHistoricalParseWorkerFailedResponse,
-  createHistoricalParseWorkerParsedResponse,
-  HistoricalParseWorkerRequestType,
   HistoricalParseWorkerResponseType,
-  historicalParseWorkerRequestSchema,
   historicalParseWorkerResponseSchema,
-  summarizeHistoricalWorkerResponseIssues,
 } from "../src/main/collectors/engine/historical-parse-worker-protocol.js";
-import { clampSessionsForWorkerResponse } from "../src/main/collectors/engine/historical-parse-worker-response-budget.js";
-import { summarizeHistoricalWorkerStderr } from "../src/main/collectors/engine/historical-parse-worker-stderr-sanitize.js";
 import {
-  Harness,
   NormalizedDefinitionKind,
   type NormalizedSession,
 } from "../src/main/collectors/types.js";
 import {
-  CAPPED_UNION_DIAGNOSTIC_PATTERN,
-  INVALID_WORKER_RESPONSE_REQUEST_PATTERN,
   makeSession,
-  OFFENDING_FIELD_DIAGNOSTIC_PATTERN,
   parsedSessions,
   REVIEWED_NORMALIZED_TOOL_USE_FIELDS,
-  ROOT_INVALID_UNION_PATTERN,
-  UNCAPPED_UNION_LEAF_PATTERN,
-  WORKER_STDERR_REDACTED_PATH_PATTERN,
-  WORKER_STDERR_REDACTED_SECRET_PATTERN,
-  WORKER_STDERR_RELATIVE_CONTEXT_PATTERN,
-  WORKER_STDERR_SUMMARY_PATTERN,
-  WORKER_STDERR_SUMMARY_PREFIX_PATTERN,
-  WORKER_STDERR_TRUNCATION_PATTERN,
-  WORKER_STDERR_WARNING_PATTERN,
 } from "./historical-parse-worker-response-support.js";
 
 test("historical parse worker response rejects malformed sessions", () => {
@@ -51,6 +30,54 @@ test("historical parse worker response accepts normalized sessions", () => {
     type: HistoricalParseWorkerResponseType.Parsed,
     requestId: "historical-parse-1",
     sessions: [makeSession("worker-session")],
+  });
+
+  assert.equal(result.success, true);
+});
+
+/**
+ * ISS-7696 (whitlockk review): `resumeAfter` documents itself as present EXACTLY
+ * when the response left sessions behind, and the schema used to accept it
+ * alone. That shape reaches `applyParseSideReport` with `truncatedByBudget`
+ * false, parks a cursor, and seals in the same pass — a sealed source holding a
+ * live continuation into a window it never admitted dropping.
+ *
+ * All three payloads are WIRE LITERALS rather than a builder, so the expected
+ * shape cannot be derived from the schema it is asserting about.
+ */
+test("historical parse worker response rejects a continuation with no dropped sessions", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [makeSession("worker-session")],
+    resumeAfter: { sessionIndex: 2, sessionId: "worker-session" },
+  });
+
+  assert.equal(result.success, false);
+});
+
+test("historical parse worker response accepts a continuation beside dropped sessions", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [makeSession("worker-session")],
+    droppedSessions: 3,
+    resumeAfter: { sessionIndex: 2, sessionId: "worker-session" },
+  });
+
+  assert.equal(result.success, true);
+});
+
+// The guard is ONE-DIRECTIONAL on purpose: a worker too old to continue reports
+// the loss without a resume point, and the runner reads that as the permanent
+// under-import ISS-5854 surfaces. Rejecting it here would drop the whole
+// response and lose the report as well.
+test("historical parse worker response accepts dropped sessions with no continuation", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [makeSession("worker-session")],
+    droppedSessions: 3,
   });
 
   assert.equal(result.success, true);
@@ -96,7 +123,7 @@ test("historical parse worker response round-trips a pre-FEA-4376 payload that o
 });
 
 test("historical parse worker response rejects a session whose model exceeds the short-text cap", () => {
-  // PR #3903 review (wongk): a /model echo is unbounded transcript text, but the
+  // PR #3903 review (whitlockk): a /model echo is unbounded transcript text, but the
   // .strict() boundary caps `model` at 8,192 chars — an over-cap value rejects the
   // WHOLE source payload (silent whole-source drop, FEA-3701 class). This pins the
   // cap, which is why the parser must pre-reject an over-length label
@@ -182,11 +209,11 @@ test("historical parse worker response strips the retired FEA-3496 cache_creatio
   });
 
   assert.equal(result.success, true);
+  assert.ok(result.success);
+  const [parsed] = parsedSessions(result);
+  assert.ok(parsed);
   assert.equal(
-    result.success
-      ? (parsedSessions(result)[0]?.usageExtras as Record<string, unknown>)
-          .cache_creation
-      : "unreachable",
+    (parsed.usageExtras as Record<string, unknown>).cache_creation,
     undefined
   );
 });
@@ -798,27 +825,6 @@ test("historical parse worker response rejects unsafe token counters", () => {
   assert.equal(result.success, false);
 });
 
-test("historical parse worker request validates canonical harness values", () => {
-  assert.equal(
-    historicalParseWorkerRequestSchema.safeParse({
-      type: HistoricalParseWorkerRequestType.ParseSource,
-      requestId: "historical-parse-1",
-      collectorKey: Harness.Claude,
-      source: "/tmp/session.jsonl",
-    }).success,
-    true
-  );
-  assert.equal(
-    historicalParseWorkerRequestSchema.safeParse({
-      type: HistoricalParseWorkerRequestType.ParseSource,
-      requestId: "historical-parse-1",
-      collectorKey: "unknown",
-      source: "/tmp/session.jsonl",
-    }).success,
-    false
-  );
-});
-
 test("historical parse worker response rejects oversized unknown payloads", () => {
   const oversizedToolInput = Array.from({ length: 1001 }, (_, index) => index);
   const result = historicalParseWorkerResponseSchema.safeParse({
@@ -872,183 +878,6 @@ test("historical parse worker response rejects oversized failure messages", () =
   assert.equal(result.success, false);
 });
 
-test("historical parse worker response rejects oversized aggregate arrays", () => {
-  const result = historicalParseWorkerResponseSchema.safeParse({
-    type: HistoricalParseWorkerResponseType.Parsed,
-    requestId: "historical-parse-1",
-    sessions: [makeAggregateHeavySession("aggregate-heavy")],
-  });
-
-  assert.equal(result.success, false);
-});
-
-test("historical parse worker response rejects oversized aggregate text", () => {
-  const text = "x".repeat(HistoricalParseWorkerLimits.maxLongTextLength);
-  const result = historicalParseWorkerResponseSchema.safeParse({
-    type: HistoricalParseWorkerResponseType.Parsed,
-    requestId: "historical-parse-1",
-    sessions: [
-      {
-        ...makeSession("aggregate-text"),
-        messages: Array.from({ length: 33 }, () => ({
-          role: "assistant",
-          timestamp: "2026-06-07T12:00:00.000Z",
-          text,
-        })),
-      },
-    ],
-  });
-
-  assert.equal(result.success, false);
-});
-
-test("historical parse worker converts malformed parsed output into a small nonfatal failure", () => {
-  const response = createHistoricalParseWorkerParsedResponse(
-    "historical-parse-1",
-    [{ sessionId: "missing-required-fields" } as NormalizedSession]
-  );
-
-  assert.equal(response.type, HistoricalParseWorkerResponseType.Failed);
-  if (response.type !== HistoricalParseWorkerResponseType.Failed) {
-    assert.fail("expected malformed parsed output to become a failed response");
-  }
-  assert.equal(response.fatal, undefined);
-  assert.match(response.message, INVALID_WORKER_RESPONSE_REQUEST_PATTERN);
-  assert.ok(response.diagnostic);
-  assert.equal(response.diagnostic.includes("sessions.0.sessionId"), false);
-});
-
-test("historical parse worker names the offending field in the nonfatal diagnostic", () => {
-  // A well-formed session that clamps cleanly but violates a per-field bound —
-  // the case that produced a bare `<root>:invalid_union` before the diagnostic
-  // was sharpened.
-  //
-  // The fixture is an oversized `cwd` (a SHORT-capped field), not the oversized
-  // `name` it used to be: ISS-5797 taught the producer to truncate every
-  // long-text field, so an oversized `name` is now clamped and the response
-  // legitimately succeeds. Short-capped fields are identifiers and paths rather
-  // than transcript payloads, are deliberately left unclamped, and so remain the
-  // honest way to exercise the diagnostic path.
-  const response = createHistoricalParseWorkerParsedResponse(
-    "historical-parse-1",
-    [
-      {
-        ...makeSession("oversized-cwd"),
-        cwd: "x".repeat(HistoricalParseWorkerLimits.maxShortTextLength + 1),
-      },
-    ]
-  );
-
-  assert.equal(response.type, HistoricalParseWorkerResponseType.Failed);
-  if (response.type !== HistoricalParseWorkerResponseType.Failed) {
-    assert.fail(
-      "expected an out-of-bounds session to become a failed response"
-    );
-  }
-  assert.ok(response.diagnostic);
-  assert.match(response.diagnostic, OFFENDING_FIELD_DIAGNOSTIC_PATTERN);
-  assert.doesNotMatch(response.diagnostic, ROOT_INVALID_UNION_PATTERN);
-});
-
-test("historical parse worker caps nested invalid union diagnostic flattening", () => {
-  const error = new z.ZodError([makeNestedInvalidUnionIssue(12)]);
-  const diagnostic = summarizeHistoricalWorkerResponseIssues(error);
-
-  assert.match(diagnostic, CAPPED_UNION_DIAGNOSTIC_PATTERN);
-  assert.doesNotMatch(diagnostic, UNCAPPED_UNION_LEAF_PATTERN);
-  assert.equal(diagnostic.split("; ").length, 6);
-});
-
-test("historical parse worker failed response factory bounds and sanitizes diagnostics", () => {
-  const response = createHistoricalParseWorkerFailedResponse(
-    "historical-parse-1",
-    `failed at /Users/alice/private/transcript.jsonl OPENAI_API_KEY=secret-value ${"x".repeat(HistoricalParseWorkerLimits.maxLongTextLength)}`,
-    {
-      diagnostic:
-        "Bearer ghp_123456789012345678901234567890 at file:///Users/alice/transcript.jsonl",
-    }
-  );
-
-  assert.equal(response.type, HistoricalParseWorkerResponseType.Failed);
-  assert.equal(response.fatal, undefined);
-  assert.equal(
-    response.message.length <= HistoricalParseWorkerLimits.maxLongTextLength,
-    true
-  );
-  assert.equal(response.message.includes("/Users/alice"), false);
-  assert.equal(response.message.includes("secret-value"), false);
-  assert.ok(response.diagnostic);
-  assert.equal(response.diagnostic.includes("ghp_"), false);
-  assert.equal(response.diagnostic.includes("file:///Users/alice"), false);
-});
-
-test("historical parse worker stderr summary includes a sanitized preview", () => {
-  const summary = summarizeHistoricalWorkerStderr(
-    Buffer.from(
-      [
-        "Warning: parse failed at /Users/alice/private/transcript.jsonl:42",
-        "OPENAI_API_KEY=secret-value",
-        "relative-parser.ts: retrying",
-      ].join("\n")
-    )
-  );
-
-  assert.ok(summary);
-  assert.match(summary, WORKER_STDERR_SUMMARY_PATTERN);
-  assert.match(summary, WORKER_STDERR_WARNING_PATTERN);
-  assert.match(summary, WORKER_STDERR_REDACTED_PATH_PATTERN);
-  assert.match(summary, WORKER_STDERR_REDACTED_SECRET_PATTERN);
-  assert.match(summary, WORKER_STDERR_RELATIVE_CONTEXT_PATTERN);
-  assert.equal(summary.includes("secret-value"), false);
-  assert.equal(summary.includes("/Users/alice"), false);
-  assert.equal(summary.includes("private/transcript"), false);
-});
-
-test("historical parse worker stderr preview is byte bounded", () => {
-  const summary = summarizeHistoricalWorkerStderr(
-    Buffer.from(`Warning: ${"x".repeat(2000)}`)
-  );
-  assert.ok(summary);
-  const preview = summary.replace(WORKER_STDERR_SUMMARY_PREFIX_PATTERN, "");
-
-  assert.match(summary, WORKER_STDERR_SUMMARY_PATTERN);
-  assert.match(preview, WORKER_STDERR_TRUNCATION_PATTERN);
-  assert.equal(
-    Buffer.byteLength(preview, "utf8") <=
-      HistoricalParseWorkerLimits.maxWorkerStderrPreviewBytes,
-    true
-  );
-});
-
-test("historical parse worker stderr summary suppresses standalone SQLite experimental warning", () => {
-  const summary = summarizeHistoricalWorkerStderr(
-    Buffer.from(
-      [
-        "(node:41402) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
-        "(Use `Electron Helper --trace-warnings ...` to show where the warning was created)",
-      ].join("\n")
-    )
-  );
-
-  assert.equal(summary, null);
-});
-
-test("historical parse worker stderr summary keeps mixed warning output", () => {
-  const summary = summarizeHistoricalWorkerStderr(
-    Buffer.from(
-      [
-        "(node:41402) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
-        "Warning: parse failed at /Users/alice/private/transcript.jsonl:42",
-      ].join("\n")
-    )
-  );
-
-  assert.ok(summary);
-  assert.match(summary, WORKER_STDERR_SUMMARY_PATTERN);
-  assert.match(summary, WORKER_STDERR_WARNING_PATTERN);
-  assert.equal(summary.includes("/Users/alice"), false);
-});
-
 function parseWorkerToolUse(toolUse: Record<string, unknown>) {
   return historicalParseWorkerResponseSchema.safeParse({
     type: HistoricalParseWorkerResponseType.Parsed,
@@ -1060,111 +889,4 @@ function parseWorkerToolUse(toolUse: Record<string, unknown>) {
       },
     ],
   });
-}
-
-function makeNestedInvalidUnionIssue(depth: number): z.ZodIssue {
-  if (depth === 0) {
-    return {
-      code: "invalid_type",
-      expected: "string",
-      path: ["leaf"],
-      message: "Invalid input: expected string, received number",
-    } as z.ZodIssue;
-  }
-
-  return {
-    code: "invalid_union",
-    path: [`union-${depth}`],
-    message: "Invalid input",
-    errors: [
-      [makeNestedInvalidUnionIssue(depth - 1)],
-      [makeNestedInvalidUnionIssue(depth - 1)],
-    ],
-  } as z.ZodIssue;
-}
-
-test("clampSessionsForWorkerResponse leaves a normal session untouched", () => {
-  const session = makeSession("normal");
-  const [clamped] = clampSessionsForWorkerResponse([session]);
-
-  assert.deepEqual(clamped, session);
-});
-
-test("clampSessionsForWorkerResponse trims an oversized session to a valid response", () => {
-  // Raw, the over-budget session is rejected by the response schema.
-  assert.equal(
-    historicalParseWorkerResponseSchema.safeParse({
-      type: HistoricalParseWorkerResponseType.Parsed,
-      requestId: "historical-parse-1",
-      sessions: [makeAggregateHeavySession("aggregate-heavy")],
-    }).success,
-    false
-  );
-
-  // Clamped, the same session yields a response that validates.
-  const clamped = clampSessionsForWorkerResponse([
-    makeAggregateHeavySession("aggregate-heavy"),
-  ]);
-  const result = historicalParseWorkerResponseSchema.safeParse({
-    type: HistoricalParseWorkerResponseType.Parsed,
-    requestId: "historical-parse-1",
-    sessions: clamped,
-  });
-
-  assert.equal(result.success, true);
-  // The session is preserved (only its detail arrays are truncated).
-  assert.equal(clamped.length, 1);
-  assert.equal(clamped[0]?.sessionId, "aggregate-heavy");
-  assert.ok(clamped[0] !== undefined && clamped[0].messages.length < 5000);
-});
-
-function makeAggregateHeavySession(sessionId: string): NormalizedSession {
-  const session = makeSession(sessionId);
-  session.messages = Array.from({ length: 5000 }, () => ({
-    role: "assistant",
-    timestamp: "2026-06-07T12:00:00.000Z",
-    text: "ok",
-  }));
-  session.tokenSeries = Array.from({ length: 5000 }, () => ({
-    timestamp: "2026-06-07T12:00:00.000Z",
-    model: "gpt-5",
-    input: 1,
-    output: 1,
-    cacheRead: 0,
-    cacheWrite: 0,
-  }));
-  session.toolUses = Array.from({ length: 5000 }, () => ({
-    name: "Read",
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.messageTimestamps = Array.from(
-    { length: 5000 },
-    () => "2026-06-07T12:00:00.000Z"
-  );
-  session.turnDurations = Array.from({ length: 5000 }, () => ({
-    durationMs: 1,
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.slashCommands = Array.from({ length: 5000 }, () => ({
-    name: "test",
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.teams = Array.from({ length: 5000 }, () => "team");
-  session.compactions = Array.from({ length: 5000 }, () => ({
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.apiErrors = Array.from({ length: 5000 }, () => ({
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.toolResultErrors = Array.from({ length: 5000 }, () => ({
-    timestamp: "2026-06-07T12:00:00.000Z",
-  }));
-  session.usageExtras = {
-    service_tiers: Array.from({ length: 5000 }, () => "default"),
-    speeds: Array.from({ length: 5000 }, () => "normal"),
-    inference_geos: Array.from({ length: 5000 }, () => "us"),
-    reasoning_output_tokens: 0,
-    web_search_requests: 0,
-  };
-  return session;
 }

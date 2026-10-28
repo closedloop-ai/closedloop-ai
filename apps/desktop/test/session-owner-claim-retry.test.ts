@@ -1,6 +1,6 @@
 /**
  * @file session-owner-claim-retry.test.ts
- * @description ISS-6168 (PR #4947 review, wongk + chatgpt-codex-connector): the
+ * @description ISS-6168 (PR #4947 review, whitlockk + chatgpt-codex-connector): the
  * two halves of the post-open owner claim that no DB-level test can see.
  *
  * 1. `createSessionOwnerClaimTracker` — the db-host worker's retry policy. The
@@ -19,7 +19,7 @@
  *    and asserts the `SetUserIdentity` request reaches it.
  */
 import assert from "node:assert/strict";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import type { createAgentDashboardDbHostLifecycle as CreateLifecycle } from "../src/main/dashboard/agent-dashboard-db-host-lifecycle.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "../src/main/dashboard/agent-dashboard-runtime-options.js";
 import {
@@ -39,7 +39,7 @@ import {
 } from "./helpers/electron-module-mock.js";
 
 const SIGNED_IN: DbHostUserIdentity = {
-  userId: "u-mike",
+  userId: "u-marisol",
   organizationId: "org-closedloop",
 };
 /** The pre-open zombie reap shells out to `lsof`; give the boot leg real room. */
@@ -224,7 +224,7 @@ describe("ISS-6168 db-host lifecycle identity push (behavioral)", () => {
   let electronMock: ElectronModuleMock;
   let createLifecycle: typeof CreateLifecycle;
 
-  before(async () => {
+  beforeAll(async () => {
     // `agent-dashboard-runtime-paths.ts` imports `electron` at module scope,
     // which throws under `tsx --test` — the ISS-4845 redirect mechanism.
     electronMock = registerElectronModuleMock();
@@ -233,7 +233,7 @@ describe("ISS-6168 db-host lifecycle identity push (behavioral)", () => {
     ));
   });
 
-  after(() => {
+  afterAll(() => {
     electronMock.deregister();
   });
 

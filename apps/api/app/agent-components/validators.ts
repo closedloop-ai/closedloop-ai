@@ -1,5 +1,6 @@
 import {
   AGENT_COMPONENT_INVENTORY_CAP,
+  AGENT_COMPONENT_LIST_MAX_OFFSET,
   AgentComponentKind,
   AgentComponentSortDir,
   AgentComponentSortKey,
@@ -8,20 +9,37 @@ import { z } from "zod";
 
 export const AGENT_COMPONENT_LIST_DEFAULT_LIMIT = 50;
 /**
- * Upper bound a caller may request in one page. This is the shared
- * `AGENT_COMPONENT_INVENTORY_CAP` (5000) — the same value as the service-side
- * `MAX_ORG_INVENTORY_ROWS` DB read cap: the org inventory is a bounded set the
- * service never returns more than that many rows for, so allowing a single
- * full-inventory fetch exposes no additional data — it just lets the Agents
- * workspace pull the whole set and do its filtering / grouping / pagination /
- * summary client-side (the surface is entirely client-side; a lower cap
- * silently truncated the list to 50 and made the summary cards undercount).
+ * Upper bound a caller may request in one page — the shared
+ * `AGENT_COMPONENT_INVENTORY_CAP` (5000).
+ *
+ * ISS-6891: a page, not the population. The service no longer caps what it reads,
+ * so an org larger than one page is reached by paging (`offset`), and `total` /
+ * `hasMore` report the complete facet-selected population rather than a truncated
+ * one. Both ends of `limit` are clamped here (`min(1)`), since a zero or
+ * negative page is not a page.
  */
 export const AGENT_COMPONENT_LIST_MAX_LIMIT = AGENT_COMPONENT_INVENTORY_CAP;
 
 /**
  * Normalize a repeated query param: `parseQueryParams` gives a string for
  * one value or string[] for multiple. We always want an array.
+ *
+ * ISS-7271 (davetho review): DEDUPED, because the array length is the only
+ * thing between a caller's query string and the DB's bind-parameter ceiling. A
+ * repeated facet value compiles to a repeated arm of the same `IN` list —
+ * `?kinds=skill&kinds=skill` filters exactly as `?kinds=skill` does — so
+ * duplicates buy the request nothing and cost it one bind slot each. Undeduped,
+ * 32k repetitions of one VALID kind built a usage-rollup predicate past the
+ * ceiling that Prisma refuses outright, and that lane is deliberately not
+ * fail-open, so the Agents catalog 500ed
+ * (`inventoryUsageIdChunkSize` in `./org-population`). Deduping bounds the facet
+ * by the ENUM's cardinality instead of by the query string's length, which is
+ * what the chunker's budget already assumes it can rely on — and it is the
+ * bound that costs the caller nothing, unlike a length cap that would reject a
+ * request whose filter was never wider than ten kinds.
+ *
+ * Before element validation deliberately: the width to bound is what arrives,
+ * not what survives parsing.
  */
 function queryArray<T extends z.ZodTypeAny>(element: T) {
   return z
@@ -29,7 +47,7 @@ function queryArray<T extends z.ZodTypeAny>(element: T) {
       if (value === undefined) {
         return undefined;
       }
-      return Array.isArray(value) ? value : [value];
+      return Array.isArray(value) ? [...new Set(value)] : [value];
     }, z.array(element))
     .optional();
 }
@@ -53,7 +71,7 @@ const agentComponentListQueryFields = z.object({
   // against the component's `DefinitionVersionEditor` authors set. Replaces the
   // old single-`owner` filter.
   collaborator: z.string().trim().min(1).optional(),
-  // ISS-4942 (wongk): the compatibility alias for the pre-FEA-4098 `?owner=`
+  // ISS-4942 (whitlockk): the compatibility alias for the pre-FEA-4098 `?owner=`
   // filter. This object is not `.strict()`, so before this an unknown `owner`
   // was stripped and the filter silently returned the UNFILTERED inventory —
   // and a version-skewed deploy makes that reachable in both directions (the
@@ -74,7 +92,12 @@ const agentComponentListQueryFields = z.object({
     .min(1)
     .max(AGENT_COMPONENT_LIST_MAX_LIMIT)
     .default(AGENT_COMPONENT_LIST_DEFAULT_LIMIT),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(AGENT_COMPONENT_LIST_MAX_OFFSET)
+    .default(0),
   // FEA-3160: inclusive lower bound for the USAGE time window (30/60/90-day
   // control on the Agents workspace). Scopes usage aggregation to
   // `AgentComponentSessionUsage.lastInvokedAt >= startDate` server-side.
@@ -141,7 +164,12 @@ export const sourceOccurrenceQuerySchema = z.object({
     .min(1)
     .max(SOURCE_OCCURRENCE_MAX_LIMIT)
     .default(SOURCE_OCCURRENCE_DEFAULT_LIMIT),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(AGENT_COMPONENT_LIST_MAX_OFFSET)
+    .default(0),
 });
 
 export type SourceOccurrenceQuery = z.infer<typeof sourceOccurrenceQuerySchema>;

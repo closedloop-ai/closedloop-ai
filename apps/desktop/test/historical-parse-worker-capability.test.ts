@@ -1,6 +1,6 @@
 /**
  * @file historical-parse-worker-capability.test.ts
- * @description ISS-4573 / PR #4085 review (wongk): the utility-process parser
+ * @description ISS-4573 / PR #4085 review (whitlockk): the utility-process parser
  * runner forks its worker with the TEST-ONLY poison capability threaded in
  * EXPLICITLY — and only when the main-process composition root cleared the
  * `!app.isPackaged` + E2E-sentinel gate. The worker never trusts the raw inherited
@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   E2E_PARSE_QUARANTINE_ENABLED_VALUE,
   E2E_POISON_WORKER_CAPABILITY_ENV,
@@ -104,7 +104,7 @@ test("ISS-4573: disarmed runner OMITS the env fork option when nothing to strip"
 });
 
 test("ISS-4573: disarmed runner STRIPS an inherited worker-capability value", async () => {
-  // PR #4085 review (wongk): a leaked/inherited capability on a production
+  // PR #4085 review (whitlockk): a leaked/inherited capability on a production
   // (disarmed) worker must be removed so it can never wedge a real parse.
   const { env, hasEnvKey } = await captureForkEnv(false, {
     [E2E_POISON_WORKER_CAPABILITY_ENV]: E2E_PARSE_QUARANTINE_ENABLED_VALUE,

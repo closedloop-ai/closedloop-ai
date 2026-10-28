@@ -1,17 +1,25 @@
 import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
+import { OnboardingAnalyticsPageName } from "@repo/api/src/types/onboarding-analytics";
 import { classifySessionDetailError } from "@repo/app/agents/components/detail/agent-session-detail-states";
 import { AgentSessionDetailView as SharedAgentSessionDetailView } from "@repo/app/agents/components/detail/agent-session-detail-view";
+import { AgentSessionShellView } from "@repo/app/agents/components/detail/agent-session-shell-view";
 import { useAgentSessionDetail } from "@repo/app/agents/hooks/use-agent-sessions";
 import {
   readTranscriptFileKey,
   readTranscriptInvocationAnchor,
   withTranscriptFileParam,
 } from "@repo/app/agents/lib/session-transcript-href";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { readArtifactCommentThreadId } from "@repo/app/shared/lib/artifact-comment-href";
+import { ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { NavReferrerSurface } from "@repo/app/shared/lib/nav-referrer";
+import { usePageViewedEvent } from "@repo/app/shared/observability/use-page-viewed-event";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { Profiler, useCallback } from "react";
 import { DesktopAuthStatus } from "../../../shared/contracts";
 import { RendererRenderView } from "../../../shared/render-commit-event";
+import { useMarkThreadViewed } from "../../hooks/use-mark-thread-viewed";
+import { useTranscriptNeverExpected } from "../../hooks/use-transcript-never-expected";
 import {
   detailTitleKey,
   usePublishDetailTitle,
@@ -29,6 +37,7 @@ import {
   resolveSessionsDetailCause,
   useRenderCommitInstrumentation,
 } from "./use-render-commit-instrumentation";
+import { useSessionDetailDeadEndTelemetry } from "./use-sessions-dead-end-telemetry";
 
 /**
  * Desktop wrapper for the shared agent-session detail body.
@@ -87,6 +96,34 @@ export function SessionDetailView({
   sessionId: string;
 }) {
   const sessionQuery = useAgentSessionDetail(sessionId);
+  // PRD-736 (ISS-10502): the aha-moment anchor — first page_viewed[session_detail],
+  // gated on the read succeeding exactly as the web page is: a not-found or
+  // failed read rendered an error state, not a session, and must not count as
+  // the activation moment. Per-mount is correct here (unlike the keep-alive nav
+  // views): this view mounts per detail visit, keyed on the session id.
+  usePageViewedEvent(OnboardingAnalyticsPageName.SessionDetail, {
+    ready: sessionQuery.isSuccess,
+  });
+  // ISS-7830: this mount IS the user having navigated into the thread, so the
+  // capture is unconditional on the read settling — a session that never loads
+  // was still opened, and gating on `sessionQuery.data` would silently lose the
+  // view for exactly the not-found and offline cases.
+  //
+  // What it must state is the LOCAL `sessions.id` — the harness
+  // `externalSessionId`, which is the key `session_viewership` is written
+  // against. The two app-core modes disagree about what the ROUTE id is:
+  // the local projection sets `id: session.externalSessionId`
+  // (`shared-agent-sessions-api.ts`), so the route id already is that value;
+  // the cloud projection sets `id: record.artifactId`
+  // (`agent-sessions/service/projections.ts`), a different id space that
+  // matches no `sessions` row, so stating it would record nothing and leave
+  // the feature dead across the whole authenticated surface (tamsinb, cid
+  // 3845388737). The settled detail carries `externalSessionId` in BOTH modes,
+  // so prefer it and fall back to the route id until the read lands. The hook
+  // re-fires only when the value actually changes — a no-op in local mode,
+  // where the two are equal — and the store is monotonic, so the cloud pair of
+  // attempts still records exactly one first view.
+  useMarkThreadViewed(sessionQuery.data?.externalSessionId ?? sessionId);
   const searchParams = useSearchParamsValue();
   // ISS-4898: the org slug the web artifact route is scoped by. Null until the
   // identity fetch settles, on an older server that omits the field, and while
@@ -122,7 +159,7 @@ export function SessionDetailView({
   const buildArtifactHref = useCallback(
     (artifact: SessionLinkedArtifact) =>
       // `webAppOrigin` is null until the settings read settles, and stays null
-      // if it fails (wongk + codex review): a pending or failed read must leave
+      // if it fails (whitlockk + codex review): a pending or failed read must leave
       // the pill inert, never fall back to production and pair a prod origin
       // with a stage/local org slug.
       organizationSlug && webAppOrigin
@@ -130,8 +167,21 @@ export function SessionDetailView({
         : null,
     [organizationSlug, webAppOrigin]
   );
+  // ISS-7249: count the not-found / unavailable / stalled treatments below as
+  // the tracked errors they are. Emits once per render-with-cause, so a poll
+  // tick on a session that stays missing does not re-count it.
+  useSessionDetailDeadEndTelemetry({
+    error: sessionQuery.error,
+    errorKind: classifySessionDetailError(sessionQuery.error),
+    hasSession: Boolean(sessionQuery.data),
+    isError: sessionQuery.isError,
+    isLoading: sessionQuery.isLoading,
+  });
   const transcriptFileKey = readTranscriptFileKey(searchParams);
   const invocationAnchor = readTranscriptInvocationAnchor(searchParams);
+  // ISS-11004: the Activity tab's comment rows link here with `?comment=`; the
+  // shell that owns the URL reads it, as it does the transcript deep links.
+  const selectedThreadId = readArtifactCommentThreadId(searchParams);
   const buildTranscriptFileHref = useCallback(
     (fileKey: string) =>
       withTranscriptFileParam(
@@ -175,10 +225,10 @@ export function SessionDetailView({
   // — the rendered id was minted by one source and names nothing in the other.
   //
   // ISS-5605 (STILL OPEN) tracks the fact that the withdrawal is SILENT. Its
-  // stated repro — sign-in flipping `branchesReadCloud` true while the cutover
-  // holds the session read on Local — no longer reproduces: ISS-5714 put BOTH
-  // surfaces behind the same `cloudHoldsHistory`, so in that state they agree
-  // and the link survives. No OTHER path to a silent withdrawal is pinned here,
+  // stated repro — sign-in flipping `branchesReadCloud` true while the session
+  // read stays on Local — no longer reproduces: ISS-5714 put BOTH surfaces
+  // behind the same read-source rule, so in that state they agree and the link
+  // survives. No OTHER path to a silent withdrawal is pinned here,
   // and none is claimed: a mode change rebuilds the app-core stack's QueryClient
   // outright (`useDesktopAppCoreStack` swaps its whole stack ref per mode), so
   // the pane visibly reloads around any withdrawal a mode change causes. Do NOT
@@ -189,8 +239,8 @@ export function SessionDetailView({
   //
   // The Branches half is READ FROM THE CONTEXT rather than re-derived here
   // (stage review on #4650): `DesktopBranchesConsumptionProvider` is mounted by
-  // `DesktopAppCoreModeStack` (ISS-5714 moved it there, inside the cutover
-  // context), which `main.tsx` wraps around the whole `App`, so
+  // `DesktopAppCoreModeStack` (ISS-5714 moved it there, inside the app-core
+  // mode context), which `main.tsx` wraps around the whole `App`, so
   // this component always sits inside it and the provider's own
   // `useCanonicalCloudSource` is the value `DesktopBranchesSource` will actually
   // select on. A second derivation of the same rule would have to be changed in
@@ -218,19 +268,37 @@ export function SessionDetailView({
   );
   // FEA-1998: render-commit timing for the session detail. Item count is the
   // number of rendered session events.
+  // ISS-7516: the desktop's LOCAL answer for whether a transcript is never
+  // expected, read from this device's own consent record and scoped to sessions
+  // recorded on THIS machine (the hook compares compute-target identity),
+  // because this device's level says nothing about someone else's.
+  //
+  // It is the FALLBACK, not the answer. `AgentSessionDetailView` prefers the
+  // recording machine's level off the session payload when the server reports
+  // one (ISS-7516 wire half) — which is both correct for another machine's
+  // session and the only thing the web has. This stays wired so a desktop
+  // talking to a server that predates that field keeps working.
+  const transcriptNeverExpected = useTranscriptNeverExpected(
+    sessionQuery.data?.computeTarget.id ?? null
+  );
   const onRenderCommit = useRenderCommitInstrumentation({
     view: RendererRenderView.SessionsDetail,
     itemCount: sessionQuery.data?.events.length ?? 0,
     causeInputs: { sessionId },
     resolveCause: resolveSessionsDetailCause,
   });
+  const SessionDetailBody = useFeatureFlagEnabledOptional(
+    ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY
+  )
+    ? AgentSessionShellView
+    : SharedAgentSessionDetailView;
+  // The Topbar breadcrumb ("Sessions / <name>") is the back affordance now;
+  // this wrapper stays as the detail shell (h-full overflow-hidden). backHref
+  // still feeds the shared not-found state's "Back to Sessions" link.
   return (
-    // The Topbar breadcrumb ("Sessions / <name>") is the back affordance now;
-    // this wrapper stays as the detail shell (h-full overflow-hidden). backHref
-    // still feeds the shared not-found state's "Back to Sessions" link.
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <Profiler id="sessions_detail" onRender={onRenderCommit}>
-        <SharedAgentSessionDetailView
+        <SessionDetailBody
           artifactHrefPending={artifactHrefPending}
           backHref={backHref}
           buildArtifactHref={
@@ -242,8 +310,10 @@ export function SessionDetailView({
           invocationAnchor={invocationAnchor}
           isError={sessionQuery.isError}
           isLoading={sessionQuery.isLoading}
+          selectedThreadId={selectedThreadId}
           session={sessionQuery.data}
           transcriptFileKey={transcriptFileKey}
+          transcriptNeverExpected={transcriptNeverExpected}
         />
       </Profiler>
     </div>

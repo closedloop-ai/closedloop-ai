@@ -2,12 +2,14 @@
 
 import {
   ALLOWED_EXTENSIONS,
-  MAX_ATTACHMENT_FILE_SIZE_BYTES,
+  isMediaMimeType,
+  maxAttachmentSizeBytesForMimeType,
 } from "@repo/api/src/types/attachment";
 import {
   useDeleteAttachment,
   useRequestAttachmentUpload,
 } from "@repo/app/documents/hooks/use-attachments";
+import { formatAttachmentSize } from "@repo/app/documents/lib/format-attachment-size";
 import { uploadToS3 } from "@repo/app/shared/lib/s3-upload";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -30,7 +32,11 @@ export function AttachFilesButton({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const requestUpload = useRequestAttachmentUpload();
-  const deleteAttachment = useDeleteAttachment(documentId);
+  // The cleanup delete below runs only after a failed S3 upload, and the user
+  // is told about the upload, not the cleanup (ISS-11741).
+  const deleteAttachment = useDeleteAttachment(documentId, {
+    suppressDefaultErrorToast: true,
+  });
 
   function resetFileInput() {
     setIsUploading(false);
@@ -49,8 +55,19 @@ export function AttachFilesButton({
     // inline-image path in rich-text-editor-host.tsx. Without this the client
     // would round-trip a presign request plus a full single-PUT upload only to
     // fail (or silently exceed limits), with no early feedback to the user.
-    if (file.size > MAX_ATTACHMENT_FILE_SIZE_BYTES) {
-      toast.error("Files must be 10 MiB or smaller");
+    //
+    // ISS-10415: the ceiling is per type, and the message names the one this
+    // file was measured against — a single document-ceiling check here rejected
+    // every real screen recording, and a single hardcoded "10 MiB" would state
+    // a limit that does not apply to the file the user picked.
+    const maxSizeBytes = maxAttachmentSizeBytesForMimeType(file.type);
+    if (file.size > maxSizeBytes) {
+      const sizeLabel = formatAttachmentSize(maxSizeBytes);
+      toast.error(
+        isMediaMimeType(file.type)
+          ? `Video and audio files must be ${sizeLabel} or smaller`
+          : `Files must be ${sizeLabel} or smaller`
+      );
       resetFileInput();
       return;
     }
@@ -72,10 +89,7 @@ export function AttachFilesButton({
                   ? uploadError.message
                   : "Upload failed"
               );
-              // Suppress the delete mutation's global error toast: the user-facing
-              // failure is the S3 upload, and surfacing a second "delete failed"
-              // toast would be misleading.
-              deleteAttachment.mutate(attachmentId, { onError: () => {} });
+              deleteAttachment.mutate(attachmentId);
             })
             .finally(resetFileInput);
         },

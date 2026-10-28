@@ -6,7 +6,7 @@ import { useWebAppOrigin } from "../../shared-agent-sessions/use-web-app-origin"
 import type { DesktopAuthState } from "../../types/desktop-api";
 
 /**
- * FEA-4209 / FEA-4210 (wongk review): the desktop Sessions list's half of the
+ * FEA-4209 / FEA-4210 (whitlockk review): the desktop Sessions list's half of the
  * linked-entity columns.
  *
  * `SyncedSessionsTable` gates the `Owning project` / `Linked issues` columns on
@@ -19,8 +19,9 @@ import type { DesktopAuthState } from "../../types/desktop-api";
  * with the Labs toggle on got no columns and no View-menu entries on data that
  * was already in hand.
  *
- * So the opt-in is the MODE, not the surface: cloud mode has the fields, local
- * mode does not and must never grow two tracks of em dashes.
+ * The opt-in is the selected rows' operands, not the app mode: a composite
+ * fallback may hold cloud and local rows together, and only rows whose producer
+ * supplied these fields establish that the columns can say anything.
  *
  * Lives in its own module rather than inline in `SessionsView` because that
  * component is already near the file-size ceiling, and because the href rule
@@ -39,7 +40,7 @@ export type DesktopLinkedEntityColumns = Readonly<{
 }>;
 
 export function useDesktopLinkedEntityColumns(
-  isCloudMode: boolean,
+  hasLinkedEntityOperands: boolean,
   authState: DesktopAuthState
 ): DesktopLinkedEntityColumns {
   const { identity } = useDesktopIdentity(authState.status, authState.userId);
@@ -51,7 +52,7 @@ export function useDesktopLinkedEntityColumns(
       // pending or failed read leaves the chip INERT — it still names the issue
       // — rather than pairing a production origin with a stage/local org slug,
       // which is the failure mode the session-detail row was reviewed for
-      // (wongk + codex, ISS-5366). No loading state is needed here for the same
+      // (whitlockk + codex, ISS-5366). No loading state is needed here for the same
       // reason the detail row needed one and this does not: that row rendered a
       // settled "not reachable" LABEL it had not earned, while a chip that is
       // merely not-yet-a-link claims nothing.
@@ -60,5 +61,5 @@ export function useDesktopLinkedEntityColumns(
         : null,
     [organizationSlug, webAppOrigin]
   );
-  return { showLinkedEntityColumns: isCloudMode, getIssueHref };
+  return { showLinkedEntityColumns: hasLinkedEntityOperands, getIssueHref };
 }

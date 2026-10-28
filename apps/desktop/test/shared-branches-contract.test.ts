@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import type { BranchKpi } from "@repo/api/src/types/branch";
+import { describe, test } from "vitest";
 import {
   emptySharedBranchesAnalytics,
   emptySharedBranchesListResponse,

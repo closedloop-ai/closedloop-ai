@@ -228,11 +228,18 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
+      onFocusOutside={(event) => {
+        onFocusOutside?.(event)
+        if (isMenuContainer(event.target)) {
+          event.preventDefault()
+        }
+      }}
       className={cn(
         "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border p-1 shadow-lg",
         className
@@ -240,6 +247,28 @@ function DropdownMenuSubContent({
       {...props}
     />
   )
+}
+
+/**
+ * ISS-7120. Radix closes a submenu whenever focus lands outside it, and its own
+ * `onItemLeave` puts focus on the PARENT MENU CONTAINER the moment the pointer
+ * stops being over the sub-trigger. The pointer stops being over the trigger
+ * when the trigger moves, not only when the person moves: anything that changes
+ * the height of the layout ABOVE the menu's anchor — on Desktop, the
+ * first-launch import splash animating its own `max-height` over 500ms directly
+ * above the page content — slides the whole anchored menu under a cursor that
+ * never moved. Chromium re-dispatches the boundary events at the SAME
+ * clientX/clientY for every frame of that slide, Radix reads them as a leave,
+ * and the submenu the person is aiming at closes with the row under the cursor
+ * still mid-click.
+ *
+ * A menu container is not a focus destination anyone picks; it is only ever
+ * Radix bouncing focus off an item. Every focus change a person actually makes
+ * lands on a menu item, on the submenu's own search box, or outside the menu
+ * entirely — and each of those still closes the submenu.
+ */
+function isMenuContainer(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.getAttribute("role") === "menu"
 }
 
 export {

@@ -1,7 +1,12 @@
+import { SpanErrorSource } from "@closedloop-ai/telemetry-contract/span";
+import type { OperationReceipt } from "@repo/api/src/types/attribution-evidence";
 import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
-import { buildRequestCompletedContractAttributes } from "@repo/observability/telemetry/request-completed";
+import {
+  buildRequestCompletedContractAttributes,
+  type RequestCompletedSpanAttribution,
+} from "@repo/observability/telemetry/request-completed";
 // `tracing/hooks` deliberately, NOT `tracing/provider`: this module is imported
 // by ~40 routes, and importing the provider would make the OpenTelemetry Node
 // SDK statically reachable from all of them — breaking the first route that
@@ -10,6 +15,24 @@ import { flushSpans, isTracingActive } from "@repo/observability/tracing/hooks";
 import { waitUntil } from "@vercel/functions";
 import { after, NextResponse } from "next/server";
 import type { z } from "zod";
+import { isStorableInt4Count } from "./int4-column-bounds";
+import type { RequestErrorCode } from "./observability/request-error-code";
+import {
+  type RouteParams,
+  toRouteTemplatePath,
+} from "./observability/request-route-path";
+import {
+  getRequestListQueryLogFields,
+  getRequestSpanAttribution,
+  recordRequestErrorCause,
+} from "./observability/request-span-attribution";
+
+/**
+ * Lowest HTTP status that means "the server failed", not "the caller did".
+ * The boundary for both the `status:error` log level and every span attribute
+ * that describes a server error (ISS-7217).
+ */
+const SERVER_ERROR_STATUS_MIN = 500;
 
 /**
  * Extract the bearer token from an `Authorization: Bearer <token>` header.
@@ -25,15 +48,17 @@ export function getBearerToken(request: Request): string | null {
 /**
  * Parse an `afterSequence` reconnect cursor from a raw request value (query
  * param or `Last-Event-ID` header). Returns the cursor when it is a
- * non-negative integer, otherwise `undefined`. Shared by the SSE routes that
- * resume an event stream from the last-seen sequence.
+ * non-negative integer that fits int4, otherwise `undefined`. Shared by the SSE
+ * routes that resume an event stream from the last-seen sequence. The ceiling
+ * is the column's: the cursor is bound as `::int`, and a larger value raised
+ * 22003 as a 500 (ISS-11195).
  */
 export function parseSequenceCursor(raw: string | null): number | undefined {
   if (raw === null) {
     return undefined;
   }
   const value = Number(raw);
-  return Number.isInteger(value) && value >= 0 ? value : undefined;
+  return isStorableInt4Count(value) ? value : undefined;
 }
 
 /**
@@ -52,20 +77,35 @@ export type IdRouteParams<T extends string = "id"> = {
  * object — over the cap, or unparseable.
  */
 export type ParseBodyResult<T> =
-  | { body: T; rawBody: unknown; errorResponse: null }
+  | { body: T; rawBody: unknown; errorResponse: null; issues?: undefined }
   | {
       body: null;
       rawBody: unknown;
       errorResponse: NextResponse<ApiResult<never>>;
+      /**
+       * The raw Zod issues behind `errorResponse`, present ONLY when validation
+       * itself failed. A route that must react to one specific field's failure
+       * — rather than just forwarding the formatted 400 — matches on
+       * `issue.path`/`issue.code` instead of re-parsing the body against a
+       * second schema that could drift from the first.
+       *
+       * Absent for the non-validation failures (malformed JSON, over-cap),
+       * which never produced issues.
+       */
+      issues?: z.core.$ZodIssue[];
     };
 
 export type ParseBodyOptions = {
-  /** Maximum allowed UTF-8 request body size in bytes. */
+  /**
+   * Maximum allowed UTF-8 request body size in bytes. Defaults to
+   * `DEFAULT_REQUEST_MAX_BYTES`, so a route opts into a DIFFERENT bound, never
+   * into no bound at all (ISS-7565).
+   */
   maxBytes?: number;
 };
 
 export type CappedRequestTextResult =
-  | { ok: true; value: string }
+  | { ok: true; value: string; bytesRead: number }
   | { ok: false };
 
 /**
@@ -84,22 +124,39 @@ export async function parseBody<T extends z.ZodType>(
   validator: T,
   options: ParseBodyOptions = {}
 ): Promise<ParseBodyResult<z.infer<T>>> {
+  const maxBytes = options.maxBytes ?? DEFAULT_REQUEST_MAX_BYTES;
+  let bodyTextResult: CappedRequestTextResult;
   try {
-    const bodyTextResult =
-      options.maxBytes === undefined
-        ? { ok: true as const, value: await request.text() }
-        : await readCappedRequestText(request, options.maxBytes);
-    if (!bodyTextResult.ok) {
-      return {
-        body: null,
-        rawBody: undefined,
-        errorResponse: NextResponse.json(failure("Request body too large"), {
-          status: 413,
-        }),
-      };
-    }
+    bodyTextResult = await readCappedRequestText(request, maxBytes);
+  } catch (error) {
+    return requestBodyReadFailureResult(error);
+  }
 
-    const rawBody = JSON.parse(bodyTextResult.value) as unknown;
+  if (!bodyTextResult.ok) {
+    logRequestBodyOverCap(request, maxBytes);
+    return {
+      body: null,
+      rawBody: undefined,
+      errorResponse: payloadTooLargeResponse("Request body too large"),
+    };
+  }
+
+  const truncationError = requestBodyTruncationError(
+    request,
+    bodyTextResult.bytesRead
+  );
+  if (truncationError !== null) {
+    return requestBodyReadFailureResult(truncationError);
+  }
+
+  let rawBody: unknown;
+  try {
+    rawBody = JSON.parse(bodyTextResult.value) as unknown;
+  } catch (error) {
+    return requestBodyParseFailureResult(error);
+  }
+
+  try {
     const parseResult = validator.safeParse(rawBody);
 
     if (!parseResult.success) {
@@ -109,20 +166,13 @@ export async function parseBody<T extends z.ZodType>(
         errorResponse: badRequestResponse(
           formatZodErrors(parseResult.error.issues)
         ),
+        issues: parseResult.error.issues,
       };
     }
 
     return { body: parseResult.data, rawBody, errorResponse: null };
   } catch (error) {
-    log.error("Failed to parse request body:", { error });
-    scheduleLogFlush();
-    return {
-      body: null,
-      rawBody: undefined,
-      errorResponse: NextResponse.json(failure("Invalid JSON body"), {
-        status: 400,
-      }),
-    };
+    return requestBodyParseFailureResult(error);
   }
 }
 
@@ -136,7 +186,7 @@ export async function readCappedRequestText(
 ): Promise<CappedRequestTextResult> {
   const reader = request.body?.getReader();
   if (!reader) {
-    return { ok: true, value: "" };
+    return { ok: true, value: "", bytesRead: 0 };
   }
 
   const decoder = new TextDecoder();
@@ -149,11 +199,20 @@ export async function readCappedRequestText(
       return {
         ok: true,
         value: `${chunks.join("")}${decoder.decode()}`,
+        bytesRead,
       };
     }
     bytesRead += value.byteLength;
     if (bytesRead > maxBytes) {
-      await reader.cancel();
+      try {
+        await reader.cancel();
+      } catch (error) {
+        log.error("Failed to cancel over-cap request body stream", { error });
+        // Flush here rather than relying on the caller: a caller that answers
+        // its own 413 inline, without `logRequestBodyOverCap`, leaves nothing
+        // downstream to flush this line.
+        scheduleLogFlush();
+      }
       return { ok: false };
     }
     chunks.push(decoder.decode(value, { stream: true }));
@@ -171,11 +230,19 @@ export async function readCappedRequestText(
  *
  * @param request - NextRequest with searchParams
  * @param validator - Zod schema to validate against
+ * @param options.errorMetadata - Reads a structured `code`/`details` off the
+ *   failing issues (ISS-9477's list query refusals). Returning `undefined`
+ *   keeps the plain 400, which is also the behavior when it is omitted.
  * @returns ParseParamsResult with typed params or error response
  */
 export function parseQueryParams<T extends z.ZodType>(
   request: { nextUrl: { searchParams: URLSearchParams } },
-  validator: T
+  validator: T,
+  options?: {
+    errorMetadata?: (
+      issues: readonly z.core.$ZodIssue[]
+    ) => ErrorResponseMetadata | undefined;
+  }
 ): ParseParamsResult<z.infer<T>> {
   const queryParams: Record<string, string | string[]> = Object.create(null);
   for (const key of new Set(request.nextUrl.searchParams.keys())) {
@@ -188,7 +255,8 @@ export function parseQueryParams<T extends z.ZodType>(
     return {
       params: null,
       errorResponse: badRequestResponse(
-        formatZodErrors(parseResult.error.issues)
+        formatZodErrors(parseResult.error.issues),
+        options?.errorMetadata?.(parseResult.error.issues)
       ),
     };
   }
@@ -214,6 +282,14 @@ export function parseRepositoryRouteLimit(
 /**
  * Create a standardized error response with sanitized logging.
  * Calls scheduleLogFlush() internally — callers must not add a redundant flush.
+ *
+ * ISS-7217: a server error also records its cause onto the request's span
+ * attribution. This is the single highest-leverage instrumentation point for
+ * that — it is the shape ~200 route catch blocks already use, and it is handed
+ * the real error, so no call site changes. Only a 5xx records: a 4xx is a
+ * client-side outcome the route deliberately returned, and marking it as a
+ * server-error cause would inflate the very population the RCA is trying to
+ * read.
  */
 export function errorResponse(
   message: string,
@@ -222,6 +298,9 @@ export function errorResponse(
   metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
   log.error(message, { error });
+  if (status >= SERVER_ERROR_STATUS_MIN) {
+    recordRequestErrorCause(error, SpanErrorSource.RouteHandler);
+  }
   scheduleLogFlush();
   return NextResponse.json(failure(message, metadata), { status });
 }
@@ -238,9 +317,18 @@ export function badRequestResponse(
 
 /**
  * Create a success response.
+ *
+ * `init` exists for responses that carry metadata a client reads OUTSIDE the
+ * body — `GET /documents` states its pagination continuation in headers so the
+ * bare-array body stays exactly what every shipped consumer already parses
+ * (ISS-6941). It is a plain `ResponseInit`, so a caller can also set a status;
+ * nothing here defaults one, and omitting `init` is byte-identical to before.
  */
-export function successResponse<T>(data: T): NextResponse<ApiResult<T>> {
-  return NextResponse.json(success(data));
+export function successResponse<T>(
+  data: T,
+  init?: ResponseInit
+): NextResponse<ApiResult<T>> {
+  return NextResponse.json(success(data), init);
 }
 
 /**
@@ -276,8 +364,18 @@ export function forbiddenResponse(
 /**
  * Create a standard delete success response.
  */
-export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {
-  return NextResponse.json(success({ deleted: true }));
+export function deleteResponse(
+  operationReceipt?: OperationReceipt
+): NextResponse<
+  ApiResult<{ deleted: true; operationReceipt?: OperationReceipt }>
+> {
+  // ISS-12552: an API-key delete carries its receipt; omitted otherwise.
+  return NextResponse.json(
+    success({
+      deleted: true,
+      ...(operationReceipt ? { operationReceipt } : {}),
+    })
+  );
 }
 
 /**
@@ -348,8 +446,8 @@ export function scheduleLogFlush(): void {
 export function scheduleLogFlushAfter(promise: Promise<unknown>): void {
   waitUntil(promise.finally(() => log.flush().catch(() => {})));
   // The supplied promise is chained into the span flush too. Callers use this
-  // form precisely because work is still running past the response (launchLoop,
-  // the heartbeat drains) — and that work produces spans. Flushing without
+  // form precisely because work is still running past the response — and that
+  // work produces spans. Flushing without
   // waiting for it would export the buffer as it stands and let the deferred
   // work's spans freeze with the function.
   scheduleSpanFlush(promise);
@@ -368,11 +466,11 @@ export function scheduleLogFlushAfter(promise: Promise<unknown>): void {
  *    `waitUntil(flushSpans())` would start the export immediately and miss the
  *    root span. `after()` runs past the response, once the span has ended.
  * 2. **Attached to every log-flush site, not just the request-completed one.**
- *    Routes that bypass the auth wrappers — `/health`, the GitHub webhook, the
- *    cron drains — never call `logRequestCompleted`, so hanging the span flush
- *    there alone would silently drop their traces. A `forceFlush()` on an
- *    already-drained buffer is a cheap no-op, so covering every terminal flush
- *    site costs far less than the spans it saves.
+ *    Routes that bypass both the auth wrappers and `withRequestCompleted` —
+ *    the cron drains — never call `logRequestCompleted`, so hanging
+ *    the span flush there alone would silently drop their traces. A
+ *    `forceFlush()` on an already-drained buffer is a cheap no-op, so covering
+ *    every terminal flush site costs far less than the spans it saves.
  * 3. **`pending` is awaited before flushing.** `scheduleLogFlushAfter` passes
  *    the caller's still-running work; that work emits spans of its own, so
  *    flushing ahead of it would export the buffer as it stands and lose them.
@@ -423,50 +521,91 @@ function scheduleSpanFlush(pending?: Promise<unknown>): void {
  * The `dd.trace_id`/`dd.span_id` correlation fields are NOT set here: the
  * logger stamps them onto every entry from the active span (ISS-4659).
  *
- * Call this from a `finally` block in the auth wrappers so it fires whether
- * the handler returned normally or threw.
+ * Call this from a `finally` block — the auth wrappers', or
+ * `withRequestCompleted`'s for a route that authenticates itself (ISS-9053) —
+ * so it fires whether the handler returned normally or threw.
+ *
+ * ISS-7217/ISS-7221/ISS-7224: the line also carries whatever the request
+ * managed to attribute about itself — the tenant, the artifact, and the cause
+ * of a 5xx — and a 5xx is emitted at `error` level rather than `info`, so
+ * `status:error` searches and error-rate monitors see it. That attribution
+ * adds fields and changes none of the snake_case ones the log-based metrics
+ * group on (`path` is templated separately, ISS-12274 below).
+ *
+ * ISS-12168: a 4xx also carries its contract `error_code`, snake_case like the
+ * fields beside it, so the per-route denial monitors can group by why a route
+ * refused rather than only that it did. `readResponseErrorCode` decides it;
+ * absent, the key is omitted, never `null`.
+ *
+ * ISS-12274: `path` is the matched route template (`/branches/:id`), built
+ * from the route's resolved `routeParams`, so the `@path` tag of
+ * `api.requests.count` / `api.errors.count` / `api.requests.latency.app` is
+ * one series per route rather than per record id.
  */
 export function logRequestCompleted(
   request: Request,
   startMs: number,
-  statusCode: number
+  statusCode: number,
+  errorCode: RequestErrorCode | undefined,
+  routeParams: RouteParams | undefined
 ): void {
   const durationMs = Math.round(globalThis.performance.now() - startMs);
-  log.info("request_completed", {
+  const fields = {
     ...buildRequestCompletedContractAttributes({
       requestUrl: request.url,
       method: request.method,
       statusCode,
       durationMs,
+      attribution: resolveRequestCompletedAttribution(statusCode),
     }),
-    path: new URL(request.url).pathname,
+    ...getRequestListQueryLogFields(),
+    path: toRouteTemplatePath(new URL(request.url).pathname, routeParams),
     method: request.method,
     status_code: statusCode,
     duration_ms: durationMs,
-  });
+    ...(errorCode === undefined ? {} : { error_code: errorCode }),
+  };
+  if (statusCode >= SERVER_ERROR_STATUS_MIN) {
+    log.error(REQUEST_COMPLETED_EVENT, fields);
+  } else {
+    log.info(REQUEST_COMPLETED_EVENT, fields);
+  }
   scheduleLogFlush();
 }
 
 /**
- * Emit the correlated ingest-failure log line shared by the loop event-ingest
- * routes (`/loops/[id]/events` and `/loops/[id]/manual-events`). Both stitch
- * the failure to its loop/org in Datadog with the same field shape; centralizing
- * it here keeps that shape defined once. `eventName` is the route-specific
- * metric name (e.g. `loop.event_ingest_failed`, `loop.manual_event_ingest_failed`).
+ * Narrow the request's accumulated attribution to what this response can
+ * honestly claim.
+ *
+ * Two rules, both about not letting a value describe a population it does not
+ * belong to:
+ *
+ *   • Error attribution appears ONLY on a 5xx. A route that caught something,
+ *     recovered, and returned 200 recorded a cause that never became a failure;
+ *     stamping it would put an `app.error.source` on a successful span.
+ *   • A 5xx with no recorded cause is stamped `unattributed` rather than left
+ *     blank. That keeps an uninstrumented failure countable and visibly
+ *     distinct from an attributed one — otherwise the attributed counts would
+ *     silently claim to describe every 5xx.
  */
-export function logLoopIngestFailure(
-  eventName: string,
-  fields: {
-    error: unknown;
-    loopId: string | undefined;
-    organizationId: string | undefined;
+function resolveRequestCompletedAttribution(
+  statusCode: number
+): RequestCompletedSpanAttribution | undefined {
+  // A copy, so dropping the error half here cannot affect anything else that
+  // reads the request's store.
+  const attribution = getRequestSpanAttribution();
+  if (statusCode >= SERVER_ERROR_STATUS_MIN) {
+    return {
+      ...attribution,
+      errorSource: attribution?.errorSource ?? SpanErrorSource.Unattributed,
+    };
   }
-): void {
-  log.error(eventName, {
-    error: fields.error,
-    loopId: fields.loopId,
-    organizationId: fields.organizationId,
-  });
+  if (!attribution) {
+    return undefined;
+  }
+  Reflect.deleteProperty(attribution, "errorSource");
+  Reflect.deleteProperty(attribution, "errorType");
+  return attribution;
 }
 
 type ErrorResponseMetadata = {
@@ -474,3 +613,141 @@ type ErrorResponseMetadata = {
   details?: JsonObject;
   timestamp?: string;
 };
+
+/**
+ * Create an accepted (202) response for work the route handed to `waitUntil`
+ * instead of awaiting (ISS-7408).
+ *
+ * 202 rather than 200 is the load-bearing part: it tells the caller the payload
+ * describes an ACCEPTED run, not a finished one, so a client cannot mistake the
+ * response for a completed result and render it as settled state.
+ */
+export function acceptedResponse<T>(data: T): NextResponse<ApiResult<T>> {
+  return NextResponse.json(success(data), { status: 202 });
+}
+
+/**
+ * Default request-body byte cap for `parseBody` (ISS-7565).
+ *
+ * A backstop, not a business rule: it exists so a route is bounded WITHOUT a
+ * per-call-site edit, and so the next route added is bounded by construction.
+ * 4 MiB clears every payload this API accepts today — the widest explicit cap
+ * in the repo is 256 KiB — and sits under the platform's serverless request
+ * ceiling, so the bound lives in code we test rather than in a host default.
+ * Surfaces that know their real payload size pass a tighter `maxBytes`.
+ */
+export const DEFAULT_REQUEST_MAX_BYTES = 4_194_304;
+
+/**
+ * Datadog event name for a request refused by the body cap, emitted by every
+ * bounded reader (`parseBody` and the desktop `readBounded*` helpers). A cap
+ * that starts firing has to be visible: without this the refusal is silent and
+ * indistinguishable from a client that never called.
+ */
+export const REQUEST_BODY_OVER_CAP_EVENT = "api.request_body_over_cap";
+
+export function logRequestBodyOverCap(
+  request: Request,
+  maxBytes: number
+): void {
+  log.warn(REQUEST_BODY_OVER_CAP_EVENT, {
+    maxBytes,
+    method: request.method,
+    path: safeRequestPath(request),
+  });
+  scheduleLogFlush();
+}
+
+function safeRequestPath(request: Request): string | undefined {
+  try {
+    return new URL(request.url).pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+const CONTENT_LENGTH_BYTES_PATTERN = /^\d+$/;
+
+/**
+ * A stream that ended before its declared `Content-Length` delivered an
+ * incomplete body, whether or not the transport surfaced an abort: some expose
+ * an early EOF as a clean close, and treating only the aborted case as
+ * truncation leaves the rest to be misreported as malformed client JSON.
+ *
+ * `Content-Length` counts wire bytes, and every bounded reader in this app
+ * consumes `request.body` UNDECODED — `readBoundedMaybeGzipJsonBody` gunzips
+ * the bytes itself, which it could not do if the platform had already expanded
+ * them. So the two counts describe the same bytes under a content coding too,
+ * and a coded body is compared like any other.
+ */
+function requestBodyWasTruncated(request: Request, bytesRead: number): boolean {
+  const contentLengthHeader = request.headers.get("content-length");
+  if (
+    contentLengthHeader === null ||
+    !CONTENT_LENGTH_BYTES_PATTERN.test(contentLengthHeader)
+  ) {
+    return false;
+  }
+  const contentLength = Number(contentLengthHeader);
+  if (!Number.isSafeInteger(contentLength)) {
+    return false;
+  }
+  return bytesRead < contentLength;
+}
+
+/**
+ * Named so the span attribution this feeds can tell a client disconnect apart
+ * from a genuine route fault (ISS-8688). `errorResponse` records a cause for
+ * every 5xx, and `resolveSpanErrorType` reads an own `name`; a bare `Error`
+ * here would land in the RCA population as an unfilterable `Error`.
+ */
+class RequestBodyTruncatedError extends Error {
+  name = "RequestBodyTruncatedError";
+
+  constructor() {
+    super("Request body ended before its declared Content-Length");
+  }
+}
+
+/**
+ * The error a bounded reader should answer a short read with, or `null` when
+ * the body arrived whole. Shared so `parseBody` and the desktop write lanes —
+ * which read bodies through their own helpers and never reach `parseBody` —
+ * classify a truncated body identically.
+ */
+export function requestBodyTruncationError(
+  request: Request,
+  bytesRead: number
+): unknown {
+  if (!requestBodyWasTruncated(request, bytesRead)) {
+    return null;
+  }
+  return request.signal?.reason ?? new RequestBodyTruncatedError();
+}
+
+function requestBodyReadFailureResult(error: unknown): ParseBodyResult<never> {
+  return {
+    body: null,
+    rawBody: undefined,
+    errorResponse: errorResponse("Failed to read request body", error),
+  };
+}
+
+function requestBodyParseFailureResult(error: unknown): ParseBodyResult<never> {
+  log.error("Failed to parse request body:", { error });
+  scheduleLogFlush();
+  return {
+    body: null,
+    rawBody: undefined,
+    errorResponse: NextResponse.json(failure("Invalid JSON body"), {
+      status: 400,
+    }),
+  };
+}
+
+/**
+ * The message every `request_completed` line carries. The `api.requests.*`
+ * log-based metrics and the `cl-api` log monitors match it by phrase, so it is
+ * declared once and read by the emitter and its tests alike.
+ */
+export const REQUEST_COMPLETED_EVENT = "request_completed";

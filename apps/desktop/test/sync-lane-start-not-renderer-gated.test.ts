@@ -60,13 +60,13 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import type { Node } from "typescript6";
 import {
   forEachChild,
   isCallExpression,
   isPropertyAccessExpression,
 } from "typescript6";
+import { describe, test } from "vitest";
 
 import { RendererReadinessGates } from "../src/main/lifecycle/renderer-readiness-gates.js";
 import {
@@ -237,9 +237,9 @@ describe("ISS-4717 RendererReadinessGates exposes no unbounded import wait", () 
   });
 
   test("the boolean still reports the genuine completion it gates cloud reads on", () => {
-    // `getCloudReadReadiness().importComplete` reads this to decide whether the
-    // renderer may cut over to reading the cloud, so it must stay false until a
-    // real completion and true after one.
+    // `getCloudReadReadiness().importComplete` reads this, and the whole-app
+    // backlog may not claim completeness while the import is still discovering
+    // work, so it must stay false until a real completion and true after one.
     const gates = new RendererReadinessGates({
       info: () => undefined,
       warn: () => undefined,

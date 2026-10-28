@@ -1,15 +1,16 @@
 import type { TeamRepository } from "@repo/api/src/types/teams";
 import { TeamRole } from "@repo/api/src/types/teams";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   conflictResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { requireTeamRole } from "../../require-team-role";
 import { AddRepositoryError, teamsService } from "../../service";
 import { addTeamRepositoryValidator } from "../../validators";
 
@@ -26,10 +27,12 @@ import { addTeamRepositoryValidator } from "../../validators";
  * they are not on got a 403 that the shared query boundary laundered into a
  * full-shell "Your session expired" card.
  *
- * The real boundary is and stays the organization: `findById(teamId,
- * user.organizationId)` above 404s an out-of-org caller before any repository
- * row is read. Writes are unchanged — POST here and PUT/DELETE on
- * `[teamRepositoryId]` keep their team-admin role gates.
+ * The real boundary is and stays the organization: `existsInOrganization(teamId,
+ * user.organizationId)` below 404s an out-of-org caller before any repository
+ * row is read. (ISS-7533 moved that probe off `findById`, whose member+user
+ * include graph this gate never read; the boundary is unchanged.) Writes are
+ * unchanged — POST here and PUT/DELETE on `[teamRepositoryId]` keep their
+ * team-admin role gates.
  *
  * SCOPE: this route, not the team. "Org-readable" above describes the repository
  * pool only, and does not generalise to everything reachable from a team.
@@ -40,23 +43,27 @@ import { addTeamRepositoryValidator } from "../../validators";
  * team configuration — and it is now a per-surface authorization state for those
  * pages to render, rather than something that blanks the shell.
  */
-export const GET = withAuth<TeamRepository[], "/teams/[teamId]/repositories">(
-  async ({ user }, _, params) => {
-    try {
-      const { teamId } = await params;
+export const GET = withAnyAuth<
+  TeamRepository[],
+  "/teams/[teamId]/repositories"
+>(async ({ user }, _, params) => {
+  try {
+    const { teamId } = await params;
 
-      const team = await teamsService.findById(teamId, user.organizationId);
-      if (!team) {
-        return notFoundResponse("Team");
-      }
-
-      const repositories = await teamsService.getRepositories(teamId);
-      return successResponse(repositories);
-    } catch (error) {
-      return errorResponse("Failed to fetch team repositories", error);
+    const exists = await teamsService.existsInOrganization(
+      teamId,
+      user.organizationId
+    );
+    if (!exists) {
+      return notFoundResponse("Team");
     }
+
+    const repositories = await teamsService.getRepositories(teamId);
+    return successResponse(repositories);
+  } catch (error) {
+    return errorResponse("Failed to fetch team repositories", error);
   }
-);
+});
 
 /**
  * POST /teams/:teamId/repositories - Add a repository to a team's curated list.
@@ -67,18 +74,9 @@ export const POST = withAuth<TeamRepository, "/teams/[teamId]/repositories">(
     try {
       const { teamId } = await params;
 
-      const team = await teamsService.findById(teamId, user.organizationId);
-      if (!team) {
-        return notFoundResponse("Team");
-      }
-
-      const hasPermission = await teamsService.hasRole(
-        teamId,
-        user.id,
-        TeamRole.Admin
-      );
-      if (!hasPermission) {
-        return forbiddenResponse();
+      const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+      if (authError) {
+        return authError;
       }
 
       const { body, errorResponse: parseError } = await parseBody(

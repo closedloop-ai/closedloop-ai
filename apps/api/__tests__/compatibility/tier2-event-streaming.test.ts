@@ -5,6 +5,7 @@ import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   INTERNAL_SECRET,
   makeEnvelope,
+  makeHelloAckEnvelope,
   makeSocketEventRequest,
   mockGatewayOwnerAuthContext,
 } from "./utils/test-fixtures";
@@ -29,7 +30,6 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
     ...original,
     relayEventBus: {
       ...original.relayEventBus,
-      publishResult: vi.fn(),
     },
   };
 });
@@ -110,7 +110,7 @@ describe("POST /internal/relay/socket-event — desktop.command.event sequence_g
     expect(body.emit).toHaveLength(1);
     expect(body.emit[0].event).toBe("desktop.hello.ack");
     expect(body.emit[0].payload).toEqual(
-      makeEnvelope({
+      makeHelloAckEnvelope({
         computeTargetId: "target-1",
         sessionId: expect.any(String),
         serverTime: expect.any(String),
@@ -148,7 +148,7 @@ describe("POST /internal/relay/socket-event — desktop.command.event sequence_g
 
     const body = await response.json();
     expect(body.emit[0].payload).toEqual(
-      makeEnvelope({
+      makeHelloAckEnvelope({
         computeTargetId: "target-1",
         sessionId: expect.any(String),
         serverTime: expect.any(String),

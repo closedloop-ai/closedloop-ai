@@ -1,7 +1,7 @@
 /**
  * E2E proof (ISS-5061): the closed-by-default gate on the "Agent Collaboration
  * Network" dashboard row reaches the DESKTOP adapter — the row is ENTIRELY
- * ABSENT with the Labs toggle off, and renders with it on.
+ * ABSENT with the flag off, and renders with it on.
  *
  * THIS GATE IS DELIBERATELY RE-INTRODUCED. ISS-5061 first shipped the row
  * closed-by-default; ISS-5280 (#4482) then retired the flag to its enabled state
@@ -19,9 +19,11 @@
  * `InsightsOverviewDashboard` → the same `DashboardRowContent`. The two shells
  * feed that shared component through DIFFERENT data paths — local SQLite over
  * IPC here, HTTP + the web API client there — and resolve the SAME flag key
- * through DIFFERENT flag ports (the Labs-backed renderer adapter here, PostHog
- * there). One passing therefore tells you nothing about the other: a regression
- * in either port, or in either data path, is invisible from the far side.
+ * through DIFFERENT flag ports: `DesktopFeatureFlagProvider`, which reads the
+ * signed-in account's PostHog assignment over the IPC bridge, here; the web
+ * PostHog adapter there. One key space, two transports, so one passing tells
+ * you nothing about the other: a regression in either port, or in either data
+ * path, is invisible from the far side.
  *
  * WHY THE SEED POPULATES THE PIPELINE IN BOTH PASSES. The row carries TWO
  * independent reasons to disappear, and conflating them would make the
@@ -76,8 +78,10 @@ import {
   dashboardOnboardedStorageKey,
   dashboardTourSeenStorageKey,
 } from "../../src/renderer/components/dashboard/dashboard-storage-keys";
+import { DASHBOARD_HEADING } from "./helpers/dashboard-header-copy";
 import {
-  dismissDesktopOnboardingOverlay,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
   seedDesktopFeatureFlags,
@@ -219,14 +223,13 @@ async function openDashboard(page: Page): Promise<void> {
     page.getByRole("heading", {
       exact: true,
       level: 1,
-      name: "Welcome to Closedloop",
+      name: DASHBOARD_HEADING,
     })
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("No agent sessions yet")).toHaveCount(0);
-  await dismissDesktopOnboardingOverlay(page);
   // Widen to "All time" so the past-dated seed is in range regardless of the
   // run clock.
-  await page.locator('[aria-label="All time"]:visible').click();
+  await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
   await expect(page.locator(`${MODELS_ROW} .recharts-area`)).toHaveCount(
     MODELS.length,
     { timeout: 45_000 }
@@ -240,7 +243,7 @@ async function expectNeighbourRowsPresent(page: Page): Promise<void> {
 }
 
 test.describe("Dashboard Agent Collaboration Network gate (ISS-5061)", () => {
-  test("hides the collaboration row on the desktop dashboard until the Labs toggle opens it", async () => {
+  test("hides the collaboration row on the desktop dashboard until the flag opens it", async () => {
     test.setTimeout(300_000);
 
     const claudeHome = fs.mkdtempSync(
@@ -285,9 +288,14 @@ test.describe("Dashboard Agent Collaboration Network gate (ISS-5061)", () => {
       });
       await seedPipelineAgents(userDataDir, SESSION_ID);
 
-      // Launch 2 — gate CLOSED. This is the registry default: no
-      // `seedDesktopFeatureFlags` call, so the profile resolves the Labs toggle
-      // to its shipped OFF value.
+      // Launch 2 — gate CLOSED because the assignment OMITS this key, which is
+      // the boundary worth pinning. `launchDesktopApp` always seeds the
+      // standard harness assignment (`E2E_DESKTOP_FEATURE_FLAG_SEED` —
+      // `agentsNav` and `labsNav`), and the provider consumes that non-null
+      // assignment ahead of its signed-out fallback, so this profile resolves
+      // against a PRESENT assignment that simply does not carry
+      // `agent-collaboration-network`. It is an omitted key reading `false`,
+      // not an absent assignment and not the unauthenticated path.
       const closed = await launchDesktopApp({
         env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
         keepUserDataDir: true,
@@ -313,7 +321,8 @@ test.describe("Dashboard Agent Collaboration Network gate (ISS-5061)", () => {
         await closed.cleanup();
       }
 
-      // Launch 3 — gate OPEN via the desktop Labs registry.
+      // Launch 3 — gate OPEN via the seeded flag assignment, the write in
+      // `seedDesktopFeatureFlags` that actually reaches the renderer.
       const open = await launchDesktopApp({
         beforeLaunch: (dir) => {
           seedDesktopFeatureFlags(dir, {

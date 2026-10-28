@@ -1,3 +1,4 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type {
   CreateDistributionRequest,
   DistributionDto,
@@ -6,8 +7,15 @@ import {
   DistributionMode,
   DistributionTargetingType,
 } from "@repo/api/src/types/distribution";
+import { Status } from "@repo/api/src/types/result";
 import { z } from "zod";
+import { roleUnresolvedResponse } from "@/lib/auth/org-admin-denial";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { recordOrganizationWrite } from "@/lib/organization-write-receipt";
 import {
   errorResponse,
   forbiddenResponse,
@@ -79,40 +87,47 @@ export const GET = withAnyAuth<DistributionDto[], "/distributions">(
 /**
  * POST /distributions
  *
- * Create a new Distribution (admin-only via `isOrgAdmin`).
+ * Create a new Distribution (admin-only via `requireOrgAdmin`).
  * Body: `{ catalogItemId, mode, targetingType, desiredEnabled?, targetComputeTargetIds?, targetUserIds? }`.
  */
 export const POST = withAnyAuth<DistributionDto, "/distributions">(
-  async ({ user, clerkOrgId, clerkUserId }, request) => {
-    const { body, errorResponse: parseErr } = await parseBody(
-      request,
-      createDistributionSchema
-    );
-    if (parseErr) {
-      return parseErr;
-    }
-
-    try {
-      const result = await distributionsService.create(
-        user.organizationId,
-        user.id,
-        clerkOrgId,
-        clerkUserId,
-        body as CreateDistributionRequest
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, _params, receipts) => {
+      const { body, errorResponse: parseErr } = await parseBody(
+        request,
+        createDistributionSchema
       );
-      if (!result.ok) {
-        if (result.error === 403) {
-          return forbiddenResponse();
-        }
-        if (result.error === 400) {
-          return errorResponse("Invalid catalogItemId", null, 400);
-        }
-        return errorResponse("Failed to create distribution", result.error);
+      if (parseErr) {
+        return parseErr;
       }
-      return successResponse(result.value);
-    } catch (error) {
-      return errorResponse("Failed to create distribution", error);
+
+      try {
+        const result = await distributionsService.create(
+          user.organizationId,
+          user.id,
+          clerkOrgId,
+          clerkUserId,
+          body as CreateDistributionRequest,
+          recordOrganizationWrite(receipts)
+        );
+        if (!result.ok) {
+          if (result.error === Status.ServiceUnavailable) {
+            return roleUnresolvedResponse();
+          }
+          if (result.error === Status.Forbidden) {
+            return forbiddenResponse();
+          }
+          if (result.error === Status.BadRequest) {
+            return errorResponse("Invalid catalogItemId", null, 400);
+          }
+          return errorResponse("Failed to create distribution", result.error);
+        }
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        return errorResponse("Failed to create distribution", error);
+      }
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );

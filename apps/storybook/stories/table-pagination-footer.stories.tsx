@@ -9,7 +9,8 @@ import { useState } from "react";
  * one queue reads the same way on every surface.
  */
 const meta = {
-  title: "Design System/Data Display/Table Pagination Footer",
+  title: "Composites v1.0/Data Display/Tables/Table Pagination Footer",
+  tags: ["deprecated"],
   component: TablePaginationFooter,
   parameters: {
     layout: "padded",
@@ -20,8 +21,19 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+/**
+ * Satisfies each story's `args` type. Every story renders through its own
+ * stateful harness, so nothing reads this at runtime.
+ */
+const DUMMY_PAGINATION_FOOTER_ARGS = {
+  page: 0,
+  totalPages: 1,
+  onPageChange: () => undefined,
+};
+
 /** One page: the readout still states the range, and no controls render. */
 export const SinglePage: Story = {
+  args: DUMMY_PAGINATION_FOOTER_ARGS,
   render: () => (
     <TablePaginationFooter
       onPageChange={() => {
@@ -36,6 +48,7 @@ export const SinglePage: Story = {
 
 /** The common case: a range readout beside live page controls. */
 export const MultiPage: Story = {
+  args: DUMMY_PAGINATION_FOOTER_ARGS,
   render: () => {
     const [page, setPage] = useState(0);
     return (
@@ -51,6 +64,7 @@ export const MultiPage: Story = {
 
 /** The result set was capped server-side, so the total is not the population. */
 export const WithTruncationNote: Story = {
+  args: DUMMY_PAGINATION_FOOTER_ARGS,
   render: () => {
     const [page, setPage] = useState(2);
     return (
@@ -67,6 +81,7 @@ export const WithTruncationNote: Story = {
 
 /** No readout — a surface with no total it can state honestly. */
 export const ControlsOnly: Story = {
+  args: DUMMY_PAGINATION_FOOTER_ARGS,
   render: () => {
     const [page, setPage] = useState(3);
     return (
@@ -84,6 +99,7 @@ export const ControlsOnly: Story = {
  * must not squeeze the controls off the row.
  */
 export const LongReadout: Story = {
+  args: DUMMY_PAGINATION_FOOTER_ARGS,
   render: () => {
     const [page, setPage] = useState(1);
     return (

@@ -2,10 +2,7 @@ import {
   type AgentSessionListItem,
   SessionPrLifecycleStatus,
 } from "@repo/api/src/types/agent-session";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentSessionListItemFixture } from "../../components/sessions/session-list-fixtures";
 import { CostAvailability } from "../cost-availability";
@@ -29,12 +26,12 @@ describe("resolveSessionRepoLabel", () => {
     expect(
       resolveSessionRepoLabel(
         createAgentSessionListItemFixture({
-          repositoryFullName: "closedloop-ai/symphony-alpha",
-          cwd: "/Users/dev/symphony-alpha",
-          worktreePath: "/Users/dev/symphony-alpha-wt",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
+          cwd: "/Users/dev/closedloop-ai",
+          worktreePath: "/Users/dev/closedloop-ai-wt",
         })
       )
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("returns null (renders Unknown) when no remote has resolved, even for a purely local run — the cwd folder name is never used as a repo label (FEA-4274)", () => {
@@ -45,8 +42,8 @@ describe("resolveSessionRepoLabel", () => {
           branch: null,
           branchArtifactId: null,
           prs: [],
-          cwd: "/Users/dev/Dev/symphony-alpha",
-          worktreePath: "/Users/dev/Dev/symphony-alpha-wt",
+          cwd: "/Users/dev/Dev/closedloop-ai",
+          worktreePath: "/Users/dev/Dev/closedloop-ai-wt",
         })
       )
     ).toBeNull();
@@ -71,23 +68,23 @@ describe("resolveSessionRepoLabel", () => {
     expect(
       resolveSessionRepoLabel(
         createAgentSessionListItemFixture({
-          repositoryFullName: "closedloop-ai/symphony-alpha",
-          branch: "mike/nightly-review",
-          cwd: "/Users/chris.chenault/Code/2",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
+          branch: "marisol/nightly-review",
+          cwd: "/Users/cosimo.corrigan/Code/2",
         })
       )
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("returns null (Unknown) instead of a fabricated numeric cwd leaf when the remote is unresolved but a branch + PRs link the session (FEA-4274)", () => {
-    // The production defect: /Users/chris.chenault/Code/2 was presented as
+    // The production defect: /Users/cosimo.corrigan/Code/2 was presented as
     // "Repository 2" while the session linked a real branch + PR. The resolver
     // must never turn the numbered worktree dir into a repository identity.
     expect(
       resolveSessionRepoLabel(
         createAgentSessionListItemFixture({
           repositoryFullName: null,
-          branch: "mike/nightly-review",
+          branch: "marisol/nightly-review",
           prs: [
             {
               num: 33,
@@ -95,8 +92,8 @@ describe("resolveSessionRepoLabel", () => {
               status: SessionPrLifecycleStatus.Open,
             },
           ],
-          cwd: "/Users/chris.chenault/Code/2",
-          worktreePath: "/Users/chris.chenault/Code/2",
+          cwd: "/Users/cosimo.corrigan/Code/2",
+          worktreePath: "/Users/cosimo.corrigan/Code/2",
         })
       )
     ).toBeNull();
@@ -131,11 +128,31 @@ describe("agentSessionToSessionTableRow", () => {
   });
 
   it("maps Started and Last active labels through app local-time helpers", () => {
-    const row = agentSessionToSessionTableRow(sessionListItem(), "owner/repo");
+    const item = sessionListItem();
+    const row = agentSessionToSessionTableRow(item, "owner/repo");
 
     expect(row.startedLabel).toBe("Yesterday");
     expect(row.lastActivityLabel).toBe("3 hours ago");
     expect(row.repo).toBe("owner/repo");
+    expect(row.rawStatus).toBe(item.status);
+  });
+
+  it("preserves producer lifecycle evidence beside a derived display status", () => {
+    const row = agentSessionToSessionTableRow(
+      sessionListItem({
+        rawStatus: "quantum-flux",
+        // Plain literal: ISS-10364 retired `DISPLAYED_SESSION_STATUS.UNKNOWN`.
+        status: "unknown",
+      }),
+      "owner/repo"
+    );
+
+    expect(row.rawStatus).toBe("quantum-flux");
+    // ISS-10364: a stored literal `unknown` now folds through
+    // `normalizeSessionStatus` to Active like any other unmodelled value, so the
+    // derived `status` no longer echoes the stored literal — `rawStatus` is what
+    // still carries it.
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("nulls missing timestamps so the cell renders the shared sentinel", () => {
@@ -228,20 +245,17 @@ describe("agentSessionToSessionTableRow", () => {
   });
 
   /**
-   * ISS-6455: the desktop LOCAL row shape — raw `active` with
-   * `awaitingInputSince` beside it, which is what the producer serves whenever
-   * the `sessions-displayed-status-parity` Labs gate is off. The list read only
-   * `status`/`lastActivityAt`/`startedAt`, so it folded this row to Stale and
-   * emptied its Duration cell while the DETAIL, which does read the field, kept
-   * timing the same run against `now()`.
+   * ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting projection
+   * this case used to pin: the mapper no longer reads `awaitingInputSince` at
+   * all, so this row's status is the ordinary Active fold, the same as any
+   * other non-terminal row — and its Duration keeps climbing against `now()`
+   * regardless, since there is no staleness fold left to stop it either.
    */
-  it("ISS-6455: keeps measuring a silent run that is awaiting input, and badges it Waiting", () => {
+  it("ISS-10364: keeps measuring a silent run that is awaiting input, now badged plain Active", () => {
     const row = agentSessionToSessionTableRow(
       sessionListItem({
         status: SESSION_STATUS.ACTIVE,
         startedAt: new Date("2026-06-15T09:00:00.000Z"),
-        // Comfortably past the 24h display cutoff, so the fold is not a
-        // boundary accident.
         lastActivityAt: new Date("2026-06-16T09:00:00.000Z"),
         awaitingInputSince: new Date("2026-06-16T09:00:00.000Z"),
         endedAt: null,
@@ -249,7 +263,7 @@ describe("agentSessionToSessionTableRow", () => {
       "owner/repo"
     );
 
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
     expect(row.durationLabel).toBe("51h 0m");
   });
 
@@ -270,20 +284,30 @@ describe("agentSessionToSessionTableRow", () => {
       "owner/repo"
     );
 
-    // Bounded by its own end instant. Without the `endedAt` guard this row
-    // badges Waiting and its Duration climbs against `now()` instead — a
-    // finished run reported as still going.
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.STALE);
-    expect(row.durationLabel).toBe("24h 30m");
+    // The `endedAt` guard still holds: this row never badges Waiting. But
+    // ISS-10364 retired the staleness fold, so its fallback is now plain Active
+    // rather than Stale — and Active always drives a running Duration window, so
+    // this straggler (stored `active` with a stray `endedAt`) keeps climbing
+    // against `now()` rather than being bounded.
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(row.durationLabel).toBe("51h 0m");
   });
 
   /**
-   * The fail-open this projection is deliberately narrowed against: a
-   * version-skewed payload spelling a status this build does not recognize,
-   * carrying `awaitingInputSince`, must stay Unknown rather than being read as a
-   * live run and timed.
+   * The recognized-live gate, held against the population it exists for: a
+   * version-skewed payload spelling a status this build does not model, with
+   * `awaitingInputSince` beside it. The gate REFUSES it, so the row is not
+   * badged Waiting on evidence this build cannot corroborate.
+   *
+   * ISS-10364 (tamsinb review, #7820) is why this is asserted rather than
+   * assumed. Narrowing `resolveDisplayedSessionStatus` to a lifecycle value
+   * made it answer Active for every unmodelled spelling, which briefly turned
+   * this gate into a pass-through and badged this row Waiting. The gate is a
+   * membership test now (`projectLiveWaiting`), so the refusal is restored —
+   * the row falls through to the ordinary fold and reads Active, and its
+   * Duration still times, because the fold no longer has a staleness arm.
    */
-  it("ISS-6455: does not project an UNRECOGNIZED status that carries awaitingInputSince", () => {
+  it("refuses the Waiting projection for an UNRECOGNIZED status carrying awaitingInputSince", () => {
     const row = agentSessionToSessionTableRow(
       sessionListItem({
         status: "quantum-flux",
@@ -295,20 +319,19 @@ describe("agentSessionToSessionTableRow", () => {
       "owner/repo"
     );
 
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
-    expect(row.durationLabel).toBeNull();
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(row.durationLabel).toBe("3h 0m");
   });
 
   /**
-   * ISS-6455 (wongk, #5099 review): a truthiness test cannot tell an ABSENT
-   * timestamp from an UNREADABLE one, so a version-skewed payload with malformed
-   * temporal fields projected Waiting and started a duration against `now()` for
-   * a run this build has no evidence about.
-   *
-   * The two fields carry different weight. `endedAt` decides whether the run is
-   * OVER, so an unreadable one disclaims the row.
+   * ISS-10364 (operator ruling, 2026-09-23/24) retired the disclaim-on-corrupt-
+   * endedAt path this case used to pin. The mapper's status fold never reads
+   * `endedAt`, and a lifecycle of `Running` (which ACTIVE always is now) short-
+   * circuits the window logic before it ever looks at `endedAt` — so a raw
+   * `active` row keeps timing against `now()` regardless of whether its
+   * `endedAt` is corrupt, absent, or a real past instant.
    */
-  it("ISS-6455: reads an unparseable endedAt as unknown rather than as a live run", () => {
+  it("ISS-10364: keeps timing an active row even with an unparseable endedAt", () => {
     const row = agentSessionToSessionTableRow(
       sessionListItem({
         status: SESSION_STATUS.ACTIVE,
@@ -320,10 +343,8 @@ describe("agentSessionToSessionTableRow", () => {
       "owner/repo"
     );
 
-    // Live by every other reading — active, and it said something an hour ago —
-    // but we cannot tell whether it ENDED, so the cell must not keep timing it.
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
-    expect(row.durationLabel).toBeNull();
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(row.durationLabel).toBe("51h 0m");
   });
 
   /**
@@ -360,10 +381,13 @@ describe("agentSessionToSessionTableRow", () => {
       "owner/repo"
     );
 
-    // The projection needs a READABLE anchor. Without one there is no evidence
-    // this run is blocked on a human, so it folds like any other silent row.
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.STALE);
-    expect(row.durationLabel).toBeNull();
+    // The projection still needs a READABLE anchor: without one there is no
+    // evidence this run is blocked on a human, so no Waiting exemption is
+    // granted and it takes the ordinary fold. ISS-10364 retired the staleness
+    // fold that ordinary path used to apply, so the row now reads Active (and
+    // measurably running) rather than Stale (and unmeasurable).
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(row.durationLabel).toBe("51h 0m");
   });
 
   it("maps session pull requests into compact PR and merge display fields", () => {
@@ -463,7 +487,7 @@ describe("agentSessionToSessionTableRow", () => {
     const row = agentSessionToSessionTableRow(
       sessionListItem({
         harness: "claude",
-        branch: "mikeangstadt/fea-3575",
+        branch: "marisolashgrove/fea-3575",
         worktreePath: "/Users/x/repo",
       }),
       "owner/repo"
@@ -571,6 +595,82 @@ describe("agentSessionToSessionTableRow", () => {
     expect(row.costLabel).toBe("$0.00");
     expect(row.costTooltip).toBe("Billed through your subscription");
     expect(row.costAvailability).toBe(CostAvailability.Subscription);
+  });
+});
+
+/**
+ * ISS-8013: the five sortable columns that render a FORMATTED value — Cost,
+ * Duration, Started, Updated and Last active — now carry the underlying value
+ * beside the label, because sorting on the label ranked `$1,234.00` below
+ * `$9.50`. This is the producer half: one mapper fills all five, and the row
+ * type declares them optional so hand-written story rows still compile, so
+ * nothing but this assertion stands between a forgotten field and a sort control
+ * that silently stops moving anything.
+ *
+ * Every instant below is DISTINCT, so a value read off a neighbouring field —
+ * `updatedAtMs` off `lastActivityAt`, the pair ISS-6005 had to separate once
+ * already — fails here rather than matching by coincidence.
+ */
+describe("agentSessionToSessionTableRow raw sort values", () => {
+  it("carries the value behind every label a sortable column ranks by", () => {
+    const row = agentSessionToSessionTableRow(
+      createAgentSessionListItemFixture({
+        status: SESSION_STATUS.INACTIVE,
+        startedAt: new Date("2026-06-16T10:00:00.000Z"),
+        endedAt: new Date("2026-06-16T10:30:00.000Z"),
+        lastActivityAt: new Date("2026-06-16T22:00:00.000Z"),
+        recordUpdatedAt: new Date("2026-06-17T08:00:00.000Z"),
+        estimatedCost: 4.25,
+      }),
+      null,
+      { now: NOW }
+    );
+
+    expect(row.costValue).toBe(4.25);
+    expect(row.durationMs).toBe(30 * 60 * 1000);
+    expect(row.startedAtMs).toBe(
+      new Date("2026-06-16T10:00:00.000Z").getTime()
+    );
+    expect(row.lastActivityAtMs).toBe(
+      new Date("2026-06-16T22:00:00.000Z").getTime()
+    );
+    expect(row.updatedAtMs).toBe(
+      new Date("2026-06-17T08:00:00.000Z").getTime()
+    );
+  });
+
+  /**
+   * The sibling in the opposite state, on the same subject: where the cell shows
+   * an em dash the value is `null`, so an unpriced or unmeasured row is UNRANKED
+   * rather than ranked as the cheapest and shortest run on the page. A `0` here
+   * would be the lie.
+   */
+  it("carries no value where the label is an em dash", () => {
+    const row = agentSessionToSessionTableRow(
+      sessionListItem({
+        status: SESSION_STATUS.INACTIVE,
+        // The wire shape a missing instant actually arrives in — see
+        // {@link UNPARSEABLE_INSTANT}. `recordUpdatedAt` is optional on the DTO,
+        // so its absence is spelled by simply not being here.
+        startedAt: UNPARSEABLE_INSTANT,
+        endedAt: null,
+        lastActivityAt: UNPARSEABLE_INSTANT,
+        estimatedCost: 0,
+      }),
+      null,
+      { now: NOW }
+    );
+
+    expect(row.costLabel).toBe("—");
+    expect(row.costValue).toBeNull();
+    expect(row.durationLabel).toBeNull();
+    expect(row.durationMs).toBeNull();
+    expect(row.startedLabel).toBeNull();
+    expect(row.startedAtMs).toBeNull();
+    expect(row.lastActivityLabel).toBeNull();
+    expect(row.lastActivityAtMs).toBeNull();
+    expect(row.updatedLabel).toBeNull();
+    expect(row.updatedAtMs).toBeNull();
   });
 });
 

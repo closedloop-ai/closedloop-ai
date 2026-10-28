@@ -1,12 +1,18 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import {
   ChecklistItemId,
   type OnboardingChecklistItem,
 } from "@repo/api/src/types/onboarding";
-
+import { useDetectedDesktopOs } from "@repo/app/onboarding/hooks/use-detected-desktop-os";
 import { useOnboardingStatus } from "@repo/app/onboarding/hooks/use-onboarding";
+import {
+  type DetectedPlatform,
+  describeDesktopInstallerGap,
+  desktopInstallerIsPublished,
+  isDesktopOs,
+} from "@repo/app/onboarding/lib/desktop-platform-availability";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 
 /**
  * The attribute every checklist row carries, stamped with its item id.
@@ -50,11 +56,10 @@ export type OnboardingChecklistView = {
 /**
  * One answer to "is the setup checklist showing, and what is in it".
  *
- * Three components need this and they need to agree: the checklist renders from
- * it, the invite spotlight anchors to a row inside it, and the agent-onboarding
- * card stands down while it is up. Recomputing those conditions in each of them
- * is how two setup cards end up disagreeing about the same fact on the same
- * screen — which is exactly what visual QA caught.
+ * Two components need this and they need to agree: the checklist renders from
+ * it, and the invite spotlight anchors to a row inside it. Recomputing those
+ * conditions in each of them is how two surfaces end up disagreeing about the
+ * same fact on the same screen — which is exactly what visual QA caught.
  */
 export function useOnboardingChecklist(): OnboardingChecklistView {
   // Refetch when the tab regains focus — `"always"`, not `true`. Unlike every
@@ -68,30 +73,112 @@ export function useOnboardingChecklist(): OnboardingChecklistView {
   const { data: status } = useOnboardingStatus({
     refetchOnWindowFocus: "always",
   });
-  const gdriveFlag = useFeatureFlag("google-drive");
-  const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
+  const gdriveEnabled = useFeatureFlagEnabled("google-drive");
+  // The visitor's platform, read once and handed straight to the row rewrite
+  // below. There is no gate to pick between shapes any more: every item goes
+  // through `withPlatformHonestDesktopRow`, which leaves every row but the
+  // desktop one untouched.
+  const detectedOs = useDetectedDesktopOs();
 
   const hiddenItemIds = new Set<ChecklistItemId>();
   if (!gdriveEnabled) {
     hiddenItemIds.add(ChecklistItemId.ConnectGoogle);
   }
 
-  const items = (status?.checklist ?? []).filter(
+  const visibleItems = (status?.checklist ?? []).filter(
     (item) => !hiddenItemIds.has(item.id)
+  );
+  const items = visibleItems.map((item) =>
+    withPlatformHonestDesktopRow(item, detectedOs)
   );
   const completedCount = items.filter((item) => item.completed).length;
   const totalCount = items.length;
 
+  // No `completedCount !== totalCount` term: the card shows its completed
+  // state and is removed only by the dismiss control (ISS-7089 F4). Vanishing
+  // at 100% deleted the card mid-session under the user, and they never saw
+  // the finished state.
   const visible =
     status?.wizardCompleted === true &&
     !status.checklistDismissed &&
-    totalCount > 0 &&
-    completedCount !== totalCount;
+    totalCount > 0;
 
   return {
     visible,
     items,
     completedCount,
     totalCount,
+  };
+}
+
+/**
+ * Rewrites the desktop row when the visitor's platform has no published
+ * installer (ISS-9651, PRD-685 FR11).
+ *
+ * The service builds this row server-side, where the visitor's platform is not
+ * knowable. It used to resolve that by sending the macOS `.dmg` to every reader,
+ * which made this rewrite the only thing standing between a Windows or Linux
+ * visitor and a one-click download of an artifact their machine cannot run —
+ * and, because the row renders before PostHog's anonymous bootstrap resolves the
+ * signed-in user's flags, a thing that had not necessarily run yet. ISS-9708
+ * removed the platform from the payload instead: the row now arrives carrying
+ * the download channel's release PAGE, which is a correct destination for every
+ * reader regardless of what this function does.
+ *
+ * So the description is what this rewrite is now FOR. The step is still "download
+ * the desktop app"; what a reader on an unpublished platform needs to know is
+ * that their platform cannot do it yet, and the page will not tell them — it simply has no
+ * asset for them. The headline goes in the description rather than the fuller
+ * sentence the wizard shows because this row truncates to one line, and a
+ * sentence clipped mid-word states nothing at all. The LABEL is left alone.
+ *
+ * Withholding `href` alongside it is now a CONSERVATIVE choice rather than a
+ * necessary one: the page is safe for anyone to open, so a reader sent there
+ * loses nothing but finds nothing either. Whether the honest arm should keep
+ * suppressing a link that no longer misroutes anybody is ISS-9651's product
+ * call, not something to flip while fixing the payload underneath it — this
+ * function's behaviour is deliberately unchanged by ISS-9708.
+ *
+ * Every other row, and the desktop row on a platform whose installer resolves,
+ * is returned by identity. A completed row is left alone too: the compute target
+ * already registered, so how the user would have installed it is moot.
+ */
+function withPlatformHonestDesktopRow(
+  item: OnboardingChecklistItem,
+  detectedOs: DetectedPlatform | null
+): OnboardingChecklistItem {
+  if (item.id !== ChecklistItemId.DownloadDesktop || item.completed) {
+    return item;
+  }
+
+  // Platform not resolved yet. Withhold the link without claiming a gap: this
+  // arm must not assert an unavailability nobody has measured. Reachable on a
+  // warm query cache, where the row commits before the detection effect runs.
+  // Since ISS-9708 the link it withholds here is the platform-neutral release
+  // page, so this no longer prevents a misroute — see the note above.
+  if (detectedOs === null) {
+    return { ...item, external: false, href: undefined };
+  }
+
+  // An agent that named no desktop OS keeps the row exactly as the service sent
+  // it. Unlike the wizard control, this row is a single link with no room to
+  // offer one per platform, and it names no platform either -- "Download the
+  // desktop app" asserts nothing about the machine reading it, so the link is
+  // not a misroute the way a "Download Mac Desktop App" button would be.
+  // Withholding it is the capability loss Perrin's ISS-9651 ruling refused, and
+  // this is the same link every visitor gets in production today.
+  if (!isDesktopOs(detectedOs)) {
+    return item;
+  }
+
+  if (desktopInstallerIsPublished(detectedOs)) {
+    return item;
+  }
+
+  return {
+    ...item,
+    description: describeDesktopInstallerGap(detectedOs).headline,
+    external: false,
+    href: undefined,
   };
 }

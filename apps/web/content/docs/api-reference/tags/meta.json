@@ -1,4 +1,10 @@
 {
   "title": "Tags",
-  "pages": ["listTags", "createTag", "updateTag", "deleteTag"]
+  "pages": [
+    "listTags",
+    "createTag",
+    "updateTag",
+    "deleteTag",
+    "batchApplyTagV2"
+  ]
 }

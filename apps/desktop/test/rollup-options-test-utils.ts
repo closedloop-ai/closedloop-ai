@@ -1,6 +1,6 @@
 /**
  * @file rollup-options-test-utils.ts
- * @description ISS-5098 (wongk, #4355): the shared, deliberately inert reporter
+ * @description ISS-5098 (whitlockk, #4355): the shared, deliberately inert reporter
  * for suites that drive the session-analytics rollup but do not assert on its
  * diagnostics.
  *

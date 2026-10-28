@@ -67,24 +67,6 @@ Override the default service URLs. Useful for local development or staging envir
 |---|---|
 | `SYMPHONY_GATEWAY_FALLBACK_ORIGIN` | Fallback origin for the gateway service, used when the primary is unavailable. |
 | `SYMPHONY_WORKTREE_PARENT_DIR` | Custom parent directory for git worktrees created by Symphony sessions. Defaults to a sibling directory of the repo. |
-| `CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE=1` | Test mode flag that bypasses the normal Symphony pipeline and runs raw Claude instead. |
-
-### Output Tailer Tuning
-
-| Variable | Description |
-|---|---|
-| `CLOSEDLOOP_TAILER_POLL_MS` | Poll interval in milliseconds for the output tailer (default determined at runtime). |
-| `CLOSEDLOOP_TAILER_THROTTLE_MS` | Throttle interval in milliseconds for the output tailer (default determined at runtime). |
-| `CLOSEDLOOP_WATCHER_POLL_MS` | Poll interval in milliseconds for the boot-recovery live-loop PID watcher (default 3000). |
-
-### Passed to Child Processes
-
-These are set on spawned subprocesses (Claude Code, deploy, learnings) rather than read by the gateway itself.
-
-| Variable | Description |
-|---|---|
-| `CLOSEDLOOP_WORKDIR` | Working directory for Closedloop run artifacts. Set on Claude Code and learnings child processes. |
-| `HOME`, `USER`, `SHELL`, `TERM`, `NODE_ENV` | Standard environment inherited into deploy child processes to ensure a sane shell environment. |
 
 ### Golden Corpus Mode (dev-only)
 
@@ -99,6 +81,6 @@ Set by the `just desktop-golden` launch recipe to boot the app against the froze
 
 ## Required GitHub Secrets
 
-- `SLACK_BOT_TOKEN` -- Slack bot token for release notifications, posted with `chat.postMessage` to the channel in the `SLACK_GITHUB_REPO_CHANNEL_ID` repo variable. The bot must be a member of that channel.
+- `SLACK_BOT_TOKEN` -- Slack bot token for release notifications, posted with `chat.postMessage`. The destination is the call site's own `channel_id`: failure reports go to the `SLACK_GITHUB_REPO_CHANNEL_ID` repo variable, the build-ready announcement to `SLACK_STATUS_INFO_CHANNEL_ID` (ISS-11009), and the in-thread replies to the channel the release was dispatched from. The bot must be a member of every channel it is asked to post to. If it is not, `chat.postMessage` answers HTTP 200 with `ok:false` and `error: not_in_channel`; the action treats that as an undelivered notification, raises an `::error::` annotation and exits non-zero.
 
 The `GITHUB_TOKEN` (automatic in Actions) handles GitHub Releases publishing. If the repo has restricted default token permissions, ensure `contents: write` is allowed (Settings > Actions > General).

@@ -29,8 +29,9 @@ const idleSaveState = {
 };
 
 const meta = {
-  title: "App Core/Settings/Org Policy Toggle Card",
+  title: "Composites v1.0/Settings/Org Policy Toggle Card",
   component: OrgPolicyEditableCard,
+  tags: ["deprecated", "autodocs"],
   args: {
     description: DESCRIPTION,
     saveState: idleSaveState,
@@ -107,11 +108,17 @@ export const Loading: Story = {
   args: {
     title: TITLE,
   },
+  parameters: {
+    controls: { include: ["title"] },
+  },
   render: (args) => <OrgPolicyLoadingState title={args.title} />,
 };
 
 /** The read that backs the card failed outright. */
 export const LoadError: Story = {
+  parameters: {
+    controls: { include: ["description", "title", "toggleHelpText"] },
+  },
   render: (args) => (
     <OrgPolicyErrorState
       description={args.description}
@@ -128,6 +135,9 @@ export const LoadError: Story = {
  * rendering an unreadable privacy gate as OFF.
  */
 export const Unavailable: Story = {
+  parameters: {
+    controls: { include: ["description", "title", "toggleHelpText"] },
+  },
   render: (args) => (
     <OrgPolicyUnavailableState
       description={args.description}
@@ -142,6 +152,9 @@ export const Unavailable: Story = {
  * admin still learns the requested write could not be confirmed.
  */
 export const UnavailableAfterUnconfirmedSave: Story = {
+  parameters: {
+    controls: { include: ["description", "title", "toggleHelpText"] },
+  },
   render: (args) => (
     <OrgPolicyUnavailableState
       description={args.description}

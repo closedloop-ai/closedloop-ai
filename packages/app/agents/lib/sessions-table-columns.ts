@@ -1,6 +1,8 @@
-import { GRID_TABLE_V2_FLAG_KEY } from "@repo/api/src/types/grid-table-v2-flag";
+import { SESSIONS_ARTIFACT_TAGS_FLAG_KEY } from "@repo/api/src/types/sessions-artifact-tags-flag";
 import type { GridTableColumn } from "@repo/design-system/components/ui/grid-table";
 import { CARD_FALLBACK_BREAKPOINT } from "@repo/design-system/lib/column-order";
+import { PRIORITY_COLUMN_LABEL } from "../../shared/lib/priority-constants";
+import { PRODUCT_GRID_FAVORITE_COLUMN_LABEL } from "../../shared/lib/product-grid-favorites";
 import {
   DS_CHIP_FIT_GEOMETRY,
   estimateChipPlusOverflowWidthPx,
@@ -19,8 +21,11 @@ import {
  *    `use-sessions-view-state.ts`) reads {@link SESSIONS_DATA_COLUMN_ORDER} to
  *    decide where a relocated column canonically belongs.
  *
- * This module is deliberately DEPENDENCY-LIGHT — a type-only import plus one
- * dependency-free constant — so the Sessions view-state hook can read the
+ * This module DECLARES the columns; which of them a build and a mount actually
+ * render — the gate and seam derivation — is `sessions-column-visibility.ts`,
+ * split out under the 1,000-line ceiling when the Priority column landed
+ * (ISS-10332). Both stay DEPENDENCY-LIGHT — type-only imports plus
+ * dependency-free constants — so the Sessions view-state hook can read the
  * canonical order without pulling the table's component graph (lucide, badges,
  * chips, the design-system component tree) into every surface that only needs
  * the hook.
@@ -56,18 +61,29 @@ export const SESSIONS_UPDATED_COLUMN_ID = "updated";
 /**
  * ISS-5770: the id of the linked-BRANCHES column.
  *
- * Plural, because a session can have more than one branch — and because it is
- * the id the Sessions prototype's own `COLUMN_SPECS` uses
- * (`apps/prototypes/app/p/sessions/components/sessions-table.tsx`). Production
- * spelled it `branch` while rendering the label "Linked branches", so the two
- * lists that are meant to BE the same list agreed on the visible string and
- * disagreed on the key any comparison would join on. That is the exact shape
- * ISS-5713 is about: nothing failed, because nothing mechanically compared them.
+ * Plural, because a session can have more than one branch — and because the
+ * approved Sessions prototype contract used that id before the prototype was
+ * componentized onto this shared declaration. Production spelled it `branch`
+ * while rendering the label "Linked branches", so the two lists that were
+ * meant to BE the same list agreed on the visible string and disagreed on the
+ * key any comparison would join on. That is the exact shape ISS-5713 is about:
+ * nothing failed, because nothing mechanically compared them.
  *
  * The visible label is unchanged ("Linked branches") — this renames the key, not
  * the column.
  */
 export const SESSIONS_BRANCHES_COLUMN_ID = "branches";
+
+/**
+ * ISS-8712: the id of the org-tag column — the approved prototype's second
+ * slot, which production had left unbuilt (it was listed as FEA-4213 in
+ * `sessions-prototype-column-parity.test.tsx`'s unimplemented set).
+ *
+ * It renders the ORG TAG VOCABULARY (the `TagArtifact` join a PRD, an Issue, or
+ * a Branch carries), not the org's own custom field that happens to be named
+ * "Tags" — those are different mechanisms and the row shows only this one.
+ */
+export const SESSIONS_TAGS_COLUMN_ID = "tags";
 
 /**
  * The pre-ISS-5770 spelling of {@link SESSIONS_BRANCHES_COLUMN_ID}.
@@ -97,11 +113,21 @@ export const SESSIONS_LEGACY_BRANCHES_COLUMN_ID = "branch";
  * A read-time alias is also the only one of the two that covers all three
  * hazards uniformly. The versioned migration rewrites `columnOrder` only; the
  * hidden-column set and any stored sort key are read on other paths, and a
- * legacy id surviving in either would silently stop hiding the column or resolve
- * a sort to nothing. Normalizing on read fixes all of them at once and is
- * idempotent, so a view written by an older build that is then read by a newer
- * one — the version-skew case the repo's compatibility rule names — degrades to
- * exactly the right column instead of to nothing.
+ * legacy id surviving in either would silently stop hiding the column or discard
+ * the saved view outright. Normalizing on read is idempotent, so a view written
+ * by an older build that is then read by a newer one — the version-skew case the
+ * repo's compatibility rule names — degrades to exactly the right column instead
+ * of to nothing.
+ *
+ * ISS-9447 M3 made "all three" true. Until then this paragraph described the
+ * intent and `useSessionsViewState` applied the map to `hiddenColumns` and
+ * `columnOrder` only — never to the stored sort key, which `savedViewSchema`
+ * validates against a CLOSED enum with no `.catch`. A legacy sort id therefore
+ * failed the whole object parse and discarded the reader's columns, window and
+ * grouping along with their sort. Latent rather than live, because the one
+ * renamed column here was never sortable; the parser now normalizes the sort
+ * axis before the enum runs, so the next rename of a sortable column does not
+ * find out the hard way.
  *
  * Per the repo's Compatibility Guardrail this tolerance is not to be removed
  * without explicit human approval.
@@ -242,6 +268,36 @@ export const SESSIONS_LEGIBLE_COLUMN_BUDGET_PX = CARD_FALLBACK_BREAKPOINT;
 export const SESSIONS_STATUS_COLUMN_ID = "status";
 
 /**
+ * ISS-7902: the Harness column's id. Named for the same reason Status is — more
+ * than one module now has to agree about it: the spec below, the v2 surface's
+ * cell branch, and the reader that feeds its sort and group band.
+ */
+export const SESSIONS_HARNESS_COLUMN_ID = "harness";
+
+/**
+ * ISS-8296: the Owner and Model column ids, named for the same reason Status and
+ * Harness are, and named HERE because this module is where a session column id
+ * is declared. `sessions-list-group-values.ts` first spelled them next to its own
+ * table, which left three spellings of each id — the constant, the column spec
+ * below, and `groupKey`'s bare comparison — with only one of them importable
+ * (marisolashgrove review).
+ */
+export const SESSIONS_OWNER_COLUMN_ID = "owner";
+export const SESSIONS_MODEL_COLUMN_ID = "model";
+
+export const SESSIONS_REPO_COLUMN_ID = "repo";
+export const SESSIONS_PR_COLUMN_ID = "pr";
+export const SESSIONS_MERGE_COLUMN_ID = "merge";
+
+/**
+ * ISS-10332: the Priority column's id. Named because four modules agree on it —
+ * the spec below, the seam set in `sessions-column-visibility.ts`, the v2
+ * surface's sort rule and the group-by dimension — and it matches the server
+ * sort key (`AGENT_SESSION_SORT_COLUMNS`) 1:1 like every key except Owner.
+ */
+export const SESSIONS_PRIORITY_COLUMN_ID = "priority";
+
+/**
  * Width (px) of the Owner column.
  *
  * Named rather than inlined because ISS-5282's first draft spent part of it,
@@ -258,25 +314,28 @@ export const SESSIONS_OWNER_COLUMN_WIDTH_PX = 180;
 /**
  * FEA-4209: the id of the linked-PROJECT(s) column.
  *
- * Rendered only while `grid-table-v2` is ON **and** the host wired the seam that
- * supplies the chips — see {@link SESSIONS_ISSUES_COLUMN_ID} for why the seam is
- * half of the gate. Hideable from the View menu like every other optional
- * column, and reorderable like every data column, so it is included in the
- * view-state hook's orderable id set.
+ * Rendered only where the host wired the seam that supplies the cell — the
+ * editable control, since ISS-12454; see {@link SESSIONS_ISSUES_COLUMN_ID} for
+ * why the seam is the whole condition now that ISS-10301 retired the
+ * `grid-table-v2` half of it. Hideable from the View
+ * menu like every other optional column, and reorderable like every data column,
+ * so it is included in the view-state hook's orderable id set.
  */
 export const SESSIONS_PROJECTS_COLUMN_ID = "projects";
 
 /**
  * Header for the linked-projects column.
  *
- * "Owning project", not "Projects" (wongk review). The bare noun read as the
+ * "Owning project", not "Projects" (whitlockk review). The bare noun read as the
  * same dimension the `sessions-project-facet` filter narrows on, and the two are
  * NOT the same dimension:
  *
- * - This cell reads `AgentSessionListItem.project`, which the API resolves from
- *   the session's LINEAGE — the source artifact it was launched from, or its
- *   loop's artifact (`project-resolution.ts`, FEA-1749: lineage only, no
- *   repository fallback). That is the project the run BELONGS to.
+ * - This cell reads `AgentSessionListItem.project`, the project the session is
+ *   FILED INTO: lineage-resolved on first sync — the source artifact it was
+ *   launched from (`project-resolution.ts`, FEA-1749: lineage only, no
+ *   repository fallback), and re-filable by a user from the
+ *   Details Project row thereafter, which no later sync overwrites (ISS-10995,
+ *   operator ruling 2026-10-12). That is the project the run BELONGS to.
  * - The facet filters on the session artifact's `sourceLinks` — a `RELATES_TO`
  *   edge to a document that lives in some project (`buildProjectLinkWhere`,
  *   ISS-5355). That is the set of projects the run TOUCHED, and a session
@@ -289,18 +348,18 @@ export const SESSIONS_PROJECTS_COLUMN_ID = "projects";
  * not make and which would also lose the more useful fact.
  *
  * Singular deliberately: the contract resolves at most one project per session,
- * and a session has exactly one owner or none. The cell is still the shared
- * multi-chip cell — reuse of one fit/overflow/accessible-name rule with the
- * `Linked issues` column — but the header describes the RELATION, not the
- * component.
+ * and a session has exactly one owner or none. The header describes the
+ * RELATION, not the component — which is why it survived ISS-12454 replacing
+ * the chip cell with an editable picker.
  */
 export const SESSIONS_PROJECTS_COLUMN_LABEL = "Owning project";
 
 /**
  * FEA-4210: the id of the linked-ISSUES column.
  *
- * Rendered only while `grid-table-v2` is ON **and** the host wired the seam that
- * supplies the chips. The seam is genuinely half of the gate rather than
+ * Rendered only where the host wired the seam that supplies the chips. ISS-10301
+ * retired the `grid-table-v2` half of this condition ENABLED, so the seam is now
+ * the WHOLE of it — and it was always the load-bearing half rather than
  * belt-and-braces: both fields these two columns read (`project`,
  * `linkedArtifacts`) are projected by the CLOUD list only — the desktop local
  * LIST producer emits neither (`shared-agent-sessions-api.ts`). A flag-only gate
@@ -313,7 +372,7 @@ export const SESSIONS_PROJECTS_COLUMN_LABEL = "Owning project";
  * correct for this list — just don't read it as "local mode has no linked
  * artifacts anywhere", because the session-detail pane now does.
  *
- * The seam is per SOURCE, not per surface (wongk review): the desktop's CLOUD
+ * The seam is per SOURCE, not per surface (whitlockk review): the desktop's CLOUD
  * mode reads the same HTTP list the web app does, so it opts in too — see
  * `useDesktopLinkedEntityColumns`. Requiring the host to opt in means the
  * source that HAS the data renders the columns and the source that does not
@@ -377,13 +436,17 @@ const SESSIONS_LINKED_ENTITY_CONTENT_WIDTH_PX = Math.ceil(
  * that from recurring; `sessions-table-linked-entity-columns.test.tsx` runs the
  * same arithmetic as a regression.
  *
- * It is still NOT a promise that a long project name renders whole at the floor:
- * the track is `0.5fr` above it, so any real desktop width holds more. What the
- * floor buys is that the first chip AND the affordance disclosing the rest are
- * both reachable. Anything the fit cannot show is named in full by the overflow
- * popover and its accessible name — and, for `Owning project`, where the contract
- * yields at most one chip so the overflow can never fire, by the per-chip
- * tooltip (`SessionLinkedChipsCell`).
+ * It is still NOT a promise that a long label renders whole at the floor: the
+ * track is `0.5fr` above it, so any real desktop width holds more. What the
+ * floor buys on `Linked issues` is that the first chip AND the affordance
+ * disclosing the rest are both reachable; anything the fit cannot show is named
+ * in full by the overflow popover and its accessible name.
+ *
+ * `Owning project` has no such disclosure: ISS-12454 made it an editable control
+ * rather than a chip, so there is no overflow to fire and no per-chip tooltip.
+ * Its long name is held by the picker trigger's own tooltip and accessible name
+ * (`ArtifactProjectValue`), which is why the floor has to leave the VALUE
+ * legible there rather than only the affordance.
  *
  * Both columns sit well past {@link SESSIONS_LEGIBLE_COLUMN_BUDGET_PX}, which is
  * deliberate and costs that budget nothing: the budget is asserted against
@@ -458,10 +521,11 @@ export type SessionsColumnSpec = GridTableColumn & {
  * ISS-5713: a feature-flag key a Sessions column may be gated behind.
  *
  * Its own alias so the gate vocabulary has ONE name that every consumer's
- * signature can spell, instead of each re-typing `typeof GRID_TABLE_V2_FLAG_KEY`
- * and having to be found and edited when a second key is added.
+ * signature can spell, instead of each re-typing the key constant and having to
+ * be found and edited when a second key is added. ISS-10301 removed
+ * `grid-table-v2` from the union when that key retired ENABLED.
  */
-export type SessionsColumnGate = typeof GRID_TABLE_V2_FLAG_KEY;
+export type SessionsColumnGate = typeof SESSIONS_ARTIFACT_TAGS_FLAG_KEY;
 
 /**
  * Which gates this BUILD has on, keyed by gate. A per-key map rather than a
@@ -473,7 +537,7 @@ export type SessionsColumnGateState = Readonly<
 >;
 
 export const SESSIONS_COLUMN_SPECS = [
-  // #4480: Status leads, as the prototype's own COLUMN_SPECS does (status, tags,
+  // #4480: Status leads, as the approved prototype contract did (status, tags,
   // owner). Status is what a reader scans a session list FOR; Owner is a
   // secondary filter dimension, so leading with it demoted the thing the row is
   // actually about. The PR body had described the new order as the prototype's
@@ -485,11 +549,43 @@ export const SESSIONS_COLUMN_SPECS = [
     sortable: true,
     gate: null,
   },
+  // ISS-10332 / PLN-2086: Priority sits beside Status — the two facts a reader
+  // scans a session list FOR — and ships SHOWN by default in new and existing
+  // views (operator ruling 5, 2026-09-21), so it is deliberately NOT in
+  // `SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS` and needs no hidden-columns migration
+  // step. `gate: null`: a column on a shipped screen is not a net-new surface
+  // (ISS-10348). It IS seam-required (`SESSIONS_PRIORITY_SEAM_COLUMN_IDS`): the
+  // cell is the `ArtifactPriorityEditor` over a host-supplied mutation, and only
+  // a source that projects the field can fill it. The header is the approved
+  // word the Documents grid already renders, never re-spelled here.
+  {
+    id: SESSIONS_PRIORITY_COLUMN_ID,
+    label: PRIORITY_COLUMN_LABEL,
+    width: "120px",
+    sortable: true,
+    gate: null,
+  },
+  // ISS-8712: Tags sits between Status and Owner — the slot the approved
+  // prototype gave it, and the one the parity test's literal has predicted
+  // since ISS-5770. Both halves of its visibility are stated, and they answer
+  // different questions: the `gate` is a property of the BUILD (is the web
+  // PostHog flag on), and its membership of SESSIONS_SEAM_REQUIRED_COLUMN_IDS
+  // is a property of the MOUNT (did this host wire a `renderTags` seam). The
+  // cell is an interactive picker with its own mutations, so the presentational
+  // table cannot derive it — a host that has not wired the seam must drop the
+  // column and its track rather than grow one of em dashes.
+  {
+    id: SESSIONS_TAGS_COLUMN_ID,
+    label: "Tags",
+    width: SESSIONS_LINKED_ENTITY_COLUMN_GRID_TRACK,
+    minWidthPx: SESSIONS_LINKED_ENTITY_COLUMN_MIN_WIDTH_PX,
+    gate: SESSIONS_ARTIFACT_TAGS_FLAG_KEY,
+  },
   // FEA-4300: Owner is sortable; its column id (`owner`) maps to the server sort
   // key `user` at the sort boundary in `SessionsTable`
   // (columnIdToSessionSortKey).
   {
-    id: "owner",
+    id: SESSIONS_OWNER_COLUMN_ID,
     label: "Owner",
     width: `${SESSIONS_OWNER_COLUMN_WIDTH_PX}px`,
     sortable: true,
@@ -499,6 +595,7 @@ export const SESSIONS_COLUMN_SPECS = [
     id: SESSIONS_AUTONOMY_COLUMN_ID,
     label: "Autonomy",
     width: "140px",
+    sortable: true,
     gate: null,
   },
   // FEA-4209 / ISS-5770: `Owning project` sits between Autonomy and Repository,
@@ -516,10 +613,10 @@ export const SESSIONS_COLUMN_SPECS = [
     label: SESSIONS_PROJECTS_COLUMN_LABEL,
     width: SESSIONS_LINKED_ENTITY_COLUMN_GRID_TRACK,
     minWidthPx: SESSIONS_LINKED_ENTITY_COLUMN_MIN_WIDTH_PX,
-    gate: GRID_TABLE_V2_FLAG_KEY,
+    gate: null,
   },
   {
-    id: "repo",
+    id: SESSIONS_REPO_COLUMN_ID,
     label: "Repository",
     width: "180px",
     sortable: true,
@@ -551,17 +648,17 @@ export const SESSIONS_COLUMN_SPECS = [
     label: SESSIONS_ISSUES_COLUMN_LABEL,
     width: SESSIONS_LINKED_ENTITY_COLUMN_GRID_TRACK,
     minWidthPx: SESSIONS_LINKED_ENTITY_COLUMN_MIN_WIDTH_PX,
-    gate: GRID_TABLE_V2_FLAG_KEY,
+    gate: null,
   },
   {
-    id: "harness",
+    id: SESSIONS_HARNESS_COLUMN_ID,
     label: "Harness",
     width: "124px",
     sortable: true,
     gate: null,
   },
   {
-    id: "model",
+    id: SESSIONS_MODEL_COLUMN_ID,
     label: "Model",
     width: "160px",
     sortable: true,
@@ -633,13 +730,13 @@ export const SESSIONS_COLUMN_SPECS = [
   // View menu, and stay reorderable, so a persisted view carrying them keeps its
   // slots.
   {
-    id: "pr",
+    id: SESSIONS_PR_COLUMN_ID,
     label: "PR",
     width: "148px",
     gate: null,
   },
   {
-    id: "merge",
+    id: SESSIONS_MERGE_COLUMN_ID,
     label: "Merge",
     width: "116px",
     gate: null,
@@ -660,8 +757,8 @@ export const SESSIONS_COLUMN_SPECS = [
  * seed for a view that has never been saved, and for "Reset view".
  */
 export const SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS: readonly string[] = [
-  "pr",
-  "merge",
+  SESSIONS_PR_COLUMN_ID,
+  SESSIONS_MERGE_COLUMN_ID,
   "started",
   // ISS-6005: `Updated` ships OFF by default at operator direction — it earns
   // its keep once comments/tags/status edits are common; until then it mostly
@@ -675,13 +772,19 @@ export const SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS: readonly string[] = [
   // fails if an id is added here without a migration step naming it.
   SESSIONS_UPDATED_COLUMN_ID,
   // ISS-5770: the prototype ships `projects` and `issues` default-OFF, so they
-  // leave the default-visible set. This is NOT redundant with their `gate`:
-  // the gate answers "may this build render the column at all", the hidden set
-  // answers "does a brand-new view start with it shown". Without this, flipping
-  // `grid-table-v2` on would grow two columns the prototype's default view does
-  // not have, which is the drift this ticket exists to close.
+  // leave the default-visible set. This was never redundant with their `gate` —
+  // a gate answers "may this build render the column at all", the hidden set
+  // answers "does a brand-new view start with it shown" — and ISS-10301 is why
+  // that distinction earned its keep: those two specs are ungated now, and this
+  // entry alone is what keeps them out of a brand-new view.
   SESSIONS_PROJECTS_COLUMN_ID,
   SESSIONS_ISSUES_COLUMN_ID,
+  // ISS-8712: `tags` ships default-OFF, the default the approved prototype gave
+  // it. Not redundant with its gate, for the reason stated just above: the gate
+  // decides whether the build may render it, this decides whether a brand-new
+  // view starts with it shown. `SESSIONS_HIDDEN_MIGRATION_V3_COLUMN_IDS` is the
+  // other half — it reaches views that were persisted before this column existed.
+  SESSIONS_TAGS_COLUMN_ID,
 ];
 
 /**
@@ -700,7 +803,7 @@ export const SESSIONS_DATA_COLUMN_ORDER: readonly string[] =
   SESSIONS_COLUMN_SPECS.map((spec) => spec.id);
 
 /**
- * ISS-4890 (wongk + stage review): each data column's track width in px, keyed
+ * ISS-4890 (whitlockk + stage review): each data column's track width in px, keyed
  * by id.
  *
  * The saved-view migration needs to answer "would putting Cost HERE leave it
@@ -738,133 +841,6 @@ export const SESSIONS_COLUMN_WIDTH_PX: Readonly<Record<string, number>> =
   );
 
 /**
- * ISS-5713: the ONE derivation of "which columns does this build actually
- * render", given the flag state and the hidden-column set.
- *
- * This is the field the ticket asks for. Before it, gatedness was a property of
- * `SessionsTable`'s render path only, so {@link SESSIONS_COLUMN_SPECS} declared
- * what COULD render while every consumer needing what DOES render kept its own
- * hand-maintained exclusion list — `e2e/sessions-list-surface.spec.ts` grew a
- * `FLAG_GATED_COLUMN_IDS` literal for exactly that reason, and a PR that added
- * two gated columns broke all five of that spec's tests without touching the
- * file. A consumer now asks the question and gets an answer that cannot drift,
- * because one place knows.
- *
- * `enabledGates` is a per-key map rather than a boolean so adding a second gate
- * key later does not change this signature or silently re-interpret an existing
- * caller's argument.
- *
- * The `hostSuppliedColumnIds` seam is deliberately separate from the gate: a
- * column can be shut because the BUILD has its flag off, or because THIS MOUNT
- * cannot supply the cell (the agent-detail Sessions tab supplies no linked
- * entities). Those are different questions with different answers per mount, and
- * collapsing them onto one flag is what grows a column of em dashes on a surface
- * whose producer never emits the field.
- */
-/**
- * ISS-5713: columns whose cell content the presentational table cannot derive on
- * its own — the host must wire a render seam or the column is dropped along with
- * its grid track.
- *
- * Declared HERE, beside the specs, so the render path and every derived consumer
- * read one set. It is deliberately distinct from a column's `gate`: the gate is a
- * property of the BUILD (is the flag on), this is a property of the MOUNT (does
- * this surface hold the data). Both fields behind `Owning project` and `Linked
- * issues` are cloud-only, so a locally-fed Sessions list must not grow two
- * columns of em dashes just because a flag flipped. A column listed here and
- * gated renders only when BOTH answer yes.
- */
-export const SESSIONS_SEAM_REQUIRED_COLUMN_IDS: ReadonlySet<string> = new Set([
-  SESSIONS_PROJECTS_COLUMN_ID,
-  SESSIONS_ISSUES_COLUMN_ID,
-]);
-
-/**
- * The minimum a column has to state for {@link selectOfferableSessionColumns} to
- * judge it. Structural rather than `SessionsColumnSpec` so the derivation can be
- * exercised against a HYPOTHETICAL column gated behind a key this build does not
- * declare yet — which is the only way to prove the rule generalises past the two
- * gated columns that happen to exist today.
- */
-export type GatedSessionColumn = { id: string; gate: string | null };
-
-/**
- * ISS-5713 / ISS-5770: the ONE answer to "may this build + this mount offer this
- * column at all", independent of whether the user has it hidden.
- *
- * Both consumers of gatedness go through here — {@link resolveRenderedSessionColumnIds}
- * (what the TABLE renders) and `sessionsToggleableColumns` (what the VIEW MENU
- * offers). They previously answered it separately, and the menu's copy was a
- * hand-maintained `projects`/`issues` exclusion list rather than a read of
- * `spec.gate`: a column added behind any other gate would have compiled, stayed
- * hidden in the table, and shown a dead switch in the menu — the same
- * declaration-versus-consumer drift this ticket exists to remove, surviving in
- * the one path it had not been applied to.
- *
- * Generic in the spec type so callers get their own element type back (labels
- * included) rather than a widened one.
- */
-export function selectOfferableSessionColumns<T extends GatedSessionColumn>(
-  specs: readonly T[],
-  {
-    enabledGates,
-    hostSuppliedColumnIds,
-  }: {
-    enabledGates: Readonly<Record<string, boolean | undefined>>;
-    hostSuppliedColumnIds?: readonly string[];
-  }
-): readonly T[] {
-  const hostSupplied = new Set(
-    (hostSuppliedColumnIds ?? []).map(normalizeSessionColumnId)
-  );
-  return specs.filter((spec) => {
-    // `null` is the ungated sentinel (see `SessionsColumnSpec["gate"]`), so a
-    // gate string that this build has not enabled shuts the column — for EVERY
-    // gate key, not just the one the linked-entity pair happens to use.
-    if (spec.gate !== null && !enabledGates[spec.gate]) {
-      return false;
-    }
-    // The host filter applies ONLY to seam-required columns. Applied to every
-    // column it would mean "a caller that names no seams renders no table",
-    // which is the opposite of the default this helper needs.
-    return !(
-      SESSIONS_SEAM_REQUIRED_COLUMN_IDS.has(spec.id) &&
-      !hostSupplied.has(spec.id)
-    );
-  });
-}
-
-export function resolveRenderedSessionColumnIds({
-  enabledGates,
-  hiddenColumnIds = SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS,
-  hostSuppliedColumnIds,
-}: {
-  enabledGates: SessionsColumnGateState;
-  hiddenColumnIds?: readonly string[];
-  hostSuppliedColumnIds?: readonly string[];
-}): readonly string[] {
-  const hidden = new Set(hiddenColumnIds.map(normalizeSessionColumnId));
-  return selectOfferableSessionColumns(SESSIONS_COLUMN_SPECS, {
-    enabledGates,
-    ...(hostSuppliedColumnIds ? { hostSuppliedColumnIds } : {}),
-  })
-    .filter((spec) => !hidden.has(spec.id))
-    .map((spec) => spec.id);
-}
-
-/**
- * ISS-5770: the columns a brand-new Sessions view shows, in render order — the
- * prototype's ten default-ON columns.
- *
- * Derived from the declaration plus the default-hidden set rather than typed out
- * again, so this cannot state a set the table does not render. Gates are treated
- * as OFF here because that is the production default (`grid-table-v2` ships
- * off), which makes this exactly what a new user sees.
- */
-export const SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS: readonly string[] =
-  resolveRenderedSessionColumnIds({ enabledGates: {} });
-
-/**
  * Every Sessions data-column id, as a literal union.
  *
  * ISS-5713: `SESSIONS_COLUMN_SPECS` is declared `as const satisfies readonly
@@ -878,3 +854,31 @@ export const SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS: readonly string[] =
  * so a column added to the declaration cannot be missed by one of them.
  */
 export type SessionsColumnId = (typeof SESSIONS_COLUMN_SPECS)[number]["id"];
+
+/**
+ * ISS-8190 — the capabilities a column's canonical spec declares that the LEGACY
+ * Sessions table must not project.
+ *
+ * Autonomy is `sortable: true` in {@link SESSIONS_COLUMN_SPECS} because the v2
+ * surface routes that header through the server sort key. The legacy table is
+ * also mounted by flag-off web and by Desktop, whose local sorter cannot honor
+ * that key, so a header projected verbatim there would arrow and announce a sort
+ * that moves nothing.
+ *
+ * A NAMED set rather than an id comparison inside the projection (marisolashgrove
+ * review): withholding is a standing property of that boundary, not a fact about
+ * one `if`, so the next surface that projects these specs finds it by name
+ * instead of inheriting a sortable header for free. Deliberately a subset and
+ * not an inventory of {@link SessionsColumnId} — a new column withholds nothing
+ * until someone decides it does.
+ *
+ * Members are typed as {@link SessionsColumnId} so a typo or a retired id fails
+ * `tsc`; the set itself is widened because the projection boundary also carries
+ * the non-data extra column, whose id is not one.
+ */
+export const SESSIONS_LEGACY_UNSORTABLE_COLUMN_IDS: ReadonlySet<string> =
+  new Set<SessionsColumnId>([SESSIONS_AUTONOMY_COLUMN_ID]);
+
+/** Stable Sessions export for Playwright's shared favorite header assertion. */
+export const SESSIONS_FAVORITE_COLUMN_LABEL =
+  PRODUCT_GRID_FAVORITE_COLUMN_LABEL;

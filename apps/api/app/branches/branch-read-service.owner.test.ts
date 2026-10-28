@@ -1,7 +1,13 @@
 /**
- * Canonical Branch Owner/Collaborators projection plus the legacy per-session
- * byActor buckets. Split out of `branch-read-service.test.ts`, which owns the
- * list/detail/usage read surfaces themselves.
+ * Canonical Branch Owner/Collaborators identity projection. Split out of
+ * `branch-read-service.test.ts`, which owns the list/detail/usage read surfaces
+ * themselves; the per-actor spend rollup built ON TOP of a resolved owner lives
+ * in `branch-read-service.owner-buckets.test.ts`.
+ *
+ * ISS-12463: the Branch Owner is the branch's own assignee. The push evidence
+ * these cases seed beside it names Collaborators and the seed, never the Owner
+ * read; its rules are pinned on `projectOwner` in
+ * `identity-attribution-owner-push-links.test.ts`.
  */
 
 import {
@@ -9,10 +15,15 @@ import {
   BranchIdentityAvailability,
   BranchPersonProvider,
 } from "@repo/api/src/types/branch-identity";
+import {
+  BRANCH_LIST_SERVER_PAGE_SIZE,
+  BranchListPageMode,
+  BranchListSortDirection,
+  BranchListSortKey,
+} from "@repo/api/src/types/branch-list-contract";
 import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import { GitHubSyncResultReason } from "@repo/api/src/types/github-read-model";
-import { BRANCH_PUSH_METHOD_VALUES } from "@repo/api/src/types/session-artifact-link";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -74,18 +85,24 @@ vi.mock("@/app/agent-sessions/service", () => ({
   },
 }));
 
+import { makeBranchAssignee } from "@/__tests__/support/branches/branch-assignee.test-fixtures";
+import { withSeededPushSessionCreators } from "@/__tests__/support/branches/branch-evidence-link.test-fixtures";
 import {
   branchId,
   createMockDb,
   makeBranchRow,
+  makePushSessionLink,
   makeSessionLink,
-  mockBranchCandidateIds,
   mockBranchCandidatePage,
   now,
   organizationId,
 } from "@/__tests__/support/branches/branch-read-service.test-helpers";
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("branchReadService owner resolution (FEA-3457)", () => {
   let mockDb: ReturnType<typeof createMockDb>;
@@ -95,8 +112,8 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     mockDb = createMockDb();
-    mockWithDbCall(mockDb);
-    mockWithDbTx(mockDb);
+    mockWithDbCall(withSeededPushSessionCreators(mockDb));
+    mockWithDbTx(withSeededPushSessionCreators(mockDb));
     mockDb.commitDetail.findMany.mockResolvedValue([]);
     installationAuthMocks.getInstallationOctokit.mockResolvedValue(
       INSTALLATION_OCTOKIT
@@ -109,18 +126,24 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
 
   const ownerA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const ownerB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const ownerC = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const secondBranchId = "22222222-2222-4222-8222-222222222222";
+  const thirdBranchId = "33333333-3333-4333-8333-333333333333";
 
-  it("resolves the earliest exact qualifying push identity on the list", async () => {
+  it("names the branch assignee as the list Owner", async () => {
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ firstPushedAt: now }),
+      makeBranchRow({
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerB),
+      }),
     ]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makeSessionLink(branchId, "s1", "1.00", ownerA),
       makeSessionLink(branchId, "s2", "1.00", ownerA),
       makePushSessionLink(branchId, "s3", ownerB, now),
     ]);
+    mockDb.user.findMany.mockResolvedValue([orgUser(ownerB, "bob")]);
     mockDb.gitHubUserConnection.findMany.mockResolvedValue([
       {
         userId: ownerB,
@@ -145,15 +168,19 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     );
   });
 
-  it("uses stable GitHub identity to break exact push-time ties", async () => {
+  it("names the assignee, not the winner of an exact push-time tie", async () => {
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ firstPushedAt: now }),
+      makeBranchRow({
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerB),
+      }),
     ]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makePushSessionLink(branchId, "s2", ownerB, now),
       makePushSessionLink(branchId, "s1", ownerA, now),
     ]);
+    mockDb.user.findMany.mockResolvedValue([orgUser(ownerB, "bob")]);
     mockDb.gitHubUserConnection.findMany.mockResolvedValue([
       {
         userId: ownerB,
@@ -176,45 +203,46 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
       offset: 0,
     });
 
-    expect(response.items[0].owner).toBe("ada");
-    expect(response.items[0].ownerIdentity?.person?.id).toBe("10");
+    expect(response.items[0].owner).toBe("bob");
+    expect(response.items[0].ownerIdentity?.person?.id).toBe("20");
   });
 
-  it("does not let later qualifying push evidence replace the lifetime owner", async () => {
+  it("does not expose an email as a Linked Session owner name", async () => {
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow({ firstPushedAt: now }),
     ]);
     mockDb.artifactLink.findMany.mockResolvedValue([
-      makePushSessionLink(branchId, "s2", ownerB, new Date(now.getTime() + 1)),
       makePushSessionLink(branchId, "s1", ownerA, now),
     ]);
-    mockDb.gitHubUserConnection.findMany.mockResolvedValue([
+    mockDb.user.findMany.mockResolvedValue([
       {
-        userId: ownerA,
-        githubUserId: "10",
-        login: "ada",
+        id: ownerA,
+        clerkId: `user_${ownerA}`,
+        email: "private-owner@example.com",
+        firstName: null,
+        lastName: null,
         avatarUrl: null,
-        profileUrl: null,
-      },
-      {
-        userId: ownerB,
-        githubUserId: "20",
-        login: "bob",
-        avatarUrl: null,
-        profileUrl: null,
       },
     ]);
+    mockDb.gitHubUserConnection.findMany.mockResolvedValue([]);
 
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
     });
 
-    expect(response.items[0].owner).toBe("ada");
+    const membership = response.items[0].canonicalProjection?.common.membership;
+    expect(membership?.sessions?.[0]).toMatchObject({
+      ownerUnavailable: true,
+    });
+    expect(membership?.sessions?.[0]?.ownerName).toBeUndefined();
+    expect(JSON.stringify(membership)).not.toContain(
+      "private-owner@example.com"
+    );
   });
 
-  it("keeps mutable multi-Session push evidence incomplete when an earlier webhook owns the Branch timestamp", async () => {
+  it("names no Owner for an unassigned branch, complete, whatever its push evidence", async () => {
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([
       makeBranchRow({ firstPushedAt: now }),
@@ -236,6 +264,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     mockDb.user.findMany.mockResolvedValue([
       {
         id: ownerA,
+        clerkId: `user_${ownerA}`,
         email: "ada@example.com",
         firstName: "Ada",
         lastName: "Lovelace",
@@ -243,6 +272,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
       },
       {
         id: ownerB,
+        clerkId: `user_${ownerB}`,
         email: "bob@example.com",
         firstName: "Bob",
         lastName: "Builder",
@@ -273,50 +303,9 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
 
     expect(response.items[0].owner).toBeNull();
     expect(response.items[0].ownerIdentity).toEqual({
-      availability: BranchIdentityAvailability.Incomplete,
+      availability: BranchIdentityAvailability.Complete,
       person: null,
     });
-  });
-
-  it("resolves a sole persisted Session pusher when an earlier webhook owns the Branch timestamp", async () => {
-    mockBranchCandidatePage(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ firstPushedAt: now }),
-    ]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makePushSessionLink(
-        branchId,
-        "s1",
-        ownerA,
-        new Date(now.getTime() + 5000)
-      ),
-    ]);
-    mockDb.user.findMany.mockResolvedValue([
-      {
-        id: ownerA,
-        email: "ada@example.com",
-        firstName: "Ada",
-        lastName: "Lovelace",
-        avatarUrl: null,
-      },
-    ]);
-    mockDb.gitHubUserConnection.findMany.mockResolvedValue([
-      {
-        userId: ownerA,
-        githubUserId: "10",
-        login: "ada",
-        avatarUrl: null,
-        profileUrl: null,
-      },
-    ]);
-
-    const response = await branchReadService.listBranches(organizationId, {
-      limit: 50,
-      offset: 0,
-    });
-
-    expect(response.items[0].owner).toBe("Ada Lovelace");
-    expect(response.items[0].ownerIdentity?.person?.id).toBe("10");
   });
 
   it("unions persisted PR, Branch, and linked-Session commenters", async () => {
@@ -344,6 +333,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     mockDb.user.findMany.mockResolvedValue([
       {
         id: ownerA,
+        clerkId: `user_${ownerA}`,
         email: "ada@example.com",
         firstName: "Ada",
         lastName: "Lovelace",
@@ -351,6 +341,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
       },
       {
         id: ownerB,
+        clerkId: `user_${ownerB}`,
         email: "bob@example.com",
         firstName: "Bob",
         lastName: "Builder",
@@ -401,12 +392,13 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
       expect.objectContaining({
         where: {
           githubDeletedAt: null,
-          comment: { deletedAt: null },
+          comment: { deletedAt: null, thread: { organizationId } },
           // ISS-6004: one page-wide read keyed on every branch id, not one read
           // per branch.
           threadProjection: {
             branchArtifactId: { in: [branchId] },
             deletedAt: null,
+            pullRequestDetail: { organizationId },
           },
         },
       })
@@ -472,6 +464,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     mockDb.user.findMany.mockResolvedValue([
       {
         id: ownerA,
+        clerkId: `user_${ownerA}`,
         email: "ada@example.com",
         firstName: "Ada",
         lastName: "Lovelace",
@@ -497,12 +490,24 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
   it("batches the user lookup across the page — ONE org-scoped query, no N+1", async () => {
     mockBranchCandidatePage(mockDb, [branchId, secondBranchId]);
     mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ id: branchId, firstPushedAt: now }),
-      makeBranchRow({ id: secondBranchId, firstPushedAt: now }),
+      makeBranchRow({
+        id: branchId,
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerA),
+      }),
+      makeBranchRow({
+        id: secondBranchId,
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerB),
+      }),
     ]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makePushSessionLink(branchId, "s1", ownerA, now),
       makePushSessionLink(secondBranchId, "s2", ownerB, now),
+    ]);
+    mockDb.user.findMany.mockResolvedValue([
+      orgUser(ownerA, "ada"),
+      orgUser(ownerB, "bob"),
     ]);
     mockDb.gitHubUserConnection.findMany.mockResolvedValue([
       {
@@ -541,40 +546,104 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     ]);
   });
 
-  it("leaves owner null when no linked session carries an owner", async () => {
-    mockBranchCandidatePage(mockDb, [branchId]);
+  it("resolves ClosedLoop-only and GitHub-linked assignees onto the row", async () => {
+    mockBranchCandidatePage(mockDb, [branchId, secondBranchId, thirdBranchId]);
     mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ firstPushedAt: now }),
+      makeBranchRow({
+        id: branchId,
+        branchName: "ada-branch",
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerA),
+      }),
+      makeBranchRow({
+        id: secondBranchId,
+        branchName: "bob-branch",
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerB),
+      }),
+      makeBranchRow({
+        id: thirdBranchId,
+        branchName: "unresolved-branch",
+        firstPushedAt: now,
+      }),
     ]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "s1", "1.00", null),
-    ]);
-
-    const response = await branchReadService.listBranches(organizationId, {
-      limit: 50,
-      offset: 0,
-    });
-
-    expect(response.items[0].owner).toBeNull();
-    expect(response.items[0].ownerIdentity?.availability).toBe("incomplete");
-  });
-
-  it("marks missing first-push state incomplete when push evidence exists", async () => {
-    mockBranchCandidatePage(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
     mockDb.artifactLink.findMany.mockResolvedValue([
       makePushSessionLink(branchId, "s1", ownerA, now),
+      makePushSessionLink(secondBranchId, "s2", ownerB, now),
+      makePushSessionLink(thirdBranchId, "s3", ownerC, now),
+    ]);
+    mockDb.user.findMany.mockResolvedValue([
+      {
+        id: ownerA,
+        clerkId: `user_${ownerA}`,
+        email: "ada@example.com",
+        firstName: "Ada",
+        lastName: "Lovelace",
+        avatarUrl: null,
+      },
+      {
+        id: ownerB,
+        clerkId: `user_${ownerB}`,
+        email: "bob@example.com",
+        firstName: "Bob",
+        lastName: "Builder",
+        avatarUrl: null,
+      },
+    ]);
+    mockDb.gitHubUserConnection.findMany.mockResolvedValue([
+      {
+        userId: ownerB,
+        githubUserId: "20",
+        login: "bob",
+        avatarUrl: null,
+        profileUrl: null,
+      },
     ]);
 
     const response = await branchReadService.listBranches(organizationId, {
-      limit: 50,
+      pageMode: BranchListPageMode.Server,
+      limit: BRANCH_LIST_SERVER_PAGE_SIZE,
       offset: 0,
+      sortKey: BranchListSortKey.Name,
+      sortDir: BranchListSortDirection.Asc,
     });
 
-    expect(response.items[0].ownerIdentity).toEqual({
-      availability: BranchIdentityAvailability.Incomplete,
+    expect(response.items.map((item) => [item.branchName, item.owner])).toEqual(
+      [
+        ["ada-branch", "Ada Lovelace"],
+        ["bob-branch", "Bob Builder"],
+        ["unresolved-branch", null],
+      ]
+    );
+    expect(response.items[0].ownerIdentity?.person).toMatchObject({
+      provider: BranchPersonProvider.ClosedLoop,
+      id: ownerA,
+      userId: ownerA,
+      displayName: "Ada Lovelace",
+    });
+    expect(response.items[1].ownerIdentity?.person).toMatchObject({
+      provider: BranchPersonProvider.GitHub,
+      id: "20",
+      userId: ownerB,
+      login: "bob",
+      displayName: "Bob Builder",
+    });
+    expect(response.items[2].ownerIdentity).toEqual({
+      availability: BranchIdentityAvailability.Complete,
       person: null,
     });
+    // ISS-10298: the Owner FACET is now counted by the server-page SQL, not by
+    // the JavaScript fold this mock drives, so asserting it here would assert
+    // the fixture. It is deep-equalled against the kernel over a real corpus in
+    // `__tests__/integration/branch-list-sql-parity.integration.test.ts`. The
+    // per-ROW owner projection below is still this path's own and stays here.
+    expect(mockDb.user.findMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.gitHubUserConnection.findMany).toHaveBeenCalledTimes(1);
+
+    // ISS-10298: narrowing by `owners` is a server-page SQL predicate now, so
+    // this mock cannot narrow anything and the assertion would only restate the
+    // fixture. The owner filter is exercised against a real corpus in
+    // `__tests__/integration/branch-list-sql-parity.integration.test.ts`.
   });
 
   it("does not qualify comments through an orphaned Session link", async () => {
@@ -589,6 +658,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     mockDb.user.findMany.mockResolvedValue([
       {
         id: ownerB,
+        clerkId: `user_${ownerB}`,
         email: "bob@example.com",
         firstName: "Bob",
         lastName: "Builder",
@@ -604,15 +674,42 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     expect(response.items[0].collaborators?.people).toEqual([]);
   });
 
-  it("does not leak a cross-org owner — an unresolved id stays unattributed", async () => {
+  it("does not leak a cross-org assignee — an unresolved id stays unattributed", async () => {
+    const outsider = makeBranchAssignee(ownerA, {
+      firstName: "Ada",
+      lastName: "Lovelace",
+      organizationId: "other-organization",
+    });
     mockBranchCandidatePage(mockDb, [branchId]);
     mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({ firstPushedAt: now }),
+      makeBranchRow({ firstPushedAt: now, assignee: outsider }),
     ]);
+    // Answers as Prisma would: only a dropped organization predicate hands the
+    // outsider back.
+    mockDb.user.findMany.mockImplementation(
+      ({ where }: { where?: { organizationId?: string } } = {}) =>
+        Promise.resolve(
+          [outsider].filter(
+            (candidate) =>
+              where?.organizationId === undefined ||
+              candidate.organizationId === where.organizationId
+          )
+        )
+    );
     mockDb.artifactLink.findMany.mockResolvedValue([
       makePushSessionLink(branchId, "s1", ownerA, now),
     ]);
-    mockDb.gitHubUserConnection.findMany.mockResolvedValue([]);
+    // A connection row scoped to THIS organization still names the outsider:
+    // the row's organization is not its user's.
+    mockDb.gitHubUserConnection.findMany.mockResolvedValue([
+      {
+        userId: ownerA,
+        githubUserId: "77",
+        login: "ada",
+        avatarUrl: null,
+        profileUrl: null,
+      },
+    ]);
 
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
@@ -620,11 +717,20 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     });
 
     expect(response.items[0].owner).toBeNull();
+    expect(response.items[0].ownerIdentity?.person).toBeNull();
+    expect(mockDb.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId }),
+      })
+    );
   });
 
   it("resolves the branch-detail owner via the same batched path", async () => {
     mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ firstPushedAt: now })
+      makeBranchRow({
+        firstPushedAt: now,
+        assignee: makeBranchAssignee(ownerA),
+      })
     );
     mockDb.artifactLink.findMany.mockResolvedValue([
       makePushSessionLink(branchId, "s1", ownerA, now),
@@ -632,6 +738,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
     mockDb.user.findMany.mockResolvedValue([
       {
         id: ownerA,
+        clerkId: `user_${ownerA}`,
         email: "ada@example.com",
         firstName: "Ada",
         lastName: "Lovelace",
@@ -654,125 +761,7 @@ describe("branchReadService owner resolution (FEA-3457)", () => {
 
     expect(detail?.owner).toBe("Ada Lovelace");
   });
-
-  it("groups byActor buckets by resolved owner over distinct sessions", async () => {
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "s1", "2.00", ownerA),
-      makeSessionLink(branchId, "s2", "1.00", ownerB),
-    ]);
-    mockDb.user.findMany.mockResolvedValue([
-      {
-        id: ownerA,
-        email: "ada@example.com",
-        firstName: "Ada",
-        lastName: null,
-      },
-      {
-        id: ownerB,
-        email: "bob@example.com",
-        firstName: "Bob",
-        lastName: null,
-      },
-    ]);
-
-    const response = await branchReadService.getBranchUsage(organizationId, {
-      limit: 50,
-      offset: 0,
-    });
-
-    // One bucket per owner, ordered by cost desc (Ada 2.0 before Bob 1.0).
-    expect(response.byActor.map((bucket) => bucket.owner)).toEqual([
-      "Ada",
-      "Bob",
-    ]);
-    expect(response.byActor[0].estimatedCostUsd).toBeCloseTo(2, 10);
-  });
-
-  it("keeps distinct owner ids that resolve to the SAME display name as separate byActor buckets (no name-merge double-count)", async () => {
-    // Two different users who happen to share a display name ("Alex Kim").
-    // Grouping byActor by name would collapse them into one bucket and
-    // double-count cost/tokens under a single owner — an attribution bug. They
-    // must stay as two distinct buckets keyed by owner id.
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "s1", "2.00", ownerA),
-      makeSessionLink(branchId, "s2", "1.00", ownerB),
-    ]);
-    mockDb.user.findMany.mockResolvedValue([
-      {
-        id: ownerA,
-        email: "alex.kim.a@example.com",
-        firstName: "Alex",
-        lastName: "Kim",
-      },
-      {
-        id: ownerB,
-        email: "alex.kim.b@example.com",
-        firstName: "Alex",
-        lastName: "Kim",
-      },
-    ]);
-
-    const response = await branchReadService.getBranchUsage(organizationId, {
-      limit: 50,
-      offset: 0,
-    });
-
-    // Two separate buckets (not one merged "Alex Kim" bucket at 3.00).
-    expect(response.byActor).toHaveLength(2);
-    expect(response.byActor.map((bucket) => bucket.owner)).toEqual([
-      "Alex Kim",
-      "Alex Kim",
-    ]);
-    // Each bucket keeps its own session's cost — no double-count.
-    expect(response.byActor[0].estimatedCostUsd).toBeCloseTo(2, 10);
-    expect(response.byActor[1].estimatedCostUsd).toBeCloseTo(1, 10);
-  });
-
-  it("folds ownerless sessions into a trailing unattributed byActor bucket", async () => {
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([makeBranchRow()]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "s1", "2.00", ownerA),
-      makeSessionLink(branchId, "s2", "1.00", null),
-    ]);
-    mockDb.user.findMany.mockResolvedValue([
-      {
-        id: ownerA,
-        email: "ada@example.com",
-        firstName: "Ada",
-        lastName: null,
-      },
-    ]);
-
-    const response = await branchReadService.getBranchUsage(organizationId, {
-      limit: 50,
-      offset: 0,
-    });
-
-    // Named owner first, the null (unattributed) bucket last.
-    expect(response.byActor.map((bucket) => bucket.owner)).toEqual([
-      "Ada",
-      null,
-    ]);
-  });
 });
-
-function makePushSessionLink(
-  targetId: string,
-  sessionId: string,
-  userId: string,
-  observedAt: Date
-) {
-  return {
-    ...makeSessionLink(targetId, sessionId, "1.00", userId),
-    branchParticipationMethod: BRANCH_PUSH_METHOD_VALUES[0],
-    branchParticipationObservedAt: observedAt,
-  };
-}
 
 function makeGitHubComment(
   userId: string,
@@ -794,5 +783,17 @@ function makeGitHubComment(
       userId,
       providerDetail: { actorType },
     },
+  };
+}
+
+/** An in-organization user row, as the org-scoped User read returns it. */
+function orgUser(id: string, firstName: string) {
+  return {
+    id,
+    clerkId: `user_${id}`,
+    email: `${id}@example.com`,
+    firstName,
+    lastName: null,
+    avatarUrl: null,
   };
 }

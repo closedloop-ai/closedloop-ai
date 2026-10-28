@@ -87,3 +87,18 @@ export type UpdateTeamRepositoryInput = {
   isDefaultSelected?: boolean;
   isPrimary?: boolean;
 };
+
+/**
+ * A team reduced to what a caller needs to pick one: its id and its display
+ * name. This is the shape `ProjectWithDetails.teams` and
+ * `DocumentWithProject.project.teams` already carried inline, and the shape the
+ * `project_team_required` 400 lists so a caller can retry with a real team.
+ *
+ * Must stay a `type` alias, never an `interface`: only aliases get TypeScript's
+ * implicit index signature, and without it an array of these cannot satisfy the
+ * `JsonObject` that error `details` is typed as.
+ */
+export type ProjectTeamOption = {
+  id: string;
+  name: string;
+};

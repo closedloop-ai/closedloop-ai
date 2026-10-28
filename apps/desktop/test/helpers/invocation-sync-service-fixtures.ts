@@ -17,7 +17,10 @@ import {
   AgentComponentInvocationRelationship,
   type AgentComponentInvocationSyncPart,
 } from "@repo/api/src/types/agent-component-invocation";
-import type { AgentComponentInvocationSyncSource } from "../../src/main/agent-sync/agent-component-invocation-sync-service.js";
+import type {
+  AgentComponentInvocationSyncDeadLetterRecoveryResult,
+  AgentComponentInvocationSyncSource,
+} from "../../src/main/agent-sync/agent-component-invocation-sync-service.js";
 import { SESSION_MISSING_MAX_RETRY_AGE_MS } from "../../src/main/agent-sync/invocation-sync-rejection-policy.js";
 
 /** When every fixture row was written to the outbox. */
@@ -47,11 +50,26 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
   entries: Array<{
     part: AgentComponentInvocationSyncPart;
     attemptCount: number;
+    permanentAttemptCount: number;
+    deadLetterRecoveryCount: number;
+    laneStalledSince: string | null;
     nextAttemptAt: string | null;
   }>;
   clearCalls = 0;
   deadLetterCalls = 0;
+  recoverCalls = 0;
+  recoveredSourceKeys: string[] = [];
+  readonly callOrder: string[] = [];
   deadLetteredAttemptCount = 0;
+  deadLetteredPermanentAttemptCount = 0;
+  /**
+   * ISS-6209: the `last_error` the lane recorded when it gave up on the row. The
+   * ack REASON and the lane's own CAUSE differ for a corrupt `created_at` — the
+   * cloud said `session_missing`, the lane quarantined for an unreadable
+   * timestamp — so a case that only counts dead-letters cannot tell the two
+   * apart.
+   */
+  deadLetteredError: string | null = null;
   /**
    * ISS-5789: the `created_at` every row this source serves reports. Mutable so a
    * case can age the queue without rebuilding it — `session_missing` is budgeted
@@ -60,6 +78,15 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
   createdAt = PART_CREATED_AT;
   /** ISS-4710 seam: overridable prepare so a test can park it (writer busy). */
   prepareImpl: () => Promise<void> = () => Promise.resolve();
+  recoverResult: AgentComponentInvocationSyncDeadLetterRecoveryResult = {
+    recoveredParts: 0,
+    cappedParts: 0,
+    quarantinedParts: 0,
+  };
+  recoverImpl: (
+    sourceKey: string
+  ) => Promise<AgentComponentInvocationSyncDeadLetterRecoveryResult> = () =>
+    Promise.resolve(this.recoverResult);
 
   constructor(
     pending: AgentComponentInvocationSyncPart,
@@ -69,8 +96,18 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
     this.entries = [pending, ...more].map((entryPart) => ({
       part: entryPart,
       attemptCount,
+      permanentAttemptCount: 0,
+      deadLetterRecoveryCount: 0,
+      laneStalledSince: null,
       nextAttemptAt: null,
     }));
+  }
+
+  withPermanentAttemptCount(permanentAttemptCount: number): this {
+    for (const entry of this.entries) {
+      entry.permanentAttemptCount = permanentAttemptCount;
+    }
+    return this;
   }
 
   prepareInvocationSyncTarget(): Promise<void> {
@@ -78,15 +115,19 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
   }
 
   loadReadyInvocationSyncParts(
-    _sourceKey: string,
+    sourceKey: string,
     now: string
   ): Promise<
     Array<{
       part: AgentComponentInvocationSyncPart;
       attemptCount: number;
+      permanentAttemptCount: number;
+      laneStalledSince: string | null;
+      deadLetterRecoveryCount: number;
       createdAt: string;
     }>
   > {
+    this.callOrder.push(`load:${sourceKey}`);
     return Promise.resolve(
       this.entries
         .filter(
@@ -94,26 +135,52 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
             entry.nextAttemptAt === null ||
             entry.nextAttemptAt.localeCompare(now) <= 0
         )
-        .map(({ part: pending, attemptCount }) => ({
-          part: pending,
-          attemptCount,
-          createdAt: this.createdAt,
-        }))
+        .map(
+          ({
+            part: pending,
+            attemptCount,
+            permanentAttemptCount,
+            laneStalledSince,
+            deadLetterRecoveryCount,
+          }) => ({
+            part: pending,
+            attemptCount,
+            permanentAttemptCount,
+            laneStalledSince,
+            deadLetterRecoveryCount,
+            createdAt: this.createdAt,
+          })
+        )
     );
+  }
+
+  recoverInvocationSyncDeadLetters(
+    sourceKey: string
+  ): Promise<AgentComponentInvocationSyncDeadLetterRecoveryResult> {
+    this.recoverCalls += 1;
+    this.recoveredSourceKeys.push(sourceKey);
+    this.callOrder.push(`recover:${sourceKey}`);
+    return this.recoverImpl(sourceKey);
   }
 
   recordInvocationSyncRetry(
     _sourceKey: string,
     pending: AgentComponentInvocationSyncPart,
-    attemptCount: number,
-    nextAttemptAt: string
+    retry: {
+      attemptCount: number;
+      permanentAttemptCount: number;
+      nextAttemptAt: string;
+      laneStalledSince: string | null;
+    }
   ): Promise<void> {
     const entry = this.entries.find(
       (candidate) => candidate.part.partHash === pending.partHash
     );
     if (entry) {
-      entry.attemptCount = attemptCount;
-      entry.nextAttemptAt = nextAttemptAt;
+      entry.attemptCount = retry.attemptCount;
+      entry.permanentAttemptCount = retry.permanentAttemptCount;
+      entry.nextAttemptAt = retry.nextAttemptAt;
+      entry.laneStalledSince = retry.laneStalledSince;
     }
     return Promise.resolve();
   }
@@ -140,10 +207,16 @@ export class FakeSource implements AgentComponentInvocationSyncSource {
   deadLetterInvocationSyncPart(
     _sourceKey: string,
     pending: AgentComponentInvocationSyncPart,
-    attemptCount: number
+    deadLetter: {
+      attemptCount: number;
+      permanentAttemptCount: number;
+      error: string;
+    }
   ): Promise<boolean> {
     this.deadLetterCalls += 1;
-    this.deadLetteredAttemptCount = attemptCount;
+    this.deadLetteredAttemptCount = deadLetter.attemptCount;
+    this.deadLetteredPermanentAttemptCount = deadLetter.permanentAttemptCount;
+    this.deadLetteredError = deadLetter.error;
     const before = this.entries.length;
     this.entries = this.entries.filter(
       (entry) =>

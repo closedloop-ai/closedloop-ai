@@ -1,5 +1,10 @@
 import type { AgentSessionDetail } from "@repo/api/src/types/agent-session";
+import {
+  AgentSessionCloudSyncState,
+  type DeadLetteredCloudSyncState,
+} from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import {
   ensureDate,
   formatRelativeTime,
@@ -38,7 +43,8 @@ export type SessionSyncStatus = {
   /**
    * Whether the verdict warrants an attention-drawing (colored badge) treatment
    * vs. a quiet, muted metadata treatment. True only for the non-nominal
-   * dispositions — `stale` / `syncing` / `failedTransient` / `failedPermanent` —
+   * dispositions — `stale` / `syncing` / `failedTransient` / `failedPermanent`,
+   * and the ISS-9884 paused pair, which is a `failedTransient` —
    * where the reader should notice the transcript is not currently in sync. A
    * `synced` / `neverExpected` verdict, or a freshness-only (disposition-absent)
    * row, is nominal (false): the list renders it as quiet muted text so a healthy
@@ -57,6 +63,11 @@ const TRANSCRIPT_DISPOSITION_LABELS: Record<TranscriptDisposition, string> = {
   [TranscriptDisposition.Synced]: "Synced",
   [TranscriptDisposition.Stale]: "Stale",
   [TranscriptDisposition.Syncing]: "Syncing",
+  // ISS-9884: true of the RE-QUEUED producer only. A `failedTransient` whose
+  // reason is `environment_unavailable` is NOT retrying — the lane stopped —
+  // and takes {@link TRANSCRIPT_UPLOAD_PAUSED_PRESENTATION} instead. This map
+  // is keyed by disposition and structurally cannot tell them apart, which is
+  // why the paused pair is resolved before the lookup rather than inside it.
   [TranscriptDisposition.FailedTransient]: "Sync failed, retrying",
   [TranscriptDisposition.FailedPermanent]: "Sync failed",
   [TranscriptDisposition.NeverExpected]: "No transcript",
@@ -151,18 +162,19 @@ export function getTranscriptDispositionLabel(
  * `options.now` is injectable so the relative label is deterministic in tests.
  */
 export function getSessionSyncStatus(
-  session: Pick<AgentSessionDetail, "transcriptDisposition" | "lastSyncedAt">,
+  session: Pick<
+    AgentSessionDetail,
+    "transcriptDisposition" | "transcriptDispositionReason" | "lastSyncedAt"
+  > &
+    Partial<Pick<AgentSessionDetail, "cloudSyncState">>,
   options: { now?: Date | number } = {}
 ): SessionSyncStatus {
-  const dispositionLabel = session.transcriptDisposition
-    ? getTranscriptDispositionLabel(session.transcriptDisposition)
-    : null;
-  const tone = session.transcriptDisposition
-    ? getTranscriptDispositionTone(session.transcriptDisposition)
-    : null;
-  const attention = session.transcriptDisposition
-    ? isAttentionDisposition(session.transcriptDisposition)
-    : false;
+  const { dispositionLabel, tone, attention } =
+    resolveDeadLetterPresentation(session.cloudSyncState) ??
+    resolveDispositionPresentation(
+      session.transcriptDisposition,
+      session.transcriptDispositionReason
+    );
 
   const syncedAt = ensureDate(session.lastSyncedAt);
   const freshnessLabel =
@@ -176,4 +188,118 @@ export function getSessionSyncStatus(
   const valueLabel = parts.length > 0 ? parts.join(" · ") : null;
 
   return { dispositionLabel, freshnessLabel, valueLabel, tone, attention };
+}
+
+/**
+ * ISS-9884: the one place that decides a transcript's upload is PAUSED rather
+ * than retrying — the desktop's lane hit its 24h environmental wall clock and
+ * STOPPED attempting, on a file nothing was ever established to be wrong with.
+ *
+ * Both halves are load-bearing and neither is sufficient alone. The disposition
+ * is `failedTransient` for the ordinary re-queued-with-backoff failure too, and
+ * a reason can ride a row whose verdict it did not produce on a version-skewed
+ * producer; only the PAIR names this state.
+ *
+ * Exported because `CloudSyncStateBadge` renders the same fact one layer out.
+ * It reads this predicate rather than re-deriving the pair, so the list chip
+ * and the list label cannot come to disagree about which rows are paused —
+ * which is exactly how the pre-ISS-9884 surfaces drifted from the detail panel.
+ */
+export function isTranscriptUploadPaused(
+  disposition: TranscriptDisposition | undefined,
+  reason: TranscriptSkipReason | undefined
+): boolean {
+  return (
+    disposition === TranscriptDisposition.FailedTransient &&
+    reason === TranscriptSkipReason.EnvironmentUnavailable
+  );
+}
+
+/**
+ * ISS-9884: how a paused transcript reads on a list row.
+ *
+ * `warning`, not `danger`: nothing failed. The transport was unavailable and
+ * the lane stopped asking, which is a state to notice rather than a dead end —
+ * and `danger` here would be the same lie in a different colour, since
+ * `failedPermanent` (the transcript is genuinely never coming) is what `danger`
+ * already means on this surface. `attention` stays true so the row still
+ * surfaces on a dense list; a paused upload is precisely the exception a
+ * scanner is looking for.
+ */
+const TRANSCRIPT_UPLOAD_PAUSED_PRESENTATION: DispositionPresentation = {
+  dispositionLabel: "Upload paused",
+  tone: "warning",
+  attention: true,
+};
+
+/** The disposition-derived third of a {@link SessionSyncStatus}. */
+type DispositionPresentation = Pick<
+  SessionSyncStatus,
+  "dispositionLabel" | "tone" | "attention"
+>;
+
+/**
+ * ISS-9884: resolve the label/tone/attention triple from the verdict PAIR.
+ *
+ * Before this the three were three independent `Record` lookups on the
+ * disposition alone, which is why an environmentally-abandoned transcript read
+ * "Sync failed, retrying" in danger red on the list while the detail panel
+ * said "Transcript upload paused". The paused pair is resolved FIRST and as a
+ * whole presentation, so the three parts cannot be branched separately and end
+ * up half-converted.
+ */
+function resolveDispositionPresentation(
+  disposition: TranscriptDisposition | undefined,
+  reason: TranscriptSkipReason | undefined
+): DispositionPresentation {
+  if (disposition === undefined) {
+    return { dispositionLabel: null, tone: null, attention: false };
+  }
+  if (isTranscriptUploadPaused(disposition, reason)) {
+    return TRANSCRIPT_UPLOAD_PAUSED_PRESENTATION;
+  }
+  return {
+    dispositionLabel: getTranscriptDispositionLabel(disposition),
+    tone: getTranscriptDispositionTone(disposition),
+    attention: isAttentionDisposition(disposition),
+  };
+}
+
+/**
+ * ISS-11427: how a session the desktop sync lane dead-lettered reads, keyed by
+ * the state its row carries. Labels per the operator ruling (Marisol Ashgrove,
+ * 2026-10-05): "fine to have dead letter and abandoned". No tooltip was
+ * supplied, so none is rendered.
+ *
+ * Tones follow the transcript verdicts' meanings on this surface: a dead
+ * letter will be retried, so it warns, as a paused upload does; an abandoned
+ * row is never coming, which is what `danger` means for `failedPermanent`.
+ */
+const DEAD_LETTERED_PRESENTATION: Record<
+  DeadLetteredCloudSyncState,
+  DispositionPresentation
+> = {
+  [AgentSessionCloudSyncState.DeadLetter]: {
+    dispositionLabel: "Dead letter",
+    tone: "warning",
+    attention: true,
+  },
+  [AgentSessionCloudSyncState.Abandoned]: {
+    dispositionLabel: "Abandoned",
+    tone: "danger",
+    attention: true,
+  },
+};
+
+/** The dead-letter presentation for a row's sync state, or null when it has none. */
+function resolveDeadLetterPresentation(
+  cloudSyncState: AgentSessionCloudSyncState | undefined
+): DispositionPresentation | null {
+  if (
+    cloudSyncState === AgentSessionCloudSyncState.DeadLetter ||
+    cloudSyncState === AgentSessionCloudSyncState.Abandoned
+  ) {
+    return DEAD_LETTERED_PRESENTATION[cloudSyncState];
+  }
+  return null;
 }

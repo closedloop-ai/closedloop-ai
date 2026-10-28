@@ -1,5 +1,6 @@
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { TIMELINE_SCALE_VISIBLE_LABEL_FLAG_KEY } from "@repo/api/src/types/timeline-scale-visible-label-flag";
 import {
   TIMELINE_SCALE_OPTIONS,
   TIMELINE_VISIBLE_COLUMNS,
@@ -115,7 +116,7 @@ describe("the timeline renders a stable 24-column window, not a duration-derived
 describe("the scale toggle changes the rendered window", () => {
   it("offers the prototype's four scales under the prototype's label", () => {
     renderDetail(longSession(40));
-    const group = screen.getByRole("group", { name: SCALE_GROUP_NAME });
+    const group = screen.getByRole("radiogroup", { name: SCALE_GROUP_NAME });
     expect(
       within(group)
         .getAllByRole("radio")
@@ -140,6 +141,46 @@ describe("the scale toggle changes the rendered window", () => {
     expect(document.querySelectorAll(BAR_SELECTOR)).toHaveLength(
       TIMELINE_VISIBLE_COLUMNS
     );
+  });
+
+  it("prints the group's name, and takes the accessible name FROM it", () => {
+    /*
+     * ISS-10599 regression. The pre-fix control named itself through
+     * `aria-label` alone, so a sighted reader got a bare row of `5m 15m 1h 12h`
+     * pills indistinguishable from `DateRangeFilter`'s bare `7d 30d 90d All`.
+     *
+     * A `getByRole("radiogroup", { name })` query CANNOT catch that: it
+     * resolves identically against `aria-label` and against `aria-labelledby`,
+     * which is exactly why the shape helper below had to stop matching the raw
+     * attribute. So this asserts the two things only the fix makes true — the
+     * name is RENDERED, and the group points at that rendered element — rather
+     * than re-asserting a name both versions expose.
+     */
+    renderDetail(longSession(40), [TIMELINE_SCALE_VISIBLE_LABEL_FLAG_KEY]);
+
+    const group = screen.getByRole("radiogroup", { name: SCALE_GROUP_NAME });
+    const labelId = group.getAttribute("aria-labelledby");
+    expect(labelId).toBeTruthy();
+
+    const visibleLabel = screen.getByText(SCALE_GROUP_NAME);
+    expect(visibleLabel).toBeVisible();
+    expect(visibleLabel.id).toBe(labelId);
+    // One name, not two: a surviving `aria-label` would override the visible
+    // text and hand a screen reader a second, unrendered name for the group.
+    expect(group).not.toHaveAttribute("aria-label");
+  });
+
+  it("keeps the shipped accessible name when the visible-label flag is off", () => {
+    /*
+     * The closed default is the shipped control, unchanged — same accessible
+     * name, no rendered label. Without this the flag-off branch could regress
+     * to an unnamed group and every assertion above would still pass.
+     */
+    renderDetail(longSession(40));
+
+    const group = screen.getByRole("radiogroup", { name: SCALE_GROUP_NAME });
+    expect(group).toHaveAttribute("aria-label", SCALE_GROUP_NAME);
+    expect(screen.queryByText(SCALE_GROUP_NAME)).toBeNull();
   });
 
   it("is keyboard operable — the toggle activates from the keyboard alone", async () => {
@@ -167,7 +208,7 @@ describe("the scale toggle changes the rendered window", () => {
 
 describe("the strip says so when a scale is finer than what was measured", () => {
   /*
-   * ISS-5819 review (wongk). `projectSessionTimeline` already knew a column
+   * ISS-5819 review (whitlockk). `projectSessionTimeline` already knew a column
    * could be narrower than the bin it was cut from — it reports
    * `subColumnSource` — but nothing downstream said it, so a `5m` view of a
    * 12-hour-binned strip read as five-minute measurement.
@@ -200,7 +241,7 @@ describe("the strip says so when a scale is finer than what was measured", () =>
     // And it is attached to the control that caused it, so it is not sight-only.
     const note = screen.getByText(TIMELINE_INTERPOLATED_SCALE_NOTE);
     expect(
-      screen.getByRole("group", { name: SCALE_GROUP_NAME })
+      screen.getByRole("radiogroup", { name: SCALE_GROUP_NAME })
     ).toHaveAttribute("aria-describedby", note.id);
   });
 });
@@ -389,7 +430,7 @@ describe("the axis caption measures the run, not the window", () => {
 
 describe("opening a different session starts at that session's own beginning", () => {
   /*
-   * #4753 review (wongk). `activeRow` used to live ABOVE the `key={session.id}`
+   * #4753 review (whitlockk). `activeRow` used to live ABOVE the `key={session.id}`
    * that remounts the detail workspace, so it was the one piece of per-session
    * state that survived same-component navigation. Before this ticket that was
    * nearly invisible — the row only positioned the `.tl-here` marker, and the
@@ -508,7 +549,8 @@ describe("the timeline is identical under both adapters' prop sets", () => {
 });
 
 function renderDetail(
-  session: ReturnType<typeof createAgentSessionDetailFixture>
+  session: ReturnType<typeof createAgentSessionDetailFixture>,
+  enabledFlags?: readonly string[]
 ) {
   return render(
     withProviders(
@@ -516,7 +558,8 @@ function renderDetail(
         backHref="/sessions"
         isLoading={false}
         session={session}
-      />
+      />,
+      enabledFlags
     )
   );
 }
@@ -531,7 +574,6 @@ function barsWithStacks(
     <SessionTimelineBars
       accessibleCosts={[null]}
       buckets={[bucket]}
-      columnHitTargetEnabled={false}
       costUnmeasured={false}
       disabled={false}
       hoverIndex={null}
@@ -546,7 +588,11 @@ function barsWithStacks(
 }
 
 function readTimelineShape(container: HTMLElement) {
-  const scaleGroup = container.querySelector('[aria-label="Timeline scale"]');
+  // ISS-10599: the group is named by `aria-label` with the visible-label flag
+  // off and by `aria-labelledby` with it on. Match on the role, which is the
+  // one thing both states share, rather than on either raw attribute — this
+  // helper is about the timeline's SHAPE, not about how the group is named.
+  const scaleGroup = container.querySelector('[role="radiogroup"]');
   return {
     axis: container.querySelector(AXIS_SELECTOR)?.textContent ?? "",
     barCount: container.querySelectorAll(BAR_SELECTOR).length,
@@ -593,7 +639,7 @@ function pricedBucket(): ActivityBucket {
  */
 function longSession(binCount: number) {
   return createAgentSessionDetailFixture({
-    // ISS-5819 review (wongk): the bins state the clock they were binned over,
+    // ISS-5819 review (whitlockk): the bins state the clock they were binned over,
     // as a real producer's do — the projection these cases exercise refuses a
     // strip that cannot.
     activityBuckets: withProducerBinBounds(uniformBins(binCount), {

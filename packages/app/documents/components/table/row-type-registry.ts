@@ -1,11 +1,13 @@
 import {
-  DocumentStatus,
+  HIDE_COMPLETED_BRANCH_STATUSES,
+  HIDE_COMPLETED_DOCUMENT_STATUSES,
+} from "@repo/api/src/types/artifact-hide-completed";
+import {
   DocumentType,
   isTerminalStatusForSubtype,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import {
-  DISPLAYED_SESSION_STATUS,
   type DisplayedSessionStatus,
   normalizeDisplayedSessionStatus,
   normalizeSessionStatus,
@@ -82,9 +84,35 @@ export type RowTypeConfig = {
   statusIcon?: StatusIconStatus;
   /** User-facing status label for branch/session row status icon tooltips. */
   statusLabel?: string;
+  /**
+   * The canonical sentence explaining a DERIVED session display state (ISS-8694).
+   * Set only for `stale`/`unknown`, which are inferences a reader cannot check
+   * from the word alone; every other status says all it has to say.
+   */
+  statusDescription?: string;
 };
 
-export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
+/**
+ * ISS-8694: per-row inputs the registry cannot resolve for itself. Optional so
+ * the capability call sites (`editable`, `route`) keep calling with one argument.
+ */
+export type RowTypeConfigOptions = {
+  /**
+   * An ALREADY-RESOLVED session display status, or nothing.
+   *
+   * A resolved value rather than a gate flag, deliberately: the surface reads
+   * its feature flag once and picks between two whole shapes at that read site,
+   * so no boolean crosses into this module to be re-derived here
+   * (`no-threaded-feature-flag`). Absent means "map the stored status", which is
+   * what every call site did before this field existed.
+   */
+  sessionDisplayedStatus?: DisplayedSessionStatus;
+};
+
+export function getRowTypeConfig(
+  item: DocumentRowItem,
+  options: RowTypeConfigOptions = {}
+): RowTypeConfig | null {
   switch (item.kind) {
     case "project":
       return null;
@@ -109,7 +137,9 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         badgeLabel: "Pull Request",
         labelClassName: "text-violet-700 dark:text-violet-300",
         icon: GitBranchIcon,
-        route: `/build/${item.data.id}`,
+        // Branch navigation is eligibility- and rollout-dependent, so the
+        // rendering owner resolves it through the Branch helper.
+        route: null,
         editable: false,
         deletable: true,
         // Branch deletes only remove the Closedloop artifact record — the
@@ -121,7 +151,10 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         statusIcon: branchStatusToIcon(item.data.status),
         statusLabel: branchStatusToLabel(item.data.status),
       };
-    case "session":
+    case "session": {
+      const displayed =
+        options.sessionDisplayedStatus ??
+        normalizeDisplayedSessionStatus(item.data.status.toLowerCase());
       return {
         badgeLabel: "Session",
         labelClassName: "text-muted-foreground",
@@ -134,9 +167,10 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         deletable: false,
         deleteDialogTitle: "Session",
         deleteDialogDescription: null,
-        statusIcon: sessionStatusToIcon(item.data.status),
-        statusLabel: sessionStatusToLabel(item.data.status),
+        statusIcon: sessionStatusToIcon(displayed),
+        statusLabel: sessionStatusToLabel(displayed),
       };
+    }
     default: {
       // Exhaustiveness check: a new row kind must be handled explicitly.
       const unhandled: never = item;
@@ -169,7 +203,16 @@ function branchStatusToLabel(status: string): string {
   return normalized ? BRANCH_STATUS_LABELS[normalized] : humanizeStatus(status);
 }
 
-function normalizeBranchStatus(status: string): GitHubPRState | null {
+/**
+ * The raw `Artifact.status` a branch row carries, recognized as a
+ * `GitHubPRState`, or `null` when it is none of them.
+ *
+ * Exported for ISS-9437's status fold (`documents/lib/row-artifact-status.ts`).
+ * This is the recognizer the row's own icon and label already read, so the fold
+ * and the render classify one row the same way; a second recognizer beside it is
+ * how they would come to disagree.
+ */
+export function normalizeBranchStatus(status: string): GitHubPRState | null {
   const normalized = status.toUpperCase() as GitHubPRState;
   return normalized === GitHubPRState.Open ||
     normalized === GitHubPRState.Merged ||
@@ -179,17 +222,19 @@ function normalizeBranchStatus(status: string): GitHubPRState | null {
 }
 
 /**
- * Documents that the hide-completed table filter treats as completed. This is
- * intentionally NARROWER than the domain-wide `TERMINAL_DOCUMENT_STATUSES`
- * (which also includes APPROVED): an APPROVED document is still actively worked
- * (it awaits execution), so hide-completed keeps it visible. Only EXECUTED and
- * OBSOLETE documents drop out. The broad terminal set stays untouched for the
- * backend loop/blocker semantics that legitimately treat APPROVED as done.
+ * Membership sets over the shared hide-completed vocabularies. The LISTS moved
+ * to `@repo/api/src/types/artifact-hide-completed` when ISS-10471 gave the
+ * filter a second consumer — the `GET /artifacts/assigned-tree` query, which
+ * cannot import this package — and the reason each list is shaped the way it is
+ * lives there now. Only the per-row-kind dispatch below is still local, because
+ * the server dispatches on artifact type and subtype rather than on row kind.
  */
-const HIDE_COMPLETED_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>([
-  DocumentStatus.Executed,
-  DocumentStatus.Obsolete,
-]);
+const HIDE_COMPLETED_DOCUMENT_STATUS_SET: ReadonlySet<string> = new Set<string>(
+  HIDE_COMPLETED_DOCUMENT_STATUSES
+);
+const HIDE_COMPLETED_BRANCH_STATUS_SET: ReadonlySet<string> = new Set<string>(
+  HIDE_COMPLETED_BRANCH_STATUSES
+);
 
 /**
  * Whether a row counts as "completed" for table semantics (the hide-completed
@@ -209,14 +254,11 @@ export function isRowItemCompleted(item: DocumentRowItem): boolean {
       // stays visible).
       return item.data.type === DocumentType.Feature
         ? isTerminalStatusForSubtype(item.data.type, item.data.status)
-        : HIDE_COMPLETED_DOCUMENT_STATUSES.has(item.data.status);
-    case "branch": {
-      const normalized = item.data.status.toUpperCase();
-      return (
-        normalized === GitHubPRState.Merged ||
-        normalized === GitHubPRState.Closed
+        : HIDE_COMPLETED_DOCUMENT_STATUS_SET.has(item.data.status);
+    case "branch":
+      return HIDE_COMPLETED_BRANCH_STATUS_SET.has(
+        item.data.status.toUpperCase()
       );
-    }
     case "session":
       return isTerminalSessionStatus(item.data.status);
     default: {
@@ -259,16 +301,26 @@ export function isTerminalSessionStatus(status: string): boolean {
  * The icon each DISPLAYED session status renders, declared as a table rather
  * than an if-chain so it reads as a mapping and not as a rename — and so it is
  * EXHAUSTIVE. A new `DisplayedSessionStatus` member fails `tsc` here until it
- * is intentionally mapped, which is how the two below came to be missing.
+ * is intentionally mapped.
  *
  * Mirrors the sibling `BRANCH_STATUS_TO_ICON`; sessions had drifted into an
  * inline chain that silently defaulted.
  *
- * `StatusIconStatus` is the DOCUMENT phase vocabulary and has no failure
- * member, so two of these are the least-wrong option rather than the right one,
- * and `StatusIcon` publishes its own accessible name — so the icon states a
- * second fact the row's label cannot correct. Kaiti owns the call (ISS-6801);
- * do not quietly re-pick a member here.
+ * `StatusIconStatus` gained a `failed` member (ISS-8692, on the ISS-6801
+ * decision), so ERROR now maps to a member whose own name and mark both say
+ * failure instead of borrowing the document-phase `wont-do` X.
+ *
+ * ISS-10364 (operator ruling, 2026-09-23/24) retired the `waiting`/`stale`/
+ * `unknown` members this table used to carry, with them the WAITING
+ * "In review" ring this comment used to flag as an undecided placeholder, and
+ * the `decorative` STALE/UNKNOWN rows the server-projected enrichment below
+ * fed (now permanently inert — see `resolveServedSessionDisplayStatus`).
+ *
+ * What this table decides is the MARK and the member's own name — NOT what the
+ * artifact table announces. `ArtifactNameCell` overrides the icon's name with
+ * the row's status caption, so on that surface the announcement already tracks
+ * the row. A consumer that renders `StatusIcon` WITHOUT that override gets the
+ * member's own label, which is why a wrong member here is still a wrong claim.
  */
 const SESSION_STATUS_TO_ICON: Record<DisplayedSessionStatus, StatusIconStatus> =
   {
@@ -276,31 +328,7 @@ const SESSION_STATUS_TO_ICON: Record<DisplayedSessionStatus, StatusIconStatus> =
     // The collapsed "finished, did not fail" state — the one genuinely faithful
     // mapping in this table.
     [SESSION_STATUS.INACTIVE]: "complete",
-    // RESIDUAL: announces "Won't do" and renders neutral, so a failed run reads
-    // as a deliberate decision not to do the work, with no failure colour. Kept
-    // because it is the only terminal-but-not-success member the set has.
-    [SESSION_STATUS.ERROR]: "wont-do",
-    // RESIDUAL: announces "In review". The session is blocked on a human, which
-    // is not the same claim.
-    [DISPLAYED_SESSION_STATUS.WAITING]: "in-review",
-    // UNREACHABLE TODAY, and present only because the Record is exhaustive —
-    // stated plainly because the obvious reading is that they fix something.
-    // They do not: `normalizeDisplayedSessionStatus` preserves a literal
-    // `waiting` and otherwise delegates to `normalizeSessionStatus`, whose
-    // lifecycle fold sends BOTH of these to `active`. Verified, not assumed.
-    //
-    // The live defect they might look like they address is real but sits one
-    // layer up: this table maps the RAW artifact status, so it never applies
-    // the honest display derivation (`resolveDisplayedSessionStatus`) at all. A
-    // long-silent session therefore renders "In progress" here while the
-    // Sessions list badges it "Stale" — a cross-surface disagreement that
-    // adding keys here cannot fix. Filed with the icon decision (ISS-6801).
-    //
-    // `decorative` announces the non-committal "Status" and renders muted, so
-    // IF the derivation is ever routed through here these assert nothing rather
-    // than claiming progress.
-    [DISPLAYED_SESSION_STATUS.STALE]: "decorative",
-    [DISPLAYED_SESSION_STATUS.UNKNOWN]: "decorative",
+    [SESSION_STATUS.ERROR]: "failed",
   };
 
 /**
@@ -308,22 +336,16 @@ const SESSION_STATUS_TO_ICON: Record<DisplayedSessionStatus, StatusIconStatus> =
  * is folded to the displayed vocabulary before the lookup. The fold is total,
  * so every input lands on a key and there is no default arm to hide a gap.
  */
-function sessionStatusToIcon(status: string): StatusIconStatus {
-  return SESSION_STATUS_TO_ICON[
-    normalizeDisplayedSessionStatus(status.toLowerCase())
-  ];
+function sessionStatusToIcon(status: DisplayedSessionStatus): StatusIconStatus {
+  return SESSION_STATUS_TO_ICON[status];
 }
 
-function sessionStatusToLabel(status: string): string {
+function sessionStatusToLabel(status: DisplayedSessionStatus): string {
   // One label per displayed state, matching the badge. What each spelling reads
   // is `SESSION_STATUS_LABELS` keyed by the fold — do not restate it here; the
   // sentence this replaced did, and was false on all three of its claims by the
-  // time ISS-5592 finished (code review, #5156). `completed`, `failed` and
-  // `unknown` are unrecognized now, so they fold to `active` and read "Active",
-  // not the "Inactive"/"Failed" that note promised.
-  return SESSION_STATUS_LABELS[
-    normalizeDisplayedSessionStatus(status.toLowerCase())
-  ];
+  // time ISS-5592 finished (code review, #5156).
+  return SESSION_STATUS_LABELS[status];
 }
 
 function humanizeStatus(status: string): string {
@@ -336,4 +358,20 @@ function humanizeStatus(status: string): string {
     return "Status";
   }
   return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+}
+
+/**
+ * ISS-8694: the display status the SERVER derived for this row, or nothing.
+ *
+ * **Permanently `undefined` since ISS-10364** (operator ruling, 2026-09-23/24):
+ * this admitted only the two DISPLAY-ONLY words (`stale`, `unknown`), and the
+ * server-side projection that produced `item.data.displayedSessionStatus`
+ * (`session-displayed-status-service.ts`) no longer emits either — ISS-11131
+ * removes the now-inert field and this function outright. Kept here, rather
+ * than inlined at its two call sites, so neither has to know that.
+ */
+export function resolveServedSessionDisplayStatus(
+  _item: DocumentRowItem
+): DisplayedSessionStatus | undefined {
+  return undefined;
 }

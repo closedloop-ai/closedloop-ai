@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import test from "node:test";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openInsightsDb } from "./local-insights-test-helpers.js";
 
@@ -58,9 +58,9 @@ const INSERT_SESSION =
   "INSERT INTO sessions (id, status, started_at) VALUES ($1, 'completed', $2)";
 
 const INSERT_PR_ARTIFACT = `INSERT INTO artifacts
-     (id, identity_key, kind, repo_full_name, pr_number, pr_state,
+     (id, identity_key, kind, repo_full_name, pr_number,
       observed_at, created_at, last_seen_at)
-   VALUES ($1, $2, 'pull_request', 'east/repo', $3, 'merged', $4, $4, $4)`;
+   VALUES ($1, $2, 'pull_request', 'east/repo', $3, $4, $4, $4)`;
 
 const INSERT_LINK = `INSERT INTO session_artifact_links
      (id, session_id, artifact_id, relation, method, evidence,

@@ -16,7 +16,7 @@
  *    only thing that would otherwise re-derive an untouched `opencode.db`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   materializeOpencodeTranscripts,
   opencodeMaterializerFingerprintPath,

@@ -13,9 +13,9 @@ import { ArrowRightSquare } from "lucide-react";
  * Displays the path to the current resource using a hierarchy of links.
  */
 const meta = {
-  title: "Design System/Navigation & Shell/Breadcrumb",
+  title: "Primitives v1.0/Navigation/Breadcrumb",
   component: Breadcrumb,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {},
   render: (args) => (

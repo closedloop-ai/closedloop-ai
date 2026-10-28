@@ -1,8 +1,23 @@
 import type { RumEvent, RumInitConfiguration } from "@datadog/browser-rum";
 import { env } from "@/env";
 import { appEnvironment } from "@/lib/environment";
+import {
+  isMeasuredLoadingTime,
+  isPollInflatedLoadingTime,
+  isPollInflatedLoadingType,
+  RUM_POLL_INFLATED_LOAD_ATTRIBUTE,
+} from "./poll-inflated-load";
 
-const DEFAULT_SESSION_SAMPLE_RATE = 100;
+// ISS-12356(f), PRD-791 v10 Option B: the rate that keeps the whole RUM line
+// at or under $5/mo with replay off. v2/usage/hourly_usage (product_families=rum,
+// 2026-09-10..10-10, 720 h): 2,152 ingested and 2,186 investigate sessions; the
+// same window's 2,185 distinct sessions split cl-app 2,004 / Astoria 181.
+// On-demand list price (datadoghq.com/pricing/list, read 2026-10-10): $0.22
+// Measure + $4.50 Investigate per 1,000 sessions. Per 31-day month cl-app at
+// 100% is $9.77 and Astoria $0.88, so (5 - 0.88) / 9.77 = 0.42. Deployed builds
+// take NEXT_PUBLIC_DATADOG_RUM_SESSION_SAMPLE_RATE from infrastructure (vercel/app),
+// set to the same value; this default covers a build without it.
+const DEFAULT_SESSION_SAMPLE_RATE = 42;
 const SESSION_REPLAY_SAMPLE_RATE = 0;
 
 export type DatadogRumConfig = Pick<
@@ -97,6 +112,30 @@ function isBenignRumError(event: RumEvent): boolean {
 }
 
 export function scrubDatadogRumEvent(event: RumEvent): boolean {
+  // ISS-8794/ISS-9711: mark whether a `loading_time` reports the refetch poll
+  // rather than the load, so per-page rankings can exclude it.
+  // `view.loading_time` is not in rum-core's `beforeSend` allowlist, so
+  // `context` is the only place the mark can go. Written explicit true/false
+  // only for a view whose `loading_type` is ratified AND whose `loading_time`
+  // was actually measured — see `POLL_INFLATED_LOAD_RATIFICATION` and
+  // `isMeasuredLoadingTime` — and left absent for every other view (an
+  // unratified type, or a ratified type the SDK never usably measured), so
+  // `false` means "evaluated, not inflated" rather than "never classified"
+  // (Perrin Upcott, 2026-09-18, ISS-9711). The spread keeps this additive:
+  // context a caller already attached survives the write.
+  if (
+    event.type === "view" &&
+    isPollInflatedLoadingType(event.view.loading_type) &&
+    isMeasuredLoadingTime(event.view.loading_time)
+  ) {
+    event.context = {
+      ...event.context,
+      [RUM_POLL_INFLATED_LOAD_ATTRIBUTE]: isPollInflatedLoadingTime(
+        event.view.loading_time
+      ),
+    };
+  }
+
   // Gate interaction egress to staff. `trackUserInteractions` is on at init so
   // RUM can attribute INP/long-tasks, but `action` events carry computed names
   // (button/link text, document/project titles). Drop them for non-staff so no

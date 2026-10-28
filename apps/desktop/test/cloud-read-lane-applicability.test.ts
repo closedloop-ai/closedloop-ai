@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { cloudReadLaneNotApplicableReason } from "../src/shared/cloud-read-lane-applicability.js";
 import {
   type CloudSyncBacklog,
@@ -18,7 +18,7 @@ import {
 } from "./helpers/sync-burndown-fixtures.js";
 
 /**
- * ISS-6206 (shafty023 review on #5050): strict lane readiness may only settle
+ * ISS-6206 (davetho review on #5050): strict lane readiness may only settle
  * on a reason this app's CONFIGURATION carries. A lane that is merely stopped
  * — `idle_not_running` covers connectivity, credential, policy and
  * compute-target gates — gets no such licence, because its gate reopens on its

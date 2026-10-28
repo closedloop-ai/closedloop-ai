@@ -10,7 +10,7 @@ import { maxIso, minIso } from "../database/db-helpers.js";
 // several rows that share the same org-level `slug`. The cloud list already
 // collapses those into ONE canonical row per family
 // (`apps/api/app/agent-components/family-collapse.ts`); this is the desktop-side
-// parity pass so the local and cloud catalogs agree (wongk).
+// parity pass so the local and cloud catalogs agree (whitlockk).
 //
 // It runs over the ALREADY-BUILT response rows (not the raw merge map) because
 // the desktop producer's usage/plugin/window folds have already been applied per
@@ -30,7 +30,7 @@ import { maxIso, minIso } from "../database/db-helpers.js";
  * the row's per-version identity key (`identityKeyByRow`), NOT the row's `id` — a
  * family's version buckets all share one name-only `id`, so an `id`-keyed map
  * would already have lost every version's set but the last (the multi-version
- * `sessions` under-count wongk flagged). The canonical row's UNION of every
+ * `sessions` under-count whitlockk flagged). The canonical row's UNION of every
  * collapsed version's session ids is written into the returned
  * `sessionIdsByComponentId` under the canonical `id`; callers read that map when
  * loading the page's LOC/$ session cost, so it describes the collapsed rows.
@@ -111,7 +111,7 @@ function foldVersionRow(
 ): void {
   // Decide the representative against the rep's OWN recency (not the widening
   // aggregate) so a fresher-invoked version can never tie itself and lose the
-  // tiebreak — the same ordering bug the cloud collapse guards (wongk).
+  // tiebreak — the same ordering bug the cloud collapse guards (whitlockk).
   if (isFresherThanRep(row, family)) {
     adoptRepresentative(family, row);
   }

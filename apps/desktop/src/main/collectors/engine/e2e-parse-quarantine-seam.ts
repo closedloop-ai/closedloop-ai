@@ -22,7 +22,7 @@
  * {@link E2E_PARSE_QUARANTINE_ENABLED_VALUE} sentinel, not merely "present", so an
  * unrelated stray value cannot accidentally flip the seam on.
  *
- * PR #4085 review (wongk): `process.env` is inherited by the packaged utility
+ * PR #4085 review (whitlockk): `process.env` is inherited by the packaged utility
  * process, so an env sentinel alone would let a PACKAGED client launched with the
  * flag quarantine a normal slow transcript after one 2s attempt (or wedge forever
  * on a marker-matching path). The seam therefore also requires an UNPACKAGED build:
@@ -66,7 +66,7 @@ export const E2E_PARSE_QUARANTINE_ENABLED_VALUE = "1";
 export const E2E_POISON_TRANSCRIPT_MARKER = "closedloop-e2e-poison";
 
 /**
- * PR #4085 review (wongk): the EXPLICIT worker capability env the main-process
+ * PR #4085 review (whitlockk): the EXPLICIT worker capability env the main-process
  * runner sets on the forked utility process — distinct from
  * {@link E2E_PARSE_QUARANTINE_ENV}, which the operator/E2E harness sets on the
  * app. The worker cannot read `app.isPackaged`, so it must NOT trust the inherited
@@ -100,7 +100,7 @@ export const E2E_PARSE_QUARANTINE_CONFIG = {
  * defaults to `true` (fail-closed): a caller that cannot prove the build is
  * unpackaged never arms the seam. Fail-safe on both dimensions — any other env
  * value (absent, empty, unexpected) OR a packaged build returns false, so a real
- * run is never affected. PR #4085 review (wongk): the packaging gate stops a
+ * run is never affected. PR #4085 review (whitlockk): the packaging gate stops a
  * packaged client launched with the inherited flag from quarantining a normal slow
  * transcript.
  */

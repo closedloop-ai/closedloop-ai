@@ -8,12 +8,14 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => (request: any, context: any) =>
-    handler(
-      { user: { id: "user-1", organizationId: "org-1" } },
-      request,
-      context.params
-    ),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(
+        { user: { id: "user-1", organizationId: "org-1" } },
+        request,
+        context.params
+      ),
 }));
 
 vi.mock("@/lib/identifier-utils", () => ({
@@ -103,7 +105,8 @@ describe("POST /documents/:id/threads/:threadId/replies", () => {
       "artifact-uuid",
       "th_1",
       "user-1",
-      "A reply"
+      "A reply",
+      undefined
     );
   });
 
@@ -169,7 +172,8 @@ describe("POST /documents/:id/threads/:threadId/resolve (participant-resolve)", 
       "artifact-uuid",
       "th_1",
       "user-1",
-      expect.any(Date)
+      expect.any(Date),
+      undefined
     );
   });
 
@@ -224,7 +228,8 @@ describe("POST /documents/:id/threads/:threadId/unresolve (author-only reopen)",
       "org-1",
       "artifact-uuid",
       "th_1",
-      "user-1"
+      "user-1",
+      undefined
     );
   });
 

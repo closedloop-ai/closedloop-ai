@@ -25,6 +25,7 @@ import type {
   CycleState,
   Mode,
   OutboxDepths,
+  PageReadStats,
 } from "./soak-types";
 
 /** How many violation strings a JSONL row carries; the count is always exact. */
@@ -130,6 +131,27 @@ export function buildCycleRecord(
       maxMs: state.pageReads.latenciesMs.length
         ? Math.max(...state.pageReads.latenciesMs)
         : null,
+      rendererP50Ms: percentile(state.pageReads.rendererLatenciesMs, 0.5),
+      rendererMaxMs: state.pageReads.rendererLatenciesMs.length
+        ? Math.max(...state.pageReads.rendererLatenciesMs)
+        : null,
+      dispatchP50Ms: percentile(state.pageReads.dispatchLatenciesMs, 0.5),
+      dispatchMaxMs: state.pageReads.dispatchLatenciesMs.length
+        ? Math.max(...state.pageReads.dispatchLatenciesMs)
+        : null,
+      dispatchMeasured: state.pageReads.dispatchLatenciesMs.length,
+      dispatchUnmeasured: state.pageReads.dispatchUnmeasured,
+      timeoutDispatchP50Ms: percentile(
+        state.pageReads.timeoutDispatchLatenciesMs,
+        0.5
+      ),
+      timeoutDispatchMaxMs: state.pageReads.timeoutDispatchLatenciesMs.length
+        ? Math.max(...state.pageReads.timeoutDispatchLatenciesMs)
+        : null,
+      timeoutDispatchMeasured:
+        state.pageReads.timeoutDispatchLatenciesMs.length,
+      timeoutDispatchUnmeasured: state.pageReads.timeoutDispatchUnmeasured,
+      timeoutPhases: { ...state.pageReads.timeoutPhases },
     },
     content: {
       deliveredSessions: content.deliveredSessions,
@@ -155,6 +177,51 @@ export function buildCycleRecord(
     failReasons: state.failReasons,
     notes: state.notes,
   };
+}
+
+/**
+ * Render a millisecond percentile for the failure line, or `n/a` when there is
+ * none. Deliberately not `0`: no timeout carried a readable mark and a dispatch
+ * that took no time are opposite facts, and the first must not read as the
+ * second on the line a lane uses to rule the outbound hop out.
+ */
+function describeMs(value: number | null): string {
+  return value === null ? "n/a" : `${value}ms`;
+}
+
+/**
+ * Render the timed-out reads' dispatch p50 WITH the share of the timeout
+ * population it was computed over.
+ *
+ * The percentile alone is the false-completeness defect this split exists to
+ * remove, reintroduced one level up in its own output: a single readable 20ms
+ * mark beside 99 unreadable ones prints `dispatch p50 20ms`, and a lane reads
+ * that as having ruled the outbound hop out on 1% of the population. A biased
+ * subset presented as the whole is worse than no number at all, because the
+ * number is what a cause gets ruled out with.
+ *
+ * Coverage is reported rather than the value suppressed to `n/a`. A measured
+ * 20ms is real evidence and discarding it would trade one wrong reading for a
+ * blind one; it simply has to arrive labelled with how much of the population
+ * stands behind it. The denominator is the cycle's whole timeout count, not the
+ * sum of the two dispatch tallies, so the coverage claim is made against the
+ * population it is about and cannot be satisfied by the tallies agreeing with
+ * each other.
+ *
+ * The suffix is omitted only when coverage is complete, so a fully measured
+ * cycle reads exactly as it did before and the annotation stays a signal rather
+ * than noise on the line a lane reads first. A cycle with no timeouts at all
+ * has no population to be partial about and reads plain `n/a`.
+ */
+function describeDispatchCoverage(pageReads: PageReadStats): string {
+  const measured = pageReads.timeoutDispatchLatenciesMs.length;
+  const value = describeMs(
+    percentile(pageReads.timeoutDispatchLatenciesMs, 0.5)
+  );
+  if (measured === pageReads.timeouts) {
+    return value;
+  }
+  return `${value} (${measured}/${pageReads.timeouts} measured)`;
 }
 
 function percentile(values: number[], fraction: number): number | null {
@@ -456,7 +523,27 @@ function appendInvariantFailReasons(
   }
   if (!invariants.readsAnswer) {
     state.failReasons.push(
-      `page_reads: ${state.pageReads.timeouts} timeouts ${state.pageReads.errors} errors ${state.pageReads.empty} empty ${state.pageReads.short} short`
+      // ISS-6102: the phase split rides on the failure line itself, because
+      // that line is what a lane reads first and "N timeouts" alone is the
+      // number that made criterion 4 arguable rather than measurable. The
+      // dispatch p50 rides with it for the same reason: `in-renderer` says the
+      // read was still outstanding, not that reaching the renderer was cheap,
+      // and a lane that reads only the counts cannot tell those apart. It rides
+      // with its COVERAGE for a third reason — see `describeDispatchCoverage`.
+      `page_reads: ${state.pageReads.timeouts} timeouts (${state.pageReads.timeoutPhases.preRenderer} pre-renderer ${state.pageReads.timeoutPhases.inRenderer} in-renderer ${state.pageReads.timeoutPhases.aboveRenderer} above-renderer ${state.pageReads.timeoutPhases.unknown} unknown, dispatch p50 ${describeDispatchCoverage(state.pageReads)}) ${state.pageReads.errors} errors ${state.pageReads.empty} empty ${state.pageReads.short} short`
+    );
+  }
+  // ISS-6102: the ok reads' dispatch percentiles carry their coverage pair in
+  // the row, but a cycle whose reads all ANSWERED prints no `page_reads:` line
+  // at all — so on exactly the cycles those percentiles are read from, nothing
+  // states how much of the ok population stands behind them. Recorded as a note
+  // for the same reason `redelivered` is: it belongs on every cycle, not only
+  // the ones where something else already failed. Emitted only when coverage is
+  // partial, so a fully measured cycle reads plain and the annotation stays a
+  // signal.
+  if (state.pageReads.dispatchUnmeasured > 0) {
+    state.notes.push(
+      `page_read_dispatch_unmeasured:${state.pageReads.dispatchUnmeasured}/${state.pageReads.ok}`
     );
   }
   // ISS-6099: content, not envelopes.

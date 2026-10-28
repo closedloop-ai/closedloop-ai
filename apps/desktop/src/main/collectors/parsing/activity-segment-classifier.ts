@@ -21,7 +21,10 @@
  * historical re-derive via the backfill pass.
  */
 import { createHash } from "node:crypto";
-import type { SessionTracePhaseSource } from "@repo/api/src/types/agent-session";
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 import { buildEvidenceTimeline } from "../evidence/build-session-evidence.js";
 import {
   type EvidenceUnit,
@@ -34,7 +37,6 @@ import {
   scoreWindow,
 } from "./activity-scoring.js";
 import { parseMsOrNull, sortedUniqueMs } from "./activity-segment-relabel.js";
-import { ACTIVITY_PHASE, type ActivityPhase } from "./activity-taxonomy.js";
 import { applyStatefulPhaseCarry } from "./phase-carry.js";
 import { computeReviewRequestMs } from "./review-intent-detector.js";
 import { applyReworkDetection } from "./rework-detector.js";
@@ -217,8 +219,8 @@ import { applySubagentPurposeAttribution } from "./subagent-purpose.js";
 //   splitter now tracks escape and comment state, so a line-continuation or an
 //   `-exec … \;` no longer tears one command into fragments whose heads are bare
 //   flags. Corpus effect: 2 sessions re-tile, both toward more honest labels —
-//   `f9830b64`'s sole `find | xargs wc -l | sort | head` becomes `explore`
-//   instead of `other`, and `413572cc` moves 2 segments out of `implement`.
+//   `a3226ea3`'s sole `find | xargs wc -l | sort | head` becomes `explore`
+//   instead of `other`, and `be42c362` moves 2 segments out of `implement`.
 //   Time-conserving in both.
 export const ACTIVITY_CLASSIFIER_VERSION = 16;
 
@@ -344,17 +346,8 @@ export function deriveSessionBoundsMs(
  *
  * `harness` selects the FEA-2268 adapter that maps this session's concrete tool
  * names to abstract categories (the ONLY vendor-aware step; the classifier core
- * is harness-blind). `tracePhaseSources` are the optional DB-derived declared
- * phase boundaries; omitted, the declared layer still draws on slash commands and
- * per-tool skill/MCP signals.
- *
- * REACHABILITY: no production caller supplies `tracePhaseSources` today —
- * `write-core.ts` computes this tiling pre-transaction precisely so no DB read is
- * in the path, and `activity-segment-backfill.ts` mirrors it. The option has been
- * dormant since FEA-2269 introduced it; wiring the sync-time trace phases
- * (`extractTracePhaseSources`) into both callers is tracked separately. It is kept
- * exercised by tests because the declared layer's category split must stay correct
- * for the day it IS wired — see `declaredCategoryForTracePhase`.
+ * is harness-blind). The declared layer draws on slash commands and per-tool
+ * skill/MCP signals.
  *
  * Determinism: reads only `NormalizedSession` + `harness` + the version constant
  * — no `Date.now()`, no randomness; the evidence timeline is totally ordered and
@@ -364,15 +357,14 @@ export function deriveSessionBoundsMs(
  */
 export function classifyActivitySegments(
   session: NormalizedSession,
-  harness: Harness,
-  options?: { tracePhaseSources?: readonly SessionTracePhaseSource[] }
+  harness: Harness
 ): ActivitySegmentRecord[] {
   const bounds = deriveSessionBoundsMs(session);
   if (!bounds) {
     return [];
   }
   const { startMs, endMs } = bounds;
-  const timeline = buildEvidenceTimeline(session, harness, options);
+  const timeline = buildEvidenceTimeline(session, harness);
   // AA-01: idle anchors are the harness-blind union of ALL observed-activity
   // instants (assistant turns + human messages + tool executions + declared
   // signals), not `tokenSeries` alone — so shell-only / human-only / zero-turn
@@ -531,8 +523,8 @@ function windowTicks(ticks: readonly EvidenceTick[]): PhaseRun[] {
  * it). Mutates `counts`; returns the index of the first tick of the NEXT run.
  *
  * The dwell has ONE exception: a DECLARED-PLAN tick is never absorbed into a
- * non-plan run (FEA-4184). A plan declaration (`/create-plan`, `ExitPlanMode`, a
- * `plan` trace phase) is a discrete, high-confidence intent event, not the noisy
+ * non-plan run (FEA-4184). A plan declaration (`/create-plan`, `ExitPlanMode`)
+ * is a discrete, high-confidence intent event, not the noisy
  * off-pattern turn hysteresis exists to smooth. Absorbing it would fold its
  * `DeclaredPlan` count into the run, and `appendActiveSegments` would then rescore
  * the COMBINED counts as `plan`, relabelling the whole accumulated run (e.g. a

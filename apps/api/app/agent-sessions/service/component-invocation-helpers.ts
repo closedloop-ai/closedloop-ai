@@ -6,12 +6,14 @@ import {
 } from "@repo/api/src/types/agent-component";
 import {
   type AgentComponentInvocationAnchor,
+  AgentComponentInvocationAttributionSource,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationEvidenceClass,
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
   AgentComponentInvocationSyncAckState,
   type AgentComponentInvocationSyncPart,
+  AgentComponentInvocationUsageMeasurement,
   type AgentComponentInvocationAttributionStatus as AttributionStatus,
   agentComponentInvocationSyncPartHashPreimage,
   type AgentComponentInvocationEvidenceClass as EvidenceClass,
@@ -271,10 +273,51 @@ export function toEvidenceClass(value: string): EvidenceClass {
     case AgentComponentInvocationEvidenceClass.CollectorSnapshot:
     case AgentComponentInvocationEvidenceClass.RepositoryCommit:
     case AgentComponentInvocationEvidenceClass.PackMembership:
+    case AgentComponentInvocationEvidenceClass.OtelCounter:
     case AgentComponentInvocationEvidenceClass.None:
       return value;
     default:
       throw new Error(`Invalid persisted invocation evidence: ${value}`);
+  }
+}
+
+/**
+ * ISS-10720: narrow a persisted `attribution_source` cell.
+ *
+ * Throws on an unreadable value for the same reason {@link toUsageMeasurement}
+ * does, and it is load-bearing here too: this value reappears in the item
+ * `toSyncItem` reconstructs for the generation-hash reconciliation, so
+ * coercing an unknown label would hand the reader a stated provenance that is
+ * not the one that was ingested. NULL never reaches here — the caller maps it
+ * to an omitted key, which is what "the transcript attributed it" looks like.
+ */
+export function toAttributionSource(
+  value: string
+): AgentComponentInvocationAttributionSource {
+  switch (value) {
+    case AgentComponentInvocationAttributionSource.HarnessOtel:
+      return value;
+    default:
+      throw new Error(`Invalid persisted attribution source: ${value}`);
+  }
+}
+
+/**
+ * ISS-7795. Throwing on an unreadable label is the same posture the sibling
+ * narrowers take, and here it is load-bearing rather than defensive: this value
+ * reappears in the item `toSyncItem` reconstructs for the generation-hash
+ * reconciliation, so silently coercing an unknown label would hand the reader a
+ * telemetry number whose stated provenance is not the one that was ingested.
+ */
+export function toUsageMeasurement(
+  value: string
+): AgentComponentInvocationUsageMeasurement {
+  switch (value) {
+    case AgentComponentInvocationUsageMeasurement.Measured:
+    case AgentComponentInvocationUsageMeasurement.Estimated:
+      return value;
+    default:
+      throw new Error(`Invalid persisted usage measurement: ${value}`);
   }
 }
 
@@ -341,6 +384,7 @@ export type PartSequenceRecord = {
 };
 
 export type StagedInvocationRow = {
+  durationMs?: bigint | null;
   id: string;
   externalInvocationId: string;
   sourceSessionId: string;
@@ -374,8 +418,22 @@ export type StagedInvocationRow = {
   outputTokens: bigint | null;
   cacheReadTokens: bigint | null;
   cacheWriteTokens: bigint | null;
-  estimatedCost: Prisma.Decimal | null;
+  // ISS-12781: a number on a row still held in memory from its wire item,
+  // a Decimal once read back from the table.
+  estimatedCost: Prisma.Decimal | number | null;
   footprintTokens: bigint | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  usageMeasurement: string | null;
+  succeeded: boolean | null;
+  // ISS-10725: the findings funnel. Same reconstruction rule as the telemetry
+  // columns above — the post-ingest generation hash is recomputed from these
+  // rows, so a dropped column rejects every generation carrying it.
+  findingsEmitted: bigint | null;
+  findingsInvalidated: bigint | null;
+  // ISS-11325: WHY that pair reads what it reads. Same reconstruction rule.
+  findingsDisposition: string | null;
+  attributionSource: string | null;
 };
 
 export type ResolutionUpdate = {
@@ -387,8 +445,8 @@ export type ResolutionUpdate = {
   definitionVersionId: string | null;
   sourceOccurrenceId: string | null;
   // ISS-4923: the post-hash identity re-point for a skill-shadowed phantom
-  // `command`. Present ONLY on a rewritten row — the UPDATE `COALESCE`s each
-  // column, so an absent key leaves the stored value untouched. Deliberately
+  // `command`. Present ONLY on a rewritten row — `persistedInvocation` keeps
+  // the staged value for an absent key. Deliberately
   // OPTIONAL rather than nullable: `null` would mean "clear this column", which
   // is never what a non-phantom row wants (see `skill-shadow-normalization.ts`).
   componentKind?: string;
@@ -503,8 +561,24 @@ export const INVOCATION_HASH_SELECT = {
   cacheReadTokens: true,
   cacheWriteTokens: true,
   estimatedCost: true,
+  durationMs: true,
   footprintTokens: true,
-} as const;
+  linesAdded: true,
+  linesRemoved: true,
+  usageMeasurement: true,
+  succeeded: true,
+  findingsEmitted: true,
+  findingsInvalidated: true,
+  findingsDisposition: true,
+  attributionSource: true,
+  // ISS-7795 keys-covered guard. The comment above says a dropped column
+  // permanently rejects every generation carrying it — but nothing enforced it:
+  // deleting a line here compiled cleanly and passed every test, because the
+  // round-trip tests hand-build their row instead of reading through this
+  // select. `satisfies` now fails `tsc` the moment this and `StagedInvocationRow`
+  // disagree, so the next telemetry column cannot be added to one and forgotten
+  // in the other.
+} as const satisfies Record<keyof StagedInvocationRow, true>;
 
 export function deleteStaleIncompleteGenerations(
   tx: TransactionClient,
@@ -680,3 +754,15 @@ export function keepLatestDate(
     dates.set(key, candidate);
   }
 }
+
+/**
+ * The `select` for the staged-part read that only re-checks the ledger of an
+ * already-persisted part. Its row is discarded after
+ * {@link partLedgerMatches}, so the identity/timing columns
+ * (`id`, `generationId`, `partIndex`, `receivedAt`) are never read.
+ */
+export const PART_LEDGER_SELECT = {
+  partHash: true,
+  itemCount: true,
+  payloadBytes: true,
+} satisfies Record<keyof PartLedgerRecord, true>;

@@ -1,92 +1,35 @@
 import {
-  BranchBillingMode,
   type BranchPageDetail,
-  BranchPhase,
-  type BranchSession,
   BranchStatus,
-  BranchViewerScope,
 } from "@repo/api/src/types/branch";
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
-import {
-  aggregateBranchCostCompleteness,
-  type BranchUsageActorBucket,
-  type BranchUsageHourBucket,
-  type BranchUsagePhaseStack,
-  type BranchUsageSummary,
-} from "@repo/api/src/types/branch-usage";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { median } from "@repo/api/src/utils/math";
-import {
-  addRow,
-  type BranchTokenRow,
-  branchCostContributions,
-  emptyCounts,
-  priceCounts,
-  type TokenCounts,
-} from "./branch-cost-completeness";
-
-export type { BranchTokenRow } from "./branch-cost-completeness";
+import { earliestSessionStartMs } from "@repo/lib/branches/branch-lead-time-activity";
+import { mergedTraceItemEndMs } from "@repo/lib/branches/merged-trace";
 
 /**
- * Pure Branches derivations shared without platform imports; token cost delegates
- * to `computeTokenCost`. Usage summaries preserve required numeric compatibility
- * fields while exposing availability through typed completeness.
+ * Pure Branches derivations shared without platform imports.
+ *
+ * ISS-4794: this module used to price token counts on READ, through the
+ * canonical `computeTokenCost` engine, in a branch-usage projection that had no
+ * production caller left — `projectBranchUsageSummary` and its `sumPricedCost` /
+ * `perHourPerActorBuckets` machinery were reachable only from their own tests.
+ * Both facts made it deletable rather than convertible: pricing belongs at WRITE
+ * (`estimateTokenCost`, harness-parity, `token-cost-writes.ts`) and reads display
+ * the stored figure, and a second engine here could only ever disagree with it.
+ * The live branch-usage projection is `apps/desktop/src/main/branch/branch-usage-projection.ts`,
+ * which sums the stored per-row cost.
+ *
  * Per-activity cost rollup lives in `@repo/lib/branches/activity-rollup`.
  */
 
 // Keep in sync with `MERGED_TRACE_IDLE_THRESHOLD_MS`; desktop main synthesizes
 // the trace's idle markers at this same gap, and this re-derivation must agree.
+// Both halves of that agreement are now mechanical: the threshold is this
+// constant, and the pause it is tested against comes from the builder's own
+// `mergedTraceItemEndMs`.
 const DEFAULT_IDLE_THRESHOLD_MS = 120_000;
-
-/**
- * Sum priced `(keyOf(row), model)` groups, dropping unpriced models. Returns
- * `null` when no group prices, matching `getArtifactSessionUsage` (FEA-1834).
- */
-function sumPricedCost(
-  rows: readonly BranchTokenRow[],
-  keyOf: (row: BranchTokenRow) => string
-): number | null {
-  // Group by `keyOf(row)` then `model` with a nested map — no in-band string
-  // separator (an earlier NUL-joined composite key rendered this file binary to
-  // git). Each `(key, model)` group is priced exactly once.
-  const groups = new Map<string, Map<string, TokenCounts>>();
-  for (const row of rows) {
-    const key = keyOf(row);
-    const byModel = groups.get(key) ?? new Map<string, TokenCounts>();
-    groups.set(key, byModel);
-    const existing = byModel.get(row.model);
-    if (existing) {
-      addRow(existing, row);
-    } else {
-      const counts = emptyCounts(row.model, row.timestamp);
-      addRow(counts, row);
-      byModel.set(row.model, counts);
-    }
-  }
-
-  let total = 0;
-  let anyPriced = false;
-  for (const byModel of groups.values()) {
-    for (const counts of byModel.values()) {
-      const cost = priceCounts(counts).costUsd;
-      if (cost != null) {
-        total += cost;
-        anyPriced = true;
-      }
-    }
-  }
-  return anyPriced ? total : null;
-}
-
-/** Total cost of `rows` priced per `(sessionId, model)` group. */
-export function costPerSession(rows: BranchTokenRow[]): number | null {
-  return sumPricedCost(rows, (row) => row.sessionId);
-}
-
-/** Total cost of one branch's `rows` priced per `model` group. */
-export function costPerBranch(rows: BranchTokenRow[]): number | null {
-  return sumPricedCost(rows, () => "branch");
-}
 
 /**
  * Total code churn per dollar. `churn` is additions + DELETIONS — removed lines
@@ -190,8 +133,16 @@ export function medianPrSize(
 
 /**
  * Walk the interleaved merged-trace stream and split wall-clock time into active
- * vs idle. A gap between consecutive timestamped items >= `idleThresholdMs`
- * (default 120s) is an idle span; shorter gaps are active.
+ * vs idle. A PAUSE >= `idleThresholdMs` (default 120s) — measured from the end of
+ * the last item that was still running to the next item's start — is an idle
+ * span; shorter pauses, and the runs themselves, are active.
+ *
+ * ISS-8720: sizing that pause start-to-start counted a `tools` run's own duration
+ * as time nothing happened, so this walk and `buildMergedTrace` disagreed about
+ * the same pause by the length of the run — on the same Sessions & timeline tab,
+ * where the swimlane's bursts sit beside the trace's idle row. Both now read the
+ * builder's `mergedTraceItemEndMs`, so there is one definition rather than two
+ * that a comment asks to agree.
  */
 export function activeIdleSpans(
   items: MergedTraceItem[],
@@ -202,364 +153,45 @@ export function activeIdleSpans(
   idleSpans: { startT: string; endT: string; gapMs: number }[];
 } {
   const threshold = options?.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
-  const stamped = items
-    .map((item) => ("t" in item ? item.t : null))
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => ({ t, ms: Date.parse(t) }))
-    .filter((entry) => !Number.isNaN(entry.ms))
-    .sort((a, b) => a.ms - b.ms);
+  const stamped = stampedTraceInstants(items);
+  const first = stamped[0];
+  if (!first) {
+    return { activeMs: 0, idleMs: 0, idleSpans: [] };
+  }
 
   let activeMs = 0;
   let idleMs = 0;
   const idleSpans: { startT: string; endT: string; gapMs: number }[] = [];
+  // Sweep line: every millisecond before `cursorMs` has been classified exactly
+  // once, which is what keeps a run and the pause after it separate instead of
+  // merged into one oversized gap.
+  let cursorMs = mergedTraceItemEndMs(first.item, first.ms);
+  activeMs += cursorMs - first.ms;
+
   for (let i = 1; i < stamped.length; i += 1) {
-    const prev = stamped[i - 1];
-    const curr = stamped[i];
-    const gapMs = curr.ms - prev.ms;
-    if (gapMs >= threshold) {
-      idleMs += gapMs;
-      idleSpans.push({ startT: prev.t, endT: curr.t, gapMs });
-    } else {
-      activeMs += gapMs;
+    const entry = stamped[i];
+    if (entry.ms > cursorMs) {
+      const gapMs = entry.ms - cursorMs;
+      if (gapMs >= threshold) {
+        idleMs += gapMs;
+        idleSpans.push({
+          startT: new Date(cursorMs).toISOString(),
+          endT: entry.t,
+          gapMs,
+        });
+      } else {
+        activeMs += gapMs;
+      }
+      cursorMs = entry.ms;
+    }
+    const endMs = mergedTraceItemEndMs(entry.item, entry.ms);
+    if (endMs > cursorMs) {
+      activeMs += endMs - cursorMs;
+      cursorMs = endMs;
     }
   }
   return { activeMs, idleMs, idleSpans };
 }
-
-/**
- * Per-hour-per-actor token + cost buckets (FEA-1834 O(grouped) shape). Rows are
- * grouped by `hourStart` (or `timestamp` truncated to the hour in `timeZone`,
- * default UTC), then by `owner` (null owner -> a single "unattributed" bucket).
- * Cost per actor bucket sums priced `(model)` groups. The `timeZone` option is
- * the one seam a future device-tz switch (openQuestion #5) flips.
- */
-export function perHourPerActorBuckets(
-  rows: BranchTokenRow[],
-  options?: { timeZone?: string }
-): BranchUsageHourBucket[] {
-  const timeZone = options?.timeZone;
-  type ActorAccumulator = {
-    owner: string | null;
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    perModel: Map<string, TokenCounts>;
-  };
-  const byHour = new Map<string, Map<string | null, ActorAccumulator>>();
-
-  for (const row of rows) {
-    const hourStart = resolveHourStart(row, timeZone);
-    if (hourStart == null) {
-      continue;
-    }
-    // `null` owner is a first-class Map key (its own "unattributed" bucket) — no
-    // sentinel string needed.
-    const actors =
-      byHour.get(hourStart) ?? new Map<string | null, ActorAccumulator>();
-    byHour.set(hourStart, actors);
-    const actor =
-      actors.get(row.owner) ??
-      ({
-        owner: row.owner,
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        perModel: new Map<string, TokenCounts>(),
-      } satisfies ActorAccumulator);
-    actors.set(row.owner, actor);
-    actor.input += row.inputTokens;
-    actor.output += row.outputTokens;
-    actor.cacheRead += row.cacheReadTokens;
-    actor.cacheWrite += row.cacheWriteTokens;
-    const modelCounts =
-      actor.perModel.get(row.model) ?? emptyCounts(row.model, row.timestamp);
-    addRow(modelCounts, row);
-    actor.perModel.set(row.model, modelCounts);
-  }
-
-  return [...byHour.entries()]
-    .sort(([a], [b]) => compareStrings(a, b))
-    .map(([hourStart, actors]) => ({
-      hourStart,
-      byActor: [...actors.values()]
-        .sort((a, b) => compareOwner(a.owner, b.owner))
-        .map((actor) => ({
-          owner: actor.owner,
-          inputTokens: actor.input,
-          outputTokens: actor.output,
-          cacheReadTokens: actor.cacheRead,
-          cacheWriteTokens: actor.cacheWrite,
-          estimatedCostUsd: sumActorModelCost(actor.perModel),
-        })),
-    }));
-}
-
-function sumActorModelCost(perModel: Map<string, TokenCounts>): number {
-  let total = 0;
-  for (const counts of perModel.values()) {
-    const cost = priceCounts(counts).costUsd;
-    if (cost != null) {
-      total += cost;
-    }
-  }
-  return total;
-}
-
-function compareStrings(a: string, b: string): number {
-  if (a === b) {
-    return 0;
-  }
-  return a < b ? -1 : 1;
-}
-
-function compareOwner(a: string | null, b: string | null): number {
-  if (a === b) {
-    return 0;
-  }
-  if (a == null) {
-    return 1;
-  }
-  if (b == null) {
-    return -1;
-  }
-  return a < b ? -1 : 1;
-}
-
-function resolveHourStart(
-  row: BranchTokenRow,
-  timeZone: string | undefined
-): string | null {
-  if (typeof row.hourStart === "string" && row.hourStart.length > 0) {
-    return row.hourStart;
-  }
-  if (
-    !(row.timestamp instanceof Date) ||
-    Number.isNaN(row.timestamp.getTime())
-  ) {
-    return null;
-  }
-  return truncateToHour(row.timestamp, timeZone);
-}
-
-/**
- * Hour-bucket key for a timestamp. UTC (default) returns a proper ISO instant
- * with minutes/seconds zeroed; a non-UTC IANA `timeZone` returns the wall-clock
- * hour in that zone (`YYYY-MM-DDTHH:00:00`), which still sorts lexicographically.
- */
-function truncateToHour(date: Date, timeZone: string | undefined): string {
-  if (!timeZone || timeZone === "UTC") {
-    const truncated = new Date(date.getTime());
-    truncated.setUTCMinutes(0, 0, 0);
-    return truncated.toISOString();
-  }
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    // Pin h23 (hours 0–23). `hour12: false` can emit "24" for midnight in some
-    // zones; the old "24"->"00" remap zeroed the hour WITHOUT rolling the day
-    // forward, mapping midnight to the previous day. h23 removes the edge case at
-    // the source so no remap is needed (thadeusb review).
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const get = (type: string) =>
-    parts.find((part) => part.type === type)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:00:00`;
-}
-
-/** Phases counted as Rework for the 2-state v1 split (review-driven). */
-function isReworkPhase(phase: BranchPhase | null): boolean {
-  return phase === BranchPhase.Rework || phase === BranchPhase.Review;
-}
-
-const PHASE_KEY_ALIASES: Record<string, BranchPhase> = {
-  plan: BranchPhase.Plan,
-  planning: BranchPhase.Plan,
-  implement: BranchPhase.Implement,
-  implementation: BranchPhase.Implement,
-  coding: BranchPhase.Implement,
-  review: BranchPhase.Review,
-  reviewing: BranchPhase.Review,
-  code_review: BranchPhase.Review,
-  rework: BranchPhase.Rework,
-  fixing: BranchPhase.Rework,
-  rework_after_review: BranchPhase.Rework,
-  verify: BranchPhase.Verify,
-  verification: BranchPhase.Verify,
-  testing: BranchPhase.Verify,
-};
-
-/**
- * Map a token/trace row's phase to a canonical `BranchPhase`. Accepts the
- * canonical values and a small set of emitted SessionPhase-key aliases
- * (openQuestion #4); returns `null` for absent or unknown keys.
- */
-export function resolveBranchPhase(row: {
-  phase?: BranchPhase | string | null;
-}): BranchPhase | null {
-  const key =
-    typeof row.phase === "string" ? row.phase.trim().toLowerCase() : null;
-  if (key == null || key.length === 0) {
-    return null;
-  }
-  return PHASE_KEY_ALIASES[key] ?? null;
-}
-
-/**
- * 2-state Build vs Rework cost split (v1 — the 5-segment split is deferred until
- * phase capture lands). Rework = Rework + review-driven phases; unknown phases
- * fold into Build. `{ buildPct: null, reworkPct: null }` when no row prices.
- */
-export function buildVsReworkSplit(rows: BranchTokenRow[]): {
-  buildPct: number | null;
-  reworkPct: number | null;
-} {
-  const reworkRows: BranchTokenRow[] = [];
-  const buildRows: BranchTokenRow[] = [];
-  for (const row of rows) {
-    if (isReworkPhase(resolveBranchPhase(row))) {
-      reworkRows.push(row);
-    } else {
-      buildRows.push(row);
-    }
-  }
-  const reworkCost = sumPricedCost(reworkRows, (row) => row.sessionId);
-  const buildCost = sumPricedCost(buildRows, (row) => row.sessionId);
-  if (reworkCost == null && buildCost == null) {
-    return { buildPct: null, reworkPct: null };
-  }
-  const build = buildCost ?? 0;
-  const rework = reworkCost ?? 0;
-  const total = build + rework;
-  if (total === 0) {
-    return { buildPct: null, reworkPct: null };
-  }
-  return {
-    buildPct: (build / total) * 100,
-    reworkPct: (rework / total) * 100,
-  };
-}
-
-/** Roll all rows up into per-actor totals (null owner -> one null bucket). */
-function rollupActors(rows: BranchTokenRow[]): BranchUsageActorBucket[] {
-  type Accumulator = {
-    owner: string | null;
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    rows: BranchTokenRow[];
-  };
-  const byOwner = new Map<string | null, Accumulator>();
-  for (const row of rows) {
-    const acc =
-      byOwner.get(row.owner) ??
-      ({
-        owner: row.owner,
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        rows: [],
-      } satisfies Accumulator);
-    byOwner.set(row.owner, acc);
-    acc.input += row.inputTokens;
-    acc.output += row.outputTokens;
-    acc.cacheRead += row.cacheReadTokens;
-    acc.cacheWrite += row.cacheWriteTokens;
-    acc.rows.push(row);
-  }
-  return [...byOwner.values()]
-    .sort((a, b) => compareOwner(a.owner, b.owner))
-    .map((acc) => ({
-      owner: acc.owner,
-      inputTokens: acc.input,
-      outputTokens: acc.output,
-      cacheReadTokens: acc.cacheRead,
-      cacheWriteTokens: acc.cacheWrite,
-      estimatedCostUsd: sumPricedCost(acc.rows, (row) => row.sessionId) ?? 0,
-    }));
-}
-
-/**
- * Phase-stacked cost/tokens, one entry per resolvable `BranchPhase`. Rows whose
- * phase cannot be resolved are excluded (v1-degraded best-effort — most rows
- * carry no phase until phase capture lands).
- */
-function buildPhaseStacks(rows: BranchTokenRow[]): BranchUsagePhaseStack[] {
-  const byPhase = new Map<BranchPhase, BranchTokenRow[]>();
-  for (const row of rows) {
-    const phase = resolveBranchPhase(row);
-    if (phase == null) {
-      continue;
-    }
-    const group = byPhase.get(phase) ?? [];
-    group.push(row);
-    byPhase.set(phase, group);
-  }
-  return [...byPhase.entries()].map(([phase, phaseRows]) => ({
-    phase,
-    estimatedCostUsd: sumPricedCost(phaseRows, (row) => row.sessionId) ?? 0,
-    inputTokens: phaseRows.reduce((sum, row) => sum + row.inputTokens, 0),
-    outputTokens: phaseRows.reduce((sum, row) => sum + row.outputTokens, 0),
-    sessionCount: new Set(phaseRows.map((row) => row.sessionId)).size,
-  }));
-}
-
-/**
- * Project branch token rows into the canonical `BranchUsageSummary` (A3 owns the
- * usage flesh-out; B1 feeds the rows from SQLite). Pure — runs identically in
- * the desktop main projector and the future REST path. Cost via the shared
- * derivations only; the subscription/api split follows `billingMode` (null
- * billingMode contributes to the total but neither split — v1-degraded).
- */
-export function projectBranchUsageSummary(
-  rows: BranchTokenRow[],
-  options?: { branchCount?: number; timeZone?: string }
-): BranchUsageSummary {
-  const subscriptionRows = rows.filter(
-    (row) => row.billingMode === BranchBillingMode.Subscription
-  );
-  const apiRows = rows.filter(
-    (row) => row.billingMode === BranchBillingMode.Api
-  );
-  return {
-    viewerScope: BranchViewerScope.Self,
-    totalBranches: options?.branchCount ?? 0,
-    totalInputTokens: rows.reduce((sum, row) => sum + row.inputTokens, 0),
-    totalOutputTokens: rows.reduce((sum, row) => sum + row.outputTokens, 0),
-    totalCacheReadTokens: rows.reduce(
-      (sum, row) => sum + row.cacheReadTokens,
-      0
-    ),
-    totalCacheWriteTokens: rows.reduce(
-      (sum, row) => sum + row.cacheWriteTokens,
-      0
-    ),
-    totalEstimatedCost: costPerBranch(rows) ?? 0,
-    subscriptionEstimatedCost:
-      sumPricedCost(subscriptionRows, (row) => row.sessionId) ?? 0,
-    apiEstimatedCost: sumPricedCost(apiRows, (row) => row.sessionId) ?? 0,
-    costCompleteness: aggregateBranchCostCompleteness(
-      branchCostContributions(rows)
-    ),
-    hourBuckets: perHourPerActorBuckets(rows, { timeZone: options?.timeZone }),
-    phaseStacks: buildPhaseStacks(rows),
-    byActor: rollupActors(rows),
-  };
-}
-
-// === Epic D non-contract helpers (added by D; CONSUME the A3 functions above) ===
-//
-// FEA-2276 removed the coarse `partitionBuildVsRework` split (+ its
-// `PhaseAggregate`/`aggregateSessions` helpers): the cost-to-merge panel now
-// consumes the real per-activity `rollupBranchActivity` in
-// `@repo/lib/branches/activity-rollup`. `reconcilePhaseSegments` is retained
-// (taxonomy-agnostic) and reused to residualize the new activity segments.
 
 /**
  * A priced phase segment for the cost-to-merge bar. `key` is a free render key
@@ -618,22 +250,6 @@ export type LeadTimeSegment = {
   durationMs: number | null;
   openEnded?: boolean;
 };
-
-function earliestSessionStartMs(
-  sessions: readonly BranchSession[]
-): number | null {
-  let earliest: number | null = null;
-  for (const session of sessions) {
-    const ms = Date.parse(session.startedAt);
-    if (Number.isNaN(ms)) {
-      continue;
-    }
-    if (earliest == null || ms < earliest) {
-      earliest = ms;
-    }
-  }
-  return earliest;
-}
 
 /**
  * Whether the branch's PR is merged, derived from the SAME signals the Properties
@@ -904,4 +520,28 @@ export function leadTimeCardValue(
       return exhaustive;
     }
   }
+}
+
+/**
+ * The merged-trace items this split may reason about: everything carrying a real
+ * instant, in chronological order, MINUS the synthesized `idle` markers.
+ *
+ * Those markers are a derivation of this same evidence, not evidence of it —
+ * `buildMergedTrace` stamps each one at the pause it describes, so counting them
+ * as stamped items would feed this walk its own conclusion.
+ */
+function stampedTraceInstants(
+  items: MergedTraceItem[]
+): { item: MergedTraceItem; t: string; ms: number }[] {
+  const stamped: { item: MergedTraceItem; t: string; ms: number }[] = [];
+  for (const item of items) {
+    if (item.type === "idle" || !("t" in item)) {
+      continue;
+    }
+    const ms = Date.parse(item.t);
+    if (!Number.isNaN(ms)) {
+      stamped.push({ item, t: item.t, ms });
+    }
+  }
+  return stamped.sort((a, b) => a.ms - b.ms);
 }

@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { beforeEach, test } from "node:test";
+import { beforeEach, test } from "vitest";
 import {
   ANTHROPIC_KEYCHAIN_SERVICE,
   anthropicKeychainService,
@@ -65,7 +65,7 @@ beforeEach(() => {
 // ── Account-name derivation ─────────────────────────────────────────────────
 
 test("keychainAccountName prefers $USER, then the OS username", () => {
-  assert.equal(keychainAccountName({ USER: "mike" }, "fallback"), "mike");
+  assert.equal(keychainAccountName({ USER: "marisol" }, "fallback"), "marisol");
   assert.equal(keychainAccountName({}, "os-user"), "os-user");
 });
 
@@ -81,7 +81,7 @@ test("keychainAccountName falls back when the name is missing or unusable", () =
     );
   }
   // Accepted charset passes through untouched.
-  for (const ok of ["mike.angstadt", "user_1", "a-b", "CAPS"]) {
+  for (const ok of ["marisol.ashgrove", "user_1", "a-b", "CAPS"]) {
     assert.equal(keychainAccountName({ USER: ok }, null), ok, ok);
   }
 });
@@ -122,10 +122,10 @@ test("distinct relocated profiles never collapse onto the same service", () => {
 test("probeKeychainCredential finds a present item on macOS", () => {
   const { deps, calls } = makeProbe({
     present: [ANTHROPIC_KEYCHAIN_SERVICE],
-    account: "mike",
+    account: "marisol",
   });
   assert.equal(probeKeychainCredential(ANTHROPIC_KEYCHAIN_SERVICE, deps), true);
-  assert.deepEqual(calls, [[ANTHROPIC_KEYCHAIN_SERVICE, "mike"]]);
+  assert.deepEqual(calls, [[ANTHROPIC_KEYCHAIN_SERVICE, "marisol"]]);
 });
 
 test("probeKeychainCredential returns false when the item is absent", () => {

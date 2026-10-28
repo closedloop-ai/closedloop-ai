@@ -1,0 +1,31 @@
+-- ISS-11812: the Session Mesh insights rollup joins session_mesh_metric_events to
+-- the delivery cohort on (organization_id, message_id, user_id). No index covered
+-- message_id, so that join scanned the organization's whole event history on every
+-- org-scope read and helped push the transaction past Prisma's 5s budget.
+--
+-- NAME: exactly what `prisma migrate diff --from-empty --to-schema` emits. The
+-- identifier spells out to 65 characters, past Postgres's 63-byte limit, and the
+-- two truncate DIFFERENTLY — Prisma cuts the stem at 59 and appends `_idx`
+-- (`..._user__idx`), Postgres keeps the first 63 bytes (`..._user_id_i`). A
+-- hand-spelled name therefore reads as a MISSING index to `migrate dev`, which
+-- emits an `ALTER INDEX ... RENAME TO ...` drift step and fails the test shards.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a cancelled
+-- or crashed build fails closed on SQLSTATE 42P07 against the same-named INVALID
+-- remnant instead of recording the migration APPLIED over a permanently-unusable
+-- index. Recovery is operator-driven: `DROP INDEX CONCURRENTLY` the remnant in
+-- psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*` schemas.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "session_mesh_metric_events_organization_id_message_id_user__idx" ON "session_mesh_metric_events"("organization_id", "message_id", "user_id");

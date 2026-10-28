@@ -38,15 +38,18 @@
  * lane for the wrong reason and pass either way.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import type { AgentComponentSyncLaneOptions } from "../src/main/agent-sync/agent-session-sync-component-lane.js";
+import { test } from "vitest";
+import type { AgentComponentSyncLaneOptions } from "../src/main/agent-sync/agent-component-sync-lane-contract.js";
 import { AgentComponentSyncLane } from "../src/main/agent-sync/agent-session-sync-component-lane.js";
 import type {
   AgentComponentCursorRow,
   AgentSessionSyncSource,
   PersistedSyncState,
 } from "../src/main/agent-sync/agent-session-sync-source.js";
-import { buildAgentComponentSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
+import {
+  AGENT_COMPONENT_SYNC_PAYLOAD_REVISION,
+  buildAgentComponentSyncSourceKey,
+} from "../src/main/agent-sync/agent-session-sync-source.js";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import {
   acceptedResult,
@@ -198,7 +201,6 @@ function makeLaneFixture(fixture: LaneFixtureOptions) {
       return fixture.sourceAvailable(tick, call) ? source : null;
     },
     getSyncComputeTargetId: () => targetFor(tick),
-    isCloudSyncTierAllowed: () => true,
     listComponentCursorRows: (sinceTs: string, sinceId: string) => {
       reads.push({ sinceTs, sinceId });
       return Promise.resolve(
@@ -238,7 +240,7 @@ function makeLaneFixture(fixture: LaneFixtureOptions) {
       await lane.syncOnce();
       // The durable persist is fire-and-forget inside the advance, so awaiting
       // the run alone does not prove the write reported. `whenCursorPersistSettled`
-      // is the lane's REAL completion signal for that half of the tick (wongk
+      // is the lane's REAL completion signal for that half of the tick (whitlockk
       // review) — no microtask-turn guessing.
       await lane.whenCursorPersistSettled();
       tick += 1;
@@ -399,7 +401,7 @@ test("ISS-5347: a REJECTED durable persist is named, and the lane resumes persis
     `a rejected persist must be logged, got: ${JSON.stringify(afterFailure)}`
   );
 
-  // RECOVERY WITH NO NEW ROW (wongk review). The write comes back but the
+  // RECOVERY WITH NO NEW ROW (whitlockk review). The write comes back but the
   // inventory is unchanged, so the cursor is drained and `applyCursorAdvance` is
   // never called again. Naming the failure was not enough on its own: nothing
   // re-attempted the unpersisted position, so the durable row stayed frozen at
@@ -480,7 +482,7 @@ test("ISS-5347: a restart resumes from the durable cursor instead of re-walking 
   );
 });
 
-// ISS-5347 (wongk review): the WITHIN-TICK race is the actual reason
+// ISS-5347 (whitlockk review): the WITHIN-TICK race is the actual reason
 // `applyCursorAdvance` re-resolves the source instead of reusing the one captured
 // at `run()` entry. Every other spec here holds the source steady for a whole
 // tick, so reverting that re-resolution would not fail them. This one flips it
@@ -520,7 +522,7 @@ test("ISS-5347: a source that returns between run entry and the cursor advance s
   );
 });
 
-// ISS-5347 (wongk review): `hydratedSourceKey` goes null whenever hydration could
+// ISS-5347 (whitlockk review): `hydratedSourceKey` goes null whenever hydration could
 // not consult the durable cursor, while `watermark`/`lastId` keep the position
 // they were advanced to. Keying the foreign-position drop off `hydratedSourceKey`
 // therefore missed the case where the target changes while that key is ALREADY
@@ -575,7 +577,7 @@ test("ISS-5347: a target change with an unconsultable durable cursor must not re
   );
 });
 
-// ISS-5347 (wongk review): the durable write is fire-and-forget, so its outcome
+// ISS-5347 (whitlockk review): the durable write is fire-and-forget, so its outcome
 // can land arbitrarily late — including after `clearCursorState()` re-scoped the
 // lane to a different account. An OLD failure landing then would dirty the NEW
 // identity's flag, and `hasStaleDurableCursor` would stop describing the durable
@@ -607,7 +609,7 @@ test("ISS-5347: a persist that rejects after clearCursorState must not dirty the
   );
 });
 
-// ISS-5347 (wongk review): the mirror case. An OLD success settling after a NEWER
+// ISS-5347 (whitlockk review): the mirror case. An OLD success settling after a NEWER
 // persist already failed would clear a staleness report that is still true, which
 // is precisely the silent divergence this ticket exists to make observable.
 test("ISS-5347: a persist that succeeds after a newer one failed must not clear the newer failure", async () => {
@@ -642,5 +644,69 @@ test("ISS-5347: a persist that succeeds after a newer one failed must not clear 
     fixture.durableCursor()?.observedTopUpdatedAt,
     TS_A,
     "sanity: only the superseded (older) position ever reached disk"
+  );
+});
+
+/**
+ * ISS-11327: the PRODUCTION-WIRING half of the ordering change.
+ *
+ * The lane pages on `last_seen_at` read as an INSTANT, and every position it persists
+ * is therefore already a RANKING KEY. Hydration must adopt that value VERBATIM.
+ *
+ * It used to re-rank it, to carry a cursor an older byte-ordered build had written.
+ * That was wrong (tamsinb, chatgpt-codex review): re-ranking lands on the same ROW
+ * but the set of rows AFTER that row changed with the order, so a row that was
+ * byte-after the stored cursor and instant-before it went unsent by both builds. The
+ * old cursor is now retired by key instead — `AGENT_COMPONENT_SYNC_PAYLOAD_REVISION`
+ * moved to v4, so a pre-change position lives under the v3 key and is never read.
+ *
+ * The seed is deliberately an OFFSET spelling, the one shape the rank does not leave
+ * alone (`09:30-01:00` ranks to `10:30Z`): re-introduce any hydration-time ranking and
+ * this assertion fails on the spot.
+ */
+const OFFSET_SPELLED_CURSOR = "2026-06-22T09:30:00-01:00";
+
+test("ISS-11327: a durable cursor is adopted verbatim, never re-ranked on hydration", async () => {
+  gatewayLog.clear();
+  const fixture = makeLaneFixture({
+    componentRows: [
+      { id: "c-later", last_seen_at: "2026-06-22T12:00:00.000Z" },
+    ],
+    sourceAvailable: () => true,
+    seedDurable: {
+      observedTopUpdatedAt: OFFSET_SPELLED_CURSOR,
+      observedIdsAtTopUpdatedAt: ["c-stopped-here"],
+    } as PersistedSyncState,
+  });
+
+  await fixture.runTick();
+
+  assert.equal(
+    fixture.reads[0]?.sinceTs,
+    OFFSET_SPELLED_CURSOR,
+    "the stored position IS a ranking key; hydration must not fold it again"
+  );
+  assert.equal(
+    fixture.reads[0]?.sinceId,
+    "c-stopped-here",
+    "the id half of the keyset position must be adopted unchanged"
+  );
+});
+
+/**
+ * ISS-11327: the retirement itself. A position written before the ordering change
+ * lives under a DIFFERENT source key, so `hydrateCursorFor` finds nothing for it and
+ * the upgraded lane re-walks from `('', '')` exactly once — the safe full backfill
+ * both reviewers asked for, on the lever this file's source module already documents
+ * for a payload expansion.
+ */
+test("ISS-11327: the component cursor key retires every pre-ordering-change position", () => {
+  assert.equal(AGENT_COMPONENT_SYNC_PAYLOAD_REVISION, "v4");
+  const key = buildAgentComponentSyncSourceKey("target-1");
+  assert.equal(key, "agent_components:v4:target-1");
+  assert.notEqual(
+    key,
+    "agent_components:v3:target-1",
+    "a v3 cursor must not be readable under the v4 key, or the old position survives"
   );
 });

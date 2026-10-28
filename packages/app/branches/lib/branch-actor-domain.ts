@@ -1,15 +1,14 @@
-import type {
-  BranchPageDetail,
-  BranchSession,
-} from "@repo/api/src/types/branch";
+import type { BranchSession } from "@repo/api/src/types/branch";
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
+import type { SessionTimelineDetail } from "@repo/api/src/types/document-sessions";
 import {
-  CHART_COLOR_PAIR_TOKEN_INDEXES,
-  CHART_COLOR_TOKENS,
-  type ChartColorPair,
-  chartColorPair,
-  chartColorPairForTokenIndex,
-} from "@repo/design-system/components/ui/chart-colors";
+  type ActorTurnSide,
+  actorColorForTurn,
+  actorColorPairForSlot,
+  UNKNOWN_ACTOR_COLOR_PAIR,
+} from "@repo/app/shared/lib/actor-color-domain";
+import type { ChartColorPair } from "@repo/design-system/components/ui/chart-colors";
+import { compareStrings } from "@repo/lib/branches/branch-actor-sort";
 
 /**
  * Shared actor → color/label domain for the Branch timeline (E1) and swimlane
@@ -18,8 +17,9 @@ import {
  * injects it into both, and even when each builds its own the deterministic
  * ordering guarantees identical colors for an identical actor set.
  *
- * Colors come from the design-system categorical palette (`chartColorPair` →
- * `--chart-1..10`, cycling modulo); this module never defines its own palette.
+ * Colors come from the shared actor-colour authority
+ * (`@repo/app/shared/lib/actor-color-domain`), which both traces seat actors in;
+ * this module owns ORDERING only and never decides a colour itself.
  * `null`/empty owners coalesce to a single "unattributed" key+label — the v1
  * degraded state (owner attribution is a soft FEA-1899 dependency).
  *
@@ -42,19 +42,11 @@ export const UNATTRIBUTED_ACTOR_LABEL = "unattributed";
 /**
  * Palette offset (FEA-3576) for the E4 session swimlane's actor domain, so its
  * colors sit in a distinct band from the E1 per-user timeline (which uses the
- * default offset 0). Half the attributed palette (9 slots: chart-1..9, with
- * chart-10 reserved for unattributed) maximally separates the two bands for the
- * common small-cardinality case, so a user in E1 and an unrelated actor in E4
- * don't land on the same color and falsely read as linked.
+ * default offset 0). Half the attributed palette maximally separates the two
+ * bands for the common small-cardinality case, so a user in E1 and an unrelated
+ * actor in E4 don't land on the same color and falsely read as linked.
  */
 export const ACTOR_SWIMLANE_PALETTE_OFFSET = 5;
-
-export const BranchActorTurnSide = {
-  Human: "human",
-  Agent: "agent",
-} as const;
-export type BranchActorTurnSide =
-  (typeof BranchActorTurnSide)[keyof typeof BranchActorTurnSide];
 
 export type BranchActorColorDomain = {
   /** Distinct actor keys: explicit primary first, unattributed last, rest alphabetical. */
@@ -72,7 +64,7 @@ export type BranchActorColorDomain = {
   /** Side-aware actor color for trace turns, activity bars, and swimlane lanes. */
   colorForTurn(
     owner: string | null,
-    side: BranchActorTurnSide,
+    side: ActorTurnSide,
     canonicalIdentity?: string | null
   ): string;
   /** Display label for an owner (verbatim, or "unattributed"). */
@@ -113,7 +105,7 @@ export type BranchActorColorDomainOptions = {
  * palette band so the user timeline (E1) and actor swimlane (E4) — which now
  * segment by different entity kinds — don't share a color language beyond the
  * primary branch actor. The unattributed sentinel is pinned to one shared color
- * (the last palette slot) regardless of offset, since "unattributed" means the
+ * (the shared neutral) regardless of offset, since "unattributed" means the
  * same thing in both charts.
  */
 export function buildActorColorDomain(
@@ -136,7 +128,10 @@ export function buildActorColorDomain(
     if (b === UNATTRIBUTED_ACTOR_KEY) {
       return -1;
     }
-    return a.localeCompare(b);
+    // ISS-9585: the same ranking `compareOwner` gives these very keys in the
+    // main process. This sort assigns palette indices, so a bare
+    // `localeCompare()` made an actor's color a function of the reader's host.
+    return compareStrings(a, b);
   });
   const ordered =
     primaryKey == null || primaryKey === UNATTRIBUTED_ACTOR_KEY
@@ -154,31 +149,15 @@ export function buildActorColorDomain(
     indexByKey.set(key, attributedIndex);
     attributedIndex += 1;
   }
-  // Pin unattributed to the LAST palette slot, shared across offsets — a stable
-  // "no owner" color that never collides with the attributed band's start.
-  const unattributedColorPair = chartColorPairForTokenIndex(
-    CHART_COLOR_TOKENS.length - 1
-  );
   const colorPairForOwner = (
     owner: string | null,
     canonicalIdentity?: string | null
   ): ChartColorPair => {
     const key = keyFor(canonicalIdentity ?? owner);
     if (key === UNATTRIBUTED_ACTOR_KEY) {
-      return unattributedColorPair;
+      return UNKNOWN_ACTOR_COLOR_PAIR;
     }
-    const index = indexByKey.get(key);
-    if (index == null) {
-      return unattributedColorPair;
-    }
-    const additionalPairCount = Math.max(
-      1,
-      CHART_COLOR_PAIR_TOKEN_INDEXES.length - 1
-    );
-    const shiftedAdditionalIndex =
-      ((index - 1 + paletteOffset) % additionalPairCount) + 1;
-    const pairIndex = index === 0 ? 0 : shiftedAdditionalIndex;
-    return chartColorPair(pairIndex);
+    return actorColorPairForSlot(indexByKey.get(key) ?? null, paletteOffset);
   };
 
   return {
@@ -190,8 +169,10 @@ export function buildActorColorDomain(
       return colorPairForOwner(owner, canonicalIdentity);
     },
     colorForTurn(owner, side, canonicalIdentity) {
-      const pair = colorPairForOwner(owner, canonicalIdentity);
-      return side === BranchActorTurnSide.Human ? pair.soft : pair.strong;
+      return actorColorForTurn(
+        colorPairForOwner(owner, canonicalIdentity),
+        side
+      );
     },
     labelFor(owner) {
       const key = keyFor(owner);
@@ -205,7 +186,7 @@ export function buildActorColorDomain(
 
 /** Primary session selected by branch membership, falling back deterministically. */
 function derivePrimarySession(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): BranchSession | undefined {
   return (
     detail.sessions.find((session) => session.isPrimary) ?? detail.sessions[0]
@@ -226,7 +207,7 @@ export function actorForSession(
 
 /** Captured `sessionstart.actor.name` by session id from the merged trace. */
 export function actorNameBySession(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): Map<string, string | null> {
   const actorBySession = new Map<string, string | null>();
   for (const item of detail.mergedTrace) {
@@ -260,7 +241,7 @@ export function deriveActorsFromUsage(
  * same deterministic domain.
  */
 export function deriveActorsFromSessions(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): (string | null)[] {
   const actorBySession = actorNameBySession(detail);
   const actors = detail.sessions.map((session) =>
@@ -276,7 +257,7 @@ export function deriveActorsFromSessions(
 
 /** Actor for the primary branch session, used to anchor the blue actor pair. */
 export function derivePrimaryActorFromSessions(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): string | null {
   const session = derivePrimarySession(detail);
   if (!session) {
@@ -294,7 +275,7 @@ export function derivePrimaryActorFromSessions(
  * E4 swimlane, which still lanes by actor).
  */
 export function deriveUsersFromSessions(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): (string | null)[] {
   return detail.sessions.map((session) => {
     const owner = session.ownerUserName;
@@ -304,7 +285,7 @@ export function deriveUsersFromSessions(
 
 /** Human owner for the primary branch session, used to anchor the blue user pair. */
 export function derivePrimaryUserFromSessions(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): string | null {
   const session = derivePrimarySession(detail);
   if (!session) {

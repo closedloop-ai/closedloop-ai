@@ -11,7 +11,6 @@
  */
 import {
   AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS,
-  AGENT_COMPONENT_INVENTORY_CAP,
   AgentComponentSortDir,
   AgentComponentSortKey,
   SourceAccessState,
@@ -52,18 +51,17 @@ vi.mock("../../agent-sessions/service", () => ({
   },
 }));
 
-import { MAX_ORG_POPULATION_ROWS } from "../org-population-reads";
-import { agentComponentsService } from "../service";
 import {
   buildComputeTarget,
   buildInventoryRow,
   buildServiceDb,
-} from "./service-db-double";
+} from "@/__tests__/support/agent-components/service-db-double";
 import {
   inventorySpineCall,
   type OrphanUsageShape,
   orphanGroupByCalls,
-} from "./usage-lane-doubles";
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
+import { agentComponentsService } from "../service";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,7 +115,6 @@ function buildUsageRow(
     harness,
     session: {
       artifactId: agentSessionId,
-      userId: "user-1",
       artifact: { organizationId },
     },
   };
@@ -409,28 +406,20 @@ describe("agentComponentsService.listForOrg", () => {
       offset: 0,
     });
 
-    const inventorySpine = inventorySpineCall(db.agentComponent);
-    expect(inventorySpine?.by).toEqual(["componentKind", "componentKey"]);
-    expect(inventorySpine?.take).toBe(AGENT_COMPONENT_INVENTORY_CAP);
-    expect(inventorySpine?.orderBy).toBeDefined();
-
-    // The row read that follows is bounded by the spine above in the dimension
-    // (distinct components) that actually grows with org size. It still carries
-    // `MAX_ORG_POPULATION_ROWS`, but as a MEMORY ceiling an order of magnitude
-    // above what the identity cap can legitimately expand to — reaching it is an
-    // anomaly the read LOGS, not the routine truncation that made the count
-    // facet-dependent.
+    // ISS-5516 removed the raw-row ceiling and ISS-6891 removed the identity cap
+    // that had replaced it. Both truncated AFTER the request's facet predicate,
+    // so on an org large enough to reach either one the same component reported a
+    // different total through every facet, and a narrower filter surfaced records
+    // the broader one hid. Pin the ABSENCE of any `take` on both lanes: one
+    // reintroduced here is the defect coming back.
     const invArgs = inventoryFindMany.mock.calls[0]?.[0];
     expect(invArgs?.orderBy).toBeDefined();
-    expect(invArgs?.take).toBe(MAX_ORG_POPULATION_ROWS);
+    expect(invArgs?.take).toBeUndefined();
+    expect(inventorySpineCall(db.agentComponent)).toBeUndefined();
 
-    // The orphan (null-FK) lane is capped the same way, so its truncation is
-    // facet-independent too.
-    const orphanSpine = orphanGroupByCalls(db.agentComponentSessionUsage).find(
-      (call) => call.by?.length === 2
-    );
-    expect(orphanSpine?.by).toEqual(["componentKind", "componentKey"]);
-    expect(orphanSpine?.take).toBe(AGENT_COMPONENT_INVENTORY_CAP);
+    for (const call of orphanGroupByCalls(db.agentComponentSessionUsage)) {
+      expect(call.take).toBeUndefined();
+    }
   });
 
   it("applies the active `search` filter to the orphan-usage query so usage-only rows can't leak across filters (FEA-3215)", async () => {
@@ -534,10 +523,8 @@ describe("agentComponentsService.listForOrg", () => {
       ?.where;
     expect(orphanWhere?.OR).toEqual([
       { componentKey: { contains: "review", mode: "insensitive" } },
-      {
-        componentKind: "agent",
-        componentKey: { equals: "CR-Helper", mode: "insensitive" },
-      },
+      // ISS-6756: an IDENTITY equality on the persisted fold, not an ILIKE.
+      { componentKind: "agent", componentKeyNormalized: "cr-helper" },
     ]);
   });
 
@@ -1159,24 +1146,21 @@ describe("agentComponentsService.listForOrg", () => {
 
     // Child usage rows: 2 sessions, 5 total invocations, carrying their natural
     // (kind, key) identity and a NULL FK — the orphan case.
+    // ISS-8932: `id` because the child-usage read selects the primary key and
+    // de-duplicates its sliced statements on it — two id-less rows would collapse
+    // onto one key here and understate the rollup.
     const childUsage = [
-      {
-        agentSessionId: "sess-1",
-        componentKind: "command",
-        componentKey: "git-status",
-        invocationCount: 3,
-        errorCount: 0,
-        lastInvokedAt: null,
-      },
-      {
-        agentSessionId: "sess-2",
-        componentKind: "command",
-        componentKey: "git-status",
-        invocationCount: 2,
-        errorCount: 0,
-        lastInvokedAt: null,
-      },
-    ];
+      { invocations: 3, session: "sess-1" },
+      { invocations: 2, session: "sess-2" },
+    ].map((row, index) => ({
+      id: `child-usage-${index}`,
+      agentSessionId: row.session,
+      componentKind: "command",
+      componentKey: "git-status",
+      invocationCount: row.invocations,
+      errorCount: 0,
+      lastInvokedAt: null,
+    }));
     const usageFindMany = vi
       .fn()
       .mockImplementation(({ where }: { where: Record<string, unknown> }) => {
@@ -1280,7 +1264,7 @@ describe("agentComponentsService.listForOrg — collaborators (authors) lineage 
           .mockResolvedValue([buildInventoryRow({ contentHash: "hash-1" })]),
       },
       // Link the coarse contentHash to the exact fingerprint the lineage keys on.
-      // wongk: the identity is keyed on (kind, key, contentHash), so the version
+      // whitlockk: the identity is keyed on (kind, key, contentHash), so the version
       // row carries the same kind/key as the inventory row it resolves.
       agentComponentVersion: {
         findMany: vi.fn().mockResolvedValue([
@@ -1366,7 +1350,7 @@ describe("agentComponentsService.listForOrg — collaborators (authors) lineage 
     expect(result.items[0].owner).toBe("Ada Lovelace");
     // Scoped to the returned page's observing user ids, not the whole working set.
     expect(observerFindMany.mock.calls[0][0].where.id.in).toEqual(["user-1"]);
-    // wongk (FEA-4247): the user lookup is org-scoped — ComputeTarget and User
+    // whitlockk (FEA-4247): the user lookup is org-scoped — ComputeTarget and User
     // have independent org FKs, so the fallback must re-filter by org.
     expect(observerFindMany.mock.calls[0][0].where.organizationId).toBe(
       "org-1"
@@ -1529,7 +1513,7 @@ describe("agentComponentsService.listForOrg — collaborators (authors) lineage 
     expect(result.items[0].collaborators).toEqual(["Alice A"]);
   });
 
-  it("wongk (contentHash collision): a skill and a command with identical bytes resolve to their OWN distinct authors", async () => {
+  it("whitlockk (contentHash collision): a skill and a command with identical bytes resolve to their OWN distinct authors", async () => {
     // Same content bytes ⇒ same coarse contentHash, but definitionHash folds in
     // the kind, so the skill and the command link to DIFFERENT DefinitionVersions
     // with DIFFERENT lineage. Keying the resolution on (kind, key, contentHash)
@@ -1669,7 +1653,7 @@ describe("agentComponentsService.listForOrg — collaborators (authors) lineage 
     expect(result.items[0].collaborators).toEqual(["John Smith", "John Smith"]);
   });
 
-  it("wongk (N+1 / working-set): the lineage read is scoped to the RETURNED page, not the whole working set", async () => {
+  it("whitlockk (N+1 / working-set): the lineage read is scoped to the RETURNED page, not the whole working set", async () => {
     // 5 inventory rows, each a distinct linked version; limit=2. With no
     // collaborator filter the lineage read must resolve only the 2 paged
     // fingerprints, not all 5 — so the read scales with the response limit.
@@ -1734,7 +1718,6 @@ function buildWindowedUsageRow(
     lastInvokedAt: new Date(lastInvokedAt),
     session: {
       artifactId: agentSessionId,
-      userId: "user-1",
       artifact: { organizationId: "org-1" },
     },
   };
@@ -2330,40 +2313,40 @@ describe("agentComponentsService.listForOrg — locPerDollar", () => {
     expect(result.items[0]?.locPerDollar).toBeNull();
   });
 
-  // FEA-4052 (wongk, PR #3720): skill and command are NOT verifiable. A single
+  // FEA-4052 (whitlockk, PR #3720): skill and command are NOT verifiable. A single
   // session gives every co-invoked component its FULL LOC/cost, so a per-component
   // KLOC/$ for a skill or command would be a misleading session-level number.
   // Until sessions can be partitioned across co-invoked components, both report
   // null even with real, measurable LOC at real cost — exactly like mcp above.
-  it.each([
-    "skill",
-    "command",
-  ] as const)("returns locPerDollar=null for %s (session-level attribution, not component-level) despite real LOC + cost", async (componentKind) => {
-    const row = buildInventoryRow({
-      id: `ac-${componentKind}`,
-      componentKind,
-      componentKey: `my-${componentKind}`,
-      sessionUsages: [buildUsageRow("sess-1", 4)],
-    });
-    installDb({
-      agentComponent: { findMany: vi.fn().mockResolvedValue([row]) },
-      sessionDetail: {
-        // 1000 lines at $2.00 — a verifiable kind would report 500 here.
-        findMany: vi
-          .fn()
-          .mockResolvedValue([buildSessionDetailRow("sess-1", 800, 200, 2)]),
-      },
-    });
+  it.each(["skill", "command"] as const)(
+    "returns locPerDollar=null for %s (session-level attribution, not component-level) despite real LOC + cost",
+    async (componentKind) => {
+      const row = buildInventoryRow({
+        id: `ac-${componentKind}`,
+        componentKind,
+        componentKey: `my-${componentKind}`,
+        sessionUsages: [buildUsageRow("sess-1", 4)],
+      });
+      installDb({
+        agentComponent: { findMany: vi.fn().mockResolvedValue([row]) },
+        sessionDetail: {
+          // 1000 lines at $2.00 — a verifiable kind would report 500 here.
+          findMany: vi
+            .fn()
+            .mockResolvedValue([buildSessionDetailRow("sess-1", 800, 200, 2)]),
+        },
+      });
 
-    const result = await agentComponentsService.listForOrg("org-1", {
-      limit: 50,
-      offset: 0,
-    });
+      const result = await agentComponentsService.listForOrg("org-1", {
+        limit: 50,
+        offset: 0,
+      });
 
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.kind).toBe(componentKind);
-    expect(result.items[0]?.locPerDollar).toBeNull();
-  });
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]?.kind).toBe(componentKind);
+      expect(result.items[0]?.locPerDollar).toBeNull();
+    }
+  );
 
   it("scopes the SessionDetail LOC/cost lookup to the org via the parent artifact", async () => {
     const sessionDetailFindMany = vi.fn().mockResolvedValue([]);
@@ -2612,7 +2595,7 @@ describe("agentComponentsService.getDetailForOrg", () => {
         sourcePath: "skills/my-skill/SKILL.md",
         sourceModifiedAt: new Date("2026-01-09T10:00:00.000Z"),
         capturedAt: new Date("2026-01-10T12:00:00.000Z"),
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         repositoryCommit: "abc123",
         packId: "pack-1",
         branchName: "feat/fea-3294",
@@ -2627,7 +2610,7 @@ describe("agentComponentsService.getDetailForOrg", () => {
         id: "source-occurrence-1",
         occurrenceType: SourceOccurrenceType.Repository,
         accessState: SourceAccessState.Accessible,
-        repoFullName: "closedloop-ai/symphony-alpha",
+        repoFullName: "closedloop-ai/closedloop-ai",
         repoPath: "skills/my-skill/SKILL.md",
         repoCommit: "abc123",
         computeTargetId: null,
@@ -2706,7 +2689,7 @@ describe("agentComponentsService.getDetailForOrg", () => {
           sourceOccurrence: {
             occurrenceType: SourceOccurrenceType.Repository,
             accessState: SourceAccessState.Accessible,
-            repoFullName: "closedloop-ai/symphony-alpha",
+            repoFullName: "closedloop-ai/closedloop-ai",
             repoPath: "skills/my-skill/SKILL.md",
             repoCommit: "abc123",
             computeTargetId: null,
@@ -2718,14 +2701,14 @@ describe("agentComponentsService.getDetailForOrg", () => {
           sourcePath: "skills/my-skill/SKILL.md",
           sourceModifiedAt: "2026-01-09T10:00:00.000Z",
           capturedAt: "2026-01-10T12:00:00.000Z",
-          repositoryFullName: "closedloop-ai/symphony-alpha",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           repositoryCommit: "abc123",
           packId: "pack-1",
           branchName: "feat/fea-3294",
         },
       ],
       total: 10,
-      hasMore: true,
+      hasMore: false,
       unmatchedCount: 2,
       ambiguousCount: 3,
     });
@@ -2740,14 +2723,14 @@ describe("agentComponentsService.getDetailForOrg", () => {
         {
           agentComponentId: null,
           componentKind: AgentComponentInvocationKind.Skill,
-          componentKey: { equals: "my-skill", mode: "insensitive" },
+          componentKeyNormalized: "my-skill",
         },
       ],
     };
     expect(invocationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expectedWhere,
-        take: AGENT_COMPONENT_INVOCATION_READ_MAX_ROWS,
+        take: AGENT_COMPONENT_INVOCATION_READ_MAX_ROWS + 1,
         orderBy: [
           { invokedAt: { sort: "desc", nulls: "last" } },
           { generationId: "asc" },
@@ -3412,7 +3395,7 @@ describe("agentComponentsService.getDetailForOrg", () => {
     expect(result?.computeTargetIds).toHaveLength(0);
   });
 
-  it("wongk (orphan authors): an orphan-only detail carries the authors from its usage's definitionVersionId lineage, not an empty set", async () => {
+  it("whitlockk (orphan authors): an orphan-only detail carries the authors from its usage's definitionVersionId lineage, not an empty set", async () => {
     const sessionId = "session-orphan-authored";
     mocks.listByArtifactIds.mockResolvedValue([{ id: sessionId }]);
 
@@ -3472,7 +3455,7 @@ describe("agentComponentsService.getDetailForOrg", () => {
     expect(result?.owner).toBe("Orin Orphan");
   });
 
-  it("wongk (no 20-row cap): the detail authors set includes an author from a revision beyond the 20-row prompt-history cap", async () => {
+  it("whitlockk (no 20-row cap): the detail authors set includes an author from a revision beyond the 20-row prompt-history cap", async () => {
     // The prompt-history DTO is capped at 20 rows. The authors lineage must NOT
     // be derived from it: an author who only touched revision 21+ must still
     // appear. Here the dedicated lineage identity read returns 25 fingerprints
@@ -3798,15 +3781,14 @@ describe("agentComponentsService.getDetailForOrg", () => {
       agentComponent: { findMany: agentComponentFindMany },
       sessionDetail: {
         // The LOC/cost read (`loadSessionLocCost`) selects `estimatedCost`;
-        // `computeCohortPerformance` selects a richer PR/loop shape. Return the
+        // `computeCohortPerformance` selects a richer PR shape. Return the
         // LOC/cost rows only to the former and `[]` to the latter so the cohort
         // read (unrelated to KLOC) stays a no-op in this focused test.
         findMany: vi.fn(async (args?: { select?: Record<string, unknown> }) =>
           // The LOC/cost read selects only the KLOC scalars (no `artifact`
-          // relation / `sourceLoopId`), unlike the cohort read.
+          // relation), unlike the cohort read.
           args?.select?.estimatedCost === true &&
-          args?.select?.artifact === undefined &&
-          args?.select?.sourceLoopId === undefined
+          args?.select?.artifact === undefined
             ? [buildSessionDetailRow("sess-a", 700, 300, 2)]
             : []
         ),

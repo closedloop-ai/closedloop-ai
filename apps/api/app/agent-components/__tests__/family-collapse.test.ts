@@ -34,11 +34,11 @@ vi.mock("../../agent-sessions/service", () => ({
   },
 }));
 
-import { agentComponentsService } from "../service";
 import {
   ensureInventorySpineDefault,
   isOrphanUsageRead,
-} from "./usage-lane-doubles";
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
+import { agentComponentsService } from "../service";
 
 // ---------------------------------------------------------------------------
 // Harness — a trimmed copy of service.test.ts's DB installer. The list path
@@ -551,7 +551,7 @@ describe("agentComponentsService.listForOrg — FEA-4267 family collapse", () =>
     ]);
   });
 
-  it("picks the freshest-INVOKED version as representative even when it has an older lastSeenAt (wongk)", async () => {
+  it("picks the freshest-INVOKED version as representative even when it has an older lastSeenAt (whitlockk)", async () => {
     // Two versions of one skill:
     //   v-old: invoked EARLIER (2026-01-05) but OBSERVED later (lastSeenAt
     //          2026-01-20) — a stale install that keeps getting re-scanned.
@@ -609,7 +609,7 @@ describe("agentComponentsService.listForOrg — FEA-4267 family collapse", () =>
     );
   });
 
-  it("dedupes a device that appears twice in the FIRST version bucket (wongk)", async () => {
+  it("dedupes a device that appears twice in the FIRST version bucket (whitlockk)", async () => {
     // Two inventory rows for the SAME version (same contentHash) and the SAME
     // device — mergeComponentRows pushes `target-dup` into one bucket twice, so
     // the first-seen family bucket seeds computeTargetIds already containing a

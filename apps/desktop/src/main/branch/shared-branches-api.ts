@@ -1,22 +1,16 @@
 import {
   type BranchAnalytics,
   type BranchLeadTimeActivity,
-  type BranchLifecyclePhaseSegment,
   type BranchListResponse,
   type BranchPageDetail,
   type BranchRow,
   type BranchSession,
-  BranchViewerScope,
   decodeBranchId,
+  encodeBranchId,
 } from "@repo/api/src/types/branch";
+import { BranchListPageMode } from "@repo/api/src/types/branch-list-contract";
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
-import {
-  type ActivitySegmentSpan,
-  type ActivitySpendEvent,
-  attributeBranchSessionActivity,
-} from "@repo/lib/branches/activity-attribution";
-import { isAnomalousSpendTotal } from "@repo/lib/branches/spend-kpi";
-import { DESKTOP_LOCAL_SESSION_AUTHOR_LABEL } from "../../shared/shared-agent-sessions-contract.js";
+import { compactBranchDetailPayload } from "@repo/lib/branches/branch-detail-payload";
 import {
   emptySharedBranchesListResponse,
   emptySharedBranchesPageDataResponse,
@@ -28,11 +22,11 @@ import {
 } from "../../shared/shared-branches-contract.js";
 import type { SessionAttributionResolverCache } from "../agent-sync/agent-session-attribution.js";
 import type { SyncedAgentSession } from "../agent-sync/agent-session-sync-contract.js";
-import type { BranchCanonicalActivityRow } from "../database/branch-activity-read.js";
-import {
-  type readBranchAnalyticsActivitySegmentRows,
-  readBranchAnalyticsLifecycleEventRows,
-} from "../database/branch-analytics-phase-evidence.js";
+import { readBranchAnalyticsLifecycleEventRows } from "../database/branch-analytics-phase-evidence.js";
+import type {
+  BranchListSnapshot,
+  BranchListSnapshotRequest,
+} from "../database/branch-list-snapshot-read.js";
 import {
   type BranchCommitRow,
   type BranchLifecycleEventRow,
@@ -55,18 +49,9 @@ import {
   readSessionBranchCounts,
 } from "../database/branch-reads.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
-import { writePersistentLog } from "../logging/persistent-log.js";
-import {
-  projectBranchAnalytics,
-  sessionCostMapFromUsageRows,
-  sumLocEnrichedSpend,
-} from "./branch-analytics-projection.js";
-import {
-  attachDesktopCanonicalDetailMetrics,
-  buildPhaseEvidence,
-  projectDesktopCanonicalMetrics,
-  selectExactBranchCohort,
-} from "./branch-canonical-metric-projection.js";
+import { buildBranchAnalyticsResult } from "./branch-analytics-builder.js";
+import { sessionCostMapFromUsageRows } from "./branch-analytics-projection.js";
+import { attachDesktopCanonicalDetailMetrics as attachMetrics } from "./branch-canonical-metric-projection.js";
 import { buildDesktopPhaseAttribution } from "./branch-detail-phase-attribution.js";
 import {
   type DesktopDetailPullRequestSelection,
@@ -75,50 +60,37 @@ import {
   selectedPullRequestDetailFields,
 } from "./branch-detail-selected-pull-request.js";
 import { readBranchCanonicalActivityRowsForScope } from "./branch-empty-scope-reads.js";
-import {
-  type DesktopBranchLastActiveProjection,
-  projectDesktopBranchLastActive,
-} from "./branch-last-active-projection.js";
+import { projectDesktopBranchLastActive } from "./branch-last-active-projection.js";
 import { buildBranchLeadTime } from "./branch-lead-time-projection.js";
 import { groupBranchLifecycleEventsBySession } from "./branch-lifecycle-event-grouping.js";
 import { lifecyclePhaseSegmentsBySession } from "./branch-lifecycle-phase-rollup.js";
+import { readBranchListInputs } from "./branch-list-input-read.js";
 import {
   branchIdsForLinks,
-  completeArtifactLoc,
   projectBranchListItems,
 } from "./branch-list-projection.js";
-import {
-  type CanonicalBranchMetricEventRead,
-  readCanonicalBranchMetricEventRows,
-} from "./branch-metric-event-read.js";
+import { readCanonicalBranchMetricEventRows } from "./branch-metric-event-read.js";
 import {
   rethrowAsBranchSourceError as rethrowAsSourceError,
   startBranchDetailPerf,
 } from "./branch-read-boundaries.js";
-import { priceSyncedBranchSession } from "./branch-session-pricing.js";
+import { toEnrichedBranchSession } from "./branch-session-projection.js";
 import { resolveDesktopBranchCostCompleteness } from "./branch-usage-cost-completeness.js";
 import {
   branchUsageRowFromTokenRow,
   projectBranchUsage,
-  sumStoredBranchCost,
 } from "./branch-usage-projection.js";
 import {
-  applyCloudHydration,
-  type BranchCloudHydrationSource,
-} from "./shared-branches-cloud-hydration.js";
-import {
-  type BranchDefaultEligibilitySnapshot,
+  assertBranchDefaultEligibilityCoverageComplete,
   denominatorEligibleBranchKeys,
   eligibleBranchKeys,
   filterEligibleBranchRows,
-  isEligibilityCoverageCompleteForCohort,
   resolveBranchProductEligibilitySnapshot,
 } from "./shared-branches-default-eligibility.js";
-import { readGlobalBranchCountsForItems } from "./shared-branches-divisor.js";
 import {
-  pageBranches,
-  selectRequestedBranches,
-} from "./shared-branches-paging.js";
+  buildBranchListResult,
+  sliceSessionMap,
+} from "./shared-branches-list-result.js";
 import {
   collectSessionIds,
   eventWindowSqlBounds,
@@ -157,9 +129,6 @@ export type BranchSyncSource = Pick<
 > &
   Partial<Pick<DbHostAgentDatabase, "syncSource">>;
 
-// Eligibility awaits authority; PR-field-only legacy callers may still peek/warm.
-export type { BranchCloudHydrationSource } from "./shared-branches-cloud-hydration.js";
-
 /**
  * Parse an ISO instant to epoch millis for ordering. Unparseable / empty values
  * sort oldest (0) so a branch with a bad timestamp never floats to the top.
@@ -167,69 +136,6 @@ export type { BranchCloudHydrationSource } from "./shared-branches-cloud-hydrati
 function isoEpoch(iso: string): number {
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? ms : 0;
-}
-
-/**
- * The list projection's tail: given already-fetched link/PR/token/commit rows,
- * page and cloud-hydrate them into the canonical list response. Split out of
- * {@link getSharedBranches} so {@link getSharedBranchesPageData} can share ONE
- * set of reads between the list and analytics projections instead of each
- * independently re-reading the same tables (FEA-3056 follow-up).
- */
-async function buildBranchListResult(
-  prisma: Parameters<typeof readSessionBranchCounts>[0],
-  linkRows: Awaited<ReturnType<typeof readLocalBranchLinkRows>>,
-  prRows: Awaited<ReturnType<typeof readLocalBranchPrRows>>,
-  tokenRows: Awaited<ReturnType<typeof readBranchTokenAggregateRows>>,
-  lastActiveByBranch: DesktopBranchLastActiveProjection,
-  request: SharedBranchesListRequest,
-  cloudHydration: BranchCloudHydrationSource | undefined,
-  eligibilitySnapshot: BranchDefaultEligibilitySnapshot | null,
-  denominatorKeys: ReadonlyArray<{
-    repoFullName: string | null;
-    branchName: string;
-  }>,
-  // FEA-3695 — the AUTHORITATIVE per-session cost map (each session once), built
-  // by the caller from the deduped per-session usage read. Optional: the
-  // standalone list op prices per (branch, model) only, so it omits this and the
-  // client falls back to the legacy branch-total inference; the page-data path
-  // (the only caller feeding the filtered summary cards) supplies it.
-  sessionCostUsd?: Readonly<Record<string, number>>
-): Promise<BranchListResponse> {
-  const projected = projectBranchListItems(
-    linkRows,
-    prRows,
-    tokenRows,
-    lastActiveByBranch
-  );
-  // Apply the canonical Last-active window to the complete eligible corpus
-  // before id selection and paging. Unavailable rows survive the window because
-  // absence is a typed result, not evidence that a row lies out of bounds.
-  const windowed = filterBranchItemsByWindow(projected, request);
-  const matched = selectRequestedBranches(windowed, request.ids);
-  const items = pageBranches(matched, request.limit, request.offset);
-  // ISS-4689 — the wire even-split divisor. Read off the PRE-DISPLAY link set
-  // and keyed to this page's sessions; see `readGlobalBranchCountsForItems`.
-  // Emitted from this SHARED builder so the standalone and page-data lists carry
-  // one shape and the KPI cannot flip between read paths.
-  const branchCountsBySession = await readGlobalBranchCountsForItems(
-    prisma,
-    items,
-    denominatorKeys
-  );
-  return {
-    items: await applyCloudHydration(items, cloudHydration, {
-      forceRefresh: request.forceRefresh,
-      resolvedResult: eligibilitySnapshot?.resolvedHydration,
-      scope: "list",
-    }),
-    total: matched.length,
-    viewerScope: BranchViewerScope.Self,
-    ...(sessionCostUsd ? { sessionCostUsd } : {}),
-    ...(branchCountsBySession.size > 0
-      ? { sessionBranchCount: Object.fromEntries(branchCountsBySession) }
-      : {}),
-  };
 }
 
 /**
@@ -259,8 +165,7 @@ async function buildBranchListResult(
  */
 export async function getSharedBranches(
   source: BranchSyncSource | null | undefined,
-  request: SharedBranchesListRequest = {},
-  cloudHydration?: BranchCloudHydrationSource
+  request: SharedBranchesListRequest = {}
 ): Promise<BranchListResponse> {
   if (!source) {
     return emptySharedBranchesListResponse();
@@ -269,18 +174,14 @@ export async function getSharedBranches(
     return emptySharedBranchesListResponse();
   }
   try {
-    // Read the raw branch population before authority resolution so a cold
-    // fail-closed view cannot prevent its own bounded authority warm-up.
+    const evaluationNow = new Date();
     const [rawLinkRows, rawPrRows, rawCommitRows] = await Promise.all([
       readLocalBranchLinkRows(source.prisma),
       readLocalBranchPrRows(source.prisma),
       readLocalBranchCommitRows(source.prisma),
     ]);
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
-      rawLinkRows,
-      cloudHydration,
-      { forceRefresh: request.forceRefresh, scope: "list" }
-    );
+    const eligibilitySnapshot =
+      resolveBranchProductEligibilitySnapshot(rawLinkRows);
     const linkRows = filterEligibleBranchRows(rawLinkRows, eligibilitySnapshot);
     const prRows = filterEligibleBranchRows(rawPrRows, eligibilitySnapshot);
     const commitRows = filterEligibleBranchRows(
@@ -288,10 +189,7 @@ export async function getSharedBranches(
       eligibilitySnapshot
     );
     const branchKeys = eligibleBranchKeys(linkRows, eligibilitySnapshot);
-    const denominatorKeys = denominatorEligibleBranchKeys(
-      rawLinkRows,
-      eligibilitySnapshot
-    );
+    const denominatorKeys = denominatorEligibleBranchKeys(eligibilitySnapshot);
     const [tokenRows, activityRows] = await Promise.all([
       readBranchTokenAggregateRows(source.prisma, branchKeys, denominatorKeys),
       readBranchCanonicalActivityRowsForScope(source, { branchKeys }),
@@ -300,113 +198,22 @@ export async function getSharedBranches(
       branchIdsForLinks(linkRows),
       activityRows,
       prRows,
-      commitRows
+      commitRows,
+      linkRows
     );
-    return await buildBranchListResult(
-      source.prisma,
+    return await buildBranchListResult({
+      prisma: source.prisma,
       linkRows,
       prRows,
       tokenRows,
       lastActiveByBranch,
       request,
-      cloudHydration,
-      eligibilitySnapshot,
-      denominatorKeys
-    );
+      denominatorKeys,
+      evaluationNow,
+    });
   } catch (error) {
     rethrowAsSourceError("getSharedBranches", error);
   }
-}
-
-/**
- * FEA-2276: build a loaded session's priced activity-segment tiling for the
- * offline/unauthenticated desktop path, from the `activitySegmentRows` (FEA-3568)
- * + `tokenEvents` (FEA-2730) that SURVIVE the branch detail's light hydration
- * (`omitEventData` only nulls the heavy `events.data` blob). Runs the SAME shared
- * `attributeBranchSessionActivity` kernel the cloud read uses, so an authenticated
- * (cloud-served) and an offline (local) branch page render an identical rollup.
- *
- * Returns `undefined` when the session carries NO tiling (older build / pre-backfill)
- * so the rollup routes its whole spend to `unattributed` — never a fabricated `[]`.
- *
- * CAP DIVERGENCE (accepted): the cloud read caps its token-event join at 10k ×
- * sessions (a pathological-scan backstop). This local read consumes the session's
- * FULL `tokenEvents` uncapped (they arrive via the shared `selectRowsByIds` reader,
- * used well beyond branches, so capping there is out of scope). Both bounds sit far
- * above any real session's turn count, so a divergence would require >10k events in
- * one session — not observed in practice; documented rather than mirrored.
- */
-function buildBranchActivitySegments(
-  session: SyncedAgentSession
-): BranchSession["activitySegments"] {
-  const rows = session.activitySegmentRows;
-  if (rows == null) {
-    return undefined;
-  }
-  const spans: ActivitySegmentSpan[] = rows.map((row) => ({
-    phase: row.phase,
-    startMs: row.startMs,
-    endMs: row.endMs,
-    confidence: row.confidence,
-  }));
-  const events: ActivitySpendEvent[] = (session.tokenEvents ?? []).map(
-    (event) => ({
-      tMs: Date.parse(event.createdAt),
-      costUsd: event.estimatedCostUsd ?? null,
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheReadTokens: event.cacheReadTokens,
-      cacheWriteTokens: event.cacheWriteTokens,
-      sourceId: event.externalEventId,
-    })
-  );
-  return attributeBranchSessionActivity(spans, events);
-}
-
-/** Sum a loaded session's per-model token usage into one `BranchSession` row. */
-function toEnrichedBranchSession(
-  session: SyncedAgentSession,
-  isPrimary: boolean,
-  branchCount: number,
-  phaseSegments: readonly BranchLifecyclePhaseSegment[] | undefined,
-  tokenRow: BranchSessionTokenRow | undefined
-): BranchSession {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-  for (const usage of session.tokenUsageByModel) {
-    inputTokens += usage.inputTokens;
-    outputTokens += usage.outputTokens;
-    cacheReadTokens += usage.cacheReadTokens;
-    cacheWriteTokens += usage.cacheWriteTokens;
-  }
-  const activitySegments = buildBranchActivitySegments(session);
-  return {
-    sessionId: session.externalSessionId,
-    slug: null,
-    name: session.name ?? null,
-    harness: session.harness ?? "",
-    startedAt: session.startedAt,
-    endedAt: session.endedAt ?? null,
-    isPrimary,
-    // FEA-2276: even-split divisor the rollup applies to attributed segment cost.
-    branchCount,
-    estimatedCostUsd: priceSyncedBranchSession(session),
-    ...(tokenRow ? { evenSplitCostUsd: tokenRow.evenSplitCostUsd } : {}),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    ...(phaseSegments && phaseSegments.length > 0 ? { phaseSegments } : {}),
-    // FEA-3576 — the branch PR-activity timeline segments each hour by the human
-    // stakeholder who spent the money. The desktop store is single-player local,
-    // so every hydrated local session's human owner is the ONE local desktop
-    // user; label it with the same `DESKTOP_LOCAL_SESSION_AUTHOR_LABEL` the
-    // merged-trace human actor uses so the timeline reads consistently here.
-    ownerUserName: DESKTOP_LOCAL_SESSION_AUTHOR_LABEL,
-    ...(activitySegments !== undefined && { activitySegments }),
-  };
 }
 
 /**
@@ -416,7 +223,8 @@ function toEnrichedBranchSession(
  * from the shared list projection (`row`), so the detail and the list agree
  * byte-for-byte. The detail-only fields are filled from the branch's own PR/link
  * rows and the loaded sessions:
- * - `linkedPrNumbers` / `mergedAt` / `closedAt` are real (from `pull_requests`).
+ * - `linkedPrNumbers` / `closedAt` are real (from `pull_requests`); `mergedAt`
+ *   comes from the selected PR.
  * - `sessions`: when the session loader hydrated a linked session, it carries
  *   the real name/harness/started/ended + per-session token splits and priced
  *   cost (D1). A session that did NOT hydrate degrades to the minimal link-row
@@ -425,9 +233,8 @@ function toEnrichedBranchSession(
  * - `mergedTrace`: the chronological cross-session trace built from the loaded
  *   sessions' turn items (empty when no session hydrated).
  * - `prBody` / `prBodyHtmlUrl` / `headSha` / `mergeCommitSha` have no v1 local
- *   producer (Epic F enrichment) → null. `additions`/`deletions`/`filesChanged`
- *   are inherited from `row` — now populated from FEA-1899 branch enrichment
- *   when available, else null.
+ *   producer → null. `additions`/`deletions`/`filesChanged` are inherited from
+ *   `row` and are null locally.
  */
 function projectBranchDetail(
   row: BranchRow,
@@ -621,7 +428,6 @@ async function loadBranchSessions(
 export async function getSharedBranchDetail(
   source: BranchSyncSource | null | undefined,
   id: unknown,
-  cloudHydration?: BranchCloudHydrationSource,
   options: Omit<SharedBranchesDetailRequest, "id"> = {}
 ): Promise<BranchPageDetail | null> {
   if (!source) {
@@ -645,11 +451,8 @@ export async function getSharedBranchDetail(
       return null;
     }
     const rawCandidateRows = await readDistinctBranchKeyRows(source.prisma);
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
-      rawCandidateRows,
-      cloudHydration,
-      { forceRefresh: options.forceRefresh, scope: "detail" }
-    );
+    const eligibilitySnapshot =
+      resolveBranchProductEligibilitySnapshot(rawCandidateRows);
     const linkRows = filterEligibleBranchRows(rawLinkRows, eligibilitySnapshot);
     perf.mark("links", linkRows.length);
     if (linkRows.length === 0) {
@@ -661,10 +464,7 @@ export async function getSharedBranchDetail(
       rawCandidateRows,
       eligibilitySnapshot
     );
-    const denominatorKeys = denominatorEligibleBranchKeys(
-      rawCandidateRows,
-      eligibilitySnapshot
-    );
+    const denominatorKeys = denominatorEligibleBranchKeys(eligibilitySnapshot);
     // The remaining branch-scoped reads are independent — run them together.
     const [
       prRows,
@@ -702,7 +502,8 @@ export async function getSharedBranchDetail(
       branchIdsForLinks(linkRows),
       activityRows,
       prRows,
-      commitRows
+      commitRows,
+      linkRows
     );
     const row = projectBranchListItems(
       linkRows,
@@ -716,8 +517,7 @@ export async function getSharedBranchDetail(
     }
     const pullRequestSelection = selectDesktopDetailPullRequest(
       prRows,
-      options,
-      linkRows.map(completeArtifactLoc).find((loc) => loc != null) ?? null
+      options
     );
     if (!pullRequestSelection) {
       perf.done("not-found");
@@ -746,22 +546,12 @@ export async function getSharedBranchDetail(
       loadedSessions,
       branchCounts
     );
-    const [hydrated] = await applyCloudHydration(
-      [detail],
-      pullRequestSelection.requested ? undefined : cloudHydration,
-      {
-        forceRefresh: options.forceRefresh,
-        resolvedResult: eligibilitySnapshot?.resolvedHydration,
-        scope: "detail",
-      }
-    );
-    const resolved = hydrated ?? detail;
-    attachDesktopCanonicalDetailMetrics(resolved, prRows, lifecycleEventRows);
+    attachMetrics(detail, prRows, lifecycleEventRows, selectedRow, linkRows);
     perf.done("ok", {
-      sessions: resolved.sessions.length,
-      idleSpans: resolved.leadTime.idleSpans.length,
+      sessions: detail.sessions.length,
+      idleSpans: detail.leadTime.idleSpans.length,
     });
-    return resolved;
+    return compactBranchDetailPayload(detail);
   } catch (error) {
     perf.done("error");
     rethrowAsSourceError("getSharedBranchDetail", error);
@@ -783,15 +573,14 @@ export async function getSharedBranchDetail(
 /**
  * Aggregate local branches into the canonical usage summary. Rolls up one token
  * row per `(session, model)` for branch-linked sessions (counted once) and hands
- * them to A3's `projectBranchUsageSummary`. Owner has no v1 producer, so
+ * them to the main-local `projectBranchUsage`. Owner has no v1 producer, so
  * `byActor` collapses to a single unattributed bucket; phase is unset, so
  * `phaseStacks` is empty; billing split follows whatever `billing_mode` the
  * local sessions carry (0 when unset).
  */
 export async function getSharedBranchUsage(
   source: BranchSyncSource | null | undefined,
-  request: SharedBranchesQuery = {},
-  cloudHydration?: BranchCloudHydrationSource
+  request: SharedBranchesQuery = {}
 ): Promise<BranchUsageSummary> {
   if (!source) {
     return emptySharedBranchesUsageSummary();
@@ -813,14 +602,9 @@ export async function getSharedBranchUsage(
         readLocalBranchPrRows(source.prisma),
         readLocalBranchCommitRows(source.prisma),
       ]);
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
-      rawLinkRows,
-      cloudHydration,
-      { scope: "list" }
-    );
-    if (eligibilitySnapshot?.coverageComplete === false) {
-      throw new Error("repository default eligibility coverage unavailable");
-    }
+    const eligibilitySnapshot =
+      resolveBranchProductEligibilitySnapshot(rawLinkRows);
+    assertBranchDefaultEligibilityCoverageComplete(eligibilitySnapshot);
     const linkRows = filterEligibleBranchRows(rawLinkRows, eligibilitySnapshot);
     const prRows = filterEligibleBranchRows(rawPrRows, eligibilitySnapshot);
     const commitRows = filterEligibleBranchRows(
@@ -834,7 +618,8 @@ export async function getSharedBranchUsage(
       branchIdsForLinks(linkRows),
       activityRows,
       prRows,
-      commitRows
+      commitRows,
+      linkRows
     );
     // No usage KPI surfaces per-branch cost, so the per-branch token aggregate is
     // skipped (pass [] for tokens); branch identity + canonical Last-active are
@@ -884,167 +669,13 @@ export async function getSharedBranchUsage(
   }
 }
 
-/**
- * Project already-fetched branch and usage evidence into canonical analytics.
- * Standalone and page-data callers share this tail to avoid duplicate reads.
- */
-export async function buildBranchAnalyticsResult(
-  prisma: Parameters<typeof readSessionBranchCounts>[0],
-  linkRows: Awaited<ReturnType<typeof readLocalBranchLinkRows>>,
-  prRows: Awaited<ReturnType<typeof readLocalBranchPrRows>>,
-  commitRows: Awaited<ReturnType<typeof readLocalBranchCommitRows>>,
-  activityRows: readonly BranchCanonicalActivityRow[],
-  usageTokenRows: Awaited<ReturnType<typeof readBranchAnalyticsTokenRows>>,
-  request: SharedBranchesQuery,
-  cloudHydration: BranchCloudHydrationSource | undefined,
-  // Required: a window must never fall back to lifetime aggregate spend.
-  metricEventRead: CanonicalBranchMetricEventRead,
-  activitySegmentEvidence: Awaited<
-    ReturnType<typeof readBranchAnalyticsActivitySegmentRows>
-  >,
-  lifecycleEvidence: Awaited<
-    ReturnType<typeof readBranchAnalyticsLifecycleEventRows>
-  >,
-  cohortOptions?: {
-    branchIds: readonly string[];
-    onMatchedBranchIds: (branchIds: string[]) => void;
-  },
-  eligibilitySnapshot?: BranchDefaultEligibilitySnapshot | null,
-  operationLastActiveByBranch?: DesktopBranchLastActiveProjection
-): Promise<BranchAnalytics> {
-  const { requestBoundary, rows: eventRows } = metricEventRead;
-  const resolvedEligibility =
-    eligibilitySnapshot ??
-    (await resolveBranchProductEligibilitySnapshot(linkRows, cloudHydration, {
-      scope: "list",
-    }));
-  const eligibleLinkRows = filterEligibleBranchRows(
-    linkRows,
-    resolvedEligibility
-  );
-  const eligiblePrRows = filterEligibleBranchRows(prRows, resolvedEligibility);
-  const eligibleCommitRows = filterEligibleBranchRows(
-    commitRows,
-    resolvedEligibility
-  );
-  const lastActiveByBranch =
-    operationLastActiveByBranch ??
-    projectDesktopBranchLastActive(
-      branchIdsForLinks(eligibleLinkRows),
-      activityRows,
-      eligiblePrRows,
-      eligibleCommitRows
-    );
-  // Hydrate the exact selected population, then window both hydrated and local
-  // rows by the immutable canonical Last-active result. The two arrays retain
-  // identical membership because hydration cannot overwrite that field.
-  const projectedItems = projectBranchListItems(
-    eligibleLinkRows,
-    eligiblePrRows,
-    [],
-    lastActiveByBranch
-  );
-  const allHydratedItems = await applyCloudHydration(
-    projectedItems,
-    cloudHydration,
-    {
-      resolvedResult: resolvedEligibility?.resolvedHydration,
-      scope: "list",
-    }
-  );
-  const selectedProjectedItems = cohortOptions
-    ? selectExactBranchCohort(projectedItems, cohortOptions.branchIds)
-    : projectedItems;
-  const selectedHydratedItems = cohortOptions
-    ? selectExactBranchCohort(allHydratedItems, cohortOptions.branchIds)
-    : allHydratedItems;
-  const windowedProjectedItems = filterBranchItemsByWindow(
-    selectedProjectedItems,
-    request
-  );
-  const windowed = filterBranchItemsByWindow(selectedHydratedItems, request);
-  const windowedSessionIds = collectSessionIds(windowed);
-  const windowActive = isDateWindowActive(request);
-  const windowedUsageRows = windowActive
-    ? filterEventRowsByEventWindow(
-        eventRows.filter((row) => windowedSessionIds.has(row.sessionId)),
-        request
-      )
-    : usageTokenRows.filter((row) => windowedSessionIds.has(row.sessionId));
-
-  const totalSpendUsd = sumStoredBranchCost(
-    windowedUsageRows.map(branchUsageRowFromTokenRow)
-  );
-  // Report corrupt totals here before the pure shared projector degrades them
-  // to a null card value; Electron logging stays out of node tests.
-  if (isAnomalousSpendTotal(totalSpendUsd)) {
-    writePersistentLog(
-      "warn",
-      "branch-analytics",
-      `invalid AI-spend total ${String(totalSpendUsd)} over ${windowedUsageRows.length} usage row(s); reporting no-data`
-    );
-  }
-  // LOC/$ stays lifetime on both sides; only cohort membership is windowed.
-  const lifetimeUsageRows = usageTokenRows.filter((row) =>
-    windowedSessionIds.has(row.sessionId)
-  );
-  // Global session branch counts preserve the authoritative even-split divisor.
-  const canonicalSessionIds = [...collectSessionIds(windowed)].sort();
-  const admittedCanonicalSessionIds = canonicalSessionIds.slice(
-    0,
-    CANONICAL_METRIC_SESSION_MAX
-  );
-  const branchCountBySession = await readSessionBranchCounts(
-    prisma,
-    admittedCanonicalSessionIds,
-    denominatorEligibleBranchKeys(linkRows, resolvedEligibility)
-  );
-  const locEnrichedSpendUsd = sumLocEnrichedSpend(
-    windowed,
-    lifetimeUsageRows,
-    branchCountBySession
-  );
-  const analytics = projectBranchAnalytics(windowed, {
-    totalSpendUsd,
-    locEnrichedSpendUsd,
-  });
-  analytics.canonicalMetrics = projectDesktopCanonicalMetrics(
-    windowed,
-    eligibleLinkRows,
-    eligiblePrRows,
-    request,
-    requestBoundary,
-    eventRows,
-    branchCountBySession,
-    buildPhaseEvidence(activitySegmentEvidence, lifecycleEvidence, {
-      admitted: admittedCanonicalSessionIds.length,
-      canonical: canonicalSessionIds.length,
-    }),
-    windowedProjectedItems,
-    isEligibilityCoverageCompleteForCohort(
-      resolvedEligibility,
-      windowed.map((item) => item.id)
-    ),
-    resolvedEligibility?.pullRequestCoverageComplete !== false
-  );
-  // Report identities from the same fail-closed cohort as canonical metrics.
-  cohortOptions?.onMatchedBranchIds(windowed.map((item) => item.id));
-  return analytics;
-}
-
-/**
- * Combined list + analytics read for the Branches screen (FEA-3056 follow-up).
- * The screen mounts its list and analytics reads together on every load;
- * independently, each re-runs the SAME link/PR/commit table scans, doubling the
- * actual DB + IPC work per page view. This op runs those reads ONCE, plus one
- * eligible-corpus canonical activity read and both token reads, which price the two
- * projections differently — see {@link buildBranchAnalyticsResult}) and derives
- * both responses from the shared rows, so a page load pays for the scan once.
- */
+/** Read the Branches screen's list and failure-isolated analytics together. */
 export async function getSharedBranchesPageData(
   source: BranchSyncSource | null | undefined,
   request: SharedBranchesListRequest = {},
-  cloudHydration?: BranchCloudHydrationSource
+  readListSnapshot?: (
+    request: BranchListSnapshotRequest
+  ) => Promise<BranchListSnapshot>
 ): Promise<SharedBranchesPageDataResponse> {
   if (!source) {
     return emptySharedBranchesPageDataResponse();
@@ -1053,56 +684,55 @@ export async function getSharedBranchesPageData(
     return emptySharedBranchesPageDataResponse();
   }
   try {
-    // Shared list reads are FATAL — a failure here throws and blanks both halves
-    // (the table can't render without them). The analytics-only token read
-    // (`readBranchAnalyticsTokenRows`) is NOT in this list: it feeds only the
-    // best-effort analytics half below (wongk review, FEA-4177 — see next block).
-    const [rawLinkRows, rawPrRows, rawCommitRows] = await Promise.all([
-      readLocalBranchLinkRows(source.prisma),
-      readLocalBranchPrRows(source.prisma),
-      readLocalBranchCommitRows(source.prisma),
-    ]);
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
-      rawLinkRows,
-      cloudHydration,
-      { forceRefresh: request.forceRefresh, scope: "list" }
+    // List snapshot failure is fatal; analytics-only reads remain best-effort.
+    const initialRawLinkRows = await readLocalBranchLinkRows(source.prisma);
+    const eligibilitySnapshot =
+      resolveBranchProductEligibilitySnapshot(initialRawLinkRows);
+    const initialLinkRows = filterEligibleBranchRows(
+      initialRawLinkRows,
+      eligibilitySnapshot
     );
+    const branchKeys = eligibleBranchKeys(
+      initialLinkRows,
+      eligibilitySnapshot
+    ).map(toBranchSnapshotKey);
+    const denominatorKeys =
+      denominatorEligibleBranchKeys(eligibilitySnapshot).map(
+        toBranchSnapshotKey
+      );
+    const snapshot = await readBranchListInputs({
+      source,
+      request,
+      branchKeys,
+      denominatorKeys,
+      eligibleBranchIds: branchKeys.map(encodeBranchId),
+      denominatorEligibleBranchIds: denominatorKeys.map(encodeBranchId),
+      readListSnapshot,
+      initialRawLinkRows,
+    });
+    const {
+      linkRows: rawLinkRows,
+      prRows: rawPrRows,
+      commitRows: rawCommitRows,
+      tokenRows,
+      activityRows,
+      sessionBranchCountEntries,
+    } = snapshot;
     const linkRows = filterEligibleBranchRows(rawLinkRows, eligibilitySnapshot);
     const prRows = filterEligibleBranchRows(rawPrRows, eligibilitySnapshot);
     const commitRows = filterEligibleBranchRows(
       rawCommitRows,
       eligibilitySnapshot
     );
-    const branchKeys = eligibleBranchKeys(linkRows, eligibilitySnapshot);
-    const denominatorKeys = denominatorEligibleBranchKeys(
-      rawLinkRows,
-      eligibilitySnapshot
-    );
-    const [tokenRows, activityRows] = await Promise.all([
-      readBranchTokenAggregateRows(source.prisma, branchKeys, denominatorKeys),
-      readBranchCanonicalActivityRowsForScope(source, { branchKeys }),
-    ]);
     const lastActiveByBranch = projectDesktopBranchLastActive(
       branchIdsForLinks(linkRows),
       activityRows,
       prRows,
-      commitRows
+      commitRows,
+      linkRows
     );
     const requestBoundary = new Date();
-    // FEA-4177 — independent failure domains. The list is the required half and
-    // is built from the fatal shared reads only, so an analytics-side failure
-    // never blanks the table.
-    //
-    // wongk review: the analytics-only per-session usage read
-    // (`readBranchAnalyticsTokenRows`) and the FEA-3695 cost-map projection it
-    // feeds MUST live inside the best-effort analytics half. Previously that read
-    // ran in the outer fatal `Promise.all`, so an analytics SQL failure rejected
-    // before the `allSettled` and the list disappeared — contrary to the
-    // page-data contract. Moving it here means an analytics read/build failure
-    // degrades ONLY the summary cards (`analytics` omitted, `analyticsError:
-    // true`): the list still renders, just without `sessionCostUsd` (the client
-    // falls back to the legacy branch-total inference, exactly like the
-    // standalone `getSharedBranches` read).
+    // FEA-4177: analytics SQL/cost-map failure degrades only summary cards.
     const buildAnalyticsHalf = async (): Promise<{
       analytics: BranchAnalytics;
       sessionCostUsd?: Readonly<Record<string, number>>;
@@ -1112,7 +742,7 @@ export async function getSharedBranchesPageData(
         await Promise.all([
           readBranchAnalyticsTokenRows(source.prisma),
           readCanonicalBranchMetricEventRows(source, request, requestBoundary),
-          readBranchAnalyticsLifecycleEventRows(source.prisma),
+          readBranchAnalyticsLifecycleEventRows(source.prisma, branchKeys),
         ]);
       // FEA-3695 — the authoritative per-session cost map (each session once),
       // built from the SAME rows the analytics spend KPI prices, so the client's
@@ -1147,7 +777,6 @@ export async function getSharedBranchesPageData(
         activityRows,
         usageTokenRows,
         request,
-        cloudHydration,
         metricEventRead,
         metricEventRead.activitySegments,
         lifecycleEvidence,
@@ -1161,17 +790,20 @@ export async function getSharedBranchesPageData(
       // The list is built WITHOUT `sessionCostUsd` here; the cost map is attached
       // below only when the analytics half succeeds, so a cost-map/analytics
       // failure cannot block or blank the list.
-      buildBranchListResult(
-        source.prisma,
+      buildBranchListResult({
+        prisma: source.prisma,
         linkRows,
         prRows,
         tokenRows,
         lastActiveByBranch,
         request,
-        cloudHydration,
-        eligibilitySnapshot,
-        denominatorKeys
-      ),
+        denominatorKeys,
+        snapshotBranchCountsBySession:
+          request.pageMode === BranchListPageMode.Server
+            ? new Map(sessionBranchCountEntries)
+            : undefined,
+        evaluationNow: requestBoundary,
+      }),
       buildAnalyticsHalf(),
     ]);
     if (listResult.status === "rejected") {
@@ -1182,13 +814,26 @@ export async function getSharedBranchesPageData(
     }
     const { analytics, sessionCostUsd, lifetimeSessionCostUsd } =
       analyticsResult.value;
+    if (request.pageMode === BranchListPageMode.Server) {
+      return { list: listResult.value, analytics };
+    }
     // `sessionBranchCount` (ISS-4689) is deliberately NOT attached here —
     // `buildBranchListResult` already emitted it, keeping this list byte-identical
     // to the standalone `getSharedBranches` one (the no-drift contract).
+    const pageSessionCost = sliceSessionMap(
+      sessionCostUsd,
+      listResult.value.items
+    );
+    const pageLifetimeSessionCost = sliceSessionMap(
+      lifetimeSessionCostUsd,
+      listResult.value.items
+    );
     const list = {
       ...listResult.value,
-      ...(sessionCostUsd ? { sessionCostUsd } : {}),
-      ...(lifetimeSessionCostUsd ? { lifetimeSessionCostUsd } : {}),
+      ...(pageSessionCost ? { sessionCostUsd: pageSessionCost } : {}),
+      ...(pageLifetimeSessionCost
+        ? { lifetimeSessionCostUsd: pageLifetimeSessionCost }
+        : {}),
     };
     return { list, analytics };
   } catch (error) {
@@ -1196,4 +841,9 @@ export async function getSharedBranchesPageData(
   }
 }
 
-const CANONICAL_METRIC_SESSION_MAX = 900;
+function toBranchSnapshotKey(row: {
+  repoFullName: string | null;
+  branchName: string;
+}): { repoFullName: string | null; branchName: string } {
+  return { repoFullName: row.repoFullName, branchName: row.branchName };
+}

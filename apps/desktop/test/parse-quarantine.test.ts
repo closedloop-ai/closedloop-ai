@@ -3,27 +3,29 @@
  * @description ISS-4444: unit coverage for the persisted parse-quarantine store.
  * A source whose historical parse keeps wedging (a CPU-spin that never settles)
  * is dead-lettered per pass and, after `maxAttempts`, QUARANTINED so it is not
- * re-parsed on every launch. The store survives restarts (best-effort JSON file),
- * so a poison transcript is quarantined once, not every cold start.
+ * re-parsed on every launch. The store survives restarts, so a poison transcript
+ * is quarantined once, not every cold start.
+ *
+ * ISS-9838: that durability is now a row in the local SQLite store reached
+ * through an injected {@link IngestStorePort}, not a JSON file, so these drive
+ * the in-memory port fake and assert on the snapshot the store wrote back.
  */
 import assert from "node:assert/strict";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createParseQuarantine,
   DEFAULT_PARSE_QUARANTINE_MAX_ATTEMPTS,
-  parseQuarantinePath,
 } from "../src/main/collectors/engine/parse-quarantine.js";
+import { createMemoryIngestStore } from "./ingest-store-test-utils.js";
+
+/**
+ * The quarantine format version this suite expects to survive a reload.
+ * Declared HERE, independently of the store's own `PERSIST_VERSION`, so the
+ * discard test below fails if that constant is deleted or its comparison is
+ * removed — a test that read its expectation from the constant it polices
+ * could not.
+ */
+const QUARANTINE_PERSIST_VERSION = 1;
 
 test("ISS-4444: a source is quarantined only after reaching maxAttempts", () => {
   const q = createParseQuarantine({ maxAttempts: 3 });
@@ -49,23 +51,65 @@ test("ISS-4444: a clean parse clears accrued attempts so a transient spin does n
   assert.equal(q.isQuarantined(source), false);
 });
 
-test("ISS-4444: quarantine persists across restarts (survives a new store over the same path)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
+test("ISS-4444: quarantine persists across restarts (survives a new store over the same port)", () => {
+  const store = createMemoryIngestStore();
   const source = "/tmp/poison.jsonl";
-  try {
-    const first = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(first.recordFailure(source), true); // quarantined immediately
-    first.flush();
-    assert.ok(existsSync(persistPath), "the quarantine file was written");
+  const first = createParseQuarantine({ store, maxAttempts: 1 });
+  assert.equal(first.recordFailure(source), true); // quarantined immediately
+  first.flush();
+  assert.equal(
+    store.peek()?.version,
+    QUARANTINE_PERSIST_VERSION,
+    "the snapshot is stamped with the current format version"
+  );
 
-    // A fresh store over the SAME path (a restart) must still see it quarantined.
-    const second = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(second.isQuarantined(source), true);
-    assert.equal(second.quarantinedCount(), 1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  // A fresh store over the SAME port (a restart) must still see it quarantined.
+  const second = createParseQuarantine({ store, maxAttempts: 1 });
+  assert.equal(second.isQuarantined(source), true);
+  assert.equal(second.quarantinedCount(), 1);
+});
+
+test("ISS-9838: a persisted quarantine at another PERSIST_VERSION is discarded whole", () => {
+  // ISS-9837 R3: the version discriminates the STORE's FORMAT, so a snapshot at
+  // any other version is dropped entirely rather than partially retained — a
+  // retained entry written under a shape this build does not understand would
+  // keep skipping a source that must be re-attempted.
+  const source = "/tmp/poison.jsonl";
+  const seedStore = createMemoryIngestStore();
+  const seeded = createParseQuarantine({ store: seedStore, maxAttempts: 1 });
+  assert.equal(seeded.recordFailure(source), true);
+  seeded.flush();
+  const persisted = seedStore.peek();
+  assert.ok(persisted, "the seed flush persisted a snapshot");
+
+  for (const version of [
+    QUARANTINE_PERSIST_VERSION - 1,
+    QUARANTINE_PERSIST_VERSION + 1,
+  ]) {
+    const store = createMemoryIngestStore({
+      version,
+      entries: persisted.entries,
+    });
+    const reloaded = createParseQuarantine({ store, maxAttempts: 1 });
+    assert.equal(
+      reloaded.isQuarantined(source),
+      false,
+      `a v${version} snapshot must not quarantine anything`
+    );
+    assert.equal(
+      reloaded.quarantinedCount(),
+      0,
+      `a v${version} snapshot is discarded wholesale`
+    );
   }
+
+  // The same snapshot at the CURRENT version still loads, so the assertions
+  // above pin the version comparison rather than a broken hydrate.
+  const sameVersion = createParseQuarantine({
+    store: createMemoryIngestStore(persisted),
+    maxAttempts: 1,
+  });
+  assert.equal(sameVersion.isQuarantined(source), true);
 });
 
 test("ISS-4444: pruneTo drops entries for sources that no longer exist", () => {
@@ -81,110 +125,86 @@ test("ISS-4444: pruneTo drops entries for sources that no longer exist", () => {
   assert.equal(q.quarantinedCount(), 1);
 });
 
-test("ISS-4444: a corrupt persisted file is ignored (starts empty, non-fatal)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-corrupt-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
-  try {
-    // Write garbage, then construct — must not throw and must start empty.
-    writeFileSync(persistPath, "not json {", "utf8");
-    const q = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(q.quarantinedCount(), 0);
-    assert.equal(q.isQuarantined("/tmp/anything.jsonl"), false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test("ISS-4444: an absent persisted snapshot is ignored (starts empty, non-fatal)", () => {
+  // ISS-9838: an unreadable payload never reaches this constructor — the
+  // provider decodes it and hands `hydrated: null` (see
+  // `dashboard/ingest-store-provider.ts`), which must not throw and must start
+  // empty.
+  const q = createParseQuarantine({
+    store: createMemoryIngestStore(null),
+    maxAttempts: 1,
+  });
+  assert.equal(q.quarantinedCount(), 0);
+  assert.equal(q.isQuarantined("/tmp/anything.jsonl"), false);
 });
 
-test("ISS-4444: a failed flush preserves the previous valid store and stays retryable (shafty023 review)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-flushfail-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
+test("ISS-4444: a failed flush preserves the previous valid snapshot and stays retryable (davetho review)", async () => {
+  const port = createMemoryIngestStore();
   const first = "/tmp/first-poison.jsonl";
   const second = "/tmp/second-poison.jsonl";
-  try {
-    // Write a first valid store and capture its bytes.
-    const store = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(store.recordFailure(first), true);
-    store.flush();
-    assert.ok(existsSync(persistPath), "the first flush wrote the store");
-    const validBytes = readFileSync(persistPath);
 
-    // Make the directory read-only so the next flush's same-directory temp write
-    // fails BEFORE the atomic rename — the previous valid store must be untouched.
-    chmodSync(dir, 0o555);
-    assert.equal(store.recordFailure(second), true);
-    store.flush(); // best-effort: swallows the write error, leaves store dirty
+  // Write a first valid snapshot and capture it.
+  const store = createParseQuarantine({ store: port, maxAttempts: 1 });
+  assert.equal(store.recordFailure(first), true);
+  store.flush();
+  const validSnapshot = port.peek();
+  assert.ok(validSnapshot, "the first flush wrote the snapshot");
 
-    assert.deepEqual(
-      readFileSync(persistPath),
-      validBytes,
-      "a failed flush must not truncate or overwrite the previous valid store"
-    );
-    // No stray temp file leaked into the (still-readable) directory.
-    assert.deepEqual(
-      readdirSync(dir).filter((name) => name.endsWith(".tmp")),
-      [],
-      "the temp file is cleaned up on failure"
-    );
+  // Refuse the next write — the previous valid snapshot must be untouched.
+  port.failWrites(true);
+  assert.equal(store.recordFailure(second), true);
+  store.flush(); // best-effort: the refusal must never fail the caller
 
-    // Restore write access; the retained dirty flag means the next flush persists
-    // BOTH sources (proving the failed flush did not clear dirty).
-    chmodSync(dir, 0o755);
-    store.flush();
-    const reloaded = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(reloaded.isQuarantined(first), true);
-    assert.equal(reloaded.isQuarantined(second), true);
-  } finally {
-    chmodSync(dir, 0o755);
-    rmSync(dir, { recursive: true, force: true });
-  }
+  assert.deepEqual(
+    port.peek(),
+    validSnapshot,
+    "a failed flush must not overwrite the previous valid snapshot"
+  );
+
+  // whitlockk review (ISS-9838): the port refuses ASYNCHRONOUSLY — `save` returning
+  // means queued, not accepted — so the retry flag is restored a microtask
+  // later. Settle before the retry, or this asserts nothing about the refusal.
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Restore writes; the retained dirty flag means the next flush persists BOTH
+  // sources (proving the failed flush did not leave dirty cleared).
+  port.failWrites(false);
+  store.flush();
+  const reloaded = createParseQuarantine({ store: port, maxAttempts: 1 });
+  assert.equal(reloaded.isQuarantined(first), true);
+  assert.equal(reloaded.isQuarantined(second), true);
 });
 
 test("ISS-4444: a persisted entry with a negative attempts count is rejected (Zod boundary)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-negative-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
   const source = "/tmp/tampered.jsonl";
-  try {
-    // A hand-edited/corrupt entry with attempts: -100 must not pass the boundary
-    // and delay quarantine for another 103 failures — it is dropped entirely, so
-    // the source starts fresh from zero attempts.
-    writeFileSync(
-      persistPath,
-      JSON.stringify({
-        version: 1,
-        entries: { [source]: { attempts: -100, quarantined: false } },
-      }),
-      "utf8"
-    );
-    const q = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(q.isQuarantined(source), false);
-    // First recorded failure quarantines it, proving the -100 was discarded (a
-    // preserved -100 would need 101 failures to reach the threshold of 1).
-    assert.equal(q.recordFailure(source), true);
-    assert.equal(q.quarantinedCount(), 1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // A hand-edited/corrupt entry with attempts: -100 must not pass the boundary
+  // and delay quarantine for another 103 failures — it is dropped entirely, so
+  // the source starts fresh from zero attempts.
+  const q = createParseQuarantine({
+    store: createMemoryIngestStore({
+      version: QUARANTINE_PERSIST_VERSION,
+      entries: { [source]: { attempts: -100, quarantined: false } },
+    }),
+    maxAttempts: 1,
+  });
+  assert.equal(q.isQuarantined(source), false);
+  // First recorded failure quarantines it, proving the -100 was discarded (a
+  // preserved -100 would need 101 failures to reach the threshold of 1).
+  assert.equal(q.recordFailure(source), true);
+  assert.equal(q.quarantinedCount(), 1);
 });
 
 test("ISS-4444: a persisted entry with a non-integer attempts count is rejected", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-noninteger-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
   const source = "/tmp/fractional.jsonl";
-  try {
-    writeFileSync(
-      persistPath,
-      JSON.stringify({
-        version: 1,
-        entries: { [source]: { attempts: 2.5, quarantined: true } },
-      }),
-      "utf8"
-    );
-    const q = createParseQuarantine({ persistPath, maxAttempts: 3 });
-    assert.equal(q.isQuarantined(source), false);
-    assert.equal(q.quarantinedCount(), 0);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const q = createParseQuarantine({
+    store: createMemoryIngestStore({
+      version: QUARANTINE_PERSIST_VERSION,
+      entries: { [source]: { attempts: 2.5, quarantined: true } },
+    }),
+    maxAttempts: 3,
+  });
+  assert.equal(q.isQuarantined(source), false);
+  assert.equal(q.quarantinedCount(), 0);
 });
 
 test("ISS-4444 (codex P1): a changed fingerprint invalidates the quarantine so a corrected transcript is re-attempted", () => {
@@ -236,55 +256,42 @@ test("ISS-4444 (codex P1): a null fingerprint (unstattable) keeps the source qua
 });
 
 test("ISS-4444 (codex P1): a fingerprint round-trips through persistence", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-fp-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
+  const store = createMemoryIngestStore();
   const source = "/tmp/poison.jsonl";
   const original = { mtimeMs: 1000, size: 500 };
-  try {
-    const first = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(first.recordFailure(source, original), true);
-    first.flush();
+  const first = createParseQuarantine({ store, maxAttempts: 1 });
+  assert.equal(first.recordFailure(source, original), true);
+  first.flush();
 
-    // A restart must still see it quarantined at the original fingerprint AND
-    // still invalidate it when the fingerprint changes.
-    const second = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    assert.equal(second.isQuarantined(source, original), true);
-    assert.equal(
-      second.isQuarantined(source, { mtimeMs: 9999, size: 999 }),
-      false,
-      "a changed fingerprint invalidates a persisted entry too"
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // A restart must still see it quarantined at the original fingerprint AND
+  // still invalidate it when the fingerprint changes.
+  const second = createParseQuarantine({ store, maxAttempts: 1 });
+  assert.equal(second.isQuarantined(source, original), true);
+  assert.equal(
+    second.isQuarantined(source, { mtimeMs: 9999, size: 999 }),
+    false,
+    "a changed fingerprint invalidates a persisted entry too"
+  );
 });
 
 test("ISS-4444 (codex P1): a legacy persisted entry without a fingerprint stays quarantined", () => {
-  const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-legacy-fp-"));
-  const persistPath = parseQuarantinePath(dir, "claude");
   const source = "/tmp/poison.jsonl";
-  try {
-    // An entry persisted before fingerprinting shipped: no fingerprint key.
-    writeFileSync(
-      persistPath,
-      JSON.stringify({
-        version: 1,
-        entries: { [source]: { attempts: 3 } },
-      }),
-      "utf8"
-    );
-    const q = createParseQuarantine({ persistPath, maxAttempts: 1 });
-    // No stored fingerprint → cannot prove change → stays quarantined; a fresh
-    // failure then stamps a fingerprint going forward.
-    assert.equal(q.isQuarantined(source, { mtimeMs: 1, size: 1 }), true);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // An entry persisted before fingerprinting shipped: no fingerprint key.
+  const q = createParseQuarantine({
+    store: createMemoryIngestStore({
+      version: QUARANTINE_PERSIST_VERSION,
+      entries: { [source]: { attempts: 3 } },
+    }),
+    maxAttempts: 1,
+  });
+  // No stored fingerprint → cannot prove change → stays quarantined; a fresh
+  // failure then stamps a fingerprint going forward.
+  assert.equal(q.isQuarantined(source, { mtimeMs: 1, size: 1 }), true);
 });
 
 test("ISS-4444: the threshold defaults to DEFAULT_PARSE_QUARANTINE_MAX_ATTEMPTS; only the injected option overrides it", () => {
   // No option → the conservative default governs quarantine (there is no
-  // environment knob; shafty023 review removed PARSE_QUARANTINE_MAX_ATTEMPTS).
+  // environment knob; davetho review removed PARSE_QUARANTINE_MAX_ATTEMPTS).
   const withDefault = createParseQuarantine();
   const source = "/tmp/default-threshold.jsonl";
   for (let i = 1; i < DEFAULT_PARSE_QUARANTINE_MAX_ATTEMPTS; i += 1) {

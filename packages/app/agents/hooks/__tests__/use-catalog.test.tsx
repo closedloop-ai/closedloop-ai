@@ -40,9 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ---------------------------------------------------------------------------
 // catalogKeys
-// ---------------------------------------------------------------------------
 
 describe("catalogKeys", () => {
   it("all is the stable base key", () => {
@@ -65,9 +63,7 @@ describe("catalogKeys", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Queries
-// ---------------------------------------------------------------------------
 
 describe("useCatalogItems", () => {
   it("fetches the org catalog list (success state)", async () => {
@@ -112,9 +108,7 @@ describe("useCatalogItem", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Mutations
-// ---------------------------------------------------------------------------
 
 describe("useCreateCatalogItem", () => {
   it("POSTs to /catalog and invalidates the list on success", async () => {

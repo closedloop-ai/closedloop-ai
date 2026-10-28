@@ -26,6 +26,9 @@ import {
  *   `userId` — scope to a specific user for the personal optimization view.
  *   `since`  — ISO date string; earliest session to include (inclusive).
  *   `until`  — ISO date string; latest session to include (inclusive).
+ *   `cursor` — a prior response's `nextCursor`; resumes after the session that
+ *              page ended on (ISS-9851). A token this endpoint did not mint is
+ *              a 400.
  *
  * Auth: any authenticated org member (withAnyAuth, org-visible — not admin-only).
  *
@@ -37,8 +40,11 @@ export const GET = withAnyAuth<
   "/agent-components/[slug]/token-trend"
 >(
   async ({ user }, request, params) => {
+    // Next's route matcher already `decodeURIComponent`s every captured
+    // segment, so `slug` arrives decoded. Decoding again corrupts a slug
+    // containing a literal `%` (`skill::a%20b` -> `skill::a b`) or throws
+    // `URIError` — here outside the try/catch, so it never became a response.
     const { slug } = await params;
-    const decodedSlug = decodeURIComponent(slug);
 
     const { params: query, errorResponse: parseError } = parseQueryParams(
       request,
@@ -47,13 +53,13 @@ export const GET = withAnyAuth<
     if (parseError) {
       return parseError;
     }
-    const { userId, since, until } = query as TokenTrendQueryParams;
+    const { userId, since, until, cursor } = query as TokenTrendQueryParams;
 
     try {
       const result = await analyticsService.fetchTokenTrend(
         user.organizationId,
-        decodedSlug,
-        { userId, since, until }
+        slug,
+        { userId, since, until, cursor }
       );
 
       if (result === null) {

@@ -1,46 +1,34 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import http from "node:http";
-import { afterEach, test } from "node:test";
+import type http from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import {
-  CloudCommandExecutor,
-  type CloudCommandExecutorOptions,
-} from "../src/main/cloud/cloud-command-executor.js";
+import { afterEach, test } from "vitest";
+import type { CloudCommandExecutor } from "../src/main/cloud/cloud-command-executor.js";
 import type {
-  DesktopCancelEvent,
   DesktopCommandAckEvent,
-  DesktopCommandEvent,
   DesktopCommandStreamEvent,
 } from "../src/main/cloud/cloud-protocol.js";
-import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/loop/signed-loop-launch-error.js";
 import { Observability } from "../src/main/telemetry/observability.js";
-import { COMMAND_SIGNING_REJECTION_REASONS } from "../src/shared/contracts.js";
+import {
+  asRecord,
+  buildCancel,
+  buildCommand,
+  closeGateway,
+  countDone,
+  createExecutor,
+  startGateway,
+  waitFor,
+} from "./cloud-command-executor-harness.js";
 
 Observability.initNoOp();
 
-let gatewayServer: http.Server | null = null;
-let gatewayPort = 0;
 let executor: CloudCommandExecutor | null = null;
 
 afterEach(async () => {
   Observability.reset();
   executor?.dispose();
   executor = null;
-  if (!gatewayServer) {
-    return;
-  }
-  await new Promise<void>((resolve, reject) => {
-    gatewayServer?.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-  gatewayServer = null;
-  gatewayPort = 0;
+  await closeGateway();
 });
 
 test("serializes conflicting lock keys while allowing parallel non-conflicting commands", async () => {
@@ -200,10 +188,8 @@ test("force-settles a cancelled command whose tool ignores the abort, freeing it
   const cancelledDone = events.find(
     (event) => event.commandId === "wedged" && event.eventType === "done"
   );
-  assert.equal(
-    (cancelledDone?.data as Record<string, unknown>).cancelled,
-    true
-  );
+  assert.ok(cancelledDone, "the cancelled command emitted no done event");
+  assert.equal((cancelledDone.data as Record<string, unknown>).cancelled, true);
 
   // The force-settle watchdog reclaims the leaked slot, so the conflicting
   // queued command dispatches and completes despite the wedged prepare still
@@ -276,10 +262,8 @@ test("suppresses late events from a cancelled command's stream (FEA-1004)", asyn
   const cancelledDone = events.find(
     (event) => event.commandId === "streamer" && event.eventType === "done"
   );
-  assert.equal(
-    (cancelledDone?.data as Record<string, unknown>).cancelled,
-    true
-  );
+  assert.ok(cancelledDone, "the cancelled command emitted no done event");
+  assert.equal((cancelledDone.data as Record<string, unknown>).cancelled, true);
 
   // Give the wedged stream time to emit several more "late" chunks server-side.
   await sleep(80);
@@ -468,89 +452,6 @@ test("gateway response watchdog releases a wedged slot when timeoutMs is absent 
         (event) => event.commandId === "after" && event.eventType === "done"
       ),
     2000
-  );
-});
-
-test("gateway response watchdog spares a slow non-streaming loop launch while still bounding a wedged streaming-default command (Codex P2)", async () => {
-  // The /api/gateway/symphony/loop route responds with JSON only after slow setup
-  // (repo/worktree prep, binary resolution, process spawn). It must survive past
-  // the short prompt-headers default — even when that default is injected small —
-  // while a genuinely wedged non-loop command on the short bound is still aborted
-  // so its in-flight slot frees.
-  const SLOW_LAUNCH_RESPONSE_DELAY_MS = 150;
-  await startGateway(async (request, response) => {
-    const url = new URL(request.url ?? "/", "http://localhost");
-    if (url.pathname === "/api/gateway/symphony/loop") {
-      // Legitimately slow: far beyond the 40ms injected default, but trivially
-      // under the generous slow-setup backstop the route actually gets.
-      await sleep(SLOW_LAUNCH_RESPONSE_DELAY_MS);
-      response.statusCode = 200;
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ ok: true, loopId: "loop-1" }));
-      return;
-    }
-    if (url.searchParams.get("command") === "wedged") {
-      await sleep(10_000); // never responds within the test window
-      return;
-    }
-    response.statusCode = 200;
-    response.setHeader("content-type", "application/json");
-    response.end(JSON.stringify({ ok: true }));
-  });
-
-  const events: Omit<
-    DesktopCommandStreamEvent,
-    "protocolVersion" | "messageId" | "timestamp"
-  >[] = [];
-  executor = createExecutor({
-    // maxInFlightCommands: 2 so the slow loop launch and the wedged command run
-    // concurrently against their different (route-aware) bounds.
-    maxInFlightCommands: 2,
-    onEvent: (event) => events.push(event),
-    // The injected short bound governs only non-slow-setup routes; the loop route
-    // is exempt and keeps its generous backstop.
-    gatewayResponseTimeoutMs: 40,
-  });
-  executor.setConnected(true);
-
-  // timeoutMs: null is exactly what the relay fixture sends for loop launches.
-  executor.enqueue(
-    buildCommand(
-      "loop-launch",
-      { command: "loop-launch" },
-      {
-        repoPath: "/repo/loop",
-        timeoutMs: null,
-        path: "/api/gateway/symphony/loop",
-      }
-    )
-  );
-  executor.enqueue(
-    buildCommand("wedged", { command: "wedged" }, { repoPath: "/repo/wedged" })
-  );
-
-  // The wedged non-loop command hits the short 40ms bound and is aborted...
-  await waitFor(
-    () =>
-      events.some(
-        (event) =>
-          event.commandId === "wedged" &&
-          event.eventType === "error" &&
-          asRecord(event.data).terminal === true
-      ),
-    2000
-  );
-
-  // ...but the slow loop launch, which the short bound would have aborted at
-  // 40ms, completes successfully because it is exempt and uses the backstop.
-  await waitFor(() => countDone(events, "loop-launch") === 1, 2000);
-  assert.equal(
-    events.some(
-      (event) =>
-        event.commandId === "loop-launch" && event.eventType === "error"
-    ),
-    false,
-    "slow loop launch must not surface a watchdog error"
   );
 });
 
@@ -785,7 +686,7 @@ test("does not forward body for GET commands", async () => {
     commandId: "get-nobody",
     operationId: "status_check",
     method: "GET",
-    path: "/api/gateway/symphony/status/TICKET-1",
+    path: "/api/gateway/git/local-changes",
     query: { repo: "/repo/a" },
     body: { shouldNotBeSent: true },
   });
@@ -1054,45 +955,7 @@ test("Observability.commandFailed is called on gateway error", async () => {
   }
 });
 
-test("rejects unsigned commands before queueing when server signing support is enforced", () => {
-  const acks: Omit<
-    DesktopCommandAckEvent,
-    "protocolVersion" | "messageId" | "timestamp"
-  >[] = [];
-  const events: Omit<
-    DesktopCommandStreamEvent,
-    "protocolVersion" | "messageId" | "timestamp"
-  >[] = [];
-  const commandId = "0196b1bb-7a00-7000-8000-000000000006";
-
-  executor = createExecutor({
-    maxInFlightCommands: 1,
-    onAck: (ack) => acks.push(ack),
-    onEvent: (event) => events.push(event),
-    isCommandSigningEnforced: () => true,
-    commandSignatureVerifier: {
-      verify: () => ({
-        ok: false,
-        reason: COMMAND_SIGNING_REJECTION_REASONS.unsignedCommand,
-      }),
-    },
-  });
-  executor.setConnected(true);
-  executor.enqueue(buildCommand(commandId, { command: "status" }));
-
-  assert.deepEqual(acks, [
-    {
-      commandId,
-      accepted: false,
-      state: "failed",
-      reason: COMMAND_SIGNING_REJECTION_REASONS.unsignedCommand,
-    },
-  ]);
-  assert.deepEqual(events, []);
-  assert.deepEqual(executor.getStats(), { activeCommands: 0, queueDepth: 0 });
-});
-
-test("emits terminal error with managed-key message when command preparation fails", async () => {
+test("emits a terminal error carrying the message when command preparation fails", async () => {
   const events: Omit<
     DesktopCommandStreamEvent,
     "protocolVersion" | "messageId" | "timestamp"
@@ -1103,11 +966,11 @@ test("emits terminal error with managed-key message when command preparation fai
     maxInFlightCommands: 1,
     onEvent: (event) => events.push(event),
     prepareCommandForExecution: async () => {
-      throw new Error(SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR);
+      throw new Error(PREPARATION_FAILURE_MESSAGE);
     },
   });
   executor.setConnected(true);
-  executor.enqueue(buildCommand(commandId, { command: "symphony_loop" }));
+  executor.enqueue(buildCommand(commandId, { command: "prepare-fails" }));
 
   await waitFor(() =>
     events.some(
@@ -1122,22 +985,21 @@ test("emits terminal error with managed-key message when command preparation fai
   assert.deepEqual(errorEvent.data, {
     type: "error",
     terminal: true,
-    error: SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR,
+    error: PREPARATION_FAILURE_MESSAGE,
   });
   assert.deepEqual(executor.getStats(), { activeCommands: 0, queueDepth: 0 });
 });
 
-test("ignores invalid signed envelopes when server signing support is disabled", async () => {
+// ISS-12784 (R3): an older server can still send signature fields; the Desktop
+// no longer verifies them, so the command runs like any other.
+test("runs a command that still carries signature fields from an older server", async () => {
   await startGateway(async (_request, response) => {
     response.statusCode = 200;
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({ ok: true }));
   });
 
-  const acks: Omit<
-    DesktopCommandAckEvent,
-    "protocolVersion" | "messageId" | "timestamp"
-  >[] = [];
+  const acks: Pick<DesktopCommandAckEvent, "accepted">[] = [];
   const events: Omit<
     DesktopCommandStreamEvent,
     "protocolVersion" | "messageId" | "timestamp"
@@ -1148,192 +1010,22 @@ test("ignores invalid signed envelopes when server signing support is disabled",
     maxInFlightCommands: 1,
     onAck: (ack) => acks.push(ack),
     onEvent: (event) => events.push(event),
-    isCommandSigningEnforced: () => false,
-    commandSignatureVerifier: {
-      verify: () => ({
-        ok: false,
-        reason: COMMAND_SIGNING_REJECTION_REASONS.invalidSignature,
-      }),
-    },
   });
   executor.setConnected(true);
-  executor.enqueue({
-    ...buildCommand(commandId, { command: "status" }),
+  const olderServerSignatureFields = {
     signature: "not-valid",
     signaturePayload: "{",
     publicKeyFingerprint: "cl:unknown",
+  };
+  executor.enqueue({
+    ...buildCommand(commandId, { command: "status" }),
+    ...olderServerSignatureFields,
   });
 
   await waitFor(() => countDone(events, commandId) === 1);
   assert.equal(acks[0].accepted, true);
   assert.deepEqual(executor.getStats(), { activeCommands: 0, queueDepth: 0 });
 });
-
-function createExecutor(options: {
-  maxInFlightCommands: number;
-  onAck?: (
-    event: Omit<
-      DesktopCommandAckEvent,
-      "protocolVersion" | "messageId" | "timestamp"
-    >
-  ) => void;
-  onEvent: (
-    event: Omit<
-      DesktopCommandStreamEvent,
-      "protocolVersion" | "messageId" | "timestamp"
-    >
-  ) => void;
-  onQueueStatsChange?: (stats: {
-    activeCommands: number;
-    queueDepth: number;
-  }) => void;
-  commandSignatureVerifier?: CloudCommandExecutorOptions["commandSignatureVerifier"];
-  isCommandSigningEnforced?: CloudCommandExecutorOptions["isCommandSigningEnforced"];
-  prepareCommandForExecution?: CloudCommandExecutorOptions["prepareCommandForExecution"];
-  gatewayResponseTimeoutMs?: number;
-  maxBufferedEventsPerCommand?: number;
-  cancelForceSettleGraceMs?: number;
-}): CloudCommandExecutor {
-  return new CloudCommandExecutor({
-    getGatewayPort: () => gatewayPort,
-    getGatewayAuthToken: () => "test-gateway-token",
-    maxInFlightCommands: options.maxInFlightCommands,
-    sendCommandAck: options.onAck ?? (() => {}),
-    sendCommandEvent: options.onEvent,
-    onQueueStatsChange: options.onQueueStatsChange,
-    ...(options.gatewayResponseTimeoutMs === undefined
-      ? {}
-      : { gatewayResponseTimeoutMs: options.gatewayResponseTimeoutMs }),
-    ...(options.maxBufferedEventsPerCommand === undefined
-      ? {}
-      : { maxBufferedEventsPerCommand: options.maxBufferedEventsPerCommand }),
-    ...(options.cancelForceSettleGraceMs === undefined
-      ? {}
-      : { cancelForceSettleGraceMs: options.cancelForceSettleGraceMs }),
-    ...(options.commandSignatureVerifier
-      ? { commandSignatureVerifier: options.commandSignatureVerifier }
-      : {}),
-    ...(options.isCommandSigningEnforced
-      ? { isCommandSigningEnforced: options.isCommandSigningEnforced }
-      : {}),
-    ...(options.prepareCommandForExecution
-      ? { prepareCommandForExecution: options.prepareCommandForExecution }
-      : {}),
-  });
-}
-
-function buildCommand(
-  commandId: string,
-  query: Record<string, string>,
-  options?: {
-    repoPath?: string;
-    timeoutMs?: number | null;
-    path?: string;
-  }
-): DesktopCommandEvent {
-  return {
-    protocolVersion: "1",
-    messageId: `${commandId}-message`,
-    timestamp: new Date().toISOString(),
-    commandId,
-    operationId: "git_action",
-    method: "POST",
-    path: options?.path ?? "/api/gateway/git",
-    query,
-    body: {
-      action: "status",
-      repoPath: options?.repoPath ?? "/repo/default",
-    },
-    timeoutMs: options?.timeoutMs ?? undefined,
-  };
-}
-
-function buildCancel(commandId: string, reason: string): DesktopCancelEvent {
-  return {
-    protocolVersion: "1",
-    messageId: `${commandId}-cancel`,
-    timestamp: new Date().toISOString(),
-    commandId,
-    reason,
-  };
-}
-
-function countDone(
-  events: Omit<
-    DesktopCommandStreamEvent,
-    "protocolVersion" | "messageId" | "timestamp"
-  >[],
-  commandId: string
-): number {
-  return events.filter(
-    (event) => event.commandId === commandId && event.eventType === "done"
-  ).length;
-}
-
-async function startGateway(
-  handler: (
-    request: http.IncomingMessage,
-    response: http.ServerResponse,
-    body: string
-  ) => Promise<void>
-): Promise<void> {
-  gatewayServer = http.createServer((request, response) => {
-    void (async () => {
-      const body = await readBody(request);
-      await handler(request, response, body);
-    })().catch((error) => {
-      response.statusCode = 500;
-      response.setHeader("content-type", "application/json");
-      response.end(
-        JSON.stringify({
-          error:
-            error instanceof Error
-              ? error.message
-              : "unknown test server failure",
-        })
-      );
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    gatewayServer?.listen(0, "127.0.0.1", () => resolve());
-    gatewayServer?.once("error", reject);
-  });
-
-  const address = gatewayServer.address();
-  if (!address || typeof address === "string") {
-    throw new Error("failed to bind test gateway server");
-  }
-  gatewayPort = address.port;
-}
-
-async function readBody(request: http.IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf-8");
-}
-
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMs = 3000
-): Promise<void> {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeoutMs) {
-      throw new Error("waitFor timeout");
-    }
-    await sleep(15);
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
-}
 
 // --- onQueueStatsChange dedupe ---
 
@@ -1453,3 +1145,5 @@ test("onQueueStatsChange: dispose does not fire a final notification", () => {
   );
   executor = null; // prevent afterEach double-dispose
 });
+
+const PREPARATION_FAILURE_MESSAGE = "command preparation failed";

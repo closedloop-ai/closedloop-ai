@@ -5,10 +5,61 @@
 // TS module graph, so it expresses transitive reachability natively and handles
 // resolution / edge-type exclusion for us. Run from apps/desktop:
 //   depcruise src --config scripts/dependency-cruiser.config.cjs
+//
+// This gate can only see `.ts` because pnpm-workspace.yaml gives
+// dependency-cruiser its own typescript via `packageExtensions`. It probes
+// `tryImportAvailable("typescript", ">=2.0.0 <7.0.0")` and declares no
+// dependency on one, so under the workspace's typescript@7 that probe fails,
+// `.ts` leaves `scannableExtensions`, and `depcruise src` silently gathers 0
+// modules and exits 0 — enforcing nothing, on every surface that runs it.
+// Remove that entry and this whole file goes quiet rather than red. The gate
+// script asserts a module floor precisely so that failure cannot pass as a
+// success; do not "fix" a low count by narrowing what is cruised.
 
 const OTEL_RUNTIME_ENTRIES = String.raw`^src/(main/(telemetry/app-otel-runtime|telemetry/app-otel-runtime-lifecycle|ipc/renderer-otel-ipc)|shared/(exception-sanitizer|renderer-otel-bridge-constants|renderer-otel-bridge-utils|renderer-otel-bridge))\.ts$`;
 const BOOT_ENTRIES = String.raw`^src/main/(index|startup|app|window)\.ts$`;
 const DESIGN_SYSTEM_RUNTIME = String.raw`^src/main/(dashboard/agent-dashboard-design-system-runtime|agent-monitor/agent-monitor-listener|telemetry/otlp-http-receiver)\.ts$|^src/main/(otlp|collectors|database)/`;
+// ISS-6330: `index.ts` alone, not the wider BOOT_ENTRIES set. It registers the
+// crash handlers, so its whole module graph evaluates BEFORE any handler exists
+// and a throw during that evaluation is the silent startup failure with no
+// dialog and no telemetry. `startup.ts`/`app.ts` run after registration and are
+// legitimately allowed the heavy surfaces below.
+const BOOTSTRAP_ENTRY = String.raw`^src/main/index\.ts$`;
+// The OTel runtime is the pointed one: the bridge index.ts reaches holds a
+// `DesktopOtelRuntime` as a TYPE only, which `tsPreCompilationDeps: false`
+// drops from this graph. Promote that to a value import and this rule fires.
+const BOOTSTRAP_FORBIDDEN_REACH = [
+  String.raw`^src/main/telemetry/app-otel-runtime(-lifecycle)?\.ts$`,
+  "@opentelemetry",
+  String.raw`socket\.io-client`,
+  "cloud-socket",
+  "relay",
+  "datadog",
+  "posthog",
+  "observability",
+  "telemetry-service",
+  "prisma",
+  DESIGN_SYSTEM_RUNTIME,
+];
+// Raw I/O and process control. Evaluating one of these is not itself fatal, but
+// each is a marker for a module heavy enough to fail at load, and none has any
+// business on a path whose only job is to install two listeners.
+const BOOTSTRAP_FORBIDDEN_CORE =
+  "^(node:)?(fs|fs/promises|http|https|net|tls|dgram|dns|child_process|worker_threads|cluster|inspector)$";
+// ISS-11262: the renderer is a browser bundle behind contextIsolation. Vite does
+// not fail on a renderer import of a Node builtin; it swaps in a browser stub
+// that throws at runtime. So the renderer's static graph must never reach the
+// main process, the gateway server, electron, or any Node builtin, including
+// through a `src/shared` module that imports one.
+const RENDERER_ENTRY = "^src/renderer/";
+const MAIN_PROCESS_SOURCE = "^src/(main|server)/";
+const ELECTRON_PACKAGE = "(^|[/+])electron([/@]|$)";
+// Matches the bare specifier too: the resolver leaves `exports`-only subpaths
+// unresolved, and an unresolved module keeps its specifier as its path.
+const REALTIME_SOCKET_CLIENT = String.raw`^@repo/realtime-client/connection$|(^|/)realtime-client/src/connection\.ts$`;
+const NODE_BUILTINS = `^(node:)?(${require("node:module")
+  .builtinModules.map((name) => name.replace(/[/]/g, "\\/"))
+  .join("|")})$`;
 
 /** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
@@ -22,9 +73,25 @@ module.exports = {
       to: { reachable: true, path: DESIGN_SYSTEM_RUNTIME },
     },
     {
+      name: "bootstrap-entry-import-safe",
+      comment:
+        "ISS-6330: src/main/index.ts must stay import-safe. Its module graph is evaluated BEFORE the crash handlers it registers exist, so a module that throws at evaluation time here exits silently — no dialog, no telemetry — which is strictly worse than having no handler at all. The eager path is deliberately four pure-data modules (the telemetry bridge, the exception sanitizer, and the two contract modules they read constants from). Reaching the OTel runtime, a transport, a vendor SDK, or the design-system runtime from here recreates that silent startup failure. Put the dependency behind the dynamic import() of startup.js instead.",
+      severity: "error",
+      from: { path: BOOTSTRAP_ENTRY },
+      to: { reachable: true, path: BOOTSTRAP_FORBIDDEN_REACH },
+    },
+    {
+      name: "bootstrap-entry-no-raw-io",
+      comment:
+        "ISS-6330: no filesystem, network, or process-spawning builtins on the pre-handler boot path — see bootstrap-entry-import-safe.",
+      severity: "error",
+      from: { path: BOOTSTRAP_ENTRY },
+      to: { reachable: true, path: BOOTSTRAP_FORBIDDEN_CORE },
+    },
+    {
       name: "app-otel-runtime-no-egress",
       comment:
-        "The main-process OTel runtime may egress only via the sanctioned relay transport (FEA-1993): no direct exporters, cloud-socket, vendor SDKs, the old observability path, or the design-system runtime.",
+        "The main-process OTel runtime may egress only via the injected keyless transport (FEA-1993; the API route since ISS-12211): no direct exporters, cloud-socket, vendor SDKs, the old observability path, or the design-system runtime.",
       severity: "error",
       from: { path: OTEL_RUNTIME_ENTRIES },
       to: {
@@ -82,6 +149,38 @@ module.exports = {
       severity: "error",
       from: { path: String.raw`^src/renderer/app-otel-runtime\.ts$` },
       to: { dependencyTypes: ["core"] },
+    },
+    {
+      name: "renderer-no-main-process",
+      comment:
+        "ISS-11262: the renderer must never (statically, transitively) import src/main, src/server, or the preload. Renderer code reaches the main process only through window.desktopApi.",
+      severity: "error",
+      from: { path: RENDERER_ENTRY },
+      to: { reachable: true, path: MAIN_PROCESS_SOURCE },
+    },
+    {
+      name: "renderer-no-electron",
+      comment:
+        "ISS-11262: electron is a main/preload dependency. The renderer runs sandboxed behind contextIsolation and cannot load it.",
+      severity: "error",
+      from: { path: RENDERER_ENTRY },
+      to: { reachable: true, path: ELECTRON_PACKAGE },
+    },
+    {
+      name: "renderer-no-node-builtins",
+      comment:
+        "ISS-11262: no Node builtin may be reachable from the renderer, including through a src/shared module. Keep node-only helpers out of any shared module the renderer imports.",
+      severity: "error",
+      from: { path: RENDERER_ENTRY },
+      to: { reachable: true, path: NODE_BUILTINS },
+    },
+    {
+      name: "renderer-no-realtime-socket",
+      comment:
+        "PLN-2162 M4 (ISS-11213 AC3): the main process holds the one realtime socket. The renderer joins channels through window.desktopApi.realtime and must never reach the realtime client that opens it.",
+      severity: "error",
+      from: { path: RENDERER_ENTRY },
+      to: { reachable: true, path: REALTIME_SOCKET_CLIENT },
     },
     {
       name: "transcript-sync-factory-no-inline-materialize",

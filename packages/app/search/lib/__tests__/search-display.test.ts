@@ -1,4 +1,5 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DOCUMENT_ROUTE_PREFIX } from "@repo/api/src/types/document";
 import type { SearchHit } from "@repo/api/src/types/search";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import { describe, expect, it } from "vitest";
@@ -92,7 +93,7 @@ describe("searchHitOrgRelativeRoute", () => {
           slug: "my-prd",
         })
       )
-    ).toBe("/prds/my-prd");
+    ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/my-prd`);
   });
 
   it("builds a team-scoped project route", () => {
@@ -107,14 +108,6 @@ describe("searchHitOrgRelativeRoute", () => {
     ).toBe("/teams/t1/projects/p1");
   });
 
-  it("builds a loop route by id", () => {
-    expect(
-      searchHitOrgRelativeRoute(
-        hit({ entityType: SearchEntityType.Loop, entityId: "l1" })
-      )
-    ).toBe("/loops/l1");
-  });
-
   it("returns null (non-link) when a document lacks the slug/subtype to route", () => {
     // Missing slug.
     expect(
@@ -122,7 +115,7 @@ describe("searchHitOrgRelativeRoute", () => {
         hit({ entityType: SearchEntityType.Document, entitySubtype: "PRD" })
       )
     ).toBeNull();
-    // Non-routable subtype (Template has no route prefix).
+    // A template has no detail route.
     expect(
       searchHitOrgRelativeRoute(
         hit({
@@ -178,12 +171,11 @@ describe("searchHitOrgRelativeRoute", () => {
 });
 
 describe("SEARCH_ENTITY_TYPE_LABELS", () => {
-  it("labels every Phase-1 corpus type", () => {
+  it("labels every offered corpus type", () => {
     expect(SEARCH_ENTITY_TYPE_LABELS[SearchEntityType.Document]).toBe(
       "Document"
     );
     expect(SEARCH_ENTITY_TYPE_LABELS[SearchEntityType.Project]).toBe("Project");
-    expect(SEARCH_ENTITY_TYPE_LABELS[SearchEntityType.Loop]).toBe("Loop");
   });
 
   it("labels an agent_component as Component (FEA-4011)", () => {

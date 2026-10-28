@@ -1,5 +1,9 @@
 import type { SessionQuality } from "@repo/api/src/agent-session-filters";
 import type {
+  AgentComponentInvocationSessionTreePage,
+  AgentComponentInvocationSessionTreeRequest,
+} from "@repo/api/src/types/agent-component-invocation-session-tree";
+import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
   AgentSessionHarnessBreakdown,
@@ -10,10 +14,15 @@ import type {
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
 import type {
+  AgentSessionEventsPage,
+  AgentSessionEventsPageRequest,
+} from "@repo/api/src/types/agent-session-events-page";
+import type {
   AgentSessionAgentTypeBreakdown,
   AgentSessionRepositoryBreakdown,
   AgentSessionToolBreakdown,
 } from "@repo/api/src/types/agent-session-usage-breakdown";
+import type { ListQueryExpression } from "@repo/api/src/types/list-query-expression";
 
 export const SHARED_AGENT_SESSIONS_IPC_CHANNELS = {
   list: "desktop:shared-agent-sessions:list",
@@ -23,23 +32,52 @@ export const SHARED_AGENT_SESSIONS_IPC_CHANNELS = {
   // FEA-4157: combined list + usage read (mirrors the branches `pageData`
   // channel) so the table and the summary cards share one raw scan.
   pageData: "desktop:shared-agent-sessions:page-data",
+  // ISS-9857: one keyset page of a session's raw events past the detail's
+  // bounded prefix — the IPC twin of `GET /agent-sessions/[id]/events`.
+  events: "desktop:shared-agent-sessions:events",
+  /**
+   * ISS-10737: every agent-component invocation of one session, as the Trace
+   * tab's tree — the IPC twin of `GET /agent-sessions/[id]/invocation-tree`.
+   */
+  invocationTree: "desktop:shared-agent-sessions:invocation-tree",
+  /**
+   * ISS-9802: abandon an in-flight read, named by the cancellation token the
+   * read carried. Not a read, but a member of this family on purpose — the
+   * register / unregister / disabled-responder passes all walk
+   * {@link SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST}, so declaring it here is what
+   * gives it a handler in every runtime state instead of one hand-maintained
+   * list at a time.
+   */
+  cancelRead: "desktop:shared-agent-sessions:cancel-read",
 } as const;
 
-export const SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST = [
-  SHARED_AGENT_SESSIONS_IPC_CHANNELS.list,
-  SHARED_AGENT_SESSIONS_IPC_CHANNELS.detail,
-  SHARED_AGENT_SESSIONS_IPC_CHANNELS.usage,
-  SHARED_AGENT_SESSIONS_IPC_CHANNELS.analytics,
-  SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData,
-] as const;
+/**
+ * ISS-8143: derived from the CHANNEL OBJECT, so an unmapped channel fails `tsc`
+ * at the `never` guard in `resolveDisabledSharedAgentSessionsIpcResponse`. A
+ * union taken from the registration list instead does not widen when a channel
+ * is added to the object, which silently disarms the guard it is supposed to
+ * feed.
+ */
+export type SharedAgentSessionsIpcChannel =
+  (typeof SHARED_AGENT_SESSIONS_IPC_CHANNELS)[keyof typeof SHARED_AGENT_SESSIONS_IPC_CHANNELS];
+
+/**
+ * ISS-8143: DERIVED from the channel object, never restated beside it. The
+ * installers iterate this list, so a channel present in the object but missing
+ * from a hand-written list registers no handler at all — the renderer's invoke
+ * hangs against a channel nothing answers, and `tsc` says nothing because the
+ * union comes from the object. Deriving the list makes that omission impossible
+ * to write, which is what AGENTS.md asks for over a side inventory guarded by a
+ * parity test.
+ */
+export const SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST: readonly SharedAgentSessionsIpcChannel[] =
+  Object.values(SHARED_AGENT_SESSIONS_IPC_CHANNELS);
 
 /** Display label for local Desktop sessions that have no reliable user profile. */
 export const DESKTOP_LOCAL_SESSION_AUTHOR_LABEL = "Local Desktop session";
 
-export type SharedAgentSessionsIpcChannel =
-  (typeof SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST)[number];
-
 export type SharedAgentSessionsQuery = {
+  componentSlug?: string;
   startDate?: string;
   endDate?: string;
   /**
@@ -71,6 +109,12 @@ export type SharedAgentSessionsQuery = {
   changePresence?: readonly string[];
   prAssociation?: readonly string[];
   /**
+   * ISS-10332: the cloud `priorities` facet — `Priority` members plus the
+   * search grammar's unset token (`PRIORITY_FILTER_VALUES`). A value outside
+   * that vocabulary is refused, as the cloud's validator refuses it.
+   */
+  priorities?: readonly string[];
+  /**
    * FEA-3284/FEA-3345/FEA-4145 session quality: `substantive` (idle/phantom rows
    * hidden), `idle` (only idle/phantom rows), or `all` (both). Absent = the
    * fail-open `all` default (`DEFAULT_SESSION_QUALITY`). Mirrors the cloud
@@ -91,10 +135,61 @@ export type SharedAgentSessionsQuery = {
   /** Column-header sort: column id + direction. */
   sortBy?: string;
   sortDir?: "asc" | "desc";
+  /**
+   * ISS-8335's ordered multi-rule spelling of the same axis, one
+   * `<column>:<dir>` entry per rule — MODELLED HERE SO IT CAN BE REFUSED.
+   *
+   * The shared `AgentSessionQueryFilters` carries it and the desktop-local data
+   * source forwards its filters to this contract verbatim, so a v2 Sessions host
+   * mounted on desktop reaches this source with a stacked rule list whether the
+   * type admits it or not. It was not admitted before ISS-8679, which meant the
+   * list ordered by the `sortBy`/`sortDir` back-compat echo of the LEAD rule
+   * alone while the toolbar that stacked them said otherwise — the ISS-8335
+   * defect reappearing on the other surface with nothing to announce it.
+   *
+   * This source applies ONE rule: its ordering is split across the cursor-page
+   * SQL, the repository-scoped id SQL and the hydrated key comparator, and each
+   * carries a single column. So `sanitizeQuery` refuses a request that resolves
+   * to more than one rule rather than silently dropping the rest.
+   */
+  sorts?: readonly string[];
+  /**
+   * ISS-9479: the canonical list query expression (ISS-9476), as a structured
+   * value under the `LIST_QUERY_EXPRESSION_PARAM` key. Main lowers it into the
+   * legacy params above before any read runs (`compileSessionListQueryRequest`),
+   * and refuses the request when it cannot serve the expression or when the
+   * request also sends a legacy spelling of one of its axes. A Desktop main
+   * older than ISS-9479 strips the key and answers unfiltered, so a client must
+   * not send it to one.
+   */
+  listQuery?: ListQueryExpression;
 };
 
 export type SharedAgentSessionsListRequest = SharedAgentSessionsQuery & {
   ids?: readonly string[];
+};
+
+/**
+ * ISS-9802 — the cancel channel's payload.
+ *
+ * `cancellationToken` is OPTIONAL because the payload crosses `ipcRenderer.invoke`
+ * and is therefore unconstrained at runtime; main answers a missing or malformed
+ * token with `requested: false` rather than throwing, so a malformed cancel
+ * costs the caller nothing.
+ */
+export type SharedAgentSessionsCancelReadRequest = {
+  cancellationToken?: string;
+};
+
+/**
+ * Whether main FORWARDED the cancellation — never whether the read stopped.
+ *
+ * The store thread is the only side that knows if the op was still running, and
+ * it answers nothing: the cancelled read settles through its own correlation.
+ * So this reports admission and no more, and the name says so.
+ */
+export type SharedAgentSessionsCancelReadResult = {
+  requested: boolean;
 };
 
 export type SharedAgentSessionListItem = AgentSessionListItem;
@@ -110,6 +205,13 @@ export type SharedAgentSessionRepositoryBreakdown =
   AgentSessionRepositoryBreakdown;
 export type SharedAgentSessionAnalytics = AgentSessionAnalytics;
 export type SharedAgentSessionsPageDataResponse = AgentSessionsPageData;
+export type SharedAgentSessionEventsPageRequest = AgentSessionEventsPageRequest;
+export type SharedAgentSessionEventsPage = AgentSessionEventsPage;
+/** ISS-10737: the Trace tab's session-scoped invocation tree, over IPC. */
+export type SharedAgentSessionInvocationTreeRequest =
+  AgentComponentInvocationSessionTreeRequest;
+export type SharedAgentSessionInvocationTreePage =
+  AgentComponentInvocationSessionTreePage;
 
 export const SHARED_AGENT_SESSIONS_NOT_FOUND_CODE =
   "LOCAL_AGENT_SESSION_NOT_FOUND" as const;
@@ -151,7 +253,7 @@ export function emptySharedAgentSessionsUsageSummary(): SharedAgentSessionUsageS
     totalEstimatedCost: 0,
     subscriptionEstimatedCost: 0,
     apiEstimatedCost: 0,
-    // ISS-4773 (wongk review): this build CAN split the bucket, so the empty
+    // ISS-4773 (whitlockk review): this build CAN split the bucket, so the empty
     // response must say so with explicit zeroes. Omitting them is the wire
     // signal for "producer predates ISS-4773", which would make a CURRENT
     // Desktop's empty/disabled IPC state fall back to the pre-ISS-4773

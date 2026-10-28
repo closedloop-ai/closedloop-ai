@@ -7,10 +7,10 @@
  * pass is exercised in isolation from the structural tiler.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
 import { EvidenceLayer } from "../src/main/collectors/evidence/evidence-model.js";
 import type { RelabelableSegment } from "../src/main/collectors/parsing/activity-segment-relabel.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import {
   applyStatefulPhaseCarry,
   CARRIED_CONFIDENCE,

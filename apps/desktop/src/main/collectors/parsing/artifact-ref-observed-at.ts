@@ -45,10 +45,12 @@
  * ## Why every step VALIDATES instead of coalescing (ISS-5236 review)
  *
  * A bare `??` chain treats any non-null string as a timestamp, and the source
- * strings here are NOT trustworthy. `toIso` (`@repo/lib/harness/parser-utils`)
- * returns an unparseable string VERBATIM rather than null, and Claude's `isoTs`
- * passes any string through with no parsing at all — deliberately, to mirror the
- * vendors' leniency. Those feed `session.startedAt` on all five harnesses and
+ * strings here are NOT trustworthy. ISS-6738 collapsed the two normalizers into
+ * one `toIso` (`@repo/lib/harness/parser-utils`) that returns null for text no
+ * `Date` can read and canonical UTC otherwise — so a NEW parse no longer emits
+ * junk. Rows persisted before that still carry it, and nothing rewrites them,
+ * so the validation below is still load-bearing. Those feed
+ * `session.startedAt` on all five harnesses and
  * `NormalizedToolUse.timestamp` on OpenCode (whose values come from arbitrary
  * TEXT columns in the user's `opencode.db`). So a junk string genuinely reaches
  * here, and `??` would prefer it precisely because it is non-null.
@@ -73,11 +75,11 @@
  * ## Why every step also CANONICALIZES (ISS-5427)
  *
  * Validating is necessary but not sufficient. `validIso` returns its input
- * VERBATIM, and the source instants it admits are not all in one format:
- * Claude's `isoTs` passes a transcript string through unparsed, so
- * `session.startedAt` — and an OpenCode `tu.timestamp` read out of an arbitrary
- * TEXT column — can be offset-form (`2026-08-06T10:00:00-05:00`) rather than
- * canonical UTC 'Z'. Before ISS-5236 that could not happen here, because every
+ * VERBATIM, and the source instants it admits are not all in one format.
+ * Since ISS-6738 `toIso` ends in `date.toISOString()`, so a freshly parsed
+ * `session.startedAt` is canonical UTC 'Z'. But rows written before it — and an
+ * OpenCode `tu.timestamp` already persisted out of an arbitrary TEXT column —
+ * can still be offset-form (`2026-08-06T10:00:00-05:00`). Before ISS-5236 that could not happen here, because every
  * scan-time ref was stamped from the import wall clock, which is canonical by
  * construction; taking the harness-supplied instant is what let a second format
  * into the column.

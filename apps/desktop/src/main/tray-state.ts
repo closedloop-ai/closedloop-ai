@@ -74,6 +74,16 @@ export function refreshDesktopTrayState(
     return;
   }
 
+  if (inputs.cloudStatus.state === "disabled") {
+    // Not "connecting": nothing is being attempted. Ready, because an off cloud
+    // is a working app, not a degraded one.
+    inputs.tray.setState(
+      "ready",
+      explicitDetails ?? `Serving on localhost:${port} | cloud: off`
+    );
+    return;
+  }
+
   inputs.tray.setState(
     "ready",
     explicitDetails ?? `Serving on localhost:${port} | cloud: connecting`

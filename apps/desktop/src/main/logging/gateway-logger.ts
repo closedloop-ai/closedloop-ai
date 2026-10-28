@@ -5,7 +5,7 @@
  */
 
 import { isBrokenPipeError } from "../../shared/broken-pipe.js";
-import { writeGatewayLogEntry } from "./persistent-log.js";
+import { writeGatewayLogEntry } from "./durable-log-sink.js";
 
 export type LogLevel = "info" | "warn" | "error";
 export type LogSession = "current" | "previous";

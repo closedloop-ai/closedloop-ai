@@ -4,9 +4,12 @@
  *
  * Reads migration.sql files from prisma/migrations in migration order and
  * writes src/main/database/migration/migrations-manifest.ts: an ordered array
- * of { name, checksum, sql }. New migrations use 000N_<name>; the one
- * timestamp-prefixed FEA-2030 migration is kept immutable and ordered at its
- * original slot. The runtime migration runner consumes this instead of reading
+ * of { name, checksum, sql }. New migrations use <YYYYMMDDHHMMSS>_<name>
+ * (`date -u +%Y%m%d%H%M%S`); ISS-10416 retired the contiguous 000N scheme and
+ * `migration-order.mjs` owns the rule and the boundary. Every committed name,
+ * 000N and timestamped alike, is immutable and ordered at its original slot —
+ * including the FEA-2030 one that predates the scheme, which is remapped by
+ * `legacyMigrationSortKeys`. The runtime migration runner consumes this instead of reading
  * the filesystem, so migrations survive tarball staging into the packaged asar
  * (mirrors the build-info.ts prebuild + gitignore precedent).
  *

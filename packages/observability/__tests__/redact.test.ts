@@ -118,6 +118,113 @@ describe("redactSensitiveText", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ISS-7086 — URL userinfo credentials, at every host shape
+//
+// This sink is where a `scheme://user:pass@host` credential used to leak. Until
+// ISS-6993 added `urlUserinfoCredential` to the telemetry vocabulary there was
+// no URL rule here at all, so the ONLY thing that happened to remove such a
+// credential was `EMAIL_VALUE_RE` below `redactSensitiveText` accidentally
+// matching `pass@dotted.host` as an email address — and it requires a dotted
+// TLD. A bare hostname (`localhost`, `db`, `redis`), an IPv4 literal, and an
+// IPv6 literal all fail that rule, so the password reached the Datadog intake
+// and the log-drain line in clear. Those are exactly the hosts a local or
+// development connection string carries.
+//
+// The vocabulary now matches the userinfo run itself and the host is no longer
+// consulted, so all four shapes are redacted. NOTHING IN THIS PACKAGE PINNED
+// THAT: before this block, `redact.test.ts` carried no credentialed-URL case of
+// any kind, so removing `urlUserinfoCredential` from the vocabulary left this
+// suite — the suite that owns the leaking sink — entirely green while three of
+// the four shapes went back to leaking.
+//
+// Every row here, dotted included, goes red under that removal — the assertions
+// are exact-equality, and an email-rule substitution lands on a different span
+// than a userinfo-run one. What separates them is the CONSEQUENCE: on the dotted
+// row the mutation costs no leak, because the email rule still removes the
+// password, whereas on the other three the password reaches the sink verbatim.
+// That is why the dotted row is the regression guard rather than the proof, and
+// why it must keep its exact-equality assertion instead of a weaker
+// `not.toContain`.
+//
+// There is no `SECRET_PRETEST`-style early bail on this sink; `redactSensitiveText`
+// runs both replaces unconditionally. The pretest hazard applies to the
+// transcript twin (`@repo/lib/security/redact-secrets`), which has its own cases.
+// ---------------------------------------------------------------------------
+
+describe("redactSensitiveText — URL userinfo credentials (ISS-7086)", () => {
+  const PASSWORD = "s3cr3tpw";
+
+  it("scrubs the credential when the host is a bare hostname with no dot", () => {
+    // The failing shape. `localhost` has no dotted TLD, so the email rule never
+    // saw it and the password went to the sink verbatim.
+    expect(
+      redactSensitiveText(`dial redis://:${PASSWORD}@localhost:6379`)
+    ).toBe(`dial ${REDACTED}localhost:6379`);
+  });
+
+  it("scrubs the credential for the bare hostnames a compose file actually uses", () => {
+    // `db` and `rabbitmq` are service names, not hosts with a public TLD — the
+    // single most common way an inline credential reaches an error message.
+    expect(redactSensitiveText(`postgres://user:${PASSWORD}@db`)).toBe(
+      `${REDACTED}db`
+    );
+    expect(redactSensitiveText(`amqp://user:${PASSWORD}@rabbitmq`)).toBe(
+      `${REDACTED}rabbitmq`
+    );
+  });
+
+  it("still scrubs the credential when the host IS dotted (regression guard)", () => {
+    expect(
+      redactSensitiveText(
+        `dial postgres://svc_user:${PASSWORD}@db.example.com:5432/app`
+      )
+    ).toBe(`dial ${REDACTED}db.example.com:5432/app`);
+  });
+
+  it("scrubs the credential when the host is an IPv4 literal", () => {
+    // The email rule needs LETTERS after the final dot, so a dotted-quad host
+    // failed it just as a bare hostname did.
+    expect(
+      redactSensitiveText(`dial redis://:${PASSWORD}@127.0.0.1:6379`)
+    ).toBe(`dial ${REDACTED}127.0.0.1:6379`);
+  });
+
+  it("scrubs the credential when the host is a bracketed IPv6 literal", () => {
+    expect(redactSensitiveText(`dial redis://:${PASSWORD}@[::1]:6379`)).toBe(
+      `dial ${REDACTED}[::1]:6379`
+    );
+  });
+
+  it("leaves a credential-free URL alone at every one of those host shapes", () => {
+    // The other direction: a rule that matched the host rather than the userinfo
+    // run would pass every case above and destroy these. Each carries a port, so
+    // the port colon is available to stand in for a user/password separator.
+    //
+    // The first fixture has no `@` at all, so on its own it proves only that
+    // there was nothing to match. The three after it each carry a real `@`
+    // further along the URL for the password run to scan to, which is what makes
+    // them a DECLINE rather than an absence of input — and it is the shape that
+    // actually regressed once, in PR #5339's review.
+    const bareHost = "dial redis://localhost:6379 timed out";
+    expect(redactSensitiveText(bareHost)).toBe(bareHost);
+
+    // Bare hostname, port, and an `@` past the end of the authority. Only the
+    // email is replaced; the scheme, host, and port survive.
+    expect(
+      redactSensitiveText("dial redis://localhost:6379#owner@example.com")
+    ).toBe(`dial redis://localhost:6379#${REDACTED}`);
+
+    // The same, at the two IP-literal hosts.
+    expect(
+      redactSensitiveText("POST http://[::1]:4318#owner@example.com")
+    ).toBe(`POST http://[::1]:4318#${REDACTED}`);
+    expect(
+      redactSensitiveText("GET http://127.0.0.1:8080?email=ops@example.com")
+    ).toBe(`GET http://127.0.0.1:8080?email=${REDACTED}`);
+  });
+});
+
 describe("redactLogValue", () => {
   it("redacts the whole value when the key is sensitive", () => {
     expect(redactLogValue("apiKey", "sk_live_xyz")).toBe(REDACTED);
@@ -196,5 +303,32 @@ describe("log meta redaction reaches the Datadog intake body", () => {
     // Non-sensitive metric fields are preserved.
     expect(body[0].inputTokens).toBe(42);
     expect(body[0].message).toBe("user authenticated");
+  });
+
+  it("keeps a bare-hostname connection-string password out of the intake body (ISS-7086)", async () => {
+    // The end-to-end form of the block above: the unit assertions prove the
+    // vocabulary matches, this proves the match is actually on the wire path a
+    // credential travels. `connectionString` is not a sensitive KEY name — it
+    // carries none of the fragments in `SENSITIVE_KEY_FRAGMENTS` — so the only
+    // thing standing between this password and Datadog is the value rule.
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.2.3");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123def456");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.error("redis connect failed", {
+      connectionString: "redis://:s3cr3tpw@localhost:6379",
+    });
+    await log.flush();
+
+    const raw = fetchMock.mock.calls[0][1].body as string;
+    expect(raw).not.toContain("s3cr3tpw");
+
+    const body = parseFlushedBody<{ connectionString: string }>(fetchMock);
+    // The host and port survive so the failure stays diagnosable.
+    expect(body[0].connectionString).toBe(`${REDACTED}localhost:6379`);
   });
 });

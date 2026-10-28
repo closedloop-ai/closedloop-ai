@@ -46,7 +46,7 @@ export function pluginPackCandidates(merged: {
 /**
  * The additive `packIds` half of one emitted list row — the parent-pack identity
  * a consumer needs to tell a plugin's rolled-up total apart from the specific
- * child rows it was rolled up FROM (wongk review on #4902).
+ * child rows it was rolled up FROM (whitlockk review on #4902).
  *
  * A plugin emits the SAME candidate set {@link pluginPackCandidates} gave
  * `resolvePluginUsage`, so the emitted identity and the emitted number can never

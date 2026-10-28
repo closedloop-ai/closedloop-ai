@@ -3,14 +3,14 @@ import {
   BranchCommentsBudget,
   BranchCommentsState,
   type BranchPrCommentsResponse,
-  fitBranchPrCommentsResponseBudget,
 } from "./branch";
+import { fitBranchPrCommentsResponseBudget } from "./branch-comments-budget";
 
 describe("BranchPrCommentsResponse", () => {
   it("preserves additive repository identity through response budgeting", () => {
     const response: BranchPrCommentsResponse = {
       branchId: "branch-1",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       state: BranchCommentsState.SyncedEmpty,
       comments: [],
       budget: {
@@ -27,11 +27,11 @@ describe("BranchPrCommentsResponse", () => {
       stale: false,
       mixedProjection: false,
       prNumber: 17,
-      prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/17",
+      prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/17",
     };
 
     expect(fitBranchPrCommentsResponseBudget(response)).toMatchObject({
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       prNumber: 17,
     });
   });
@@ -64,6 +64,6 @@ function commentsResponse(): BranchPrCommentsResponse {
     stale: false,
     mixedProjection: false,
     prNumber: 17,
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/17",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/17",
   };
 }

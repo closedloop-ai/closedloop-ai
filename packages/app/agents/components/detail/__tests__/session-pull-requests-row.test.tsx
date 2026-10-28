@@ -10,10 +10,10 @@
 import type { SessionPR } from "@repo/api/src/types/agent-session";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { SESSION_EMPTY_PULL_REQUESTS_LABEL } from "../detail-content";
+import { SESSION_EMPTY_PULL_REQUESTS_LABEL } from "../session-pull-requests-label";
 import { SessionPullRequestsRow } from "../session-pull-requests-row";
 
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 
 function renderRow({ prs }: { prs: readonly SessionPR[] }) {
   return render(<SessionPullRequestsRow prs={prs} repositoryFullName={REPO} />);

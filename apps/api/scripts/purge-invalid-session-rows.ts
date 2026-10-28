@@ -22,8 +22,7 @@
  * rows the backup does NOT capture — `artifact_links`,
  * `tag_artifacts`, `favorite_artifacts`,
  * `comment_threads`, `artifact_evaluations`, `artifact_ratings`,
- * `file_attachments`, `linear_subtasks` — and NULLs the `loops` /
- * `loop_session_artifact` pointers (`onDelete: SetNull`). The session payload
+ * `file_attachments`, `linear_subtasks`. The session payload
  * itself is reconstructed by client resync, but those human/server-side
  * associations are NOT — once deleted they are gone unless restored by hand.
  * For stale invalid sessions they are almost always absent, so the dry run
@@ -52,6 +51,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Prisma, withDb } from "@repo/database";
+import { type ScriptOutput, scriptOutput } from "./script-progress-output";
 
 /** Characters in an ISO timestamp that are unsafe in a filename. */
 const BACKUP_TIMESTAMP_UNSAFE_CHARS = /[:.]/g;
@@ -254,12 +254,10 @@ export async function countOrphanedChildren(
 }
 
 /**
- * Associations on the matched artifacts that the cascade ALSO removes — or, for
- * Loop pointers, nulls — but that the JSON backup does NOT capture and client
- * resync does NOT rebuild: human/server-side state (comments, favorites, tags,
- * ratings, evaluations, artifact links, attachments, Linear subtasks) and Loop
- * references (`Loop.artifactId` / `Loop.sessionArtifactId` are `onDelete:
- * SetNull`, so a referencing loop survives with a dangling pointer). For stale
+ * Associations on the matched artifacts that the cascade ALSO removes but that
+ * the JSON backup does NOT capture and client resync does NOT rebuild:
+ * human/server-side state (comments, favorites, tags, ratings, evaluations,
+ * artifact links, attachments, Linear subtasks). For stale
  * invalid sessions these are almost always zero, but "almost always" is not a
  * gate — the dry run reports them so an operator can confirm none exist (or
  * consciously accept the loss) before executing.
@@ -273,8 +271,6 @@ export type CascadeAssociationCounts = {
   tagArtifacts: number;
   favorites: number;
   linearSubtasks: number;
-  /** Loops left with a dangling pointer (SetNull), not deleted. */
-  loopReferences: number;
   /** Sum of every field above — the single go/no-go signal. */
   total: number;
 };
@@ -288,7 +284,6 @@ const ZERO_ASSOCIATIONS: CascadeAssociationCounts = {
   tagArtifacts: 0,
   favorites: 0,
   linearSubtasks: 0,
-  loopReferences: 0,
   total: 0,
 };
 
@@ -304,34 +299,24 @@ export async function countCascadeAssociations(
   orgId: string
 ): Promise<CascadeAssociationCounts> {
   const sessionWhere = invalidSessionWhere(orgId);
-  const [withCounts, loopReferences] = await Promise.all([
-    db.artifact.findMany({
-      where: { session: sessionWhere },
-      select: {
-        _count: {
-          select: {
-            sourceLinks: true,
-            targetLinks: true,
-            ratings: true,
-            evaluations: true,
-            commentThreads: true,
-            fileAttachments: true,
-            tagArtifacts: true,
-            favoritedBy: true,
-            linearSubtasks: true,
-          },
+  const withCounts = await db.artifact.findMany({
+    where: { session: sessionWhere },
+    select: {
+      _count: {
+        select: {
+          sourceLinks: true,
+          targetLinks: true,
+          ratings: true,
+          evaluations: true,
+          commentThreads: true,
+          fileAttachments: true,
+          tagArtifacts: true,
+          favoritedBy: true,
+          linearSubtasks: true,
         },
       },
-    }),
-    db.loop.count({
-      where: {
-        OR: [
-          { artifact: { session: sessionWhere } },
-          { sessionArtifact: { session: sessionWhere } },
-        ],
-      },
-    }),
-  ]);
+    },
+  });
 
   const counts = withCounts.reduce<CascadeAssociationCounts>(
     (acc, { _count: c }) => {
@@ -347,7 +332,6 @@ export async function countCascadeAssociations(
     },
     { ...ZERO_ASSOCIATIONS }
   );
-  counts.loopReferences = loopReferences;
   counts.total =
     counts.artifactLinks +
     counts.ratings +
@@ -356,8 +340,7 @@ export async function countCascadeAssociations(
     counts.fileAttachments +
     counts.tagArtifacts +
     counts.favorites +
-    counts.linearSubtasks +
-    counts.loopReferences;
+    counts.linearSubtasks;
   return counts;
 }
 
@@ -606,10 +589,10 @@ export async function writeBackupToFile(backup: PurgeBackup): Promise<string> {
   return path;
 }
 
-export async function main() {
+export async function main(output: ScriptOutput = scriptOutput) {
   const config = resolveRunConfig(process.env);
   if (!config.ok) {
-    console.error(`ERROR: ${config.error}`);
+    await output.error(`ERROR: ${config.error}`);
     process.exit(1);
   }
 
@@ -622,7 +605,7 @@ export async function main() {
     process.env.PURGE_TX_MAX_WAIT_MS,
     DEFAULT_PURGE_TX_MAX_WAIT_MS
   );
-  console.log(
+  await output.log(
     `Invalid session_detail purge — mode: ${dryRun ? "DRY RUN" : "EXECUTE"}, ` +
       `org: ${orgId}, min_revision: ${CURRENT_SERVER_MIN_REVISION}` +
       (dryRun ? "" : `, tx_timeout_ms: ${txTimeoutMs}`)
@@ -633,7 +616,7 @@ export async function main() {
     { writeBackup: writeBackupToFile, txTimeoutMs, txMaxWaitMs }
   );
 
-  console.log(
+  await output.log(
     `  Matched ${report.targetCount} invalid session(s); dependents: ` +
       `${report.tokenUsageCount} token-usage, ${report.eventCount} event row(s).`
   );
@@ -642,34 +625,33 @@ export async function main() {
   if (a.total > 0) {
     // Visible warning, not suppressed: these are removed/nulled by the cascade,
     // are NOT in the backup, and are NOT rebuilt by client resync.
-    console.warn(
+    await output.warn(
       `  ⚠ ${a.total} backup-uncaptured association(s) on the matched ` +
         "artifacts (NOT reversible by resync — review before executing):\n" +
         `      artifact_links=${a.artifactLinks}, ` +
         `comment_threads=${a.commentThreads}, ratings=${a.ratings}, ` +
         `evaluations=${a.evaluations}, tags=${a.tagArtifacts}, ` +
         `favorites=${a.favorites}, attachments=${a.fileAttachments}, ` +
-        `linear_subtasks=${a.linearSubtasks}, ` +
-        `loop_references=${a.loopReferences} (loops left with a dangling pointer)`
+        `linear_subtasks=${a.linearSubtasks}`
     );
   } else {
-    console.log(
+    await output.log(
       "  No backup-uncaptured associations (links/comments/tags/favorites/" +
-        "ratings/evaluations/attachments/loop refs) on the matched artifacts."
+        "ratings/evaluations/attachments) on the matched artifacts."
     );
   }
 
   if (dryRun) {
-    console.log("\nDry run complete. Set DRY_RUN=0 to execute.");
+    await output.log("\nDry run complete. Set DRY_RUN=0 to execute.");
     return;
   }
 
   if (report.targetCount === 0) {
-    console.log("\nNothing to purge.");
+    await output.log("\nNothing to purge.");
     return;
   }
 
-  console.log(
+  await output.log(
     `  Backup written: ${report.backupPath}\n` +
       `  Deleted ${report.deletedCount} parent artifact(s)/session(s); ` +
       "children removed by cascade; orphan check passed."
@@ -678,7 +660,8 @@ export async function main() {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((err) => {
-    console.error("Invalid session purge failed:", err);
-    process.exit(1);
+    scriptOutput
+      .error("Invalid session purge failed:", err)
+      .finally(() => process.exit(1));
   });
 }

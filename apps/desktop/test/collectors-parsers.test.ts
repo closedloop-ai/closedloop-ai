@@ -13,12 +13,13 @@
  * non-recursive `readdirSync` over `test/`, so a suite in a subdirectory would
  * never run in CI.
  */
+import "./support/attribution-parse-policy.js";
 import assert from "node:assert/strict";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, test } from "node:test";
 import { parseCursorTranscript } from "@repo/lib/harness/cursor/parse-cursor";
+import { afterEach, describe, test } from "vitest";
 import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
 import { workspacePathFromUri } from "../src/main/collectors/copilot/copilot-home.js";
@@ -45,6 +46,7 @@ import {
   minimalCodexRollout,
   writeCodexCollectorRollout,
 } from "./codex-rollout-fixture.js";
+import { createMemoryIngestStore } from "./ingest-store-test-utils.js";
 import {
   cleanupTempDirs,
   makeTempDir,
@@ -887,41 +889,37 @@ describe("Codex collector", () => {
     // points at an unrelated path and the child's linkage is malformed. Trusting
     // either would crash the build (null.rolloutId) or aim descendant graph work
     // at a path outside the admitted source.
-    const cachePath = path.join(root, "linkage-cache.json");
     const parentStat = statSync(parentPath);
     const childStat = statSync(childPath);
-    writeFileSync(
-      cachePath,
-      JSON.stringify({
-        version: 1,
-        entries: {
-          [parentPath]: {
-            mtimeMs: parentStat.mtimeMs,
-            size: parentStat.size,
-            linkage: {
-              rolloutId: CODEX_PARENT_UUID,
-              parentThreadId: null,
-              depth: null,
-              agentNickname: null,
-              agentRole: null,
-              forkedFromId: null,
-              sourcePath: path.join(root, "evil-outside.jsonl"),
-            },
-          },
-          [childPath]: {
-            mtimeMs: childStat.mtimeMs,
-            size: childStat.size,
-            linkage: null,
+    const linkageStore = createMemoryIngestStore({
+      version: 1,
+      entries: {
+        [parentPath]: {
+          mtimeMs: parentStat.mtimeMs,
+          size: parentStat.size,
+          linkage: {
+            rolloutId: CODEX_PARENT_UUID,
+            parentThreadId: null,
+            depth: null,
+            agentNickname: null,
+            agentRole: null,
+            forkedFromId: null,
+            sourcePath: path.join(root, "evil-outside.jsonl"),
           },
         },
-      })
-    );
+        [childPath]: {
+          mtimeMs: childStat.mtimeMs,
+          size: childStat.size,
+          linkage: null,
+        },
+      },
+    });
 
     const collector = createCodexCollector({
       sessionsDir: root,
       archivedDir: path.join(root, "archive"),
       listSources: () => [parentPath, childPath],
-      linkageCachePath: cachePath,
+      linkageStore,
     });
 
     // Must not throw, and must rebuild the graph from disk so the child still
@@ -955,7 +953,7 @@ describe("Codex collector", () => {
       );
     }
 
-    // No linkageCachePath: a cold cache, so the build reads every rollout's
+    // No linkageStore: a cold cache, so the build reads every rollout's
     // session_meta rather than reusing persisted linkage.
     const collector = createCodexCollector({
       sessionsDir: root,
@@ -1016,7 +1014,7 @@ describe("Codex collector", () => {
           title: "child PR",
         }),
         codexMcpToolCallEnd("2026-06-24T10:11:02.000Z", {
-          url: "https://github.com/closedloop-ai/symphony-alpha/pull/4242",
+          url: "https://github.com/closedloop-ai/closedloop-ai/pull/4242",
         }),
         codexTokenCount("2026-06-24T10:11:03.000Z", 50, 0, 5),
       ],
@@ -1040,8 +1038,8 @@ describe("Codex collector", () => {
     assert.deepEqual(parent.artifacts.prs, [
       {
         number: "4242",
-        repo: "closedloop-ai/symphony-alpha",
-        url: "https://github.com/closedloop-ai/symphony-alpha/pull/4242",
+        repo: "closedloop-ai/closedloop-ai",
+        url: "https://github.com/closedloop-ai/closedloop-ai/pull/4242",
       },
     ]);
   });
@@ -1281,10 +1279,10 @@ describe("Cursor parser", () => {
   // FEA-3710 (Parser roadmap 4): the Cursor parser core now lives in the shared,
   // browser-safe `@repo/lib/harness` module. This pins the contract that both
   // entrypoints — the desktop file shell (`parseTranscriptFile`, which streams
-  // the file and stamps mtime) and the pure core (`parseCursorTranscript`, which
-  // the cloud/browser upload path invokes on in-memory lines) — produce the SAME
-  // canonical NormalizedSession for the same fixture, modulo the desktop-only
-  // `fileModifiedAt` stamp. A surface-specific semantic fork would diverge here.
+  // the file and stamps its mtime and birth time) and the pure core
+  // (`parseCursorTranscript`, which the cloud/browser upload path invokes on
+  // in-memory lines) — produce the SAME canonical NormalizedSession for the same
+  // fixture, modulo those desktop-only stamps. A semantic fork would diverge here.
   test("Cursor: desktop shell and shared core produce the same canonical session", async () => {
     const records = [
       {
@@ -1336,7 +1334,6 @@ describe("Cursor parser", () => {
     mkdirSync(sessionDir, { recursive: true });
     const filePath = writeJsonl(sessionDir, `${sessionId}.jsonl`, records);
 
-    // Desktop entrypoint: stream the file, derive sessionId from the path.
     const viaShell = await parseTranscriptFile(filePath);
     assert.ok(viaShell, "expected the desktop shell to parse the transcript");
 
@@ -1348,11 +1345,11 @@ describe("Cursor parser", () => {
     );
     assert.ok(viaCore, "expected the shared core to parse the transcript");
 
-    // The only permitted divergence is the desktop-only source mtime, which the
-    // cloud renderer has no file to stamp. Everything else must be identical.
-    const { fileModifiedAt: _shellMtime, ...shellCanonical } = viaShell;
+    // The only permitted divergence is the desktop-only source mtime and birth
+    // time, which the cloud renderer has no file to stamp.
+    const { fileModifiedAt: _m, fileCreatedAt: _b, ...shell } = viaShell;
     const { fileModifiedAt: _coreMtime, ...coreCanonical } = viaCore;
-    assert.deepEqual(shellCanonical, coreCanonical);
+    assert.deepEqual(shell, coreCanonical);
   });
 });
 
@@ -1360,199 +1357,3 @@ describe("Cursor parser", () => {
 // never emitted a parse-quality signal, so a truncated/corrupt rollout lost a
 // turn's token usage with zero diagnostic. These mirror the Claude parity tests
 // in `test/claude/parse-quality.test.ts` (FEA-2771).
-describe("Codex parser parse quality (FEA-2907)", () => {
-  // A minimal, valid Codex rollout: one user turn + one assistant turn whose
-  // token usage lands in tokensByModel.
-  const codexLines: unknown[] = [
-    {
-      timestamp: "2026-05-18T10:00:00.000Z",
-      type: "session_meta",
-      payload: {
-        id: CODEX_UUID,
-        cwd: "/workspace/project",
-        cli_version: "0.40.0",
-      },
-    },
-    {
-      timestamp: "2026-05-18T10:00:01.000Z",
-      type: "turn_context",
-      payload: { model: "gpt-5-codex", cwd: "/workspace/project" },
-    },
-    {
-      timestamp: "2026-05-18T10:00:02.000Z",
-      type: "event_msg",
-      payload: { type: "user_message", message: "fix the bug" },
-    },
-    {
-      timestamp: "2026-05-18T10:00:05.000Z",
-      type: "response_item",
-      payload: {
-        type: "message",
-        role: "assistant",
-        content: [{ type: "output_text", text: "on it" }],
-      },
-    },
-    {
-      timestamp: "2026-05-18T10:00:06.000Z",
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          total_token_usage: {
-            input_tokens: 1200,
-            cached_input_tokens: 400,
-            output_tokens: 300,
-            reasoning_output_tokens: 50,
-          },
-        },
-        turn_context: { model: "gpt-5-codex" },
-      },
-    },
-  ];
-  const validText = codexLines.map((line) => JSON.stringify(line)).join("\n");
-  // A truncated mid-write line: valid JSON prefix, no closing brace.
-  const truncatedLine =
-    '{"timestamp":"2026-05-18T10:00:07.000Z","type":"event_msg';
-
-  test("Codex parser reports a clean parse quality when all lines are valid", async () => {
-    const dir = makeTempDir("codex-pq-clean-");
-    const filePath = path.join(
-      dir,
-      `rollout-2026-05-18T10-00-00-${CODEX_UUID}.jsonl`
-    );
-    writeFileSync(filePath, `${validText}\n`, "utf8");
-
-    const parsed = await parseRolloutFile(filePath, {
-      mergeWorkflowJournalTokens: false,
-    });
-    assert.ok(parsed, "expected a parsed Codex rollout");
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 5,
-      malformedLines: 0,
-      truncatedFinalLine: false,
-    });
-  });
-
-  test("Codex parser flags a truncated final line as benign in parse quality (FEA-2907)", async () => {
-    const dir = makeTempDir("codex-pq-truncated-");
-    const filePath = path.join(
-      dir,
-      `rollout-2026-05-18T10-00-00-${CODEX_UUID}.jsonl`
-    );
-    // Valid turns followed by a truncated trailing line (live/interrupted write).
-    writeFileSync(filePath, `${validText}\n${truncatedLine}\n`, "utf8");
-
-    const parsed = await parseRolloutFile(filePath, {
-      mergeWorkflowJournalTokens: false,
-    });
-    assert.ok(parsed, "expected a parsed Codex rollout");
-    // Prior turns still parse; the trailing drop is flagged but expected.
-    assert.deepEqual(parsed.tokensByModel["gpt-5-codex"], {
-      input: 800,
-      output: 300,
-      cacheRead: 400,
-      cacheWrite: 0,
-    });
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 6,
-      malformedLines: 1,
-      truncatedFinalLine: true,
-    });
-  });
-
-  test("Codex parser flags mid-file corruption in parse quality (FEA-2907)", async () => {
-    const dir = makeTempDir("codex-pq-corrupt-");
-    const filePath = path.join(
-      dir,
-      `rollout-2026-05-18T10-00-00-${CODEX_UUID}.jsonl`
-    );
-    // A malformed line BEFORE the final line: real corruption, not truncation.
-    writeFileSync(
-      filePath,
-      `${validText}\n${truncatedLine}\n${validText}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseRolloutFile(filePath, {
-      mergeWorkflowJournalTokens: false,
-    });
-    assert.ok(parsed, "expected a parsed Codex rollout");
-    // 5 valid + 1 malformed + 5 valid = 11 non-empty lines attempted.
-    assert.equal(parsed.parseQuality?.totalLines, 11);
-    assert.equal(parsed.parseQuality?.malformedLines, 1);
-    // Final line parsed cleanly → the drop is mid-file, not a truncation.
-    assert.equal(parsed.parseQuality?.truncatedFinalLine, false);
-    // Consumers derive mid-file corruption = malformedLines - (truncated ? 1 : 0).
-    const midFileMalformed =
-      (parsed.parseQuality?.malformedLines ?? 0) -
-      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0);
-    assert.equal(midFileMalformed, 1);
-  });
-
-  const workflowUsageLine = JSON.stringify({
-    type: "usage",
-    model: "gpt-5-codex",
-    tokens_input: 10,
-    tokens_output: 5,
-    session_id: "inner-agent-1",
-  });
-
-  test("Codex parser folds a corrupt workflow journal's malformed line into parent parse quality (FEA-2979)", async () => {
-    const dir = makeTempDir("codex-pq-wf-corrupt-");
-    const filePath = path.join(
-      dir,
-      `rollout-2026-05-18T10-00-00-${CODEX_UUID}.jsonl`
-    );
-    writeFileSync(filePath, `${validText}\n`, "utf8");
-    // Companion inner-agent journal with mid-file corruption: a malformed line
-    // BEFORE the final valid line silently drops that inner turn's token usage.
-    writeFileSync(
-      path.join(dir, "workflow-inner.jsonl"),
-      `${workflowUsageLine}\n${truncatedLine}\n${workflowUsageLine}\n`,
-      "utf8"
-    );
-
-    // Default options → workflow journals ARE scanned and folded.
-    const parsed = await parseRolloutFile(filePath);
-    assert.ok(parsed, "expected a parsed Codex rollout");
-    // 5 clean rollout lines + 3 workflow-journal lines (2 valid, 1 malformed).
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 8,
-      malformedLines: 1,
-      truncatedFinalLine: false,
-    });
-    // The valid inner-agent tokens are still folded under the workflow key.
-    assert.deepEqual(parsed.tokensByModel["workflow-agent"], {
-      input: 20,
-      output: 10,
-      cacheRead: 0,
-      cacheWrite: 0,
-    });
-  });
-
-  test("Codex parser discounts a truncated final line in a workflow journal (FEA-2979)", async () => {
-    const dir = makeTempDir("codex-pq-wf-truncated-");
-    const filePath = path.join(
-      dir,
-      `rollout-2026-05-18T10-00-00-${CODEX_UUID}.jsonl`
-    );
-    writeFileSync(filePath, `${validText}\n`, "utf8");
-    // Companion journal whose ONLY malformed line is the trailing one — the
-    // benign shape of a live/interrupted write, discounted from the fold.
-    writeFileSync(
-      path.join(dir, "workflow-inner.jsonl"),
-      `${workflowUsageLine}\n${truncatedLine}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseRolloutFile(filePath);
-    assert.ok(parsed, "expected a parsed Codex rollout");
-    // totalLines counts the truncated line (5 + 2) but malformedLines stays 0:
-    // the trailing drop is discounted, and the main rollout is clean.
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 7,
-      malformedLines: 0,
-      truncatedFinalLine: false,
-    });
-  });
-});

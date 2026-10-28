@@ -8,7 +8,7 @@
  * `process.env` mutation) so the tests are order-independent.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   E2E_PARSE_QUARANTINE_CONFIG,
   E2E_PARSE_QUARANTINE_ENABLED_VALUE,
@@ -43,7 +43,7 @@ test("ISS-4573: disarmed by default — a production env is a no-op", () => {
 
 test("ISS-4573: arms ONLY on the exact enabled sentinel AND an unpackaged build", () => {
   assert.equal(isE2eParseQuarantineEnabled(enabledEnv(), UNPACKAGED), true);
-  // PR #4085 review (wongk): a PACKAGED build never arms even with the exact
+  // PR #4085 review (whitlockk): a PACKAGED build never arms even with the exact
   // sentinel — a packaged client that inherited the flag must not quarantine a
   // normal transcript.
   assert.equal(isE2eParseQuarantineEnabled(enabledEnv(), PACKAGED), false);
@@ -79,7 +79,7 @@ test("ISS-4573: only a marked poison source wedges, and only with the explicit w
   // A marked source is NOT wedged without the explicit worker capability — the
   // marker alone can never poison a production parse.
   assert.equal(isE2ePoisonSource(POISON_SOURCE, {}), false);
-  // PR #4085 review (wongk): the worker reads ONLY the runner-supplied capability,
+  // PR #4085 review (whitlockk): the worker reads ONLY the runner-supplied capability,
   // NOT the raw inherited app-level sentinel. A worker that inherited the app-level
   // env but was NOT explicitly forked with the capability (the packaged case) never
   // wedges.

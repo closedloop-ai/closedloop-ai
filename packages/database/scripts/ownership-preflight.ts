@@ -3,7 +3,7 @@
  *
  * WHY: on 2026-08-11 every api-stage `main` deploy wedged because
  * `public_repositories` on stage was owned by `postgres` (a 2026-05-18 manual
- * re-apply), not by `vercel_iam`, the role every deploy migrates as. The first
+ * re-apply), not by `vercel_iam`, the role every deploy then migrated as. The first
  * migration to ALTER that table in 85 days failed mid-file with SQLSTATE 42501
  * (`must be owner of table …`) AFTER its first statement had committed —
  * `prisma migrate deploy` applies bare statements per-statement, with no
@@ -39,7 +39,8 @@
  * objects, and indexes/sequences follow their table's ownership. Membership in
  * the owning role would also satisfy Postgres; this check compares direct
  * ownership, which is the invariant the infrastructure actually maintains
- * (`postgresql_default_privileges` pins `owner = vercel_iam`) — a false
+ * (the migrate role owns every table: `vercel_migrator` since ISS-5978 split
+ * it from the `vercel_iam` runtime role, `MIGRATE_PGUSER`) — a false
  * positive from an exotic membership setup surfaces as one warn/fail naming the
  * exact tables, not a silent pass.
  *

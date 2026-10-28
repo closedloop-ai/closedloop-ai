@@ -2,9 +2,9 @@ import { CopyButton } from "@repo/design-system/components/ui/primitives/copy-bu
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Copy Button",
+  title: "Primitives v1.0/Actions/Copy Button",
   component: CopyButton,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     text: "pnpm -C apps/storybook build",

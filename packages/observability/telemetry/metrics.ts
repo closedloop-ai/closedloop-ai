@@ -12,7 +12,6 @@ export type QueueMetric = {
     | "queued_command_count"
     | "in_flight_command_count"
     | "retry_attempts"
-    | "replay_frequency"
     | "executor_saturation"
     | "dropped_expired_work_items"
     | "command_state_transition";
@@ -63,8 +62,7 @@ type ProtocolBaseMetric = {
     | "reconnect_frequency"
     | "event_ordering_gaps"
     | "command_ack_lifecycle_context_omitted"
-    | "connection_churn_rate"
-    | "replay_window_usage";
+    | "connection_churn_rate";
   origin: Origin;
   value?: number;
   count?: number;
@@ -100,28 +98,53 @@ export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
  * path.
  *
  * `poolMax`/`waitingCount`/`inUse`/`idle`/`total` ride as log attributes for
- * diagnosis; they are deliberately NOT metric tags.
+ * diagnosis; they are deliberately NOT metric tags. `saturated` and
+ * `permitQueued` are the exceptions in waiting: booleans cannot explode
+ * cardinality, and they are the split that makes `db_pool_acquire_wait`
+ * readable (ISS-10293). The union makes both REQUIRED on that metric and
+ * absent on every other one, mirroring `PoolTelemetrySample`.
  */
-export type DbPoolMetric = {
-  metric:
-    | "db_pool_acquire_wait"
-    | "db_pool_acquire_timeout"
-    | "db_pool_checkout_duration"
-    | "db_pool_wait_queue_depth"
-    | "db_pool_in_use"
-    | "db_pool_idle"
-    | "db_pool_total";
+export type DbPoolMetric = DbPoolAcquireWaitMetric | DbPoolStateMetric;
+
+type DbPoolMetricCounters = {
   origin: Origin;
-  /** Gauge/measurement (ms for durations). Mutually exclusive with `count`. */
-  value?: number;
-  /** Additive counter; always 1. Mutually exclusive with `value`. */
-  count?: number;
   poolMax: number;
   waitingCount: number;
   inUse: number;
   idle: number;
   total: number;
   timestamp?: string;
+};
+
+/**
+ * See `PoolAcquireWaitSample` in `@repo/database` for what each label means,
+ * where each one stops being evidence, and the sampling caveat.
+ */
+type DbPoolAcquireWaitMetric = DbPoolMetricCounters & {
+  metric: "db_pool_acquire_wait";
+  /** ms, from the caller's arrival. */
+  value: number;
+  count?: never;
+  /** The pool had nothing to give when the caller arrived. */
+  saturated: boolean;
+  /** The caller queued for its unit of work's acquisition-budget permit first. */
+  permitQueued: boolean;
+};
+
+type DbPoolStateMetric = DbPoolMetricCounters & {
+  metric:
+    | "db_pool_acquire_timeout"
+    | "db_pool_checkout_duration"
+    | "db_pool_wait_queue_depth"
+    | "db_pool_in_use"
+    | "db_pool_idle"
+    | "db_pool_total";
+  /** Gauge/measurement (ms for durations). Mutually exclusive with `count`. */
+  value?: number;
+  /** Additive counter; always 1. Mutually exclusive with `value`. */
+  count?: number;
+  saturated?: never;
+  permitQueued?: never;
 };
 
 // ---------------------------------------------------------------------------
@@ -131,7 +154,7 @@ export type DbPoolMetric = {
 /**
  * Emit any telemetry metric as JSON with the `_telemetryMetric: true` marker
  * that the Datadog log-to-metric pipeline filters on. Use this directly for
- * domain-specific metric types (e.g. loop.runner.*); use the typed wrappers
+ * domain-specific metric types (e.g. session.ingestion.*); use the typed wrappers
  * below for the queue/protocol metric families.
  */
 export function emitTelemetryMetric<T extends { metric: string }>(

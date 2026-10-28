@@ -1,24 +1,22 @@
 "use client";
 
 import { clamp } from "@repo/api/src/utils/math";
-import { MentionComposer } from "@repo/app/shared/components/mention-composer";
 import {
   type MentionUser,
   resolveMentionLabel,
   seedMentionsFromIds,
 } from "@repo/app/shared/lib/mentions";
 import type { SortDirection } from "@repo/app/shared/lib/table-utils";
+import { SyncAbandonedNotice } from "@repo/app/shared/trace-comments/sync-abandoned-notice";
+import { OrgMentionComposer } from "@repo/app/users/components/org-mention-composer";
 import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
-import {
-  Avatar,
-  AvatarFallback,
-} from "@repo/design-system/components/ui/avatar";
 import {
   CommentThreadAnchorPreview,
   CommentThreadCard,
   CommentThreadHeader,
   CommentThreadMain,
 } from "@repo/design-system/components/ui/comment-thread";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   ArrowDownWideNarrowIcon,
@@ -57,8 +55,10 @@ export function TraceCommentsRail({
   onDelete,
   onJump,
   onReply,
+  onRetrySync,
   onUpdate,
   onWidthChange,
+  selectedThreadId,
   traceIdentity,
   width,
 }: Readonly<{
@@ -71,11 +71,25 @@ export function TraceCommentsRail({
     commentId: string,
     draft: { body: string; mentions?: string[] }
   ) => void;
+  /**
+   * ISS-8597: re-pend a comment whose sync was permanently rejected. Undefined
+   * when the surface's source cannot dead-letter one, which is what suppresses
+   * the retry affordance rather than a second flag.
+   */
+  onRetrySync?: (commentId: string) => void;
   onUpdate?: (
     commentId: string,
     update: { body: string; mentions?: string[] }
   ) => void;
   onWidthChange?: (width: number) => void;
+  /**
+   * ISS-11004: the comment a `?comment=` link addressed, which the Session
+   * Activity tab's comment rows point at. That thread reads as the active one
+   * and is scrolled into view, so the reader lands on the comment the link
+   * named rather than at the top of an unfamiliar rail. Undefined on a surface
+   * with no such link, which leaves Branch's rail exactly as it was.
+   */
+  selectedThreadId?: string | null;
   /**
    * Stable identity of the trace this rail is showing (the session/branch id).
    * The rail is reused across same-component session/branch navigation, so the
@@ -86,6 +100,7 @@ export function TraceCommentsRail({
   width?: number;
 }>) {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
   // Client-side render order for the rail. Default `desc` = newest-first; the
   // sort button toggles it and re-orders the already-fetched list in place (no
   // refetch). Owned here because the rail holds the array it renders.
@@ -107,6 +122,36 @@ export function TraceCommentsRail({
     () => sortByCreatedAtThenId(comments, sortDir),
     [comments, sortDir]
   );
+
+  // ISS-11004: reveal the thread a link addressed, ONCE per address. The rail
+  // re-renders on every comment refresh, so re-scrolling whenever the list changes
+  // would keep yanking a reader who has since scrolled away. The marker is set
+  // only when the card was actually found and scrolled — an address that
+  // arrives before its comments have rendered retries on the next render
+  // instead of being recorded as done — and cleared when the address goes, so
+  // addressing the same comment again later scrolls again.
+  const revealedThreadIdRef = useRef<string | null>(null);
+  const selectedIsRendered = sortedComments.some(
+    (comment) => comment.threadId === selectedThreadId
+  );
+  useEffect(() => {
+    if (!selectedThreadId) {
+      revealedThreadIdRef.current = null;
+      return;
+    }
+    if (
+      !selectedIsRendered ||
+      revealedThreadIdRef.current === selectedThreadId
+    ) {
+      return;
+    }
+    const card = findCommentCard(streamRef.current, selectedThreadId);
+    if (!card) {
+      return;
+    }
+    revealedThreadIdRef.current = selectedThreadId;
+    card.scrollIntoView({ block: "nearest" });
+  }, [selectedThreadId, selectedIsRendered]);
   // FEA-3490: resolve persisted mention IDs → display labels for @-chips, and
   // seed the edit composer so an edit preserves existing mentions.
   const { data: users } = useOrganizationUsers();
@@ -253,10 +298,10 @@ export function TraceCommentsRail({
         </div>
       </div>
 
-      <div className="fp-stream">
+      <div className="fp-stream" ref={streamRef}>
         {sortedComments.length === 0 ? (
           <div className="px-4 py-8 text-center">
-            <p className="font-medium text-sm">No trace comments yet</p>
+            <p className="font-medium text-sm">{TRACE_COMMENTS_EMPTY_TITLE}</p>
             <p className="mt-1 text-muted-foreground text-xs">
               Select trace text to anchor the next comment.
             </p>
@@ -271,8 +316,10 @@ export function TraceCommentsRail({
               onDelete={onDelete}
               onJump={onJump}
               onReply={onReply}
+              onRetrySync={onRetrySync}
               onUpdate={onUpdate}
               resolveMentions={resolveMentions}
+              selected={comment.threadId === selectedThreadId}
             />
           ))
         )}
@@ -288,6 +335,25 @@ export function TraceCommentsRail({
   );
 }
 
+/**
+ * The retry handler this viewer may have, which is none unless they wrote the
+ * comment.
+ *
+ * `packages/api/src/types/comment.ts` says the author is the only one who can
+ * move a dead-lettered row, and the server answers `forbidden` to anyone else.
+ * Authorship used to be implicit: while `syncAbandoned` came only from the
+ * desktop's local queue it could describe nothing but the local user's own
+ * outgoing rows. ISS-10382 has the cloud serve the field to every viewer of the
+ * thread, so the implication is gone and the check has to be explicit — or a
+ * reader gets a button that can only fail.
+ */
+function retryHandlerFor(
+  comment: TraceCommentItem,
+  onRetrySync?: (commentId: string) => void
+): ((commentId: string) => void) | undefined {
+  return comment.canEdit ? onRetrySync : undefined;
+}
+
 function TraceCommentCard({
   active,
   comment,
@@ -295,8 +361,10 @@ function TraceCommentCard({
   onDelete,
   onJump,
   onReply,
+  onRetrySync,
   onUpdate,
   resolveMentions,
+  selected,
 }: Readonly<{
   active: boolean;
   comment: TraceCommentItem;
@@ -307,12 +375,16 @@ function TraceCommentCard({
     commentId: string,
     draft: { body: string; mentions?: string[] }
   ) => void;
+  onRetrySync?: (commentId: string) => void;
   onUpdate?: (
     commentId: string,
     update: { body: string; mentions?: string[] }
   ) => void;
   resolveMentions: MentionResolver;
+  /** True for the thread a `?comment=` link addressed (ISS-11004). */
+  selected: boolean;
 }>) {
+  const selectionChrome = commentCardSelectionChrome(active, selected);
   const [isEditing, setIsEditing] = useState(false);
   const [isReplying, setIsReplying] = useState(false);
   const jumpToComment = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -363,10 +435,15 @@ function TraceCommentCard({
   };
   return (
     <CommentThreadCard
-      className={cn("fp-comment-card", active && "is-active")}
+      aria-current={selectionChrome.ariaCurrent}
+      className={cn(
+        "fp-comment-card",
+        selectionChrome.highlighted && "is-active"
+      )}
+      data-comment-thread-id={comment.threadId}
       interactive
       onClick={jumpToComment}
-      selected={active}
+      selected={selectionChrome.highlighted}
     >
       <CommentThreadAnchorPreview className="cursor-pointer">
         {comment.anchor.selectedText}
@@ -419,11 +496,16 @@ function TraceCommentCard({
           </span>
         }
         avatar={
-          <Avatar className="size-[26px]">
-            <AvatarFallback className="bg-primary/10 text-[10px] text-primary">
-              AI
-            </AvatarFallback>
-          </Avatar>
+          // ISS-12269: this drew a fixed "AI" for every author, whoever wrote
+          // the comment. The adjacent header states the name, so the picture
+          // is decorative.
+          <PersonAvatar
+            avatarUrl={comment.authorAvatarUrl}
+            className="size-[26px]"
+            decorative
+            fallbackClassName="text-[10px]"
+            name={commentAuthorName(comment.authorName)}
+          />
         }
         className="fp-comment-main"
         content={
@@ -431,16 +513,36 @@ function TraceCommentCard({
             <CommentThreadHeader
               author={
                 <b className="text-xs">
-                  {comment.authorName ?? "Unknown user"}
+                  {commentAuthorName(comment.authorName)}
                 </b>
               }
               metadata={
-                <span className="fp-when">{comment.createdAtLabel}</span>
+                <>
+                  <span className="fp-when">{comment.createdAtLabel}</span>
+                  {/*
+                   * Mounted only for a comment that is actually dead-lettered,
+                   * which since the 2026-09-16 ruling is the whole gate: the
+                   * field is only ever set by the flag-gated terminal write. A
+                   * rail of ordinary comments mounts none of these and opens no
+                   * subscription, because there is no longer a flag read here to
+                   * open one.
+                   */}
+                  {comment.syncAbandoned === true ? (
+                    <SyncAbandonedNotice
+                      commentId={comment.id}
+                      // ISS-10827: the same authorship `retryHandlerFor` gates
+                      // the door on, passed explicitly — a reader must not be
+                      // told their own delivery failed.
+                      isAuthor={comment.canEdit}
+                      onRetrySync={retryHandlerFor(comment, onRetrySync)}
+                    />
+                  ) : null}
+                </>
               }
             />
             {isEditing ? (
               <div className="mt-2">
-                <MentionComposer
+                <OrgMentionComposer
                   autoFocus
                   cancelLabel="Cancel"
                   defaultValue={comment.body}
@@ -466,7 +568,7 @@ function TraceCommentCard({
                     <CommentThreadHeader
                       author={
                         <b className="text-xs">
-                          {reply.authorName ?? "Unknown user"}
+                          {commentAuthorName(reply.authorName)}
                         </b>
                       }
                       metadata={
@@ -503,7 +605,7 @@ function TraceCommentCard({
             ) : null}
             {isReplying ? (
               <div className="fp-reply-composer">
-                <MentionComposer
+                <OrgMentionComposer
                   autoFocus
                   cancelLabel="Cancel"
                   onCancel={cancelReply}
@@ -548,4 +650,48 @@ function MentionChips({
       ))}
     </div>
   );
+}
+
+export const TRACE_COMMENTS_EMPTY_TITLE = "No trace comments yet";
+
+/**
+ * The rendered card for one thread id, matched by attribute rather than a
+ * built selector so an id carrying selector syntax cannot break the query.
+ */
+function findCommentCard(
+  stream: HTMLDivElement | null,
+  threadId: string
+): Element | null {
+  if (!stream) {
+    return null;
+  }
+  for (const card of stream.querySelectorAll("[data-comment-thread-id]")) {
+    if (card.getAttribute("data-comment-thread-id") === threadId) {
+      return card;
+    }
+  }
+  return null;
+}
+
+/**
+ * How a card reads when it is the active trace row, the addressed comment, or
+ * both. `aria-current` states the addressed one in the accessibility tree, so
+ * it is never identified by its background alone (WCAG 1.4.1).
+ */
+function commentCardSelectionChrome(
+  active: boolean,
+  selected: boolean
+): { ariaCurrent: "true" | undefined; highlighted: boolean } {
+  return {
+    ariaCurrent: selected ? "true" : undefined,
+    highlighted: active || selected,
+  };
+}
+
+/** The shipped fallback for a comment whose author identity did not resolve. */
+const UNKNOWN_COMMENT_AUTHOR_LABEL = "Unknown user";
+
+/** The shipped fallback for an author identity that did not resolve. */
+function commentAuthorName(authorName: string | null): string {
+  return authorName ?? UNKNOWN_COMMENT_AUTHOR_LABEL;
 }

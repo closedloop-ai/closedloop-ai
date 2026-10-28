@@ -15,7 +15,8 @@
  * column width, the window start picks which stretch of the session those 24
  * columns cover, and the bar count stops moving.
  *
- * Mirrors the prototype's `apps/prototypes/app/p/sessions/timeline-model.ts`,
+ * Mirrors the legacy Web Master fixture's
+ * `packages/app/agents/components/sessions/web-master-legacy-preview/timeline-model.ts`,
  * which is the source of truth for this screen. It is re-declared rather than
  * imported because `apps/prototypes` is a presentational sandbox that production
  * must not depend on; the four scale values, the 24-column constant and the
@@ -65,7 +66,7 @@ const MS_PER_MINUTE = 60_000;
  * The scale a session opens on: the finest one whose 24 columns still cover the
  * whole run, so a session that fits needs no scrubbing to see all of it.
  *
- * ASKED OF THE GEOMETRY, NOT OF THE DURATION (#4753 review, wongk). The
+ * ASKED OF THE GEOMETRY, NOT OF THE DURATION (#4753 review, whitlockk). The
  * prototype's thresholds (`2h`, `6h`, `24h`) are exactly `24 x` each column
  * width, which is the right answer only if column 0 starts when the session
  * does. It does not: {@link resolveTimelineScaleGeometry} FLOORS the origin to a

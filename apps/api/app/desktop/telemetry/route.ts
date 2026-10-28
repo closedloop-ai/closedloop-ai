@@ -29,11 +29,10 @@ const DESKTOP_TELEMETRY_REQUEST_MAX_BYTES = 262_144;
 export const maxDuration = 15;
 
 /**
- * FEA-3425 (PLN-1437 Phase 3): REST twin of the relay `desktop.telemetry`
- * socket event, letting sessioned desktop installs deliver diagnostics
- * telemetry over the authenticated HTTP write lane instead of the static-key
- * relay socket. The desktop client is fire-and-forget, but every non-2xx
- * branch still carries a machine-readable `code`
+ * FEA-3425 (PLN-1437 Phase 3): sessioned desktop installs deliver diagnostics
+ * telemetry over the authenticated HTTP write lane; the relay
+ * `desktop.telemetry` socket event it replaced was retired in ISS-12735. The
+ * desktop client is fire-and-forget, but every non-2xx branch still carries a machine-readable `code`
  * ({@link DesktopWriteLaneRestErrorCode}) for operators, mirroring the
  * analytics and agent-sessions twins.
  */

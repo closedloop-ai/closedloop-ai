@@ -9,6 +9,7 @@
  * dynamic import, createMockHttpServerFactory for node:http).  No real port
  * is bound — never call reserveTestPort here.
  */
+import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,9 @@ vi.mock("socket.io", () => {
   };
   return {
     Server: class MockServer {
+      // Engine.IO stub: index.ts attaches a `connection_error` listener to
+      // `io.engine` at module load, so a Server double without one crashes on import.
+      engine = { on: vi.fn() };
       constructor(_server: unknown, options: { cors?: { origin?: unknown } }) {
         if (typeof options?.cors?.origin === "function") {
           capturedCorsOriginFn = options.cors.origin as CorsOriginFn;
@@ -152,6 +156,9 @@ vi.mock("@repo/observability/shutdown", () => ({
 
 const TEST_SECRET = "test-secret-sam";
 const TEST_API_URL = "http://127.0.0.1:19879";
+// A second, DIFFERENT origin, so a stamp that quietly used the configured url
+// cannot satisfy the redirect assertion below (ISS-9081, #6587).
+const REDIRECTED_API_ORIGIN = "http://127.0.0.1:19880";
 const TEST_ORG_ID = "org-sam-1";
 const TEST_USER_ID = "user-sam-1";
 const TEST_TARGET_ID = "target-sam-1";
@@ -496,7 +503,17 @@ describe("socket auth middleware — clerkUserId handling", () => {
 // ---------------------------------------------------------------------------
 
 describe("forwardSocketEvent — non-validate fallback", () => {
-  it("returns emit=[] on non-2xx response so no events are forwarded", async () => {
+  // ISS-7976 changed the behaviour these two cases pin. They previously
+  // asserted that a failed hello forward left the socket connected with
+  // nothing emitted -- which is precisely the zombie the ticket is about:
+  // connected, unregistered, heartbeat-less and silent, buffering to the 100
+  // cap and then nacking forever with nothing re-driving hello. The relay now
+  // answers the desktop and closes, matching what the identical call already
+  // did on a network failure. The expectations are inverted here for that
+  // reason, not to accommodate a regression; the deliverable contract is
+  // covered end to end in worker-registration-lifecycle.test.ts.
+
+  it("nacks and disconnects on a non-2xx response instead of going silent", async () => {
     vi.useFakeTimers();
     const socket = makeMockSocket("sock-fwd-nok-1");
     socket.handshake.auth.apiKey = "sk_test";
@@ -521,13 +538,13 @@ describe("forwardSocketEvent — non-validate fallback", () => {
     socket._trigger("desktop.hello", { targetId: TEST_TARGET_ID });
     await vi.advanceTimersByTimeAsync(0);
 
-    // result.emit is [] — no events forwarded to socket
-    expect(socket.emit).not.toHaveBeenCalled();
-    // result.disconnect is undefined (falsy) — socket not disconnected
-    expect(socket.disconnect).not.toHaveBeenCalled();
+    expect(socket.emit).toHaveBeenCalledWith("desktop.hello.nack", {
+      reason: DesktopHelloNackReason.InternalError,
+    });
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
 
-  it("returns emit=[] when data.emit is not an array so no events are forwarded", async () => {
+  it("nacks and disconnects when data.emit is not an array instead of going silent", async () => {
     vi.useFakeTimers();
     const socket = makeMockSocket("sock-fwd-emit-noarray-1");
     socket.handshake.auth.apiKey = "sk_test";
@@ -553,8 +570,10 @@ describe("forwardSocketEvent — non-validate fallback", () => {
     socket._trigger("desktop.hello", { targetId: TEST_TARGET_ID });
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(socket.emit).not.toHaveBeenCalled();
-    expect(socket.disconnect).not.toHaveBeenCalled();
+    expect(socket.emit).toHaveBeenCalledWith("desktop.hello.nack", {
+      reason: DesktopHelloNackReason.InternalError,
+    });
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
 });
 
@@ -575,6 +594,26 @@ describe("isAllowedSocketOrigin — cors origin callback", () => {
     const cb = vi.fn();
     capturedCorsOriginFn!("http://localhost:3000", cb);
     expect(cb).toHaveBeenCalledWith(null, true);
+  });
+
+  it("rejects a localhost origin in production", () => {
+    const nodeEnvDescriptor = Object.getOwnPropertyDescriptor(
+      process.env,
+      "NODE_ENV"
+    );
+    process.env.NODE_ENV = "production";
+
+    try {
+      const cb = vi.fn();
+      capturedCorsOriginFn!("http://localhost:3000", cb);
+      expect(cb).toHaveBeenCalledWith(null, false);
+    } finally {
+      if (nodeEnvDescriptor === undefined) {
+        Reflect.deleteProperty(process.env, "NODE_ENV");
+      } else {
+        Object.defineProperty(process.env, "NODE_ENV", nodeEnvDescriptor);
+      }
+    }
   });
 
   it("rejects arbitrary browser origins", () => {
@@ -732,5 +771,136 @@ describe("getHeaderValue — header value edge cases", () => {
     ).mock.calls[0];
     const reqHeaders = fetchCall[1].headers as Record<string, string>;
     expect(reqHeaders["X-Desktop-Gateway-Id"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-9081: the relay states the API it resolved the target against
+// ---------------------------------------------------------------------------
+
+describe("ISS-9081: mintingApiOrigin on a forwarded hello ack", () => {
+  /**
+   * The relay is the only participant that knows which environment minted the
+   * target: the desktop dials `relayOrigin` and posts data to `apiOrigin`, two
+   * independent settings, while the row is created wherever this process's
+   * `CLOSEDLOOP_API_URL` points. Without the statement the desktop stamps the
+   * origin it happens to be pointed at, which is how an id minted in one
+   * environment gets adopted as another's.
+   */
+  it("stamps the API url it called onto the ack, and onto nothing else", async () => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket("sock-iss9081-stamp");
+    socket.handshake.auth.apiKey = "sk_test";
+
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessAuthResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        url: `${TEST_API_URL}/internal/relay/socket-event`,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              success: true,
+              targetId: TEST_TARGET_ID,
+              gatewaySessionId: TEST_GW_SESSION,
+              emit: [
+                {
+                  event: "desktop.hello.ack",
+                  payload: {
+                    computeTargetId: TEST_TARGET_ID,
+                    sessionId: TEST_GW_SESSION,
+                  },
+                },
+                {
+                  event: "desktop.command",
+                  payload: { commandId: "cmd-iss9081" },
+                },
+              ],
+            })
+          ),
+        headers: { get: () => "application/json" },
+      } as unknown as Response);
+
+    const authErr = await runMiddleware(socket);
+    expect(authErr).toBeUndefined();
+
+    capturedConnectionHandler?.(socket);
+    socket._trigger("desktop.hello", { targetId: TEST_TARGET_ID });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The whole payload, not just the added key: an ack the stamp rebuilt
+    // wrongly would still contain `mintingApiOrigin`.
+    expect(socket.emit).toHaveBeenCalledWith("desktop.hello.ack", {
+      computeTargetId: TEST_TARGET_ID,
+      sessionId: TEST_GW_SESSION,
+      mintingApiOrigin: TEST_API_URL,
+    });
+    // Every other frame in the same batch is forwarded untouched. Stamping the
+    // whole emit array would satisfy the assertion above and put an API origin
+    // on every command the relay delivers.
+    expect(socket.emit).toHaveBeenCalledWith("desktop.command", {
+      commandId: "cmd-iss9081",
+    });
+  });
+
+  /**
+   * The stamp has to name the origin that MINTED the row, and that is the one
+   * the call landed on rather than the one it was aimed at (davetho, #6587).
+   * `fetch` follows a 307/308 cross-origin redirect transparently, so a relay
+   * configured for A whose API redirects to B has its target minted by B.
+   * Stating A there hands the desktop a B-minted id labelled A's — the exact
+   * crossed pairing this field exists to refuse, reintroduced by the field
+   * meant to close it.
+   */
+  it("states the origin the call LANDED on, not the one it was aimed at", async () => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket("sock-iss9081-redirect");
+    socket.handshake.auth.apiKey = "sk_test";
+
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeSuccessAuthResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        // `Response.url` is the FINAL url after redirects, so this is what a
+        // cross-origin 307 out of the configured `TEST_API_URL` looks like.
+        url: `${REDIRECTED_API_ORIGIN}/internal/relay/socket-event`,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              success: true,
+              targetId: TEST_TARGET_ID,
+              gatewaySessionId: TEST_GW_SESSION,
+              emit: [
+                {
+                  event: "desktop.hello.ack",
+                  payload: {
+                    computeTargetId: TEST_TARGET_ID,
+                    sessionId: TEST_GW_SESSION,
+                  },
+                },
+              ],
+            })
+          ),
+        headers: { get: () => "application/json" },
+      } as unknown as Response);
+
+    const authErr = await runMiddleware(socket);
+    expect(authErr).toBeUndefined();
+
+    capturedConnectionHandler?.(socket);
+    socket._trigger("desktop.hello", { targetId: TEST_TARGET_ID });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(socket.emit).toHaveBeenCalledWith("desktop.hello.ack", {
+      computeTargetId: TEST_TARGET_ID,
+      sessionId: TEST_GW_SESSION,
+      // The redirect target, reduced to a bare origin — not `TEST_API_URL`,
+      // and not the full response url with its path still on it.
+      mintingApiOrigin: REDIRECTED_API_ORIGIN,
+    });
   });
 });

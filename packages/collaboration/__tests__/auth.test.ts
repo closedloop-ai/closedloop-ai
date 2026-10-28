@@ -93,7 +93,7 @@ describe("authenticate", () => {
     });
 
     it("grants every namespace the room parser accepts, at the same org scope", async () => {
-      // PR #4285 reviewer wongk: `parseDocumentRoomId` still accepts the
+      // PR #4285 reviewer whitlockk: `parseDocumentRoomId` still accepts the
       // pre-rename `:document:` namespace (Liveblocks room IDs are immutable, so
       // that compatibility arm is permanent), but the session used to allow only
       // `:artifact:*`. A legacy room therefore parsed, authorized with a 200, and

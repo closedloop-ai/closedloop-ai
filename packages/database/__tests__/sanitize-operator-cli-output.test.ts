@@ -10,7 +10,7 @@ import { makeDeployError } from "./test-helpers/deploy-error";
  * 500 body and, through it, a GitHub Actions log. A connection failure names
  * its endpoint in PROSE — never as a `scheme://user:pass@host` URL and never as
  * a `PGHOST=` assignment — so the sanitizer's original patterns passed it
- * straight through (review: wongk). These cover each shape Prisma and libpq
+ * straight through (review: whitlockk). These cover each shape Prisma and libpq
  * actually emit, and each asserts BOTH halves of the contract: the endpoint is
  * gone AND the diagnosis is not, because a redaction that eats the error code
  * makes surfacing the output pointless.
@@ -63,14 +63,17 @@ describe("sanitizeOperatorCliOutput endpoint redaction", () => {
       `Error: ${PrismaMigrateDeployErrorCode.UserDefinedInvariant}\nDatabase error:\nERROR: connection to server at "${ENDPOINT_HOST}" port ${ENDPOINT_PORT} failed`,
       PrismaMigrateDeployErrorCode.UserDefinedInvariant,
     ],
-  ])("redacts the endpoint %s reports, keeping the code", (_shape, stderr, code) => {
-    const sanitized = sanitizeStderr(stderr);
+  ])(
+    "redacts the endpoint %s reports, keeping the code",
+    (_shape, stderr, code) => {
+      const sanitized = sanitizeStderr(stderr);
 
-    expect(sanitized).not.toContain(ENDPOINT_HOST);
-    expect(sanitized).toContain(REDACTION_MARKER);
-    // The code is the diagnosis. Redaction, never erasure.
-    expect(sanitized).toContain(code);
-  });
+      expect(sanitized).not.toContain(ENDPOINT_HOST);
+      expect(sanitized).toContain(REDACTION_MARKER);
+      // The code is the diagnosis. Redaction, never erasure.
+      expect(sanitized).toContain(code);
+    }
+  );
 
   it("leaves diagnostic text that merely follows the word `at` alone", () => {
     // The reason the pattern anchors on `server at` rather than sweeping every
@@ -92,7 +95,7 @@ describe("sanitizeOperatorCliOutput endpoint redaction", () => {
  * streams SPLIT the diagnosis: migration-pipeline-prisma-cli.test.ts pins a real
  * run writing `Error: P3009` to stderr while the migration name arrives on
  * stdout as `Applying migration 20260101_add`. Enough stderr therefore dropped
- * stdout — and the migration name with it — entirely (review: wongk).
+ * stdout — and the migration name with it — entirely (review: whitlockk).
  */
 describe("sanitizeOperatorCliOutput diagnosis extraction", () => {
   const NOISY_STDERR = `Error: ${PrismaMigrateDeployErrorCode.FailedMigration}\n${"connection pool advisory notice ".repeat(30)}`;

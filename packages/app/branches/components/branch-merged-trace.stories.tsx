@@ -64,9 +64,9 @@ const traceItems: MergedTraceItem[] = [
 ];
 
 const meta = {
-  title: "App Core/Branches/Merged Trace",
+  title: "Composites v1.0/Branches/Branch Merged Trace",
   component: BranchMergedTrace,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchMergedTrace>;
 

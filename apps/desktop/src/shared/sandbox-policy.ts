@@ -8,11 +8,12 @@ import {
 } from "./sandbox-messages.js";
 
 /**
- * TCC-protected user folders (FEA-3641). On macOS, merely stat'ing or reading
- * these directories triggers a runtime TCC ("Transparency, Consent, Control")
- * permission prompt — the "why is it asking for my music files?" symptom Andrew
- * hit. The app never needs to browse, probe (`.git`), or search inside them, so
- * we treat them as hard-skip everywhere the gateway touches the filesystem.
+ * TCC-protected user folders (FEA-3641). On macOS, reading these directories
+ * triggers a runtime TCC ("Transparency, Consent, Control") permission prompt —
+ * the "why is it asking for my music files?" symptom Ottilie hit; a bare `stat`
+ * was measured not to (ISS-11914, see {@link isTccProtectedPath}). The app never
+ * needs to browse, probe (`.git`), or search inside them, so we treat them as
+ * hard-skip everywhere the gateway touches the filesystem.
  *
  * Basenames are matched case-insensitively directly under the user's home dir.
  * `Photos Library.photoslibrary` lives under `~/Pictures`, which is already
@@ -288,4 +289,135 @@ export function validateSandboxBaseDirectory(
     throw new Error(SANDBOX_RISKY_ROOT_MESSAGE);
   }
   return canonical;
+}
+
+/**
+ * ISS-11914: `~/Library` locations whose existing content macOS gates behind a
+ * consent prompt — iCloud Drive (`Mobile Documents`), File Provider domains
+ * such as Dropbox (`CloudStorage`), other apps' (group) containers, and the
+ * Contacts, Calendars and Reminders stores (Perrin Upcott's ruling,
+ * 2026-10-07). Apple names those three TCC categories but documents no on-disk
+ * path (ISS-11914 source table), so the paths come from the OS: on macOS
+ * 26.6.2, `lsof` shows `contactsd` holding
+ * `Application Support/AddressBook/AddressBook-v22.abcddb` open and
+ * `/usr/libexec/remindd` holding
+ * `Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`
+ * open. `Calendars` is the path the ruling names; it does not exist on macOS
+ * 26.6.2, where calendar data is under `Group Containers`.
+ */
+const TCC_PROTECTED_LIBRARY_SUBDIRS: readonly string[] = [
+  "Mobile Documents",
+  "CloudStorage",
+  "Containers",
+  "Group Containers",
+  path.join("Application Support", "AddressBook"),
+  "Calendars",
+  path.join("Group Containers", "group.com.apple.reminders"),
+];
+
+/** ISS-11914: where macOS mounts network and removable volumes. */
+const TCC_PROTECTED_VOLUMES_ROOT = "/Volumes";
+
+/** A symlink chain longer than this ends the walk; it matches macOS's MAXSYMLINKS. */
+const MAX_SYMLINK_HOPS = 32;
+
+/**
+ * ISS-11914 (Perrin Upcott's rulings, 2026-10-06 and 2026-10-07): true when
+ * `targetPath`, after following symlinks, is at or anywhere under a location
+ * where reading existing content raises a macOS TCC prompt — a
+ * {@link TCC_PROTECTED_HOME_SUBDIRS} folder, a `*.photoslibrary` bundle, iCloud
+ * Drive, `~/Library/CloudStorage`, `~/Library/Containers`,
+ * `~/Library/Group Containers`, the Contacts, Calendars and Reminders stores,
+ * or `/Volumes`. Session discovery and attribution must not read a file or
+ * spawn `git` at such a path.
+ *
+ * A bare existence check (`stat`/`lstat`/`access`) may still run: a throwaway
+ * ad-hoc-signed app on macOS 26.6.2 stat'd paths in `~/Documents` and
+ * `~/Library/CloudStorage` in under 1 ms with no prompt, while `readdir` of the
+ * same folders blocked on one (ISS-11914 probe). Following symlinks here
+ * touches nothing inside a protected folder: see
+ * {@link resolveSymlinksWithoutReading}.
+ *
+ * Compared case-insensitively, like {@link isPathAtOrUnder}, against roots built
+ * from `os.homedir()`, which on macOS is the canonical `/Users/<name>`.
+ */
+export function isTccProtectedPath(
+  targetPath: string | null | undefined
+): boolean {
+  if (!targetPath) {
+    return false;
+  }
+  const absolute = path.resolve(expandHomePath(targetPath));
+  const libraryDir = path.join(os.homedir(), "Library");
+  const roots = [
+    ...tccProtectedDirectories(),
+    ...TCC_PROTECTED_LIBRARY_SUBDIRS.map((name) => path.join(libraryDir, name)),
+    TCC_PROTECTED_VOLUMES_ROOT,
+  ];
+  return (
+    isUnderTccProtectedRoot(absolute, roots) ||
+    isUnderTccProtectedRoot(
+      resolveSymlinksWithoutReading(absolute, roots),
+      roots
+    )
+  );
+}
+
+function isUnderTccProtectedRoot(
+  absolute: string,
+  roots: readonly string[]
+): boolean {
+  return (
+    absolute
+      .split(path.sep)
+      .some((segment) => segment.toLowerCase().endsWith(".photoslibrary")) ||
+    roots.some((root) => isPathAtOrUnder(absolute, root))
+  );
+}
+
+/**
+ * Where `absolute` really lives, found without reading anything inside a
+ * protected folder. It walks one component at a time: `lstat` on each, and
+ * `readlink` only on a symlink that itself sits outside every protected
+ * location. It stops at the first component inside one, before touching it, so
+ * nothing in a protected folder is ever stat'd or read during the walk. A
+ * component that does not exist, or a symlink loop, ends the walk with the rest
+ * of the path appended unresolved.
+ */
+function resolveSymlinksWithoutReading(
+  absolute: string,
+  roots: readonly string[]
+): string {
+  const pending = splitAbsolute(absolute);
+  let resolved = path.parse(absolute).root;
+  let hops = 0;
+  while (pending.length > 0) {
+    const next = path.join(resolved, pending.shift() ?? "");
+    if (isUnderTccProtectedRoot(next, roots)) {
+      return path.join(next, ...pending);
+    }
+    try {
+      if (!fs.lstatSync(next).isSymbolicLink()) {
+        resolved = next;
+        continue;
+      }
+      hops += 1;
+      if (hops > MAX_SYMLINK_HOPS) {
+        return path.join(next, ...pending);
+      }
+      const target = path.resolve(resolved, fs.readlinkSync(next));
+      pending.unshift(...splitAbsolute(target));
+      resolved = path.parse(target).root;
+    } catch {
+      return path.join(next, ...pending);
+    }
+  }
+  return resolved;
+}
+
+function splitAbsolute(absolute: string): string[] {
+  return absolute
+    .slice(path.parse(absolute).root.length)
+    .split(path.sep)
+    .filter(Boolean);
 }

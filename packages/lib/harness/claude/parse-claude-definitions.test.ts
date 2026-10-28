@@ -13,7 +13,7 @@
  * an unrelated reminder.
  */
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 
 const TS = "2026-07-09T12:00:01.000Z";
 
@@ -403,5 +403,167 @@ describe("the captured body is bounded and trimmed of harness scaffolding", () =
     expect(session?.toolUses[0]?.definitionSnapshot?.content).toBe(
       "String body."
     );
+  });
+});
+
+describe("branch edges of the definition lane", () => {
+  it("never joins a command keyed by uuid to a meta record without a promptId", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        JSON.stringify({
+          type: "user",
+          timestamp: TS,
+          uuid: "turn-1",
+          message: {
+            role: "user",
+            content: "<command-name>/design-review</command-name>",
+          },
+        }),
+        metaDefinition({}, wrapped("command", "Body.")),
+      ],
+      { sessionId: "def-command-no-prompt-id" }
+    );
+
+    expect(session?.slashCommands).toHaveLength(1);
+    expect(session?.slashCommands[0]?.definitionSnapshot).toBeUndefined();
+  });
+
+  it("mirrors onto the agent matched by native id, skipping a non-matching agent", async () => {
+    const sidechain = (agentId: string, id: string, timestamp: string) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp,
+        agentId,
+        isSidechain: true,
+        message: {
+          role: "assistant",
+          model: "claude-opus-4",
+          content: [{ type: "tool_use", id, name: "Read", input: {} }],
+          usage: USAGE,
+        },
+      });
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        toolCall({
+          type: "tool_use",
+          id: "toolu_agent",
+          name: "Agent",
+          input: { subagent_type: "code-reviewer", prompt: "review" },
+        }),
+        sidechain("other-agent", "toolu_a", "2026-07-09T12:00:03.000Z"),
+        sidechain("toolu_agent", "toolu_b", "2026-07-09T12:00:04.000Z"),
+        metaDefinition(
+          { sourceToolUseID: "toolu_agent" },
+          wrapped("agent", "You are a reviewer."),
+          "2026-07-09T12:00:05.000Z"
+        ),
+      ],
+      { sessionId: "def-agent-native-id" }
+    );
+
+    const byNativeId = Object.fromEntries(
+      (session?.subagents ?? []).map((agent) => [
+        agent.nativeSubagentId,
+        agent.definitionSnapshot?.content ?? null,
+      ])
+    );
+    expect(byNativeId).toEqual({
+      "other-agent": null,
+      toolu_agent: "You are a reviewer.",
+    });
+  });
+
+  it("ignores a meta record whose content is neither a string nor a block array", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        toolCall({
+          type: "tool_use",
+          id: "toolu_skill",
+          name: "Skill",
+          input: { skill: "code-review" },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-07-09T12:00:02.000Z",
+          isMeta: true,
+          sourceToolUseID: "toolu_skill",
+          message: { role: "user", content: { text: wrapped("skill", "x") } },
+        }),
+      ],
+      { sessionId: "def-object-content" }
+    );
+
+    expect(session?.toolUses[0]?.definitionSnapshot).toBeUndefined();
+  });
+
+  it("assembles the body only from text blocks, skipping other block types", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        toolCall({
+          type: "tool_use",
+          id: "toolu_skill",
+          name: "Skill",
+          input: { skill: "code-review" },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-07-09T12:00:02.000Z",
+          isMeta: true,
+          sourceToolUseID: "toolu_skill",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                text: "Base directory for this skill: /x\n\nnope",
+              },
+              { type: "text", text: wrapped("skill", "Kept.") },
+            ],
+          },
+        }),
+      ],
+      { sessionId: "def-mixed-blocks" }
+    );
+
+    expect(session?.toolUses[0]?.definitionSnapshot?.content).toBe("Kept.");
+  });
+
+  it("omits definitionSnapshot from a skill projection that captured none", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        toolCall({
+          type: "tool_use",
+          id: "toolu_skill",
+          name: "Skill",
+          input: { skill: "code-review" },
+        }),
+      ],
+      { sessionId: "def-skill-no-snapshot" }
+    );
+
+    expect(session?.skills).toHaveLength(1);
+    expect(session?.skills[0]).not.toHaveProperty("definitionSnapshot");
+  });
+
+  it("omits providerToolUseId from a skill whose tool call carried no id", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        toolCall({
+          type: "tool_use",
+          name: "Skill",
+          input: { skill: "code-review" },
+        }),
+      ],
+      { sessionId: "def-skill-no-id" }
+    );
+
+    expect(session?.skills).toHaveLength(1);
+    expect(session?.skills[0]).not.toHaveProperty("providerToolUseId");
   });
 });

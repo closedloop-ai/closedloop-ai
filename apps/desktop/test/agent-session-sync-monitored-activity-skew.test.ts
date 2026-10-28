@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import {
@@ -9,6 +8,7 @@ import {
   type SyncedArtifactRef,
 } from "@repo/api/src/types/session-artifact-link";
 import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import { test } from "vitest";
 import type {
   AgentSessionSyncBatch,
   SyncedAgentSession,
@@ -33,7 +33,7 @@ const DRAINED_V1_SOURCE_KEY = `${AGENT_SESSION_SYNC_SOURCE_KIND}:monitored_activ
 
 const activityRef = {
   kind: ArtifactRefTargetKind.Branch,
-  repositoryFullName: "closedloop-ai/symphony-alpha",
+  repositoryFullName: "closedloop-ai/closedloop-ai",
   branchName: "feat/iss-6060",
   method: ArtifactRefMethod.McpToolCall,
   relation: ArtifactRefRelation.Created,

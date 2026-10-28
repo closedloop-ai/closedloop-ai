@@ -13,6 +13,7 @@ import {
   DocumentType,
   DocumentTypeAlias,
   IssueStatus,
+  isProjectOptionalDocumentType,
   MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS,
   MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS,
   MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS,
@@ -20,16 +21,19 @@ import {
   normalizeDocumentType,
   RepositoryRole,
   SnapshotSource,
+  snapshotSourceSchema,
 } from "@repo/api/src/types/document.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { operationReceiptOutputShape } from "../tool-call-receipts.js";
 import {
   asRecord,
   DOCUMENT_DOC_HELP,
-  describeIdOrSlug,
+  idOrSlugRequiredMessage,
   type McpUrlBuilder,
   readNumber,
   readString,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -91,14 +95,13 @@ type CreatedDocumentInlineImageOutput = {
 
 type CreateDocumentToolInput = {
   title: string;
-  // Post-normalization persisted type (ISS-4397): the schema
-  // (`projectBoundDocumentTypeInputSchema`) accepts the project-bound canonical
-  // types plus the `ISSUE` alias and transforms to a project-bound
-  // `DocumentType` (ISSUE→FEATURE) before this handler runs, so the value is
-  // always one of `PROJECT_BOUND_DOCUMENT_TYPES` at runtime — hence the narrower
-  // `ProjectBoundDocumentType`, not the org-level-inclusive `DocumentType`.
-  type: ProjectBoundDocumentType;
-  projectId: string;
+  // Post-normalization persisted type (ISS-4397): `createDocumentTypeInputSchema`
+  // transforms `ISSUE` to `FEATURE` before this handler runs, so TEMPLATE and the
+  // alias never reach it.
+  type: CreatableDocumentType;
+  // Required for project-bound types and optional for DOC. A raw-shape schema
+  // cannot express that, so the handler enforces the requirement.
+  projectId?: string;
   content: string;
   assigneeId?: string | null;
   approverId?: string | null;
@@ -178,15 +181,19 @@ export function registerCreateDocument(
     "create-document",
     {
       description:
-        "Create a document — a PRD, implementation plan, or issue (ISS-*; `ISSUE`≡`FEATURE`, the legacy alias) — and attach it to a project. Templates are not creatable through this tool. The assigned slug (PRD-*, PLN-*, ISS-*; legacy FEA-* slugs still resolve) is returned in the response and is the preferred handle for future calls.\n\nEditable fields (assignee, approver, priority, dueDate, fileName, status, repositorySelection) can be set at creation in the same operation. Issues/features default to TRIAGE when status is omitted; other types default to DRAFT. Repository context becomes an immutable snapshot after creation.",
+        "Create a document — a PRD, implementation plan, or issue (ISS-*; `ISSUE`≡`FEATURE`, the legacy alias) attached to a project, or an organization-level document (`type: DOC`, DOC-*), which needs no projectId. Templates are not creatable through this tool. The assigned slug (PRD-*, PLN-*, ISS-*, DOC-*; legacy FEA-* slugs still resolve) is returned in the response and is the preferred handle for future calls.\n\nEditable fields (assignee, approver, priority, dueDate, fileName, status, repositorySelection) can be set at creation in the same operation. Issues/features default to TRIAGE when status is omitted; other types default to DRAFT. Repository context is captured as a server-owned snapshot at creation; callers cannot edit it afterwards, though the server corrects a snapshot it only ever guessed once a branch resolves the real repository.",
       inputSchema: {
         title: z.string().describe("Title of the document"),
-        // ISS-4397: accepts `ISSUE` in addition to the canonical project-bound
-        // types; `ISSUE` normalizes to `FEATURE` before the create body is built.
-        type: projectBoundDocumentTypeInputSchema.describe(
-          `${DOCUMENT_DOC_HELP} Choose the document type (\`ISSUE\`≡\`FEATURE\`).`
+        // ISS-4397: accepts `ISSUE` in addition to the canonical types;
+        // `ISSUE` normalizes to `FEATURE` before the create body is built.
+        type: createDocumentTypeInputSchema.describe(
+          `${DOCUMENT_DOC_HELP} Choose the document type (\`ISSUE\`≡\`FEATURE\`; \`DOC\` for an organization-level document).`
         ),
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
+        projectId: requiredIdOrSlug(...PROJECT_ID_ARGS)
+          .optional()
+          .describe(
+            "Project UUID or slug (e.g. PRO-7). Required for PRD, IMPLEMENTATION_PLAN, and FEATURE/ISSUE; optional for DOC. Use list-projects to find one."
+          ),
         content: z.string().describe("Initial document content/body"),
         assigneeId: z
           .string()
@@ -235,7 +242,7 @@ export function registerCreateDocument(
           })
           .optional()
           .describe(
-            "Repositories this document is created against (owner/repo full names, optional branches). Exact full-name/branch/count constraints are enforced by the API; the snapshot is read-only after creation."
+            "Repositories this document is created against (owner/repo full names, optional branches). Exact full-name/branch/count constraints are enforced by the API; the snapshot is read-only to callers after creation."
           ),
         inlineImages: z
           .array(
@@ -303,10 +310,17 @@ export function registerCreateDocument(
         inlineImages: z
           .array(createdDocumentInlineImageOutputSchema)
           .optional(),
+        ...operationReceiptOutputShape,
       },
     },
     (input: CreateDocumentToolInput) =>
       withCreateDocumentErrorHandling(async () => {
+        if (
+          input.projectId === undefined &&
+          !isProjectOptionalDocumentType(input.type)
+        ) {
+          throw new Error(idOrSlugRequiredMessage(...PROJECT_ID_ARGS));
+        }
         const body = buildCreateDocumentRequestBody(input);
         const response = await apiClient.post<CreateDocumentResponse>(
           "/documents",
@@ -333,9 +347,11 @@ function buildCreateDocumentRequestBody(
   const body: CreateDocumentMcpRequestBody = {
     title: input.title,
     type: input.type,
-    projectId: input.projectId,
     content: input.content,
   };
+  if (input.projectId !== undefined) {
+    body.projectId = input.projectId;
+  }
   if (input.assigneeId !== undefined) {
     body.assigneeId = input.assigneeId;
   }
@@ -639,73 +655,59 @@ function readRepositoryRole(value: unknown): RepositoryRole | null {
   return null;
 }
 
+// Parsed through the canonical enum schema rather than a hand-listed
+// disjunction: a member added to SnapshotSource used to fall through here and
+// silently drop the artifact's repository provenance from this tool's output
+// (ISS-8164).
 function readSnapshotSource(value: unknown): SnapshotSource | null {
-  const source = readString(value);
-  if (
-    source === SnapshotSource.ProjectDefaults ||
-    source === SnapshotSource.LoopSelection ||
-    source === SnapshotSource.ParentArtifact ||
-    source === SnapshotSource.Legacy ||
-    source === SnapshotSource.None
-  ) {
-    return source;
-  }
-  return null;
+  const parsed = snapshotSourceSchema.safeParse(readString(value));
+  return parsed.success ? parsed.data : null;
 }
 
-// The create-document MCP tool is intentionally scoped to project-bound
-// artifacts (PRD/IMPLEMENTATION_PLAN/FEATURE): its schema requires a projectId,
-// so exposing DOC or TEMPLATE here would either persist a project-less DOC with
-// a spurious project or reach the API with a required project and 500 on
-// TEMPLATE. Org-level Documents are created from the web "New Document" flow
-// (FEA-4345), not via this tool. Derived from the DocumentType SSOT so a new
-// project-bound subtype is picked up automatically; DOC/TEMPLATE are the two
-// org-level exclusions (mirrors isProjectOptionalDocumentType).
+const PROJECT_ID_ARGS = [
+  "Project",
+  "PRO-7",
+  "Use list-projects to find one.",
+] as const;
+
+// Project-bound types need a projectId; DOC may omit it (FEA-4345) or carry one
+// (ISS-12858). TEMPLATE stays uncreatable here: templates are internal.
+// ISS-10984 added DOC so agents can create org-level documents without a raw
+// POST /documents.
 export const PROJECT_BOUND_DOCUMENT_TYPES = [
   DocumentType.Prd,
   DocumentType.ImplementationPlan,
   DocumentType.Feature,
 ] as const;
 
-export type ProjectBoundDocumentType =
-  (typeof PROJECT_BOUND_DOCUMENT_TYPES)[number];
+type CreatableDocumentType =
+  | (typeof PROJECT_BOUND_DOCUMENT_TYPES)[number]
+  | typeof DocumentType.Doc;
 
 /**
  * ISS-4397: the accepted *input* document types for create-document — the
- * project-bound canonical types ({@link PROJECT_BOUND_DOCUMENT_TYPES}) plus the
- * `ISSUE` alias, which normalizes to `FEATURE` (itself project-bound). Callers
- * may pass `ISSUE` or `FEATURE`; both mint `FEATURE`-typed artifacts. The schema
- * ({@link projectBoundDocumentTypeInputSchema}) transforms this input superset to
- * a canonical {@link ProjectBoundDocumentType} before the request body is built,
- * so downstream code never sees `ISSUE`.
+ * creatable canonical types plus the `ISSUE` alias, which normalizes to
+ * `FEATURE`. The schema ({@link createDocumentTypeInputSchema}) transforms this
+ * input superset to a canonical {@link CreatableDocumentType} before the request
+ * body is built, so downstream code never sees `ISSUE`.
  */
-export const PROJECT_BOUND_DOCUMENT_TYPE_INPUTS = [
+export const CREATE_DOCUMENT_TYPE_INPUTS = [
   ...PROJECT_BOUND_DOCUMENT_TYPES,
+  DocumentType.Doc,
   DocumentTypeAlias.Issue,
 ] as const;
 
 /**
- * Narrows {@link normalizeDocumentType}'s widened `DocumentType` return to the
- * `ProjectBoundDocumentType` this tool guarantees. The input enum only admits
- * project-bound types plus the `ISSUE` alias, and every one of those normalizes
- * to a project-bound subtype (`ISSUE`→`FEATURE`, the rest to themselves), so the
- * value is provably project-bound at runtime — this keeps the compile-time
- * protection the schema's transform would otherwise widen away.
+ * Narrows {@link normalizeDocumentType}'s widened `DocumentType` return: every
+ * accepted input normalizes to itself except `ISSUE`→`FEATURE`, so TEMPLATE can
+ * never come out of it.
  */
-function normalizeToProjectBoundType(
-  type: (typeof PROJECT_BOUND_DOCUMENT_TYPE_INPUTS)[number]
-): ProjectBoundDocumentType {
-  return normalizeDocumentType(type) as ProjectBoundDocumentType;
+function normalizeToCreatableType(
+  type: (typeof CREATE_DOCUMENT_TYPE_INPUTS)[number]
+): CreatableDocumentType {
+  return normalizeDocumentType(type) as CreatableDocumentType;
 }
 
-/**
- * Zod schema exported for reuse/testing: validates the input superset
- * ({@link PROJECT_BOUND_DOCUMENT_TYPE_INPUTS}) and normalizes the `ISSUE` alias to
- * a persisted {@link ProjectBoundDocumentType}. The transform output is narrowed
- * to `ProjectBoundDocumentType` (never the broader `DocumentType`), so the create
- * body cannot carry an org-level `DOC`/`TEMPLATE` and future handler changes stay
- * type-checked against project-bound subtypes only.
- */
-export const projectBoundDocumentTypeInputSchema = z
-  .enum(PROJECT_BOUND_DOCUMENT_TYPE_INPUTS)
-  .transform(normalizeToProjectBoundType);
+export const createDocumentTypeInputSchema = z
+  .enum(CREATE_DOCUMENT_TYPE_INPUTS)
+  .transform(normalizeToCreatableType);

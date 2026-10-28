@@ -315,7 +315,6 @@ function applyStoredRepoFullName(
     repositoryFullName: storedRepoFullName,
     worktreePath: null,
     sourceArtifactId: null,
-    sourceLoopId: null,
     baseBranch: null,
   };
 }

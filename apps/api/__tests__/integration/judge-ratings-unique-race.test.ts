@@ -1,20 +1,20 @@
 /**
- * Real-Postgres proof that `submitJudgeRating` survives its own create→update
- * fallback (ISS-6320, wongk review of the judge-ratings service).
+ * Real-Postgres proof that `submitJudgeRating` survives a second rating for the
+ * same row (ISS-6320, whitlockk review of the judge-ratings service).
  *
- * The mocked unit suite cannot see this: it resolves the P2002 rejection and
- * the follow-up update against the same plain object, so a statement sequence
- * PostgreSQL rejects outright reads as green. Only a real connection can prove
- * the difference, so this suite covers both halves:
+ * The mocked unit suite cannot see this: it resolves every write against a
+ * plain object, so a statement sequence PostgreSQL rejects outright reads as
+ * green. Only a real connection can prove the difference, so this suite covers:
  *
- *   1. The BOUNDARY itself — inside one interactive transaction, a caught
+ *   1. The BOUNDARY itself: inside one interactive transaction, a caught
  *      unique violation aborts the transaction and every later statement on it
- *      is refused with "current transaction is aborted". That is exactly the
- *      structure the service used before this change, so this case is the
- *      counterfactual: it fails here, against a real database, by design.
- *   2. The SERVICE — a second `submitJudgeRating` for the same
+ *      is refused with "current transaction is aborted". That is why the
+ *      service, which writes in one transaction so its receipt commits with it
+ *      (ISS-12552), inserts with `skipDuplicates` instead of catching P2002.
+ *   2. The SERVICE: a second `submitJudgeRating` for the same
  *      (judgeScoreId, userId, organizationId) resolves to an update, returns
  *      `isUpdate: true`, and actually persists the new score.
+ *   3. The RACE: two first ratings sent at once leave one row and no error.
  *
  * Self-skips when DATABASE_URL is unset (matches the other integration suites).
  * Everything is namespaced under a freshly-created org and removed in afterAll
@@ -227,6 +227,36 @@ describe.skipIf(!hasDatabase)("judge ratings — unique-race write path", () => 
     );
     expect(readBack.ratings).toEqual([{ judgeScoreId, rating: SECOND_RATING }]);
 
+    const rowCount = await withDb((db) =>
+      db.judgeHumanScore.count({ where: { organizationId } })
+    );
+    expect(rowCount).toBe(1);
+  });
+
+  it("settles two first ratings sent at once into one row without a unique violation", async () => {
+    // ISS-12552: the insert and the update share one transaction, so a lost
+    // insert race must skip the duplicate rather than raise on it.
+    const results = await Promise.all([
+      submitJudgeRating(
+        organizationId,
+        userId,
+        artifactId,
+        judgeScoreId,
+        FIRST_RATING
+      ),
+      submitJudgeRating(
+        organizationId,
+        userId,
+        artifactId,
+        judgeScoreId,
+        SECOND_RATING
+      ),
+    ]);
+
+    expect(results.map((result) => result?.isUpdate).sort()).toEqual([
+      false,
+      true,
+    ]);
     const rowCount = await withDb((db) =>
       db.judgeHumanScore.count({ where: { organizationId } })
     );

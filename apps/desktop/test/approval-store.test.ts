@@ -24,8 +24,8 @@
  * clearResolved()) in beforeEach/afterEach to stay independent.
  */
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
 import Store from "electron-store";
+import { afterEach, beforeEach, test } from "vitest";
 import { ApprovalStore } from "../src/main/approvals/approval-store.js";
 import type { RiskTier } from "../src/shared/contracts.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";
@@ -47,10 +47,10 @@ type EnqueueInput = {
 
 function makeEnqueueInput(overrides?: Partial<EnqueueInput>): EnqueueInput {
   return {
-    operationId: "deploy",
+    operationId: "desktop_security_upgrade",
     riskTier: "high",
     method: "POST",
-    path: "/api/gateway/deploy",
+    path: "/api/gateway/security/upgrade",
     body: '{"ref":"main"}',
     location: "Local Desktop",
     reason: "Deploy requested",
@@ -79,8 +79,16 @@ afterEach(() => {
 // --- fingerprint() ---
 
 test("fingerprint produces identical sha256 for the same method+path+body", () => {
-  const a = ApprovalStore.fingerprint("POST", "/api/gateway/deploy", "body");
-  const b = ApprovalStore.fingerprint("POST", "/api/gateway/deploy", "body");
+  const a = ApprovalStore.fingerprint(
+    "POST",
+    "/api/gateway/security/upgrade",
+    "body"
+  );
+  const b = ApprovalStore.fingerprint(
+    "POST",
+    "/api/gateway/security/upgrade",
+    "body"
+  );
 
   assert.equal(a, b);
   // sha256 hex digest is 64 lowercase hex chars.
@@ -108,7 +116,7 @@ test("enqueue returns the existing pending entry on a fingerprint collision", ()
     makeEnqueueInput({
       // Same method/path/body => same fingerprint. Other fields differ but
       // must NOT create a duplicate.
-      operationId: "deploy",
+      operationId: "desktop_security_upgrade",
       reason: "second request for the same operation",
     })
   );
@@ -123,8 +131,12 @@ test("enqueue returns the existing pending entry on a fingerprint collision", ()
 test("enqueue creates distinct entries for distinct fingerprints", () => {
   const store = new ApprovalStore();
 
-  const a = store.enqueue(makeEnqueueInput({ path: "/api/gateway/deploy/a" }));
-  const b = store.enqueue(makeEnqueueInput({ path: "/api/gateway/deploy/b" }));
+  const a = store.enqueue(
+    makeEnqueueInput({ path: "/api/gateway/security/upgrade/a" })
+  );
+  const b = store.enqueue(
+    makeEnqueueInput({ path: "/api/gateway/security/upgrade/b" })
+  );
 
   assert.notEqual(a.id, b.id);
   assert.notEqual(a.fingerprint, b.fingerprint);
@@ -205,7 +217,7 @@ test("resolveAndRemove caps resolved history at MAX_RESOLVED newest-first", () =
   let lastFingerprint = "";
   for (let i = 0; i < total; i += 1) {
     const entry = store.enqueue(
-      makeEnqueueInput({ path: `/api/gateway/deploy/${i}` })
+      makeEnqueueInput({ path: `/api/gateway/security/upgrade/${i}` })
     );
     lastFingerprint = entry.fingerprint;
     store.approve(entry.id);
@@ -238,13 +250,17 @@ test("constructor drops malformed persisted entries on rehydration", () => {
   const validEntry = {
     id: "11111111-1111-4111-8111-111111111111",
     createdAt: new Date().toISOString(),
-    operationId: "deploy",
+    operationId: "desktop_security_upgrade",
     riskTier: "high",
     method: "POST",
-    path: "/api/gateway/deploy",
+    path: "/api/gateway/security/upgrade",
     location: "Local Desktop",
     reason: "rehydrated",
-    fingerprint: ApprovalStore.fingerprint("POST", "/api/gateway/deploy", "b"),
+    fingerprint: ApprovalStore.fingerprint(
+      "POST",
+      "/api/gateway/security/upgrade",
+      "b"
+    ),
   };
 
   seed.set("pending", [

@@ -3,7 +3,6 @@ import {
   getRoutingSelection,
   resetRoutingSelectionForTests,
   setRoutingAutoSelection,
-  setRoutingManualSelection,
   subscribeRoutingSelection,
 } from "../routing-store";
 import { EngineerRoutingMode } from "../types";
@@ -40,16 +39,14 @@ describe("routing-store", () => {
     const selection = getRoutingSelection();
     expect(selection.mode).toBe(EngineerRoutingMode.CloudRelay);
     expect(selection.computeTargetId).toBeNull();
-    expect(selection.source).toBe("auto");
   });
 
-  it("hydrates a complete manual selection from storage", () => {
+  it("hydrates a complete selection from storage", () => {
     storageMap.set(
       storageKey,
       JSON.stringify({
         mode: EngineerRoutingMode.LocalElectron,
         computeTargetId: "ct-stored",
-        source: "manual",
         updatedAt: 42,
       })
     );
@@ -57,8 +54,34 @@ describe("routing-store", () => {
     expect(getRoutingSelection()).toEqual({
       mode: EngineerRoutingMode.LocalElectron,
       computeTargetId: "ct-stored",
-      source: "manual",
       updatedAt: 42,
+    });
+  });
+
+  // ISS-12617 removed the manual selection. A value an older build stored
+  // with `source: "manual"` loads as an ordinary selection, so the next
+  // automatic write (the Desktop repair) replaces it instead of being refused.
+  it("loads a stored manual selection as an ordinary one that an automatic write replaces", () => {
+    storageMap.set(
+      storageKey,
+      JSON.stringify({
+        mode: EngineerRoutingMode.CloudRelay,
+        computeTargetId: "ct-stored",
+        source: "manual",
+        updatedAt: 42,
+      })
+    );
+
+    expect(getRoutingSelection()).toEqual({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "ct-stored",
+      updatedAt: 42,
+    });
+
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron, "ct-local");
+    expect(getRoutingSelection()).toMatchObject({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: "ct-local",
     });
   });
 
@@ -76,7 +99,6 @@ describe("routing-store", () => {
     expect(selection).toMatchObject({
       mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: null,
-      source: "auto",
     });
     expect(selection.updatedAt).toBeGreaterThan(0);
   });
@@ -90,48 +112,30 @@ describe("routing-store", () => {
     expect(getRoutingSelection()).toEqual({
       mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: null,
-      source: "auto",
       updatedAt: 0,
     });
   });
 
-  it("allows manual selection override", () => {
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron, "ct-123");
+  it("sets a selection and persists it", () => {
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron, "ct-123");
     const selection = getRoutingSelection();
     expect(selection.mode).toBe(EngineerRoutingMode.LocalElectron);
     expect(selection.computeTargetId).toBe("ct-123");
-    expect(selection.source).toBe("manual");
-  });
-
-  it("auto selection does not override manual", () => {
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron);
-
-    setRoutingAutoSelection(EngineerRoutingMode.CloudRelay, "ct-456");
-    const selection = getRoutingSelection();
-    expect(selection.mode).toBe(EngineerRoutingMode.LocalElectron);
-    expect(selection.source).toBe("manual");
-  });
-
-  it("auto selection with force overrides manual", () => {
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron);
-
-    setRoutingAutoSelection(EngineerRoutingMode.CloudRelay, "ct-456", {
-      force: true,
+    expect(JSON.parse(storageMap.get(storageKey) ?? "{}")).toMatchObject({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: "ct-123",
     });
-    const selection = getRoutingSelection();
-    expect(selection.mode).toBe(EngineerRoutingMode.CloudRelay);
-    expect(selection.computeTargetId).toBe("ct-456");
   });
 
   it("notifies listeners on change", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutingSelection(listener);
 
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron);
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron);
     expect(listener).toHaveBeenCalledOnce();
 
     unsubscribe();
-    setRoutingManualSelection(EngineerRoutingMode.CloudRelay);
+    setRoutingAutoSelection(EngineerRoutingMode.CloudRelay);
     expect(listener).toHaveBeenCalledOnce();
   });
 
@@ -139,20 +143,19 @@ describe("routing-store", () => {
     const listener = vi.fn();
     subscribeRoutingSelection(listener);
 
-    setRoutingManualSelection(EngineerRoutingMode.CloudRelay);
-    // First call changes source from auto to manual
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron);
     expect(listener).toHaveBeenCalledOnce();
 
-    setRoutingManualSelection(EngineerRoutingMode.CloudRelay);
-    // Same mode + same source + same computeTargetId = no change
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron);
+    // Same mode + same computeTargetId = no change
     expect(listener).toHaveBeenCalledOnce();
   });
 
   it("preserves computeTargetId for both routing modes", () => {
-    setRoutingManualSelection(EngineerRoutingMode.CloudRelay, "ct-relay");
+    setRoutingAutoSelection(EngineerRoutingMode.CloudRelay, "ct-relay");
     expect(getRoutingSelection().computeTargetId).toBe("ct-relay");
 
-    setRoutingManualSelection(EngineerRoutingMode.LocalElectron, "ct-local");
+    setRoutingAutoSelection(EngineerRoutingMode.LocalElectron, "ct-local");
     expect(getRoutingSelection().computeTargetId).toBe("ct-local");
   });
 });

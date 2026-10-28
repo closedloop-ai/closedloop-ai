@@ -7,7 +7,7 @@ import type { DesktopAuthState } from "../../../types/desktop-api";
 import { useDesktopLinkedEntityColumns } from "../use-desktop-linked-entity-columns";
 
 /**
- * FEA-4209 / FEA-4210 (wongk review): the desktop half of the linked-entity
+ * FEA-4209 / FEA-4210 (whitlockk review): the desktop half of the linked-entity
  * columns — which mode has the data, and what destination a chip can honestly
  * offer.
  */
@@ -73,7 +73,7 @@ describe("useDesktopLinkedEntityColumns", () => {
     );
 
     expect(result.current.getIssueHref(ISSUE)).toBe(
-      "https://app.closedloop.ai/acme/issues/FEA-4210"
+      "https://app.closedloop.ai/acme/documents/FEA-4210"
     );
   });
 

@@ -10,7 +10,7 @@
  * confidence boost + `plan` contributor. Most labels need no single required
  * layer; `plan` is the one exception — it requires a PLAN-SPECIFIC declared
  * signal (`DeclaredPlan`, FEA-4184), so neither a bare human turn NOR a generic
- * declaration (an `implement` trace phase) can fabricate it — and since AA-03 an
+ * declaration (`DeclaredIntent`) can fabricate it — and since AA-03 an
  * unrecognized name-derived signal (an MCP `get-document`, a `/code-review`) is
  * inert `DeclaredUtility`, contributing no boost and no mass at all.
  * Harness-blind: this module reasons only over abstract
@@ -30,12 +30,13 @@
  * They are the intended tuning surface — a recalibration adjusts these constants
  * and bumps `ACTIVITY_CLASSIFIER_VERSION`, re-deriving history via the backfill.
  */
-import { EvidenceLayer, ToolCategory } from "../evidence/evidence-model.js";
+
 import {
-  ACTIVE_PHASE_ORDER,
   ACTIVITY_PHASE,
   type ActivityPhase,
-} from "./activity-taxonomy.js";
+} from "@repo/api/src/types/activity-phase";
+import { EvidenceLayer, ToolCategory } from "../evidence/evidence-model.js";
+import { ACTIVE_PHASE_ORDER } from "./activity-taxonomy.js";
 
 /** A window's abstract-category counts (the per-window slice of the mix). */
 export type ActivityCategoryCounts = Record<ToolCategory, number>;
@@ -155,12 +156,12 @@ function planScore(counts: ActivityCategoryCounts): number {
     return 0;
   }
   // `plan` requires a PLAN-SPECIFIC declared signal (a plan skill/slash-command
-  // like `/create-plan`, an `ExitPlanMode`-style MCP call, or a trace phase
-  // declaring "plan") — NOT merely any declared intent. The evidence core splits
-  // declarations into `DeclaredPlan` (plan-specific), the generic `DeclaredIntent`
-  // (since AA-03, a non-plan TRACE PHASE only — e.g. one labelled `implement`), and
-  // the inert `DeclaredUtility` (every unrecognized skill / MCP / slash-command
-  // name); see `declaredCategoryFor` in `evidence-model.ts`. Gating on the GENERIC
+  // like `/create-plan` or an `ExitPlanMode`-style MCP call) — NOT merely any
+  // declared intent. The evidence core splits declarations into `DeclaredPlan`
+  // (plan-specific), the generic `DeclaredIntent` (currently has no producer —
+  // see its own doc comment in `evidence-model.ts`), and the inert
+  // `DeclaredUtility` (every unrecognized skill / MCP / slash-command name); see
+  // `declaredCategoryFor` in `evidence-model.ts`. Gating on the GENERIC
   // declared count would let any declaration (an MCP `get-document`, a
   // `/code-review`) fabricate `plan` in a
   // no-mutation window — the false positive codex flagged (FEA-4184). A bare human

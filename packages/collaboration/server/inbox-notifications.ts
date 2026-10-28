@@ -103,36 +103,6 @@ export async function sendAssignmentNotification(
   });
 }
 
-export type LoopCompletedNotificationParams = {
-  userId: string;
-  organizationId: string;
-  loopTitle: string;
-  loopUrl: string;
-  subjectId: string;
-};
-
-/**
- * Notify a Loop's owner that their autonomous agent run reached terminal
- * success. Delegates to `triggerInboxNotification`, which no-ops when the
- * Liveblocks secret is unset and swallows trigger failures so a notification
- * error never fails the loop-completion path.
- */
-export async function sendLoopCompletedNotification(
-  params: LoopCompletedNotificationParams
-): Promise<void> {
-  await triggerInboxNotification({
-    userId: params.userId,
-    organizationId: params.organizationId,
-    kind: "$loopCompleted",
-    subjectId: params.subjectId,
-    activityData: {
-      loopTitle: params.loopTitle,
-      loopUrl: params.loopUrl,
-    },
-    errorLabel: "Failed to send loop completed notification",
-  });
-}
-
 export const MentionEntityType = {
   Session: "session",
   Branch: "branch",

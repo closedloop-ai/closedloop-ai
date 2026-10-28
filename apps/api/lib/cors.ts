@@ -1,3 +1,10 @@
+import { POSTHOG_TRACING_HEADERS } from "@repo/analytics/posthog-tracing-headers";
+import { ARTIFACT_LINK_CONTINUATION_HEADERS } from "@repo/api/src/types/artifact";
+import { DOCUMENT_LIST_CONTINUATION_HEADERS } from "@repo/api/src/types/document";
+import {
+  FEATURE_FLAG_OVERRIDES_HEADER,
+  FEATURE_FLAGS_CHECKED_HEADER,
+} from "@repo/api/src/types/feature-flag-overrides";
 import {
   DEPLOYMENT_ID_HEADER,
   ORG_IDENTITY_HEADER,
@@ -25,12 +32,41 @@ const ALLOWED_REQUEST_HEADERS = [
   DEPLOYMENT_ID_HEADER,
   "traceparent",
   "tracestate",
+  // ISS-11929: posthog-js sends all three to the cl-api host together.
+  ...Object.values(POSTHOG_TRACING_HEADERS),
+  // ISS-12048: the Dev Tools overrides, sent only while Dev Mode is on.
+  FEATURE_FLAG_OVERRIDES_HEADER,
+] as const;
+
+// Response headers a cross-origin browser caller is allowed to READ. Without
+// this list the browser hands JavaScript only the CORS-safelisted response
+// headers and silently drops the rest — no error, just `null` from
+// `headers.get(...)`. Non-browser callers (API keys, MCP, the producer scrape)
+// are unaffected either way; this is what makes the same metadata reachable
+// from `apps/app`.
+// ISS-6941: the `GET /documents` continuation metadata, which exists precisely
+// so a paging caller can tell "that was everything" from "the server capped
+// me". Listed from the shared contract rather than retyped, so the header a
+// route sends and the header CORS exposes cannot drift apart.
+// ISS-10102: the same shape for `GET /artifact-links/resolved`, whose bare-array
+// arm would otherwise cap a lineage at ARTIFACT_LINK_PAGE_SIZE with no way for
+// the caller to notice.
+const EXPOSED_RESPONSE_HEADERS = [
+  DOCUMENT_LIST_CONTINUATION_HEADERS.Total,
+  DOCUMENT_LIST_CONTINUATION_HEADERS.HasMore,
+  DOCUMENT_LIST_CONTINUATION_HEADERS.NextOffset,
+  ARTIFACT_LINK_CONTINUATION_HEADERS.HasMore,
+  ARTIFACT_LINK_CONTINUATION_HEADERS.NextCursor,
+  ARTIFACT_LINK_CONTINUATION_HEADERS.SnapshotId,
+  // ISS-12048: the flags a Dev Mode request checked, for the overlay.
+  FEATURE_FLAGS_CHECKED_HEADER,
 ] as const;
 
 export function getCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": ALLOWED_REQUEST_HEADERS.join(", "),
+    "Access-Control-Expose-Headers": EXPOSED_RESPONSE_HEADERS.join(", "),
     "Access-Control-Max-Age": "86400",
   };
 

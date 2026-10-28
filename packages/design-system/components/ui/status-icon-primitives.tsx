@@ -5,6 +5,8 @@ import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   CENTER,
   CIRCUMFERENCE,
+  EMPTY_RING_TRACK_COLOR as SHARED_EMPTY_RING_TRACK_COLOR,
+  FilledBoltCircle,
   FilledCheckCircle,
   FilledExclamationCircle,
   FilledSwapCircle,
@@ -32,13 +34,14 @@ export { EMPTY_RING_TRACK_COLOR } from "./internal/status-icon-shared";
  */
 
 /** Glyph rendered inside a filled status circle. */
-export type StatusGlyph = "check" | "x" | "swap" | "exclamation";
+export type StatusGlyph = "check" | "x" | "swap" | "exclamation" | "bolt";
 
 const STATUS_GLYPHS: Record<StatusGlyph, (fill: string) => React.ReactNode> = {
   check: (fill) => <FilledCheckCircle fill={fill} />,
   x: (fill) => <FilledXCircle fill={fill} />,
   swap: (fill) => <FilledSwapCircle fill={fill} />,
   exclamation: (fill) => <FilledExclamationCircle fill={fill} />,
+  bolt: (fill) => <FilledBoltCircle fill={fill} />,
 };
 
 interface StatusRingProps
@@ -256,4 +259,192 @@ export function StatusDash({
       />
     </svg>
   );
+}
+
+/**
+ * A single visual treatment for a status mark: which primitive draws it and the
+ * visual props that primitive needs. Purely visual — no member names a domain
+ * status, so this stays inside the package's domain-free scope rule.
+ */
+type StatusIconTreatment =
+  | {
+      readonly kind: "glyph";
+      readonly glyph: StatusGlyph;
+      /** CSS-var fill token for the circle. */
+      readonly fill: string;
+    }
+  | {
+      readonly kind: "ring";
+      /** CSS-var arc/inner-pie token. Inert where `percentage` is 0. */
+      readonly color: string;
+      /** Fill amount, 0-100. Stated on every arm, like `StatusRing` requires. */
+      readonly percentage: number;
+      /** Dashed track — the lowest-commitment ring. */
+      readonly dashed?: boolean;
+      /** Track (background circle) color override. */
+      readonly trackColor?: string;
+      /** Ring track/arc stroke width override. */
+      readonly ringStrokeWidth?: number;
+    };
+
+/** Arc/inner-pie tone every measurable ring in this family draws. */
+export const PROGRESS_RING_COLOR = "var(--progress-foreground)";
+
+/**
+ * The named visual vocabulary a status mark can take, keyed by what it DRAWS
+ * rather than by what any one domain calls it. This layer owns the tuple; a
+ * domain adapter owns which name each of its statuses maps to and that status's
+ * label. A glyph name states the token it paints, so the two cannot drift.
+ */
+export type StatusAppearance =
+  | "dashed-ring"
+  | "blank-ring"
+  | "empty-ring"
+  | "quarter-ring"
+  | "half-ring"
+  | "three-quarter-ring"
+  | "full-ring"
+  | "muted-half-ring"
+  | "success-check"
+  | "warning-exclamation"
+  | "foreground-x"
+  | "ai-swap"
+  | "destructive-bolt";
+
+const STATUS_APPEARANCES: Record<StatusAppearance, StatusIconTreatment> = {
+  "dashed-ring": {
+    kind: "ring",
+    color: PROGRESS_RING_COLOR,
+    percentage: 0,
+    dashed: true,
+  },
+  // Parts from `empty-ring` on track tone alone — about 1.5:1 between two
+  // identical silhouettes, so the pair does NOT separate at 16px and nothing
+  // here claims it does. Only a domain adapter's unknown-status fallback
+  // reaches it, and their maps exclude it by type.
+  "blank-ring": { kind: "ring", color: PROGRESS_RING_COLOR, percentage: 0 },
+  "empty-ring": {
+    kind: "ring",
+    color: PROGRESS_RING_COLOR,
+    percentage: 0,
+    trackColor: SHARED_EMPTY_RING_TRACK_COLOR,
+  },
+  // Half and three-quarter stops use 48.5 and 73.5, not 50 and 75: the
+  // arc's round `strokeLinecap` overshoots by half a stroke at each end.
+  // Quarter stays at 25 because the small arc needs the named stop more than
+  // the optical correction. One edit here repoints every family drawing it.
+  "quarter-ring": {
+    kind: "ring",
+    color: PROGRESS_RING_COLOR,
+    percentage: 25,
+  },
+  "half-ring": { kind: "ring", color: PROGRESS_RING_COLOR, percentage: 48.5 },
+  "three-quarter-ring": {
+    kind: "ring",
+    color: PROGRESS_RING_COLOR,
+    percentage: 73.5,
+  },
+  "full-ring": { kind: "ring", color: PROGRESS_RING_COLOR, percentage: 100 },
+  // Muted tone, thinner stroke, and the same 48.5% geometry as `half-ring` —
+  // so it does read as a position, which is why the name says `half`.
+  "muted-half-ring": {
+    kind: "ring",
+    color: "var(--muted-foreground)",
+    percentage: 48.5,
+    ringStrokeWidth: 1.5,
+    trackColor: "var(--muted-foreground)",
+  },
+  "success-check": { kind: "glyph", glyph: "check", fill: "var(--success)" },
+  "warning-exclamation": {
+    kind: "glyph",
+    glyph: "exclamation",
+    fill: "var(--warning)",
+  },
+  "foreground-x": { kind: "glyph", glyph: "x", fill: "var(--foreground)" },
+  "ai-swap": { kind: "glyph", glyph: "swap", fill: "var(--ai)" },
+  // Within the artifact status families, the only mark for
+  // terminal-and-went-wrong — so it parts from `foreground-x` and
+  // `warning-exclamation` on SHAPE, not hue alone (WCAG 1.4.1). Other
+  // vocabularies pair differently; see the ledger.
+  "destructive-bolt": {
+    kind: "glyph",
+    glyph: "bolt",
+    fill: "var(--destructive)",
+  },
+};
+
+/**
+ * Every appearance name, at runtime. A `Record<StatusAppearance, …>` is checked
+ * by `tsc`, which a vitest run does not invoke — so a consumer covering the
+ * whole vocabulary derives its list here instead of hand-copying the union and
+ * silently going one short.
+ */
+export const STATUS_APPEARANCE_NAMES = Object.keys(
+  STATUS_APPEARANCES
+) as readonly StatusAppearance[];
+
+interface StatusAppearanceIconProps
+  extends Omit<React.SVGAttributes<SVGSVGElement>, "color" | "fill"> {
+  /** Which named visual treatment to draw. */
+  appearance: StatusAppearance;
+  /** Accessible label for the icon. The caller's vocabulary, not this layer's. */
+  label: string;
+  /** Icon size in pixels (default 16). */
+  size?: 16 | 20;
+  /** Spinning arc for AI/agent processing. Ignored by glyph appearances. */
+  thinking?: boolean;
+}
+
+/**
+ * Draws one named {@link StatusAppearance}. This is the single seam every
+ * status-icon family renders through, so a change to what an appearance draws
+ * lands on all of them at once instead of on whichever copy was edited.
+ *
+ * The registry supplies defaults, then `props` spreads last to preserve the
+ * public wrapper API's historical escape hatch for deliberate SVG overrides.
+ * Omitting `color` and `fill` still rejects the literal form; a spread of a
+ * wider object can override visual props by design.
+ */
+export function StatusAppearanceIcon({
+  appearance,
+  label,
+  size = 16,
+  thinking = false,
+  ...props
+}: StatusAppearanceIconProps) {
+  const treatment = hasStatusAppearance(appearance)
+    ? STATUS_APPEARANCES[appearance]
+    : STATUS_APPEARANCES["blank-ring"];
+
+  if (treatment.kind === "glyph") {
+    return (
+      <FilledStatusCircle
+        fill={treatment.fill}
+        glyph={treatment.glyph}
+        label={label}
+        size={size}
+        {...props}
+      />
+    );
+  }
+
+  return (
+    <StatusRing
+      color={treatment.color}
+      dashed={treatment.dashed}
+      label={label}
+      percentage={treatment.percentage}
+      ringStrokeWidth={treatment.ringStrokeWidth}
+      size={size}
+      thinking={thinking}
+      trackColor={treatment.trackColor}
+      {...props}
+    />
+  );
+}
+
+function hasStatusAppearance(
+  appearance: StatusAppearance
+): appearance is StatusAppearance {
+  return Object.hasOwn(STATUS_APPEARANCES, appearance);
 }

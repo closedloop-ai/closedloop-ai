@@ -13,9 +13,9 @@ import { SessionProvenanceChip } from "./session-provenance-chip";
  * it a reader has to guess whether a missing chip is intentional or a bug.
  */
 const meta = {
-  title: "App Core/Agents/Session Provenance Chip",
+  title: "Primitives v1.0/Feedback & Status/Session Provenance Chip",
   component: SessionProvenanceChip,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: { provenance: BranchProvenance.Agent },
 } satisfies Meta<typeof SessionProvenanceChip>;

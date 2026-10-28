@@ -28,10 +28,10 @@ export const SELECTED_PR_TITLE = "Selected pull request";
 export const COMPATIBILITY_PR_TITLE = "Compatibility pull request";
 /** Selected URL paired with pull request #22. */
 export const SELECTED_PR_URL =
-  "https://github.com/closedloop-ai/symphony-alpha/pull/22";
+  "https://github.com/closedloop-ai/closedloop-ai/pull/22";
 /** Compatibility URL paired with pull request #11. */
 export const COMPATIBILITY_PR_URL =
-  "https://github.com/closedloop-ai/symphony-alpha/pull/11";
+  "https://github.com/closedloop-ai/closedloop-ai/pull/11";
 /** Explicit selected description used by non-fallback scenarios. */
 export const SELECTED_PR_BODY = "Selected body";
 /** Legacy compatibility description used by fallback scenarios. */

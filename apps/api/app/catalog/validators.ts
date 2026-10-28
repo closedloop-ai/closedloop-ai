@@ -1,8 +1,43 @@
+import { POSTGRES_INT4_MAX } from "@closedloop-ai/loops-api/column-limits";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
+
+/**
+ * The kinds a `CatalogItem` can target. "pack" is the container kind; the rest
+ * are the component kinds a Pack holds.
+ *
+ * Exported because `catalog_items.target_kind` has more than one producer and
+ * had grown more than one spelling of this list — an inline `z.enum` here and a
+ * private const in `service/update-authorization.ts`. One owner, derived
+ * everywhere else.
+ */
+export const CatalogTargetKind = {
+  Agent: "agent",
+  Command: "command",
+  Hook: "hook",
+  Mcp: "mcp",
+  Pack: "pack",
+  Plugin: "plugin",
+  Skill: "skill",
+} as const;
+export type CatalogTargetKind =
+  (typeof CatalogTargetKind)[keyof typeof CatalogTargetKind];
+
+export const catalogTargetKindSchema = z.enum(CatalogTargetKind);
+
+/**
+ * `CatalogItem.sortOrder` is a Prisma `Int` (int4). The floor was already here;
+ * the ceiling stops an out-of-range value reaching Prisma as an uncaught 500.
+ */
+const catalogSortOrderSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(POSTGRES_INT4_MAX)
+  .optional();
 
 const coachingConfigSchema = z.object({
   signals: z.array(z.string().min(1)).min(1),
@@ -25,19 +60,10 @@ export const listCatalogQuerySchema = z.object({
 
 export const createCatalogItemBodySchema = z
   .object({
-    // "pack" is the container kind; the rest are the component kinds a Pack holds.
-    targetKind: z.enum([
-      "pack",
-      "plugin",
-      "skill",
-      "command",
-      "agent",
-      "hook",
-      "mcp",
-    ]),
+    targetKind: catalogTargetKindSchema,
     name: z.string().min(1).max(256),
     description: z.string().max(2048).optional(),
-    sortOrder: z.number().int().min(0).optional(),
+    sortOrder: catalogSortOrderSchema,
     coaching: z.boolean().optional(),
     coachingConfig: coachingConfigSchema.optional(),
     /** Parent Pack id when creating a component inside a Pack. */
@@ -55,7 +81,7 @@ export const updateCatalogItemBodySchema = z
   .object({
     name: z.string().min(1).max(256).optional(),
     description: z.string().max(2048).optional(),
-    sortOrder: z.number().int().min(0).optional(),
+    sortOrder: catalogSortOrderSchema,
     enabled: z.boolean().optional(),
     coaching: z.boolean().optional(),
     coachingConfig: coachingConfigSchema.optional(),

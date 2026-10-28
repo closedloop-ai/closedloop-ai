@@ -16,7 +16,7 @@
  * grandfather list (per `test/AGENTS.md`).
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";

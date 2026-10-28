@@ -1,6 +1,10 @@
 import "server-only";
 
-import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import { isValidCloudBranchId } from "@repo/api/src/types/branch-id";
+import {
+  normalizeRepoFullName,
+  parseRepositoryFullName,
+} from "@repo/api/src/types/branch-repository";
 import {
   BRANCH_SELECTED_PULL_REQUEST_FILE_CONTENT_MAX_BYTES,
   BranchSelectedPullRequestAcquisitionUnavailableReason,
@@ -22,9 +26,10 @@ import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import { getSelectedPullRequestFileContentEvidence } from "@repo/github/selected-pull-request-content-evidence";
 import { getSelectedPullRequestEvidence } from "@repo/github/selected-pull-request-evidence";
 import { runBranchViewRead } from "@/lib/github/github-branch-view-read-client";
-import { isValidCloudBranchId } from "./branch-canonical-metric-usage";
+import { finalizeCloudBranchProductResponse } from "./branch-product-response-eligibility";
 import { branchHasCloudEligibility } from "./cloud-branch-eligibility";
 import { selectedPullRequestEvidenceAcquisitionBudget } from "./selected-pull-request-evidence-acquisition-budget";
+import { selectedPullRequestRepositoryFullName } from "./selected-pull-request-repository-identity";
 
 const selectedPullRequestApplicationSelect = {
   id: true,
@@ -120,15 +125,23 @@ export const branchSelectedPullRequestFilesService = {
         )
     );
     if (!read.ok) {
-      return branchSelectedPullRequestAccessUnavailable(
-        read.error.reason,
-        read.error.retryAfterSeconds
+      return finalizeCloudBranchProductResponse(
+        organizationId,
+        branchId,
+        branchSelectedPullRequestAccessUnavailable(
+          read.error.reason,
+          read.error.retryAfterSeconds
+        )
       );
     }
     if (!read.value.ok) {
       throw read.value.error;
     }
-    return read.value.value;
+    return finalizeCloudBranchProductResponse(
+      organizationId,
+      branchId,
+      read.value.value
+    );
   },
 
   getDiff: async (
@@ -200,15 +213,23 @@ export const branchSelectedPullRequestFilesService = {
         )
     );
     if (!read.ok) {
-      return branchSelectedPullRequestAccessUnavailable(
-        read.error.reason,
-        read.error.retryAfterSeconds
+      return finalizeCloudBranchProductResponse(
+        organizationId,
+        branchId,
+        branchSelectedPullRequestAccessUnavailable(
+          read.error.reason,
+          read.error.retryAfterSeconds
+        )
       );
     }
     if (!read.value.ok) {
       throw read.value.error;
     }
-    return read.value.value;
+    return finalizeCloudBranchProductResponse(
+      organizationId,
+      branchId,
+      read.value.value
+    );
   },
 };
 
@@ -229,14 +250,23 @@ function findSelectedPullRequestContext(
         id: branchId,
         organizationId,
         type: ArtifactType.BRANCH,
-        branch: { deletedAt: null },
+        branch: { isNot: null },
       },
       select: branchSelectedPullRequestApplicationSelect,
     });
     if (!row?.branch) {
       return null;
     }
-    return selectedPullRequestContextFromRow(row, query);
+    const context = selectedPullRequestContextFromRow(row, query);
+    if (
+      !(
+        context &&
+        (await branchHasCloudEligibility(db, organizationId, branchId))
+      )
+    ) {
+      return null;
+    }
+    return context;
   });
 }
 
@@ -248,32 +278,21 @@ function selectedPullRequestContextFromRow(
     (detail) =>
       detail.branchArtifactId === row.id &&
       detail.number === query.pullRequestNumber &&
-      pullRequestRepositoryFullName(row, detail) === query.repositoryFullName
+      selectedPullRequestRepositoryFullName(row, detail) ===
+        query.repositoryFullName
   );
   if (!selected) {
     return null;
   }
-  const [owner, repo] = query.repositoryFullName.split("/");
-  if (!(owner && repo)) {
+  const identity = parseRepositoryFullName(query.repositoryFullName);
+  if (!identity) {
     return null;
   }
   return {
     expectedFileCount: selected.changedFiles,
-    owner,
-    repo,
+    owner: identity.owner,
+    repo: identity.repo,
   };
-}
-
-function pullRequestRepositoryFullName(
-  row: SelectedPullRequestApplicationRow,
-  detail: SelectedPullRequestApplicationRow["pullRequestDetails"][number]
-) {
-  const fullName =
-    detail.repository?.fullName ??
-    detail.repositoryFullName ??
-    row.branch?.repository?.fullName ??
-    row.branch?.repositoryFullName;
-  return fullName ? normalizeRepoFullName(fullName) : null;
 }
 
 function branchViewReadInput(

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import {
   type BranchKeyRow,
   readBranchCommitRowsForSessions,
@@ -126,13 +126,13 @@ async function seedCorpus(
   // PRs (one per repo'd branch). The global read EXISTS-scopes via the branch
   // artifact, which both have.
   await db.run(
-    `INSERT INTO pull_requests (id, pr_url, pr_number, repo_full_name, branch_name, state, observed_at, created_at)
-     VALUES ('pr-a', 'https://gh/acme/web/pull/1', 1, 'acme/web', 'feature/alpha', 'open', $1, $1)`,
+    `INSERT INTO pull_requests (id, pr_url, pr_number, repo_full_name, branch_name, observed_at, created_at)
+     VALUES ('pr-a', 'https://gh/acme/web/pull/1', 1, 'acme/web', 'feature/alpha', $1, $1)`,
     "2026-06-01T03:00:00.000Z"
   );
   await db.run(
-    `INSERT INTO pull_requests (id, pr_url, pr_number, repo_full_name, branch_name, state, observed_at, created_at)
-     VALUES ('pr-b', 'https://gh/acme/web/pull/2', 2, 'acme/web', 'feature/beta', 'open', $1, $1)`,
+    `INSERT INTO pull_requests (id, pr_url, pr_number, repo_full_name, branch_name, observed_at, created_at)
+     VALUES ('pr-b', 'https://gh/acme/web/pull/2', 2, 'acme/web', 'feature/beta', $1, $1)`,
     "2026-06-01T03:00:00.000Z"
   );
 }

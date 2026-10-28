@@ -1,8 +1,9 @@
 "use client";
 
 import { GroupByMode } from "@repo/app/documents/lib/group-by";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { useLinkedSearchWriter } from "@repo/app/shared/hooks/use-linked-search-writer";
+import { writeTableGroupViewParams } from "@repo/app/shared/lib/table-group-view-params";
+import { EMPTY_TABLE_GROUPING } from "@repo/design-system/components/ui/table-toolbar-model";
 import type {
   NavigationActions,
   ReadonlySearchParams,
@@ -14,12 +15,8 @@ import { useCallback } from "react";
  * (PRD-421 / PLN-755 Phase D).
  *
  * Lives in its own hook so the page component stays under Biome's cognitive
- * complexity limit and so the flag check + URL/state mutation logic can be
- * unit-tested in isolation.
- *
- * Returns `undefined` when the `stack-rank-project-page` flag is off so the
- * caller can conditionally hide the menu item without an explicit
- * `?? undefined`.
+ * complexity limit and so the URL/state mutation logic can be unit-tested in
+ * isolation.
  */
 export function useStackRankReset(input: {
   clearSort: () => void;
@@ -27,20 +24,24 @@ export function useStackRankReset(input: {
   searchParams: ReadonlySearchParams;
   navigation: NavigationActions;
   pathname: string;
-}): (() => void) | undefined {
+}): () => void {
   const { clearSort, setGroupBy, searchParams, navigation, pathname } = input;
-  const isEnabled = useFeatureFlagEnabled(
-    STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY
+  const { readLatest, replaceSearch } = useLinkedSearchWriter(
+    pathname,
+    searchParams,
+    navigation.replace
   );
   const handler = useCallback(() => {
     clearSort();
     setGroupBy(GroupByMode.None);
-    const params = new URLSearchParams(searchParams.toString());
+    const params = readLatest();
     params.delete("sortBy");
     params.delete("sortDir");
-    const qs = params.toString();
-    navigation.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [clearSort, setGroupBy, searchParams, navigation, pathname]);
+    // The ungrouped view is stated too: carrying the old `group` would
+    // re-group the board, which reads its grouping from the link (PRD-720 AC3).
+    writeTableGroupViewParams(params, EMPTY_TABLE_GROUPING, {});
+    replaceSearch(params);
+  }, [clearSort, setGroupBy, readLatest, replaceSearch]);
 
-  return isEnabled ? handler : undefined;
+  return handler;
 }

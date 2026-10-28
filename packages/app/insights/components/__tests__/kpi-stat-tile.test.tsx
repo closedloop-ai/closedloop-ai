@@ -1,7 +1,17 @@
 import type { KpiStat } from "@repo/api/src/types/insights";
 import { KpiDeltaBasis, KpiFormat } from "@repo/api/src/types/insights";
-import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
-import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import {
+  WithNeutralDeltaPill,
+  WithUnifiedDeltaPill,
+} from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
+import {
+  DELTA_SENTIMENT_CAPTION,
+  DeltaSentiment,
+  deltaPillClass,
+  deltaPillGeometryClass,
+  MetricDeltaTreatment,
+  MetricPolarity,
+} from "@repo/design-system/components/ui/primitives/metric-polarity";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -36,7 +46,7 @@ function renderTile(
       pinned={false}
       polarity={polarity}
       tileId={tileId}
-      title="Captured PRs"
+      title="Merged PRs"
     />
   );
 }
@@ -59,7 +69,7 @@ function renderTileWithUnifiedPill(
         pinned={false}
         polarity={polarity}
         tileId={tileId}
-        title="Captured PRs"
+        title="Merged PRs"
       />
     </WithUnifiedDeltaPill>
   );
@@ -71,6 +81,9 @@ function trendChip(): HTMLElement {
 
 // A non-finite delta must never surface as literal "NaN"/"Infinity" text.
 const NON_FINITE_TEXT = /NaN|Infinity/;
+const IMPROVEMENT_VERDICT = String(
+  DELTA_SENTIMENT_CAPTION[DeltaSentiment.Improvement]
+);
 
 describe("KpiMetricTile delta slot (FEA-2494)", () => {
   it("shows a real signed delta for ranges with a prior-period comparison", () => {
@@ -102,25 +115,25 @@ describe("KpiMetricTile delta slot (FEA-2494)", () => {
     ["NaN", Number.NaN],
     ["+Infinity", Number.POSITIVE_INFINITY],
     ["-Infinity", Number.NEGATIVE_INFINITY],
-  ])("renders the no-comparison placeholder, not a bogus chip, for a %s delta on a lower-is-better tile (shafty023 review on #4148)", (_label, deltaPct) => {
-    // A non-finite deltaPct must fall to the placeholder. Without the boundary
-    // guard `NaN > 0` is false, so a lower-is-better tile would render a bogus
-    // down-arrow + "NaN%" + a green "better" — a UI that lies about a number
-    // that does not exist.
-    renderTile(makeKpi({ deltaPct }), "cost", MetricPolarity.LowerIsBetter);
+  ])(
+    "renders the no-comparison placeholder, not a bogus chip, for a %s delta on a lower-is-better tile (davetho review on #4148)",
+    (_label, deltaPct) => {
+      // A non-finite deltaPct must fall to the placeholder. Without the boundary
+      // guard `NaN > 0` is false, so a lower-is-better tile would render a bogus
+      // down-arrow + "NaN%" + a green "better" — a UI that lies about a number
+      // that does not exist.
+      renderTile(makeKpi({ deltaPct }), "cost", MetricPolarity.LowerIsBetter);
 
-    expect(screen.getByTestId("kpi-delta-placeholder")).toBeInTheDocument();
-    expect(screen.queryByTestId("kpi-trend-chip")).not.toBeInTheDocument();
-    expect(screen.queryByText(NON_FINITE_TEXT)).not.toBeInTheDocument();
-    expect(screen.queryByText("better")).not.toBeInTheDocument();
-  });
+      expect(screen.getByTestId("kpi-delta-placeholder")).toBeInTheDocument();
+      expect(screen.queryByTestId("kpi-trend-chip")).not.toBeInTheDocument();
+      expect(screen.queryByText(NON_FINITE_TEXT)).not.toBeInTheDocument();
+      expect(screen.queryByText(IMPROVEMENT_VERDICT)).not.toBeInTheDocument();
+    }
+  );
 
   it("moves the KPI description behind the card info control", async () => {
     const user = userEvent.setup();
-    renderTile(
-      makeKpi({ label: "Merged PRs", sub: "PRs found in local sessions" }),
-      "kpi:merged"
-    );
+    renderTile(makeKpi({ sub: "PRs found in local sessions" }), "kpi:merged");
 
     expect(
       screen.queryByText("PRs found in local sessions")
@@ -244,6 +257,91 @@ describe("KpiMetricTile trend polarity (ISS-4633)", () => {
     expect(chip).toHaveTextContent("worse");
   });
 
+  /**
+   * ISS-6493 AC5 — this consumer must NOT move, and that is the finding.
+   *
+   * The ticket lists `kpi-stat-tile` among the five surfaces that "mount the
+   * same primitives and must all move together". It resolves the same
+   * `useMetricDeltaTreatment()` and does inherit the new treatment — but its
+   * delta is `TrendBadge`, bare text plus an arrow with no pill under ANY
+   * treatment (that is deliberate: `KpiDeltaPlaceholder` uses `variant="bare"`
+   * here precisely so the absent state does not out-design the present one).
+   * A pill change therefore has nothing to act on, and the only thing the
+   * treatment decides for this tile is the verdict word — which ISS-6493 keeps.
+   *
+   * So the correct behaviour is byte-identical to the flag-off render above, and
+   * that is asserted rather than assumed: if the neutral gate ever started
+   * stripping the word here, this tile would silently lose its non-colour cue on
+   * a gate whose whole premise is that it does not touch that cue. The
+   * `renderTileWithUnifiedPill` cases above are the positive sibling proving
+   * this assertion can fail — under THAT gate the word does go.
+   */
+  it("is unchanged by the neutral-pill gate, whose pill this bare tile never had (ISS-6493)", () => {
+    render(
+      <WithNeutralDeltaPill>
+        <KpiMetricTile
+          kpi={makeKpi({ deltaPct: 38, label: "Cost" })}
+          pinned={false}
+          polarity={MetricPolarity.LowerIsBetter}
+          tileId="kpi:cost"
+          title="Cost"
+        />
+      </WithNeutralDeltaPill>
+    );
+
+    const chip = trendChip();
+    expect(chip).toHaveTextContent("+38%");
+    expect(chip).toHaveTextContent("worse");
+  });
+
+  /**
+   * ISS-6493 AC5, on the tone that can actually show the difference (whitlockk
+   * review on #5857).
+   *
+   * The case above rides `LowerIsBetter` + `+38%`, which grades out SCORED — and
+   * every treatment renders a scored tone identically, so it cannot distinguish
+   * "this tile deliberately ignores the pill" from "the gate never reached this
+   * tile". NEUTRAL is the only tone `TREATMENT_PILLS_EVERY_TONE` changes, so it
+   * is the only tone on which this consumer's no-op is a real claim. Production
+   * neutral tiles are exactly the ones at stake: Tokens and Sessions.
+   *
+   * The no-op is the CONTRACT, not an oversight: `TrendBadge` styles its chip
+   * with `DELTA_SENTIMENT_TEXT_CLASS` alone and never reaches for
+   * `deltaPillClass`/`deltaPillGeometryClass`, so an Insights tile has no pill to
+   * gain under any treatment. Asserting that here narrows the rollout claim to
+   * what the code actually does — the Sessions/Branches delta families pill,
+   * this bare tile does not — so a future change that quietly starts pilling
+   * here has to come through this test rather than through a screenshot.
+   */
+  it("leaves a NEUTRAL tile bare under the neutral-pill gate (ISS-6493)", () => {
+    render(
+      <WithNeutralDeltaPill>
+        <KpiMetricTile
+          kpi={makeKpi({ deltaPct: -52, label: "Tokens" })}
+          pinned={false}
+          polarity={MetricPolarity.Neutral}
+          tileId="kpi:tokens"
+          title="Tokens"
+        />
+      </WithNeutralDeltaPill>
+    );
+
+    const chip = trendChip();
+    expect(chip).toHaveTextContent("-52%");
+    // Neutral carries no verdict word under ANY treatment, so its absence here
+    // is not evidence about the gate — the pill classes below are.
+    expect(chip).toHaveClass("text-muted-foreground");
+
+    // Derived from the polarity SSOT, never retyped: these are precisely the
+    // classes a pilling consumer gains for a neutral tone. Empty would make
+    // every assertion below vacuous, so the list is proven non-empty first.
+    const pillOnlyClasses = neutralPillOnlyClasses();
+    expect(pillOnlyClasses.length).toBeGreaterThan(0);
+    for (const className of pillOnlyClasses) {
+      expect(chip).not.toHaveClass(className);
+    }
+  });
+
   it("reads a flat 0% as holding steady, not as a win", () => {
     renderTile(
       makeKpi({ deltaPct: 0 }),
@@ -311,7 +409,7 @@ describe("KpiMetricTile no-comparison reason (ISS-4995)", () => {
   });
 
   it("renders the range copy rather than throwing on an inherited basis name", () => {
-    // wongk review: `deltaBasis` is parsed JSON, so the type does not hold at
+    // whitlockk review: `deltaBasis` is parsed JSON, so the type does not hold at
     // runtime. Indexing the reason map with `"__proto__"` used to yield
     // `Object.prototype`, which reaches `TooltipContent` as a React child and
     // throws instead of falling back. Rendering through the real tile is the
@@ -398,3 +496,76 @@ describe("KpiMetricTile no-comparison reason (ISS-4995)", () => {
     expect(trendChip()).toHaveTextContent("+12%");
   });
 });
+
+/**
+ * ISS-7866. A gated tile used to replace the whole card with a bare bordered
+ * box, so the "Connect GitHub" ask arrived with no metric name attached to it.
+ */
+describe("KpiMetricTile availability detail (ISS-7866)", () => {
+  it("keeps the metric label beside the gated affordance", () => {
+    render(
+      <KpiMetricTile
+        availabilityDetail={<button type="button">Connect GitHub</button>}
+        kpi={undefined}
+        pinned={false}
+        polarity={MetricPolarity.HigherIsBetter}
+        tileId="kpi:merged"
+        title="Merged PRs"
+      />
+    );
+
+    expect(screen.getByText("Merged PRs")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Connect GitHub" })
+    ).toBeInTheDocument();
+  });
+
+  it("uses the catalog title, not the producer's own label (ISS-12638)", () => {
+    render(
+      <KpiMetricTile
+        availabilityDetail={<span>Unavailable for this scope</span>}
+        kpi={makeKpi({ key: "merged", label: "PRs merged" })}
+        pinned={false}
+        polarity={MetricPolarity.HigherIsBetter}
+        tileId="kpi:merged"
+        title="Merged PRs"
+      />
+    );
+
+    expect(screen.getByText("Merged PRs")).toBeInTheDocument();
+    expect(screen.queryByText("PRs merged")).not.toBeInTheDocument();
+    // The value the producer sent is NOT stated: the tile is declining to
+    // report this metric, so printing 128 beside "Unavailable" would contradict
+    // the caption it just rendered.
+    expect(screen.queryByText("128")).not.toBeInTheDocument();
+  });
+});
+
+const CLASS_SEPARATOR = /\s+/;
+
+/**
+ * The classes a NEUTRAL delta gains under {@link MetricDeltaTreatment.NeutralPill}
+ * that it does not carry under {@link MetricDeltaTreatment.Legacy} — i.e. exactly
+ * the pill chrome an Insights `TrendBadge` must never pick up.
+ *
+ * Read from the polarity SSOT rather than retyped: a literal list would keep
+ * asserting the old tokens after a retune and quietly stop describing the pill
+ * it is named for. Both treatments share `text-muted-foreground` on this tone,
+ * so the shared class is filtered out — asserting the full list absent would
+ * otherwise fail on the overlap rather than on the pill.
+ */
+function neutralPillOnlyClasses(): string[] {
+  const classesFor = (treatment: MetricDeltaTreatment): string[] =>
+    `${deltaPillGeometryClass(DeltaSentiment.Neutral, treatment)} ${deltaPillClass(
+      DeltaSentiment.Neutral,
+      treatment
+    )}`
+      .trim()
+      .split(CLASS_SEPARATOR)
+      .filter(Boolean);
+
+  const legacy = classesFor(MetricDeltaTreatment.Legacy);
+  return classesFor(MetricDeltaTreatment.NeutralPill).filter(
+    (className) => !legacy.includes(className)
+  );
+}

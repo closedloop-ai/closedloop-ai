@@ -1,0 +1,47 @@
+-- ISS-10009 part 2: the access path the per-push LOC cohort read actually uses.
+--
+-- WHAT ASKS FOR IT. `loadBranchPushLocAtoms` (apps/api/app/branches/branch-push-loc-read.ts)
+-- filters `organization_id = ? AND branch_artifact_id IN (…one id chunk…) AND
+-- source = 'push_loc' AND compatibility_alias_for_source_event_id IS NULL`, then
+-- orders `created_at DESC, source_event_id DESC` under a row cap.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. Both can serve the SEEK and neither
+-- can serve the SORT. `branch_activity_atoms_dedupe_key` (organization_id,
+-- branch_artifact_id, source, source_event_id) has exactly the right prefix but
+-- orders by `source_event_id`. `branch_activity_atoms_latest_idx`
+-- (organization_id, branch_artifact_id, occurred_at DESC, source,
+-- source_event_id) puts `occurred_at` third, so `source` is not part of the
+-- prefix and the ordering it does carry is the wrong clock. Either way Postgres
+-- gathers the cohort's rows and sorts them.
+--
+-- WHY created_at AND NOT occurred_at, which IS indexed. `occurred_at` is the
+-- newest `commits[].timestamp`, a git AUTHOR date the client controls, so a
+-- rebase can back-date a push below the cut; the cap orders on the server write
+-- clock precisely so a filled cap can only shed the OLDEST captures.
+--
+-- WHY THIS COLUMN ORDER. The dedupe key's prefix, then the sort column: the
+-- IN-list can stay an Index Cond for selective cohorts. This DOES NOT satisfy
+-- the global `created_at DESC, source_event_id DESC` order for multiple branch
+-- ids: branch id leads the index, and source_event_id is not an index key.
+-- Postgres still sorts the matching cohort; for a broad cohort it can instead
+-- choose a sequential scan. This index supports the seek, not a sort-free LIMIT.
+-- A `created_at`-major index (organization_id,
+-- source, created_at) was considered and rejected: it makes only org+source an
+-- Index Cond, so with a cohort far smaller than the row cap the scan never
+-- reaches the cap and walks the org's entire `push_loc` lane instead.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `branch_activity_atoms`
+-- for the whole build, and that table is on the GitHub webhook write path —
+-- push is the highest-volume delivery. `IF NOT EXISTS` is deliberately absent:
+-- with CONCURRENTLY a failed build leaves a same-named INVALID index behind, and
+-- the guard in `scripts/lint/destructive-migrations/index-ddl.ts` requires the
+-- retry to fail closed on it rather than silently mark the migration applied.
+--
+-- TIMING. `push_loc` rows began being written when part 1 (#7533) merged on
+-- 2026-09-17, so the table's push lane is near-empty and this build is cheap
+-- today. That is why it ships with the consumer rather than after it.
+--
+-- ROLLBACK. `DROP INDEX CONCURRENTLY "branch_activity_atoms_source_created_idx";`
+-- Nothing reads this index by name; the read falls back to the sort it does now.
+CREATE INDEX CONCURRENTLY "branch_activity_atoms_source_created_idx"
+  ON "branch_activity_atoms" ("organization_id", "branch_artifact_id", "source", "created_at" DESC);

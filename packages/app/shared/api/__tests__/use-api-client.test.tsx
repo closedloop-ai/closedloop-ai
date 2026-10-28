@@ -2,6 +2,7 @@ import {
   DEPLOYMENT_ID_HEADER,
   ORG_IDENTITY_HEADER,
 } from "@repo/api/src/types/headers";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { useSyncExternalStore } from "react";
@@ -19,11 +20,7 @@ import { AuthAdapterProvider } from "../../auth/provider";
 import { createStaticAuthAdapter } from "../../auth/static-auth-adapter";
 import type { ApiAdapter } from "../api-adapter";
 import { ApiError } from "../api-error";
-import {
-  type ApiRequestOptions,
-  DEFAULT_API_TIMEOUT_MS,
-  LONG_RUNNING_API_TIMEOUT_MS,
-} from "../api-timeout";
+import { type ApiRequestOptions, DEFAULT_API_TIMEOUT_MS } from "../api-timeout";
 import { ApiAdapterProvider } from "../provider";
 import { useApiClient } from "../use-api-client";
 
@@ -51,7 +48,7 @@ describe("useApiClient (port)", () => {
       jsonResponse({ success: true, data: { ok: true } })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     await result.current.get("/things");
@@ -73,7 +70,7 @@ describe("useApiClient (port)", () => {
       jsonResponse({ success: true, data: null })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(createStaticAuthAdapter(), {
+      wrapper: createAdapterWrapper(createStaticAuthAdapter(), {
         resolveApiOrigin: () => TEST_ORIGIN,
         deploymentId: "dpl_api_n",
       }),
@@ -89,7 +86,7 @@ describe("useApiClient (port)", () => {
       jsonResponse({ success: true, data: null })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     await result.current.get("/things");
@@ -107,7 +104,7 @@ describe("useApiClient (port)", () => {
       getToken: () => Promise.resolve(null),
     });
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(adapter),
+      wrapper: createAdapterWrapper(adapter),
     });
 
     await result.current.get("/public");
@@ -125,7 +122,7 @@ describe("useApiClient (port)", () => {
       })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const data = await result.current.get<{ createdAt: Date }>("/things/1");
@@ -147,7 +144,7 @@ describe("useApiClient (port)", () => {
       )
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const failure = await result.current.get("/tags/t1").catch((e) => e);
@@ -166,7 +163,7 @@ describe("useApiClient (port)", () => {
       jsonResponse({ error: "Bad gateway", code: "GATEWAY" }, { status: 502 })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const failure = await result.current.get("/things").catch((e) => e);
@@ -182,7 +179,7 @@ describe("useApiClient (port)", () => {
   it("wraps network failures into ApiError with status 0", async () => {
     fetchMock.mockRejectedValueOnce(new Error("connection refused"));
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const failure = await result.current.get("/things").catch((e) => e);
@@ -191,10 +188,64 @@ describe("useApiClient (port)", () => {
     expect(failure).toMatchObject({ message: "connection refused", status: 0 });
   });
 
+  // FEA-4217: the Sessions CSV export. `getRaw` cannot serve it — that reader
+  // calls `response.json()` first and folds a parse failure to `null`, so a
+  // perfectly good CSV would resolve as an empty success.
+  it("returns a non-JSON body verbatim from getText", async () => {
+    const csv = "Date,User\n2026-08-01,ada\n";
+    fetchMock.mockResolvedValueOnce(
+      new Response(csv, {
+        status: 200,
+        headers: { "Content-Type": "text/csv" },
+      })
+    );
+    const { result } = renderHook(() => useApiClient(), {
+      wrapper: createAdapterWrapper(),
+    });
+
+    await expect(result.current.getText("/export")).resolves.toBe(csv);
+  });
+
+  it("throws the parsed error envelope from getText on a failure status", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: "not allowed here", code: "FORBIDDEN" },
+        { status: 403 }
+      )
+    );
+    const { result } = renderHook(() => useApiClient(), {
+      wrapper: createAdapterWrapper(),
+    });
+
+    const failure = await result.current.getText("/export").catch((e) => e);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({
+      message: "not allowed here",
+      status: 403,
+      code: "FORBIDDEN",
+    });
+  });
+
+  it("still throws from getText when the failure body is not JSON at all", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("upstream is down", {
+        status: 502,
+        headers: { "Content-Type": "text/plain" },
+      })
+    );
+    const { result } = renderHook(() => useApiClient(), {
+      wrapper: createAdapterWrapper(),
+    });
+
+    const failure = await result.current.getText("/export").catch((e) => e);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 502 });
+  });
+
   it("returns un-enveloped bodies from getRaw and throws parsed raw errors", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ plain: true }));
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     await expect(result.current.getRaw("/raw")).resolves.toEqual({
@@ -226,7 +277,7 @@ describe("useApiClient (port)", () => {
       hangsUntilAborted(init.signal)
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const pending = result.current
@@ -256,7 +307,7 @@ describe("useApiClient (port)", () => {
       })
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const pending = result.current.get<{ ok: boolean }>("/slow");
@@ -274,7 +325,7 @@ describe("useApiClient (port)", () => {
       hangsUntilAborted(init.signal)
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const pending = result.current
@@ -299,7 +350,7 @@ describe("useApiClient (port)", () => {
     );
     const controller = new AbortController();
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     const pending = result.current
@@ -319,7 +370,7 @@ describe("useApiClient (port)", () => {
     vi.useFakeTimers();
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: null }));
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     await result.current.get("/things");
@@ -332,7 +383,7 @@ describe("useApiClient (port)", () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: null }));
     const controlled = createControlledAuthAdapter({ isLoaded: false });
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(controlled.adapter),
+      wrapper: createAdapterWrapper(controlled.adapter),
     });
 
     const pending = result.current.get("/things");
@@ -354,7 +405,7 @@ describe("useApiClient (port)", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValue("late-token");
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(
+      wrapper: createAdapterWrapper(
         createStaticAuthAdapter({
           isLoaded: true,
           userId: "user_test",
@@ -399,7 +450,7 @@ describe("useApiClient (port)", () => {
       Promise.resolve(jsonResponse({ success: true, data: null }))
     );
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(),
+      wrapper: createAdapterWrapper(),
     });
 
     await result.current.get("/things");
@@ -438,7 +489,7 @@ describe("useApiClient (port)", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValue("late-token");
     const { result } = renderHook(() => useApiClient(), {
-      wrapper: createWrapper(
+      wrapper: createAdapterWrapper(
         createStaticAuthAdapter({
           isLoaded: true,
           userId: "user_test",
@@ -455,7 +506,7 @@ describe("useApiClient (port)", () => {
   });
 });
 
-function createWrapper(
+function createAdapterWrapper(
   authAdapter: AuthAdapter = createStaticAuthAdapter(),
   apiAdapter: ApiAdapter = { resolveApiOrigin: () => TEST_ORIGIN }
 ) {

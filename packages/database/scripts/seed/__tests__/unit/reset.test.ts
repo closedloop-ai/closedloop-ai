@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { PrismaClient } from "../../../../generated/client";
 import { SeedProfileName } from "../../profiles";
 import {
   countResettableOrgRows,
@@ -12,10 +13,6 @@ import {
 } from "../../reset";
 import { BASELINE_ORG_ID } from "../fixtures/baseline-org";
 import { createMockPrisma } from "../fixtures/mock-prisma";
-
-// Shorthand to access mock call records without fighting Prisma delegate types.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyDelegate = any;
 
 const EMPTY_SCOPE: ResetScope = {
   projectIds: [],
@@ -40,7 +37,7 @@ const EMPTY_SCOPE: ResetScope = {
 describe("reset helpers", () => {
   it("counts org-scoped LinearSubtask rows during reset verification", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     const snapshot = buildSnapshot({});
     p.linearSubtask.count.mockResolvedValue(2);
 
@@ -61,7 +58,7 @@ describe("reset helpers", () => {
 
   it("verifies remaining org-scoped rows even when current snapshot scope is empty", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     const snapshot = buildSnapshot({});
     p.linearSubtask.count.mockResolvedValue(1);
 
@@ -77,34 +74,18 @@ describe("reset helpers", () => {
     });
   });
 
-  it("clears preserved identity scalars and does not touch excluded global tables", async () => {
+  it("leaves preserved user and org rows untouched and does not touch excluded global tables", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
 
     await resetOrgData(prisma, BASELINE_ORG_ID);
 
-    expect(p.user.updateMany).toHaveBeenCalledWith({
-      where: { organizationId: BASELINE_ORG_ID },
-      data: {
-        claudeApiKeyEncrypted: null,
-        claudeApiKeyLastFour: null,
-        claudeApiKeySetAt: null,
-        preferredComputeTargetId: null,
-      },
-    });
-    // ISS-6317 narrowed this discarded write: same single-row `update` on the
-    // same `where` (so a missing org still raises P2025), now returning only the
-    // primary key instead of every Organization column.
-    expect(p.organization.update).toHaveBeenCalledWith({
-      where: { id: BASELINE_ORG_ID },
-      data: {
-        claudeApiKeyEncrypted: null,
-        claudeApiKeyLastFour: null,
-        claudeApiKeySetAt: null,
-      },
-      select: { id: true },
-    });
+    // ISS-12435: the Claude key and preferred compute target columns this reset
+    // used to clear are `@ignore`d (the data step nulls them), so reset no longer
+    // writes the preserved user and organization rows at all.
+    expect(p.user.updateMany).not.toHaveBeenCalled();
+    expect(p.organization.update).not.toHaveBeenCalled();
     expect(p.oAuthRevokedToken.deleteMany).not.toHaveBeenCalled();
     expect(p.oAuthRateLimit.deleteMany).not.toHaveBeenCalled();
     expect(p.localGatewayChallengeJti.deleteMany).not.toHaveBeenCalled();
@@ -117,27 +98,20 @@ describe("reset helpers", () => {
 
   it("uses batched profile strategy for perf reset instead of one wide transaction", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
 
     await resetOrgData(prisma, BASELINE_ORG_ID, SeedProfileName.Perf);
 
     expect(p.$transaction).not.toHaveBeenCalled();
-    expect(p.user.updateMany).toHaveBeenCalledWith({
+    expect(p.project.deleteMany).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
-      data: {
-        claudeApiKeyEncrypted: null,
-        claudeApiKeyLastFour: null,
-        claudeApiKeySetAt: null,
-        preferredComputeTargetId: null,
-      },
     });
   });
 
   it("keeps reset delete and verification model lists in sync", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    stubDeleteManyCounts(prisma);
     const snapshot = buildSnapshot({});
 
     const deleteSummary = await resetOrgData(prisma, BASELINE_ORG_ID);
@@ -154,8 +128,8 @@ describe("reset helpers", () => {
 
   it("labels reset delete failures with the failing model and reason", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
     p.comment.deleteMany.mockRejectedValue(new Error("delete failed"));
 
     await expect(resetOrgData(prisma, BASELINE_ORG_ID)).rejects.toMatchObject({
@@ -169,8 +143,8 @@ describe("reset helpers", () => {
 
   it("scopes comment-subtree deletes via relation predicates instead of materialized id lists", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
 
     await resetOrgData(prisma, BASELINE_ORG_ID);
 
@@ -195,8 +169,8 @@ describe("reset helpers", () => {
 
   it("does not materialize per-comment ids before delete or count", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
 
     await resetOrgData(prisma, BASELINE_ORG_ID);
 
@@ -210,8 +184,8 @@ describe("reset helpers", () => {
 
   it("explicitly deletes and counts BranchStatusCheck rows", async () => {
     const prisma = createMockPrisma();
-    const p = prisma as AnyDelegate;
-    stubDeleteManyCounts(p);
+    const p = vi.mocked(prisma, true);
+    stubDeleteManyCounts(prisma);
     const snapshot = buildSnapshot({
       branchArtifactIds: ["00000000-0000-4000-8000-0000000000bc"],
     });
@@ -260,16 +234,16 @@ function buildSnapshot(scope: Partial<ResetScope>): ResetVerificationSnapshot {
   };
 }
 
-function stubDeleteManyCounts(prisma: Record<string, unknown>): void {
-  for (const delegate of Object.values(prisma)) {
+function stubDeleteManyCounts(prisma: PrismaClient): void {
+  const delegates: unknown[] = Object.values(prisma);
+  for (const delegate of delegates) {
     if (
       delegate &&
       typeof delegate === "object" &&
       "deleteMany" in delegate &&
-      typeof (delegate as AnyDelegate).deleteMany?.mockResolvedValue ===
-        "function"
+      vi.isMockFunction(delegate.deleteMany)
     ) {
-      (delegate as AnyDelegate).deleteMany.mockResolvedValue({ count: 0 });
+      delegate.deleteMany.mockResolvedValue({ count: 0 });
     }
   }
 }

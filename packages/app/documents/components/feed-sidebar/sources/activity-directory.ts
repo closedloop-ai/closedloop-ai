@@ -1,10 +1,16 @@
 "use client";
 
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import type { Tag } from "@repo/api/src/types/tag";
 import type { User } from "@repo/api/src/types/user";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
+import { useTags } from "@repo/app/tags/hooks/use-tags";
 import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
 import { useMemo } from "react";
+import {
+  type ActivityDirectory,
+  ActivityDirectoryStatus,
+} from "./activity-types";
 
 /**
  * The org directories an activity row needs to turn a stored id into a name
@@ -20,26 +26,6 @@ import { useMemo } from "react";
  * reader something untrue. This module is the one place that classification
  * lives, so both renderers say the same thing about the same query.
  */
-
-export const ActivityDirectoryStatus = {
-  /** Still reading. Renderers reserve space; they must not name anyone. */
-  Pending: "pending",
-  /** Read succeeded and has records. An id that misses is genuinely absent. */
-  Ready: "ready",
-  /**
-   * We cannot name anyone: the read failed, or it returned nothing at all (a
-   * restricted viewer sees an empty directory). Renderers must fall back to
-   * copy that claims nothing, never to "Unknown user" — we do not know that.
-   */
-  Unavailable: "unavailable",
-} as const;
-export type ActivityDirectoryStatus =
-  (typeof ActivityDirectoryStatus)[keyof typeof ActivityDirectoryStatus];
-
-export type ActivityDirectory<TRecord> = {
-  status: ActivityDirectoryStatus;
-  find: (id: string) => TRecord | null;
-};
 
 /**
  * The org-user directory, shared by the actor cell and the assignment chips so
@@ -63,6 +49,21 @@ export function useProjectDirectory(
   enabled: boolean
 ): ActivityDirectory<ProjectWithDetails> {
   const query = useProjects(undefined, { enabled });
+  return useDirectory(query.data, {
+    isError: query.isError,
+    isPending: query.isPending,
+    fetchStatus: query.fetchStatus,
+  });
+}
+
+/**
+ * The org-tag directory, for the tag id on a tag row (ISS-12117), so the row
+ * names the tag and draws it in its own colour instead of "added a tag".
+ * `enabled` keeps the request off a feed with no tag rows, like the project
+ * directory; it reads the same `GET /tags` query the tag picker already caches.
+ */
+export function useTagDirectory(enabled: boolean): ActivityDirectory<Tag> {
+  const query = useTags({ enabled });
   return useDirectory(query.data, {
     isError: query.isError,
     isPending: query.isPending,

@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
-  type BranchBaseBranchSource,
+  BranchBaseBranchSource,
   BranchFileCacheStatus,
   type BranchHeadShaSource,
   type BranchPushSource,
   BranchSyncStatus,
-  LinkType,
 } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
-import {
-  GitHubPRState,
-  type GitHubPRState as GitHubPRStateValue,
-} from "@repo/api/src/types/github";
+import type { GitHubPRState as GitHubPRStateValue } from "@repo/api/src/types/github";
+import type { GitHubActorType } from "@repo/api/src/types/github-actor";
+import type { PullRequestArtifactLinkResult } from "@repo/api/src/types/pull-request-artifact-link";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
@@ -25,6 +23,7 @@ import {
   withDb,
 } from "@repo/database";
 import { indexBranchArtifactAfterCommit } from "@/app/branches/branch-search-index";
+import { writeBranchSourceLink } from "@/app/branches/branch-source-link";
 import { parseStoredSnapshot } from "@/app/documents/repository-snapshot-helpers";
 import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
 import { getPrismaErrorCode } from "@/lib/db-utils";
@@ -32,7 +31,9 @@ import {
   type GitHubFetchProvenance,
   gitHubFetchProvenanceData,
 } from "@/lib/github-fetch-provenance";
-import { isUuid } from "@/lib/identifier-utils";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
+import { deleteBranchArtifact } from "./branch-delete";
+import { seedBranchOwners } from "./branch-owner-seed/branch-owner-seed";
 import { bumpBranchActivity, stampBranchFirstPush } from "./branch-push-state";
 import {
   applyDeleteTransition,
@@ -41,26 +42,68 @@ import {
   type HeadTransitionResult,
   parseBranchBaseBranchSource,
   parseBranchHeadShaSource,
-  parseGitHubPRState,
   resolveBaseProvenance,
+  resolveDeletedAtUpdate,
+  resolveUpdateBranchStatus,
   scheduleFileChangeCacheRefresh,
 } from "./branch-state-transitions";
+import {
+  addsBranchSourceLink,
+  type BranchUpsertField,
+  branchUpsertChangedFields,
+} from "./branch-upsert-changed-fields";
 import { resolveCloudBranchWriteEligibility } from "./branch-write-eligibility";
-import { adoptRepolessPullRequestDetail } from "./github-projection-writer";
+import { ensurePullRequestAuthorIdentity } from "./pull-request-author-identity";
+import { relinkPullRequestBranchInTransaction } from "./pull-request-branch-relink";
 import {
   type PullRequestHeadRepositoryObservation,
   persistPullRequestHeadRepositoryAuthority,
 } from "./pull-request-head-authority";
 import { pullRequestLocData } from "./pull-request-loc-data";
+import { reconcilePullRequestProviderIdentityInTransaction } from "./pull-request-provider-identity";
+import {
+  acquirePullRequestProviderIdentityLockInTransaction,
+  pullRequestProviderLockTxOptions,
+} from "./pull-request-provider-lock";
 
 type BranchDetailWithCurrentPr = BranchDetail & {
   currentPullRequestDetail: PullRequestDetail | null;
 };
 
-export type BranchArtifactWithDetail = Artifact & {
+type BranchArtifactRow = Artifact & {
   branch: BranchDetailWithCurrentPr | null;
   pullRequest: PullRequestDetail | null;
 };
+
+export type BranchArtifactWithDetail = BranchArtifactRow & {
+  /**
+   * ISS-10169: whether this call CREATED the row, rather than resolving the
+   * existing branch for `(organizationId, repositoryFullName, branchName)`.
+   * Reusing a branch is legitimate and common, but a caller handed back an id
+   * with no way to tell the two apart cannot verify what it got.
+   */
+  created: boolean;
+  /**
+   * ISS-10169: the PRODUCES edges this call actually wrote, read back from the
+   * write. Empty means none was REQUESTED — never that a requested one failed
+   * to land, which rolls the transaction back instead.
+   */
+  linkedArtifacts: PullRequestArtifactLinkResult[];
+};
+
+/**
+ * What a recorded upsert wrote, for its receipt (ISS-12552): for an
+ * upsert onto an existing branch, the persisted fields it moved; empty for a
+ * create and for an upsert that changed nothing.
+ */
+export type BranchUpsertWrite = BranchArtifactWithDetail & {
+  changedFields: BranchUpsertField[];
+};
+
+/** Database-only predicate that must hold in the canonical write transaction. */
+export type BranchArtifactWriteGuard = (
+  tx: TransactionClient
+) => Promise<boolean>;
 
 export type UpsertBranchPullRequestInput = {
   githubId: string;
@@ -73,6 +116,9 @@ export type UpsertBranchPullRequestInput = {
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
+  authorLogin?: string | null;
+  authorProviderUserId?: string | null;
+  authorActorType?: GitHubActorType | null;
   // FEA-3552: GitHub PR createdAt — anchors the rail's "PR opened" dot.
   githubCreatedAt?: Date | null;
   closedAt?: Date | null;
@@ -85,7 +131,7 @@ export type UpsertBranchArtifactInput = {
   organizationId: string;
   /**
    * Installation-repo surrogate id — optional enrichment (PRD-510 D2). App-repo
-   * producers (webhook, loop, PR) pass it; the desktop producer omits it for
+   * producers (webhook, PR) pass it; the desktop producer omits it for
    * non-App branches. Branch identity keys on the org + normalized full name.
    */
   repositoryId?: string | null;
@@ -100,6 +146,17 @@ export type UpsertBranchArtifactInput = {
   /** Verified PR base repository used for source-document authorization. */
   pullRequestBaseRepositoryFullName?: string;
   projectId: string | null;
+  /**
+   * ISS-10995 (operator ruling 2026-10-12): treat `projectId` as a FILL for
+   * this producer — it files a branch that has none and never re-files one.
+   * Set it on a SYNC-shaped producer, whose project is resolved lineage (the
+   * push and PR webhooks, the loop callback, the PR-linkage retry). Leave it
+   * off where `projectId` is a value the caller chose for this write: the
+   * ruling constrains the sync, and discarding an explicit re-file would make
+   * `POST /artifact-links/branches` and the Select-PR dialog return 200 for a
+   * move they did not perform.
+   */
+  projectFillOnly?: boolean;
   createdById?: string | null;
   baseBranch?: string | null;
   baseBranchSource?: BranchBaseBranchSource | null;
@@ -131,27 +188,8 @@ export type UpsertBranchArtifactInput = {
   isDelete?: boolean;
   deletedAt?: Date | null;
   sourceArtifactId?: string | null;
-  /**
-   * Internal supplementary source-artifact repo authorization. Only
-   * `createLoopBranchArtifact` may derive this after authenticated loop lookup,
-   * `findAllowedLoopRepo`, and active repository lookup. Public request bodies,
-   * webhooks, Electron, claude-plugins, and relay payloads must not provide it.
-   */
-  sourceArtifactTargetRepoAuthorization?: SourceArtifactTargetRepoAuthorization;
   pullRequest?: UpsertBranchPullRequestInput | null;
   fetchProvenance?: GitHubFetchProvenance;
-};
-
-export const SourceArtifactTargetRepoAuthorizationProvenance = {
-  LoopBranchArtifactCallback: "loop_branch_artifact_callback",
-} as const;
-
-export type SourceArtifactTargetRepoAuthorizationProvenance =
-  (typeof SourceArtifactTargetRepoAuthorizationProvenance)[keyof typeof SourceArtifactTargetRepoAuthorizationProvenance];
-
-export type SourceArtifactTargetRepoAuthorization = {
-  provenance: SourceArtifactTargetRepoAuthorizationProvenance;
-  repositoryFullNames: readonly string[];
 };
 
 type SourceArtifactEvidence = {
@@ -174,7 +212,7 @@ async function validateSourceArtifact(
   input: UpsertBranchArtifactInput
 ): Promise<Result<SourceArtifactEvidence, StatusCode>> {
   if (!input.sourceArtifactId) {
-    return Result.ok({ createdById: null });
+    return Result.ok({ createdById: null, snapshot: null });
   }
   const sourceArtifactBaseWhere: Prisma.ArtifactWhereInput = {
     id: input.sourceArtifactId,
@@ -218,7 +256,7 @@ async function validateSourceArtifact(
       normalizeRepoFullName(repo.fullName) ===
       normalizeRepoFullName(authorizedRepositoryFullName)
   );
-  if (allowed || hasSupplementarySourceRepoAuthorization(input)) {
+  if (allowed) {
     return Result.ok(evidence);
   }
   return Result.err(Status.Forbidden);
@@ -321,26 +359,50 @@ function buildBranchCreateData(
   };
 }
 
+/**
+ * The base ref to stamp on the PR row — the caller's base ONLY where it says that
+ * base came from a PR's own base ref. A branch base from a harness input, an MCP
+ * input, or a repository default is not evidence about any pull request, and
+ * ISS-8155 exists to stop the PR read borrowing values like that.
+ */
+function pullRequestBaseRef(
+  input: Pick<UpsertBranchArtifactInput, "baseBranch" | "baseBranchSource">
+): string | null {
+  return input.baseBranchSource === BranchBaseBranchSource.PullRequestBase
+    ? input.baseBranch || null
+    : null;
+}
+
 async function upsertCurrentPullRequestDetail(
   tx: TransactionClient,
   artifactId: string,
   organizationId: string,
   repositoryId: string,
+  repositoryFullName: string,
   input: UpsertBranchPullRequestInput,
   fetchProvenance: GitHubFetchProvenance | undefined,
-  headRef: { name: string; oid: string | null }
+  headRef: { name: string; oid: string | null },
+  baseRefName: string | null
 ) {
   const detailId = randomUUID();
   const provenance = gitHubFetchProvenanceData(fetchProvenance);
-  // FEA-2732: adopt any desktop-produced repo-less row for this branch+number
-  // (fills repositoryId + githubId) so the githubId-keyed upsert below updates
-  // that same row instead of inserting a duplicate.
-  await adoptRepolessPullRequestDetail(tx, {
-    branchArtifactId: artifactId,
-    number: input.number,
-    repositoryId,
-    githubId: input.githubId,
-  });
+  const existingPullRequestDetailId =
+    await reconcilePullRequestProviderIdentityInTransaction(tx, {
+      organizationId,
+      repositoryId,
+      repositoryFullName,
+      githubId: input.githubId,
+      number: input.number,
+    });
+  if (existingPullRequestDetailId) {
+    await relinkPullRequestBranchInTransaction(tx, {
+      organizationId,
+      pullRequestDetailId: existingPullRequestDetailId,
+      branchArtifactId: artifactId,
+      repositoryFullName,
+      pullRequestNumber: input.number,
+    });
+  }
   const detail = await tx.pullRequestDetail.upsert({
     where: { githubId: input.githubId },
     create: {
@@ -363,10 +425,13 @@ async function upsertCurrentPullRequestDetail(
       closedAt: input.closedAt ?? null,
       mergedAt: input.mergedAt ?? null,
       mergeCommitSha: input.mergeCommitSha ?? null,
+      authorLogin: input.authorLogin ?? null,
+      authorProviderUserId: input.authorProviderUserId ?? null,
+      authorActorType: input.authorActorType ?? null,
+      baseRefName,
       ...provenance,
     },
     update: {
-      branchArtifactId: artifactId,
       title: input.title,
       htmlUrl: input.htmlUrl,
       body: input.body ?? null,
@@ -380,22 +445,40 @@ async function upsertCurrentPullRequestDetail(
       closedAt: input.closedAt ?? null,
       mergedAt: input.mergedAt ?? null,
       mergeCommitSha: input.mergeCommitSha ?? null,
+      ...pullRequestAuthorUpdateData(input),
+      // Omission-preserving: a caller whose base did not come from a PR base has
+      // no evidence about this PR and must not null a value that has some.
+      ...(baseRefName === null ? {} : { baseRefName }),
       ...provenance,
     },
-    select: { id: true },
+    select: { id: true, branchArtifactId: true },
+  });
+  await ensurePullRequestAuthorIdentity(tx, {
+    organizationId,
+    githubId: input.githubId,
+    authorProviderUserId: input.authorProviderUserId,
+    authorLogin: input.authorLogin,
+    authorActorType: input.authorActorType,
   });
   await tx.pullRequestDetail.updateMany({
     where: {
+      organizationId,
       branchArtifactId: artifactId,
       isCurrent: true,
       id: { not: detail.id },
     },
     data: { isCurrent: false },
   });
-  await tx.branchDetail.update({
-    where: { artifactId },
+  if (detail.branchArtifactId !== artifactId) {
+    throw new Error("pull request Branch ownership changed during upsert");
+  }
+  const pointed = await tx.branchDetail.updateMany({
+    where: { artifactId, organizationId },
     data: { currentPullRequestDetailId: detail.id },
   });
+  if (pointed.count !== 1) {
+    throw new Error("pull request current pointer changed during upsert");
+  }
   await persistPullRequestHeadRepositoryAuthority(
     tx,
     { organizationId, pullRequestDetailId: detail.id },
@@ -408,7 +491,7 @@ async function createBranchArtifact(
   tx: TransactionClient,
   input: UpsertBranchArtifactInput,
   createdById: string | null
-): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
+): Promise<Result<BranchArtifactRow, StatusCode>> {
   const base = resolveBaseProvenance(
     {
       baseBranch: input.baseBranch,
@@ -455,17 +538,18 @@ async function createBranchArtifact(
   // A PullRequestDetail requires a (non-null) installation repo — PRs only exist
   // for App repos, which always carry repositoryId. Desktop non-App branches
   // arrive without a PR, so this simply doesn't run for them.
-  const pullRequestRepositoryId =
-    input.pullRequestRepositoryId ?? input.repositoryId;
+  const pullRequestRepositoryId = resolvePullRequestRepositoryId(input);
   if (input.pullRequest && pullRequestRepositoryId) {
     await upsertCurrentPullRequestDetail(
       tx,
       created.id,
       input.organizationId,
       pullRequestRepositoryId,
+      input.repositoryFullName,
       input.pullRequest,
       input.fetchProvenance,
-      { name: input.branchName, oid: input.headSha ?? null }
+      { name: input.branchName, oid: input.headSha ?? null },
+      pullRequestBaseRef(input)
     );
   }
   return rereadBranchArtifact(tx, created.id);
@@ -478,7 +562,7 @@ async function updateBranchArtifact(
   createdById: string | null,
   existing: BranchDetail,
   currentArtifact: { createdById: string | null; status: string | null }
-): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
+): Promise<Result<BranchArtifactRow, StatusCode>> {
   // PRD-510 FR2 / PLN-1099 Phase 2: apply explicit push evidence with the atomic,
   // DB-guarded earliest-wins stamp — NOT an app-computed read-then-write, which
   // under READ COMMITTED lets two concurrent/redelivered pushes both read the
@@ -557,15 +641,12 @@ async function updateBranchArtifact(
         input.repositoryFullName,
         input.branchName
       ),
-      // FEA-1749: (re)parent only, never clear. Dropping the old
-      // `projectId === null → BadRequest` guard let a null reach this update;
-      // writing it back would strip a project an existing branch legitimately
-      // has. Mirrors the deployment update path — a branch is still parented
-      // when a later producer supplies a real project, just never un-parented.
-      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...branchProjectUpdateData(input),
       ...(createdById && !currentArtifact.createdById ? { createdById } : {}),
     },
+    select: { id: true },
   });
+  await fillBranchProject(tx, artifactId, input);
   await tx.branchDetail.update({
     where: { artifactId },
     data: {
@@ -587,6 +668,7 @@ async function updateBranchArtifact(
         ? { fileCacheStatus: cacheSchedule.fileCacheStatus }
         : {}),
     },
+    select: { artifactId: true },
   });
   const activityAt = resolveBranchActivityAt(
     input,
@@ -615,9 +697,11 @@ async function updateBranchArtifact(
       artifactId,
       input.organizationId,
       pullRequestRepositoryId,
+      input.repositoryFullName,
       input.pullRequest,
       input.fetchProvenance,
-      { name: input.branchName, oid: input.headSha ?? null }
+      { name: input.branchName, oid: input.headSha ?? null },
+      pullRequestBaseRef(input)
     );
   }
   return rereadBranchArtifact(tx, artifactId);
@@ -626,7 +710,7 @@ async function updateBranchArtifact(
 async function rereadBranchArtifact(
   tx: TransactionClient,
   artifactId: string
-): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
+): Promise<Result<BranchArtifactRow, StatusCode>> {
   const artifact = await tx.artifact.findUnique({
     where: { id: artifactId },
     include: branchInclude,
@@ -642,32 +726,6 @@ async function rereadBranchArtifact(
     : Result.err(Status.NotFound);
 }
 
-async function linkSourceIfRequested(
-  tx: TransactionClient,
-  input: UpsertBranchArtifactInput,
-  branchArtifactId: string
-) {
-  if (!input.sourceArtifactId) {
-    return;
-  }
-  await tx.artifactLink.upsert({
-    where: {
-      sourceId_targetId_linkType: {
-        sourceId: input.sourceArtifactId,
-        targetId: branchArtifactId,
-        linkType: LinkType.Produces,
-      },
-    },
-    create: {
-      organizationId: input.organizationId,
-      sourceId: input.sourceArtifactId,
-      targetId: branchArtifactId,
-      linkType: LinkType.Produces,
-    },
-    update: {},
-  });
-}
-
 /**
  * Creates or updates a BRANCH artifact by the PRD-510 D2 identity key
  * `(organizationId, normalized repositoryFullName, branchName)` — uniform across
@@ -676,9 +734,13 @@ async function linkSourceIfRequested(
  * artifact for compatibility while the destructive cutover is still pending.
  */
 async function upsertBranchArtifact(
-  input: UpsertBranchArtifactInput
+  input: UpsertBranchArtifactInput,
+  recordWritten?: RecordWriteInTransaction<BranchUpsertWrite>
 ): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
-  const result = await runUpsertBranchArtifact(input);
+  const result = await runUpsertBranchArtifact(input, undefined, recordWritten);
+  if (!result) {
+    throw new Error("Unguarded Branch upsert was unexpectedly rejected");
+  }
   if (result.ok) {
     // FEA-3930: fail-open, post-commit index of the branch + its current PR into
     // the unified-search projection. Never blocks or fails the branch write.
@@ -687,157 +749,220 @@ async function upsertBranchArtifact(
   return result;
 }
 
+/**
+ * Runs a database-only guard in the same transaction as the canonical Branch
+ * write. A rejected guard returns null before any Product evidence is mutated.
+ */
+async function upsertBranchArtifactGuarded(
+  input: UpsertBranchArtifactInput,
+  guard: BranchArtifactWriteGuard
+): Promise<Result<BranchArtifactWithDetail, StatusCode> | null> {
+  const result = await runUpsertBranchArtifact(input, guard);
+  if (result?.ok) {
+    indexBranchArtifactAfterCommit(result.value);
+  }
+  return result;
+}
+
 function runUpsertBranchArtifact(
-  input: UpsertBranchArtifactInput
-): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
-  return upsertBranchArtifactOnce(input).catch((error) => {
-    if (getPrismaErrorCode(error) !== "P2002") {
-      throw error;
+  input: UpsertBranchArtifactInput,
+  guard?: BranchArtifactWriteGuard,
+  recordWritten?: RecordWriteInTransaction<BranchUpsertWrite>
+): Promise<Result<BranchArtifactWithDetail, StatusCode> | null> {
+  return upsertBranchArtifactOnce(input, guard, recordWritten).catch(
+    (error) => {
+      if (getPrismaErrorCode(error) !== "P2002") {
+        throw error;
+      }
+      return upsertBranchArtifactOnce(input, guard, recordWritten);
     }
-    return upsertBranchArtifactOnce(input);
-  });
+  );
 }
 
 function upsertBranchArtifactOnce(
-  input: UpsertBranchArtifactInput
-): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
-  return withDb.tx(async (tx) => {
-    const eligibility = await resolveCloudBranchWriteEligibility(tx, input);
-    if (eligibility.kind === "not_materialized") {
-      return Result.err(Status.BadRequest);
-    }
-    // FEA-1749: a null projectId is legitimate, not a resolution failure. Branch
-    // identity is (organizationId, repositoryFullName, branchName) — PRD-510 D2
-    // — and has never included a project. `buildBranchCreateData` already takes
-    // `string | null`. This used to fail closed here, which is what made the
-    // desktop lane (the producer that by definition has no project) unable to
-    // create a branch at all.
-    const sourceResult = await validateSourceArtifact(tx, input);
-    if (!sourceResult.ok) {
-      return sourceResult;
-    }
-    const createdById = input.createdById ?? sourceResult.value.createdById;
-
-    // PRD-510 D2: resolve by the org-scoped full-name key, uniform across
-    // producers and independent of App installation. `existing` is normalized
-    // the same way it was written (buildBranchCreateData), so the lookup is
-    // casing/`.git`-insensitive.
-    const existing = await tx.branchDetail.findUnique({
-      where: {
-        organizationId_repositoryFullName_branchName: {
+  input: UpsertBranchArtifactInput,
+  guard?: BranchArtifactWriteGuard,
+  recordWritten?: RecordWriteInTransaction<BranchUpsertWrite>
+): Promise<Result<BranchArtifactWithDetail, StatusCode> | null> {
+  // ISS-7130: raise the bounds only for the writes that can actually block on
+  // the PR-provider advisory lock — the same predicate the acquisition below
+  // uses, and both halves are pure functions of `input`. A lock-free producer (a
+  // push webhook, the desktop branch lane) keeps Prisma's defaults rather than
+  // inheriting a ceiling that would let a stalled write pin a pooled connection
+  // for the whole waiter budget, which `pullRequestProviderLockTxOptions`
+  // DERIVES from the holder ceiling and so is not restated as a number here.
+  // Ignored entirely when a caller already has an ambient transaction
+  // open — the options then live on that outer `withDb.tx`, which is why the
+  // `pull_request` webhook carries the same bounds itself.
+  const takesProviderLock = Boolean(
+    input.pullRequest && resolvePullRequestRepositoryId(input)
+  );
+  return withDb.tx(
+    async (tx) => {
+      if (guard && !(await guard(tx))) {
+        return null;
+      }
+      const eligibility = await resolveCloudBranchWriteEligibility(tx, input);
+      if (eligibility.kind === "not_materialized") {
+        return Result.err(Status.BadRequest);
+      }
+      // FEA-1749: a null projectId is legitimate, not a resolution failure. Branch
+      // identity is (organizationId, repositoryFullName, branchName) — PRD-510 D2
+      // — and has never included a project. `buildBranchCreateData` already takes
+      // `string | null`. This used to fail closed here, which is what made the
+      // desktop lane (the producer that by definition has no project) unable to
+      // create a branch at all.
+      const sourceResult = await validateSourceArtifact(tx, input);
+      if (!sourceResult.ok) {
+        return sourceResult;
+      }
+      const createdById = input.createdById ?? sourceResult.value.createdById;
+      const pullRequestRepositoryId = resolvePullRequestRepositoryId(input);
+      if (input.pullRequest && pullRequestRepositoryId) {
+        await acquirePullRequestProviderIdentityLockInTransaction(tx, {
           organizationId: input.organizationId,
-          repositoryFullName: normalizeRepoFullName(input.repositoryFullName),
-          branchName: input.branchName,
+          repositoryFullName:
+            input.pullRequestBaseRepositoryFullName ?? input.repositoryFullName,
+          number: input.pullRequest.number,
+        });
+      }
+
+      // PRD-510 D2: resolve by the org-scoped full-name key, uniform across
+      // producers and independent of App installation. `existing` is normalized
+      // the same way it was written (buildBranchCreateData), so the lookup is
+      // casing/`.git`-insensitive.
+      const existing = await tx.branchDetail.findUnique({
+        where: {
+          organizationId_repositoryFullName_branchName: {
+            organizationId: input.organizationId,
+            repositoryFullName: normalizeRepoFullName(input.repositoryFullName),
+            branchName: input.branchName,
+          },
         },
-      },
-      include: { artifact: { select: { createdById: true, status: true } } },
-    });
+        include: {
+          artifact: {
+            select: { createdById: true, status: true, projectId: true },
+          },
+        },
+      });
 
-    const result = existing
-      ? await updateBranchArtifact(
+      const result = existing
+        ? await updateBranchArtifact(
+            tx,
+            existing.artifactId,
+            input,
+            createdById,
+            existing,
+            existing.artifact
+          )
+        : await createBranchArtifact(tx, input, createdById);
+
+      if (!result.ok) {
+        return result;
+      }
+      // ISS-12552: read only for a caller that records the write, so an
+      // upsert that gets no receipt issues exactly the queries it did before.
+      const sourceLinkAdded =
+        recordWritten !== undefined &&
+        existing !== null &&
+        (await addsBranchSourceLink(
           tx,
-          existing.artifactId,
-          input,
-          createdById,
-          existing,
-          existing.artifact
-        )
-      : await createBranchArtifact(tx, input, createdById);
-
-    if (result.ok) {
-      await linkSourceIfRequested(tx, input, result.value.id);
-    }
-    return result;
-  });
+          input.sourceArtifactId,
+          result.value.id
+        ));
+      // ISS-10169: the response's link echo used to be the REQUEST read back to
+      // the caller, so it asserted a relationship nobody had looked at. This is
+      // the write's own report, and it is the only thing the echo is built from.
+      const linkedArtifacts = await writeBranchSourceLink(tx, {
+        organizationId: input.organizationId,
+        sourceArtifactId: input.sourceArtifactId ?? null,
+        branchArtifactId: result.value.id,
+      });
+      await seedBranchOwners(tx, input.organizationId, [result.value.id]);
+      const written = {
+        ...result.value,
+        created: !existing,
+        linkedArtifacts,
+      };
+      await recordWritten?.(tx, {
+        ...written,
+        changedFields: existing
+          ? branchUpsertChangedFields(
+              { projectId: existing.artifact.projectId, branch: existing },
+              result.value,
+              sourceLinkAdded
+            )
+          : [],
+      });
+      return Result.ok(written);
+    },
+    takesProviderLock ? pullRequestProviderLockTxOptions : undefined
+  );
 }
 
-function hasSupplementarySourceRepoAuthorization(
+function resolvePullRequestRepositoryId(
   input: UpsertBranchArtifactInput
-): boolean {
-  const authorization = input.sourceArtifactTargetRepoAuthorization;
-  return (
-    authorization?.provenance ===
-      SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback &&
-    authorization.repositoryFullNames.some(
-      (repositoryFullName) =>
-        normalizeRepoFullName(repositoryFullName) ===
-        normalizeRepoFullName(input.repositoryFullName)
-    )
-  );
-}
-
-function resolveDeletedAtUpdate(
-  deleteTransition: { deletedAt: Date | null } | null,
-  shouldClearDeletedAt: boolean
-): Date | null | undefined {
-  if (deleteTransition) {
-    return deleteTransition.deletedAt;
-  }
-  if (shouldClearDeletedAt) {
-    return null;
-  }
-  return undefined;
-}
-
-function resolveUpdateBranchStatus(input: {
-  deleteTransition: { status: GitHubPRStateValue } | null;
-  shouldClearDeletedAt: boolean;
-  pullRequestState: GitHubPRStateValue | null;
-  currentStatus: string | null;
-}): GitHubPRStateValue {
-  if (input.deleteTransition) {
-    return input.deleteTransition.status;
-  }
-  if (input.pullRequestState) {
-    return input.pullRequestState;
-  }
-  if (
-    input.shouldClearDeletedAt &&
-    parseGitHubPRState(input.currentStatus) !== GitHubPRState.Merged
-  ) {
-    return GitHubPRState.Open;
-  }
-  return decideBranchStatus({ currentStatus: input.currentStatus });
-}
-
-/**
- * Delete a branch artifact (and its nested PR state) by id, scoped to the
- * caller's organization. Mirrors document deletion: it removes the platform
- * record only — it does NOT touch the underlying git branch or GitHub PR.
- *
- * The DB cascade handles every dependent row: `BranchDetail`,
- * `BranchStatusCheck`, `BranchFileChange`, `PullRequestDetail` (FK
- * `branch_artifact_id` is ON DELETE CASCADE), `ArtifactLink`, `LinearSubtask`,
- * and favorites. `DeploymentDetail.branchArtifactId` is ON DELETE SET NULL, so
- * deployment records are preserved and merely unlinked.
- *
- * Returns `true` when a branch artifact was deleted, `false` when no branch
- * artifact with that id exists in the organization (so the route can answer
- * 404 without deleting documents or deployments through this endpoint).
- */
-async function deleteBranchArtifact(
-  id: string,
-  organizationId: string
-): Promise<boolean> {
-  // Branch artifacts carry no slug; they are referenced by UUID only. A
-  // non-UUID id can never match, and would otherwise blow up the `@db.Uuid`
-  // column comparison.
-  if (!isUuid(id)) {
-    return false;
-  }
-  // Single atomic query: the type guard lives in the WHERE clause, so there is
-  // no check-then-delete race, and `deleteMany` is idempotent — a concurrent
-  // double-delete yields `count: 0` (mapped to 404 by the route) instead of a
-  // P2025 throw.
-  const result = await withDb((db) =>
-    db.artifact.deleteMany({
-      where: { id, organizationId, type: ArtifactType.BRANCH },
-    })
-  );
-  return result.count > 0;
+): string | null {
+  return input.pullRequestRepositoryId ?? input.repositoryId ?? null;
 }
 
 export const branchService = {
   upsertBranchArtifact,
+  upsertBranchArtifactGuarded,
   deleteBranchArtifact,
 };
+
+/** Preserve old producer omissions instead of clearing measured PR authors. */
+function pullRequestAuthorUpdateData(input: UpsertBranchPullRequestInput) {
+  return {
+    ...(input.authorLogin === undefined
+      ? {}
+      : { authorLogin: input.authorLogin }),
+    ...(input.authorProviderUserId === undefined
+      ? {}
+      : { authorProviderUserId: input.authorProviderUserId }),
+    ...(input.authorActorType === undefined
+      ? {}
+      : { authorActorType: input.authorActorType }),
+  };
+}
+
+/**
+ * The project an UNCONDITIONAL update arm writes: the one a caller chose for
+ * this write. A sync-shaped producer's lineage project is left to
+ * {@link fillBranchProject}, and FEA-1749's "never clear" holds on both paths —
+ * a null `input.projectId` writes nothing.
+ */
+function branchProjectUpdateData(input: UpsertBranchArtifactInput): {
+  projectId?: string;
+} {
+  return input.projectId && !input.projectFillOnly
+    ? { projectId: input.projectId }
+    : {};
+}
+
+/**
+ * File a sync-shaped producer's branch that has no project, in ONE statement
+ * whose predicate the database evaluates.
+ *
+ * Not an app-computed read-then-write, for the reason
+ * {@link updateBranchArtifact} states about the push stamp: these transactions
+ * run READ COMMITTED, the branch row is not locked by the `findUnique` that
+ * resolves it, and `POST /artifact-links/batch-move` — the Details Project
+ * row's writer — takes `FOR NO KEY UPDATE` and commits inside that window
+ * (ISS-10995, davetho review on PR #8735). A decision made from the earlier
+ * read would overwrite the user's committed move with lineage.
+ */
+async function fillBranchProject(
+  tx: TransactionClient,
+  artifactId: string,
+  input: UpsertBranchArtifactInput
+): Promise<void> {
+  if (!(input.projectId && input.projectFillOnly)) {
+    return;
+  }
+  await tx.artifact.updateMany({
+    where: { id: artifactId, projectId: null },
+    data: { projectId: input.projectId },
+  });
+}

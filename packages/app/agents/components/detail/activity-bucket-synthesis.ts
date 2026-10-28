@@ -1,6 +1,7 @@
 import type {
   ActivityBucket,
   AgentSessionDetail,
+  SyncedAgentSessionTokenUsage,
   TurnItem,
 } from "@repo/api/src/types/agent-session";
 import type { ActivityMarker } from "@repo/app/agents/components/detail/session-timeline-axis";
@@ -14,6 +15,7 @@ import {
   hasTraceRow,
   type SessionTimelineWindow,
 } from "@repo/app/agents/lib/session-timeline-geometry";
+import { UNKNOWN_MODEL_LABEL } from "@repo/app/agents/lib/session-timeline-stacks";
 import { formatTime } from "@repo/app/shared/lib/date-utils";
 
 /**
@@ -108,7 +110,7 @@ function buildTimedActivityBuckets(
   window: SessionTimelineWindow | null
 ): ActivityBucket[] {
   /*
-   * ISS-4821 (wongk review): bucket against the RESOLVED window, not the
+   * ISS-4821 (whitlockk review): bucket against the RESOLVED window, not the
    * transcript's own min/max. The bars sit directly under the axis, so building
    * them on a transcript-only scale while the axis is drawn on a window widened
    * by the Activity-phases tiling put the two on different scales — a bar under
@@ -120,7 +122,7 @@ function buildTimedActivityBuckets(
   const lastMs = window ? window.endMs : rowBounds.maxMs;
   const spanMs = Math.max(1, lastMs - firstMs);
   const bucketCount = getFallbackBucketCount(spanMs, timedRows.length);
-  const model = session.primaryModel ?? session.model ?? "model";
+  const model = resolveSynthesizedBucketModel(session);
   const buckets = Array.from(
     { length: bucketCount },
     (_, bucketIndex): ActivityBucket => ({
@@ -139,7 +141,7 @@ function buildTimedActivityBuckets(
           cCache: 0,
         },
       },
-      // ISS-5819 review (wongk): this path DOES know its own clock — it bins
+      // ISS-5819 review (whitlockk): this path DOES know its own clock — it bins
       // over `[firstMs, lastMs]` right here — so it states it, on the same
       // optional wire fields the desktop collector fills. `buildEvenActivityBuckets`
       // deliberately does not: those bins are ORDINAL (n rows per bucket, no
@@ -166,7 +168,10 @@ function buildTimedActivityBuckets(
     (sum, bucket) => sum + getFallbackBucketWeight(bucket),
     0
   );
-  const totalCost = Math.max(session.estimatedCost, MIN_ACTIVITY_COST);
+  const totalCost = Math.max(
+    session.estimatedCost ?? MIN_ACTIVITY_COST,
+    MIN_ACTIVITY_COST
+  );
   for (const bucket of buckets) {
     const weight = getFallbackBucketWeight(bucket);
     if (weight === 0 || totalWeight === 0) {
@@ -186,9 +191,12 @@ function buildEvenActivityBuckets(
 ): ActivityBucket[] {
   const bucketCount = Math.min(16, Math.max(4, rows.length));
   const bucketSize = Math.ceil(rows.length / bucketCount);
-  const cost = Math.max(session.estimatedCost, MIN_ACTIVITY_COST);
+  const cost = Math.max(
+    session.estimatedCost ?? MIN_ACTIVITY_COST,
+    MIN_ACTIVITY_COST
+  );
   const costPerRow = cost / rows.length;
-  const model = session.primaryModel ?? session.model ?? "model";
+  const model = resolveSynthesizedBucketModel(session);
   return Array.from({ length: bucketCount }, (_, bucketIndex) => {
     const firstIndex = bucketIndex * bucketSize;
     const bucketRows = rows.slice(firstIndex, firstIndex + bucketSize);
@@ -312,6 +320,98 @@ function applyBucketCost(
     cOut: bucket.cOut,
     cCache: bucket.cCache,
   };
+}
+
+/**
+ * The model a synthesized bucket is allowed to name.
+ *
+ * ISS-5634: this was `session.primaryModel ?? session.model ?? "model"`, and
+ * both halves of that reached the hover card's `model` column as a claim the
+ * record never made.
+ *
+ * - `?? "model"` printed the PLACEHOLDER WORD under a `model` header on a
+ *   session whose model never resolved (the ISS-5572 errored-turn-one shape
+ *   carries `model: null`), where it is indistinguishable from a real name.
+ * - On a session that ran several models the primary took 100% of every bucket,
+ *   contradicting the `tokenUsageByModel` table on the same detail page. Nothing
+ *   here measures WHICH model spent a slice — the strip is reconstructed from
+ *   turn shape — so a multi-model record supports naming none of them.
+ *
+ * Hence: name the model only where the record shows exactly one, and otherwise
+ * carry the split under {@link UNKNOWN_MODEL_LABEL}. Replacing the KEY rather
+ * than dropping the entry is deliberate — `buildModelStack` cuts the bar by
+ * these keys, so an empty `byModel` would leave the Model cut painting an empty
+ * bar interior, which reads as a rendering failure rather than as "unknown".
+ *
+ * `tokenUsageByModel` is the ONLY population counted, deliberately. It is the
+ * table this card was contradicting, and it is one vocabulary on both surfaces
+ * — the cloud derives `session.models` from it (`agent-sessions/service.ts`)
+ * while desktop fills that field with `[primaryModel]` off the session row, so
+ * unioning the two would let one model spelled two ways read as two models and
+ * withhold a name on desktop that the cloud still prints for the same session.
+ * Counting `models` adds nothing either way: neither producer can put a second
+ * model there that is not already here.
+ */
+function resolveSynthesizedBucketModel(session: AgentSessionDetail): string {
+  // Spend, not presence: a zero-token row is a model that did not compete for
+  // this slice, and letting one withhold the name would hide the single model
+  // that actually paid for the whole session.
+  const billedUsage = (session.tokenUsageByModel ?? []).filter(hasBilledUsage);
+  const billedModels = new Set(
+    billedUsage
+      .map((usage) => namedModel(usage.model))
+      .filter((model): model is string => model !== null)
+  );
+  /*
+   * ISS-5634 review (whitlockk): a billed row whose model is blank is UNRESOLVED
+   * SPEND, not an absent row, and dropping it before the count made the set
+   * look narrower than the record is. Paired with one named billed model the
+   * set had a single member, so every synthesized bucket handed that model
+   * 100% of a total part of which it never earned; alone, the empty set fell
+   * through to `primaryModel`, naming a model the usage table never billed.
+   * Both printed a manufactured attribution in the `model` column. Unresolved
+   * spend is ambiguity, so it withholds the name the same way a second model
+   * does.
+   */
+  const hasUnnamedBilledUsage = billedUsage.some(
+    (usage) => namedModel(usage.model) === null
+  );
+  if (hasUnnamedBilledUsage || billedModels.size > 1) {
+    return UNKNOWN_MODEL_LABEL;
+  }
+  // The billed model leads. This column answers "which model was billed for
+  // this slice", the measured producer answers it with the token event's own
+  // model (`session-trace.ts`), and `primaryModel` is a separate column both
+  // producers set independently — so preferring it would print a name the spend
+  // table on the same page disagrees with, which is the defect being fixed.
+  // Primary/model remain the answer only for a session that billed nothing at
+  // all — with no billed row there is no spend for them to misattribute.
+  const [onlyBilledModel] = billedModels;
+  return (
+    onlyBilledModel ??
+    namedModel(session.primaryModel) ??
+    namedModel(session.model) ??
+    UNKNOWN_MODEL_LABEL
+  );
+}
+
+/**
+ * A model name only if it is one. A blank is not a narrower answer than
+ * "unknown" — as a `byModel` key it renders an unlabelled segment and an empty
+ * `model` cell, which is the failure {@link UNKNOWN_MODEL_LABEL} exists to
+ * prevent. `??` alone does not catch it: an empty string is not nullish.
+ */
+function namedModel(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
+function hasBilledUsage(usage: SyncedAgentSessionTokenUsage): boolean {
+  const tokens =
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.cacheReadTokens +
+    usage.cacheWriteTokens;
+  return tokens > 0 || (usage.estimatedCostUsd ?? 0) > 0;
 }
 
 const DAY_MS = 86_400_000;

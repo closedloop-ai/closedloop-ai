@@ -11,9 +11,7 @@ import {
 } from "@repo/app/shared/test-fixtures/documents";
 import { describe, expect, it } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------------
 
 const OTHER_USER = { ...TEST_USER, id: "user-2", firstName: "Grace" } as const;
 
@@ -46,9 +44,7 @@ const ALL_COLUMNS = [
   Col.Parent,
 ];
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("collapseUninformativeColumns — constant columns (FEA-3945)", () => {
   it("hides Assignee when every row has the same assignee", () => {
@@ -78,7 +74,7 @@ describe("collapseUninformativeColumns — constant columns (FEA-3945)", () => {
   });
 
   it("hides Project when every row shares the same project", () => {
-    const project = { id: "project-1", name: "Mike's Workspace" };
+    const project = { id: "project-1", name: "Marisol's Workspace" };
     const items = [docRow({ id: "a", project }), docRow({ id: "b", project })];
     const result = collapseUninformativeColumns(
       [Col.Project],
@@ -160,7 +156,7 @@ describe("collapseUninformativeColumns — constant rule is opt-in (reviewer)", 
   });
 
   it("keeps a constant Project when the constant rule is off (general table)", () => {
-    const project = { id: "project-1", name: "Mike's Workspace" };
+    const project = { id: "project-1", name: "Marisol's Workspace" };
     const items = [docRow({ id: "a", project }), docRow({ id: "b", project })];
     const result = collapseUninformativeColumns(
       [Col.Project],
@@ -220,7 +216,7 @@ describe("collapseUninformativeColumns — guards", () => {
   });
 
   it("collapses the full My-Issues set to just Type on a single-scope page", () => {
-    const project = { id: "project-1", name: "Mike's Workspace" };
+    const project = { id: "project-1", name: "Marisol's Workspace" };
     const items = [
       docRow({
         id: "a",

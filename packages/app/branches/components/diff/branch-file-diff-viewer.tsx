@@ -1,6 +1,7 @@
 "use client";
 
 import type { BranchViewFileDiff } from "@repo/api/src/types/branch-view";
+import { BRANCH_FILE_DIFF_CLASS } from "@repo/api/src/types/desktop-session-replay-pilot";
 import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { useTheme } from "next-themes";
@@ -91,16 +92,18 @@ export function BranchFileDiffViewer({
   return (
     <ScrollArea className={scrollAreaClassName ?? className ?? "max-h-[32rem]"}>
       {leadingContent}
-      <ReactDiffViewer
-        compareMethod={DiffMethod.WORDS}
-        hideLineNumbers={false}
-        newValue={diffData?.newContent ?? ""}
-        oldValue={diffData?.oldContent ?? ""}
-        {...restViewerProps}
-        splitView={splitView}
-        styles={viewerProps?.styles ?? branchDiffViewerStyles}
-        useDarkTheme={isDark}
-      />
+      <div className={BRANCH_FILE_DIFF_CLASS}>
+        <ReactDiffViewer
+          compareMethod={DiffMethod.WORDS}
+          hideLineNumbers={false}
+          newValue={diffData?.newContent ?? ""}
+          oldValue={diffData?.oldContent ?? ""}
+          {...restViewerProps}
+          splitView={splitView}
+          styles={viewerProps?.styles ?? branchDiffViewerStyles}
+          useDarkTheme={isDark}
+        />
+      </div>
     </ScrollArea>
   );
 }

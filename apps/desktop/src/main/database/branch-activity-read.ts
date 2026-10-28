@@ -1,7 +1,6 @@
 import type { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { normalizeBranchActivityScopes } from "./branch-activity-identity.js";
 import { queryBranchActivityRows } from "./branch-activity-query.js";
-import { reconcileBranchActivityRows } from "./branch-activity-reconciliation.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 
 /** Exact persisted Branch identity accepted by the canonical activity read. */
@@ -39,8 +38,7 @@ export function createBranchCanonicalActivityReadMethods(
       if (scopes.length === 0) {
         return [];
       }
-      const rawRows = await queryBranchActivityRows(prisma, scopes);
-      return reconcileBranchActivityRows(rawRows);
+      return await queryBranchActivityRows(prisma, scopes);
     },
   };
 }

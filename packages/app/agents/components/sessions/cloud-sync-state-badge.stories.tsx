@@ -1,5 +1,6 @@
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import type { Meta, StoryObj } from "@storybook/react";
 import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
 
@@ -19,6 +20,12 @@ import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
  *   transcript upload FAILED. #4150: the detail panel shows this as a
  *   destructive "Transcript upload failed" with a Retry, so the list must not
  *   reuse the in-flight "syncs automatically" copy and tell the user to relax.
+ * - {@link PendingTranscriptPaused} — ISS-9884: the session is in the cloud and
+ *   the desktop's transcript lane STOPPED attempting because its environment
+ *   was unavailable. Same `failedTransient` disposition as
+ *   {@link PendingTranscriptFailed} and a different fact — nothing failed and
+ *   nothing is retrying — so it needs the reason paired with the disposition
+ *   to resolve to the right copy.
  *
  * {@link Synced} and {@link Absent} render NOTHING, deliberately — a "synced"
  * chip on every settled row would make the table a wall of redundant badges. The
@@ -29,9 +36,9 @@ import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
  * the `TooltipProvider`.
  */
 const meta = {
-  title: "App Core/Agents/Cloud Sync State Badge",
+  title: "Composites v1.0/Sessions/Cloud Sync State Badge",
   component: CloudSyncStateBadge,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     cloudSyncState: AgentSessionCloudSyncState.Pending,
@@ -64,6 +71,19 @@ export const PendingTranscriptSyncing: Story = {
  */
 export const PendingTranscriptFailed: Story = {
   args: { transcriptDisposition: TranscriptDisposition.FailedTransient },
+};
+
+/**
+ * ISS-9884: the session is in the cloud, but its transcript archive isn't
+ * available, so the desktop's transcript lane stopped attempting rather than
+ * retrying. Same `failedTransient` disposition as {@link PendingTranscriptFailed}
+ * — the `environment_unavailable` reason is what tells the two apart.
+ */
+export const PendingTranscriptPaused: Story = {
+  args: {
+    transcriptDisposition: TranscriptDisposition.FailedTransient,
+    transcriptDispositionReason: TranscriptSkipReason.EnvironmentUnavailable,
+  },
 };
 
 /**

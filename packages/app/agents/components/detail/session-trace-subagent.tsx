@@ -16,12 +16,12 @@ type SubagentItem = Extract<TurnItem, { type: "subagent" }>;
  * event count; the underlying transcript stays behind the disclosure (`open`)
  * so the parent trace reads as a single line per sub-agent (Claude Code / Codex
  * style) until the user asks for detail. Extracted from session-trace.tsx to
- * shrink that grandfathered file (FEA-4172 code-review).
+ * shrink that file rather than grow it (FEA-4172 code-review).
  *
  * The meta row carries no `tokens` part: there is no per-sub-agent token source
  * (the cost points carry only `{tMs, costUsd}`, and `SyncedAgentSessionAgent`
  * has no counts), so `item.tokens` is always null and the part is dropped. Do
- * not describe this row as showing tokens until a source exists (wongk review).
+ * not describe this row as showing tokens until a source exists (whitlockk review).
  */
 export function SessionTraceSubagent({
   item,
@@ -47,7 +47,7 @@ export function SessionTraceSubagent({
   // body) rather than render a misleading "(0 events)".
   const eventCount = countSubagentEvents(item.body);
   const label = buildSubagentLabel(item);
-  // FEA-4178 (wongk review): a body-less sub-agent row — e.g. every row on the
+  // FEA-4178 (whitlockk review): a body-less sub-agent row — e.g. every row on the
   // branch merged trace, whose lean `MergedTraceItem` carries no transcript —
   // has nothing behind the disclosure. Rendering it as a chevron button would
   // put an affordance on a row that only opens to "No transcript captured.",
@@ -81,7 +81,7 @@ export function SessionTraceSubagent({
                   "st-sub-meta-part",
                   part.kind === "cost" && "cost"
                 )}
-                // FEA-4178 (wongk review): the sub-agent cost is attributed by
+                // FEA-4178 (whitlockk review): the sub-agent cost is attributed by
                 // timestamp overlap, not metered per-agent, so a bare "$0.20"
                 // reads as a measured figure it isn't. Name what it is on hover
                 // — mirroring the gutter cost's `Cumulative: $X` title — so the
@@ -217,7 +217,7 @@ function buildSubagentLabel(item: SubagentItem): string {
  * part on its own: cost is the one datum in this trace we lift to full
  * `--foreground` contrast (the session-level gutter cost does the same via
  * `.st-gut-line.cost`), so the sub-agent cost must not sit flat-muted next to
- * it (wongk review).
+ * it (whitlockk review).
  */
 function buildSubagentMetaParts(item: SubagentItem): SubagentMetaPart[] {
   const parts: SubagentMetaPart[] = [];
@@ -264,7 +264,7 @@ const SUBAGENT_META_SEPARATOR = " · ";
 /** Fallback when a sub-agent invocation carries no resolved name. */
 const SUBAGENT_FALLBACK_LABEL = "Sub-agent";
 /**
- * FEA-4178 (wongk review): hover/title copy for the collapsed box's cost part.
+ * FEA-4178 (whitlockk review): hover/title copy for the collapsed box's cost part.
  * The figure is attributed by timestamp overlap with the main-agent turns, not
  * metered per sub-agent, so a bare dollar amount can overstate precision. This
  * names the attribution so the number reads honestly.

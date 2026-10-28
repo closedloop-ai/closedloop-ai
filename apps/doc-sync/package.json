@@ -1,0 +1,45 @@
+{
+  "name": "doc-sync",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env.local src/index.ts",
+    "build": "tsc",
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "lint": "biome check src/",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'"
+  },
+  "dependencies": {
+    "@aws-sdk/credential-providers": "^3.1004.0",
+    "@aws-sdk/rds-signer": "^3.1003.0",
+    "@aws-sdk/util-format-url": "^3.972.7",
+    "@hocuspocus/common": "^4.7.0",
+    "@hocuspocus/extension-database": "^4.7.0",
+    "@hocuspocus/server": "^4.7.0",
+    "@repo/document-schema": "workspace:*",
+    "@repo/http-service": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "@repo/realtime-contract": "workspace:*",
+    "@smithy/hash-node": "^4.2.11",
+    "@smithy/signature-v4": "^5.3.11",
+    "@tiptap/pm": "~3.31.3",
+    "@tiptap/y-tiptap": "^3.0.9",
+    "hono": "catalog:",
+    "pg": "^8.20.0",
+    "tsx": "^4.21.0",
+    "yjs": "^13.6.33",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@hocuspocus/provider": "^4.7.0",
+    "@repo/vitest-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "@types/pg": "8.20.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

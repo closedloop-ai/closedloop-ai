@@ -1,5 +1,5 @@
 /**
- * ISS-5362 (#4514, wongk): the PRODUCTION pass-through, end to end.
+ * ISS-5362 (#4514, whitlockk): the PRODUCTION pass-through, end to end.
  *
  * The catalog test stops at the descriptor and the `DonutChart` tests supply
  * their own maps, so both stay green if `tile-content.tsx` never forwards the

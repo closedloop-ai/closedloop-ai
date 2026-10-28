@@ -1,12 +1,9 @@
 import type {
   TranscriptCompleteRequest,
-  TranscriptSkipRequest,
   TranscriptSyncPlanRequest,
 } from "@repo/api/src/types/desktop-transcripts";
-import {
-  TRANSCRIPT_UPLOAD_PART_BYTES,
-  TranscriptSkipReason,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TRANSCRIPT_UPLOAD_PART_BYTES } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Legacy single-arg hashtext() advisory lock (32-bit key), still emitted
@@ -21,8 +18,6 @@ const mocks = vi.hoisted(() => {
       update: vi.fn(),
     },
     sessionDetail: { findUnique: vi.fn() },
-    // FEA-4169: the default org-policy gate reads Organization via withDb.
-    organization: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   };
   const withDb = Object.assign(
@@ -43,7 +38,7 @@ vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
   Prisma: mocks.Prisma,
 }));
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/transcript-storage", () => ({
   createTranscriptMultipartUpload: vi.fn(),
   copyTranscriptPart: vi.fn(),
   presignTranscriptUploadPart: vi.fn(),
@@ -68,14 +63,14 @@ import {
   baseDeps,
   CT,
   NOW,
-  ORG,
   SID,
   STORED_SHA,
   s3Port,
   transcriptRow,
 } from "@/__tests__/support/desktop/transcripts/service.test-fixtures";
-import { TranscriptSyncErrorReason, transcriptSyncService } from "./service";
+import { transcriptSyncService } from "./service";
 import { TranscriptRateLimiter } from "./transcript-rate-limit";
+import { TranscriptSyncErrorReason } from "./transcript-sync-error-reason";
 
 const NEW_SHA = "b".repeat(64);
 const BIG_OFFSET = 6 * 1024 * 1024; // >= S3 5 MiB min, so append is legal
@@ -116,12 +111,6 @@ function completeRequest(
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findOwnedById.mockResolvedValue({ id: CT });
-  // FEA-4169: default the org policy ON so the existing plan/complete/skip
-  // behavior tests exercise the happy path; the policy-off case is covered
-  // explicitly below by overriding this or injecting deps.isOrgPolicyEnabled.
-  mocks.db.organization.findUnique.mockResolvedValue({
-    sessionSyncPolicyEnabled: true,
-  });
   mocks.db.sessionTranscript.findUnique.mockResolvedValue(null);
   mocks.db.sessionDetail.findUnique.mockResolvedValue(null);
   mocks.db.sessionTranscript.upsert.mockResolvedValue({});
@@ -202,8 +191,36 @@ describe("transcriptSyncService.planSync", () => {
           uploadStatus: "uploading",
           pendingUploadId: null,
         }),
+        // ISS-6318: `upsertPlanRow` returns its promise to callers that bare-
+        // `await` it, so the row is discarded and an absent `select` would
+        // RETURNING all ~24 of this row's scalars — a per-cell cost paid for a
+        // value nobody reads. Written literally so removing the production
+        // `select` reddens here.
+        select: { id: true },
       })
     );
+  });
+
+  // ISS-8735: a degraded resend must not null a previously stored good mtime.
+  it("sourceMtime: degraded -> create null, update key omitted; valid -> Date on both", async () => {
+    const s3 = s3Port();
+    await transcriptSyncService.planSync({
+      ...auth,
+      request: planRequest({ planEndOffset: 1000, sourceMtime: undefined }),
+      deps: baseDeps(s3),
+    });
+    const degraded = mocks.db.sessionTranscript.upsert.mock.calls[0][0];
+    expect(degraded.create.sourceMtime).toBeNull();
+    expect(degraded.update).not.toHaveProperty("sourceMtime");
+    const mtime = new Date(NOW).toISOString();
+    await transcriptSyncService.planSync({
+      ...auth,
+      request: planRequest({ planEndOffset: 1000, sourceMtime: mtime }),
+      deps: baseDeps(s3Port()),
+    });
+    const valid = mocks.db.sessionTranscript.upsert.mock.calls[1][0];
+    expect(valid.create.sourceMtime).toEqual(new Date(mtime));
+    expect(valid.update.sourceMtime).toEqual(new Date(mtime));
   });
 
   it("plans a from-scratch multipart upload for a large fresh file", async () => {
@@ -444,6 +461,56 @@ describe("transcriptSyncService.complete", () => {
     });
   });
 
+  // ISS-7097: the transaction wrapper's catch-all used to degrade EVERY throw —
+  // a `PLAN_TX_TIMEOUT_MS` expiry, an unreachable database — to `StaleUpload`,
+  // i.e. a 409 telling the desktop its own state was stale. The desktop answers
+  // a 409 by burning one of five per-row retry attempts, so a cloud-side outage
+  // marched healthy transcripts toward a `retries_exhausted` skip the cloud then
+  // believed. Nothing about the caller is stale here, and the reason must say so.
+  it("reports an upstream failure as unavailable, not as a stale upload", async () => {
+    mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+      transcriptRow({ pendingUploadId: "u" })
+    );
+    mocks.withDb.tx.mockImplementationOnce(() => {
+      throw new Error("Transaction already closed: timeout exceeded");
+    });
+    const result = await transcriptSyncService.complete({
+      ...auth,
+      request: completeRequest(),
+      deps: baseDeps(s3Port()),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamUnavailable,
+    });
+  });
+
+  // ISS-8689 / PRD-699 Appendix A: an unset TRANSCRIPTS_BUCKET is environmental
+  // (only an admin fixes it), so it must be told apart from a transient outage
+  // even though both throw from inside this same transaction wrapper. The
+  // discriminant is read via `isStorageNotConfiguredError`, not the message —
+  // the duck-typed error below only carries the discriminant field, matching
+  // what `TranscriptStorageNotConfiguredError` actually attaches.
+  it("reports a storage-not-configured failure as upstream-not-configured, not as a stale upload", async () => {
+    mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+      transcriptRow({ pendingUploadId: "u" })
+    );
+    mocks.withDb.tx.mockImplementationOnce(() => {
+      throw Object.assign(new Error("TRANSCRIPTS_BUCKET is not configured"), {
+        transcriptStorageNotConfigured: true,
+      });
+    });
+    const result = await transcriptSyncService.complete({
+      ...auth,
+      request: completeRequest(),
+      deps: baseDeps(s3Port()),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamNotConfigured,
+    });
+  });
+
   it("rejects a superseded uploadId without touching the row", async () => {
     mocks.db.sessionTranscript.findUnique.mockResolvedValue(
       transcriptRow({ pendingUploadId: "u-new" })
@@ -556,8 +623,97 @@ describe("transcriptSyncService.complete", () => {
     expect(mocks.db.sessionTranscript.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ uploadStatus: "failed" }),
+        // ISS-6318: `markFailed` is declared `Promise<unknown>` and every
+        // caller bare-`await`s it, so this row is discarded too.
+        select: { id: true },
       })
     );
+  });
+
+  // ISS-7097: this catch RETURNS rather than throws, so it never reaches
+  // `runTranscriptTx`'s reclassifying tail and has to make the same call itself.
+  // S3 being down says nothing about this row being stale, and answering 409
+  // spends one of the desktop's five per-row attempts on a cloud outage — the
+  // exact bug this ticket exists to fix, one call path over.
+  it("reports an S3 outage during completion as unavailable, not as a stale upload", async () => {
+    mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+      transcriptRow({ storedEtag: "prev-etag", pendingUploadId: "u" })
+    );
+    const throttled = Object.assign(new Error("SlowDown"), {
+      $metadata: { httpStatusCode: 503 },
+    });
+    const s3 = s3Port({
+      listParts: vi.fn().mockResolvedValue([{ partNumber: 1, etag: "e1" }]),
+      completeMultipartUpload: vi.fn().mockRejectedValue(throttled),
+    });
+    const result = await transcriptSyncService.complete({
+      ...auth,
+      request: completeRequest(),
+      deps: baseDeps(s3),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamUnavailable,
+    });
+    // The abort still runs: a half-finished multipart upload is leaked storage
+    // whichever family the rejection belongs to, and the client re-plans from
+    // server truth either way.
+    expect(s3.abortMultipartUpload).toHaveBeenCalled();
+  });
+
+  // ISS-8689: this catch RETURNS rather than throws (same reason as the S3
+  // outage case above), so it has to classify config-unset itself too. A
+  // `TranscriptStorageNotConfiguredError` here carries no `$metadata` at all,
+  // so without this check it would fall through to `StaleUpload` and burn the
+  // desktop's per-row retry budget on a config problem no retry can fix.
+  it("reports a storage-not-configured failure during completion as upstream-not-configured, not as a stale upload", async () => {
+    mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+      transcriptRow({ storedEtag: "prev-etag", pendingUploadId: "u" })
+    );
+    const notConfigured = Object.assign(
+      new Error("TRANSCRIPTS_BUCKET is not configured"),
+      { transcriptStorageNotConfigured: true }
+    );
+    const s3 = s3Port({
+      listParts: vi.fn().mockResolvedValue([{ partNumber: 1, etag: "e1" }]),
+      completeMultipartUpload: vi.fn().mockRejectedValue(notConfigured),
+    });
+    const result = await transcriptSyncService.complete({
+      ...auth,
+      request: completeRequest(),
+      deps: baseDeps(s3),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamNotConfigured,
+    });
+    expect(s3.abortMultipartUpload).toHaveBeenCalled();
+  });
+
+  // Regression (ISS-8689): the config-unset check must not widen over a
+  // genuine stale-plan S3 rejection. A real AWS SDK 4xx carries `$metadata`
+  // with a status below 429/500 and no config discriminant, so it must keep
+  // falling to `StaleUpload` exactly as before this ticket.
+  it("still answers a genuine stale-plan S3 4xx on the complete path with stale-upload", async () => {
+    mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+      transcriptRow({ storedEtag: "prev-etag", pendingUploadId: "u" })
+    );
+    const preconditionFailed = Object.assign(new Error("PreconditionFailed"), {
+      $metadata: { httpStatusCode: 412 },
+    });
+    const s3 = s3Port({
+      listParts: vi.fn().mockResolvedValue([{ partNumber: 1, etag: "e1" }]),
+      completeMultipartUpload: vi.fn().mockRejectedValue(preconditionFailed),
+    });
+    const result = await transcriptSyncService.complete({
+      ...auth,
+      request: completeRequest(),
+      deps: baseDeps(s3),
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: TranscriptSyncErrorReason.StaleUpload,
+    });
   });
 
   it("fails when the stored checksum does not match the client checksum", async () => {
@@ -738,95 +894,5 @@ describe("per-file advisory lock derivation (PRD-536 D12)", () => {
     });
     expect(mocks.db.$executeRaw).toHaveBeenCalledTimes(1);
     assertDualLock(firstLockSql());
-  });
-});
-
-describe("FEA-4169: server-side org session-sync policy gate", () => {
-  function skipRequest(): TranscriptSkipRequest {
-    return {
-      computeTargetId: CT,
-      externalSessionId: SID,
-      fileKey: "main",
-      sourceHarness: "claude_code",
-      reason: TranscriptSkipReason.TooLarge,
-    };
-  }
-
-  it("planSync denies (PolicyDisabled) when the org policy is OFF, minting no URL and writing no row", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const s3 = s3Port();
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest(),
-      deps: { ...baseDeps(s3), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    // Org-scoped, enforced before any S3/URL or DB write.
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(ORG);
-    expect(s3.presignPutObject).not.toHaveBeenCalled();
-    expect(s3.createMultipartUpload).not.toHaveBeenCalled();
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-    expect(mocks.db.sessionTranscript.upsert).not.toHaveBeenCalled();
-  });
-
-  it("complete denies (PolicyDisabled) when the org policy is OFF, completing no upload", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const s3 = s3Port();
-    const result = await transcriptSyncService.complete({
-      ...auth,
-      request: completeRequest(),
-      deps: { ...baseDeps(s3), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    expect(s3.completeMultipartUpload).not.toHaveBeenCalled();
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("markPermanentlySkipped denies (PolicyDisabled) when the org policy is OFF", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const result = await transcriptSyncService.markPermanentlySkipped({
-      ...auth,
-      request: skipRequest(),
-      deps: { ...baseDeps(s3Port()), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-    expect(mocks.db.sessionTranscript.upsert).not.toHaveBeenCalled();
-  });
-
-  it("default DB-backed gate: an unresolved org fails closed (denies) without throwing", async () => {
-    // No injected dep → the DB-backed default runs. A missing org row degrades
-    // to deny (fail-closed), never a throw, so version skew is enforced safely.
-    mocks.db.organization.findUnique.mockResolvedValue(null);
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest(),
-      deps: baseDeps(s3Port()),
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-  });
-
-  it("default DB-backed gate: an explicitly-enabled org is allowed to plan", async () => {
-    mocks.db.organization.findUnique.mockResolvedValue({
-      sessionSyncPolicyEnabled: true,
-    });
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest({ planEndOffset: 1000 }),
-      deps: baseDeps(s3Port()),
-    });
-    expect(result.ok).toBe(true);
   });
 });

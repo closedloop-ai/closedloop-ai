@@ -20,12 +20,23 @@
  * PAIRS (real emoji/astral characters) are left untouched.
  */
 
-// Module-level (Biome useTopLevelRegex). Matches a high surrogate NOT followed
-// by a low surrogate, or a low surrogate NOT preceded by a high surrogate.
-const LONE_SURROGATE_RE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-// Built via fromCharCode so no literal NUL / replacement byte lives in source.
-const NUL_CHAR = String.fromCharCode(0);
+import {
+  LONE_SURROGATE_RE,
+  NUL_CHARACTER,
+} from "@repo/api/src/types/postgres-text";
+
+// The shared literal is non-global on purpose (its `.test` callers would carry
+// `lastIndex` otherwise); `replace` here needs every match, so the `g` copy is
+// derived from the one canonical source rather than being a second literal.
+// Every flag the shared literal carries is copied with it — rebuilding from
+// `.source` alone would silently keep matching the old set if a flag such as
+// `u` is ever added upstream. `g` is stripped first so the copy cannot end up
+// declaring it twice, which is a SyntaxError.
+const LONE_SURROGATE_GLOBAL_RE = new RegExp(
+  LONE_SURROGATE_RE,
+  `${LONE_SURROGATE_RE.flags.replace("g", "")}g`
+);
+// Built via fromCharCode so no literal replacement byte lives in source.
 const UNICODE_REPLACEMENT_CHAR = String.fromCharCode(0xff_fd);
 
 // Recursion bound for sanitizePostgresJson. Real agent-session JSON (event
@@ -38,8 +49,8 @@ const MAX_SANITIZE_JSON_DEPTH = 200;
 /** Remove NULs and replace lone surrogates so a single string is Postgres-safe. */
 export function sanitizePostgresText(value: string): string {
   return value
-    .replaceAll(NUL_CHAR, "")
-    .replace(LONE_SURROGATE_RE, UNICODE_REPLACEMENT_CHAR);
+    .replaceAll(NUL_CHARACTER, "")
+    .replace(LONE_SURROGATE_GLOBAL_RE, UNICODE_REPLACEMENT_CHAR);
 }
 
 /**

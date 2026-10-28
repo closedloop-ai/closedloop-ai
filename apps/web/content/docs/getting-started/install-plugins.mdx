@@ -90,16 +90,11 @@ After install you have new slash commands and skills available in every Claude C
 - `/code:code` – start a planning/execution loop against a workdir.
 - `/code:amend-plan` – conversationally amend an existing plan.
 - `/code:plan-with-codex` – run a multi-round plan debate between Claude and Codex.
-- `/code:cancel-code` – clear the current loop state for a workdir.
 - `/code-review:start` – run multi-agent code review on the current diff.
 - `/agent-bootstrap` – generate project-specific expert agents from your codebase.
 - `/process-learnings`, `/export-closedloop-learnings`, `/push-learnings`, `/pull-learnings`, `/prune-learnings`, `/goal-stats` – self-learning pipeline.
 
 Skills are discovered automatically by Claude Code from context and do not need to be invoked by name.
-
-## How the desktop app uses the plugins
-
-The desktop app resolves the `claude` binary (honoring a `CLAUDE_BIN` override), spawns it with a plan or execute command, and tails the NDJSON stream to produce live progress in the web app. If the plugins are missing you will see a `preflight.script_not_found` telemetry event and the loop will refuse to start. Install or update the plugins and restart the desktop app to recover.
 
 ## Update path
 

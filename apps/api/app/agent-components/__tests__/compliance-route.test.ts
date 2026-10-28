@@ -6,14 +6,14 @@
  * server-side gate: a non-admin (member, or an API key whose owner is not an
  * admin) gets 403 and the service is never called; an admin gets the payload.
  *
- * Prisma/service are mocked; the admin check (`isOrgAdmin`) is mocked so the
+ * Prisma/service are mocked; the admin check (`requireOrgAdmin`) is mocked so the
  * gate branch is exercised directly.
  */
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  isOrgAdmin: vi.fn(),
+  requireOrgAdmin: vi.fn(),
   getCompliance: vi.fn(),
   authCtx: {
     userId: "user-1",
@@ -46,7 +46,7 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  requireOrgAdmin: mocks.requireOrgAdmin,
 }));
 
 vi.mock("../compliance/service", () => ({
@@ -55,6 +55,10 @@ vi.mock("../compliance/service", () => ({
   },
 }));
 
+import {
+  ORG_ADMIN_ADMITTED,
+  orgAdminRefused,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { GET as complianceRoute } from "../compliance/route";
 
 function makeRequest(): NextRequest {
@@ -74,7 +78,7 @@ describe("GET /agent-components/compliance admin gate", () => {
   });
 
   it("returns 403 and never queries when the caller is not an org admin", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.requireOrgAdmin.mockImplementation(orgAdminRefused);
 
     const response = await complianceRoute(makeRequest(), emptyContext);
 
@@ -83,18 +87,18 @@ describe("GET /agent-components/compliance admin gate", () => {
   });
 
   it("checks the caller's own clerk org/user for admin status", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.requireOrgAdmin.mockImplementation(orgAdminRefused);
 
     await complianceRoute(makeRequest(), emptyContext);
 
-    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
+    expect(mocks.requireOrgAdmin).toHaveBeenCalledWith(
       mocks.authCtx.clerkOrgId,
       mocks.authCtx.clerkUserId
     );
   });
 
   it("returns the compliance payload for an org admin", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
     mocks.getCompliance.mockResolvedValue({
       items: [
         {

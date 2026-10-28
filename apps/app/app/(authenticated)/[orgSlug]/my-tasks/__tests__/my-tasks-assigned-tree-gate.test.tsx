@@ -7,16 +7,12 @@ const mocks = vi.hoisted(() => ({
   useDocumentsPage: vi.fn(),
   useUpdateDocument: vi.fn(),
   useProjects: vi.fn(),
-  useBranchList: vi.fn(),
-  useMergedProjectTrees: vi.fn(),
   useAssignedArtifactTree: vi.fn(),
   useFeatureFlagEnabled: vi.fn(),
   useFeatureFlagsLoaded: vi.fn(),
   usePostHogDistinctId: vi.fn(),
   useUser: vi.fn(),
   refetchCurrentUser: vi.fn(),
-  refetchContributorBranches: vi.fn(),
-  refetchMergedProjectTrees: vi.fn(),
   refetchAssignedArtifactTree: vi.fn(),
   useFavoriteArtifacts: vi.fn(),
   useProjectFilters: vi.fn(),
@@ -40,26 +36,20 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // Presentational markers so the test asserts branch selection, not child guts.
-vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view",
-  () => ({
-    DocumentsView: ({ isLoading }: { isLoading?: boolean }) => (
-      <div
-        data-loading={isLoading ? "true" : "false"}
-        data-testid="documents-view"
-      />
-    ),
-  })
-);
+vi.mock("@repo/app/documents/components/table/documents-view", () => ({
+  DocumentsView: ({ isLoading }: { isLoading?: boolean }) => (
+    <div
+      data-loading={isLoading ? "true" : "false"}
+      data-testid="documents-view"
+    />
+  ),
+}));
 vi.mock("@/app/(authenticated)/components/header", () => ({
   Header: () => <div data-testid="header" />,
 }));
 // vi.mock paths resolve relative to this test file, which sits one directory
 // deeper (__tests__/) than page.tsx — so add one extra "../" to each relative
 // specifier the page uses.
-vi.mock("../../../components/agent-onboarding-card", () => ({
-  AgentOnboardingCard: () => null,
-}));
 vi.mock("../../../components/onboarding-checklist", () => ({
   OnboardingChecklist: () => null,
 }));
@@ -78,9 +68,16 @@ vi.mock("../components/my-tasks-kanban", () => ({
 vi.mock("@repo/app/documents/components/table/document-table-toolbar", () => ({
   DocumentTableToolbar: ({
     activeFiltersBarProps,
+    leadingContent,
   }: {
     activeFiltersBarProps?: { extraChips?: ReactNode };
-  }) => <div data-testid="toolbar">{activeFiltersBarProps?.extraChips}</div>,
+    leadingContent?: ReactNode;
+  }) => (
+    <div data-testid="toolbar">
+      {activeFiltersBarProps?.extraChips}
+      {leadingContent}
+    </div>
+  ),
 }));
 
 vi.mock("@repo/app/users/hooks/use-users", () => ({
@@ -95,12 +92,6 @@ vi.mock("@repo/app/documents/hooks/use-documents", () => ({
 }));
 vi.mock("@repo/app/projects/hooks/use-projects", () => ({
   useProjects: mocks.useProjects,
-}));
-vi.mock("@repo/app/branches/hooks/use-branches", () => ({
-  useBranchList: mocks.useBranchList,
-}));
-vi.mock("@repo/app/projects/hooks/use-merged-project-trees", () => ({
-  useMergedProjectTrees: mocks.useMergedProjectTrees,
 }));
 vi.mock("@repo/app/projects/hooks/use-assigned-artifact-tree", () => ({
   useAssignedArtifactTree: mocks.useAssignedArtifactTree,
@@ -167,6 +158,10 @@ vi.mock("@repo/navigation/use-search-params-value", () => ({
 // gates require.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: mocks.useFeatureFlagEnabled,
+  // ISS-9665: the board reads `artifact-priority-unset` through the OPTIONAL
+  // hook. Backed by the same key-driven spy so it obeys the closed default and
+  // a case can still turn it on by adding the key to `enabledFeatureFlags`.
+  useFeatureFlagEnabledOptional: mocks.useFeatureFlagEnabled,
   // FEA-1626: the board holds its documents read until the recency flag
   // resolves. `isReady` is driven per-test so the unresolved window — where the
   // query must NOT fire — is reachable, rather than being permanently true.
@@ -174,9 +169,16 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
     enabled: mocks.useFeatureFlagEnabled(key),
     isReady: mocks.isFeatureFlagGateReady,
   }),
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port, so this exhaustive module mock owes it an entry
+  // too. Same answer as the required gate above.
+  useFeatureFlagGateOptional: (key: string) => ({
+    enabled: mocks.useFeatureFlagEnabled(key),
+    isReady: mocks.isFeatureFlagGateReady,
+  }),
 }));
 // The tree source withholds BOTH reads until PostHog's flags have resolved for
-// the identified user (FEA-1651, wongk). These stubs put the suite in the
+// the identified user (FEA-1651, whitlockk). These stubs put the suite in the
 // settled/identified state so existing cases exercise the steady state; the
 // transition case drives them directly.
 vi.mock("@repo/analytics/client", () => ({
@@ -195,18 +197,27 @@ vi.mock("@repo/auth/client", () => ({
   useUser: mocks.useUser,
 }));
 
-import { MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { DocumentType } from "@repo/api/src/types/document";
 import MyTasksPage from "../page";
 import { docsResult, setBaseMocks } from "./my-tasks-page-test-harness";
 
 /**
- * FEA-1651 (parent FEA-908): the list view's cross-project tree moves from an
- * N-request per-project fan-out to the single `GET /artifacts/assigned-tree`
- * read, behind a closed-by-default flag (ISS-4779). Both hooks are always
- * mounted, so what matters is which one is ENABLED — a disabled hook issues no
- * request at all.
+ * FEA-1651 (parent FEA-908): the list view's cross-project tree is the single
+ * `GET /artifacts/assigned-tree` read.
+ *
+ * ISS-12637 retired `my-tasks-own-work-tree`, so nothing here seeds a flag.
+ * Asserting the endpoint at DEFAULT CONFIG is what proves the retirement — a
+ * suite that kept seeding the key would pass identically against a gate that
+ * was never removed. The per-project fan-out is not asserted absent here: the
+ * hook that issued it was deleted with the flag, so there is nothing left to
+ * call.
+ *
+ * The five cases this file lost with the flag were its OFF arm, the two
+ * unresolved-PostHog windows, the no-PostHog-key carve-out, and the
+ * unresolved-to-on transition. Each asserted which of two reads won; there is
+ * one read.
  */
-describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
+describe("MyTasksPage assigned-artifact-tree endpoint (FEA-1651)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.enabledFeatureFlags.clear();
@@ -221,31 +232,13 @@ describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
     mocks.useDocumentsPage.mockReturnValue(docsResult());
   });
 
-  function enabledFlags(): {
-    merged: boolean | undefined;
-    assigned: boolean | undefined;
-  } {
-    return {
-      merged: mocks.useMergedProjectTrees.mock.calls.at(-1)?.[1]?.enabled,
-      assigned: mocks.useAssignedArtifactTree.mock.calls.at(-1)?.[1]?.enabled,
-    };
+  function assignedEnabled(): boolean | undefined {
+    return mocks.useAssignedArtifactTree.mock.calls.at(-1)?.[1]?.enabled;
   }
 
-  it("reads the per-project fan-out and never the assigned-tree endpoint with the flag off", () => {
-    mocks.useFeatureFlagEnabled.mockReturnValue(false);
-
-    render(<MyTasksPage />);
-
-    expect(enabledFlags()).toEqual({ merged: true, assigned: false });
-  });
-
-  it("reads the single assigned-tree endpoint and never the fan-out with the flag on", () => {
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
-    const tree = { nodes: [], externalParents: [] };
+  it("reads the assigned-tree endpoint at default config, with no flag seeded", () => {
     mocks.useAssignedArtifactTree.mockReturnValue({
-      data: tree,
+      data: { nodes: [], externalParents: [] },
       isLoading: false,
       isError: false,
       refetch: mocks.refetchAssignedArtifactTree,
@@ -253,26 +246,20 @@ describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
 
     render(<MyTasksPage />);
 
-    expect(enabledFlags()).toEqual({ merged: false, assigned: true });
+    expect(assignedEnabled()).toBe(true);
     expect(mocks.useAssignedArtifactTree.mock.calls.at(-1)?.[0]).toBe("user-1");
   });
 
-  it("keeps the isListView gate: neither tree read is enabled in card view", () => {
+  it("keeps the isListView gate: the tree read is not enabled in card view", () => {
     // `useLocalStorageState` backs the list/card view toggle.
     mocks.useLocalStorageState.mockReturnValue(["card", vi.fn()]);
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
 
     render(<MyTasksPage />);
 
-    expect(enabledFlags()).toEqual({ merged: false, assigned: false });
+    expect(assignedEnabled()).toBe(false);
   });
 
   it("surfaces an assigned-tree read failure through the same degraded-stream path", () => {
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
     mocks.useAssignedArtifactTree.mockReturnValue({
       data: null,
       isLoading: false,
@@ -286,115 +273,22 @@ describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
     expect(screen.queryByTestId("empty-state")).toBeNull();
   });
 
-  it("starts NEITHER read while the flag is still unresolved for the identified user", () => {
-    // The cold-PostHog window: flags have not been delivered yet, so the web
-    // adapter reports the flag as `false`. Keying off that raw value would start
-    // the LEGACY fan-out here and never cancel it when the flag resolves true
-    // (wongk). Both reads must stay disabled instead.
-    mocks.useFeatureFlagsLoaded.mockReturnValue(false);
-    mocks.useFeatureFlagEnabled.mockReturnValue(false);
-
-    render(<MyTasksPage />);
-
-    expect(enabledFlags()).toEqual({ merged: false, assigned: false });
-  });
-
-  it("reads the assigned-tree endpoint immediately in a build with no PostHog key", () => {
-    // The only case the `postHogFeatureFlagsEnabled` carve-out changes, and the
-    // one every other test here pins away: with no key, `useFeatureFlag` is
-    // bound to the local fixture, so flags are decided from the first render —
-    // there is no bootstrap, no `identify()`, and no distinct id. Reading the
-    // handshake signals literally instead would report "never settled" forever
-    // and hold both reads off for the whole life of every containerized-E2E and
-    // local-dev session. The handshake mocks stay in their UNSETTLED state on
-    // purpose: with the carve-out removed this asserts `assigned: false`.
-    mocks.postHogLive = false;
-    mocks.useFeatureFlagsLoaded.mockReturnValue(false);
-    mocks.usePostHogDistinctId.mockReturnValue(undefined);
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
-
-    render(<MyTasksPage />);
-
-    expect(enabledFlags()).toEqual({ merged: false, assigned: true });
-  });
-
-  it("starts NEITHER read while PostHog is not yet keyed on the signed-in user", () => {
-    // Flags delivered, but for the ANONYMOUS bootstrap id — identify() has not
-    // landed, so this flag value is not this user's.
-    mocks.useFeatureFlagsLoaded.mockReturnValue(true);
-    mocks.usePostHogDistinctId.mockReturnValue("anon-bootstrap-id");
-    mocks.useFeatureFlagEnabled.mockReturnValue(false);
-
-    render(<MyTasksPage />);
-
-    expect(enabledFlags()).toEqual({ merged: false, assigned: false });
-  });
-
-  it("never starts the legacy fan-out across the unresolved to flag-on transition", () => {
-    mocks.useFeatureFlagsLoaded.mockReturnValue(false);
-    mocks.useFeatureFlagEnabled.mockReturnValue(false);
-    const { rerender } = render(<MyTasksPage />);
-    expect(enabledFlags()).toEqual({ merged: false, assigned: false });
-
-    // The flags resolve, and they resolve ON.
-    mocks.useFeatureFlagsLoaded.mockReturnValue(true);
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
-    rerender(<MyTasksPage />);
-
-    expect(enabledFlags()).toEqual({ merged: false, assigned: true });
-    // Across the WHOLE transition the fan-out was never enabled once, so there
-    // are no already-issued legacy reads left running beside the new one.
-    const everEnabledMerged = mocks.useMergedProjectTrees.mock.calls.some(
-      (call) => call[1]?.enabled === true
-    );
-    expect(everEnabledMerged).toBe(false);
-  });
-
-  it("does not issue the contributor-branch read under the flag, or let it hold the table", () => {
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
-    // The branch read is reporting "still loading". Under the flag the endpoint
-    // resolves contributor branches server-side, so this read is not issued and
-    // must not gate the table behind a skeleton for a read nothing consumes.
-    mocks.useBranchList.mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      refetch: mocks.refetchContributorBranches,
-    });
-    mocks.useAssignedArtifactTree.mockReturnValue({
-      data: { nodes: [], externalParents: [] },
-      isLoading: false,
-      isError: false,
-      refetch: mocks.refetchAssignedArtifactTree,
-    });
-    // A real row, so the board renders the table rather than the empty state.
-    mocks.useDocumentsPage.mockReturnValue(
-      docsResult({ data: [{ id: "doc-0" }] })
-    );
-
-    render(<MyTasksPage />);
-
-    expect(mocks.useBranchList.mock.calls.at(-1)?.[1]?.enabled).toBe(false);
-    expect(
-      screen.getByTestId("documents-view").getAttribute("data-loading")
-    ).toBe("false");
-  });
-
+  // ISS-10472 moved this case to a FLAT tab, where its premise still holds. The
+  // truncation it seeds is the UNPAGED read's anchor cap, and the All tab no
+  // longer issues an unpaged read — nor would it mark a floor if it did, since
+  // its total is exact and the node budget renders nothing there (operator
+  // ruling 2026-10-20). The flat tabs still read the unpaged tree, so the cap
+  // and its marker are still live on them; kept as a counterfactual.
   it("marks the total a floor and names the tree bound when the server truncated the walk", () => {
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
     // The documents stream is COMPLETE (`hasMore: false`), so any floor marker
     // here can only have come from the tree stream — this is the case where a
     // whole stream would otherwise leave the count silently.
     mocks.useDocumentsPage.mockReturnValue(
-      docsResult({ data: [{ id: "doc-0" }], total: 1, hasMore: false })
+      docsResult({
+        data: [{ id: "doc-0", type: DocumentType.Feature }],
+        total: 1,
+        hasMore: false,
+      })
     );
     mocks.useAssignedArtifactTree.mockReturnValue({
       data: {
@@ -412,6 +306,7 @@ describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
     });
 
     render(<MyTasksPage />);
+    fireEvent.click(screen.getByText("Issues"));
 
     expect(screen.getByText((content) => content.includes("+"))).toBeTruthy();
     expect(
@@ -420,9 +315,6 @@ describe("MyTasksPage assigned-artifact-tree endpoint gate (FEA-1651)", () => {
   });
 
   it("retries the tree stream from Try again, not only the documents read", () => {
-    mocks.useFeatureFlagEnabled.mockImplementation(
-      (key: string) => key === MY_TASKS_ASSIGNED_ARTIFACT_TREE_FEATURE_FLAG_KEY
-    );
     mocks.useAssignedArtifactTree.mockReturnValue({
       data: null,
       isLoading: false,

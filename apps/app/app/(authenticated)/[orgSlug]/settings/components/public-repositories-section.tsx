@@ -7,9 +7,10 @@ import {
   useRemovePublicRepository,
 } from "@repo/app/github/hooks/use-github-integration";
 import { getErrorMessage } from "@repo/app/shared/api/api-error";
+import { GitHubLogo } from "@repo/app/shared/feature-flags/github-logo";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
-import { GithubIcon, Loader2Icon, Trash2Icon } from "lucide-react";
+import { Loader2Icon, Trash2Icon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 type PublicRepo = {
@@ -53,7 +54,7 @@ function PublicRepoList({
           key={repo.id}
         >
           <div className="flex items-center gap-2 text-sm">
-            <GithubIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <GitHubLogo className="h-4 w-4 shrink-0 text-muted-foreground" />
             <a
               className="text-foreground hover:underline"
               href={`https://github.com/${repo.fullName}`}

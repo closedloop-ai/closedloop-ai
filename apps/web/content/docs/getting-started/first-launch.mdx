@@ -29,7 +29,7 @@ The single root directory that all loops are allowed to touch. Pick a dedicated 
 
 ## Optional: binary path overrides
 
-Electron apps on macOS launch with a stripped PATH. If `claude`, `gh`, `codex`, `python3`, or `git` are installed in non-standard locations, expand **Configure binary paths** in the onboarding overlay and enter an absolute path for each tool the app failed to auto-detect.
+Electron apps on macOS launch with a stripped PATH. If `claude`, `codex`, `python3`, or `git` are installed in non-standard locations, expand **Configure binary paths** in the onboarding overlay and enter an absolute path for each tool the app failed to auto-detect.
 
 The app resolves each binary in three tiers:
 
@@ -46,7 +46,6 @@ Once you click **Complete Setup** the app:
 1. Persists the four settings and the binary paths.
 2. Starts the local gateway on the first free port in `19432..19435`.
 3. Creates a signed Socket.IO connection to the relay and emits a `desktop.hello` handshake with your computer name, the gateway protocol version, the desktop version, and the plugin version.
-4. Performs a boot-recovery pass that reattaches any loops that were running when the app last exited (see [Recovery and resilience](../mechanisms/recovery)).
 
 The Dashboard tab should now show three green status cards: **Gateway Port**, **Cloud Connection**, and **Remote Commands**.
 

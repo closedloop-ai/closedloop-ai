@@ -1,23 +1,23 @@
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import {
   SESSION_PR_PURPOSE_LABELS,
+  SessionArtifactLinkKind,
   SessionPrPurpose,
 } from "@repo/api/src/types/session-artifact-link";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  attributionReadMocks,
   buildAgentSessionDbMock,
-  buildAnalyticsJsonRecord,
-  buildAnalyticsScalarRecord,
   buildAttributionLensRecord,
-  buildPersistedAgent,
-  buildPersistedEvent,
   installDb,
   lowConfidenceBranch,
   referencedBranch,
   staleBranch,
   trustedBranch,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
+import { usageOwnerGroupMocks } from "@/__tests__/support/agent-sessions/usage-owner-groups.test-mocks";
 import { agentSessionsService } from "../service";
+import { SessionCostLedger } from "./usage-cost-split";
 
 vi.mock("@repo/database", async () => {
   const { databaseModuleMock } = await import(
@@ -38,7 +38,7 @@ describe("agentSessionsService", () => {
     vi.clearAllMocks();
   });
 
-  it("splits usage summary costs by linked loop apiKeySource", async () => {
+  it("splits usage summary costs by stored ledger, then billingMode", async () => {
     installDb({
       sessionDetail: buildAgentSessionDbMock({
         aggregate: vi.fn().mockResolvedValue({
@@ -55,19 +55,6 @@ describe("agentSessionsService", () => {
         }),
         groupBy: vi
           .fn()
-          .mockResolvedValueOnce([
-            {
-              userId: "user-1",
-              _count: { _all: 4 },
-              _sum: {
-                inputTokens: 100,
-                outputTokens: 50,
-                cacheReadTokens: 10,
-                cacheWriteTokens: 5,
-                estimatedCost: 1.5,
-              },
-            },
-          ])
           .mockResolvedValueOnce([
             {
               harness: "claude",
@@ -103,49 +90,50 @@ describe("agentSessionsService", () => {
               },
             },
           ])
-          /* Fourth sessionDetail.groupBy call: cost split grouped by
-             sourceLoopId and billingMode. Loop-originated rows are classified by
-             the loop's apiKeySource; DESKTOP_SYNC rows (null sourceLoopId) are
-             classified by their synced billingMode — a subscription/seat mode
-             counts toward subscription cost, anything else toward API cost.
+          /* Third sessionDetail.groupBy call: cost split grouped by
+             legacyLoopCostLedger and billingMode. Former loop rows keep the
+             ledger stored on the session (ISS-12435); DESKTOP_SYNC rows (null
+             ledger) are classified by their synced billingMode: a
+             subscription/seat mode counts toward subscription cost, anything
+             else toward API cost.
              Binary-exact values so the subscription/API sums compare equal under
              toEqual without floating-point drift. */
           .mockResolvedValueOnce([
             {
-              sourceLoopId: "loop-subscription",
+              legacyLoopCostLedger: SessionCostLedger.Subscription,
               billingMode: null,
               _sum: { estimatedCost: 0.5 },
             },
             {
-              sourceLoopId: "loop-api",
+              legacyLoopCostLedger: SessionCostLedger.Metered,
               billingMode: null,
               _sum: { estimatedCost: 0.25 },
             },
             // DESKTOP_SYNC, subscription/seat billingMode → subscription cost.
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: "pro",
               _sum: { estimatedCost: 0.125 },
             },
             // DESKTOP_SYNC, API billingMode → API cost.
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: "api",
               _sum: { estimatedCost: 0.125 },
             },
             // DESKTOP_SYNC, legacy null billingMode → API cost.
             {
-              sourceLoopId: null,
+              legacyLoopCostLedger: null,
               billingMode: null,
               _sum: { estimatedCost: 0.125 },
             },
             {
-              sourceLoopId: "loop-missing",
+              legacyLoopCostLedger: SessionCostLedger.Unknown,
               billingMode: null,
               _sum: { estimatedCost: 0.25 },
             },
           ])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
       }),
@@ -175,18 +163,6 @@ describe("agentSessionsService", () => {
             firstName: "Ada",
             lastName: "Lovelace",
             avatarUrl: null,
-          },
-        ]),
-      },
-      loop: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "loop-subscription",
-            metadata: { apiKeySource: "none" },
-          },
-          {
-            id: "loop-api",
-            metadata: { apiKeySource: "organization" },
           },
         ]),
       },
@@ -248,26 +224,24 @@ describe("agentSessionsService", () => {
         }),
         groupBy: vi
           .fn()
-          // byUser
-          .mockResolvedValueOnce([])
           // byHarness
           .mockResolvedValueOnce([])
           // byRepository
           .mockResolvedValueOnce([])
-          // cost split by sourceLoopId + billingMode
+          // cost split by legacyLoopCostLedger + billingMode
           .mockResolvedValueOnce([
             {
-              sourceLoopId: "loop-subscription",
+              legacyLoopCostLedger: SessionCostLedger.Subscription,
               billingMode: null,
               _sum: { estimatedCost: 0.625 },
             },
             {
-              sourceLoopId: "loop-api",
+              legacyLoopCostLedger: SessionCostLedger.Metered,
               billingMode: null,
               _sum: { estimatedCost: 0.75 },
             },
           ])
-          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
           // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
       }),
@@ -279,18 +253,6 @@ describe("agentSessionsService", () => {
       },
       user: {
         findMany: vi.fn().mockResolvedValue([]),
-      },
-      loop: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "loop-subscription",
-            metadata: { apiKeySource: "none" },
-          },
-          {
-            id: "loop-api",
-            metadata: { apiKeySource: "organization" },
-          },
-        ]),
       },
     });
 
@@ -310,21 +272,20 @@ describe("agentSessionsService", () => {
   });
 
   it("summarizes usage across multiple organization members", async () => {
-    const aggregate = vi.fn().mockResolvedValue({
-      _count: { _all: 3 },
-      _sum: {
-        inputTokens: 75,
-        outputTokens: 30,
-        cacheReadTokens: 5,
-        cacheWriteTokens: 2,
-        estimatedCost: 1.25,
-      },
-      _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-      _max: { sessionStartedAt: new Date("2026-03-14T10:00:00.000Z") },
-    });
-    const sessionGroupBy = vi
-      .fn()
-      .mockResolvedValueOnce([
+    const owners = usageOwnerGroupMocks(
+      () => ({
+        _count: { _all: 3 },
+        _sum: {
+          inputTokens: 75,
+          outputTokens: 30,
+          cacheReadTokens: 5,
+          cacheWriteTokens: 2,
+          estimatedCost: 1.25,
+        },
+        _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
+        _max: { sessionStartedAt: new Date("2026-03-14T10:00:00.000Z") },
+      }),
+      [
         {
           userId: "user-1",
           _count: { _all: 1 },
@@ -347,7 +308,11 @@ describe("agentSessionsService", () => {
             estimatedCost: 0.75,
           },
         },
-      ])
+      ]
+    );
+    const aggregate = owners.aggregate;
+    const sessionGroupBy = vi
+      .fn()
       .mockResolvedValueOnce([
         {
           harness: "claude",
@@ -361,11 +326,11 @@ describe("agentSessionsService", () => {
           },
         },
       ])
-      // Third call: repository facet groupBy (empty here).
+      // Second call: repository facet groupBy (empty here).
       .mockResolvedValueOnce([])
-      // Fourth call: headline cost split by sourceLoopId (empty here).
+      // Third call: headline cost split by ledger (empty here).
       .mockResolvedValueOnce([])
-      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
       // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const computeTargetFindMany = vi.fn().mockResolvedValue([]);
@@ -381,6 +346,7 @@ describe("agentSessionsService", () => {
       artifactLink: {
         findFirst: artifactLinkFindFirst,
       },
+      artifact: { groupBy: owners.artifactGroupBy },
       agentSessionTokenUsage: {
         groupBy: vi.fn().mockResolvedValue([
           {
@@ -463,6 +429,8 @@ describe("agentSessionsService", () => {
             { cacheReadTokens: { gt: 0 } },
             { cacheWriteTokens: { gt: 0 } },
             { toolUseCount: { gt: 0 } },
+            // ISS-5801: the substantive inventory gained the invocation arm.
+            { componentInvocationCount: { gt: 0 } },
           ],
         },
       ],
@@ -473,10 +441,10 @@ describe("agentSessionsService", () => {
     expect(sessionGroupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expectedWhere })
     );
-    // Cost split aggregates estimatedCost grouped by sourceLoopId and
+    // Cost split aggregates estimatedCost grouped by legacyLoopCostLedger and
     // billingMode in the DB rather than materializing one row per session.
     expect(sessionGroupBy).toHaveBeenCalledWith({
-      by: ["sourceLoopId", "billingMode"],
+      by: ["legacyLoopCostLedger", "billingMode"],
       where: expectedWhere,
       _sum: {
         estimatedCost: true,
@@ -493,12 +461,29 @@ describe("agentSessionsService", () => {
         },
       })
     );
-    expect(artifactLinkFindFirst).toHaveBeenCalledWith(
+    const probeCall = artifactLinkFindFirst.mock.calls[0]?.[0];
+    expect(probeCall).toEqual(
       expect.objectContaining({
         where: expect.objectContaining({
           source: expect.objectContaining({
             session: { is: expectedWhere },
           }),
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              AND: expect.arrayContaining([
+                expect.objectContaining({
+                  OR: expect.arrayContaining([
+                    expect.objectContaining({
+                      metadata: {
+                        path: ["linkKind"],
+                        equals: SessionArtifactLinkKind.SessionBranch,
+                      },
+                    }),
+                  ]),
+                }),
+              ]),
+            }),
+          ]),
         }),
         select: { id: true },
       })
@@ -523,8 +508,7 @@ describe("agentSessionsService", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
       // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const computeTargetFindMany = vi.fn().mockResolvedValue([]);
@@ -575,26 +559,13 @@ describe("agentSessionsService", () => {
     });
     const groupBy = vi
       .fn()
-      .mockResolvedValueOnce([
-        {
-          userId: "user-1",
-          _count: { _all: 2 },
-          _sum: {
-            inputTokens: 390,
-            outputTokens: 180,
-            cacheReadTokens: 39,
-            cacheWriteTokens: 18,
-            estimatedCost: 3.9,
-          },
-        },
-      ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
       // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
-    const findMany = vi.fn().mockResolvedValue([
+    const attribution = attributionReadMocks([
       buildAttributionLensRecord({
         artifactId: "session-1",
         inputTokens: 300,
@@ -604,7 +575,6 @@ describe("agentSessionsService", () => {
         estimatedCost: 3,
         branches: [
           trustedBranch("branch-1", "feature/a", 101),
-          trustedBranch("branch-1", "feature/a", 999),
           staleBranch("branch-2", "feature/b", 102),
         ],
       }),
@@ -627,10 +597,17 @@ describe("agentSessionsService", () => {
       sessionDetail: buildAgentSessionDbMock({
         aggregate,
         groupBy,
-        findMany,
+        findMany: attribution.sessionDetailFindMany,
       }),
       artifactLink: {
         findFirst: vi.fn().mockResolvedValue({ id: "link-1" }),
+        findMany: attribution.artifactLinkFindMany,
+      },
+      artifact: {
+        findMany: attribution.artifactFindMany,
+        // ISS-12251: the one Owner; the per-assignee aggregate answers with the
+        // totals above, which are hers.
+        groupBy: vi.fn().mockResolvedValue([{ assigneeId: "user-1" }]),
       },
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
@@ -687,7 +664,7 @@ describe("agentSessionsService", () => {
     ]);
     expect(summary.byPr).toEqual([
       expect.objectContaining({
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         prNumber: 101,
         branchArtifactId: "branch-1",
         inputTokens: 180,
@@ -709,10 +686,13 @@ describe("agentSessionsService", () => {
       }),
     ]);
     expect(summary.byPr?.some((row) => row.prNumber === 102)).toBe(false);
-    expect(findMany).toHaveBeenCalledWith(
+    // ISS-7655: the lenses come from a set-based read now, so the paged
+    // `orderBy artifactId asc / take 200` shape this used to pin is gone. What
+    // still needs pinning is that these rows came from the attribution read and
+    // not from another reader's mock.
+    expect(attribution.artifactLinkFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        orderBy: { artifactId: "asc" },
-        take: 200,
+        select: expect.objectContaining({ metadata: true }),
       })
     );
   });
@@ -731,26 +711,13 @@ describe("agentSessionsService", () => {
     });
     const groupBy = vi
       .fn()
-      .mockResolvedValueOnce([
-        {
-          userId: "user-1",
-          _count: { _all: 1 },
-          _sum: {
-            inputTokens: 100,
-            outputTokens: 50,
-            cacheReadTokens: 10,
-            cacheWriteTokens: 5,
-            estimatedCost: 1,
-          },
-        },
-      ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Fourth call (FEA-4303): the primary-model facet groupBy (by `model`).
       // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
-    const findMany = vi.fn().mockResolvedValue([
+    const attribution = attributionReadMocks([
       buildAttributionLensRecord({
         artifactId: "session-remainder",
         inputTokens: 100,
@@ -770,10 +737,15 @@ describe("agentSessionsService", () => {
       sessionDetail: buildAgentSessionDbMock({
         aggregate,
         groupBy,
-        findMany,
+        findMany: attribution.sessionDetailFindMany,
       }),
       artifactLink: {
         findFirst: vi.fn().mockResolvedValue({ id: "link-1" }),
+        findMany: attribution.artifactLinkFindMany,
+      },
+      artifact: {
+        findMany: attribution.artifactFindMany,
+        groupBy: vi.fn().mockResolvedValue([{ assigneeId: "user-1" }]),
       },
       agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
       computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
@@ -831,23 +803,23 @@ describe("agentSessionsService", () => {
       slug: "branch-one",
       branch: { artifactId: "branch-1" },
     });
-    const artifactLinkFindMany = vi
-      .fn()
-      .mockResolvedValue([{ sourceId: "session-1" }]);
-    const sessionFindMany = vi.fn().mockResolvedValue([
-      buildAttributionLensRecord({
-        artifactId: "session-1",
-        inputTokens: 400,
-        outputTokens: 200,
-        cacheReadTokens: 40,
-        cacheWriteTokens: 20,
-        estimatedCost: 4,
-        branches: [
-          trustedBranch("branch-1", "feature/a", 101),
-          referencedBranch("branch-2", "feature/b", 102),
-        ],
-      }),
-    ]);
+    const attribution = attributionReadMocks(
+      [
+        buildAttributionLensRecord({
+          artifactId: "session-1",
+          inputTokens: 400,
+          outputTokens: 200,
+          cacheReadTokens: 40,
+          cacheWriteTokens: 20,
+          estimatedCost: 4,
+          branches: [
+            trustedBranch("branch-1", "feature/a", 101),
+            referencedBranch("branch-2", "feature/b", 102),
+          ],
+        }),
+      ],
+      [{ sourceId: "session-1" }]
+    );
     const tokenUsageFindMany = vi.fn().mockResolvedValue([
       {
         agentSessionId: "session-1",
@@ -861,9 +833,14 @@ describe("agentSessionsService", () => {
     ]);
 
     installDb({
-      artifact: { findFirst: artifactFindFirst },
-      artifactLink: { findMany: artifactLinkFindMany },
-      sessionDetail: buildAgentSessionDbMock({ findMany: sessionFindMany }),
+      artifact: {
+        findFirst: artifactFindFirst,
+        findMany: attribution.artifactFindMany,
+      },
+      artifactLink: { findMany: attribution.artifactLinkFindMany },
+      sessionDetail: buildAgentSessionDbMock({
+        findMany: attribution.sessionDetailFindMany,
+      }),
       agentSessionTokenUsage: { findMany: tokenUsageFindMany },
     });
 
@@ -889,210 +866,5 @@ describe("agentSessionsService", () => {
         },
       ],
     });
-  });
-  it("paginates analytics queries and counts tool coverage by session id", async () => {
-    const scalarPageOne = Array.from({ length: 200 }, (_, index) =>
-      buildAnalyticsScalarRecord(index + 1)
-    );
-    const scalarPageTwo = [
-      buildAnalyticsScalarRecord(201, {
-        repositoryFullName: "closedloop-ai/closedloop-electron",
-        inputTokens: 30,
-        outputTokens: 15,
-        estimatedCost: 0.75,
-        errorCount: 2,
-        artifact: {
-          projectId: "project-2",
-          project: {
-            id: "project-2",
-            name: "Desktop",
-            slug: "desktop",
-          },
-        },
-      }),
-    ];
-    const jsonPageOne = Array.from({ length: 200 }, (_, index) =>
-      buildAnalyticsJsonRecord(index + 1)
-    );
-    jsonPageOne[0] = buildAnalyticsJsonRecord(1, {
-      agents: [
-        buildPersistedAgent({
-          type: "main",
-          status: "completed",
-          endedAt: "2026-05-20T17:01:00.000Z",
-        }),
-      ],
-      events: [buildPersistedEvent()],
-    });
-    jsonPageOne[1] = buildAnalyticsJsonRecord(2, {
-      agents: [
-        buildPersistedAgent({
-          externalAgentId: "agent-2",
-          type: "worker",
-          status: "failed",
-          endedAt: "2026-05-20T17:02:00.000Z",
-        }),
-      ],
-      events: [
-        // "tool_failure" has no "error" substring: it counts as an error only
-        // because aggregateByTool classifies via the shared ERROR_EVENT_PATTERN
-        // (/error|fail/i), matching the desktop countErrorEvents. Under the old
-        // `includes("error")` classifier this would have been errorCount: 0,
-        // so this row guards the web/desktop drift fix.
-        buildPersistedEvent({
-          externalEventId: "event-2",
-          eventType: "tool_failure",
-        }),
-      ],
-    });
-    const jsonPageTwo = [
-      buildAnalyticsJsonRecord(201, {
-        events: [
-          buildPersistedEvent({
-            externalEventId: "event-201",
-            toolName: "Bash",
-          }),
-        ],
-      }),
-    ];
-    const attributionPageOne = Array.from({ length: 200 }, (_, index) =>
-      buildAttributionLensRecord({
-        artifactId: `session-${index + 1}`,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        estimatedCost: 0,
-        branches: [],
-      })
-    );
-    const attributionPageTwo = [
-      buildAttributionLensRecord({
-        artifactId: "session-201",
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        estimatedCost: 0,
-        branches: [],
-      }),
-    ];
-
-    const findMany = vi
-      .fn()
-      .mockResolvedValueOnce(scalarPageOne)
-      .mockResolvedValueOnce(scalarPageTwo)
-      .mockResolvedValueOnce(jsonPageOne)
-      .mockResolvedValueOnce(jsonPageTwo)
-      .mockResolvedValueOnce(attributionPageOne)
-      .mockResolvedValueOnce(attributionPageTwo);
-
-    installDb({
-      sessionDetail: buildAgentSessionDbMock({
-        findMany,
-      }),
-      artifactLink: {
-        findFirst: vi.fn().mockResolvedValue({ id: "link-1" }),
-      },
-    });
-
-    await expect(
-      agentSessionsService.getAnalytics({
-        organizationId: "org-1",
-        filters: {},
-      })
-    ).resolves.toEqual({
-      viewerScope: AgentSessionViewerScope.Organization,
-      byTool: [
-        {
-          toolName: "Read",
-          invocationCount: 2,
-          errorCount: 1,
-          sessionCount: 2,
-        },
-        {
-          toolName: "Bash",
-          invocationCount: 1,
-          errorCount: 0,
-          sessionCount: 1,
-        },
-      ],
-      byAgentType: [
-        {
-          agentType: "main",
-          count: 1,
-          successCount: 1,
-          failedCount: 0,
-          avgDurationMs: 60_000,
-        },
-        {
-          agentType: "worker",
-          count: 1,
-          successCount: 0,
-          failedCount: 1,
-          avgDurationMs: 120_000,
-        },
-      ],
-      byRepository: [
-        {
-          repositoryFullName: "closedloop-ai/symphony-alpha",
-          sessionCount: 200,
-          inputTokens: 2000,
-          outputTokens: 1000,
-          estimatedCost: 50,
-          errorCount: 0,
-        },
-        {
-          repositoryFullName: "closedloop-ai/closedloop-electron",
-          sessionCount: 1,
-          inputTokens: 30,
-          outputTokens: 15,
-          estimatedCost: 0.75,
-          errorCount: 2,
-        },
-      ],
-      byProject: [
-        {
-          projectId: "project-1",
-          projectName: "Agent Platform",
-          projectSlug: "agent-platform",
-          sessionCount: 200,
-          inputTokens: 2000,
-          outputTokens: 1000,
-          estimatedCost: 50,
-        },
-        {
-          projectId: "project-2",
-          projectName: "Desktop",
-          projectSlug: "desktop",
-          sessionCount: 1,
-          inputTokens: 30,
-          outputTokens: 15,
-          estimatedCost: 0.75,
-        },
-      ],
-    });
-
-    expect(findMany).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        cursor: { artifactId: "session-200" },
-        skip: 1,
-      })
-    );
-    expect(findMany).toHaveBeenNthCalledWith(
-      4,
-      expect.objectContaining({
-        cursor: { artifactId: "session-200" },
-        skip: 1,
-      })
-    );
-    expect(findMany).toHaveBeenNthCalledWith(
-      6,
-      expect.objectContaining({
-        cursor: { artifactId: "session-200" },
-        skip: 1,
-      })
-    );
   });
 });

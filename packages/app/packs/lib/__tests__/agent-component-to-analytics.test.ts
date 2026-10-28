@@ -80,23 +80,90 @@ describe("agentComponentToPackAnalytics", () => {
     expect(performance.efficiencyTrend).toEqual([...source.efficiencyTrend]);
   });
 
-  it("builds team usage from the collaborators (authors) set and device adoption", () => {
-    const { teamUsage } = agentComponentToPackAnalytics(makeComponent());
-    // codex P1: the `installers` / Used By roster models who USED the pack — a
-    // different set from the version AUTHORS in `collaborators`. Mapping authors
-    // → installers would corrupt the adoption model (authors shown as users,
-    // real users omitted, inflated installedCount), so the roster stays
-    // unavailable until the separate Used By source lands (FEA-4098 Slice 4).
-    expect(teamUsage.installers).toEqual([]);
-    expect(teamUsage.installedCount).toBe(0);
-    // Device adoption breadth is honest and still surfaced.
+  it("builds the Used By roster from the cloud installers set (ISS-6768)", () => {
+    const { teamUsage } = agentComponentToPackAnalytics(
+      makeComponent({ installers: ["Rae Okafor", "Jun Watanabe"] })
+    );
+    // The roster travels on the detail contract, folded by the same cloud
+    // producer that fills the desktop overlay's `PackAnalyticsResponse.owners`.
+    expect(teamUsage.installers).toEqual([
+      { id: "Rae Okafor", name: "Rae Okafor", initials: "R" },
+      { id: "Jun Watanabe", name: "Jun Watanabe", initials: "J" },
+    ]);
+    expect(teamUsage.installedCount).toBe(2);
+    // Device adoption breadth stays the DEVICE count, not the headcount.
     expect(teamUsage.deviceCount).toBe(3);
   });
 
-  it("keeps the installers roster empty even for a component with authors", () => {
+  it("never maps the version authors into the Used By roster", () => {
+    // codex P1: the `installers` / Used By roster models who USED the pack — a
+    // different set from the version AUTHORS in `collaborators`. Mapping authors
+    // → installers would corrupt the adoption model (authors shown as users,
+    // real users omitted, inflated installedCount).
     const { teamUsage } = agentComponentToPackAnalytics(
-      makeComponent({ collaborators: ["Maya Chen"] })
+      makeComponent({
+        collaborators: ["Maya Chen"],
+        installers: ["Rae Okafor"],
+      })
     );
+    expect(teamUsage.installers?.map((user) => user.name)).toEqual([
+      "Rae Okafor",
+    ]);
+    expect(teamUsage.installedCount).toBe(1);
+  });
+
+  it("gives two same-named installers distinct render identities", () => {
+    // The cloud deliberately keeps two distinct users who share a display name
+    // as two installers. `id` is the React key at both render sites, so they
+    // must not collide — while the first occurrence keeps the bare name so a
+    // roster of distinct people keeps the ids and avatar colors it has today.
+    const { teamUsage } = agentComponentToPackAnalytics(
+      makeComponent({ installers: ["Rae Okafor", "Rae Okafor"] })
+    );
+    expect(teamUsage.installers?.map((user) => user.id)).toEqual([
+      "Rae Okafor",
+      "Rae Okafor#2",
+    ]);
+    expect(teamUsage.installers?.map((user) => user.name)).toEqual([
+      "Rae Okafor",
+      "Rae Okafor",
+    ]);
+    expect(teamUsage.installedCount).toBe(2);
+  });
+
+  it("keeps render ids distinct when a display name already carries a suffix", () => {
+    // The occurrence suffix is not a free namespace: a real display name can
+    // end in one. Without escaping, rows 2 and 3 here both map to `Alex#2` and
+    // collide on the React key at every render site.
+    const { teamUsage } = agentComponentToPackAnalytics(
+      makeComponent({ installers: ["Alex", "Alex", "Alex#2"] })
+    );
+    const ids = teamUsage.installers?.map((user) => user.id) ?? [];
+
+    expect(ids).toEqual(["Alex", "Alex#2", "Alex##2"]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("carries an omitted roster through as unavailable, never as zero", () => {
+    // A version-skewed cloud response predating ISS-6768 omits `installers`.
+    // Coercing that to `[]` renders `Used by (0)` on a pack whose device
+    // adoption is nonzero — the same false zero this fix removes — so the
+    // unavailable state has to survive the mapping.
+    const component = makeComponent({ installers: ["Rae Okafor"] });
+    Reflect.deleteProperty(component, "installers");
+
+    const { teamUsage } = agentComponentToPackAnalytics(component);
+
+    expect(teamUsage.installers).toBeUndefined();
+    expect(teamUsage.installedCount).toBeUndefined();
+    expect(teamUsage.deviceCount).toBe(3);
+  });
+
+  it("reserves the empty roster for a producer that computed one", () => {
+    const { teamUsage } = agentComponentToPackAnalytics(
+      makeComponent({ installers: [] })
+    );
+
     expect(teamUsage.installers).toEqual([]);
     expect(teamUsage.installedCount).toBe(0);
   });
@@ -139,6 +206,28 @@ describe("agentComponentToPackAnalytics", () => {
         makeComponent({ mergedPrsTruncated: false })
       ).performance.mergedPrsTruncated
     ).toBe(false);
+  });
+
+  it("carries the baseline sample size in both declared directions (ISS-9853)", () => {
+    expect(
+      agentComponentToPackAnalytics(makeComponent({ baselineSampleSize: 500 }))
+        .performance.baselineSampleSize
+    ).toBe(500);
+    // `null` is a declared state — "the comparator was not a strict sample".
+    expect(
+      agentComponentToPackAnalytics(makeComponent({ baselineSampleSize: null }))
+        .performance.baselineSampleSize
+    ).toBeNull();
+  });
+
+  it("preserves an omitted baseline sample size as unknown, not null", () => {
+    const source = makeComponent({ baselineSampleSize: 500 });
+    Reflect.deleteProperty(source, "baselineSampleSize");
+
+    const { performance } = agentComponentToPackAnalytics(source);
+
+    expect(performance.baselineSampleSize).toBeUndefined();
+    expect(performance.baselineSampleSize).not.toBeNull();
   });
 
   it("preserves an omitted merged-PR coverage flag as unknown, not false", () => {

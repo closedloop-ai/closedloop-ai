@@ -115,8 +115,7 @@ export function assertRenderAggregatesFreeze(
   firedKeys: Set<string>
 ): void {
   if (writeSnapshots) {
-    mkdirSync(dirname(fixturePath), { recursive: true });
-    writeFileSync(fixturePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    writeRenderAggregatesFixture(snapshot, fixturePath, firedKeys);
     return;
   }
   if (tz !== "UTC") {
@@ -140,6 +139,53 @@ export function assertRenderAggregatesFreeze(
         "Regenerate via GOLDEN_L4_WRITE_SNAPSHOTS=1 (UTC suite), verify, then freeze."
     );
   }
+}
+
+/**
+ * Freeze a regenerated snapshot WITHOUT laundering the registered authority
+ * divergences (ISS-8751).
+ *
+ * The authority-owned keys (`charts.branchesWithoutPr` and its two tile
+ * availabilities) are the one part of this fixture that is NOT Desktop's own
+ * output: offline Desktop fails them closed, and the signed oracle records what
+ * the semantic contract says they should be, so the ISS-5828 registry can hold
+ * the two apart.
+ *
+ * This used to write `snapshot` verbatim, which copied Desktop's fail-closed
+ * values over the oracle's. That makes `actual === oracle`, the divergence stops
+ * reproducing, and the next reader deletes the registry entry as stale -- turning
+ * a tracked bug into blessed behavior. Carrying the authority subtree forward
+ * from the existing fixture keeps the contrast, and reusing the same reconcile
+ * the read path uses means the bytes written are exactly the bytes that will be
+ * compared. It also populates `firedKeys`, so a regen run proves every
+ * registered divergence still reproduces instead of skipping that check.
+ *
+ * With no existing fixture there is nothing to carry forward, and writing raw
+ * output would silently bless the bug -- so that case refuses rather than
+ * guessing. Deriving the authority values for a brand-new fixture is an
+ * oracle-review step, not something a regen flag may do.
+ */
+function writeRenderAggregatesFixture(
+  snapshot: Layer4Snapshot,
+  fixturePath: string,
+  firedKeys: Set<string>
+): void {
+  if (!existsSync(fixturePath)) {
+    throw new Error(
+      `Refusing to generate ${fixturePath} from Desktop output alone: the ` +
+        "authority-owned delivery keys would be frozen at their fail-closed " +
+        "values, silently blessing the ISS-5828 divergence. Derive those values " +
+        "from the semantic contract and seed the fixture before regenerating."
+    );
+  }
+  const frozen: Layer4Snapshot = JSON.parse(readFileSync(fixturePath, "utf8"));
+  const projected = reconcileAuthoritySnapshotFreeze(
+    snapshot,
+    frozen,
+    firedKeys
+  );
+  mkdirSync(dirname(fixturePath), { recursive: true });
+  writeFileSync(fixturePath, `${JSON.stringify(projected, null, 2)}\n`);
 }
 
 /** Three-way guard: current divergence, resolved divergence, or new regression. */

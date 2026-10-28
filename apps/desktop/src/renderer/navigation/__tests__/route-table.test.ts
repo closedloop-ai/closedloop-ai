@@ -1,16 +1,37 @@
+import { SettingsPanelId } from "@repo/api/src/types/settings-panel";
+import { parseSettingsRouteParams } from "@repo/api/src/types/settings-route";
+import { packDetailPath } from "@repo/app/packs/lib/pack-routes";
 import {
   NAV_FROM_PARAM,
   NavReferrerSurface,
 } from "@repo/app/shared/lib/nav-referrer";
+import {
+  SHELL_CANONICAL_LANDING_ROUTE_ID,
+  SHELL_DESKTOP_DOCS_HELP_NAV_GATE_KEY,
+  SHELL_DESKTOP_LABS_NAV_GATE_KEY,
+  SHELL_NAVIGATION_ITEMS,
+  ShellNavigationGateKind,
+  ShellNavigationItemId,
+  ShellNavigationRouteId,
+  ShellNavigationSurface,
+} from "@repo/app/shared/lib/shell-navigation-contract";
 import { describe, expect, it } from "vitest";
+import { DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY } from "../../../shared/desktop-docs-help-flag";
+import { DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
+import { DESKTOP_LABS_NAV_FEATURE_FLAG_KEY } from "../../../shared/feature-flags-labs-detail";
 import {
   agentDetailHref,
   branchDetailHref,
+  DEFAULT_NAV_ID,
+  DESKTOP_CANONICAL_LANDING_NAV_ID,
+  DESKTOP_SHELL_ROUTE_NAV_IDS,
   hashToHrefEntries,
   hrefForNavId,
   matchRoute,
   NavId,
   normalizeNavId,
+  normalizeRouteHref,
+  RECORD_ID_ROUTE_PATTERNS,
   sessionDetailHref,
 } from "../route-table";
 
@@ -18,7 +39,7 @@ describe("matchRoute", () => {
   it("maps / to the default view", () => {
     expect(matchRoute("/")).toEqual({
       kind: "nav",
-      navId: "sessions",
+      navId: "dashboard",
       params: {},
     });
   });
@@ -165,25 +186,115 @@ describe("href builders", () => {
   });
 });
 
+describe("DESKTOP_SHELL_ROUTE_NAV_IDS", () => {
+  it("covers every shared shell route id with a NavId or an explicit null", () => {
+    expect(Object.keys(DESKTOP_SHELL_ROUTE_NAV_IDS).sort()).toEqual(
+      Object.values(ShellNavigationRouteId).sort()
+    );
+  });
+
+  it("maps supported shell routes to routable Desktop nav ids", () => {
+    for (const navId of Object.values(DESKTOP_SHELL_ROUTE_NAV_IDS)) {
+      if (navId === null) {
+        continue;
+      }
+      expect(matchRoute(hrefForNavId(navId))).toEqual({
+        kind: "nav",
+        navId,
+        params: {},
+      });
+    }
+  });
+
+  it("keeps My Issues separate from the legacy My Tasks alias", () => {
+    expect(
+      DESKTOP_SHELL_ROUTE_NAV_IDS[ShellNavigationRouteId.MyIssues]
+    ).toBeNull();
+    expect(
+      DESKTOP_SHELL_ROUTE_NAV_IDS[ShellNavigationRouteId.MyTasks]
+    ).toBeNull();
+    expect(matchRoute("/my-tasks")).toEqual({
+      kind: "nav",
+      navId: NavId.Sessions,
+      params: {},
+    });
+  });
+
+  it("maps each first-class Desktop nav id to one shell route id", () => {
+    const mappedNavIds = Object.values(DESKTOP_SHELL_ROUTE_NAV_IDS).filter(
+      isMappedNavId
+    );
+
+    expect(new Set(mappedNavIds).size).toBe(mappedNavIds.length);
+  });
+
+  it("derives the shell-entry landing from the canonical Dashboard route", () => {
+    expect(DESKTOP_CANONICAL_LANDING_NAV_ID).toBe(
+      DESKTOP_SHELL_ROUTE_NAV_IDS[SHELL_CANONICAL_LANDING_ROUTE_ID]
+    );
+    expect(DESKTOP_SHELL_ROUTE_NAV_IDS[ShellNavigationRouteId.Dashboard]).toBe(
+      NavId.Dashboard
+    );
+    // The seed IS the landing. A `DEFAULT_NAV_ID` that disagreed is what opened
+    // Desktop on Sessions and left Dashboard reachable only through a second,
+    // experience-gated redirect.
+    expect(DEFAULT_NAV_ID).toBe(DESKTOP_CANONICAL_LANDING_NAV_ID);
+    expect(DEFAULT_NAV_ID).toBe(NavId.Dashboard);
+  });
+
+  it("keeps Desktop gate metadata aligned with Desktop flag keys", () => {
+    const itemById = new Map(
+      SHELL_NAVIGATION_ITEMS.map((item) => [item.id, item])
+    );
+    const desktopGatesFor = (itemId: ShellNavigationItemId) =>
+      itemById.get(itemId)?.gates?.[ShellNavigationSurface.Desktop] ?? [];
+
+    expect(SHELL_DESKTOP_LABS_NAV_GATE_KEY).toBe(
+      DESKTOP_LABS_NAV_FEATURE_FLAG_KEY
+    );
+    expect(SHELL_DESKTOP_DOCS_HELP_NAV_GATE_KEY).toBe(
+      DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY
+    );
+    expect(desktopGatesFor(ShellNavigationItemId.Agents)).toEqual([
+      desktopLabsContainerGate(),
+      desktopLabsItemGate(DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY),
+    ]);
+    expect(desktopGatesFor(ShellNavigationItemId.Help)).toEqual([
+      desktopLabsContainerGate(),
+      desktopLabsItemGate(DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY),
+    ]);
+    expect(desktopGatesFor(ShellNavigationItemId.Insights)).toEqual([
+      desktopLabsContainerGate(),
+    ]);
+    expect(desktopGatesFor(ShellNavigationItemId.Packs)).toEqual([
+      desktopLabsContainerGate(),
+    ]);
+    expect(desktopGatesFor(ShellNavigationItemId.Plans)).toEqual([
+      desktopLabsContainerGate(),
+    ]);
+  });
+});
+
 describe("normalizeNavId", () => {
   it("passes valid ids, aliases analytics, defaults unknowns", () => {
     expect(normalizeNavId("analytics")).toBe("insights");
-    expect(normalizeNavId("bogus")).toBe("sessions");
-    expect(normalizeNavId(null)).toBe("sessions");
+    expect(normalizeNavId("bogus")).toBe("dashboard");
+    expect(normalizeNavId(null)).toBe("dashboard");
   });
 
-  it("aliases the legacy scheduled-tasks tab id to Routines (PRD-566/FEA-4348)", () => {
-    // A bare `desktop:navigate-tab` payload or a legacy `#tab=scheduled-tasks`
-    // hash resolves through here; without the alias it would default to
-    // sessions instead of landing on Routines (wongk, #3896).
-    expect(normalizeNavId("scheduled-tasks")).toBe("routines");
+  it("falls the retired Routines and Audit Bot ids through to the landing view (PRD-797 AC-001.1)", () => {
+    for (const retired of ["routines", "scheduled-tasks", "audit"]) {
+      expect(normalizeNavId(retired)).toBe("dashboard");
+    }
   });
 });
 
 describe("hashToHrefEntries", () => {
-  it("defaults an empty hash to the sessions view", () => {
-    expect(hashToHrefEntries("")).toEqual(["/sessions"]);
-    expect(hashToHrefEntries("#")).toEqual(["/sessions"]);
+  it("seeds an empty hash with the landing view", () => {
+    // The launch seed. Anything else here means Desktop opens on a surface the
+    // user is then redirected away from.
+    expect(hashToHrefEntries("")).toEqual(["/dashboard"]);
+    expect(hashToHrefEntries("#")).toEqual(["/dashboard"]);
   });
 
   it("passes through the current path scheme", () => {
@@ -192,12 +303,104 @@ describe("hashToHrefEntries", () => {
     ]);
   });
 
+  it.each([
+    ["/settings/account", "/settings?tab=account"],
+    ["/settings/security", "/settings?panel=desktop-app"],
+    ["/settings/relay-gateway", "/settings?panel=desktop-app"],
+    ["/settings/relay", "/settings?panel=desktop-app"],
+    ["/settings/gateway", "/settings?panel=desktop-app"],
+    ["/settings/compute-targets", "/settings?panel=desktop-app"],
+    ["/settings/cli-tools", "/settings?panel=desktop-app"],
+    ["/settings/binary-paths", "/settings?panel=desktop-app"],
+  ])("normalizes %s to %s", (href, expected) => {
+    expect(normalizeRouteHref(href)).toBe(expected);
+  });
+
+  it("preserves existing Settings subpath query params and replaces tab", () => {
+    expect(
+      normalizeRouteHref("/settings/account?from=command&tab=security")
+    ).toBe("/settings?from=command&tab=account");
+  });
+
+  // ISS-10286: the aliases the Desktop App panel owns write the v2 `panel`
+  // vocabulary, so the path wins over a stale `?panel=` rather than a stale
+  // `?tab=`.
+  it("replaces a stale panel on a Desktop App alias", () => {
+    expect(
+      normalizeRouteHref("/settings/security?from=command&panel=profile")
+    ).toBe("/settings?from=command&panel=desktop-app");
+  });
+
+  /**
+   * ISS-10286 split the aliases across two vocabularies, which is what made the
+   * CROSS direction reachable: an alias that writes `?tab=` cannot clear a
+   * stale `?panel=` by overwriting its own param, and `parseSettingsRouteParams`
+   * reads `panel` first — so before this, `/settings/account?panel=profile`
+   * opened Profile while the path said Account (tamsinb, #4032721366). Both
+   * directions, because clearing one vocabulary and not the other is exactly
+   * the half-fix that shipped.
+   */
+  it("clears a stale panel when the alias writes the tab vocabulary", () => {
+    expect(
+      normalizeRouteHref("/settings/account?from=command&panel=profile")
+    ).toBe("/settings?from=command&tab=account");
+  });
+
+  it("clears a stale tab when the alias writes the panel vocabulary", () => {
+    expect(
+      normalizeRouteHref("/settings/security?from=command&tab=account")
+    ).toBe("/settings?from=command&panel=desktop-app");
+  });
+
+  // Only the FIRST "?" delimits the query. A later one lives inside a value —
+  // here a `returnTo` that carries its own query — and must survive whole.
+  it("keeps a query value that itself contains a question mark", () => {
+    expect(
+      normalizeRouteHref("/settings/security?returnTo=/branches?owner=grace")
+    ).toBe("/settings?returnTo=%2Fbranches%3Fowner%3Dgrace&panel=desktop-app");
+  });
+
+  it("normalizes an encoded question mark to the same href as a literal one", () => {
+    expect(
+      normalizeRouteHref(
+        "/settings/security?returnTo=%2Fbranches%3Fowner%3Dgrace"
+      )
+    ).toBe(
+      normalizeRouteHref("/settings/security?returnTo=/branches?owner=grace")
+    );
+  });
+
+  it("keeps a fragment inside a query value instead of truncating there", () => {
+    expect(
+      normalizeRouteHref("/settings/security?returnTo=/branches#top")
+    ).toBe("/settings?returnTo=%2Fbranches%23top&panel=desktop-app");
+  });
+
+  it("normalizes an empty query to the bare alias href", () => {
+    expect(normalizeRouteHref("/settings/security?")).toBe(
+      "/settings?panel=desktop-app"
+    );
+  });
+
   it("migrates a legacy analytics tab to insights", () => {
     expect(hashToHrefEntries("#tab=analytics")).toEqual(["/insights"]);
   });
 
-  it("migrates a legacy scheduled-tasks tab to routines (PRD-566/FEA-4348)", () => {
-    expect(hashToHrefEntries("#tab=scheduled-tasks")).toEqual(["/routines"]);
+  it.each([
+    ["#/settings/account", "/settings?tab=account"],
+    ["#/settings/security", "/settings?panel=desktop-app"],
+    ["#/settings/relay-gateway", "/settings?panel=desktop-app"],
+    ["#/settings/cli-tools", "/settings?panel=desktop-app"],
+  ])("restores %s as %s", (hash, expected) => {
+    expect(hashToHrefEntries(hash)).toEqual([expected]);
+  });
+
+  it("restores a Settings subpath hash whose returnTo carries its own query", () => {
+    expect(
+      hashToHrefEntries("#/settings/security?returnTo=/branches?owner=grace")
+    ).toEqual([
+      "/settings?returnTo=%2Fbranches%3Fowner%3Dgrace&panel=desktop-app",
+    ]);
   });
 
   it("migrates a legacy tab+sessionId hash to a two-entry stack", () => {
@@ -207,8 +410,8 @@ describe("hashToHrefEntries", () => {
     ]);
   });
 
-  it("falls back to the sessions view for unparseable hashes", () => {
-    expect(hashToHrefEntries("#garbage")).toEqual(["/sessions"]);
+  it("falls back to the landing view for unparseable hashes", () => {
+    expect(hashToHrefEntries("#garbage")).toEqual(["/dashboard"]);
   });
 });
 
@@ -309,6 +512,46 @@ describe("matchRoute — /packs is the Packs page; other Packs-Lab aliases → A
   });
 });
 
+describe("matchRoute pack detail (ISS-6925)", () => {
+  it("maps /packs/:id to the Packs view carrying a decoded `id` param", () => {
+    expect(matchRoute("/packs/my-pack-id")).toEqual({
+      kind: "nav",
+      navId: "packs",
+      params: { id: "my-pack-id" },
+    });
+  });
+
+  it("agrees with the shared path builder both shells link through", () => {
+    expect(matchRoute(packDetailPath("my-pack-id"))).toEqual({
+      kind: "nav",
+      navId: "packs",
+      params: { id: "my-pack-id" },
+    });
+  });
+
+  it("decodes an encoded id, so the host reads the same value web does", () => {
+    expect(matchRoute(packDetailPath("scope/pack"))).toEqual({
+      kind: "nav",
+      navId: "packs",
+      params: { id: "scope/pack" },
+    });
+  });
+
+  it("does not let /packs/:id shadow the /packs nav view", () => {
+    expect(matchRoute("/packs")).toEqual({
+      kind: "nav",
+      navId: "packs",
+      params: {},
+    });
+  });
+
+  it("returns null for malformed or wrong-arity pack paths", () => {
+    expect(matchRoute("/packs/")).toBeNull();
+    expect(matchRoute("/packs/a/b")).toBeNull();
+    expect(matchRoute("/packs/%")).toBeNull();
+  });
+});
+
 describe("normalizeNavId — 'packs' is the Packs page; other Packs-Lab values → Agents (FEA-4087)", () => {
   it("passes 'packs' through to the reclaimed Packs nav (no longer Agents)", () => {
     expect(normalizeNavId("packs")).toBe("packs");
@@ -334,9 +577,9 @@ describe("normalizeNavId — 'packs' is the Packs page; other Packs-Lab values �
     expect(normalizeNavId("agents")).toBe("agents");
   });
 
-  it("defaults unknown values to the default nav (sessions)", () => {
-    expect(normalizeNavId("bogus")).toBe("sessions");
-    expect(normalizeNavId(null)).toBe("sessions");
+  it("defaults unknown values to the default nav (dashboard)", () => {
+    expect(normalizeNavId("bogus")).toBe("dashboard");
+    expect(normalizeNavId(null)).toBe("dashboard");
   });
 });
 
@@ -374,5 +617,138 @@ describe("agentDetailHref (T-18.6)", () => {
 
   it("produces a simple slug href", () => {
     expect(agentDetailHref("my-agent")).toBe("/agents/my-agent");
+  });
+});
+
+/**
+ * ISS-6642: the desktop twin of `e2e/agents-breadcrumb-encoding.spec.ts`.
+ *
+ * `matchPattern` decodes a captured segment exactly ONCE, so a double-encoded
+ * href hands the agent-detail route a slug that is still percent-encoded and
+ * still has no literal `::` — the identity codec misses it, the detail fetch
+ * misses, and the crumb leaks `%3A%3A%2F%2F`. Web repairs that at its page
+ * boundary (`normalizeAgentSlug`, ISS-4776) and had this route boundary as its
+ * only repo-wide caller; desktop's route table now repairs it too.
+ *
+ * The assertions compare the two resolved routes to EACH OTHER rather than to a
+ * literal: "the double-encoded href resolves to the same component" is the
+ * claim, and pinning both sides to a constant is what lets the two paths drift
+ * while both stay green.
+ */
+const CANONICAL_AGENT_SLUG = "command:://cl-ci-babysit";
+
+describe("matchRoute agent-detail slug repair (ISS-6642)", () => {
+  it("resolves a double-encoded href to the same component as the correctly-encoded one", () => {
+    const correct = agentDetailHref(CANONICAL_AGENT_SLUG);
+    // What a router hop that encoded an ALREADY-encoded segment emits.
+    const doubleEncoded = `/agents/${encodeURIComponent(encodeURIComponent(CANONICAL_AGENT_SLUG))}`;
+    expect(doubleEncoded).not.toBe(correct);
+
+    const fromCorrect = matchRoute(correct);
+    const fromDoubleEncoded = matchRoute(doubleEncoded);
+
+    expect(fromCorrect).toEqual({
+      kind: "agent-detail",
+      agentSlug: CANONICAL_AGENT_SLUG,
+      params: { id: CANONICAL_AGENT_SLUG },
+    });
+    // The identity the detail view, the fetch, and the crumb all key off. The
+    // raw `params.id` capture is deliberately NOT normalized, so this asserts
+    // the repaired field alone.
+    expect(
+      fromDoubleEncoded?.kind === "agent-detail"
+        ? fromDoubleEncoded.agentSlug
+        : null
+    ).toBe(
+      fromCorrect?.kind === "agent-detail" ? fromCorrect.agentSlug : undefined
+    );
+  });
+
+  it("leaves a slug whose key legitimately contains a literal % untouched", () => {
+    // The case the repair deliberately protects: `load%20test` is the real key,
+    // not an encoding of `load test`. It already carries a literal `::`, so a
+    // repair that decoded unconditionally would mangle it into `load test`.
+    const slug = "tool::load%20test";
+
+    expect(matchRoute(agentDetailHref(slug))).toEqual({
+      kind: "agent-detail",
+      agentSlug: slug,
+      params: { id: slug },
+    });
+  });
+});
+
+/**
+ * ISS-10286 — the `/settings/security` alias, driven through the two
+ * production steps that decide where a user lands: the route table's rewrite,
+ * and the Settings v2 parser that reads the result.
+ *
+ * The contract is that the request SURVIVES as a known panel id. ISS-10195 left
+ * the desktop's machine-local controls with no v2 owner, and the legacy `?tab=`
+ * spelling has had no reader since — so this link reached the parser naming
+ * NOTHING and opened the default panel as if the user had browsed there. The
+ * Labs → Desktop App panel is now its owner, so the same link resolves.
+ */
+describe("the security deep link as Settings v2 reads it", () => {
+  it("resolves to the Desktop App panel rather than naming nothing", () => {
+    const href = normalizeRouteHref("/settings/security");
+    const query = href.slice(href.indexOf("?") + 1);
+
+    const params = parseSettingsRouteParams(new URLSearchParams(query));
+
+    expect(params.panel).toBe(SettingsPanelId.DesktopApp);
+    expect(params.requestedPanel).toBe(SettingsPanelId.DesktopApp);
+  });
+
+  it("keeps the returnTo the link carries", () => {
+    const href = normalizeRouteHref("/settings/security?returnTo=/branches");
+    const query = href.slice(href.indexOf("?") + 1);
+
+    const params = parseSettingsRouteParams(new URLSearchParams(query));
+
+    expect(params.panel).toBe(SettingsPanelId.DesktopApp);
+    expect(params.returnTo).toBe("/branches");
+  });
+
+  // The other half of the split, and the one a reader is most likely to assume
+  // away: Account did NOT move into this panel, so its alias still speaks the
+  // unread legacy vocabulary and still names no panel.
+  it("leaves the account alias naming no panel at all", () => {
+    const href = normalizeRouteHref("/settings/account");
+    const query = href.slice(href.indexOf("?") + 1);
+
+    const params = parseSettingsRouteParams(new URLSearchParams(query));
+
+    expect(params.panel).toBeNull();
+    expect(params.requestedPanel).toBeNull();
+  });
+});
+
+function desktopLabsContainerGate() {
+  return {
+    kind: ShellNavigationGateKind.DesktopLabsContainer,
+    key: SHELL_DESKTOP_LABS_NAV_GATE_KEY,
+  };
+}
+
+function desktopLabsItemGate(key: string) {
+  return {
+    kind: ShellNavigationGateKind.DesktopLabsItem,
+    key,
+  };
+}
+
+function isMappedNavId(navId: NavId | null): navId is NavId {
+  return navId !== null;
+}
+
+describe("RECORD_ID_ROUTE_PATTERNS (ISS-12259)", () => {
+  it("lists the routes with an id param and no route without one", () => {
+    expect(RECORD_ID_ROUTE_PATTERNS).toEqual(
+      expect.arrayContaining(["/sessions/:id", "/agents/:id"])
+    );
+    expect(RECORD_ID_ROUTE_PATTERNS).not.toContain(
+      hrefForNavId(NavId.Sessions)
+    );
   });
 });

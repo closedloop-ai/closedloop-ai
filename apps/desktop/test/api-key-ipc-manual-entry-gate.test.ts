@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { CostReconciliationService } from "../src/main/cost/cost-reconciliation-service.js";
-import {
-  ApiKeyIpcChannel,
-  registerApiKeyIpcHandlers,
-} from "../src/main/ipc/api-key-ipc.js";
+import { registerApiKeyIpcHandlers } from "../src/main/ipc/api-key-ipc.js";
 import type {
   ApiKeyStatus,
   ApiKeyStore,
 } from "../src/main/settings/api-key-store.js";
+import { ApiKeyIpcChannel } from "../src/shared/api-key-ipc-channel.js";
 
 type IpcHandler = (event: unknown, payload?: unknown) => unknown;
 

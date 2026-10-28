@@ -18,31 +18,30 @@ import {
   BranchDataState,
   BranchKpiState,
   type BranchListResponse,
-  BranchTagAvailability,
   BranchViewerScope,
 } from "@repo/api/src/types/branch.ts";
-import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics.ts";
 import { ReadSource } from "@repo/api/src/types/read-source.ts";
 import { TagColor } from "@repo/api/src/types/tag.ts";
+import { PRODUCT_GRID_FAVORITE_COLUMN_LABEL } from "@repo/app/shared/lib/product-grid-favorites.ts";
 import axe from "axe-core";
 import {
   ACTIVE_PR,
   BRANCH_ID,
   BRANCH_NAME,
-  detailFor,
   REPOSITORY,
 } from "../../../../e2e/helpers/branch-details-comprehensive-data";
 import { expectWcagAaClean } from "../../../../e2e/helpers/critical-wcag-aa";
 import { DesktopAuthStatus } from "../../src/shared/contracts.js";
+import { launchAuthenticatedDesktopApp } from "./helpers/authenticated-desktop-app";
 import {
   AUTHENTICATED_ACCESS_TOKEN,
   AUTHENTICATED_GATEWAY_ID,
   AUTHENTICATED_ORGANIZATION_ID,
   AUTHENTICATED_USER_ID,
-  launchAuthenticatedDesktopApp,
-  seedAuthenticatedDesktopSession,
+  createAuthenticatedDesktopSessionRecord,
   startAuthenticatedBranchCloudServer,
 } from "./helpers/branch-details-authenticated-cloud";
+import { branchListRowFixture } from "./helpers/branch-list-row-fixture";
 import {
   drainedCloudReadReadiness,
   gotoHash,
@@ -54,8 +53,12 @@ const VIEWPORTS = [
   { height: 800, label: "768px", width: 768 },
 ] as const;
 const EXPECTED_HEADERS = [
+  // ISS-12918 (#9116): Branches inherits the shared favorite star column.
+  PRODUCT_GRID_FAVORITE_COLUMN_LABEL,
   "Name",
   "Owner",
+  // ISS-10332: shown by default on a cloud-read host (operator ruling 5).
+  "Priority",
   "Collaborators",
   "Linked sessions",
   "Changes",
@@ -64,6 +67,9 @@ const EXPECTED_HEADERS = [
   "Last active",
   "Repository",
   "Tags",
+  // ISS-12453: shown by default on a cloud-read host (operator ruling
+  // 2026-10-13, "Project should be editable on list surfaces").
+  "Project",
 ] as const;
 const SYNCING_LINK_NAME = `Syncing branch data. ${BRANCH_NAME}`;
 const READY_ROW_NAME = /^feature\/ready\s/;
@@ -95,17 +101,8 @@ test("renders an authenticated awaiting-sync row truthfully at Desktop widths", 
   });
 
   try {
-    const sessionSeedLaunch = await launchAuthenticatedDesktopApp({
-      env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-      userDataDir,
-    });
-    try {
-      await seedAuthenticatedDesktopSession(sessionSeedLaunch.app, userDataDir);
-    } finally {
-      await sessionSeedLaunch.cleanup();
-    }
-
     const { page, pageErrors, cleanup } = await launchAuthenticatedDesktopApp({
+      sameProcessSessionSeed: createAuthenticatedDesktopSessionRecord(),
       cloudReadReadiness: drainedCloudReadReadiness(),
       beforeLaunch: (launchUserDataDir) => {
         seedDesktopSettings(launchUserDataDir, {
@@ -219,72 +216,15 @@ function branchListItem({
   tagName,
   topLevelDataState,
 }: BranchListItemOptions): BranchListResponse["items"][number] {
-  const detail = detailFor(ACTIVE_PR);
-  const projection = detail.canonicalProjection;
-  if (!projection) {
-    throw new Error(
-      "ISS-5559 fixture requires the canonical Branch projection."
-    );
-  }
-  const tag = {
-    color: TagColor.Amber,
-    id: `iss-5559-${id}-tag`,
-    name: tagName,
-  };
-  const tagPermissions = { canApply: true, canRemove: false };
-  return {
-    additions: detail.additions,
-    ahead: detail.ahead,
-    artifactId: id,
-    attributedCostUsd: detail.attributedCostUsd,
-    baseBranch: detail.baseBranch,
-    behind: detail.behind,
+  return branchListRowFixture({
     branchName,
-    canonicalProjection: {
-      ...projection,
-      common: {
-        ...projection.common,
-        identity: {
-          ...projection.common.identity,
-          artifactId: id,
-          branchName,
-        },
-        lastActiveAt: {
-          state: BranchMetricAvailability.Complete,
-          value: RECENT_ACTIVITY_AT,
-        },
-        tags: {
-          availability: BranchTagAvailability.Available,
-          items: [tag],
-          permissions: tagPermissions,
-        },
-      },
-      list: { ...projection.list, dataState: canonicalDataState },
-    },
-    checksPassed: detail.checksPassed,
-    checksStatus: detail.checksStatus,
-    checksTotal: detail.checksTotal,
-    dataState: topLevelDataState,
-    deletions: detail.deletions,
-    estimatedCostUsd: detail.estimatedCostUsd,
-    filesChanged: detail.filesChanged,
+    canonicalDataState,
     id,
     lastActivityAt: RECENT_ACTIVITY_AT,
-    multiPrWarning: detail.multiPrWarning,
-    owner: detail.owner,
-    prNumber: detail.prNumber,
-    prState: detail.prState,
-    prTitle: detail.prTitle,
-    prUrl: detail.prUrl,
-    projectId: projection.common.identity.projectId,
-    repoFullName: detail.repoFullName,
-    reviewDecision: detail.reviewDecision,
-    sessionIds: detail.sessionIds,
-    status: detail.status,
-    tagAvailability: BranchTagAvailability.Available,
-    tagPermissions,
-    tags: [tag],
-  };
+    tagPermissions: { canApply: true, canRemove: false },
+    tags: [{ color: TagColor.Amber, id: `iss-5559-${id}-tag`, name: tagName }],
+    topLevelDataState,
+  });
 }
 
 function branchAnalyticsResponse(): BranchAnalytics {
@@ -321,12 +261,19 @@ async function expectAwaitingSyncList(
   page: Page,
   viewportLabel: string
 ): Promise<void> {
-  const table = page.getByRole("table");
-  await expect(table).toBeVisible({ timeout: 30_000 });
-  await expect(table.getByRole("columnheader")).toHaveText(EXPECTED_HEADERS);
+  const surface = page.getByTestId("branches-history-list");
+  const table = surface.getByRole("grid");
+  const compact = viewportLabel === "768px";
+  if (compact) {
+    await expect(table).toHaveCount(0);
+    await expect(surface.locator('[data-slot="card"]')).toHaveCount(2);
+  } else {
+    await expect(table).toBeVisible({ timeout: 30_000 });
+    await expect(table.getByRole("columnheader")).toHaveText(EXPECTED_HEADERS);
+  }
 
-  const branchLink = table.getByRole("link", { name: SYNCING_LINK_NAME });
-  const readyLink = table.getByRole("link", {
+  const branchLink = surface.getByRole("link", { name: SYNCING_LINK_NAME });
+  const readyLink = surface.getByRole("link", {
     exact: true,
     name: READY_BRANCH_NAME,
   });
@@ -334,12 +281,22 @@ async function expectAwaitingSyncList(
   await expect(branchLink).toHaveAccessibleName(SYNCING_LINK_NAME);
   await expect(readyLink).toBeVisible();
   await expect(readyLink).toHaveAccessibleName(READY_BRANCH_NAME);
-  const row = table.getByRole("row").filter({ hasText: BRANCH_NAME });
-  const readyRow = table.getByRole("row", { name: READY_ROW_NAME });
+  const row = compact
+    ? branchLink.locator('xpath=ancestor::*[@data-slot="card"][1]')
+    : table.getByRole("row").filter({ hasText: BRANCH_NAME });
+  const readyRow = compact
+    ? readyLink.locator('xpath=ancestor::*[@data-slot="card"][1]')
+    : table.getByRole("row", { name: READY_ROW_NAME });
   await expect(row).toBeVisible();
   await expect(readyRow).toBeVisible();
-  await expect(row.getByRole("cell")).toHaveCount(EXPECTED_HEADERS.length);
-  await expect(readyRow.getByRole("cell")).toHaveCount(EXPECTED_HEADERS.length);
+  if (!compact) {
+    await expect(row.getByRole("gridcell")).toHaveCount(
+      EXPECTED_HEADERS.length
+    );
+    await expect(readyRow.getByRole("gridcell")).toHaveCount(
+      EXPECTED_HEADERS.length
+    );
+  }
   await expect(
     branchLink.getByText("Syncing branch data.", { exact: true })
   ).toHaveClass(SR_ONLY_CLASS_PATTERN);
@@ -349,11 +306,21 @@ async function expectAwaitingSyncList(
   await expect(readyRow).not.toContainText("Syncing branch data.");
   await expect(row).not.toContainText("Syncing…");
   await expect(row).not.toContainText("*");
-  await expectRowCellsRemainUsable(row);
+  if (compact) {
+    await expect(
+      row.locator(`a[href="#/branches/${BRANCH_ID}?tab=sessions-timeline"]`)
+    ).toHaveCount(1);
+    await expect(row.locator('a[href*="/pull/"]')).toHaveCount(1);
+    await expect(row).toContainText(TAG_NAME);
+  } else {
+    await expectRowCellsRemainUsable(row);
+  }
 
   const scrollOwner = page.getByRole("region", { name: "Branches" });
-  await expectScrollOwnerKeyboardAccess(page, scrollOwner);
-  await expectTagsReachableAtRightEdge(page, scrollOwner, table, row);
+  if (!compact) {
+    await expectScrollOwnerKeyboardAccess(page, scrollOwner);
+    await expectTagsReachableAtRightEdge(page, scrollOwner, table, row);
+  }
   await expectNoDocumentOverflow(page, viewportLabel);
   await scrollOwner.evaluate((element) => {
     element.scrollLeft = 0;

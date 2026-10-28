@@ -22,8 +22,12 @@ import { portableDefinitionPath } from "./portable-definition-path";
  * key-suffix fallback would) shows the user a meaningless hash. The page passes
  * the resolved `component.name` when it has one; absent that, this neutral label
  * is shown instead of the digest.
+ *
+ * Exported so the gated route's PENDING chrome shows the SAME leaf label the
+ * loaded page settles on (ISS-5041): a fallback that differed would make the
+ * crumb change text the moment the flag resolved.
  */
-const CONTENT_HASH_CRUMB_FALLBACK = "Agent";
+export const CONTENT_HASH_CRUMB_FALLBACK = "Agent";
 
 /**
  * The human-facing breadcrumb label for an agent-component detail route.

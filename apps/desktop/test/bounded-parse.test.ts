@@ -16,7 +16,7 @@
  * pinned with fake timers — no wall-clock waits.
  */
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 import {
   HISTORICAL_PARSE_ENQUEUE_CEILING_FACTOR,
   parseSourceBounded,
@@ -224,7 +224,7 @@ test("ISS-4444: a throwing abort hook does not fail the timeout resolve", async 
   wedged.resolve([]);
 });
 
-test("ISS-4572 (wongk / T9): the enqueue ceiling backstops a parse whose onDispatch is NEVER fired", async () => {
+test("ISS-4572 (whitlockk / T9): the enqueue ceiling backstops a parse whose onDispatch is NEVER fired", async () => {
   // A (hypothetical/future) runner that accepts `onDispatch` but never calls it
   // would leave the precise dispatch clock unarmed forever. The enqueue-scoped
   // absolute ceiling must still resolve the bound so the boot import advances.
@@ -256,7 +256,7 @@ test("ISS-4572 (wongk / T9): the enqueue ceiling backstops a parse whose onDispa
   wedged.resolve([]);
 });
 
-test("ISS-4572 (wongk / T9): a normal dispatch clears the enqueue ceiling so queue wait is never charged", async () => {
+test("ISS-4572 (whitlockk / T9): a normal dispatch clears the enqueue ceiling so queue wait is never charged", async () => {
   // With the ceiling armed, a source that dispatches normally must still only be
   // charged the DISPATCH bound — the ceiling is cleared on dispatch, so a long
   // pre-dispatch queue wait (short of the ceiling) never trips the backstop.

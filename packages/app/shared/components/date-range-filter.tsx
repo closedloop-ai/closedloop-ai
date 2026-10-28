@@ -11,14 +11,22 @@ import {
   DATE_RANGES,
   type DateRange,
 } from "../lib/format-utils";
+import { DATE_RANGE_FILTER_ARIA_LABEL } from "./date-range-filter-labels";
 
 /**
  * Compact, always-visible segmented control for a table time window.
  *
- * DEFAULTS to the shared Sessions/Branches range set (7d / 30d / 90d / All):
+ * DEFAULTS to the shared Sessions/Branches range set (7d / 30d / 60d / 90d / All):
  * the selected range drives both the list query and the summary-metric query,
  * so the cards reflect the window. Single-select — a click on the active range
  * is a no-op (never clears to empty).
+ *
+ * `value` accepts the EMPTY STRING for "none of these is in charge" (FEA-4201:
+ * the Sessions listing can be driven by an explicit from/to window instead).
+ * `ToggleGroup type="single"` renders nothing pressed for a value no item
+ * matches, which is the honest state — a filled pill over rows a different
+ * control selected is the louder claim, and it is the false one. No caller that
+ * always holds a real range is affected.
  *
  * The `ranges` / `labels` / `shortLabels` / `ariaLabel` props are optional and
  * default to that shared set, so the Sessions/Branches toolbars render exactly
@@ -34,9 +42,9 @@ export function DateRangeFilter<Range extends string = DateRange>({
   ranges = DATE_RANGES as unknown as readonly Range[],
   labels = DATE_RANGE_LABELS as unknown as Record<Range, string>,
   shortLabels = DATE_RANGE_SHORT_LABELS as unknown as Record<Range, string>,
-  ariaLabel = "Date range",
+  ariaLabel = DATE_RANGE_FILTER_ARIA_LABEL,
 }: {
-  value: Range;
+  value: Range | "";
   onChange: (range: Range) => void;
   className?: string;
   /** Render order of the segmented control. Defaults to the shared set. */

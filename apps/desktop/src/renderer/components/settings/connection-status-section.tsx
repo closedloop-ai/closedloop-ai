@@ -2,15 +2,13 @@ import { Section } from "@closedloop-ai/design-system/components/ui/layout/secti
 import { z } from "zod";
 import type { CloudSyncBacklog } from "../../../shared/cloud-read-readiness-contract";
 import { ConnectionSecurityMode } from "../../../shared/connection-security";
+import type { CloudStatus } from "../../hooks/use-cloud-status";
+import { CloudStatusKind } from "../../hooks/use-cloud-status";
 import type {
-  CloudStatus,
   CloudSyncProgress,
   CloudSyncStatusTone,
-} from "../../hooks/use-ingest-progress";
-import {
-  CloudStatusKind,
-  describeCloudSyncStatus,
-} from "../../hooks/use-ingest-progress";
+} from "../../hooks/use-cloud-sync-progress";
+import { describeCloudSyncStatus } from "../../hooks/use-cloud-sync-progress";
 
 type ConnectionStatusSectionProps = {
   cloudConnectionEnabled: boolean | null;
@@ -18,7 +16,7 @@ type ConnectionStatusSectionProps = {
   cloudSyncProgress: CloudSyncProgress | null;
   /**
    * ISS-5768: the whole-app, all-lanes backlog. Required, because it — not
-   * `cloudSyncProgress.caughtUp`, which is one of five lanes — is what decides
+   * `cloudSyncProgress.caughtUp`, which is one of six lanes — is what decides
    * whether the History Sync cell may claim "Up to date".
    */
   cloudSyncBacklog: CloudSyncBacklog;
@@ -194,6 +192,16 @@ function describeCloudConnectionStatus(
       detail: "The desktop cloud socket is connected.",
       label: "Connected",
       tone: CloudConnectionTone.Success,
+    };
+  }
+  // Reached when the connection is off for a reason other than the Desktop
+  // setting above — golden mode today. Muted, like that branch: a deliberate
+  // opt-out is not a failed connection.
+  if (cloudStatus?.kind === CloudStatusKind.Disabled) {
+    return {
+      detail: cloudStatus.reason,
+      label: "Disabled",
+      tone: CloudConnectionTone.Muted,
     };
   }
   if (cloudStatus?.kind === CloudStatusKind.Degraded) {

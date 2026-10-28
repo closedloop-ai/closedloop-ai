@@ -10,14 +10,11 @@ import {
   readLocalBranchLinkRows,
   readLocalBranchPrRows,
 } from "../database/branch-reads.js";
+import { buildBranchAnalyticsResult } from "./branch-analytics-builder.js";
 import { readBranchCanonicalActivityRowsForScope } from "./branch-empty-scope-reads.js";
 import { readCanonicalBranchMetricEventRows } from "./branch-metric-event-read.js";
 import { rethrowAsBranchSourceError } from "./branch-read-boundaries.js";
-import {
-  type BranchCloudHydrationSource,
-  type BranchSyncSource,
-  buildBranchAnalyticsResult,
-} from "./shared-branches-api.js";
+import type { BranchSyncSource } from "./shared-branches-api.js";
 import {
   eligibleBranchKeys,
   filterEligibleBranchRows,
@@ -27,8 +24,7 @@ import {
 /** Project exact canonical metrics for existing requested Desktop Branch IDs. */
 export async function getSharedBranchCohortAnalytics(
   source: BranchSyncSource | null | undefined,
-  rawRequest: unknown,
-  cloudHydration?: BranchCloudHydrationSource
+  rawRequest: unknown
 ): Promise<BranchAnalyticsCohortResponse | null> {
   const request = branchAnalyticsCohortRequestSchema.parse(rawRequest);
   if (!source) {
@@ -57,11 +53,8 @@ export async function getSharedBranchCohortAnalytics(
       ),
       readBranchAnalyticsLifecycleEventRows(source.prisma, branchKeys),
     ]);
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
-      linkRows,
-      cloudHydration,
-      { scope: "list" }
-    );
+    const eligibilitySnapshot =
+      resolveBranchProductEligibilitySnapshot(linkRows);
     const requestedIds = new Set(request.branchIds);
     const eligibleRequestedLinks = filterEligibleBranchRows(
       linkRows,
@@ -82,7 +75,6 @@ export async function getSharedBranchCohortAnalytics(
       activityRows,
       usageTokenRows,
       { startDate: request.startDate, endDate: request.endDate },
-      cloudHydration,
       metricEventRead,
       metricEventRead.activitySegments,
       lifecycleEvidence,

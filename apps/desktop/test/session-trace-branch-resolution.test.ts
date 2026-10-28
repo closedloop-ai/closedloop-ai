@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { SqliteArtifactLinkRow } from "../src/main/database/db-row-types.js";
 import {
   buildSessionTraceSyncFields,
   buildTraceTimelineRows,
-  resolveArtifactLinkBranch,
 } from "../src/main/database/session-trace.js";
+import { resolveArtifactLinkBranch } from "../src/main/database/session-trace-branch-resolution.js";
 import { baseSessionTraceInput as baseInput } from "./session-trace-test-utils.js";
 
 // FEA-2531: the session's derived branch follows WRITE evidence only
@@ -22,21 +22,19 @@ function link(
     slug: null,
     is_primary: false,
     method: "git_commit",
-    repo_full_name: "closedloop-ai/symphony-alpha",
+    repo_full_name: "closedloop-ai/closedloop-ai",
     pr_number: null,
     url: null,
     relation: "created",
     sha: null,
     title: null,
     branch_name: "feat/x",
-    lines_added: null,
-    lines_removed: null,
-    files_changed: null,
+    priority: null,
     link_observed_at: "2026-06-07T12:00:00.000Z",
     artifact_committed_at: null,
     artifact_observed_at: null,
     artifact_last_seen_at: null,
-    pr_state: null,
+    base_ref: null,
     pr_opened_at: null,
     ...overrides,
   };
@@ -86,6 +84,22 @@ test("resolveArtifactLinkBranch picks the latest-observed write link", () => {
         method: "git_checkout",
         branch_name: "feat/checkout",
         link_observed_at: "2026-06-07T12:09:00.000Z",
+      }),
+    ]),
+    "feat/late"
+  );
+});
+
+test("resolveArtifactLinkBranch ranks offset timestamps by instant", () => {
+  assert.equal(
+    resolveArtifactLinkBranch([
+      link({
+        branch_name: "feat/early",
+        link_observed_at: "2026-06-07T13:00:00+02:00",
+      }),
+      link({
+        branch_name: "feat/late",
+        link_observed_at: "2026-06-07T12:00:00Z",
       }),
     ]),
     "feat/late"

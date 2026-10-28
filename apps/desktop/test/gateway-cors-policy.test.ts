@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   isLoopbackOrigin,
   isOriginAllowed,
@@ -10,7 +10,7 @@ import { ADDITIONAL_TRUSTED_WEB_APP_ORIGINS } from "../src/shared/contracts.js";
 const PROD_ORIGIN = "https://app.closedloop.ai";
 // Pin the stage origin as a literal so a typo in the allowlist fails this test
 // rather than silently passing via `ADDITIONAL_TRUSTED_WEB_APP_ORIGINS[0]`.
-const STAGE_ORIGIN = "https://app.closedloop-stage.ai";
+const STAGE_ORIGIN = "https://app.stage.example";
 
 test("allowlist pins the stage web-app origin literally", () => {
   assert.ok(
@@ -70,10 +70,10 @@ test("suffix-spoof of the stage origin is rejected", () => {
   // `sameOrigin` compares the full URL origin, so an attacker-controlled host
   // that merely ends with the trusted host must not be allowed.
   const spoofs = [
-    "https://app.closedloop-stage.ai.evil.com",
-    "https://evil-app.closedloop-stage.ai",
-    "http://app.closedloop-stage.ai",
-    "https://app.closedloop-stage.ai:8443",
+    "https://app.stage.example.evil.com",
+    "https://evil-app.stage.example",
+    "http://app.stage.example",
+    "https://app.stage.example:8443",
   ];
   for (const spoof of spoofs) {
     assert.equal(

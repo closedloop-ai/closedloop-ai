@@ -1,3 +1,8 @@
+import {
+  type ApiKey,
+  ApiKeyScope,
+  type CreateApiKeyResponse,
+} from "@repo/api/src/types/api-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "@/app/api-keys/route";
 import { apiKeysService } from "@/app/api-keys/service";
@@ -11,8 +16,10 @@ import {
 let mockAuthContext: AuthContext = createTestAuthContext();
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context?.params),
 }));
 vi.mock("@/app/api-keys/service");
 
@@ -23,21 +30,21 @@ describe("POST /api-keys", () => {
   });
 
   it("creates API key with no scopes field and calls generate without scopes", async () => {
-    const mockResult = {
+    const mockResult: CreateApiKeyResponse = {
       id: "key-1",
       organizationId: "test-org-id",
       userId: "test-user-id",
       name: "Test",
       keyPrefix: "sk_live_",
       expiresAt: null,
-      scopes: ["read", "write", "delete"],
+      scopes: [ApiKeyScope.Read, ApiKeyScope.Write, ApiKeyScope.Delete],
       lastUsedAt: null,
       createdAt: new Date(),
       revokedAt: null,
       plaintext: "sk_live_abc123",
     };
 
-    vi.mocked(apiKeysService.generate).mockResolvedValue(mockResult as any);
+    vi.mocked(apiKeysService.generate).mockResolvedValue(mockResult);
 
     const request = createMockRequest({
       method: "POST",
@@ -68,21 +75,21 @@ describe("POST /api-keys", () => {
   });
 
   it("returns 200 when scopes contains read, write, and delete", async () => {
-    const mockResult = {
+    const mockResult: CreateApiKeyResponse = {
       id: "key-2",
       organizationId: "test-org-id",
       userId: "test-user-id",
       name: "Explicit Full",
       keyPrefix: "sk_live_",
       expiresAt: null,
-      scopes: ["read", "write", "delete"],
+      scopes: [ApiKeyScope.Read, ApiKeyScope.Write, ApiKeyScope.Delete],
       lastUsedAt: null,
       createdAt: new Date(),
       revokedAt: null,
       plaintext: "sk_live_def456",
     };
 
-    vi.mocked(apiKeysService.generate).mockResolvedValue(mockResult as any);
+    vi.mocked(apiKeysService.generate).mockResolvedValue(mockResult);
 
     const request = createMockRequest({
       method: "POST",
@@ -110,20 +117,20 @@ describe("GET /api-keys", () => {
   });
 
   it("returns 200 with API keys including scopes from service", async () => {
-    const mockKey = {
+    const mockKey: ApiKey = {
       id: "key-existing",
       organizationId: "test-org-id",
       userId: "test-user-id",
       name: "Existing Key",
       keyPrefix: "sk_live_",
       expiresAt: null,
-      scopes: ["read"],
+      scopes: [ApiKeyScope.Read],
       lastUsedAt: null,
       createdAt: new Date(),
       revokedAt: null,
     };
 
-    vi.mocked(apiKeysService.list).mockResolvedValue([mockKey as any]);
+    vi.mocked(apiKeysService.list).mockResolvedValue([mockKey]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api-keys",

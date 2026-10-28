@@ -4,20 +4,23 @@ import {
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import type { PromoteResponse } from "@repo/api/src/types/distribution";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
-import type { FixtureRoute } from "../../../../shared/storybook/fixture-fetch";
+import type {
+  FixtureRequestContext,
+  FixtureRoute,
+} from "../../../../shared/storybook/fixture-fetch";
 import { PromoteModal } from "../promote-modal";
 
+const NAME_FIELD_LABEL = "Name";
 const SUCCESS_MESSAGE = /promoted successfully/i;
 const DESCRIPTION_LABEL = /description/i;
 
-// ---------------------------------------------------------------------------
 // Fixture helpers
-// ---------------------------------------------------------------------------
 
 function makeComponent(
   overrides: Partial<AgentComponent> = {}
@@ -45,10 +48,7 @@ function makeComponent(
 const promoteRoute: FixtureRoute = {
   method: "POST",
   path: "/agent-components/promote",
-  respond: () => ({
-    catalogItemId: "catalog-item-1",
-    distributionId: "distribution-1",
-  }),
+  respond: () => PROMOTE_RESULT,
 };
 
 /**
@@ -80,9 +80,7 @@ describe("PromoteModal", () => {
       </AppCoreStoryProviders>
     );
 
-    await user.click(
-      screen.getByRole("button", { name: "Promote & Distribute" })
-    );
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
 
     // Success screen with the created ids.
     await screen.findByText(SUCCESS_MESSAGE);
@@ -98,7 +96,7 @@ describe("PromoteModal", () => {
     // Reopen for the same component: form should be fresh, not the stale
     // success screen.
     await user.click(screen.getByRole("button", { name: "Reopen" }));
-    await screen.findByLabelText("Name");
+    await screen.findByLabelText(NAME_FIELD_LABEL);
     expect(screen.queryByText(SUCCESS_MESSAGE)).not.toBeInTheDocument();
     expect(screen.queryByText("catalog-item-1")).not.toBeInTheDocument();
   });
@@ -115,18 +113,19 @@ describe("PromoteModal", () => {
       </AppCoreStoryProviders>
     );
 
-    const nameInput = await screen.findByLabelText<HTMLInputElement>("Name");
+    const nameInput =
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
     expect(nameInput.value).toBe("My Orchestrator Agent");
 
     // Dismiss via ESC without submitting, then reopen the same component.
     await user.keyboard("{Escape}");
     await waitFor(() =>
-      expect(screen.queryByLabelText("Name")).not.toBeInTheDocument()
+      expect(screen.queryByLabelText(NAME_FIELD_LABEL)).not.toBeInTheDocument()
     );
     await user.click(screen.getByRole("button", { name: "Reopen" }));
 
     const reopenedNameInput =
-      await screen.findByLabelText<HTMLInputElement>("Name");
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
     expect(reopenedNameInput.value).toBe("My Orchestrator Agent");
   });
 });
@@ -163,7 +162,8 @@ describe("PromoteModal draft survival across a refetch (ISS-5976)", () => {
       <PromoteModalHarness component={makeComponent()} />
     );
 
-    const nameInput = await screen.findByLabelText<HTMLInputElement>("Name");
+    const nameInput =
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
     await user.clear(nameInput);
     await user.type(nameInput, "Renamed by the admin");
     const descriptionInput =
@@ -174,9 +174,9 @@ describe("PromoteModal draft survival across a refetch (ISS-5976)", () => {
     // so it must not re-run and wipe the in-progress edit.
     rerender(<PromoteModalHarness component={makeComponent()} />);
 
-    expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe(
-      "Renamed by the admin"
-    );
+    expect(
+      screen.getByLabelText<HTMLInputElement>(NAME_FIELD_LABEL).value
+    ).toBe("Renamed by the admin");
     expect(
       screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL).value
     ).toBe("Half-written description");
@@ -188,7 +188,7 @@ describe("PromoteModal draft survival across a refetch (ISS-5976)", () => {
     const { rerender } = render(
       <PromoteModalHarness component={makeComponent()} />
     );
-    await screen.findByLabelText("Name");
+    await screen.findByLabelText(NAME_FIELD_LABEL);
 
     rerender(
       <PromoteModalHarness
@@ -200,9 +200,234 @@ describe("PromoteModal draft survival across a refetch (ISS-5976)", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe(
-        "Second Agent"
-      )
+      expect(
+        screen.getByLabelText<HTMLInputElement>(NAME_FIELD_LABEL).value
+      ).toBe("Second Agent")
     );
   });
 });
+
+describe("PromoteModal submit request (ISS-6635)", () => {
+  it("sends the component id, trimmed name, trimmed description, and kind", async () => {
+    const user = userEvent.setup();
+    const captured: unknown[] = [];
+    const component = makeComponent();
+    render(
+      <SubmitHarness
+        component={component}
+        route={createCapturingPromoteRoute(captured)}
+      />
+    );
+
+    const nameInput =
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
+    await user.clear(nameInput);
+    await user.type(nameInput, "  Renamed  ");
+    await user.type(
+      screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL),
+      "  Orchestrates the release train.  "
+    );
+
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
+    await screen.findByText(SUCCESS_MESSAGE);
+
+    // `id` deliberately differs from both `slug` and `name` on the fixture, so
+    // a slug-for-id swap here would distribute the wrong software org-wide.
+    expect(captured).toEqual([
+      {
+        agentComponentId: component.id,
+        name: "Renamed",
+        description: "Orchestrates the release train.",
+        targetKind: component.kind,
+      },
+    ]);
+  });
+
+  it("omits description entirely when the admin typed only whitespace", async () => {
+    const user = userEvent.setup();
+    const captured: unknown[] = [];
+    render(
+      <SubmitHarness
+        component={makeComponent()}
+        route={createCapturingPromoteRoute(captured)}
+      />
+    );
+
+    await user.type(
+      await screen.findByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL),
+      "   "
+    );
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
+    await screen.findByText(SUCCESS_MESSAGE);
+
+    // `description.trim() || undefined` — an empty string would overwrite the
+    // catalog item's description with blank rather than leaving it unset.
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).not.toHaveProperty("description");
+  });
+});
+
+describe("PromoteModal blank-name guard (ISS-6637)", () => {
+  it.each([
+    ["an empty name", ""],
+    ["a whitespace-only name", "   "],
+  ])("blocks the request on %s", async (_label, typed) => {
+    const user = userEvent.setup();
+    const captured: unknown[] = [];
+    render(
+      <SubmitHarness
+        component={makeComponent()}
+        route={createCapturingPromoteRoute(captured)}
+      />
+    );
+
+    const nameInput =
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
+    await user.clear(nameInput);
+    if (typed) {
+      await user.type(nameInput, typed);
+    }
+
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
+
+    await screen.findByText("Name is required.");
+    // The same message renders when the server 400s, so the message alone does
+    // not prove the client guard ran. No request may leave the browser.
+    expect(captured).toHaveLength(0);
+  });
+});
+
+describe("PromoteModal rejected promote (ISS-6636)", () => {
+  it("surfaces the server message and keeps the admin's draft", async () => {
+    const user = userEvent.setup();
+    const serverMessage = "Catalog slug already in use by pack acme/legacy";
+    const draftDescription = "Half-written description";
+    const captured: unknown[] = [];
+    render(
+      <SubmitHarness
+        component={makeComponent()}
+        route={createCapturingPromoteRoute(captured, {
+          // A real 409 envelope, not a thrown transport error: the message has
+          // to survive `readEnvelopeBody`'s error extraction before the modal
+          // ever sees it, and only this path exercises that.
+          status: 409,
+          error: serverMessage,
+          respond: () => ({}),
+        })}
+      />
+    );
+
+    const nameInput =
+      await screen.findByLabelText<HTMLInputElement>(NAME_FIELD_LABEL);
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed by the admin");
+    await user.type(
+      screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL),
+      draftDescription
+    );
+
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
+
+    // The message shares no words with the "Failed to promote component."
+    // fallback, so this cannot pass on a swallowed server message.
+    await screen.findByText(serverMessage);
+    // The request was actually issued — this is the server-rejection path, not
+    // the client-side blank-name guard covered above.
+    expect(captured).toHaveLength(1);
+    expect(screen.queryByText(SUCCESS_MESSAGE)).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText<HTMLInputElement>(NAME_FIELD_LABEL).value
+    ).toBe("Renamed by the admin");
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL).value
+    ).toBe(draftDescription);
+  });
+});
+
+describe("PromoteModal in-flight state (ISS-6639)", () => {
+  it("disables Cancel and Submit while the promote is in flight", async () => {
+    const user = userEvent.setup();
+    let settle: ((result: PromoteResponse) => void) | undefined;
+    const inFlight = new Promise<PromoteResponse>((resolve) => {
+      settle = resolve;
+    });
+    render(
+      <SubmitHarness
+        component={makeComponent()}
+        route={createCapturingPromoteRoute([], { respond: () => inFlight })}
+      />
+    );
+
+    await screen.findByLabelText(NAME_FIELD_LABEL);
+    await user.click(screen.getByRole("button", { name: SUBMIT_LABEL }));
+
+    // Label and `disabled` are two separate bindings off `promote.isPending`;
+    // reading only the label would pass with the guard dropped, leaving a
+    // double-click free to fire a second org-wide distribution.
+    const pendingSubmit = await screen.findByRole("button", {
+      name: PENDING_SUBMIT_LABEL,
+    });
+    expect(pendingSubmit).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    settle?.(PROMOTE_RESULT);
+    await screen.findByText(SUCCESS_MESSAGE);
+  });
+});
+
+const SUBMIT_LABEL = "Promote & Distribute";
+const PENDING_SUBMIT_LABEL = "Promoting…";
+
+const PROMOTE_RESULT: PromoteResponse = {
+  catalogItemId: "catalog-item-1",
+  distributionId: "distribution-1",
+};
+
+/**
+ * A promote route that records every request body it is handed.
+ *
+ * The plain `promoteRoute` above answers success no matter what was sent, so a
+ * test that only waits for the success screen cannot tell a correct body from
+ * an empty one — and this endpoint auto-installs the promoted component on
+ * every compute target in the org. These tests assert the captured body.
+ */
+function createCapturingPromoteRoute(
+  captured: unknown[],
+  overrides: Partial<Omit<FixtureRoute, "method" | "path">> = {}
+): FixtureRoute {
+  const respond: (context: FixtureRequestContext) => unknown =
+    overrides.respond ?? (() => PROMOTE_RESULT);
+  return {
+    ...overrides,
+    method: "POST",
+    path: "/agent-components/promote",
+    respond: (context) => {
+      captured.push(context.body);
+      return respond(context);
+    },
+  };
+}
+
+/**
+ * Mounts the modal open with a caller-supplied route so a test can capture the
+ * outbound request, defer the response, or reject it.
+ */
+function SubmitHarness({
+  component,
+  route,
+}: {
+  component: AgentComponent;
+  route: FixtureRoute;
+}) {
+  return (
+    <AppCoreStoryProviders apiRoutes={[route]}>
+      <PromoteModal
+        component={component}
+        onOpenChange={() => {
+          // The submit path is what's under test; dismissal is covered above.
+        }}
+        open={true}
+      />
+    </AppCoreStoryProviders>
+  );
+}

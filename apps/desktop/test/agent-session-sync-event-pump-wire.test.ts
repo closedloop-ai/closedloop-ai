@@ -20,8 +20,8 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "node:test";
 import ts from "typescript6";
+import { test } from "vitest";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 
 const RUNTIME_PATH = join(
@@ -64,6 +64,41 @@ test("the runtime bootstrap POINTS that tee at the sync service's pump", () => {
   assert.ok(
     wired,
     "buildRuntimeOptions must map onLocalSessionDataChanged to agentSessionSync.notifyLocalSessionActivity() — an unwired option leaves the pump permanently untriggered"
+  );
+});
+
+test("projection readiness refreshes both session upload lanes", () => {
+  const source = parseTypeScriptFile(BOOTSTRAP_PATH);
+  let refreshesSessionLane = false;
+  let refreshesInvocationLane = false;
+  forEachNode(source, (node) => {
+    if (
+      !(ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) ||
+      node.name.text !== "onInitialSessionProjectionReady"
+    ) {
+      return;
+    }
+    forEachNode(node.initializer, (inner) => {
+      if (
+        !(
+          ts.isCallExpression(inner) &&
+          ts.isPropertyAccessExpression(inner.expression)
+        ) ||
+        inner.expression.name.text !== "refresh"
+      ) {
+        return;
+      }
+      const receiver = inner.expression.expression.getText(source);
+      refreshesSessionLane ||= receiver.endsWith("agentSessionSync");
+      refreshesInvocationLane ||= receiver.endsWith(
+        "agentComponentInvocationSync"
+      );
+    });
+  });
+
+  assert.ok(
+    refreshesSessionLane && refreshesInvocationLane,
+    "opening projection readiness must refresh both lanes because each stops its timer and drops work signals while readiness is false"
   );
 });
 

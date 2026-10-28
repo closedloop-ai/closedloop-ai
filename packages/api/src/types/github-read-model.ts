@@ -1,5 +1,6 @@
 import type { ChecksStatus, ReviewDecision } from "./branch-checks";
 import type { GitHubPRState } from "./github";
+import type { GitHubActorType } from "./github-actor";
 import type {
   RepositoryDefaultAuthority,
   RepositoryDefaultProvenance,
@@ -72,6 +73,8 @@ export const GitHubFetchTrigger = {
   Webhook: "webhook",
   Backfill: "backfill",
   UserAction: "user_action",
+  /** Scheduled durable replay of retained provider-owned PR evidence. */
+  Retry: "retry",
   SurfaceOpen: "surface_open",
   // FEA-2732: a desktop → cloud sync tick produced this projection row.
   DesktopSync: "desktop_sync",
@@ -133,6 +136,7 @@ export const GitHubBundledPullRequestsStopReason = {
   ItemLimit: "item_limit",
   BudgetLow: "budget_low",
   ProviderRateLimit: "provider_rate_limit",
+  WatermarkReached: "watermark_reached",
 } as const;
 export type GitHubBundledPullRequestsStopReason =
   (typeof GitHubBundledPullRequestsStopReason)[keyof typeof GitHubBundledPullRequestsStopReason];
@@ -148,6 +152,19 @@ export type GitHubBundledPullRequestsPageOptions = {
   maxPages?: number;
   maxItems?: number;
   targetNumbers?: readonly number[];
+  /**
+   * ISS-7892: stop paging once a page has reached PRs at or older than this
+   * GitHub `updated_at`. Only sound because the connection is ordered
+   * UPDATED_AT DESC, so the first already-seen row proves every later page is
+   * already-seen too. Absent (the default) keeps the unbounded window read.
+   */
+  stopAtUpdatedAt?: string | null;
+  /**
+   * ISS-7892: false drops `statusCheckRollup` from the selection. It is the
+   * single most expensive field in the query, so a caller that discards check
+   * state should not pay for it.
+   */
+  includeStatusCheckRollup?: boolean;
 };
 
 export type GitHubReadModelPullRequest = {
@@ -172,6 +189,9 @@ export type GitHubReadModelPullRequest = {
   mergeCommitSha: string | null;
   updatedAt: string | null;
   author: string | null;
+  /** Immutable author evidence. Omitted by legacy/unavailable reads; null clears a provider ghost. */
+  authorProviderUserId?: string | null;
+  authorActorType?: GitHubActorType | null;
   source: GitHubReadModelSource;
   /** Additive fork-head snapshot; absent for legacy callers or inaccessible heads. */
   headRepository?: RepositoryDefaultAuthority;

@@ -107,6 +107,9 @@ export class TranscriptSyncService {
       statFile: (filePath) => this.opts.statFile(filePath),
       hashPath: (filePath) => this.hashPath(filePath),
       getComputeTargetId: () => this.opts.getComputeTargetId?.() ?? null,
+      // ISS-7096: another identity's transcripts never queue for THIS
+      // environment's cloud; see the store's observe gate.
+      getSyncIdentity: () => this.opts.getSyncIdentity?.() ?? null,
       now: () => this.now(),
     };
     this.queue = new TranscriptDrainQueue({
@@ -116,6 +119,9 @@ export class TranscriptSyncService {
       now: () => this.now(),
       log: (message) => this.log(message),
       concurrency: this.concurrency,
+      // ISS-6338: read LIVE off the options rather than snapshotted, so the
+      // seam matches every other option this lane re-reads per pass.
+      emitSyncBatch: (event) => this.opts.emitSyncBatch?.(event),
     });
     this.sweeper = new TranscriptDiscoverySweeper({
       opts: this.opts,
@@ -251,9 +257,10 @@ export class TranscriptSyncService {
 
   stop(): void {
     this.started = false;
-    // A fresh start re-runs crash recovery (a stop mid-upload can itself leave
-    // an `uploading` row behind).
-    this.sweeper.resetForRestart();
+    // ISS-7097: nothing to re-arm for a restart any more. A stop mid-upload can
+    // still leave an `uploading` row behind, but the sweep's lease reclaim is
+    // recurring rather than latched, so it picks that row up on a normal tick
+    // whether or not the service was ever restarted.
     // The queue's in-flight claims are deliberately NOT cleared — those uploads
     // are still running and their keys must keep blocking a concurrent re-claim
     // of the same file; each drain clears its own key in its finally.
@@ -293,6 +300,11 @@ export class TranscriptSyncService {
 
   /** One bounded-concurrency upload pass — see `transcript-drain-queue.ts`. */
   drainOnce(): Promise<void> {
+    // A sweep that ran before the store was ready is still owed; it drains
+    // when it finishes, so it replaces this pass rather than racing it.
+    if (this.sweeper.isAwaitingStore() && this.opts.getStore()) {
+      return this.sweeper.sweepOnce();
+    }
     this.logIfDrainGated();
     return this.queue.drainOnce();
   }
@@ -364,6 +376,9 @@ export class TranscriptSyncService {
       online: this.opts.isOnline(),
       tierGate: this.tierGate(),
       storeReady: Boolean(store),
+      // ISS-7516: same live read the drain queue is wired with, so the identity
+      // the renderer compares against is the one this lane actually uploads as.
+      computeTargetId: this.opts.getComputeTargetId?.() ?? null,
     };
     if (!store) {
       return { ...base, statusCounts: emptyTranscriptStatusCounts() };
@@ -412,5 +427,16 @@ export class TranscriptSyncService {
     timerDeps?: QuiesceTimerDeps
   ): Promise<QuiesceOutcome> {
     return this.inFlight.quiesce(budgetMs, timerDeps);
+  }
+
+  /**
+   * ISS-9884 (PLN-1986 §5): the event door onto this lane's give-up — an
+   * org-policy transition, a consent-tier change, a sign-in. Re-arms a lane
+   * that gave up on its 24h ceiling and owes the rows it paused a revival; the
+   * next drain pass acts on both, so a caller that also kicks a sweep must call
+   * this FIRST.
+   */
+  noteLaneRecoverySignal(): void {
+    this.queue.noteLaneRecoverySignal();
   }
 }

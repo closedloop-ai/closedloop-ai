@@ -33,7 +33,7 @@ describe("approved Branches awaiting-sync row", () => {
       { wrapper: AppCoreStoryProviders }
     );
 
-    expect(screen.getAllByRole("columnheader")).toHaveLength(10);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(11);
     const link = screen.getByRole("link", { name: RE_SYNCING_BRANCH_NAME });
     expect(link).toHaveAttribute("href", `#/branches/${row.id}`);
     expect(within(link).getByText(row.branchName)).toBeVisible();

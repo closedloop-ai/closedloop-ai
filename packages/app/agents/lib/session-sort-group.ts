@@ -1,3 +1,4 @@
+import { formatSessionSortRule } from "@repo/api/src/types/agent-session-sort";
 /**
  * Sort keys for the Sessions table. Values match the server's `sortBy` enum (see
  * `AGENT_SESSION_SORT_COLUMNS` in apps/api). Most also match the table column id
@@ -14,6 +15,7 @@ export const SessionSortKey = {
   Repo: "repo",
   Harness: "harness",
   Model: "model",
+  Autonomy: "autonomy",
   Duration: "duration",
   Cost: "cost",
   Started: "started",
@@ -27,8 +29,12 @@ export type SessionSortKey =
 
 /**
  * The Sessions table column id for the Owner cell. It intentionally differs from
- * its server sort key (`user`) — the cell renders ownership, the API orders by
- * the `user` relation — so the two are mapped rather than assumed equal.
+ * its server sort key (`user`), so the two are mapped rather than assumed equal.
+ *
+ * `user`, not `assignee` (ISS-12251, PLN-2176 T-4.2): the cloud API orders
+ * `user` by the assignee and accepts `assignee` only as its alias; Desktop's
+ * local read refuses `assignee` and orders `user` by the local creator, its
+ * Owner (D-7); and an API that predates the alias rejects `assignee`.
  */
 export const OWNER_COLUMN_ID = "owner";
 
@@ -57,3 +63,42 @@ export const SessionSortDir = {
 } as const;
 export type SessionSortDir =
   (typeof SessionSortDir)[keyof typeof SessionSortDir];
+
+/**
+ * ISS-8335: an ordered rule list as the repeatable `sorts` query param the
+ * Sessions list route accepts.
+ *
+ * Each entry is encoded by the SHARED codec the server's validator parses with
+ * (`@repo/api/src/types/agent-session-sort`), so the two halves of the wire
+ * contract cannot drift on the separator or the field order. Column ids are
+ * translated through {@link columnIdToSessionSortKey} for the same reason a
+ * single-column sort is — Owner is `owner` to the table and `user` to the API,
+ * and a rule spelled the table's way is rejected by the route's closed enum.
+ */
+export function toSessionSortRuleParams(
+  rules: readonly { fieldId: string; direction: SessionSortDir }[]
+): string[] {
+  return rules.map((rule) =>
+    formatSessionSortRule(
+      columnIdToSessionSortKey(rule.fieldId),
+      rule.direction
+    )
+  );
+}
+
+/**
+ * ISS-8335: one ordered sort rule in the HOST's vocabulary — a server sort key,
+ * not a table column id.
+ *
+ * The distinction is the same one {@link columnIdToSessionSortKey} exists for,
+ * and it is why this is not the surface's `SessionsListSortRule`: that carries
+ * COLUMN ids, whose set is strictly wider (it adds the lead `name` column and,
+ * client-side, sortable custom fields). Nothing outside this closed key set can
+ * reach the API — `AGENT_SESSION_SORT_COLUMNS` is a `z.enum` and rejects the
+ * rest — so a host rule is spelled in keys and translated at the surface
+ * boundary, exactly as the primary `sortKey` already is.
+ */
+export type SessionSortRule = {
+  direction: SessionSortDir;
+  fieldId: SessionSortKey;
+};

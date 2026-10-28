@@ -16,11 +16,11 @@
  * growing.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
 import {
   InsightsPeriod,
   InsightsSection,
 } from "@closedloop-ai/loops-api/insights";
+import { test } from "vitest";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openTestPrisma, type RawDb } from "./prisma-test-utils.js";
 
@@ -35,26 +35,15 @@ const IN_WINDOW = "2026-06-20T10:00:00.000Z";
 type CapturedPr = {
   id: string;
   number: number;
-  added: number | null;
-  removed: number | null;
 };
 
 async function seedCapturedPrs(db: RawDb, prs: readonly CapturedPr[]) {
   for (const pr of prs) {
     await db.query(
       `INSERT INTO artifacts
-         (id, identity_key, kind, repo_full_name, pr_number,
-          lines_added, lines_removed, files_changed, created_at, last_seen_at)
-       VALUES ($1, $2, 'pull_request', 'org/repo', $3, $4, $5, $6, $7, $7)`,
-      [
-        pr.id,
-        `pr:org/repo:${pr.number}`,
-        pr.number,
-        pr.added,
-        pr.removed,
-        pr.added === null ? null : 5,
-        IN_WINDOW,
-      ]
+         (id, identity_key, kind, repo_full_name, pr_number, created_at, last_seen_at)
+       VALUES ($1, $2, 'pull_request', 'org/repo', $3, $4, $4)`,
+      [pr.id, `pr:org/repo:${pr.number}`, pr.number, IN_WINDOW]
     );
   }
 }
@@ -79,76 +68,6 @@ function deliveryKpi(
   );
 }
 
-test("ISS-5414: the coverage pair is emitted and both size captions quote it", async () => {
-  const { db, prisma, close } = await openTestPrisma();
-  try {
-    // Two enriched PRs (300 and 100 lines) and two whose size was never
-    // fetched. KLOC sums 400 lines → 0.4, folding the unsized pair in as 0;
-    // the median is over [100, 300] → 200. Both therefore describe 2 of the 4
-    // captured PRs, which is exactly what the captions must say.
-    await seedCapturedPrs(db, [
-      { id: "pr-sized-a", number: 1, added: 300, removed: 0 },
-      { id: "pr-sized-b", number: 2, added: 100, removed: 0 },
-      { id: "pr-unsized-a", number: 3, added: null, removed: null },
-      { id: "pr-unsized-b", number: 4, added: null, removed: null },
-    ]);
-
-    const delivery = await computeLocalInsights(
-      prisma,
-      InsightsSection.Delivery,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-
-    assert.equal(deliveryKpi(delivery.kpis, "capturedPrsScanned").value, 4);
-    assert.equal(deliveryKpi(delivery.kpis, "capturedPrsWithoutLoc").value, 2);
-
-    // The tiles still report their lower-bound figures — the caption is what
-    // stops a reader taking them for the whole picture.
-    assert.equal(deliveryKpi(delivery.kpis, "kloc").value, 0.4);
-    assert.equal(deliveryKpi(delivery.kpis, "pr-size").value, 200);
-    assert.equal(
-      deliveryKpi(delivery.kpis, "kloc").sub,
-      "thousands of lines changed in captured PRs · sized 2 of 4 captured PRs scanned"
-    );
-    assert.equal(
-      deliveryKpi(delivery.kpis, "pr-size").sub,
-      "median lines changed per captured PR · sized 2 of 4 captured PRs scanned"
-    );
-  } finally {
-    await close();
-  }
-});
-
-test("ISS-5414: full coverage is stated, not left to be inferred from a missing clause", async () => {
-  const { db, prisma, close } = await openTestPrisma();
-  try {
-    await seedCapturedPrs(db, [
-      { id: "pr-sized-a", number: 1, added: 120, removed: 30 },
-      { id: "pr-sized-b", number: 2, added: 40, removed: 10 },
-    ]);
-
-    const delivery = await computeLocalInsights(
-      prisma,
-      InsightsSection.Delivery,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-
-    assert.equal(deliveryKpi(delivery.kpis, "capturedPrsWithoutLoc").value, 0);
-    assert.equal(
-      deliveryKpi(delivery.kpis, "kloc").sub,
-      "thousands of lines changed in captured PRs · sized 2 of 2 captured PRs scanned"
-    );
-    assert.equal(
-      deliveryKpi(delivery.kpis, "pr-size").sub,
-      "median lines changed per captured PR · sized 2 of 2 captured PRs scanned"
-    );
-  } finally {
-    await close();
-  }
-});
-
 test("ISS-5414 × ISS-5412: an unknown KLOC still carries the clause that says why", async () => {
   const { db, prisma, close } = await openTestPrisma();
   try {
@@ -157,8 +76,8 @@ test("ISS-5414 × ISS-5412: an unknown KLOC still carries the clause that says w
     // pairing alone: the dash needs the caption to say what is missing, and the
     // caption must not be dropped just because the value went null.
     await seedCapturedPrs(db, [
-      { id: "pr-unsized-a", number: 1, added: null, removed: null },
-      { id: "pr-unsized-b", number: 2, added: null, removed: null },
+      { id: "pr-unsized-a", number: 1 },
+      { id: "pr-unsized-b", number: 2 },
     ]);
 
     const delivery = await computeLocalInsights(

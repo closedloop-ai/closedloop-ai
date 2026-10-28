@@ -5,6 +5,7 @@ import {
   CHART_SERIES_TOKEN_INDEXES,
   chartSeriesColor,
 } from "@repo/design-system/components/ui/chart-colors";
+import { CHART_OTHER_SERIES_LABEL } from "@repo/design-system/components/ui/chart-series-fold";
 import type {
   TimeSeriesPointDatum,
   TimeSeriesSeriesDef,
@@ -31,7 +32,8 @@ const COLLIDING_SERIES_COUNT = 17;
 // Anchored at the start so they match the aggregate band's own name and never a
 // series that merely contains the word.
 const AGGREGATE_BAND_PATTERN = /^Other models \(/;
-const ANY_AGGREGATE_BAND_PATTERN = /^Other/;
+const ANY_AGGREGATE_BAND_PATTERN = (text: string) =>
+  text.startsWith(CHART_OTHER_SERIES_LABEL);
 
 const series: TimeSeriesSeriesDef[] = Array.from(
   { length: COLLIDING_SERIES_COUNT },
@@ -188,7 +190,7 @@ describe("series cap collision guards (ISS-5523 review)", () => {
   });
 });
 
-describe("series cap boundary at exactly one series past the cap (wongk review)", () => {
+describe("series cap boundary at exactly one series past the cap (whitlockk review)", () => {
   // The population the fold threshold got wrong, and the one size none of the
   // suites above touch: they test 17 (well over) and 10 (exactly at). At
   // CAP + 1 the old `series.length <= cap + 1` guard skipped the fold, numbered

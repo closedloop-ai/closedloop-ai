@@ -23,9 +23,9 @@ import { Mail, Plus, PlusCircle, Search, UserPlus } from "lucide-react";
  * triggered by a button.
  */
 const meta: Meta<typeof DropdownMenu> = {
-  title: "Design System/Primitives/Dropdown Menu",
+  title: "Primitives v1.0/Overlays/Dropdown Menu",
   component: DropdownMenu,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   render: (args) => (
     <DropdownMenu {...args}>

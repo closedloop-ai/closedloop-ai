@@ -2,7 +2,6 @@ import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
 import { DocumentType } from "@repo/api/src/types/document";
 import {
   SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID,
-  SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID,
   sessionLinkedChipsTrackTestId,
 } from "@repo/app/agents/lib/session-linked-entity-chips";
 import {
@@ -16,7 +15,6 @@ import {
   SESSIONS_PROJECTS_COLUMN_ID,
   SESSIONS_PROJECTS_COLUMN_LABEL,
 } from "@repo/app/agents/lib/sessions-table-columns";
-import { GRID_TABLE_V2_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import type { GridTableMode } from "@repo/design-system/components/ui/grid-table";
@@ -86,7 +84,6 @@ function renderTable(
   options: Readonly<{
     linkedArtifacts?: SessionLinkedArtifact[];
     project?: { id: string; name: string; slug: string | null } | null;
-    flagOn?: boolean;
     optIn?: boolean;
     /**
      * Pins the layout instead of depending on an unmeasured container:
@@ -95,13 +92,7 @@ function renderTable(
     mode?: GridTableMode;
   }> = {}
 ) {
-  const {
-    linkedArtifacts = [],
-    project = null,
-    flagOn = true,
-    optIn = true,
-    mode,
-  } = options;
+  const { linkedArtifacts = [], project = null, optIn = true, mode } = options;
   return renderWithFlags(
     <SyncedSessionsTable
       getIssueHref={buildIssueHref}
@@ -116,7 +107,7 @@ function renderTable(
       mode={mode}
       showLinkedEntityColumns={optIn}
     />,
-    flagOn ? [GRID_TABLE_V2_FEATURE_FLAG_KEY] : []
+    []
   );
 }
 
@@ -137,7 +128,7 @@ function queryCell(columnId: string): Element | null {
 }
 
 describe("Sessions table — linked-entity columns (FEA-4209 / FEA-4210)", () => {
-  it("renders the session's project as a named chip in the Projects column", () => {
+  it("renders the session's owning project in the Projects column", () => {
     renderTable({
       project: { id: "project-1", name: "Platform Core", slug: "platform" },
     });
@@ -145,38 +136,45 @@ describe("Sessions table — linked-entity columns (FEA-4209 / FEA-4210)", () =>
     expect(
       screen.getByText(SESSIONS_PROJECTS_COLUMN_LABEL)
     ).toBeInTheDocument();
-    // The VALUE, in the right track — not merely "a chip rendered somewhere".
+    // The VALUE, in the right track — not merely "rendered somewhere".
     expect(cellFor(SESSIONS_PROJECTS_COLUMN_ID)).toHaveTextContent(
       "Platform Core"
     );
   });
 
-  it("discloses a project name in full even though its cell can never overflow", () => {
-    // The Projects column is the one place `+N` can never be the escape hatch:
-    // the contract yields at most one project, and the fit returns early for a
-    // single chip. The label is rendered in a `truncate` span inside a narrow
-    // track, so without a per-chip tooltip a long name would be unreadable with
-    // no affordance at all — no overflow, no tooltip, no accessible name.
+  it("discloses a project name in full even though the track truncates it", () => {
+    // A contract ISS-12454 changed the MECHANISM of, not the substance: the name
+    // renders in a `truncate` span inside a narrow track, so a long one is
+    // clipped, and BOTH halves of the disclosure have to survive the move off
+    // the chip — the tooltip for whoever is looking at it, the accessible name
+    // for whoever is not. Asserting only the second is what let the first go
+    // missing in this change's first draft (design pass, note 2).
     const longName = "Platform Core Infrastructure and Developer Tooling";
     renderTable({ project: { id: "project-1", name: longName, slug: null } });
 
     const cell = cellFor(SESSIONS_PROJECTS_COLUMN_ID);
-    // No overflow control exists for this cell — that is the premise, not an
-    // incidental detail, so assert it rather than assume it.
-    expect(
-      cell.querySelector(
-        `[data-testid="${SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID}"]`
-      )
-    ).toBeNull();
+    const trigger = cell.querySelector("button");
+    expect(trigger).not.toBeNull();
+    expect(trigger?.getAttribute("aria-label")).toContain(longName);
     const disclosure = cell.querySelector('[data-testid="tooltip-content"]');
     expect(disclosure).not.toBeNull();
     expect(disclosure).toHaveTextContent(longName);
   });
 
-  it("renders a session with no project as the shared empty sentinel, not a blank cell", () => {
+  it("keeps the sentinel on an UNFILED session AND makes it a control", () => {
+    // Both, not either — the dichotomy this case was first written with ("picker
+    // OR empty cell") was wrong, and the sibling editable cells in this same
+    // grid already settle it: `EntityTagsCell` and `ArtifactPriorityEditor` put
+    // the dash INSIDE the button, so the column keeps stating the fact and is
+    // still actionable. A column of "Select project…" down every unfiled row is
+    // a list of instructions where a list of values belongs (design pass, note
+    // 3).
     renderTable({ project: null });
 
-    expect(cellFor(SESSIONS_PROJECTS_COLUMN_ID).textContent?.trim()).toBe("—");
+    const cell = cellFor(SESSIONS_PROJECTS_COLUMN_ID);
+    const trigger = cell.querySelector("button");
+    expect(trigger).not.toBeNull();
+    expect(trigger?.textContent?.trim()).toBe("—");
   });
 
   it("renders each linked issue as a chip that links to that issue", () => {
@@ -225,7 +223,7 @@ describe("Sessions table — linked-entity columns (FEA-4209 / FEA-4210)", () =>
         ]}
         showLinkedEntityColumns
       />,
-      [GRID_TABLE_V2_FEATURE_FLAG_KEY]
+      []
     );
 
     const cell = cellFor(SESSIONS_ISSUES_COLUMN_ID);
@@ -265,22 +263,6 @@ describe("Sessions table — linked-entity columns (FEA-4209 / FEA-4210)", () =>
       cellFor(SESSIONS_ISSUES_COLUMN_ID).querySelector("a")
     ).toHaveAttribute("href", `/${ORG_SLUG}/issues/${slugs[0]}`);
     expect(screen.queryByText(lastSlug)).not.toBeInTheDocument();
-  });
-
-  it("renders neither column while the shared grid-table-v2 flag is off", () => {
-    renderTable({
-      flagOn: false,
-      linkedArtifacts: [issue("artifact-1", "FEA-654")],
-      project: { id: "project-1", name: "Platform Core", slug: "platform" },
-    });
-
-    expect(queryCell(SESSIONS_PROJECTS_COLUMN_ID)).toBeNull();
-    expect(queryCell(SESSIONS_ISSUES_COLUMN_ID)).toBeNull();
-    expect(
-      screen.queryByText(SESSIONS_ISSUES_COLUMN_LABEL)
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Platform Core")).not.toBeInTheDocument();
-    expect(screen.queryByText("FEA-654")).not.toBeInTheDocument();
   });
 
   it("floors both tracks wide enough to hold a chip AND its overflow counter", () => {

@@ -14,13 +14,16 @@
  * number is non-zero.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   DIFF_STATS_TOOL_HANDLERS,
   DIFF_STATS_TOOL_NAMES,
 } from "@repo/lib/harness/claude/diff-stats-tool-handlers";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
-import { ownDiffFilePaths } from "../src/main/collectors/claude/sidecar-diff-stats.js";
+import {
+  foldSidecarDiffStats,
+  ownDiffFilePaths,
+} from "../src/main/collectors/claude/sidecar-diff-stats.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 import {
   assistantLine,
@@ -275,11 +278,12 @@ test("ISS-5402: a sub-agent's overwriting Write diffs against its own prior Read
 });
 
 test("ISS-5402: a sub-agent Write carrying no string content books no line at all", async () => {
-  // The shared handlers are total: a non-string `content` is coerced to `""`,
-  // and `"".split("\n").length` is ONE — so an unvalidated malformed Write is
-  // persisted as a line nobody wrote. The sidecar lane reads raw transcript JSON
-  // straight off disk, so it must reject the payload before dispatch. This is
-  // the whole record dropping, not a partial count: no line AND no file.
+  // The shared handlers are total: a non-string `content` is coerced to `""`, so
+  // an unvalidated malformed Write is persisted as a file nobody wrote to (and,
+  // before ISS-6764 rewrote the fresh-Write branch, a line nobody wrote either).
+  // The sidecar lane reads raw transcript JSON straight off disk, so it must
+  // reject the payload before dispatch. This is the whole record dropping, not a
+  // partial count: no line AND no file.
   const filePath = writeClaudeTranscript(
     "sess-malformed-write",
     DELEGATING_ONLY_PARENT,
@@ -319,7 +323,9 @@ test("ISS-5402: a sub-agent Write carrying no string content books no line at al
   // Combined, not merely present — see the read-only-sidecar test above.
   assert.equal(parsed.tokenSeries.length, 2);
   assert.equal(parsed.tokensByModel[MODEL]?.output, OUTPUT_TOKENS_PER_TURN * 2);
-  // Not `{ filesChanged: 1, linesAdded: 1, linesRemoved: 0 }`.
+  // Not `{ filesChanged: 1, linesAdded: 0, linesRemoved: 0 }` — since ISS-6764
+  // the un-gated formula books no line either, so the changed FILE is the whole
+  // of what the gate suppresses.
   assert.equal(parsed.diffStats, null);
 });
 
@@ -444,7 +450,7 @@ test("ISS-5402: a session with no sidecars is unchanged by the fold", async () =
   });
 });
 
-// thadeusb review (PR #4531): `ownDiffFilePaths` recovers the parent's own
+// tamsinb review (PR #4531): `ownDiffFilePaths` recovers the parent's own
 // changed-file paths so the parent/sidecar union can tell a genuinely new
 // sidecar file from one the parent already counted. Its tool-name set used to be
 // hand-maintained beside the shared handler registry; a fourth registered
@@ -462,15 +468,64 @@ test("ISS-5402: the parent-path tool set is derived from the handler registry, n
 test("ISS-5402: ownDiffFilePaths claims the parent's path for EVERY registered diffStats tool", () => {
   // Iterating the registry is the point: a handler added tomorrow is covered
   // here with no edit to this test, which is what makes the drift impossible
-  // rather than merely noticed.
+  // rather than merely noticed. ISS-6761: the payload must now be WELL-FORMED
+  // for the claim to happen, so one union payload carries every registered
+  // tool's edited fields at once. A tool added tomorrow whose fields are not in
+  // it fails this test loudly rather than silently dropping out of the union.
+  const wellFormedForEveryTool = {
+    content: "one line",
+    old_string: "before",
+    new_string: "after",
+    edits: [{ old_string: "before", new_string: "after" }],
+  };
   for (const [toolName] of DIFF_STATS_TOOL_HANDLERS) {
     const claimed = ownDiffFilePaths([
-      { name: toolName, input: { file_path: `/repo/src/${toolName}.ts` } },
+      {
+        name: toolName,
+        input: {
+          ...wellFormedForEveryTool,
+          file_path: `/repo/src/${toolName}.ts`,
+        },
+      },
     ]);
     assert.deepEqual(
       [...claimed],
       [`/repo/src/${toolName}.ts`],
       `${toolName} is a registered diffStats handler, so the parent's path from it must join the union`
+    );
+  }
+});
+
+// ISS-6761: the parent's own tool loop now drops a malformed diffStats payload
+// instead of coercing it, so that path is NOT in the parent's `filesChanged`.
+// Recovering it here anyway would subtract a file the parent never counted, and
+// a sidecar's well-formed edit of the same path would then be counted by nobody.
+test("ISS-6761: a malformed parent payload claims no path, so a sidecar's edit of it still counts", () => {
+  for (const [toolName] of DIFF_STATS_TOOL_HANDLERS) {
+    const contestedPath = `/repo/src/${toolName}.ts`;
+    const ownPaths = ownDiffFilePaths([
+      // `file_path` alone: no `content`, no edited side, no edits array —
+      // exactly the shape the shared schema gate rejects in both lanes.
+      { name: toolName, input: { file_path: contestedPath } },
+    ]);
+    assert.equal(
+      ownPaths.size,
+      0,
+      `${toolName} carrying no usable payload was never counted by the parent, so it must not claim the path`
+    );
+    // And the consequence, end to end: the parent booked nothing for that block
+    // (`parentDiffStats` is null), so a sub-agent's well-formed edit of the SAME
+    // path is the only measurement there is and must survive the union.
+    assert.deepEqual(
+      foldSidecarDiffStats(null, ownPaths, [
+        {
+          linesAdded: 3,
+          linesRemoved: 1,
+          filePaths: new Set([contestedPath]),
+        },
+      ]),
+      { filesChanged: 1, linesAdded: 3, linesRemoved: 1 },
+      `${toolName}: the sidecar's real edit must not be subtracted by a path the parent never counted`
     );
   }
 });

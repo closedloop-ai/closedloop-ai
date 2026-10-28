@@ -13,7 +13,7 @@ import { PackDetail } from "../pack-detail";
 /**
  * ISS-6462 — the Packs Performance tab rendered `mergedPrs` through
  * `NUMBER_FORMAT.format` with no `+` and no caveat, while the server counts
- * distinct merged PRs over only the first `COHORT_SCAN_CAP` cohort sessions. A
+ * distinct merged PRs over only a bounded sample of the cohort sessions. A
  * pack whose cohort exceeds that cap therefore showed a confident undercount.
  *
  * `merged-prs-readout.test.ts` pins the readout itself; this drives the real
@@ -89,7 +89,7 @@ describe("PackDetail Merged PRs tile (ISS-6462)", () => {
 });
 
 /**
- * ISS-6462 (wongk, #5096 review): the same tile, driven from the WEB ADAPTER's
+ * ISS-6462 (whitlockk, #5096 review): the same tile, driven from the WEB ADAPTER's
  * own input instead of a pre-mapped `PackPerformance`.
  *
  * The suite above hands `PackDetail` a block that already carries the flag, and

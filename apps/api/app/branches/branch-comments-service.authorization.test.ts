@@ -4,23 +4,20 @@ import {
 } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { GitHubActorType } from "@repo/api/src/types/github-actor";
-import {
-  GitHubCommentThreadKind,
-  GitHubLegacyCommentState,
-  ThreadStatus,
-} from "@repo/database";
-import { GitHubProviderResultStatus } from "@repo/github";
+import { GitHubCommentThreadKind, ThreadStatus } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  reconcileMarker,
+  reconcileResult,
+} from "@/__tests__/support/branches/branch-comments-service.test-helpers";
 
 const mocks = vi.hoisted(() => ({
   artifactFindFirst: vi.fn(),
   commentFindMany: vi.fn(),
   repositoryFindFirst: vi.fn(),
   queryRaw: vi.fn(),
-  getInstallationOctokit: vi.fn(),
-  listIssueComments: vi.fn(),
-  listReviewComments: vi.fn(),
-  listReviews: vi.fn(),
+  readMarker: vi.fn(),
+  reconcileOnView: vi.fn(),
   withDb: vi.fn(),
 }));
 
@@ -29,16 +26,15 @@ vi.mock("@repo/database", async (importOriginal) => ({
   withDb: mocks.withDb,
 }));
 
-vi.mock("@repo/github", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@repo/github")>()),
-  listPullRequestIssueCommentsWithProviderResult: mocks.listIssueComments,
-  listPullRequestReviewCommentsWithProviderResult: mocks.listReviewComments,
-  listPullRequestReviewsWithProviderResult: mocks.listReviews,
-}));
+vi.mock(
+  "@/app/comments/service/github/github-comment-reconcile-marker",
+  () => ({ readPullRequestCommentsReconcileMarker: mocks.readMarker })
+);
 
-vi.mock("@repo/github/installation-auth", () => ({
-  getInstallationOctokit: mocks.getInstallationOctokit,
-}));
+vi.mock(
+  "@/app/comments/service/github/github-comment-on-demand-reconcile",
+  () => ({ reconcilePullRequestCommentsOnView: mocks.reconcileOnView })
+);
 
 import { branchCommentsService } from "./branch-comments-service";
 
@@ -60,17 +56,8 @@ describe("branchCommentsService selected-PR identity", () => {
     mocks.artifactFindFirst.mockResolvedValue(branchContextRow());
     mocks.commentFindMany.mockResolvedValue([]);
     mocks.queryRaw.mockResolvedValue([{ id: branchId }]);
-    mocks.getInstallationOctokit.mockResolvedValue({ marker: "installation" });
-    for (const providerRead of [
-      mocks.listIssueComments,
-      mocks.listReviewComments,
-      mocks.listReviews,
-    ]) {
-      providerRead.mockResolvedValue({
-        status: GitHubProviderResultStatus.Success,
-        value: [],
-      });
-    }
+    mocks.readMarker.mockResolvedValue(reconcileMarker());
+    mocks.reconcileOnView.mockResolvedValue(reconcileResult());
   });
 
   it("orders equal-time persisted projections deterministically by id", async () => {
@@ -89,7 +76,7 @@ describe("branchCommentsService selected-PR identity", () => {
       "comment-a",
       "comment-b",
     ]);
-    expect(result?.state).toBe(BranchCommentsState.StaleMixed);
+    expect(result?.state).toBe(BranchCommentsState.Populated);
     expect(result?.comments[0]?.kind).toBe(BranchPrCommentKind.Review);
     expect(result?.comments[0]).toMatchObject({
       author: { login: "reviewer" },
@@ -98,7 +85,7 @@ describe("branchCommentsService selected-PR identity", () => {
       line: 1,
       path: "file.ts",
       resolved: false,
-      stale: true,
+      stale: false,
       threadId: "thread-comment-a",
     });
     expect(result?.budget).toMatchObject({
@@ -127,9 +114,10 @@ describe("branchCommentsService selected-PR identity", () => {
       prNumber: 42,
     });
     expect(mocks.repositoryFindFirst).not.toHaveBeenCalled();
+    expect(mocks.readMarker).toHaveBeenCalledWith("org-1", "pr-cross");
   });
 
-  it("does not fall back to the Branch repository for an unresolved cross-repo PR", async () => {
+  it("reads an installation-less cross-repo PR as its own repository, never the Branch's", async () => {
     mocks.artifactFindFirst.mockResolvedValue(
       branchContextRow({
         includeCrossRepository: true,
@@ -143,7 +131,12 @@ describe("branchCommentsService selected-PR identity", () => {
       pullRequestNumber: 42,
     });
 
-    expect(result).toBeNull();
+    expect(result).toMatchObject({
+      repositoryFullName: "other/repository",
+      prNumber: 42,
+    });
+    expect(result?.prUrl).toBe("https://github.com/other/repository/pull/42");
+    expect(mocks.readMarker).toHaveBeenCalledWith("org-1", "pr-cross");
     expect(mocks.repositoryFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -152,10 +145,17 @@ describe("branchCommentsService selected-PR identity", () => {
         }),
       })
     );
-    expect(mocks.getInstallationOctokit).not.toHaveBeenCalled();
-    expect(mocks.listIssueComments).not.toHaveBeenCalled();
-    expect(mocks.listReviewComments).not.toHaveBeenCalled();
-    expect(mocks.listReviews).not.toHaveBeenCalled();
+    expect(mocks.commentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          thread: expect.objectContaining({
+            githubProjection: {
+              is: expect.objectContaining({ pullRequestDetailId: "pr-cross" }),
+            },
+          }),
+        }),
+      })
+    );
   });
 });
 
@@ -167,7 +167,7 @@ function branchContextRow(options?: {
   includeCrossRepository?: boolean;
   omitCrossRelation?: boolean;
 }) {
-  const mainRepository = repository("closedloop-ai", "symphony-alpha", "1");
+  const mainRepository = repository("closedloop-ai", "closedloop-ai");
   const current = pullRequest("pr-main", "repository-1", mainRepository);
   const pullRequestDetails = [current];
   if (options?.includeCrossRepository) {
@@ -175,9 +175,7 @@ function branchContextRow(options?: {
       ...pullRequest(
         "pr-cross",
         "repository-2",
-        options.omitCrossRelation
-          ? null
-          : repository("Other", "Repository", "2")
+        options.omitCrossRelation ? null : repository("Other", "Repository")
       ),
       repositoryFullName: "Other/Repository",
     });
@@ -189,20 +187,14 @@ function branchContextRow(options?: {
       deletedAt: null,
       firstPushedAt: new Date("2026-07-01T00:00:00.000Z"),
       repositoryId: "repository-1",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
-      currentPullRequestDetail: current,
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       repository: mainRepository,
     },
   };
 }
 
-function repository(owner: string, name: string, installationId: string) {
-  return {
-    fullName: `${owner}/${name}`,
-    owner,
-    name,
-    installation: { installationId },
-  };
+function repository(owner: string, name: string) {
+  return { fullName: `${owner}/${name}`, owner, name };
 }
 
 function pullRequest(
@@ -215,7 +207,6 @@ function pullRequest(
     branchArtifactId: branchId,
     repositoryId,
     repositoryFullName: selectedRepository?.fullName ?? "other/repository",
-    isCurrent: true,
     number: 42,
     title: "Pull request",
     htmlUrl: `https://github.com/${selectedRepository?.fullName ?? "other/repository"}/pull/42`,
@@ -239,6 +230,7 @@ function projectionRow(id: string) {
     createdAt,
     updatedAt: createdAt,
     deletedAt: null,
+    syncStates: [],
     githubProjection: {
       githubCommentId: id,
       githubInReplyToCommentId: null,
@@ -260,8 +252,6 @@ function projectionRow(id: string) {
         threadKind: GitHubCommentThreadKind.REVIEW_THREAD,
         path: "file.ts",
         line: 1,
-        legacyState: GitHubLegacyCommentState.PENDING,
-        lastSyncedAt: createdAt,
       },
     },
   };

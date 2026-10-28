@@ -8,10 +8,11 @@ import type { ComponentVersion } from "@repo/api/src/types/agent-component";
  * crash fixed in #3208 — that value can reach the renderer as a non-string in
  * practice (a Liveblocks-deserialized value, a number, or any non-string on a
  * malformed / differently-shaped record). Calling `.slice` on a non-string then
- * throws a `TypeError`, and because the Agents component detail page renders
- * inside the top-level `LiveblocksErrorBoundary`, that throw is caught →
- * re-render → re-throw → crash-spiral that freezes the page (this is the class
- * of bug behind the Skill-component detail crash, FEA-3520).
+ * throws a `TypeError`, which takes the whole detail page down to the route's
+ * error boundary (this is the class of bug behind the Skill-component detail
+ * crash, FEA-3520; until ISS-10202 it froze the page instead, because the
+ * top-level `LiveblocksErrorBoundary` caught it and re-rendered the same
+ * subtree).
  *
  * So we normalize every shape to a string: real strings pass through, other
  * primitives (number, bigint, boolean) are `String()`-coerced so a numeric hash

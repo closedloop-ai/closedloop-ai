@@ -23,7 +23,7 @@
  *  (4) the drop is REPORTED, not swallowed. The reporting is the contract here:
  *      the whole point is that a mint/insert divergence stays visible instead of
  *      degrading into silent attribution loss; and
- *  (5) BOTH stored-row entry points report it (wongk, #4355). The legacy
+ *  (5) BOTH stored-row entry points report it (whitlockk, #4355). The legacy
  *      bootstrap (`ensureStoredAgentComponentInvocations`) and the stored-row
  *      rebuild (`rebuildAgentComponentInvocationsFromStoredRows`) build their
  *      candidates straight off `events.agent_id` — the very column with no FK —
@@ -35,7 +35,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import type { AgentComponentInvocationCandidate } from "../src/main/database/component-invocation-row-writer.js";
 import { insertInvocationRows } from "../src/main/database/component-invocation-row-writer.js";
 import {

@@ -29,14 +29,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationEvidenceClass,
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
+  AgentComponentInvocationUsageMeasurement,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, test } from "vitest";
 import type { AgentComponentInvocationCandidate } from "../src/main/database/component-invocation-row-writer.js";
 import {
   insertInvocationRows,
@@ -53,6 +54,8 @@ const MAIN_AGENT_ID = "main-agent";
    convergence, not reporting, and every candidate it inserts has a null agent
    reference, so nothing here can produce a report. */
 const REPORT = ROLLUP_OPTS.log;
+/* ISS-10725: the refusal line is bounded to one per batch and counts rows. */
+const ONE_REFUSED_ROW = /on 1 row\(s\)/;
 
 type Db = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
 
@@ -280,6 +283,13 @@ describe("FEA-4160 idempotent component_invocations insert", () => {
       externalInvocationId: "remapped-id",
       componentKey: "weak-key",
       evidenceClass: AgentComponentInvocationEvidenceClass.PackMembership,
+      model: "claude-weak",
+      inputTokens: 11,
+      outputTokens: 12,
+      cacheReadTokens: 13,
+      cacheWriteTokens: 14,
+      usageMeasurement: AgentComponentInvocationUsageMeasurement.Measured,
+      attributionSource: null,
     });
     const stronger = baseTestCandidate({
       externalInvocationId: "remapped-id",
@@ -287,6 +297,13 @@ describe("FEA-4160 idempotent component_invocations insert", () => {
       evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
       definitionHash: "hash-strong",
       definitionContent: "# strong definition",
+      model: "claude-strong",
+      inputTokens: 41,
+      outputTokens: 42,
+      cacheReadTokens: 43,
+      cacheWriteTokens: 44,
+      usageMeasurement: AgentComponentInvocationUsageMeasurement.Measured,
+      attributionSource: null,
     });
 
     const merged = mergeInvocationRowsByExternalId([base, stronger]);
@@ -304,6 +321,18 @@ describe("FEA-4160 idempotent component_invocations insert", () => {
     assert.equal(survivor.definitionHash, "hash-strong");
     assert.equal(survivor.definitionContent, "# strong definition");
     assert.equal(survivor.sequence, 0);
+    // ISS-7795: telemetry follows the evidence that won. Keeping the weak
+    // candidate's counts would attribute them to a component the merge just
+    // decided this row is NOT.
+    assert.equal(survivor.model, "claude-strong");
+    assert.equal(survivor.inputTokens, 41);
+    assert.equal(survivor.outputTokens, 42);
+    assert.equal(survivor.cacheReadTokens, 43);
+    assert.equal(survivor.cacheWriteTokens, 44);
+    assert.equal(
+      survivor.usageMeasurement,
+      AgentComponentInvocationUsageMeasurement.Measured
+    );
   });
 
   test("mergeInvocationRowsByExternalId keeps first-wins when the collision is equal-or-weaker evidence", () => {
@@ -312,11 +341,19 @@ describe("FEA-4160 idempotent component_invocations insert", () => {
       componentKey: "primary-key",
       evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
       definitionHash: "hash-primary",
+      model: "claude-primary",
+      inputTokens: 41,
+      usageMeasurement: AgentComponentInvocationUsageMeasurement.Measured,
+      attributionSource: null,
     });
     const weaker = baseTestCandidate({
       externalInvocationId: "remapped-id",
       componentKey: "weaker-key",
       evidenceClass: AgentComponentInvocationEvidenceClass.PackMembership,
+      model: "claude-weaker",
+      inputTokens: 11,
+      usageMeasurement: AgentComponentInvocationUsageMeasurement.Measured,
+      attributionSource: null,
     });
 
     const merged = mergeInvocationRowsByExternalId([primary, weaker]);
@@ -325,8 +362,154 @@ describe("FEA-4160 idempotent component_invocations insert", () => {
     // The weaker collision does not clobber the primary's identity/evidence.
     assert.equal(merged[0]?.componentKey, "primary-key");
     assert.equal(merged[0]?.definitionHash, "hash-primary");
+    // ISS-7795: nor its telemetry — a losing candidate's counts must not be
+    // attributed to the component that won.
+    assert.equal(merged[0]?.model, "claude-primary");
+    assert.equal(merged[0]?.inputTokens, 41);
+  });
+
+  /**
+   * ISS-10725 (Bug Hunter A): `AgentComponentInvocationCandidate` has two
+   * independently nullable findings fields, so both-or-neither can only be made
+   * good at the WRITE. These drive the production `insertInvocationRows` and
+   * read the stored cells back, rather than asserting a projection helper,
+   * because the claim is about what reaches the column.
+   */
+  test("an inadmissible findings pair is written as NULL/NULL, not stored", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "aci-10725-findings-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "session-10725-findings";
+      await db.importer.importSession(toolSession(sessionId), "claude");
+      await db.run(
+        "DELETE FROM agent_component_invocations WHERE session_id = $1",
+        sessionId
+      );
+
+      const inadmissible = [
+        { findingsEmitted: 10, findingsInvalidated: null },
+        { findingsEmitted: null, findingsInvalidated: 3 },
+        // Inverted: the derived `confirmed` would be negative.
+        { findingsEmitted: 2, findingsInvalidated: 3 },
+        { findingsEmitted: 1.5, findingsInvalidated: 0 },
+      ];
+      // Two rows per batch, so a per-row projection is distinguishable from a
+      // batch-wide one: the admissible companion must survive untouched.
+      for (const pair of inadmissible) {
+        await db.prisma.write((client) =>
+          insertInvocationRows(
+            client,
+            sessionId,
+            [
+              baseTestCandidate({
+                externalInvocationId: "bad-pair",
+                sequence: 0,
+                ...pair,
+              }),
+              baseTestCandidate({
+                externalInvocationId: "good-pair",
+                sequence: 1,
+                findingsEmitted: 4,
+                findingsInvalidated: 1,
+              }),
+            ],
+            REPORT
+          )
+        );
+
+        const stored = await findingsRows(db, sessionId);
+        const bad = stored.find(
+          (row) => row.external_invocation_id === "bad-pair"
+        );
+        const good = stored.find(
+          (row) => row.external_invocation_id === "good-pair"
+        );
+        assert.equal(bad?.findings_emitted, null, JSON.stringify(pair));
+        assert.equal(bad?.findings_invalidated, null, JSON.stringify(pair));
+        assert.equal(Number(good?.findings_emitted), 4);
+        assert.equal(Number(good?.findings_invalidated), 1);
+      }
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reports the refused findings pair instead of losing it in NULL", async () => {
+    // ISS-10725 review (tamsinb): the stored NULL is indistinguishable from
+    // "nothing ever measured this", so refusing a corrupt pair silently is the
+    // same gap `usageRefusedCorruptCounts` closes on the telemetry columns. One
+    // bounded line per batch, counting rows and echoing no stored value.
+    const dir = await mkdtemp(path.join(os.tmpdir(), "aci-10725-refusal-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "session-10725-refusal";
+      await db.importer.importSession(toolSession(sessionId), "claude");
+      await db.run(
+        "DELETE FROM agent_component_invocations WHERE session_id = $1",
+        sessionId
+      );
+      const lines: string[] = [];
+
+      await db.prisma.write((client) =>
+        insertInvocationRows(
+          client,
+          sessionId,
+          [
+            baseTestCandidate({
+              externalInvocationId: "bad-pair",
+              sequence: 0,
+              findingsEmitted: 2,
+              findingsInvalidated: 3,
+            }),
+            baseTestCandidate({
+              externalInvocationId: "good-pair",
+              sequence: 1,
+              findingsEmitted: 4,
+              findingsInvalidated: 1,
+            }),
+            // Never attributed at all: the benign absence, which must NOT be
+            // counted as a refusal or the signal stops meaning anything.
+            baseTestCandidate({
+              externalInvocationId: "never-measured",
+              sequence: 2,
+            }),
+          ],
+          (message) => lines.push(message)
+        )
+      );
+
+      const refusals = lines.filter((line) =>
+        line.includes("withheld a findings funnel")
+      );
+      assert.equal(refusals.length, 1, JSON.stringify(lines));
+      assert.match(refusals[0], ONE_REFUSED_ROW);
+      assert.ok(refusals[0].includes(sessionId));
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
+
+function findingsRows(
+  db: Db,
+  sessionId: string
+): Promise<
+  {
+    external_invocation_id: string;
+    findings_emitted: bigint | null;
+    findings_invalidated: bigint | null;
+  }[]
+> {
+  return db.prisma.client.$queryRawUnsafe(
+    `SELECT external_invocation_id, findings_emitted, findings_invalidated
+       FROM agent_component_invocations
+      WHERE session_id = $1
+      ORDER BY sequence`,
+    sessionId
+  );
+}
 
 function baseTestCandidate(
   overrides: Partial<AgentComponentInvocationCandidate> &
@@ -335,6 +518,8 @@ function baseTestCandidate(
   return {
     externalSourceId: null,
     childSessionId: null,
+    estimatedCost: null,
+    footprintTokens: null,
     agentId: null,
     parentAgentId: null,
     componentKind: AgentComponentInvocationKind.Tool,
@@ -359,6 +544,19 @@ function baseTestCandidate(
     gitBranch: null,
     repositoryFullName: null,
     succeeded: null,
+    model: null,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    usageMeasurement: null,
+    linesAdded: null,
+    linesRemoved: null,
+    findingsEmitted: null,
+    findingsInvalidated: null,
+    // ISS-11325: no disposition recorded on a fixture the findings ingest never reached.
+    findingsDisposition: null,
+    attributionSource: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,

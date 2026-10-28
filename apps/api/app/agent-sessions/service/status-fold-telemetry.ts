@@ -1,6 +1,23 @@
 /**
  * ISS-5981: the BATCH-level tally behind the ingest's status-fold metric,
- * `SessionSyncMetric.UnmodelledStatusFolded`.
+ * `SessionSyncMetric.UnmodelledStatusFolded`, and (ISS-8552)
+ * `SessionSyncMetric.ContradictorySessionEndDropped` beside it — the ingest's
+ * OTHER per-slice refusal, aggregated here for the identical amplification
+ * reason rather than in a second module that would duplicate the `finally`
+ * contract and the never-throw guard.
+ *
+ * ISS-8603 added a THIRD on those same grounds,
+ * `SessionSyncMetric.ActivityTilingSliceRefused`. It is not a status fold at all
+ * — the module's name has outlived its first tenant and now reads as "the batch
+ * tally for per-slice refusals" — but it is the same shape (one per-slice
+ * verdict, summed, emitted from the batch `finally`), and a fourth module
+ * repeating the never-throw envelope would be the duplication the paragraph
+ * above rejects. It differs in one respect: it emits ONE EMISSION PER REASON,
+ * the `SentinelRevisionHeld` shape, because its guard's two arms are faults an
+ * operator would chase differently.
+ *
+ * ISS-12251 added a FOURTH, `SessionSyncMetric.ImplausibleCreatedAtDropped`,
+ * the same shape as the session-end refusal.
  *
  * ISS-5592 removed the second metric this module used to carry
  * (`RetiredStatusFolded`, split by `SessionSyncRetiredStatusFoldSource`) along
@@ -9,7 +26,7 @@
  * unmodelled counter instead, with the raw word in `unmodelledStatusSamples`.
  *
  * `upsertSessionSlice` reports its fold decisions rather than emitting them
- * (wongk, PR #4786). This module accumulates them across one sync request and
+ * (whitlockk, PR #4786). This module accumulates them across one sync request and
  * emits at most ONE event for the whole batch.
  *
  * Why not per session: the ingest schema accepts up to 200 sessions per request
@@ -24,12 +41,13 @@
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import { ActivityTilingSkipReason } from "./activity-segment-persistence";
 import type { UpsertSessionsContext } from "./records";
+import type { UpsertSessionSliceResult } from "./session-slice-result";
 import { SessionSyncMetric } from "./session-sync-metrics";
-import type { UpsertSessionSliceResult } from "./upsert-session-slice";
 
 /**
- * How many DISTINCT unmodelled spellings one batch reports (wongk, #5047).
+ * How many DISTINCT unmodelled spellings one batch reports (whitlockk, #5047).
  *
  * The counter alone is unactionable — it says version skew is happening but not
  * WHICH spelling arrived, and since ISS-5592 removed the alias map the response
@@ -68,10 +86,42 @@ export type StatusFoldTally = {
 
 export function createStatusFoldTally(): StatusFoldTally {
   let unmodelledCount = 0;
+  let contradictorySessionEndCount = 0;
+  let implausibleCreatedAtCount = 0;
+  const activityTilingRefusals = emptyActivityTilingRefusalCounts();
   const unmodelledSamples = new Set<string>();
 
   return {
     record(outcome) {
+      // ISS-8603. Same truthiness guard and same reason as its neighbours: an
+      // outcome shape without the field must read as "nothing was refused"
+      // rather than throw out of the caller's `finally`.
+      //
+      // OWN KEYS, not `in` (whitlockk, #7101): `in` walks the prototype chain, so a
+      // reason spelled `"toString"` or `"constructor"` passed this guard, and
+      // `++` on the inherited member opened that name as an own key holding
+      // NaN — an unknown reason carrying a count no monitor can read, which is
+      // the "plausible-but-wrong number" AGENTS.md forbids emitting and strictly
+      // worse than the drop this block promises. `Object.hasOwn` and the
+      // null-prototype tally each close it alone; keeping both means a later
+      // edit to either one cannot silently reopen it.
+      const refusalReason = outcome.activityTilingSkipReason;
+      if (
+        refusalReason &&
+        Object.hasOwn(activityTilingRefusals, refusalReason)
+      ) {
+        activityTilingRefusals[refusalReason]++;
+      }
+      // ISS-8552. Same truthiness guard and same reason as the fold below: this
+      // runs in the caller's `finally`, so an outcome shape without the field
+      // must read as "nothing was dropped" rather than throw and take the
+      // watermark stamps with it.
+      if (outcome.droppedContradictorySessionEnd) {
+        contradictorySessionEndCount++;
+      }
+      if (outcome.droppedImplausibleCreatedAt) {
+        implausibleCreatedAtCount++;
+      }
       // TRUTHINESS, not `!== null`: this runs in the caller's `finally` ahead of
       // the ingest watermark stamps and must never throw (see `emit`), so it
       // cannot assume the field is present. An absent value from a partial or
@@ -102,6 +152,21 @@ export function createStatusFoldTally(): StatusFoldTally {
         count: unmodelledCount,
         unmodelledStatusSamples: [...unmodelledSamples],
       });
+      for (const [reason, count] of Object.entries(activityTilingRefusals)) {
+        emitFoldCount(context, {
+          metric: SessionSyncMetric.ActivityTilingSliceRefused,
+          count,
+          reason,
+        });
+      }
+      emitFoldCount(context, {
+        metric: SessionSyncMetric.ContradictorySessionEndDropped,
+        count: contradictorySessionEndCount,
+      });
+      emitFoldCount(context, {
+        metric: SessionSyncMetric.ImplausibleCreatedAtDropped,
+        count: implausibleCreatedAtCount,
+      });
     },
   };
 }
@@ -116,6 +181,8 @@ function emitFoldCount(
   emission: {
     metric: SessionSyncMetric;
     count: number;
+    /** ISS-8603: the facet an `ActivityTilingSliceRefused` emission splits on. */
+    reason?: string;
     unmodelledStatusSamples?: readonly string[];
   }
 ): void {
@@ -128,6 +195,7 @@ function emitFoldCount(
       organizationId: context.organizationId,
       computeTargetId: context.computeTargetId,
       count: emission.count,
+      ...(emission.reason ? { reason: emission.reason } : {}),
       ...(emission.unmodelledStatusSamples?.length
         ? { unmodelledStatusSamples: emission.unmodelledStatusSamples }
         : {}),
@@ -139,4 +207,26 @@ function emitFoldCount(
       error: parseError(error),
     });
   }
+}
+
+/**
+ * ISS-8603: a zeroed tally keyed by EVERY {@link ActivityTilingSkipReason}, on a
+ * NULL PROTOTYPE.
+ *
+ * Two properties, and the literal-plus-transplant shape is what keeps both.
+ * Spelling the keys out of the const object rather than deriving them is what
+ * makes the tally exhaustive: a reason added later cannot fall into a default
+ * arm and go uncounted, because the `Record` fails `tsc` until the emission loop
+ * can see it. The null prototype is what makes the recorder's ownership check
+ * total — with no inherited members there is no key for a caller-shaped reason
+ * to find, and none for `++` to open (whitlockk, #7101).
+ */
+function emptyActivityTilingRefusalCounts(): Record<
+  ActivityTilingSkipReason,
+  number
+> {
+  const seeded: Record<ActivityTilingSkipReason, number> = {
+    [ActivityTilingSkipReason.VersionMismatch]: 0,
+  };
+  return Object.assign(Object.create(null), seeded);
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   PROFILE_CONFIG_IPC_CHANNELS,
   ProfileConfigIpcChannel,
@@ -31,6 +31,7 @@ function makeProfileRegistrarHandlers(
     {
       isTrustedSender,
       settingsStore: {
+        getSignOutCleanupState: () => ({ isPending: () => false }),
         findConfigByOrigins: () => savedConfig,
         getRelayOrigin: () => savedConfig.relayOrigin,
         getApiOrigin: () => savedConfig.apiOrigin,

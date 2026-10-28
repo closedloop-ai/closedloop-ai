@@ -7,8 +7,8 @@
  * parser core.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { parseOpenCodeTranscript } from "@repo/lib/harness/opencode/parse-opencode";
+import { test } from "vitest";
 import type {
   OpencodeDroppedSession,
   OpencodeSessionLoad,
@@ -152,7 +152,7 @@ test("ISS-5238: a checkpoint from a build with an older PROJECTION revision re-d
   materializeOpencodeTranscripts(STATE_DIR, deps);
   assert.equal(loadCount, 1, "sweep 1 parsed and checkpointed");
 
-  // Simulate the upgrade wongk flagged: the checkpoint on disk was written by a
+  // Simulate the upgrade whitlockk flagged: the checkpoint on disk was written by a
   // build whose serializer predates this one, while `opencode.db` has not been
   // touched since. Strip the projection-revision component to reproduce exactly
   // what that older build persisted. Without a revision in the fingerprint the

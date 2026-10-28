@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { makePopulatedSession as makeSession } from "./normalized-session-test-utils.js";
 
@@ -134,7 +134,7 @@ test("a NESTED delegation recovers its span from the parent subagent's transcrip
     // SUBAGENT's transcript, so it lands on `subagent.toolUses` and never on
     // `session.toolUses`. Indexing only the session's tool uses left the
     // child's degenerate span unrepaired and persisted a 0-second delegation —
-    // 16 of the 68 subagents in the golden corpus, all in dossier f216298d.
+    // 16 of the 68 subagents in the golden corpus, all in dossier 3870c244.
     const result = await db.importer.importSession(
       makeSession({
         sessionId: "dedup-nested",

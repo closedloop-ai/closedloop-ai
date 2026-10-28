@@ -7,9 +7,8 @@ import type { DocumentDetail } from "@repo/api/src/types/document";
 // other importer of it.
 import "@repo/collaboration/shared/config";
 import { RoomEventType } from "@repo/collaboration/shared/room-events";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { invalidateDocumentDetailCaches, useDocument } from "./use-documents";
+import { useRefetchPublishedDocument } from "./use-refetch-published-document";
 
 type UseDocumentRoomEventsConfig = {
   documentId: string;
@@ -25,7 +24,9 @@ type UseDocumentRoomEventsConfig = {
 
 /**
  * Listens for `document-version-published` events on the current Liveblocks
- * room and reacts by refetching the document and notifying the caller.
+ * room, the Liveblocks reset protocol, and reacts by refetching the document
+ * and notifying the caller. The `version.published` realtime signal
+ * (`useDocumentVersionSignals`) tells editors on both transports.
  *
  * Must be mounted inside a Liveblocks `RoomProvider` — call sites should
  * gate the component that invokes this hook on the presence of a room ID
@@ -38,42 +39,28 @@ type UseDocumentRoomEventsConfig = {
  * id but is a different client that never ran the browser's mutation
  * `onSuccess`, so a `publisherId === currentUser` filter would wrongly
  * suppress the reload in that user's open editor. Idempotency is instead
- * enforced downstream: the scaffold's `onRemoteVersionPublished` bails when
- * the refetched version is not newer than the version it is already showing,
- * so the tab that published via its own mutation does no redundant reseed.
- *
- * Refetching goes through `useDocument(..., { enabled: false }).refetch()`
- * rather than a hand-rolled `fetchQuery`: it reuses the canonical queryFn
- * defined in `use-documents.ts` and `refetch()` always hits the network,
- * sidestepping the global `staleTime: 60s` that would otherwise hand back
- * stale pre-publish content.
+ * enforced downstream: `useRemoteVersionPublished` bails when the refetched
+ * version is not newer than the version it is already showing, so the tab that
+ * published via its own mutation does no redundant reseed, and a version that
+ * arrives as both the room event and the signal acts once.
  */
 export function useDocumentRoomEvents({
   documentId,
   onRemoteVersionPublished,
 }: UseDocumentRoomEventsConfig) {
-  const queryClient = useQueryClient();
-  // Passive observer — enabled:false means this hook never triggers the
-  // initial fetch (the parent page's useDocument already does that).
-  // It exists solely so we can call .refetch() to force a network read.
-  const { refetch: refetchDocument } = useDocument(documentId, undefined, {
-    enabled: false,
-  });
+  const refetch = useRefetchPublishedDocument(
+    documentId,
+    onRemoteVersionPublished
+  );
 
   const handleEvent = useCallback(
     async ({ event }: { event: Liveblocks["RoomEvent"] }) => {
       if (event.type !== RoomEventType.DocumentVersionPublished) {
         return;
       }
-
-      const result = await refetchDocument();
-      if (!result.data) {
-        return;
-      }
-      invalidateDocumentDetailCaches(queryClient, documentId, result.data.slug);
-      onRemoteVersionPublished(result.data);
+      await refetch();
     },
-    [documentId, onRemoteVersionPublished, queryClient, refetchDocument]
+    [refetch]
   );
 
   useEventListener(handleEvent);

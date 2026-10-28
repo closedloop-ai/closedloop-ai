@@ -1,12 +1,11 @@
 /**
- * @file data-collection-card.tsx
  * @description The Settings → General "Data Collection" card: one privacy
  * toggle per local agent tool Closedloop is allowed to read.
  *
- * Extracted from `SettingsPanel.tsx` (ISS-5768) to keep that grandfathered file
+ * Extracted from `SettingsPanel.tsx` (ISS-5768) to keep that file
  * shrinking rather than growing, following the sibling pattern already
- * established by `data-sync-tab.tsx`, `labs-tab.tsx`, and
- * `security-flags-section.tsx`. Behaviour is unchanged.
+ * established by `data-sync-tab.tsx` and `labs-tab.tsx`. Behaviour is
+ * unchanged.
  */
 import {
   Card,

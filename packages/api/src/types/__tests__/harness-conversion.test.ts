@@ -1,4 +1,3 @@
-import { HarnessName } from "@repo/crewd/model";
 import { describe, expect, it } from "vitest";
 import { AgentComponentKind } from "../agent-component";
 import type {
@@ -13,6 +12,7 @@ import {
   planConversionDryRun,
   resolveConversionCapability,
 } from "../harness-conversion";
+import { HarnessName } from "../harness-name";
 
 const ALL_KINDS = Object.values(AgentComponentKind);
 const ALL_HARNESSES = Object.values(HarnessName);

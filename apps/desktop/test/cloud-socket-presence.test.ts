@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript6";
+import { afterEach, describe, test } from "vitest";
 import {
   DESKTOP_POP_GATEWAY_ID_HEADER,
   DESKTOP_POP_SIGNATURE_HEADER,
@@ -9,15 +9,20 @@ import {
   DesktopPopUnavailableError,
   RELAY_API_KEY_VERIFY_PATH,
 } from "../src/main/auth/desktop-pop.js";
+import { CloudSocketService } from "../src/main/cloud/cloud-socket.js";
 import {
-  buildRelayValidationPopHeaders,
-  CloudSocketService,
   parseDesktopHelloAck,
   parseServerCapabilities,
+} from "../src/main/cloud/cloud-socket-hello-ack.js";
+import {
+  buildPausedAwarePresence,
+  CLOUD_COMMANDS_PAUSED_ERROR,
+} from "../src/main/cloud/cloud-socket-payloads.js";
+import {
+  buildRelayValidationPopHeaders,
   refreshRelayValidationPopHeadersForSocket,
-} from "../src/main/cloud/cloud-socket.js";
+} from "../src/main/cloud/cloud-socket-pop-headers.js";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
-import { buildCommandSigningCapabilities } from "../src/shared/command-signing-policy.js";
 import { GATEWAY_PROTOCOL_VERSION } from "../src/shared/contracts.js";
 import {
   createStubOptions,
@@ -111,6 +116,75 @@ describe("T-6.1: Presence state log deduplication", () => {
       afterBackOnline.length,
       3,
       "Transition back to online should log"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-7710: `buildPausedAwarePresence` was the same block copied into two
+// callbacks in the composition root, where `DesktopApplication` cannot be
+// constructed outside Electron and so neither copy was reachable by a test.
+// Extracting it made the decision testable; these pin it so a later edit cannot
+// quietly drop one of the three terms and start reporting `online` on a link,
+// a pause switch, or a gateway that says otherwise.
+// ---------------------------------------------------------------------------
+
+const HEALTHY_ONLINE_PRESENCE = {
+  cloudOnline: true,
+  paused: false,
+  gatewayHealthy: true,
+  activeCommands: 2,
+  queueDepth: 5,
+};
+
+describe("ISS-7710: the paused-aware presence payload", () => {
+  test("reports online only when link, pause switch, and gateway all agree", () => {
+    assert.deepEqual(buildPausedAwarePresence(HEALTHY_ONLINE_PRESENCE), {
+      state: "online",
+      activeCommands: 2,
+      queueDepth: 5,
+    });
+  });
+
+  test("an unhealthy gateway degrades presence even while the link is online", () => {
+    assert.equal(
+      buildPausedAwarePresence({
+        ...HEALTHY_ONLINE_PRESENCE,
+        gatewayHealthy: false,
+      }).state,
+      "degraded",
+      "dropping the gateway-health term would advertise a compute target that cannot serve a command"
+    );
+  });
+
+  test("an offline link degrades presence even while the gateway is healthy", () => {
+    assert.equal(
+      buildPausedAwarePresence({
+        ...HEALTHY_ONLINE_PRESENCE,
+        cloudOnline: false,
+      }).state,
+      "degraded",
+      "a healthy local gateway is not a live relay link"
+    );
+  });
+
+  test("a pause degrades presence and names itself as the reason", () => {
+    assert.deepEqual(
+      buildPausedAwarePresence({ ...HEALTHY_ONLINE_PRESENCE, paused: true }),
+      {
+        state: "degraded",
+        error: CLOUD_COMMANDS_PAUSED_ERROR,
+        activeCommands: 2,
+        queueDepth: 5,
+      },
+      "an operator pause must be reported as its own reason, not as an anonymous degrade"
+    );
+  });
+
+  test("an unpaused presence carries no error key at all", () => {
+    assert.ok(
+      !("error" in buildPausedAwarePresence(HEALTHY_ONLINE_PRESENCE)),
+      "the optional field must stay OMITTED rather than serialized empty; the relay contract does not declare it nullable"
     );
   });
 });
@@ -253,14 +327,17 @@ describe("T-3.1: hello payload version fields", () => {
         desktopClientVersion: "0.13.9-test",
         gatewayProtocolVersion: "0.1.0",
         pluginVersion: "1.0.0-test",
-        getCapabilities: () => ({ commandSigning: true }),
+        getCapabilities: () => ({ versions: { git: "2.45.0" } }),
       })
     );
 
     // Inject a fake socket so we can capture what emitHello emits without
     // establishing a real Socket.IO connection.
     const fakeSocket = new FakeSocket();
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
+    Object.assign(service as unknown as Record<string, unknown>, {
+      socket: fakeSocket,
+      stopped: false,
+    });
 
     // Call the private emitHello method directly via prototype access.
     // This exercises the same code path triggered on connect, building the
@@ -293,72 +370,7 @@ describe("T-3.1: hello payload version fields", () => {
       "gatewayProtocolVersion must match"
     );
     assert.equal(hello.pluginVersion, "1.0.0-test", "pluginVersion must match");
-    assert.deepEqual(hello.capabilities, { commandSigning: true });
-
-    service.stop();
-  });
-
-  test("CloudSocketService omits commandSigningRequired until enforcement opt-in is enabled", () => {
-    const service = new CloudSocketService(
-      createStubOptions({
-        getCapabilities: () =>
-          buildCommandSigningCapabilities({
-            commandSigningEnforcementEnabled: false,
-          }),
-      })
-    );
-    const fakeSocket = new FakeSocket();
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
-
-    const proto = Object.getPrototypeOf(service) as Record<
-      string,
-      (...args: unknown[]) => void
-    >;
-    proto.emitHello.call(service);
-
-    const hello = fakeSocket.emittedEvents.find(
-      (e) => e.name === "desktop.hello"
-    )?.payload as Record<string, unknown>;
-    assert.deepEqual(hello.capabilities, {
-      tools: {
-        claude: false,
-        codex: false,
-        git: false,
-        gh: false,
-        python3: false,
-      },
-      versions: {},
-      commandSigning: true,
-    });
-
-    service.stop();
-  });
-
-  test("CloudSocketService includes commandSigningRequired when enforcement opt-in is enabled", () => {
-    const service = new CloudSocketService(
-      createStubOptions({
-        getCapabilities: () =>
-          buildCommandSigningCapabilities({
-            commandSigningEnforcementEnabled: true,
-          }),
-      })
-    );
-    const fakeSocket = new FakeSocket();
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
-
-    const proto = Object.getPrototypeOf(service) as Record<
-      string,
-      (...args: unknown[]) => void
-    >;
-    proto.emitHello.call(service);
-
-    const hello = fakeSocket.emittedEvents.find(
-      (e) => e.name === "desktop.hello"
-    )?.payload as Record<string, unknown>;
-    assert.equal(
-      (hello.capabilities as Record<string, unknown>).commandSigningRequired,
-      true
-    );
+    assert.deepEqual(hello.capabilities, { versions: { git: "2.45.0" } });
 
     service.stop();
   });
@@ -370,9 +382,14 @@ describe("T-3.1: hello payload version fields", () => {
         agentSessionSync: true,
       }),
       {
-        computeTargetSigning: true,
         agentSessionSync: true,
       }
+    );
+    // ISS-12784: Desktop no longer reads the signing capability an older
+    // server still advertises.
+    assert.equal(
+      parseServerCapabilities({ computeTargetSigning: true }),
+      undefined
     );
     assert.equal(
       parseServerCapabilities({ computeTargetSigning: false }),
@@ -450,8 +467,9 @@ describe("T-3.1: hello payload version fields", () => {
       undefined
     );
     assert.equal((ack as unknown as Record<string, unknown>).userId, undefined);
+    // ISS-12784: an ack still carrying computeTargetSigning is accepted and the
+    // flag ignored.
     assert.deepEqual(ack.serverCapabilities, {
-      computeTargetSigning: true,
       agentSessionSync: true,
     });
     assert.deepEqual(ack.resumeFromSequence, { "cmd-1": 2 });
@@ -493,7 +511,10 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
     );
     const fakeSocket = new FakeSocket();
     (fakeSocket as unknown as { id: string }).id = "sock-FEA1404";
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
+    Object.assign(service as unknown as Record<string, unknown>, {
+      socket: fakeSocket,
+      stopped: false,
+    });
     (service as unknown as Record<string, unknown>).stopped = false;
     (service as unknown as Record<string, unknown>).awaitingHelloAck = true;
 
@@ -580,7 +601,10 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
     );
     const fakeSocket = new FakeSocket();
     (fakeSocket as unknown as { id: string }).id = "sock-diag";
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
+    Object.assign(service as unknown as Record<string, unknown>, {
+      socket: fakeSocket,
+      stopped: false,
+    });
     (service as unknown as Record<string, unknown>).stopped = false;
     (service as unknown as Record<string, unknown>).awaitingHelloAck = true;
 
@@ -694,60 +718,6 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
 
     assert.ok(onConsecutive);
     assert.equal(onOtherCounter, undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// T-6.2: Capability flags loopRunnerRefreshSupported and loopRunnerHeartbeatSupported
-// ---------------------------------------------------------------------------
-
-describe("T-6.2: capability flags loopRunnerRefreshSupported and loopRunnerHeartbeatSupported", () => {
-  test("desktop.hello capabilities include loopRunnerRefreshSupported=true and loopRunnerHeartbeatSupported=true", () => {
-    const service = new CloudSocketService(
-      createStubOptions({
-        getCapabilities: () => ({
-          tools: {
-            claude: false,
-            codex: false,
-            git: false,
-            gh: false,
-            python3: false,
-          },
-          versions: {},
-          commandSigning: true,
-          loopRunnerRefreshSupported: true,
-          loopRunnerHeartbeatSupported: true,
-        }),
-      })
-    );
-
-    const fakeSocket = new FakeSocket();
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
-
-    const proto = Object.getPrototypeOf(service) as Record<
-      string,
-      (...args: unknown[]) => void
-    >;
-    proto.emitHello.call(service);
-
-    const hello = fakeSocket.emittedEvents.find(
-      (e) => e.name === "desktop.hello"
-    )?.payload as Record<string, unknown>;
-    assert.ok(hello, "Expected desktop.hello to be emitted");
-
-    const caps = hello.capabilities as Record<string, unknown>;
-    assert.equal(
-      caps.loopRunnerRefreshSupported,
-      true,
-      "loopRunnerRefreshSupported must be true"
-    );
-    assert.equal(
-      caps.loopRunnerHeartbeatSupported,
-      true,
-      "loopRunnerHeartbeatSupported must be true"
-    );
-
-    service.stop();
   });
 });
 

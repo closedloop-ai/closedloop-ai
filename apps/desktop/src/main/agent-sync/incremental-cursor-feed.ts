@@ -47,6 +47,13 @@ export type IncrementalQueueFeedState = {
   incrementalQueuedIds: Set<string>;
   /** Ids already tracked by the backfill lane (ISS-4712 starvation guard). */
   backfillQueuedIds: Set<string>;
+  /**
+   * ISS-8041: the admitted row's `updated_at`, recorded per id so the durable
+   * cursor can be held at the OLDEST still-owed stamp instead of only being
+   * written once the queues drain. Absence is meaningful downstream — see
+   * `agent-session-sync-cursor-prefix.ts` — so it is written on admission only.
+   */
+  queuedUpdatedAtById: Map<string, string>;
 };
 
 /**
@@ -92,6 +99,7 @@ export function feedIncrementalCursorRows(
     }
     state.incrementalQueuedIds.add(row.id);
     state.incrementalQueue.push(row.id);
+    state.queuedUpdatedAtById.set(row.id, row.updated_at);
     newlyQueued.push(row.id);
   }
 

@@ -7,13 +7,20 @@
  * regression on exactly the rows this lane means to enrich).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
+import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import {
+  SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES,
   SYNCED_COMPONENT_VARIANTS_MAX,
   SYNCED_COMPONENT_VARIANTS_MAX_SERIALIZED_BYTES,
   SyncedComponentVariantsTruncatedReason,
   serializedJsonUtf8ByteSize,
 } from "@repo/api/src/types/synced-component-content";
+import {
+  SYNTHETIC_GITHUB_TOKEN,
+  SYNTHETIC_GOOGLE_TOKEN,
+} from "@repo/lib/security/synthetic-secrets.test-helpers";
+import { test } from "vitest";
 import { loadSyncedComponentRows } from "../src/main/database/component-sync-source.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 
@@ -140,6 +147,61 @@ test("carries a retained variant and never re-sends the primary revision", async
   assert.equal(component.contentHash, "hash-primary");
 });
 
+test("ISS-4965: redacts secrets in the primary body and every variant body", async () => {
+  const primary = `PRIMARY ${SYNTHETIC_GITHUB_TOKEN}`;
+  const variant = `VARIANT ${SYNTHETIC_GITHUB_TOKEN}`;
+  const { prisma } = fakePrisma(
+    [componentRow({ component_kind: "skill", content: primary })],
+    [
+      versionRow({
+        component_kind: "skill",
+        content_hash: "hash-variant",
+        content: variant,
+      }),
+    ]
+  );
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.equal(component.content, "PRIMARY [REDACTED:ghp]");
+  assert.equal(component.variants?.[0].content, "VARIANT [REDACTED:ghp]");
+  assert.equal(component.contentHash, "hash-primary");
+  // Perrin, 2026-10-05: each redacted body carries the usage digest of the text
+  // as written, which its usage rows are stamped with.
+  assert.equal(component.usageScopeHash, rawUsageDigest(primary));
+  assert.equal(component.variants?.[0].usageScopeHash, rawUsageDigest(variant));
+});
+
+test("ISS-4965: a clean body sends no usage digest", async () => {
+  const { prisma } = fakePrisma(
+    [componentRow()],
+    [versionRow({ content_hash: "hash-variant", content: "VARIANT BODY" })]
+  );
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.equal(Object.hasOwn(component, "usageScopeHash"), false);
+  assert.equal(
+    Object.hasOwn(component.variants?.[0] ?? {}, "usageScopeHash"),
+    false
+  );
+  assert.equal(component.variants?.[0].content, "VARIANT BODY");
+});
+
+test("ISS-4965: clamps the redacted body, so a marker cannot push it past the budget", async () => {
+  const tail = ` ${SYNTHETIC_GOOGLE_TOKEN}`;
+  const raw = `${"x".repeat(
+    SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES - tail.length
+  )}${tail}`;
+  assert.equal(
+    serializedJsonUtf8ByteSize(raw),
+    SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES
+  );
+  const { prisma } = fakePrisma([componentRow({ content: raw })], []);
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.ok(
+    serializedJsonUtf8ByteSize(component.content ?? "") <=
+      SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES
+  );
+  assert.ok(!component.content?.includes(SYNTHETIC_GOOGLE_TOKEN));
+});
+
 test("stops filling variants at the serialized-byte budget instead of over-filling the component", async () => {
   // Two revisions that each nearly exhaust the variant budget: the first fits,
   // the second must be dropped rather than pushing the component past the
@@ -195,7 +257,7 @@ test("carries an EMPTY retained revision — it is a real hash, not a missing bo
   const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
   // The collector hashes and persists an empty definition as a valid version
   // row, so a falsy-body skip silently withheld a real retained hash from the
-  // cloud. Only a NULL column means "no body" (wongk, #4295).
+  // cloud. Only a NULL column means "no body" (whitlockk, #4295).
   assert.deepEqual(
     component.variants?.map((variant) => variant.contentHash),
     ["hash-empty", "hash-real"]
@@ -227,7 +289,7 @@ test("caps candidates per family IN SQL, before any body column is read", async 
   // agent_component_versions is append-only per hash, so a churned definition
   // can accumulate unboundedly many full bodies. The first pass must rank and
   // cut per family WITHOUT selecting `content`; only the survivors get bodies
-  // fetched (wongk, #4295).
+  // fetched (whitlockk, #4295).
   const [identityQuery, bodyQuery] = versionQueries;
   assert.ok(identityQuery?.includes("ROW_NUMBER() OVER"));
   assert.ok(
@@ -332,7 +394,7 @@ test("matches variants to the component family, not across identities", async ()
 test("ISS-5029: states `variantsTruncated: false` when no cap bound", async () => {
   // Two revisions, both shipped. Nothing was dropped, so the marker must be
   // explicitly FALSE — a flag that is always set is as useless as one that never
-  // is. #4391 (wongk): a marker-aware packer STATES the negative rather than
+  // is. #4391 (whitlockk): a marker-aware packer STATES the negative rather than
   // omitting it, because the cloud writer reserves omission for a desktop that
   // predates the marker and leaves such a row's stored value untouched. Omitting
   // here would make this packer indistinguishable from that one and strand a
@@ -379,7 +441,7 @@ test("ISS-5029: sets `variantsTruncated` when the per-family ENTRY cap binds", a
   const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
   assert.equal(component.variants?.length, SYNCED_COMPONENT_VARIANTS_MAX);
   assert.equal(component.variantsTruncated, true);
-  // #4391 (wongk): the entry cap, like the SQL rank cap, cannot bind unless the
+  // #4391 (whitlockk): the entry cap, like the SQL rank cap, cannot bind unless the
   // family holds more revisions than one sync can carry — so it reports
   // `family_cap`, the one reason the cloud can reconcile into a proof.
   assert.equal(
@@ -423,7 +485,7 @@ test("ISS-5029: sets `variantsTruncated` when the serialized-byte budget binds",
   const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
   assert.equal(component.variants?.length, 1);
   assert.equal(component.variantsTruncated, true);
-  // #4391 (wongk): reported DISTINCTLY from a family cap. This stop says nothing
+  // #4391 (whitlockk): reported DISTINCTLY from a family cap. This stop says nothing
   // about how many revisions the device holds — here it binds at ONE shipped
   // revision out of two — so the cloud must not reconcile it into a proof that
   // it is missing something. Labelling it `family_cap` would resurrect the false
@@ -435,7 +497,7 @@ test("ISS-5029: sets `variantsTruncated` when the serialized-byte budget binds",
 });
 
 test("ISS-5029: a rank-capped family that ALSO stops on budget keeps the stronger family-cap reason", async () => {
-  // #4391 (wongk): both caps can bind on one component, and the two are not
+  // #4391 (whitlockk): both caps can bind on one component, and the two are not
   // equally informative. `family_cap` bounds the device's holdings and is the
   // only reason the cloud can prove anything from; `byte_budget` bounds nothing.
   // The budget stop happens LAST in the packer, so a naive last-writer-wins
@@ -680,4 +742,17 @@ function isRankableVersionRow(row: VersionRow): boolean {
     typeof contentHash === "string" &&
     contentHash.length > 0
   );
+}
+
+/**
+ * ISS-4965: the digest the cloud's version-usage read matches usage rows on,
+ * computed straight from `computeDefinitionHash` over the RAW body so a
+ * regression in the production helper cannot move both sides at once.
+ */
+function rawUsageDigest(body: string): string {
+  return computeDefinitionHash({
+    frontmatter: "",
+    body,
+    kind: AgentComponentKind.Skill,
+  }).definitionHash;
 }

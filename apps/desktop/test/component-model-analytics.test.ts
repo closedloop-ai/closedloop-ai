@@ -11,8 +11,8 @@
  */
 
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
 import { normalizeComponentKey } from "@repo/api/src/types/agent-component-analytics";
+import { afterAll, test } from "vitest";
 import { rawKeyInClause } from "../src/main/dashboard/hash-scope-predicates.js";
 import { matchingUsageRawKeys } from "../src/main/dashboard/shared-agent-components-api.js";
 import { localDay } from "../src/main/database/db-helpers.js";
@@ -29,7 +29,7 @@ process.env.TZ = "America/Chicago";
 // Restore the exact previous TZ so a co-located runner mode (files sharing one
 // process) doesn't leak Chicago into later tests, per the root AGENTS.md Test
 // Practices rule (unset → delete the property, not assign "undefined").
-after(() => {
+afterAll(() => {
   if (originalTz === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {

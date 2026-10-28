@@ -37,7 +37,6 @@ import {
   LayoutDashboardIcon,
   type LucideIcon,
   PlusIcon,
-  RotateCcwIcon,
   SearchIcon,
   SquareCheckIcon,
   UsersIcon,
@@ -62,7 +61,6 @@ const navIcons: Record<NavIconName, LucideIcon> = {
   agents: BotIcon,
   packs: BlocksIcon,
   insights: BarChart3,
-  loops: RotateCcwIcon,
   "agent-monitoring": BarChart3,
   judges: BarChart3,
 };

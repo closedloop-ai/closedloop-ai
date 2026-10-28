@@ -14,8 +14,10 @@ import type { AuthContext } from "@/lib/auth/with-auth";
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params ?? Promise.resolve({})),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context?.params ?? Promise.resolve({})),
 }));
 
 vi.mock("@/app/onboarding/service");

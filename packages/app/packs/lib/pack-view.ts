@@ -25,9 +25,7 @@ import type { Harness } from "@repo/app/agents/lib/session-types";
 import type { PackInstallState } from "./install-state";
 import type { PackComponentInstallMatrix } from "./pack-install-matrix";
 
-// ---------------------------------------------------------------------------
 // Content kinds (superset)
-// ---------------------------------------------------------------------------
 
 /**
  * The full superset of kinds a pack (plugin) can bundle. The first five are the
@@ -116,9 +114,7 @@ export type PackContentEntry = {
   installState?: PackInstallState | null;
 };
 
-// ---------------------------------------------------------------------------
 // People (installers, activity actors)
-// ---------------------------------------------------------------------------
 
 /** A team member rendered in installer stacks, usage rosters, and the activity feed. */
 export type PackUser = {
@@ -126,8 +122,6 @@ export type PackUser = {
   name: string;
   initials: string;
   avatarUrl?: string | null;
-  /** Stable accent color for the avatar (hex). */
-  color?: string | null;
 };
 
 export type PackActivityEvent = {
@@ -141,9 +135,7 @@ export type PackActivityEvent = {
   agoLabel: string;
 };
 
-// ---------------------------------------------------------------------------
 // Multiplayer / analytics blocks (optional; present per context)
-// ---------------------------------------------------------------------------
 
 /**
  * Canonical org-wide adoption, sourced from the agent-component analytics
@@ -151,12 +143,20 @@ export type PackActivityEvent = {
  * usage" is who has actually used the pack across the org and on how many devices.
  */
 export type PackTeamUsage = {
-  /** Teammates who have used the pack (attributed owner + collaborators). */
-  installers: PackUser[];
+  /**
+   * Teammates who have used the pack.
+   *
+   * OMITTED when the producer could not compute a roster — a version-skewed
+   * response, or a local reader with no org-wide inventory. An empty ARRAY is a
+   * measured empty: the producer looked and found nobody. Rendering the two the
+   * same way is what made a pack with real device adoption read `Used by (0)`,
+   * so keep them distinct all the way to the render.
+   */
+  installers?: PackUser[];
   /** Optional roster of org members without the pack (only when a source exists). */
   notInstalled?: PackUser[];
-  /** Distinct teammates who have used it. */
-  installedCount: number;
+  /** Distinct teammates who have used it; omitted when the roster is unavailable. */
+  installedCount?: number;
   /** Active org-member denominator for the adoption ring, when known. */
   teamSize?: number;
   /** Adoption breadth — distinct compute targets (devices) that have observed it. */
@@ -174,11 +174,9 @@ export type PackTeamUsage = {
  * when the baseline is not computable (rendered without a delta, never faked).
  *
  * Six of these fields are exposed as cards (locPerDollar, successRate,
- * tokenEfficiency, invocations, sessions, mergedPrs). `qualityScore` is computed
- * best-effort (session → source loop → artifact evaluation → judge score) but is
- * intentionally NOT rendered yet: most sessions carry no attached evaluation
- * until judging is wired deeper into the UX, so it stays `null` for now and the
- * card lights up with zero backend change once scores populate.
+ * tokenEfficiency, invocations, sessions, mergedPrs). `qualityScore` is
+ * intentionally NOT rendered: it was derived through a session's source loop,
+ * which PRD-795 removed, so the API reports it as `null`.
  */
 export type PackPerformance = {
   /** Merged thousands-of-lines-of-code per dollar; null when not computable. */
@@ -213,6 +211,15 @@ export type PackPerformance = {
    * the same cap while unable to report it.
    */
   mergedPrsTruncated?: boolean;
+  /**
+   * ISS-9853: how many baseline sessions the success-rate comparator was
+   * SAMPLED from, when that sample was smaller than the window — the
+   * pass-through of `CohortDeliveryMetrics.baselineSampleSize`, whose tri-state
+   * semantics (`resolveBaselineSampleCoverage`) this field keeps. `null` means
+   * the comparator was not a strict sample; absence means the producer did not
+   * say.
+   */
+  baselineSampleSize?: number | null;
   /**
    * Best-effort avg judge score (0–10) over the pack's sessions. Computed but
    * NOT rendered yet (sparse until judging is integrated); null for most packs.
@@ -272,9 +279,7 @@ export type PackDistribution = {
   adoptionLoaded: boolean;
 };
 
-// ---------------------------------------------------------------------------
 // The view-model
-// ---------------------------------------------------------------------------
 
 export type PackView = {
   id: string;
@@ -331,24 +336,40 @@ export type PackView = {
   installMatrix?: PackComponentInstallMatrix[] | null;
 };
 
-// ---------------------------------------------------------------------------
 // Small shared derivations
-// ---------------------------------------------------------------------------
 
 /** Team install count (falls back to the installer roster length). */
 export function installCount(pack: PackView): number {
+  return installCountOrUnavailable(pack) ?? 0;
+}
+
+/**
+ * Team install count, or `null` when no producer computed a roster.
+ *
+ * {@link installCount} floors that to `0`, which is right for sorting and
+ * thresholds and wrong for a READOUT: "0 teammates use this" is a claim, and an
+ * unavailable roster has not made it. Display sites read this one and dash.
+ */
+export function installCountOrUnavailable(pack: PackView): number | null {
   return (
-    pack.teamUsage?.installedCount ?? pack.teamUsage?.installers.length ?? 0
+    pack.teamUsage?.installedCount ?? pack.teamUsage?.installers?.length ?? null
   );
 }
 
-/** Adoption share as a 0–100 percentage, or null when team size is unknown. */
+/**
+ * Adoption share as a 0–100 percentage, or null when it cannot be computed —
+ * an unknown team size, or an unavailable roster. The numerator must come from
+ * {@link installCountOrUnavailable}, not {@link installCount}: flooring to `0`
+ * would render "0% of the team" and an empty ring off a roster no producer
+ * computed, which is the same false zero in percentage form.
+ */
 export function adoptionShare(pack: PackView): number | null {
   const size = pack.teamUsage?.teamSize ?? 0;
-  if (size <= 0) {
+  const installs = installCountOrUnavailable(pack);
+  if (size <= 0 || installs === null) {
     return null;
   }
-  return Math.round((installCount(pack) / size) * 100);
+  return Math.round((installs / size) * 100);
 }
 
 /** Slope of the install trend — how fast adoption is climbing this window. */
@@ -392,9 +413,7 @@ export function trendingPackIds(packs: readonly PackView[]): Set<string> {
   );
 }
 
-// ---------------------------------------------------------------------------
 // Same-name disambiguation (FEA-3972)
-// ---------------------------------------------------------------------------
 
 const COLLAPSE_WHITESPACE = /\s+/g;
 const CATEGORY_TOKEN_SEPARATOR = /[\s_-]+/;

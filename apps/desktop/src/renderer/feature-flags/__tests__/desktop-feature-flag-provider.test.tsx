@@ -9,23 +9,19 @@ import {
 import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { SESSION_STATUS_SYNC_BADGE_TEST_ID } from "@repo/app/agents/lib/session-sync-presentation";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deferred } from "../../../../test/deferred.js";
-import { DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
 import { DesktopFeatureFlagProvider } from "../desktop-feature-flag-provider";
 
-const UNKNOWN_SHARED_FLAG_KEY = "sharedDevOnlyFlag";
 // ISS-5279: the row's own Status pill, marked as carrying a sync presentation.
 // There is no separate "Syncing" badge any more — that WAS the duplicate.
 const STATUS_BADGE_TEST_ID = SESSION_STATUS_SYNC_BADGE_TEST_ID;
 const PULSE_RING_CLASS_RE = /motion-safe:animate-status-pulse-ring/;
 const SYNCING_LABEL_REGEX = /^Syncing$/;
-// Every default data column EXCEPT Status — the View-menu state wongk's
+// Every default data column EXCEPT Status — the View-menu state whitlockk's
 // hidden-column case describes.
 //
 // ISS-5666: `qualifiers` is listed explicitly. This set means "everything but
@@ -53,76 +49,26 @@ const _DESKTOP_LOCAL_ONLY_LABEL = getCloudSyncDisclosureCopy(
 ).label;
 let originalDesktopApiDescriptor: PropertyDescriptor | undefined;
 
-describe("DesktopFeatureFlagProvider", () => {
-  beforeEach(() => {
-    originalDesktopApiDescriptor = Object.getOwnPropertyDescriptor(
-      window,
-      "desktopApi"
-    );
-  });
+beforeEach(() => {
+  originalDesktopApiDescriptor = Object.getOwnPropertyDescriptor(
+    window,
+    "desktopApi"
+  );
+});
 
-  afterEach(() => {
-    if (originalDesktopApiDescriptor) {
-      Object.defineProperty(window, "desktopApi", originalDesktopApiDescriptor);
-    } else {
-      Reflect.deleteProperty(window, "desktopApi");
-    }
-    vi.restoreAllMocks();
-  });
-
-  it("keeps default-off desktop flags disabled while settings load in dev", async () => {
-    const runtime = deferred<unknown>();
-    const flags = deferred<unknown>();
-    installDesktopApi({
-      flags: flags.promise,
-      runtimeStatus: runtime.promise,
-    });
-
-    renderFeatureProbe();
-
-    expect(screen.getByTestId("agent-coaching").textContent).toBe("disabled");
-    expect(screen.getByTestId("shared-dev").textContent).toBe("disabled");
-
-    runtime.resolve({ isPackaged: false });
-
-    await waitFor(() =>
-      expect(screen.getByTestId("shared-dev").textContent).toBe("enabled")
-    );
-    expect(screen.getByTestId("agent-coaching").textContent).toBe("disabled");
-
-    flags.resolve({ flags: [] });
-
-    await waitFor(() =>
-      expect(screen.getByTestId("agent-coaching").textContent).toBe("disabled")
-    );
-  });
-
-  it("uses explicit persisted desktop flag values when they arrive", async () => {
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [
-          {
-            key: DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY,
-            value: true,
-          },
-        ],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: false }),
-    });
-
-    renderFeatureProbe();
-
-    await waitFor(() =>
-      expect(screen.getByTestId("agent-coaching").textContent).toBe("enabled")
-    );
-    expect(screen.getByTestId("shared-dev").textContent).toBe("enabled");
-  });
+afterEach(() => {
+  if (originalDesktopApiDescriptor) {
+    Object.defineProperty(window, "desktopApi", originalDesktopApiDescriptor);
+  } else {
+    Reflect.deleteProperty(window, "desktopApi");
+  }
+  vi.restoreAllMocks();
 });
 
 // ISS-4774: prove the DESKTOP adapter drives the shared `SyncedSessionsTable`
-// fold, so the feature can't render one way on web and another on desktop. These
-// tests use a packaged build (isPackaged: true, dev fallback off) so the shared
-// derivation, not a dev fallback, is what drives the render.
+// fold, so the feature can't render one way on web and another on desktop. Every
+// gate here is CLOSED — after ISS-8753 there is no build-type fallback and no
+// local registry to seed — so the shared derivation is what drives the render.
 describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions table on desktop", () => {
   // ISS-5366: with `sessions-honest-unknown-states` retired ON the row's
   // DISPLAYED status is folded against the staleness cutoff, and the sync fold
@@ -182,12 +128,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
   }
 
   it("ONE Status pill, still labelled 'Active', pulsing — no second pill and no dot (ISS-5279)", async () => {
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopSessionsTable();
 
@@ -200,7 +141,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // dimension, never a Status value.
     expect(statusBadge.textContent).toContain("Active");
     expect(statusBadge.className).toMatch(PULSE_RING_CLASS_RE);
-    // The duplicate Mike filed repeatedly: no second "Syncing" pill…
+    // The duplicate Marisol filed repeatedly: no second "Syncing" pill…
     expect(screen.queryByText(SYNCING_LABEL_REGEX)).toBeNull();
     // …and no separate dot either.
     expect(screen.queryByTestId("session-liveness-dot")).toBeNull();
@@ -214,12 +155,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // claim is "an upload is in flight" — says nothing. The verdict is not lost:
     // it is the Name cell's disposition badge, which the fold only suppresses
     // for a row that IS uploading.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(
       createAgentSessionListItemFixture({
@@ -244,12 +180,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // The one rendering that is allowed to look like "done", because it is. If
     // this row grew a marker, "no marker" would stop meaning "finished" and the
     // pulse's stop would be uninterpretable again.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(
       createAgentSessionListItemFixture({
@@ -276,12 +207,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // into, so the badge is now asserted ABSENT — a creep-back guard. What this
     // case still proves is the part that matters: the row keeps its OWN run
     // status ("Active") rather than being repainted by a fold it must not enter.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(
       createAgentSessionListItemFixture({
@@ -300,7 +226,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
   });
 
   it("the Status column hidden: the fold stands down, and no sync chip is left behind on the row (ISS-4848)", async () => {
-    // wongk: with Status hidden from the View menu the desktop grid renders no
+    // whitlockk: with Status hidden from the View menu the desktop grid renders no
     // Status cell, so the folded pill has nowhere to live — and the fold also
     // suppressed the name-cell badge, leaving an uploading row with no sync
     // signal anywhere. The fold now gates on Status visibility on BOTH adapters.
@@ -308,12 +234,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // ISS-5770 removed the `Signals` column the inline pill was handed back to,
     // so it is asserted absent rather than present. The stood-down fold — no
     // Status pill, no pulse — is what this case still proves.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(uploadingItem, VISIBLE_COLUMNS_WITHOUT_STATUS);
 
@@ -342,12 +263,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // third flag. ISS-5770 then removed the `Signals` column both chips rendered
     // into, so the cap no longer has anything to arbitrate on the list: neither
     // chip renders, which is asserted below.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(uploadingItem, VISIBLE_COLUMNS_WITHOUT_STATUS);
 
@@ -367,12 +283,7 @@ describe("DesktopFeatureFlagProvider — ISS-4774 folds the shared sessions tabl
     // in the cloud at all ("Local only") — a different fact, with different copy
     // (#4150). The fold keys on the transcript verdict, so this row keeps its
     // honest inline pill.
-    installDesktopApi({
-      flags: Promise.resolve({
-        flags: [],
-      }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
 
     renderDesktopTable(
       createAgentSessionListItemFixture({
@@ -441,10 +352,7 @@ describe("DesktopFeatureFlagProvider — ISS-5282 rehomes the row qualifiers on 
    * re-gated it.
    */
   function renderDesktopQualifiers() {
-    installDesktopApi({
-      flags: Promise.resolve({ flags: [] }),
-      runtimeStatus: Promise.resolve({ isPackaged: true }),
-    });
+    installClosedFlagBridge();
     const memoryNavigation = createMemoryNavigation({ orgSlug: "org-test" });
     return render(
       <DesktopFeatureFlagProvider>
@@ -468,7 +376,7 @@ describe("DesktopFeatureFlagProvider — ISS-5282 rehomes the row qualifiers on 
     // with the column. What survives is the half that still has to hold on
     // DESKTOP: the lead cell is the session name and nothing else.
     //
-    // That contract is the whole point of ISS-5666 — Mike asked three times for
+    // That contract is the whole point of ISS-5666 — Marisol asked three times for
     // the pills to leave that cell — and removing their new home must not hand
     // them back to it. Asserted with the row on screen so an unrendered row
     // cannot satisfy it vacuously.
@@ -487,42 +395,18 @@ describe("DesktopFeatureFlagProvider — ISS-5282 rehomes the row qualifiers on 
   });
 });
 
-function renderFeatureProbe() {
-  return render(
-    <DesktopFeatureFlagProvider>
-      <FeatureProbe
-        flagKey={DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY}
-        testId="agent-coaching"
-      />
-      <FeatureProbe flagKey={UNKNOWN_SHARED_FLAG_KEY} testId="shared-dev" />
-    </DesktopFeatureFlagProvider>
-  );
-}
-
-function FeatureProbe({
-  flagKey,
-  testId,
-}: {
-  flagKey: string;
-  testId: string;
-}) {
-  const enabled = useFeatureFlagEnabled(flagKey);
-  return <div data-testid={testId}>{enabled ? "enabled" : "disabled"}</div>;
-}
-
-function installDesktopApi({
-  flags,
-  runtimeStatus,
-}: {
-  flags: Promise<unknown>;
-  runtimeStatus: Promise<unknown>;
-}) {
+/**
+ * A `window.desktopApi` with no auth or assignment bridge — the shape a unit
+ * harness actually stubs, and the one that settles every gate CLOSED: the auth
+ * store reports signed-out, so the assignment closes terminal-Unavailable.
+ *
+ * ISS-8753: it no longer stubs `getAllFlags`/`getRuntimeStatus`, because the
+ * provider no longer reads them. A stub that still seeded a local registry here
+ * would suggest these cases could be flipped from it; they cannot.
+ */
+function installClosedFlagBridge() {
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
-    value: {
-      getAllFlags: vi.fn(() => flags),
-      getRuntimeStatus: vi.fn(() => runtimeStatus),
-      onFlagsChanged: vi.fn(),
-    },
+    value: {},
   });
 }

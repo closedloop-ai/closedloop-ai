@@ -63,12 +63,6 @@ function TreeNodeCard({ node }: { node: AgentTreeNode }) {
                 <span className="text-muted-foreground">Status:</span>{" "}
                 {node.agent.status}
               </div>
-              {node.agent.task && (
-                <div>
-                  <span className="text-muted-foreground">Task:</span>{" "}
-                  {node.agent.task}
-                </div>
-              )}
               {node.agent.currentTool && (
                 <div>
                   <span className="text-muted-foreground">Current tool:</span>{" "}

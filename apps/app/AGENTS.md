@@ -90,7 +90,7 @@ Legitimate: subscriptions (prefer `useSyncExternalStore`), post-render DOM measu
 
 ## E2E Coverage for UI Surfaces (MANDATORY)
 
-E2E coverage for user-facing surfaces is part of "done" here, the same way the Parker Protocol design pass is — not a soft suggestion. This extends the repo-wide Test Practices in the root `AGENTS.md`; it does not replace the unit/render coverage those rules already require.
+E2E coverage for user-facing surfaces is part of "done" here, the same way the Pascoe Protocol design pass is — not a soft suggestion. This extends the repo-wide Test Practices in the root `AGENTS.md`; it does not replace the unit/render coverage those rules already require.
 
 - **New UI surface ⇒ new e2e spec.** Any NEW user-facing surface you add to `apps/app` — a screen, route, drawer, dialog, panel, tab, or otherwise significant component — ships in the same change with a Playwright web-e2e spec that exercises its primary flow (navigate to it, drive its main interaction, assert the observable result), not just a mounted-in-isolation render test.
 - **UI bug fix ⇒ regression e2e.** Any UI BUG FIX adds an e2e test that reproduces the bug through the real surface and would fail without your fix, guarding the regression. Cover the aesthetic/visual dimension too when the bug was visual — assert the corrected rendered state (visible text, layout, empty/error/loading state), and add or update a visual-regression assertion where the surface already has one (see `e2e/VISUAL-REGRESSION.md`).

@@ -3,6 +3,7 @@ import { DesktopAuthorizeParamError } from "../desktop-authorize-params";
 import {
   getAuthorizeMintErrorCopy,
   getAuthorizeParamErrorCopy,
+  mintFailureEndsRun,
 } from "../desktop-authorize-state";
 
 describe("getAuthorizeParamErrorCopy", () => {
@@ -37,14 +38,24 @@ describe("getAuthorizeMintErrorCopy", () => {
     expect(copy.retryable).toBe(false);
   });
 
-  it.each([
-    undefined,
-    500,
-    503,
-  ])("maps a missing/5xx status (%s) to generic retryable copy", (status) => {
-    const copy = getAuthorizeMintErrorCopy(status);
+  it.each([undefined, 500, 503])(
+    "maps a missing/5xx status (%s) to generic retryable copy",
+    (status) => {
+      const copy = getAuthorizeMintErrorCopy(status);
 
-    expect(copy.title).toBe("Something went wrong");
-    expect(copy.retryable).toBe(true);
+      expect(copy.title).toBe("Something went wrong");
+      expect(copy.retryable).toBe(true);
+    }
+  );
+});
+
+describe("mintFailureEndsRun", () => {
+  it.each([400, 403])("ends the run on %s", (status) => {
+    expect(mintFailureEndsRun(status)).toBe(true);
+  });
+
+  // A 401 offers no retry, but the run has to outlive the re-sign-in.
+  it.each([401, 500, undefined])("keeps the run on %s", (status) => {
+    expect(mintFailureEndsRun(status)).toBe(false);
   });
 });

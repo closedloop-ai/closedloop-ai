@@ -59,7 +59,7 @@ describe("validateRequest", () => {
       },
     });
 
-    const result = await validateRequest(request);
+    const result = expectAccepted(await validateRequest(request));
 
     expect(result.body).toBe(requestBody);
     expect(result.signature).toBe("sha256=abcdef123456");
@@ -88,7 +88,7 @@ describe("validateRequest", () => {
       },
     });
 
-    const result = await validateRequest(request);
+    const result = expectAccepted(await validateRequest(request));
 
     expect(result.body).toBe(requestBody);
     expect(result.signature).toBeNull();
@@ -115,7 +115,7 @@ describe("validateRequest", () => {
       },
     });
 
-    const result = await validateRequest(request);
+    const result = expectAccepted(await validateRequest(request));
 
     expect(result.body).toBe(requestBody);
     expect(result.signature).toBe("sha256=abcdef123456");
@@ -142,10 +142,22 @@ describe("validateRequest", () => {
       },
     });
 
-    const result = await validateRequest(request);
+    const result = expectAccepted(await validateRequest(request));
 
     expect(result.body).toBe("");
     expect(result.signature).toBe("sha256=abcdef123456");
     expect(result.eventType).toBe("ping");
   });
 });
+
+/**
+ * Narrow `validateRequest` to its accepted arm. The over-cap arm carries no
+ * body/headers, so a regression that starts refusing these fixtures fails here
+ * instead of silently type-erroring at every assertion.
+ */
+function expectAccepted(result: Awaited<ReturnType<typeof validateRequest>>) {
+  if (result.oversized !== null) {
+    throw new Error("expected validateRequest to accept the request body");
+  }
+  return result;
+}

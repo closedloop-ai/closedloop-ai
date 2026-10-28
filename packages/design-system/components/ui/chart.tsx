@@ -9,22 +9,44 @@ import { cn } from "@closedloop-ai/design-system/lib/utils"
 // parent momentarily resolves to 0 (a `flex-1 min-h-0` chain that hasn't laid
 // out yet, a display:none → visible reveal, an expand modal, or a grid cell
 // before its track settles), it logs `width(-1) and height(-1) ... should be
-// greater than 0` and renders an invisible 0×0 chart. Two layers keep it honest:
+// greater than 0` and renders an invisible 0×0 chart. Three layers keep it
+// honest:
 //  1. `min-h-40` (= CHART_MIN_HEIGHT_PX) on the ChartContainer BOX itself, so a
 //     shrinkable host (`flex-1 min-h-0`) grows to fit the chart instead of the
 //     chart overflowing the card. The floor lives on the laid-out box the parent
 //     measures, not only the inner container.
 //  2. A matching `minHeight` on the inner ResponsiveContainer, so even mid-layout
 //     it always has real pixels to measure and never resolves to 0×0.
-// Height-owning callers (the dashboard chart cards fix an explicit `h-*`, or a
-// `flex-1` parent taller than the floor) still expand past this floor; the
-// `min-h-40` only sets a lower bound. Unconstrained callers keep the
-// `aspect-video` intrinsic height (which is >= the floor above ~285px wide).
+//     Height-owning callers (the dashboard chart cards fix an explicit `h-*`, or
+//     a `flex-1` parent taller than the floor) still expand past this floor; the
+//     `min-h-40` only sets a lower bound. Unconstrained callers keep the
+//     `aspect-video` intrinsic height (which is >= the floor above ~285px wide).
+//  3. `initialDimension` on the inner ResponsiveContainer. Independent of (1) and
+//     (2): Recharts' `SizeDetectorContainer` always mounts with a hardcoded
+//     `{ width: -1, height: -1 }` state (its own default, not something either
+//     layer above touches) and only replaces it with a real measurement inside a
+//     post-commit effect. Every ResponsiveContainer therefore renders once, on
+//     literally every mount in every environment (jsdom or a real browser), with
+//     that -1×-1 state before the effect runs — which is the exact "width(-1)
+//     and height(-1)" this warning names. `initialDimension` overrides Recharts'
+//     default so that first render already reports a real, positive guess (the
+//     same ~285×160 an `aspect-video` box at this floor resolves to); the effect
+//     still overwrites it with the true measured size right after, so responsive
+//     behavior is unchanged. Confirmed via `story-sweep.test.tsx`: every chart
+//     story logged this warning before `initialDimension` was added, and none do
+//     after, even though (1) and (2) were already in place.
 const CHART_MIN_HEIGHT_PX = 160
 const CHART_MIN_HEIGHT_CLASS = "min-h-40"
+// The `aspect-video` (16:9) width an ~160px-tall chart resolves to, matching the
+// "~285px wide" already documented above for the unconstrained/floor case.
+const CHART_INITIAL_WIDTH_PX = 285
 const RESPONSIVE_CONTAINER_DIMENSIONS = {
   minHeight: CHART_MIN_HEIGHT_PX,
   minWidth: 0,
+  initialDimension: {
+    width: CHART_INITIAL_WIDTH_PX,
+    height: CHART_MIN_HEIGHT_PX,
+  },
 } as const
 
 // Format: { THEME_NAME: CSS_SELECTOR }
@@ -107,7 +129,7 @@ function ChartContainer({
 }: React.ComponentProps<"div"> & {
   config: ChartConfig
   children: React.ReactElement
-  // FEA-4264 (wongk review): a semantic identity for the data this chart draws.
+  // FEA-4264 (whitlockk review): a semantic identity for the data this chart draws.
   // The interactive-legend hidden-series state lives in this component, so a
   // consumer that reuses one ChartContainer instance across a data-identity
   // change (e.g. a metric-picker preview swapping which metric it shows) would
@@ -122,7 +144,7 @@ function ChartContainer({
     () => new Set()
   )
   // Clear any hidden series when the chart's data identity changes, so toggle
-  // state never bleeds across a semantic reset (wongk review). Tracked via a ref
+  // state never bleeds across a semantic reset (whitlockk review). Tracked via a ref
   // + render-phase compare rather than an effect so the stale hidden set never
   // paints for a frame against the new identity.
   const previousResetKeyRef = React.useRef(resetKey)
@@ -257,8 +279,7 @@ ${colorConfig
   )
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const ChartTooltip = RechartsPrimitive.Tooltip as unknown as React.FC<any>
+const ChartTooltip = RechartsPrimitive.Tooltip
 
 function ChartTooltipContent({
   active,
@@ -275,17 +296,7 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
-}: // biome-ignore lint/suspicious/noExplicitAny: recharts types incompatible with React 19 JSX
-  any & {
-    hideLabel?: boolean
-    hideIndicator?: boolean
-    indicator?: "line" | "dot" | "dashed"
-    nameKey?: string
-    labelKey?: string
-    // Formats the per-series numeric value (e.g. currency, tokens) while keeping
-    // the default indicator + label layout. Falls back to `toLocaleString()`.
-    valueFormatter?: (value: number) => string
-  }) {
+}: ChartTooltipContentProps) {
   const { config } = useChart()
 
   const tooltipLabel = React.useMemo(() => {
@@ -340,8 +351,9 @@ function ChartTooltipContent({
       {!nestLabel ? tooltipLabel : null}
       <div className="grid gap-1.5">
         {payload
-          .filter((item: any) => item.type !== "none")
-          .map((item: any, index: number) => {
+          .map(requireTooltipRow)
+          .filter((item) => item.type !== "none")
+          .map((item, index) => {
             const key = `${nameKey || item.name || item.dataKey || "value"}`
             const itemConfig = getPayloadConfigFromPayload(config, item, key)
             // ISS-5362 (#4514 review): Recharts merges each `<Cell>`'s fill
@@ -361,7 +373,9 @@ function ChartTooltipContent({
 
             return (
               <div
-                key={item.dataKey}
+                key={
+                  item.dataKey === undefined ? undefined : String(item.dataKey)
+                }
                 className={cn(
                   "[&>svg]:text-muted-foreground flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5",
                   indicator === "dot" && "items-center"
@@ -434,8 +448,7 @@ function ChartTooltipContent({
   )
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const ChartLegend = RechartsPrimitive.Legend as unknown as React.FC<any>
+const ChartLegend = RechartsPrimitive.Legend
 
 function ChartLegendContent({
   className,
@@ -446,8 +459,7 @@ function ChartLegendContent({
   seriesKey,
   interactive = true,
 }: React.ComponentProps<"div"> & {
-    // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-    payload?: any[]
+    payload?: readonly ChartLegendEntry[]
     verticalAlign?: "top" | "bottom"
     hideIcon?: boolean
     // Config key used to resolve each entry's label/icon.
@@ -541,7 +553,7 @@ function ChartLegendContent({
               // toggles in Chip/filter-chip and give the hit target room
               // (threads #3, #7).
               "flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground outline-none transition-colors [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground",
-              "hover:bg-muted focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              "hover:bg-muted focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
             )}
             key={item.value}
             onClick={() => toggleSeries(identity)}
@@ -583,7 +595,7 @@ function ChartLegendContent({
         <button
           className={cn(
             "cursor-pointer rounded-md px-1.5 py-1 font-medium text-muted-foreground outline-none transition-colors",
-            "hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            "hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
           )}
           onClick={resetSeries}
           type="button"
@@ -608,8 +620,7 @@ function ChartLegendStatic({
   verticalAlign,
 }: {
   className?: string
-  // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-  entries: any[]
+  entries: readonly ChartLegendEntry[]
   config: ChartConfig
   hideIcon: boolean
   nameKey: string | undefined
@@ -661,8 +672,7 @@ function ChartLegendStatic({
 // the entry's `value`. Kept in lockstep with how each composite draws a series
 // so a legend click hides exactly the mark it labels.
 function resolveSeriesIdentity(
-  // biome-ignore lint/suspicious/noExplicitAny: recharts payload item is untyped
-  item: any,
+  item: ChartLegendEntry,
   seriesKey: string | undefined
 ): string {
   if (seriesKey && item?.payload && seriesKey in item.payload) {
@@ -767,6 +777,77 @@ function isPaintServerReference(fill: unknown): boolean {
   return (
     typeof fill === "string" && PAINT_SERVER_REFERENCE_PATTERN.test(fill)
   )
+}
+
+// Recharts' `ValueType` / `NameType`, which its index does not re-export.
+type ChartTooltipValue = number | string | ReadonlyArray<number | string>
+type ChartTooltipName = number | string
+
+/**
+ * One tooltip row as Recharts injects it (its `TooltipPayloadEntry`), with every
+ * field optional: Recharts types the injected array as `ReadonlyArray<any>`, and
+ * direct callers hand partial rows.
+ */
+type ChartTooltipRow = {
+  type?: string
+  name?: ChartTooltipName
+  dataKey?: RechartsPrimitive.DataKey<unknown>
+  value?: ChartTooltipValue | null
+  color?: string
+  // The chart's data row for this point; a `<Cell>` merges its `fill` in.
+  payload?: Record<string, unknown>
+}
+
+type ChartTooltipContentProps = {
+  active?: boolean
+  payload?: ReadonlyArray<ChartTooltipRow | null>
+  label?: React.ReactNode
+  className?: string
+  labelClassName?: string
+  color?: string
+  hideLabel?: boolean
+  hideIndicator?: boolean
+  indicator?: "line" | "dot" | "dashed"
+  nameKey?: string
+  labelKey?: string
+  // Recharts' `DefaultTooltipContentProps["labelFormatter"]` signature, over
+  // this component's own row type.
+  labelFormatter?: (
+    label: React.ReactNode,
+    payload: ReadonlyArray<ChartTooltipRow | null>
+  ) => React.ReactNode
+  formatter?(
+    value: ChartTooltipValue | null,
+    name: ChartTooltipName,
+    item: ChartTooltipRow,
+    index: number,
+    payload: ChartTooltipRow["payload"]
+  ): React.ReactNode
+  // Formats the per-series numeric value (e.g. currency, tokens) while keeping
+  // the default indicator + label layout. Falls back to `toLocaleString()`.
+  valueFormatter?: (value: number) => string
+}
+
+/**
+ * One legend entry as Recharts injects it (its `LegendPayload`), plus the
+ * chart-specific fields a composite puts on `payload` (a donut slice's key).
+ */
+type ChartLegendEntry = {
+  type?: RechartsPrimitive.LegendType
+  value?: string
+  color?: string
+  dataKey?: RechartsPrimitive.DataKey<unknown>
+  payload?: Record<string, unknown>
+}
+
+/** Reading a field off a null row throws the `TypeError` it always has. */
+function requireTooltipRow(
+  row: ChartTooltipRow | null
+): ChartTooltipRow {
+  if (row === null) {
+    throw new TypeError("Cannot read properties of null (reading 'type')")
+  }
+  return row
 }
 
 export {

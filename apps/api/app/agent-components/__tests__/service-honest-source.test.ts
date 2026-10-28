@@ -23,8 +23,11 @@ vi.mock("../../agent-sessions/service", () => ({
   },
 }));
 
+import {
+  buildInventoryRow,
+  buildServiceDb,
+} from "@/__tests__/support/agent-components/service-db-double";
 import { agentComponentsService } from "../service";
-import { buildInventoryRow, buildServiceDb } from "./service-db-double";
 
 function installDb(db: Record<string, unknown>) {
   const dbWithDefaults = buildServiceDb(db);

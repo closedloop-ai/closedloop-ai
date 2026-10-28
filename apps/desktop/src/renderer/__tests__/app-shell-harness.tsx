@@ -16,10 +16,8 @@
  * Because that hoisting runs above every import, this module's own
  * `../App` import still resolves against those mocks.
  */
-import {
-  AgentSessionState,
-  type AgentSessionsPageData,
-} from "@repo/api/src/types/agent-session";
+import type { AgentSessionsPageData } from "@repo/api/src/types/agent-session";
+import type { DesktopFeatureFlagAssignment } from "@repo/api/src/types/desktop-feature-flags";
 import {
   cleanup,
   configure,
@@ -28,13 +26,15 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, type Mock, vi } from "vitest";
 import {
   DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY,
-  DESKTOP_LABS_NAV_FEATURE_FLAG_KEY,
   DESKTOP_SESSION_DETAIL_READ_SOURCE_FEATURE_FLAG_KEY,
-  DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY,
 } from "../../shared/feature-flags";
+import {
+  DESKTOP_LABS_NAV_FEATURE_FLAG_KEY,
+  DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY,
+} from "../../shared/feature-flags-labs-detail";
 import { LOCAL_SESSION_SOURCE_STATUSES } from "../../shared/local-session-source-status";
 import type { SessionLimitsSnapshot } from "../../shared/session-limits-channel";
 import { DesktopNavigationApp } from "../App";
@@ -52,6 +52,7 @@ import {
   filterSessionsList,
   type ShellSessionsListRequest,
 } from "./app-shell-session-fixtures";
+import { deferredDomDumpElementError } from "./deferred-dom-dump-element-error";
 import { installLocalStorage } from "./local-storage-fixture";
 
 const activeNavigations = new Set<DesktopNavigation>();
@@ -88,7 +89,10 @@ export const TEST_TIMEOUT_MS = 30_000;
  */
 export function setupAppShellSuite(): void {
   vi.setConfig({ hookTimeout: TEST_TIMEOUT_MS, testTimeout: TEST_TIMEOUT_MS });
-  configure({ asyncUtilTimeout: ASYNC_SETTLE_TIMEOUT_MS });
+  configure({
+    asyncUtilTimeout: ASYNC_SETTLE_TIMEOUT_MS,
+    getElementError: deferredDomDumpElementError,
+  });
 
   beforeAll(() => {
     Object.defineProperty(Element.prototype, "scrollIntoView", {
@@ -113,17 +117,13 @@ export function setupAppShellSuite(): void {
   beforeEach(() => {
     restoreResizeObserver = installResizeObserver();
     restoreLocalStorage = installLocalStorage();
-    // ISS-5112 Step F: these suites model the STEADY-STATE shell — routing,
-    // breadcrumbs, sidebar search, the Labs gate — on an install that has run
-    // before. Say so, rather than leaving it implied by an empty store.
+    // These suites model the STEADY-STATE shell — routing, breadcrumbs, sidebar
+    // search, the Labs gate — on an install that has run before. Say so, rather
+    // than leaving it implied by an empty store.
     //
-    // It is load-bearing now that the guest-landing gate holds the shell back on
-    // a first run until the flag snapshot lands: without the seed every case
-    // here is a "first launch", and the hold renders a bare background over the
-    // whole shell. That collides head-on with the ISS-5037 Labs deep-link hold,
-    // whose own case deliberately keeps `getAllFlags` open forever — two holds
-    // for one window, and the coarser one wins. A real deep-linker has launched
-    // before, so production never stacks them.
+    // It is load-bearing: without the seed every case here is a "first launch",
+    // and the ISS-10195 guided onboarding run opens its blocking welcome modal
+    // over the shell these cases assert on.
     window.localStorage.setItem(dashboardOnboardedStorageKey, "1");
     installDesktopApi();
   });
@@ -223,6 +223,22 @@ function installResizeObserver(): () => void {
  * gate, so the stub seeds the flag ON by default; the gate's own off/on
  * behavior is asserted in the dedicated ISS-5037 cases below and in
  * `navigation/__tests__/nav-config-labs-gate.test.ts`.
+ *
+ * ISS-8753 — SEEDED AS AN ASSIGNMENT, not as a local registry snapshot. Desktop
+ * flag resolution is the signed-in user's PostHog assignment, and the retired
+ * `getAllFlags` registry read is gone from the provider entirely, so a stub that
+ * still served it would open nothing. This seeds the same
+ * {@link E2E_HARNESS_ASSIGNMENT_SUBJECT anonymous} assignment the Electron E2E
+ * harness is served, over the same `getE2eSeededFeatureFlags` bridge member, so
+ * the provider folds it through the real `readFeatureAssignment` boundary
+ * exactly as it folds a live reply.
+ *
+ * Deliberately the SEED member rather than `getDesktopFeatureFlags` plus a
+ * stubbed auth bridge: the seam short-circuits ahead of the auth path, so these
+ * suites keep the signed-out shell they have always rendered and this change
+ * moves only where the flag verdicts come from. `getAllFlags` is NOT stubbed
+ * here any more — a provider that regressed to the registry finds the member
+ * absent and fails loudly instead of quietly resolving from it.
  */
 export function installDesktopApi({
   labsNav = true,
@@ -230,6 +246,7 @@ export function installDesktopApi({
   flagsGate,
   sessionDetailReadSource = false,
   subscriptionSessionLimits = false,
+  assignmentFlags,
   getSessionLimits,
 }: {
   labsNav?: boolean;
@@ -241,9 +258,15 @@ export function installDesktopApi({
    */
   agentsNav?: boolean;
   /**
-   * ISS-5037: hold `getAllFlags` open until this settles, so a case can drive
+   * ISS-5037: hold the flag read open until this settles, so a case can drive
    * the shell's UNRESOLVED window (the startup race the Hold outcome protects)
    * rather than the immediate resolution every other case gets.
+   *
+   * ISS-8753: it now holds `getE2eSeededFeatureFlags`. An unanswered seam leaves
+   * the provider PENDING — `settled: false` is "not asked yet", which is
+   * distinct from an answered "no seed" — so `useDesktopFeatureFlagsResolved`
+   * stays false and the Hold outcome is reached, the same window the retired
+   * `getAllFlags` gate produced.
    */
   flagsGate?: Promise<void>;
   /**
@@ -260,13 +283,20 @@ export function installDesktopApi({
    */
   subscriptionSessionLimits?: boolean;
   /**
+   * ISS-8370: further verdicts layered onto the seeded assignment, for a suite
+   * whose subject is a gate this stub does not name (the program rollout key).
+   * The suite names the key; this harness never does.
+   */
+  assignmentFlags?: Record<string, boolean>;
+  /**
    * The snapshot bridge the sidebar footer reads. Omitted by default so shell
    * cases that say nothing about session limits do not accidentally mount them;
    * `session-limits-labs-gate.test.tsx` injects a spy to assert the flag-off
    * case performs no read at all.
    */
   getSessionLimits?: () => Promise<SessionLimitsSnapshot | null>;
-} = {}) {
+} = {}): { notifyRendererReady: Mock<() => void> } {
+  const notifyRendererReady = vi.fn();
   const items = [
     agentSessionListItem({
       id: "s-active",
@@ -286,13 +316,11 @@ export function installDesktopApi({
     agentSessionListItem({
       id: "s-pending",
       name: "Shell Pending Session",
-      state: AgentSessionState.PendingApproval,
       status: "active",
     }),
     agentSessionListItem({
       id: "s-blocked",
       name: "Shell Blocked Session",
-      state: AgentSessionState.Blocked,
       status: "failed",
     }),
     agentSessionListItem({
@@ -363,36 +391,40 @@ export function installDesktopApi({
           url: "http://127.0.0.1:0",
         })
       ),
-      getAllFlags: vi.fn(async () => {
+      getE2eSeededFeatureFlags: vi.fn(async () => {
         await flagsGate;
         return {
-          flags: [
-            { key: DESKTOP_LABS_NAV_FEATURE_FLAG_KEY, value: labsNav },
-            { key: DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY, value: agentsNav },
-            {
-              key: DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY,
-              value: subscriptionSessionLimits,
-            },
-            {
-              key: DESKTOP_SESSION_DETAIL_READ_SOURCE_FEATURE_FLAG_KEY,
-              value: sessionDetailReadSource,
-            },
-          ],
-        };
+          userId: E2E_HARNESS_ASSIGNMENT_SUBJECT,
+          resolved: true,
+          flags: {
+            [DESKTOP_LABS_NAV_FEATURE_FLAG_KEY]: labsNav,
+            [DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY]: agentsNav,
+            [DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY]:
+              subscriptionSessionLimits,
+            [DESKTOP_SESSION_DETAIL_READ_SOURCE_FEATURE_FLAG_KEY]:
+              sessionDetailReadSource,
+            ...assignmentFlags,
+          },
+        } satisfies DesktopFeatureFlagAssignment;
       }),
       ...(getSessionLimits ? { getSessionLimits } : {}),
       onDbChanged: vi.fn(() => () => undefined),
-      // FEA-4233: the local IPC trace-comments sink. Without it the shared
-      // comments-rail discovery read rejects, so the rail never reaches
-      // settled-empty; a resolving empty `list` lets it settle and fold to the
-      // slim re-open handle for these zero-comment sessions.
-      traceCommentsApi: {
-        create: vi.fn(),
-        delete: vi.fn(),
-        list: vi.fn(async () => []),
-        reply: vi.fn(),
-        update: vi.fn(),
-      },
+      notifyRendererReady,
     },
   });
+  return { notifyRendererReady };
 }
+
+/**
+ * The subject a harness-seeded assignment is reported as evaluated for.
+ *
+ * NOT correlated against an account, and cannot be: the provider reads a seeded
+ * assignment with a `null` subject — the boundary read's documented
+ * anonymous/pre-auth case, which is what these signed-out shell mounts actually
+ * are — so this value is a legible marker in a payload dump rather than an
+ * identity. It mirrors the main process's own
+ * `E2E_FEATURE_FLAG_ASSIGNMENT_SUBJECT` in spelling only; importing that
+ * constant would drag a `node:fs`-bearing main-process lifecycle module into a
+ * jsdom renderer suite for a string no assertion here depends on.
+ */
+const E2E_HARNESS_ASSIGNMENT_SUBJECT = "e2e-harness";

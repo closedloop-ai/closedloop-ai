@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Claude Code llm_request OTel spans, which arrive only with CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1; read only by the telemetry rollup."
+}

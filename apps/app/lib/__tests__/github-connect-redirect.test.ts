@@ -1,12 +1,18 @@
 import {
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DesktopSignInFraming,
+  DesktopSignInMethod,
   DesktopSignInProvider,
+  encodeDesktopEmailHint,
 } from "@repo/api/src/types/desktop-authorize-url";
 import { describe, expect, it } from "vitest";
 import {
   buildGitHubConnectRedirectUrl,
   GITHUB_CONNECT_DEFAULT_TARGET,
   GITHUB_CONNECT_REDIRECT_PARAM,
+  resolveDesktopEmailHintFromSearchParams,
+  resolveDesktopSignInFramingFromSearchParams,
+  resolveDesktopSignInMethodFromSearchParams,
   resolveDesktopSignInProviderFromSearchParams,
   resolveGitHubConnectRedirectFromSearchParams,
   resolveGitHubConnectRedirectTarget,
@@ -24,7 +30,7 @@ const APP_ORIGIN = "https://app.closedloop.ai";
 const DESKTOP_AUTHORIZE_SEARCH =
   "?code_challenge=abc123&code_challenge_method=S256&state=xyz789" +
   "&redirect_uri=http%3A%2F%2F127.0.0.1%3A51789%2Fcallback" +
-  "&gateway_id=gw-1&gateway_public_key=LS0tLS1CRUdJTg&device_name=Kris%20MacBook&platform=darwin";
+  "&gateway_id=gw-1&gateway_public_key=LS0tLS1CRUdJTg&device_name=Kerensa%20MacBook&platform=darwin";
 
 describe("shouldDeepLinkGitHubConnect", () => {
   it("intercepts the bare desktop authorize path", () => {
@@ -112,6 +118,177 @@ describe("buildGitHubConnectRedirectUrl", () => {
         DESKTOP_AUTHORIZE_QUERY_PARAMS.provider
       )
     ).toBe(false);
+  });
+
+  // ISS-5954 M2: dropping `email` at this hop would strand every email pick on
+  // the GitHub default — the wrong-door defect this issue exists to close.
+  it("carries the email method through to the deep link", () => {
+    const requestUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?state=xyz&provider=email`
+    );
+
+    expect(
+      buildGitHubConnectRedirectUrl(requestUrl).searchParams.get(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.provider
+      )
+    ).toBe(DesktopSignInMethod.Email);
+  });
+
+  // ISS-5954 M5: the prefill rides the email branch only, still encoded, and
+  // only when it decodes to a plausible address — a social pick or a mangled
+  // value must not carry an email across the hop.
+  it("carries a valid email hint on the email branch and drops it elsewhere", () => {
+    const hint = encodeDesktopEmailHint("kerensa+desktop@closedloop.ai");
+    const emailUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=email&email_hint=${hint}`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(emailUrl).searchParams.get(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint
+      )
+    ).toBe(hint);
+
+    const socialUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=google&email_hint=${hint}`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(socialUrl).searchParams.has(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint
+      )
+    ).toBe(false);
+
+    const mangledUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=email&email_hint=garbage`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(mangledUrl).searchParams.has(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint
+      )
+    ).toBe(false);
+  });
+
+  // ISS-5954 — the framing rides the email branch only, like the hint, and an
+  // unrecognized value dies at this hop.
+  it("carries a recognized framing on the email branch and drops it elsewhere", () => {
+    const emailUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=email&framing=sign-in`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(emailUrl).searchParams.get(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.framing
+      )
+    ).toBe(DesktopSignInFraming.SignIn);
+
+    const socialUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=google&framing=sign-in`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(socialUrl).searchParams.has(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.framing
+      )
+    ).toBe(false);
+
+    const mangledUrl = new URL(
+      `${APP_ORIGIN}/settings/integrations/desktop/authorize?provider=email&framing=sideways`
+    );
+    expect(
+      buildGitHubConnectRedirectUrl(mangledUrl).searchParams.has(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.framing
+      )
+    ).toBe(false);
+  });
+});
+
+describe("resolveDesktopEmailHintFromSearchParams", () => {
+  it("decodes a plausible hint and rejects everything else", () => {
+    const hint = encodeDesktopEmailHint("kerensa+desktop@closedloop.ai");
+    expect(
+      resolveDesktopEmailHintFromSearchParams({
+        email_hint: hint ?? undefined,
+      })
+    ).toBe("kerensa+desktop@closedloop.ai");
+    expect(resolveDesktopEmailHintFromSearchParams({})).toBeNull();
+    expect(
+      resolveDesktopEmailHintFromSearchParams({ email_hint: "garbage" })
+    ).toBeNull();
+  });
+
+  it("takes the first value of a repeated key", () => {
+    const first = encodeDesktopEmailHint("first@closedloop.ai");
+    const second = encodeDesktopEmailHint("second@closedloop.ai");
+    expect(
+      resolveDesktopEmailHintFromSearchParams({
+        email_hint: [first ?? "", second ?? ""],
+      })
+    ).toBe("first@closedloop.ai");
+  });
+});
+
+describe("resolveDesktopSignInFramingFromSearchParams", () => {
+  it("selects the framing the desktop named", () => {
+    expect(
+      resolveDesktopSignInFramingFromSearchParams({
+        framing: DesktopSignInFraming.SignIn,
+      })
+    ).toBe(DesktopSignInFraming.SignIn);
+    expect(
+      resolveDesktopSignInFramingFromSearchParams({
+        framing: DesktopSignInFraming.SignUp,
+      })
+    ).toBe(DesktopSignInFraming.SignUp);
+  });
+
+  it("defaults absent and unrecognized values to sign-up", () => {
+    expect(resolveDesktopSignInFramingFromSearchParams({})).toBe(
+      DesktopSignInFraming.SignUp
+    );
+    expect(
+      resolveDesktopSignInFramingFromSearchParams({ framing: "sideways" })
+    ).toBe(DesktopSignInFraming.SignUp);
+  });
+
+  it("takes the first value of a repeated key", () => {
+    expect(
+      resolveDesktopSignInFramingFromSearchParams({
+        framing: [DesktopSignInFraming.SignIn, DesktopSignInFraming.SignUp],
+      })
+    ).toBe(DesktopSignInFraming.SignIn);
+  });
+});
+
+describe("resolveDesktopSignInMethodFromSearchParams", () => {
+  it("selects the method the desktop named, email included", () => {
+    expect(
+      resolveDesktopSignInMethodFromSearchParams({ provider: "google" })
+    ).toBe(DesktopSignInMethod.Google);
+    expect(
+      resolveDesktopSignInMethodFromSearchParams({ provider: "email" })
+    ).toBe(DesktopSignInMethod.Email);
+  });
+
+  // Absent and unrecognized both mean "the flow this route has always started":
+  // a version-skewed desktop build sends nothing, and an unknown value must not
+  // strand the user on a flow this deploy cannot run.
+  it("falls back to GitHub for an absent or unknown value", () => {
+    expect(resolveDesktopSignInMethodFromSearchParams({})).toBe(
+      DesktopSignInMethod.GitHub
+    );
+    expect(
+      resolveDesktopSignInMethodFromSearchParams({ provider: "gitlab" })
+    ).toBe(DesktopSignInMethod.GitHub);
+    expect(resolveDesktopSignInMethodFromSearchParams({ provider: "" })).toBe(
+      DesktopSignInMethod.GitHub
+    );
+  });
+
+  // Matches the redirect_url resolver: an appended second copy must not be able
+  // to displace the value the desktop actually sent.
+  it("takes the first value of a repeated key", () => {
+    expect(
+      resolveDesktopSignInMethodFromSearchParams({
+        provider: ["email", "github"],
+      })
+    ).toBe(DesktopSignInMethod.Email);
   });
 });
 

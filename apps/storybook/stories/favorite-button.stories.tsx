@@ -1,61 +1,43 @@
 import { FavoriteButton } from "@repo/design-system/components/ui/favorite-button";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
+import type { ComponentProps } from "react";
 import { useState } from "react";
 
-function FavoriteButtonDemo({
-  initialFavorite,
-  size,
-  isPending = false,
-  addLabel,
-  removeLabel,
-}: {
-  initialFavorite: boolean;
-  size?: "sm" | "default";
-  isPending?: boolean;
-  addLabel?: string;
-  removeLabel?: string;
-}) {
-  const [isFavorite, setIsFavorite] = useState(initialFavorite);
-  const [toggleCount, setToggleCount] = useState(0);
-
+function FavoriteButtonStory({
+  isFavorite,
+  ...args
+}: ComponentProps<typeof FavoriteButton>) {
+  const [currentIsFavorite, setIsFavorite] = useState(isFavorite);
   return (
-    <div className="flex items-center gap-3 rounded-lg border p-4">
-      <FavoriteButton
-        addLabel={addLabel}
-        isFavorite={isFavorite}
-        isPending={isPending}
-        onToggle={(nextIsFavorite) => {
-          setIsFavorite(nextIsFavorite);
-          setToggleCount((current) => current + 1);
-        }}
-        removeLabel={removeLabel}
-        size={size}
-      />
-      <div className="space-y-1 text-sm">
-        <div className="font-medium">
-          {isFavorite ? "Marked as favorite" : "Not favorited"}
-        </div>
-        <div className="text-muted-foreground">
-          Toggle handler fired {toggleCount} times
-        </div>
-      </div>
-    </div>
+    <FavoriteButton
+      {...args}
+      isFavorite={currentIsFavorite}
+      onToggle={setIsFavorite}
+    />
   );
 }
 
 const meta = {
-  title: "Design System/Primitives/Favorite Button",
-  component: FavoriteButtonDemo,
-  tags: ["autodocs"],
+  title: "Primitives v1.0/Actions/Favorite Button",
+  component: FavoriteButton,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
   args: {
-    initialFavorite: false,
+    isFavorite: false,
     size: "sm",
     isPending: false,
   },
-} satisfies Meta<typeof FavoriteButtonDemo>;
+  // key remounts the story when the Controls panel changes `isFavorite`,
+  // re-seeding local state — plain React state, not a Storybook preview
+  // hook, so it works in every rendering context (Canvas AND the autodocs
+  // inline Docs page, where `useArgs()` previously threw at runtime).
+  render: (args) => (
+    <FavoriteButtonStory key={remountKey(args.isFavorite)} {...args} />
+  ),
+} satisfies Meta<typeof FavoriteButton>;
 
 export default meta;
 
@@ -65,13 +47,13 @@ export const Default: Story = {};
 
 export const Active: Story = {
   args: {
-    initialFavorite: true,
+    isFavorite: true,
   },
 };
 
 export const Pending: Story = {
   args: {
-    initialFavorite: true,
+    isFavorite: true,
     isPending: true,
   },
 };

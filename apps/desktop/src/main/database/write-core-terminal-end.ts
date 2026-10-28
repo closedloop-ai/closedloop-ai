@@ -4,8 +4,8 @@
  * terminal: advance its frozen `ended_at` when a fresh parse proves the run went
  * on longer, then heal its failed-vs-completed classification.
  *
- * Extracted from `importPhaseSessionAndMainAgent` in `write-core.ts` (a
- * grandfathered over-ceiling file) so the terminal-end rules live in one place
+ * Extracted from `importPhaseSessionAndMainAgent` in `write-core.ts` so the
+ * terminal-end rules live in one place
  * with their own tests, and so `write-core.ts` shrinks rather than grows.
  */
 
@@ -20,6 +20,7 @@ import {
   importedMainAgentStatus,
   resolveImportedSessionStatus,
 } from "./imported-session-status.js";
+import { readSessionSyncWatermarkTarget } from "./session-sync-watermark.js";
 
 /** The stored columns this reconciliation reads off the existing session row. */
 type ExistingTerminalSession = {
@@ -96,11 +97,18 @@ export async function reconcileTerminalSession(
     // completed/abandoned row healing to inactive) carries the matching
     // ends_with_error the reaper would later read.
     const reconciledEndsWithError = resolved === SESSION_STATUS.ERROR ? 1 : 0;
+    // ISS-8871: read AFTER the `ended_at` advance above, which may already have
+    // moved this row in this same transaction.
+    const healWatermark = await readSessionSyncWatermarkTarget(
+      tx,
+      session.sessionId,
+      now
+    );
     await tx.$executeRawUnsafe(
-      "UPDATE sessions SET status = $1, ended_at = COALESCE(ended_at, $2), updated_at = $3, ends_with_error = $4 WHERE id = $5",
+      "UPDATE sessions SET status = $1, ended_at = COALESCE(ended_at, $2), updated_at = COALESCE($3, updated_at), ends_with_error = $4 WHERE id = $5",
       resolved,
       reconciledEndedAt,
-      now,
+      healWatermark,
       reconciledEndsWithError,
       session.sessionId
     );
@@ -176,10 +184,18 @@ async function advanceTerminalEndedAt(
   if (advanced === null) {
     return null;
   }
+  // ISS-8871: the corrected duration only reaches the cloud if this write leaves
+  // the row selectable, so the watermark advances strictly forward rather than
+  // being assigned `now` — which no-ops whenever the row already sits there.
+  const endedAtWatermark = await readSessionSyncWatermarkTarget(
+    tx,
+    session.sessionId,
+    now
+  );
   await tx.$executeRawUnsafe(
-    "UPDATE sessions SET ended_at = $1, updated_at = $2 WHERE id = $3",
+    "UPDATE sessions SET ended_at = $1, updated_at = COALESCE($2, updated_at) WHERE id = $3",
     advanced,
-    now,
+    endedAtWatermark,
     session.sessionId
   );
   await tx.$executeRawUnsafe(

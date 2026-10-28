@@ -1,25 +1,25 @@
-import path from "node:path";
-import { parseGitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope";
-import type { GitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope-constants";
+import type { TelemetryHarnessName } from "@closedloop-ai/telemetry-contract/resource";
+import { Harness } from "@repo/lib/harness/types";
 import { app, ipcMain } from "electron";
-import { resolveBinaryFromLoginShellSync } from "../../server/shell-path.js";
 import { AGENT_MONITOR_PORT } from "../../shared/contracts.js";
+import { dropOnDbHostLifecycleError } from "../../shared/db-host-fire-and-forget.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import type { DesktopIngestProgressReport } from "../../shared/ingest-quarantine-contract.js";
 import type { StreamRunResult } from "../../shared/install-run-contract.js";
 import { isAgentMonitorHooksEnabled } from "../agent-monitor/agent-monitor-hooks.js";
 import { AgentHookListener } from "../agent-monitor/agent-monitor-listener.js";
 import { isClaudeLiveHookEnabled } from "../agent-monitor/claude-live-hook-flag.js";
-import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
-import {
-  getSharedBranchDetail,
-  getSharedBranches,
-} from "../branch/shared-branches-api.js";
+import type { SyncLaneBatchEmit } from "../agent-sync/sync-lane-cloud-health.js";
 import {
   type CollectorEnabledState,
   getActiveCollectionMode,
   type HooksInstalledState,
 } from "../collectors/engine/collection-mode.js";
 import { CollectorManager } from "../collectors/engine/collector-manager.js";
+import {
+  createE2eBootImportAbandonFault,
+  e2eBootImportAbandonPasses,
+} from "../collectors/engine/e2e-boot-import-abandon-seam.js";
 import {
   E2E_PARSE_QUARANTINE_CONFIG,
   isE2eParseQuarantineEnabled,
@@ -33,35 +33,60 @@ import { createMutualExclusivityMonitor } from "../collectors/engine/mutual-excl
 import { createUtilityProcessHistoricalParseRunner } from "../collectors/engine/utility-process-historical-parse-runner.js";
 import {
   createGoldenCollectors,
-  stageGoldenCorpus,
+  stageGoldenCorpusInto,
 } from "../collectors/golden/golden-collectors.js";
-import { detectBillingMode } from "../cost/billing-mode-detector.js";
 import type { MeteredUsageRow } from "../cost/reconciliation-worker.js";
-import { dropOnDbHostLifecycleError } from "../database/db-host/db-host-fire-and-forget.js";
+import { createIngestBatchResumeCursorStore } from "../database/ingest-batch-resume-cursor-store.js";
 import { createWiredStoreIntegrityProbe } from "../database/store-integrity-wiring.js";
-import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
-import { resolveGitHubResyncBranchIds } from "../github/github-resync-branch-resolution.js";
 import { sendToRendererWindow } from "../ipc/renderer-ipc.js";
 import { resolveLoopbackListenerPort } from "../lifecycle/loopback-port-isolation.js";
-import { attachPostBootMaintenanceSettle } from "../lifecycle/post-boot-maintenance-settle.js";
+import {
+  attachPostBootMaintenanceSettle,
+  createMaintenanceSettleNotifier,
+} from "../lifecycle/post-boot-maintenance-settle.js";
+import {
+  type OnboardingParseProgressReading,
+  readOnboardingParseProgress,
+} from "../onboarding/onboarding-parse-progress.js";
+import { ClaudeCodeSignalDropReason } from "../otel/claude-code-signal-drop.js";
 import type { CatalogFetchCoordinator } from "../packs/catalog-fetch-coordinator.js";
 import { streamRun } from "../packs/install-orchestrator.js";
 import { resolveInstalledPackVersion } from "../packs/installed-version.js";
 import type { PackScanCoordinator } from "../packs/pack-scan-coordinator.js";
 import * as packStore from "../packs/pack-store.js";
+import { subscribeParsePolicyFlips } from "../parse-policy/parse-policy-resolver.js";
 import { withIpcProfiling } from "../profiling/ipc-profiling.js";
 import { getIpcProfilingSink } from "../profiling/main-profiling-session.js";
+import { startSessionMeshHookInstallation } from "../session-mesh/session-mesh-hook-installer.js";
+import type { MaterializeImportHealthEvent } from "../telemetry/app-otel-runtime-import-health.js";
 import { installImportHealthTracking } from "../telemetry/import-health-telemetry.js";
 import { Observability } from "../telemetry/observability.js";
 import { OtlpHttpReceiver } from "../telemetry/otlp-http-receiver.js";
 import { DEFAULT_OTLP_RECEIVER_PORT } from "../telemetry/otlp-receiver-state.js";
-import { delay, yieldToMainLoop } from "../util/main-loop-scheduling.js";
+import {
+  claudeCaptureGate,
+  createOtlpExportCallbacks,
+} from "../telemetry/otlp-receiver-wiring.js";
+import { startAgentCaptureReceivers } from "./agent-capture-receiver-startup.js";
+import type { AgentDashboardDatabaseRuntime } from "./agent-dashboard-database-runtime.js";
 import { createAgentDashboardDbHostLifecycle } from "./agent-dashboard-db-host-lifecycle.js";
 import {
   registerDesignSystemDbIpcHandlers,
   unregisterDesignSystemDbIpcHandlers,
 } from "./agent-dashboard-db-ipc-registration.js";
-import { toBranchSyncSource } from "./agent-dashboard-ipc-coercion.js";
+import {
+  type GitHubResyncNudgeRefreshResult,
+  refreshGitHubResyncBranches,
+} from "./agent-dashboard-github-resync.js";
+// ISS-6241: the shape and its generation-guarded writers moved to
+// `maintenance-progress-state.ts`; re-exported here so existing importers of the
+// runtime's type keep resolving.
+import {
+  desktopCatchupPollMs,
+  desktopHistoricalImportDelayMs,
+  desktopHistoricalImportStaggerMs,
+} from "./agent-dashboard-runtime-import-schedule.js";
+import { createAgentDashboardRuntimeLifecycle } from "./agent-dashboard-runtime-lifecycle.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard-runtime-options.js";
 import { resolveIngestStateDir } from "./agent-dashboard-runtime-paths.js";
 import {
@@ -70,92 +95,106 @@ import {
   seedAgentDashboardCatalog,
 } from "./agent-dashboard-startup-maintenance.js";
 import { createAgentDashboardStoreCoordinators } from "./agent-dashboard-store-coordinators.js";
-import {
-  clearTraceCommentCloudSyncErrorLog,
-  createTraceCommentSyncDriver,
-} from "./agent-dashboard-trace-comment-sync.js";
-import { createBranchCloudHydration } from "./branch-cloud-hydration-factory.js";
+import { resolveIngestStoreProvider } from "./ingest-store-provider.js";
 import type { AgentDashboardMaintenanceProgress } from "./maintenance-progress-state.js";
 import { createMaintenanceProgressState } from "./maintenance-progress-state.js";
 import { resolveOpencodeWithheldReconciliation } from "./opencode-withheld-reconciliation.js";
+import { createParsePolicyMaintenanceRerun } from "./parse-policy-maintenance-rerun.js";
 import { createPostBootMaintenance } from "./post-boot-maintenance.js";
+import { scheduleWhenRendererIdle } from "./post-boot-maintenance-idle-reschedule.js";
 import { resolveRebuildSyncComputeTargetId } from "./rebuild-sync-compute-target.js";
+import { createStartupBackgroundScheduler } from "./startup-background-scheduler.js";
+import { createStartupHistoricalBackfillTask } from "./startup-historical-backfill.js";
 
-// ISS-6241: the shape and its generation-guarded writers moved to
-// `maintenance-progress-state.ts`; re-exported here so existing importers of the
-// runtime's type keep resolving.
+export type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard-runtime-options.js";
+
 export type { AgentDashboardMaintenanceProgress } from "./maintenance-progress-state.js";
 
-export type AgentDashboardDesignSystemRuntime = {
-  connection: null;
-  syncSource: AgentSessionSyncSource | null;
-  /** FEA-2715: transcript archive-lane fingerprint/upload-cursor store. */
-  transcriptSync: TranscriptSyncStore | null;
-  getUrl: () => string | null;
-  isReady: () => boolean;
-  startHookListener: () => void;
-  startCollectors: () => void;
-  getIngestProgress: () => DesktopIngestProgressReport;
-  /**
-   * FEA-3639: harness transcript roots that exist but the OS won't let us read
-   * (a denied macOS file-access prompt). Empty when nothing is blocked. The
-   * renderer turns this into an explicit "waiting on file access" prompt instead
-   * of a silent stall.
-   */
-  getFileAccessBlocks: () => FileAccessBlock[];
-  getMaintenanceProgress: () => AgentDashboardMaintenanceProgress;
-  refreshGitHubBranches: (
-    body: unknown
-  ) => Promise<GitHubResyncNudgeRefreshResult>;
-  setImportPaused: (paused: boolean) => void;
-  stop: () => Promise<void>;
-  close: () => Promise<void> | void;
-  /**
-   * ISS-4713 — mark the intentional-shutdown window open on the db-host client
-   * synchronously, before the app tears down the capture/sync services that
-   * still drive db-host writes. From here a db-host `exit` is treated as
-   * expected (no "exited unexpectedly" relabel, no mid-shutdown restart). The
-   * bounded, clean db-host drain then happens inside `close()`.
-   */
-  beginClosing: () => void;
-  restartCollectors: () => Promise<void>;
-  registerIpcHandlers: () => void;
-  loadMeteredUsageRows: (
-    cutoffIso: string
-  ) => MeteredUsageRow[] | Promise<MeteredUsageRow[]>;
-  /**
-   * FEA-2923: run a vetted catalog-pack install via the same `streamRun` path
-   * the renderer catalog UI uses. `packId` is resolved to a local `pack_catalog`
-   * row whose vetted `installCommands` are executed — cloud-supplied commands and
-   * presigned zip URLs are NEVER an install source. Used by the auto-install
-   * reconciler in app.ts.
-   */
-  installPack: (packId: string, harness: string) => Promise<StreamRunResult>;
-  /**
-   * FEA-2923: return the installed version of a pack from the local
-   * `agent_packs` inventory, or null when the pack is not installed. A pack that
-   * is installed but carries no version string resolves to the `"installed"`
-   * sentinel so the reconciler treats it as present.
-   */
-  getInstalledPackVersion: (packId: string) => Promise<string | null>;
-  /**
-   * FEA-3813 (PRD-553 M1): start the local crewd scheduler daemon (runs in the
-   * db host). Called from `boot()` gated on the `scheduledTasks` Labs flag —
-   * idempotent, so a re-entrant boot is safe. Off ⇒ never called ⇒ no daemon.
-   */
-  startScheduler: () => Promise<void>;
-  /**
-   * FEA-3813 (PRD-553 M1): stop the scheduler daemon and drain its in-flight run
-   * + pending write-behinds. Called from `shutdown()`; idempotent and safe before
-   * `startScheduler`. (Also disposed with the db in `close()`.)
-   */
-  stopScheduler: () => Promise<void>;
-};
-
-export type GitHubResyncNudgeRefreshResult = {
-  body: GitHubResyncNudgeBody;
-  branchIds: string[];
-};
+export type AgentDashboardDesignSystemRuntime =
+  AgentDashboardDatabaseRuntime & {
+    /**
+     * ISS-6338: per-lane cloud batch health, forwarded from the runtime options.
+     * Exposed here because the transcript archive lane already resolves its STORE
+     * through this runtime, so an emitter hung off the same object is available on
+     * exactly the passes that can produce a batch. Absent when no telemetry
+     * runtime is wired, in which case the lane drains uninstrumented.
+     */
+    emitSyncBatch?: SyncLaneBatchEmit;
+    /**
+     * ISS-8600: report one batch-materialized harness's outcome as an
+     * import-health record. Exposed here for the same reason `emitSyncBatch` is —
+     * the transcript lane already resolves its store through this runtime, so the
+     * discovery sweep reaches the seam without an `app.ts` edit. Absent when no
+     * telemetry runtime is wired, in which case the sweep is uninstrumented.
+     *
+     * The harness is the caller's to name: a second `batch: true` collector's
+     * wiring must supply its own rather than inherit whichever one this seam was
+     * built for.
+     */
+    noteMaterializeOutcome?: (
+      harness: TelemetryHarnessName,
+      kind: MaterializeImportHealthEvent
+    ) => void;
+    getUrl: () => string | null;
+    isReady: () => boolean;
+    startCollectors: () => void;
+    getIngestProgress: () => DesktopIngestProgressReport;
+    /**
+     * ISS-8346: where the boot import has got to, for the onboarding estimate —
+     * bytes still to parse for the named harnesses, plus what the importer is
+     * doing.
+     *
+     * Deliberately NOT folded into {@link DesktopIngestProgressReport}: that is
+     * the renderer's banner payload, while this is derived in main against a
+     * transcript inventory the renderer never holds, and two of the facts it turns
+     * on (the acknowledged pause, the spent re-drive budget) are main-only.
+     */
+    readParseProgress: (
+      harnesses: readonly string[]
+    ) => OnboardingParseProgressReading;
+    /**
+     * FEA-3639: harness transcript roots that exist but the OS won't let us read
+     * (a denied macOS file-access prompt). Empty when nothing is blocked. The
+     * renderer turns this into an explicit "waiting on file access" prompt instead
+     * of a silent stall.
+     */
+    getFileAccessBlocks: () => FileAccessBlock[];
+    getMaintenanceProgress: () => AgentDashboardMaintenanceProgress;
+    refreshGitHubBranches: (
+      body: unknown
+    ) => Promise<GitHubResyncNudgeRefreshResult>;
+    setImportPaused: (paused: boolean) => void;
+    stop: () => Promise<void>;
+    close: () => Promise<void> | void;
+    /**
+     * ISS-4713 — mark the intentional-shutdown window open on the db-host client
+     * synchronously, before the app tears down the capture/sync services that
+     * still drive db-host writes. From here a db-host `exit` is treated as
+     * expected (no "exited unexpectedly" relabel, no mid-shutdown restart). The
+     * bounded, clean db-host drain then happens inside `close()`.
+     */
+    beginClosing: () => void;
+    restartCollectors: () => Promise<void>;
+    registerIpcHandlers: () => void;
+    loadMeteredUsageRows: (
+      cutoffIso: string
+    ) => MeteredUsageRow[] | Promise<MeteredUsageRow[]>;
+    /**
+     * FEA-2923: run a vetted catalog-pack install via the same `streamRun` path
+     * the renderer catalog UI uses. `packId` is resolved to a local `pack_catalog`
+     * row whose vetted `installCommands` are executed — cloud-supplied commands and
+     * presigned zip URLs are NEVER an install source. Used by the auto-install
+     * reconciler in app.ts.
+     */
+    installPack: (packId: string, harness: string) => Promise<StreamRunResult>;
+    /**
+     * FEA-2923: return the installed version of a pack from the local
+     * `agent_packs` inventory, or null when the pack is not installed. A pack that
+     * is installed but carries no version string resolves to the `"installed"`
+     * sentinel so the reconciler treats it as present.
+     */
+    getInstalledPackVersion: (packId: string) => Promise<string | null>;
+  };
 
 /**
  * Create the in-process design-system dashboard runtime. Import this module only
@@ -189,7 +228,6 @@ export async function createAgentDashboardDesignSystemRuntime(
   const agentDatabasePromise = dbHostLifecycle.ready;
   const rawStoreOp = dbHostLifecycle.rawStoreOp;
   const invokeStoreOp = dbHostLifecycle.invokeStoreOp;
-  const cloudHydration = createBranchCloudHydration(options, invokeStoreOp);
 
   const registerIpcHandlers = () => {
     if (dbIpcRegistered) {
@@ -201,7 +239,7 @@ export async function createAgentDashboardDesignSystemRuntime(
         () => agentDatabasePromise,
         options,
         invokeStoreOp,
-        cloudHydration
+        dbHostLifecycle.cancelRead
       );
     // ISS-4430 — these channels register AFTER the static block that
     // `installIpcProfiling` patches, so they were invisible to `ipc.jsonl`
@@ -223,179 +261,86 @@ export async function createAgentDashboardDesignSystemRuntime(
   log("agent-dashboard", "SQLite runtime active for Agent Dashboard database");
   // The renderer may have first-painted against disabled IPC responders while
   // SQLite opened. Nudge DB-backed caches once live handlers can serve data.
-  sendToRendererWindow(options.getWindow(), "desktop:db:ready", {});
-  sendToRendererWindow(options.getWindow(), "desktop:db:changed", {});
+  sendToRendererWindow(
+    options.getWindow(),
+    DesktopRendererEventChannel.DbReady,
+    {}
+  );
+  sendToRendererWindow(
+    options.getWindow(),
+    DesktopRendererEventChannel.DbChanged,
+    {}
+  );
 
-  let closed = false;
-  // FEA-2261: the first-launch collector import (thousands of transcripts) plus
-  // its post-boot data-revision rebuild and artifact-link backfill is the heavy
-  // critical-path work that paints the dashboard. Each of those runs as a
-  // synchronous chunk in the DB host, so any OTHER heavy op dispatched
-  // concurrently (catalog GitHub-stats fetch, enrichment sweep, historical
-  // backfill, catalog maintenance) piles onto the same child loop and starves
-  // the renderer's desktop:db:* reads, freezing the UI/banner for ~30s. Hold the
-  // non-critical startup background tasks until this signal fires so the import
-  // gets the loop to itself; the tasks already serialize one-at-a-time after it.
-  let collectorImportSettled = false;
-  const collectorImportSettledResolvers = new Set<() => void>();
-  const notifyCollectorImportSettled = (): void => {
-    if (collectorImportSettled) {
-      return;
-    }
-    collectorImportSettled = true;
-    for (const resolve of collectorImportSettledResolvers) {
-      resolve();
-    }
-    collectorImportSettledResolvers.clear();
-  };
-  const whenCollectorImportSettled = (): Promise<void> => {
-    if (collectorImportSettled) {
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      collectorImportSettledResolvers.add(resolve);
-    });
-  };
-  // Fail open if the import never settles (collectors disabled, a stuck import,
-  // a crashed child): these best-effort ops must not be deferred forever. Normal
-  // first launches resolve the real signal well inside this window. The timer is
-  // unref'd so it never holds the process open, and cleared once either side
-  // wins so an early signal does not leave a dangling 5-minute timer.
-  const waitForCollectorImportSettledOrTimeout = async (): Promise<void> => {
-    if (collectorImportSettled) {
-      return;
-    }
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(
-        resolve,
-        STARTUP_BACKGROUND_COLLECTOR_IMPORT_FAIL_OPEN_MS
-      );
-      if (timer && typeof timer.unref === "function") {
-        timer.unref();
-      }
-    });
-    await Promise.race([whenCollectorImportSettled(), timeout]);
-    if (timer) {
-      clearTimeout(timer);
-    }
-  };
-  const waitForBackgroundSlot = async (): Promise<void> => {
-    if (options.waitForRendererBackgroundSlot) {
-      await options.waitForRendererBackgroundSlot();
-      return;
-    }
-    await yieldToMainLoop();
-  };
-  const backgroundDelay = async (ms: number): Promise<void> => {
-    await delay(ms);
-    await waitForBackgroundSlot();
-  };
-  let backgroundTaskTail: Promise<void> = Promise.resolve();
-  const enqueueStartupBackgroundTask = (
-    task: () => void | Promise<void>
-  ): Promise<void> => {
-    const previousTask = backgroundTaskTail.catch(() => undefined);
-    const currentTask = previousTask.then(async () => {
-      if (closed) {
-        return;
-      }
-      await waitForBackgroundSlot();
-      if (closed) {
-        return;
-      }
-      await task();
-    });
-    backgroundTaskTail = currentTask.catch(() => undefined);
-    return currentTask;
-  };
-  // First paint / dashboard-data-served (and, when wired, the renderer live-DB
-  // idle window) — the fast startup gate that keeps background work off the loop
-  // during the sensitive first-paint window. Bounded to a few seconds; distinct
-  // from the up-to-5-minute collector-import settle gate below.
-  const waitForInitialBackgroundWorkAllowed = (): Promise<void> =>
-    (
-      options.whenInitialBackgroundWorkAllowed ??
-      options.whenInitialDashboardDataServed ??
-      (() => Promise.resolve())
-    )();
-  const runAfterInitialBackgroundWorkAllowed = (
-    taskName: string,
-    task: () => void | Promise<void>
-  ): void => {
-    // First paint / dashboard-data-served gates first, THEN the first-launch
-    // collector import + post-boot maintenance must settle (FEA-2261), THEN the
-    // task joins the serialized background queue.
-    void waitForInitialBackgroundWorkAllowed()
-      .then(() => waitForCollectorImportSettledOrTimeout())
-      .then(() => enqueueStartupBackgroundTask(task))
-      .catch((error: unknown) => {
-        log(
-          "agent-dashboard",
-          `${taskName} failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-  };
+  // ISS-6713: the `closed` flag and the current-start slot — the runtime's whole
+  // start/stop/close state machine — live in the sibling lifecycle module so a
+  // test can drive the transitions without forking a db host or opening
+  // Electron. This runtime still owns WHAT each transition tears down.
+  const lifecycle = createAgentDashboardRuntimeLifecycle(dbHostLifecycle);
+  const isClosed = (): boolean => lifecycle.isClosed();
+  // FEA-2261: the startup background-work gates and serialized queue live in
+  // the sibling scheduler module; this runtime owns only WHAT it schedules.
+  const {
+    notifyCollectorImportSettled,
+    notifyCollectorImportTimedOut,
+    notifyCollectorImportRetriesExhausted,
+    notifySessionProjectionSettled,
+    isSessionProjectionSettled,
+    waitForBackgroundSlot,
+    backgroundDelay,
+    runAfterInitialBackgroundWorkAllowed,
+  } = createStartupBackgroundScheduler({
+    isClosed,
+    log,
+    waitForRendererBackgroundSlot: options.waitForRendererBackgroundSlot,
+    whenInitialBackgroundWorkAllowed: options.whenInitialBackgroundWorkAllowed,
+    whenInitialDashboardDataServed: options.whenInitialDashboardDataServed,
+    onSessionProjectionReady: options.onInitialSessionProjectionReady,
+  });
   const runStartupCatalogMaintenance = async (): Promise<void> => {
-    if (closed) {
+    if (isClosed()) {
       return;
     }
 
-    await seedAgentDashboardCatalog(invokeStoreOp, log);
-    // ISS-4428: `pack_catalog` is now populated, so the required-plugin
-    // installer can resolve its vetted install commands. Signal catalog
-    // readiness so a distribution that was deferred ("runtime not ready") while
-    // the catalog was unseeded is retried now, rather than staying `pending`
-    // until the next cloud-online. Guarded on `closed` so a runtime torn down
-    // mid-maintenance does not fire a post-disposal retry.
-    if (!closed) {
+    const catalogSeeded = await seedAgentDashboardCatalog(invokeStoreOp, log);
+    // ISS-4428: signal readiness so a distribution deferred while `pack_catalog`
+    // was unseeded retries now instead of staying `pending` until the next
+    // cloud-online. ISS-6170: only on a SUCCESSFUL seed — the installer reads
+    // this to decide a pack may be given up on permanently, and an empty catalog
+    // is the one state where `ENOTFOUND` is transient. `isClosed()` keeps a
+    // runtime torn down mid-maintenance from firing a post-disposal retry.
+    if (catalogSeeded && !isClosed()) {
       options.onCatalogSeeded?.();
     }
     await waitForBackgroundSlot();
-    if (closed) {
+    if (isClosed()) {
       return;
     }
     await scanAgentDashboardPacks(invokeStoreOp, log);
     await waitForBackgroundSlot();
-    if (closed) {
+    if (isClosed()) {
       return;
     }
     await backfillClaudePlans(invokeStoreOp, log);
-    sendToRendererWindow(options.getWindow(), "desktop:db:changed", {});
+    sendToRendererWindow(
+      options.getWindow(),
+      DesktopRendererEventChannel.DbChanged,
+      {}
+    );
   };
   runAfterInitialBackgroundWorkAllowed(
     "Startup catalog maintenance",
     runStartupCatalogMaintenance
   );
 
-  const resolveGitPath = () => resolveBinaryFromLoginShellSync("git").path;
-
-  // Login-shell binary lookup is synchronous; wait for the first visible window
-  // so git path resolution cannot hold first paint.
-  const runStartupHistoricalBackfill = async (): Promise<void> => {
-    if (closed) {
-      return;
-    }
-
-    const gitPath = resolveGitPath();
-    await agentDatabase
-      .runHistoricalBackfill(gitPath, 50)
-      .catch((e: unknown) =>
-        log(
-          "agent-enrichment",
-          `Startup backfill failed: ${e instanceof Error ? e.message : String(e)}`
-        )
-      );
-  };
   runAfterInitialBackgroundWorkAllowed(
     "Startup historical backfill",
-    runStartupHistoricalBackfill
+    createStartupHistoricalBackfillTask({ isClosed, agentDatabase, log })
   );
 
-  // FEA-2648 golden mode: no background egress — catalog fetches hit GitHub and
-  // trace-comment sync POSTs to the cloud API; both stay unscheduled so an
-  // isolated corpus walkthrough neither talks to the network nor mutates the
-  // throwaway DB with live data.
+  // FEA-2648 golden mode: no background egress — catalog fetches hit GitHub, so
+  // they stay unscheduled and an isolated corpus walkthrough neither talks to the
+  // network nor mutates the throwaway DB with live data.
   const golden = options.golden ?? null;
 
   // FEA-3628 / ISS-5274: both heavy `store:` ops are driven from the main
@@ -413,41 +358,22 @@ export async function createAgentDashboardDesignSystemRuntime(
   });
   packScanCoordinator = storeCoordinators.packScan;
   catalogCoordinator = storeCoordinators.catalog;
-  const traceCommentSync = createTraceCommentSyncDriver({
-    invokeStoreOp,
-    getSyncSource: () => agentDatabase.syncSource,
-    options,
-    isClosed: () => closed,
-    enqueueBackgroundTask: enqueueStartupBackgroundTask,
-    log: (message: string) => log("trace-comments", message),
-  });
-  if (!golden) {
-    void waitForInitialBackgroundWorkAllowed()
-      .then(() => traceCommentSync.startRetryInterval())
-      .catch((error: unknown) =>
-        log(
-          "trace-comments",
-          `Retry interval start deferred: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        )
-      );
-    runAfterInitialBackgroundWorkAllowed(
-      "Initial trace-comment sync retry",
-      traceCommentSync.runPendingSync
-    );
-  }
-
-  let startPromise: Promise<void> | null = null;
-
   const collectorsLog = (message: string): void =>
     log("agent-collectors", message);
   // ISS-4573 (TEST-ONLY): the parse-quarantine seam arms only for an UNPACKAGED
-  // build launched with the exact E2E sentinel. PR #4085 review (wongk): resolve
+  // build launched with the exact E2E sentinel. PR #4085 review (whitlockk): resolve
   // `app.isPackaged` HERE, at the main-process composition root, and pass it to the
   // seam so a packaged client that inherits the flag can never arm. Computed once
   // and reused for both the manager config and the explicit worker capability.
   const e2eParseQuarantineArmed = isE2eParseQuarantineEnabled(
+    process.env,
+    app.isPackaged
+  );
+  // ISS-8982 (TEST-ONLY): the boot-import abandon seam, gated on the same two
+  // dimensions and resolved here for the same reason. `null` in every
+  // production run, so the manager is handed no hook at all rather than an
+  // inert one.
+  const e2eBootImportAbandons = e2eBootImportAbandonPasses(
     process.env,
     app.isPackaged
   );
@@ -458,7 +384,7 @@ export async function createAgentDashboardDesignSystemRuntime(
     ? null
     : createUtilityProcessHistoricalParseRunner({
         log: collectorsLog,
-        // PR #4085 review (wongk): the worker cannot read `app.isPackaged`, so it
+        // PR #4085 review (whitlockk): the worker cannot read `app.isPackaged`, so it
         // must NOT trust the raw inherited app-level sentinel. Thread the poison
         // capability in explicitly ONLY when the main process cleared the
         // `!isPackaged` + sentinel gate above; the runner strips any inherited
@@ -524,23 +450,60 @@ export async function createAgentDashboardDesignSystemRuntime(
       isPackaged: app.isPackaged,
     });
 
+  const otlpLog = (message: string) => log("otlp-http-receiver", message);
+  /**
+   * Record a lost Claude signal, never letting the bookkeeping fail an export.
+   *
+   * The recorder writes through the shared queue, so a store that is closing or
+   * a transient write failure must not propagate into the receiver's dispatch
+   * loop and cost a healthy export.
+   */
+  const recordClaudeSignalDrop = async (input: {
+    harness: string;
+    reason: ClaudeCodeSignalDropReason;
+    count: number;
+  }): Promise<void> => {
+    try {
+      await agentDatabase.claudeCodeOtel.recordSignalDrop(input);
+    } catch (error) {
+      otlpLog(
+        `failed to record a dropped Claude signal: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
   const otlpReceiver = new OtlpHttpReceiver({
     port: loopbackPort(DEFAULT_OTLP_RECEIVER_PORT),
-    log: (message: string) => log("otlp-http-receiver", message),
+    log: otlpLog,
     onBindError: (reason) => {
       collectorsLog(`OTLP receiver unavailable: ${reason}`);
     },
-    onClaudeExport: (payload) => {
-      log(
-        "otlp-http-receiver",
-        `received Claude ${payload.kind} export with ${payload.resourceAttributes.length} resource batch(es)`
-      );
-    },
-    onCodexExport: (payload) => {
-      log(
-        "otlp-http-receiver",
-        `received Codex ${payload.kind} export with ${payload.resourceAttributes.length} resource batch(es)`
-      );
+    ...createOtlpExportCallbacks({
+      log: otlpLog,
+      isClaudeCaptureEnabled: claudeCaptureGate({
+        isOtelCaptureEnabled: () =>
+          options.isClaudeCodeOtelCaptureEnabled?.() ?? false,
+        isClaudeCollectorEnabled: () =>
+          currentCollectorEnabledState()[Harness.Claude] !== false,
+      }),
+      persistClaudeSignals: (signals) =>
+        agentDatabase.claudeCodeOtel.persistSignals(signals),
+      recordSignalDrop: (input) => {
+        void recordClaudeSignalDrop(input);
+      },
+      // ISS-10719: the persist lane the previous wiring's own comment called
+      // "still-unwired". Codex exports were received, logged, and thrown away.
+      persistCodexBatch: (batch) => agentDatabase.codexOtel.persistBatch(batch),
+    }),
+    // ISS-10717: an evicted export is ACKed and therefore never re-sent, so
+    // without this count the corpus reads as authoritative while it is a lower
+    // bound. The harness is all that is knowable here — the payload is decoded
+    // downstream — so one call is one lost EXPORT.
+    onExportDropped: (harness) => {
+      void recordClaudeSignalDrop({
+        harness,
+        reason: ClaudeCodeSignalDropReason.ReceiverBackpressure,
+        count: 1,
+      });
     },
   });
 
@@ -585,14 +548,17 @@ export async function createAgentDashboardDesignSystemRuntime(
         return agentDatabase.processEvent(hookType, data, harness);
       },
     },
+    onSessionMeshHookEvent: options.onSessionMeshHookEvent,
     log: (message: string) => log("agent-monitor-listener", message),
     onBindError: options.onTerminalFailure,
   });
 
   const isMaintenanceActive = (generation: number): boolean =>
-    !closed && maintenanceGeneration === generation;
+    !isClosed() && maintenanceGeneration === generation;
 
-  const schedulePostBootMaintenance = (): void => {
+  // ISS-8601: false runs the rebuild without claiming the import finished.
+  const schedulePostBootMaintenance = (claimImportComplete = true): void => {
+    maintenanceScheduled = true;
     const generation = ++maintenanceGeneration;
     // The readiness signal (which clears the Dashboard nav throbber) must fire
     // when maintenance SETTLES for the active generation — success OR failure.
@@ -605,12 +571,12 @@ export async function createAgentDashboardDesignSystemRuntime(
       generation,
       {
         isActive: isMaintenanceActive,
-        onSettleActive: () => {
-          options.onInitialCollectorImportComplete?.();
-          // FEA-2261: release the non-critical startup background tasks now that
-          // the first-launch import + post-boot maintenance have settled.
-          notifyCollectorImportSettled();
-        },
+        // FEA-2261 release + the ISS-8601 readiness claim; see that factory.
+        onSettleActive: createMaintenanceSettleNotifier({
+          claimImportComplete,
+          onImportComplete: options.onInitialCollectorImportComplete,
+          onSettled: notifySessionProjectionSettled,
+        }),
         logError: (e: unknown) =>
           log(
             "post-boot-maintenance",
@@ -631,6 +597,18 @@ export async function createAgentDashboardDesignSystemRuntime(
     );
     maintenanceTask = task;
   };
+
+  // ISS-12552: a settled parse-policy flip reruns the chain once, behind any
+  // pass in flight (see parse-policy-maintenance-rerun.ts).
+  let maintenanceScheduled = false;
+  const unsubscribeParsePolicyFlips = subscribeParsePolicyFlips(
+    createParsePolicyMaintenanceRerun({
+      isScheduled: () => maintenanceScheduled,
+      currentPass: () => maintenanceTask,
+      isClosed,
+      rerun: () => schedulePostBootMaintenance(false),
+    })
+  );
 
   // ISS-4824: the whole post-boot maintenance CHAIN (DATA_REVISION rebuild + its
   // sync-outbox hand-off, artifact-link backfill + the PR-attribution
@@ -656,14 +634,19 @@ export async function createAgentDashboardDesignSystemRuntime(
     resolveComputeTargetId: () => resolveRebuildSyncComputeTargetId(options),
   });
 
+  let timedOutMaintenanceReArm: { cancel: () => void } | null = null;
+
   const cancelCollectorMaintenance = async (): Promise<void> => {
     maintenanceGeneration++;
+    timedOutMaintenanceReArm?.cancel();
+    timedOutMaintenanceReArm = null;
     // FEA-2264: the bumped generation makes the in-flight task's finalizer skip
     // the clear (it no longer owns the runtime), so reset here directly — a
     // cancelled maintenance window must not leave the banner showing "finishing
     // up" forever.
     clearMaintenanceProgress();
-    collectorManager.stop();
+    // ISS-9839 (ISS-9837 C2): awaited — the batch resume cursor's terminal flush.
+    await collectorManager.stop();
     historicalParseRunner?.stop();
     packScanCoordinator?.stop();
     const task = maintenanceTask;
@@ -672,28 +655,33 @@ export async function createAgentDashboardDesignSystemRuntime(
     }
   };
 
-  // FEA-2648: stage the frozen corpus into the golden profile before any
-  // collector sees it — even a readOnly open of the WAL-mode opencode.db would
-  // drop -wal/-shm sidecars into the frozen raw/ dirs.
-  const goldenStagingDir = golden
-    ? path.join(
-        options.userDataPath ?? app.getPath("userData"),
-        "corpus-staging"
-      )
-    : null;
-  if (golden && goldenStagingDir) {
-    stageGoldenCorpus(golden.corpusDir, goldenStagingDir);
-  }
+  const goldenStagingDir = stageGoldenCorpusInto(
+    golden,
+    options.userDataPath ?? app.getPath("userData")
+  );
 
   // ISS-5103: decorate the importer with the import-health tally (no-op when the
   // host wired no telemetry seam). See installImportHealthTracking.
+  // ISS-6116: the decorated importer has to exist before the manager that owns
+  // the ingest tracker can be constructed, so the harness-progress seam is bound
+  // AFTER construction rather than closing over the later `const`. The tracker
+  // arms its interval immediately and a slow db-host read sits between the two,
+  // so a closure over the binding could fire inside its temporal dead zone.
+  let harnessProgressSource: CollectorManager | null = null;
   const importHealth = installImportHealthTracking({
     emitImportHealth: options.emitImportHealth,
     database: agentDatabase,
+    reportHarnessProgress: () =>
+      harnessProgressSource?.reportHarnessProgress() ?? [],
+    // ISS-6336: read at TICK time, not now — the manager that owns the
+    // quarantine stores is constructed below, and it needs the decorated
+    // importer this call returns.
+    readQuarantinedCounts: () =>
+      collectorManager.getIngestProgress().quarantinedByStage,
     log: collectorsLog,
   });
 
-  // ISS-5266 (wongk review): the upgrade guard, resolved before the collectors
+  // ISS-5266 (whitlockk review): the upgrade guard, resolved before the collectors
   // are built because `listSources` cannot await. See the module for why a
   // failed lookup must NOT force a rescan.
   const opencodeWithheldReconciliation =
@@ -703,14 +691,39 @@ export async function createAgentDashboardDesignSystemRuntime(
       log: collectorsLog,
     });
 
+  // ISS-9838: the persisted ingest stores now live in SQLite. Their hydrate is
+  // resolved HERE (ISS-9837 R1), for the same reason as the guard above, so
+  // every store constructor below stays synchronous — and the collectors receive
+  // only the narrow port, never `agentDatabase` (ISS-9837 R2).
+  const ingestStores = await resolveIngestStoreProvider({
+    database: agentDatabase,
+    log: collectorsLog,
+  });
+
   const collectorManager = new CollectorManager({
     importer: importHealth.importer,
-    detectBillingMode,
+    // ISS-6336: the failures the decorated importer above can never see.
+    onIngestFailure: importHealth.noteIngestFailure,
+    // ISS-8600: an INSTALLED harness whose fast re-attach loop gave up — the
+    // engine stays silent for a harness whose roots never existed. The tracker
+    // maps the collector's harness key onto the contract's closed `harness.name`
+    // set.
+    onWatchLost: importHealth.noteWatchLost,
     stateDir: resolveIngestStateDir(options.userDataPath),
+    ingestStores,
+    // ISS-9839 (ISS-9837 R1c): `collectors/` may not reach for `agentDatabase`.
+    batchResumeCursorStore: createIngestBatchResumeCursorStore({
+      prisma: agentDatabase.prisma,
+      invokeStoreOp,
+    }),
     emit: (sessionId?: string) => {
-      sendToRendererWindow(options.getWindow(), "desktop:db:changed", {
-        sessionId,
-      });
+      sendToRendererWindow(
+        options.getWindow(),
+        DesktopRendererEventChannel.DbChanged,
+        {
+          sessionId,
+        }
+      );
       // Goal stage 3: the same post-write moment feeds the sync pump — new
       // local session data is exactly the work-arrival signal the event-driven
       // lane runs on. Fires regardless of window/renderer state (the renderer
@@ -767,20 +780,40 @@ export async function createAgentDashboardDesignSystemRuntime(
     // unset), so this spreads {} and the manager keeps its generous ~90s deadline
     // and default 3-attempt threshold.
     ...(e2eParseQuarantineArmed ? E2E_PARSE_QUARANTINE_CONFIG : {}),
+    // ISS-8982 (TEST-ONLY, unpackaged + E2E-launch-env-gated): abandon each
+    // harness's first N historical passes with a recoverable `DbHostExitError`,
+    // so the launched-app E2E reaches `RetriesExhausted` by counting passes
+    // rather than by SIGKILLing the real db-host on a budget and hoping enough
+    // kills land. Spread, not assigned, so a production run adds no key at all.
+    ...(e2eBootImportAbandons === null
+      ? {}
+      : {
+          e2eAbandonHistoricalPass: createE2eBootImportAbandonFault(
+            e2eBootImportAbandons
+          ),
+        }),
     ...(historicalParseRunner ? { historicalParseRunner } : {}),
     log: collectorsLog,
     cooperativeDelay: backgroundDelay,
     waitForRendererBackgroundSlot: waitForBackgroundSlot,
-    onBootImportComplete: schedulePostBootMaintenance,
-    // FEA-4156: the boot import gave up (a wedged harness the watchdog timed out
-    // on). Deliberately does NOT run post-boot maintenance — that would re-queue
-    // history rebuild + artifact-link backfill onto the still-wedged import host
-    // and strand the splash in the Compute stage. The renderer reads the degraded
-    // `timedOut` ingest signal to resolve the splash into its graceful
-    // partial-import state. We still release the deferred best-effort startup ops
-    // here so a wedged import can't hold them forever (mirroring the maintenance
-    // settle path and the existing fail-open timeout).
-    onBootImportTimeout: notifyCollectorImportSettled,
+    onBootImportComplete: () => schedulePostBootMaintenance(),
+    // Both degraded boot-import terminals — the watchdog giving up on a wedged
+    // harness (FEA-4156) and a settle with sources left behind (ISS-6207) —
+    // release the deferred startup ops and neither runs the cloud-read cutover,
+    // which would claim readiness over sessions never imported. ISS-8601 splits
+    // them on the maintenance half: TIMEOUT re-arms the rebuild at the next
+    // renderer idle (`claimImportComplete: false` keeps that a rebuild, not a
+    // readiness claim); retriesExhausted opens projection only when no earlier
+    // timeout already made that maintenance owed.
+    onBootImportTimeout: () => {
+      notifyCollectorImportTimedOut();
+      timedOutMaintenanceReArm = scheduleWhenRendererIdle({
+        hasRecentRendererRead: options.hasRecentRendererRead,
+        run: () => schedulePostBootMaintenance(false),
+        log: collectorsLog,
+      });
+    },
+    onBootImportRetriesExhausted: notifyCollectorImportRetriesExhausted,
     // Self-heal catchup-cache/DB divergence: after a DB reset/migration the
     // JSON ingest cache still marks codex/claude sources "seen", but their rows
     // are gone. Surfacing the live id set lets the manager re-import orphans.
@@ -803,6 +836,7 @@ export async function createAgentDashboardDesignSystemRuntime(
     // an emptiness the surface reads as "nothing withheld".
     ...opencodeWithheldReconciliation,
   });
+  harnessProgressSource = collectorManager;
 
   /* FEA-1999: periodic SQLite store integrity-health probe. Runs on the reader
      pool (off the write/IPC hot path), skipped while the first-launch backfill
@@ -816,43 +850,34 @@ export async function createAgentDashboardDesignSystemRuntime(
     log: (message: string) => collectorsLog(message),
   });
 
-  const ensureOtlpReceiverStarted = (): Promise<void> => {
-    if (closed) {
-      return Promise.resolve();
-    }
-    if (!startPromise) {
-      if (golden) {
-        // FEA-2648: golden mode binds neither the OTLP receiver nor the hook
-        // listener. Assign (not just return) a resolved promise — callers
-        // identity-check the returned promise against `startPromise` before
-        // starting the collector manager.
-        startPromise = Promise.resolve();
-      } else {
-        const pendingStartPromise = otlpReceiver.start().then((state) => {
-          if (closed || startPromise !== pendingStartPromise) {
-            return;
-          }
-          if (!state.available) {
-            collectorsLog(`OTLP receiver unavailable: ${state.reason}`);
-          }
-        });
-        startPromise = pendingStartPromise;
-        void hookListener.start();
-      }
-    }
-    return startPromise;
-  };
+  const ensureOtlpReceiverStarted = (): Promise<void> =>
+    startAgentCaptureReceivers({
+      lifecycle,
+      golden: Boolean(golden),
+      hookListener,
+      otlpReceiver,
+      onSessionMeshReady: options.onSessionMeshReady,
+      reconcileSessionMeshHooks: () => startSessionMeshHookInstallation(true),
+      log: collectorsLog,
+    });
 
   const runtime: AgentDashboardDesignSystemRuntime = {
     connection: agentDatabase.connection,
     syncSource: agentDatabase.syncSource,
+    isInitialSessionProjectionReady: isSessionProjectionSettled,
     transcriptSync: agentDatabase.transcriptSync,
+    invokeStoreOp,
+    emitSyncBatch: options.emitSyncBatch,
+    noteMaterializeOutcome: importHealth.noteMaterializeOutcome,
     getUrl: () => hookListener.getUrl(),
     isReady: () => hookListener.isReady(),
-    startHookListener: () => {
-      void ensureOtlpReceiverStarted();
-    },
     getIngestProgress: () => collectorManager.getIngestProgress(),
+    readParseProgress: (harnesses) =>
+      readOnboardingParseProgress({
+        remainingPendingBytes:
+          collectorManager.remainingPendingBytes(harnesses),
+        report: collectorManager.getIngestProgress(),
+      }),
     // FEA-3639: probe each ENABLED harness's transcript roots for a permission
     // block on demand (a cheap `opendir` over each root). Runs per runtime-status
     // poll, so a granted permission clears the renderer prompt on the next tick
@@ -869,30 +894,7 @@ export async function createAgentDashboardDesignSystemRuntime(
         )
       ),
     getMaintenanceProgress: () => maintenanceProgressState.read(),
-    refreshGitHubBranches: async (body) => {
-      const parsed = parseGitHubResyncNudgeBody(body);
-      if (!cloudHydration) {
-        return { body: parsed.body, branchIds: [] };
-      }
-      const source = toBranchSyncSource(agentDatabase);
-      const list = await getSharedBranches(
-        source,
-        { forceRefresh: true },
-        cloudHydration
-      );
-      const branchIds = resolveGitHubResyncBranchIds(
-        parsed.body.scopes,
-        list.items
-      );
-      await Promise.all(
-        branchIds.map((id) =>
-          getSharedBranchDetail(source, id, cloudHydration, {
-            forceRefresh: true,
-          })
-        )
-      );
-      return { body: parsed.body, branchIds };
-    },
+    refreshGitHubBranches: (body) => refreshGitHubResyncBranches(body),
     setImportPaused: (paused: boolean) => {
       if (paused) {
         collectorManager.pauseImport();
@@ -901,12 +903,12 @@ export async function createAgentDashboardDesignSystemRuntime(
       }
     },
     startCollectors: () => {
-      if (closed) {
+      if (isClosed()) {
         return;
       }
       const pendingStartPromise = ensureOtlpReceiverStarted();
       void pendingStartPromise.then(() => {
-        if (closed || startPromise !== pendingStartPromise) {
+        if (!lifecycle.isCurrentStart(pendingStartPromise)) {
           return;
         }
         collectorManager.start();
@@ -914,50 +916,51 @@ export async function createAgentDashboardDesignSystemRuntime(
       });
     },
     stop: async () => {
-      if (closed) {
+      if (!lifecycle.beginStop()) {
         return;
       }
-      startPromise = null;
       storeIntegrityProbe.stop();
-      await importHealth.shutdown();
+      // ISS-6336 (whitlockk review): collectors stop BEFORE the final flush.
+      // `importHealth.shutdown()` drains the tally then disposes, and
+      // `noteIngestFailure` no-ops once disposed — flushing first dropped every
+      // failure raised while the still-running pass wound down. Stopping first
+      // also settles the generation, so the rejections
+      // `historicalParseRunner.stop()` raises are suppressed by the
+      // `isImportActive` gate instead of counted. The db host and the OTel
+      // exporter are both still up here, so the flush loses nothing by moving.
       await cancelCollectorMaintenance();
+      await importHealth.shutdown();
       await Promise.all([hookListener.stop(), otlpReceiver.stop()]);
     },
-    beginClosing: () => {
-      // ISS-4713: open the intentional-shutdown window on the db-host client so
-      // an exit during teardown is not relabeled unexpected / restarted. Cheap,
-      // synchronous, and idempotent — close() sets the same flag as a backstop.
-      dbHostLifecycle.beginClosing();
-    },
-    close: async () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      startPromise = null;
-      // FEA-2261: release any startup tasks still parked on the import gate so
-      // their chains resolve and short-circuit on the `closed` check instead of
-      // lingering until the fail-open timeout.
-      notifyCollectorImportSettled();
-      storeIntegrityProbe.stop();
-      await importHealth.shutdown();
-      storeCoordinators.stopCatalog();
-      traceCommentSync.stopRetryInterval();
-      clearTraceCommentCloudSyncErrorLog();
-      if (dbIpcRegistered) {
-        unregisterDesignSystemDbIpcHandlers();
-        dbIpcRegistered = false;
-      }
-      await cancelCollectorMaintenance();
-      await Promise.all([hookListener.stop(), otlpReceiver.stop()]);
-      await dbHostLifecycle.close();
-    },
+    // ISS-4713: open the intentional-shutdown window on the db-host client so an
+    // exit during teardown is not relabeled unexpected / restarted. Cheap,
+    // synchronous, and idempotent — close() sets the same flag as a backstop.
+    beginClosing: lifecycle.beginClosing,
+    close: () =>
+      lifecycle.close(async () => {
+        // FEA-2261: release any startup tasks still parked on the import gate so
+        // their chains resolve and short-circuit on the `isClosed()` check
+        // instead of lingering until the fail-open timeout.
+        notifyCollectorImportSettled();
+        unsubscribeParsePolicyFlips();
+        storeIntegrityProbe.stop();
+        // ISS-6336 (whitlockk review): stop the collectors before the final
+        // flush, for the reason spelled out on `stop` above.
+        await cancelCollectorMaintenance();
+        await importHealth.shutdown();
+        storeCoordinators.stopCatalog();
+        if (dbIpcRegistered) {
+          unregisterDesignSystemDbIpcHandlers();
+          dbIpcRegistered = false;
+        }
+        await Promise.all([hookListener.stop(), otlpReceiver.stop()]);
+      }),
     restartCollectors: async () => {
-      if (closed) {
+      if (isClosed()) {
         return;
       }
       await cancelCollectorMaintenance();
-      if (closed) {
+      if (isClosed()) {
         return;
       }
       // FEA-1839: a restart is the config-change boundary (e.g. a hooks toggle).
@@ -988,30 +991,7 @@ export async function createAgentDashboardDesignSystemRuntime(
       const detail = await packStore.getPack(agentDatabase.prisma, packId);
       return resolveInstalledPackVersion(detail);
     },
-    // FEA-3813 (PRD-553 M1): forward scheduler control to the db-host child (the
-    // daemon + its writer connection live there). `agentDatabase.scheduler.*` are
-    // clone-safe methods, so the proxy forwards them over IPC.
-    startScheduler: () => {
-      if (closed) {
-        return Promise.resolve();
-      }
-      return agentDatabase.scheduler.start();
-    },
-    stopScheduler: () => agentDatabase.scheduler.stop(),
   };
 
   return runtime;
 }
-
-const desktopHistoricalImportDelayMs = 0;
-const desktopHistoricalImportStaggerMs = 1000;
-const desktopCatchupPollMs = 30 * 60_000;
-
-// FEA-2261: upper bound on how long the non-critical startup background tasks
-// (catalog GitHub-stats fetch, enrichment sweep, historical backfill, catalog
-// maintenance) wait for the first-launch collector import + post-boot
-// maintenance to settle before falling open. Generous on purpose: a normal
-// first launch resolves the real signal well inside this window, so this cap
-// only protects the pathological case (no collectors, a stuck/crashed import)
-// from deferring these best-effort ops indefinitely.
-const STARTUP_BACKGROUND_COLLECTOR_IMPORT_FAIL_OPEN_MS = 5 * 60_000;

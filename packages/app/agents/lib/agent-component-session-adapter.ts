@@ -12,11 +12,11 @@
 
 import type { AgentComponent } from "@repo/api/src/types/agent-component";
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import type { SessionRowResolutionOptions } from "@repo/app/agents/lib/session-table-row";
 import { sessionsFor } from "./detail-data";
 
-export type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
+export type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 
 /**
  * Map `AgentComponentDetail.sessionsTab` items to `SessionTableRow[]`.

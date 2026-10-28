@@ -63,10 +63,8 @@ Per-project:
 | `.learnings/outcomes.log` | Pipe-delimited outcomes. |
 | `.learnings/runs.log` | Run-level log. |
 | `.learnings/acknowledgments.log` | Learning acknowledgment log. |
-| `.learnings/goal-outcome.json` | Output of `evaluate_goal.py`. |
 | `.learnings/pending-closedloop.json` | Closedloop-specific learnings queue. |
 | `.learnings/changed-files.json` | Changed files since start SHA. |
-| `.learnings/relevance-scores.json` | Output of `pattern_relevance.py`. |
 | `.learnings/build-result.json` | Build outcome. |
 | `.learnings/merge-result.json` | Merge outcome. |
 
@@ -110,8 +108,6 @@ Under `app.getPath("userData")`:
 - `desktop-secrets.json` (API key, encrypted via `safeStorage`)
 - `desktop-approvals.json`
 - `desktop-activity-log.json`
-- `desktop-job-store.json`
-- `desktop-loop-tokens.json`
 - `gateway-identity.json`
 
 Plus `~/.closedloop-ai/electron-port` (plaintext active port).

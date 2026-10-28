@@ -32,19 +32,43 @@ import {
   SyncedComponentVariantsTruncatedReason,
   serializedJsonUtf8ByteSize,
 } from "@repo/api/src/types/synced-component-content";
+import {
+  type RedactedDefinitionBody,
+  redactDefinitionBody,
+} from "@repo/lib/security/redact-definition-content";
+import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
 import { parseJsonObjectText } from "../agent-sync/agent-sync-json-text.js";
-import type { DesktopPrisma } from "./prisma-client.js";
+import { resolveLocalComponentSessionIds } from "../dashboard/component-session-scope.js";
+import { componentCursorCanonicalRankSql } from "./component-cursor-rank.js";
+import type { SqliteComponentUsageRow } from "./db-row-types.js";
+import type {
+  DesktopPrisma,
+  DesktopPrismaReadClient,
+} from "./prisma-client.js";
 import { selectRowsByIds } from "./session-detail-mappers.js";
 
 /**
  * Cursor row for the agent_components inventory sync lane (T-8.6).
- * Ordered by (last_seen_at, id) so new/updated rows are always discovered.
+ * Ordered by (cursor_key, id) — ISS-11327: `last_seen_at` read as an INSTANT — so
+ * new/updated rows are always discovered whatever spelling they were stamped in.
  * Tombstoned rows (uninstalled_at IS NOT NULL) are included so the cloud
  * receives uninstall signals.
  */
 export type SqliteAgentComponentCursorRow = {
   id: string;
   last_seen_at: string | null;
+  /**
+   * ISS-11327: the row's KEYSET RANKING KEY — `last_seen_at` read as an instant
+   * (`component-cursor-rank.ts`), which is what the cursor predicate and the
+   * `ORDER BY` below both compare and what the lane must persist. Projected by the
+   * query rather than recomputed by the consumer so the value the lane stores is
+   * the very value the next read will compare it against.
+   */
+  cursor_key: string;
+  /** ISS-8593: set once the component is uninstalled. The lane reads it to keep
+   * a tombstoned id out of the dead-letter cap's eviction set — such a row's
+   * ordering key can never advance again, so nothing else would re-drive it. */
+  uninstalled_at: string | null;
 };
 
 /** Full inventory row for `POST /desktop/components/sync`. */
@@ -89,7 +113,7 @@ type SqliteAgentComponentVersionRow = {
  * applied before any definition text is materialized — `agent_component_versions`
  * is append-only per hash, so a churned definition can accumulate an unbounded
  * number of full bodies and selecting them all just to emit eight would make the
- * DB host read arbitrarily much text (wongk, #4295).
+ * DB host read arbitrarily much text (whitlockk, #4295).
  */
 type SqliteAgentComponentVersionIdentityRow = {
   component_kind: string;
@@ -105,25 +129,37 @@ type SqliteAgentComponentVersionIdentityRow = {
 // ---------------------------------------------------------------------------
 
 /**
+ * ISS-11327: the lane's keyset ranking key over `agent_components.last_seen_at`,
+ * spelled once and used at all three sites that must agree — the two keyset
+ * disjuncts, the `ORDER BY`, and the projected `cursor_key` the lane persists.
+ * Spelling it three times inline would be three places to drift.
+ */
+const COMPONENT_CURSOR_CANONICAL_RANK_SQL =
+  componentCursorCanonicalRankSql("last_seen_at");
+
+/**
  * T-8.6 / fix(component-sync-cursor-keyset): Cursor rows for the component
- * inventory sync lane, ordered by (last_seen_at, id) and paged with a proper
+ * inventory sync lane, ordered by (cursor_key, id) and paged with a proper
  * KEYSET predicate so the lane advances monotonically through ALL rows even
  * when hundreds share one `last_seen_at` (previously a `>=` watermark could
  * not advance past a same-timestamp cluster larger than the batch, so the
  * first batch re-uploaded forever and the rest never synced).
  *
- * The keyset cursor is the `(sinceTs, sinceId)` pair — the same `(last_seen_at,
- * id)` tuple as the sort order, which is unique. `last_seen_at` is nullable, so
- * it is normalized with `COALESCE(last_seen_at, '')`; an empty string sorts
- * before any ISO-8601 timestamp, ordering NULL rows first and consistently.
- * Passing `('', '')` selects every row (full backfill on first run): `'' > ''`
- * is false, but `'' = '' AND id > ''` is true for every non-empty id.
+ * The keyset cursor is the `(sinceTs, sinceId)` pair — the same `(cursor_key, id)`
+ * tuple as the sort order, which is unique. ISS-11327: `cursor_key` is
+ * `last_seen_at` read as an INSTANT rather than as bytes
+ * (`componentCursorCanonicalRankSql`), because the lane's re-sync-on-change contract is a
+ * claim about instants and a row re-stamped to a later instant in a lower-sorting
+ * spelling was never re-selected. NULL and every unreadable value rank to the empty
+ * string, which sorts before any real instant and orders them first and
+ * consistently. Passing `('', '')` selects every row (full backfill on first run):
+ * `'' > ''` is false, but `'' = '' AND id > ''` is true for every non-empty id.
  * Includes tombstoned rows (uninstalled_at IS NOT NULL) so the cloud receives
  * uninstall signals.
  *
  * FEA-3438: the SELECT is bounded by `LIMIT $3` so each keyset page reads only
  * the caller's batch, not the entire remaining unsynced tail. The keyset order
- * is deterministic and unique on `(last_seen_at, id)`, so `LIMIT` returns the
+ * is deterministic and unique on `(cursor_key, id)`, so `LIMIT` returns the
  * exact next page and the caller advances past its last row on the next tick.
  * Per-tick read cost is O(batch) instead of O(remaining), and first-run
  * backfill is O(N) across ticks instead of O(N^2).
@@ -137,11 +173,12 @@ export async function listAgentComponentCursorRows(
   return await prisma.read((reader) =>
     reader.$queryRawUnsafe<SqliteAgentComponentCursorRow[]>(
       `
-      SELECT id, last_seen_at
+      SELECT id, last_seen_at, uninstalled_at,
+             ${COMPONENT_CURSOR_CANONICAL_RANK_SQL} AS "cursor_key"
       FROM agent_components
-      WHERE COALESCE(last_seen_at, '') > $1
-         OR (COALESCE(last_seen_at, '') = $1 AND id > $2)
-      ORDER BY COALESCE(last_seen_at, '') ASC, id ASC
+      WHERE ${COMPONENT_CURSOR_CANONICAL_RANK_SQL} > $1
+         OR (${COMPONENT_CURSOR_CANONICAL_RANK_SQL} = $1 AND id > $2)
+      ORDER BY ${COMPONENT_CURSOR_CANONICAL_RANK_SQL} ASC, id ASC
       LIMIT $3
       `,
       sinceTs,
@@ -153,7 +190,8 @@ export async function listAgentComponentCursorRows(
 
 /**
  * T-8.6: Load full component rows by id for packing into the sync payload.
- * Includes tombstoned rows so uninstall signals are synced.
+ * Includes tombstoned rows so uninstall signals are synced. Never selects
+ * `local_project_path` (ISS-12169): that column is Desktop-local.
  */
 async function loadAgentComponents(
   prisma: DesktopPrisma,
@@ -307,8 +345,9 @@ function mapAgentComponentToSynced(
     // above the byte ceiling made large-content components vanish from the
     // cloud. The untruncated sha256 stays in `contentHash` so the cloud can
     // still dedup/version by the true file identity.
-    content:
-      row.content == null ? null : clampSyncedComponentContent(row.content),
+    ...(row.content == null
+      ? { content: null }
+      : syncedComponentContent(row.content, row.component_kind)),
     contentHash: row.content_hash ?? null,
     // F1 (FEA-3290 / PRD-527 Slice 4 / AC-007): ship the honest resolution
     // state so the cloud never surfaces a label-minted (`unresolved`) row as a
@@ -351,7 +390,7 @@ const VERSION_CANDIDATES_PER_FAMILY = SYNCED_COMPONENT_VARIANTS_MAX + 1;
  * which is also the sentinel the cloud version row uses, so no source dimension
  * has to cross the wire.
  *
- * TWO PASSES, deliberately (wongk, #4295). `agent_component_versions` is
+ * TWO PASSES, deliberately (whitlockk, #4295). `agent_component_versions` is
  * append-only per content hash, so a definition that churns accumulates a row per
  * revision forever — and the transport caps downstream only decide what to SEND,
  * long after a single-pass query would have made the DB host materialize every
@@ -572,7 +611,7 @@ async function loadVersionBodies(
   for (const row of rows) {
     // An EMPTY body is a real retained revision, not a missing one — the
     // collector hashes and persists an empty definition as a valid version row,
-    // so only a NULL column means "no body" (wongk, #4295).
+    // so only a NULL column means "no body" (whitlockk, #4295).
     if (row.content !== null && row.content !== undefined) {
       bodyByKey.set(versionRowKey(row), row.content);
     }
@@ -590,7 +629,7 @@ async function loadVersionBodies(
  * cloud version row. A revision with no hash is skipped; an EMPTY body is NOT —
  * the collector hashes and persists an empty definition as a valid retained
  * revision, and dropping it here would silently withhold a real hash from the
- * cloud (wongk, #4295).
+ * cloud (whitlockk, #4295).
  *
  * The budget is the load-bearing guard: the transport chunker DEAD-LETTERS any
  * single component whose serialized JSON exceeds ~248 KiB, dropping its existence
@@ -602,7 +641,7 @@ async function loadVersionBodies(
  * component after its own serialized size, not a flat constant: summing
  * `content` + `contentHash` alone undercounts the wire cost, because the emitted
  * variant also carries `format`, both dates, and the JSON object keys themselves
- * (wongk, #4295). Each candidate is costed by serializing the variant object it
+ * (whitlockk, #4295). Each candidate is costed by serializing the variant object it
  * would emit.
  *
  * STOPS at the first over-budget revision (`break`, not `continue`). That is the
@@ -634,7 +673,7 @@ function selectSyncedVariants(
       continue;
     }
     if (variants.length >= SYNCED_COMPONENT_VARIANTS_MAX) {
-      // ISS-5029 (wongk, #4391): the ENTRY cap, reported as a family cap. Like
+      // ISS-5029 (whitlockk, #4391): the ENTRY cap, reported as a family cap. Like
       // the SQL rank cap it only binds when the family holds more revisions than
       // one sync can carry, so it carries the same lower bound on this device's
       // holdings and the cloud can reconcile it into a proof.
@@ -645,14 +684,14 @@ function selectSyncedVariants(
     }
     const variant: SyncedComponentVariant = {
       contentHash: row.content_hash,
-      content: clampSyncedComponentContent(row.content),
+      ...syncedComponentContent(row.content, row.component_kind),
       format: row.format ?? null,
       firstSeenAt: row.first_seen_at ?? null,
       lastSeenAt: row.last_seen_at ?? null,
     };
     const cost = serializedVariantByteSize(variant);
     if (budget + cost > budgetBytes) {
-      // ISS-5029 (wongk, #4391): the BYTE budget, which is a materially weaker
+      // ISS-5029 (whitlockk, #4391): the BYTE budget, which is a materially weaker
       // signal than either family cap — it can bind at two shipped revisions on
       // a component with large bodies, and says nothing about how many revisions
       // this device holds. Reported distinctly so the cloud does not mistake it
@@ -677,7 +716,7 @@ function selectSyncedVariants(
  * `JSON.stringify` is used directly rather than summing
  * {@link serializedJsonUtf8ByteSize} over the value strings, because the
  * undercount that motivated this was precisely the non-body fields
- * (wongk, #4295). `Buffer.byteLength` measures the already-escaped string, so no
+ * (whitlockk, #4295). `Buffer.byteLength` measures the already-escaped string, so no
  * escape-inflation correction is needed on top.
  */
 function serializedVariantByteSize(variant: SyncedComponentVariant): number {
@@ -743,7 +782,7 @@ export async function loadSyncedComponentRows(
     // complete" failure this ticket exists to remove, so it is set first
     // (closedloop-ai review, ISS-5029).
     //
-    // Written for EVERY component, `false` included (wongk, #4391): this packer
+    // Written for EVERY component, `false` included (whitlockk, #4391): this packer
     // knows the answer, so it states it, and the cloud writer treats an explicit
     // `false` as "clear any stored claim" while treating ABSENCE as "a desktop
     // with no opinion — leave the stored value alone". Emitting nothing here
@@ -807,7 +846,7 @@ type SelectedSyncedVariants = {
 };
 
 /**
- * ISS-5029 (wongk, #4391): fold one cap verdict into the component's wire
+ * ISS-5029 (whitlockk, #4391): fold one cap verdict into the component's wire
  * marker.
  *
  * Two caps are evaluated per component — the SQL rank cap from pass 1 and the
@@ -843,4 +882,96 @@ function applyVariantsTruncation(
   component.variantsTruncatedReason = keepsFamilyCap
     ? SyncedComponentVariantsTruncatedReason.FamilyCap
     : reason;
+}
+
+/**
+ * T-8.6: Load per-session component usage rows for the given session ids.
+ * Grouped by session_id via the returned Map; used by assembleSyncedSessions
+ * to emit `components: SyncedComponentUsage[]` on each session object.
+ *
+ * Moved here verbatim from `sync-source.ts` (ISS-7830) for the reason this whole
+ * module exists: component reads are a cohesive concern of their own, and
+ * `sync-source.ts` is over the ceiling and shrink-only.
+ */
+export async function selectComponentUsageRows(
+  reader: DesktopPrismaReadClient,
+  ids: string[]
+): Promise<Map<string, SqliteComponentUsageRow[]>> {
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const rows = await selectRowsByIds<SqliteComponentUsageRow>(
+    reader,
+    `
+    SELECT
+      session_id,
+      component_kind,
+      component_key,
+      git_branch,
+      agent_component_id,
+      harness,
+      invocations,
+      error_count,
+      component_version_hash,
+      first_invoked_at,
+      last_invoked_at
+    FROM agent_component_session_usage
+    WHERE session_id IN (__IDS__)
+    ORDER BY session_id ASC, component_kind ASC, component_key ASC, git_branch ASC
+    `,
+    ids
+  );
+  const grouped = new Map<string, SqliteComponentUsageRow[]>();
+  for (const row of rows) {
+    const existing = grouped.get(row.session_id);
+    if (existing) {
+      existing.push(row);
+    } else {
+      grouped.set(row.session_id, [row]);
+    }
+  }
+  return grouped;
+}
+
+/**
+ * ISS-4965: the definition text a component sync carries. Secrets are redacted
+ * before the clamp so the clamp measures the bytes that ship.
+ */
+function syncedComponentContent(
+  content: string,
+  componentKind: string
+): RedactedDefinitionBody {
+  const body = redactDefinitionBody(content, componentKind);
+  return { ...body, content: clampSyncedComponentContent(body.content) };
+}
+
+/** Component-scoped readers exposed through the session sync source. */
+export function createComponentSyncReaders(
+  prisma: DesktopPrisma
+): Pick<
+  AgentSessionSyncSource,
+  "resolveComponentSessionIds" | "listComponentCursorRows" | "loadComponentRows"
+> {
+  return {
+    resolveComponentSessionIds(slug) {
+      return prisma.read((reader) =>
+        resolveLocalComponentSessionIds({ client: reader }, slug)
+      );
+    },
+    async listComponentCursorRows(
+      sinceTs: string,
+      sinceId: string,
+      limit: number
+    ) {
+      return await listAgentComponentCursorRows(
+        prisma,
+        sinceTs,
+        sinceId,
+        limit
+      );
+    },
+    async loadComponentRows(ids: string[]): Promise<SyncedComponent[]> {
+      return await loadSyncedComponentRows(prisma, ids);
+    },
+  };
 }

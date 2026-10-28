@@ -1,73 +1,16 @@
-import type { ComputeModeResponse } from "@repo/api/src/types/settings";
-import { log } from "@repo/observability/log";
-import { z } from "zod";
-import { getOrgAdminStatus } from "@/lib/auth/org-admin";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
-import {
-  errorResponse,
-  forbiddenResponse,
-  parseBody,
-  scheduleLogFlush,
-  successResponse,
-} from "@/lib/route-utils";
-import { computeModeService } from "../compute-mode-service";
-
-const computeModeValidator = z.object({
-  computeMode: z.enum(["GITHUB_ACTIONS", "LOOPS"]),
-});
+import { loopsRemovedResponse } from "@/lib/loops-removed-response";
 
 /**
- * GET /settings/compute-mode
- * Returns the organization's current compute mode.
+ * ISS-12435 (PRD-795): Loops are removed. This route is a 410 tombstone
+ * (`apps/api/AGENTS.md`) for installed Desktop builds, stale browser bundles
+ * and `sk_live_*` integrations that can still call it.
  */
-export const GET = withAuth<ComputeModeResponse, "/settings/compute-mode">(
-  async ({ user }) => {
-    try {
-      const computeMode = await computeModeService.getComputeMode(
-        user.organizationId
-      );
-      return successResponse({ computeMode });
-    } catch (error) {
-      return errorResponse("Failed to fetch compute mode", error);
-    }
-  }
+export const GET = withAnyAuth<never, "/settings/compute-mode">(() =>
+  Promise.resolve(loopsRemovedResponse())
 );
 
-/**
- * PUT /settings/compute-mode
- * Set the organization's compute mode. Requires admin role.
- */
-export const PUT = withAuth<ComputeModeResponse, "/settings/compute-mode">(
-  async ({ user, clerkOrgId, clerkUserId }, request) => {
-    try {
-      const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
-      if (!adminStatus.isAdmin) {
-        log.warn("Denied compute mode update for non-admin user", {
-          clerkOrgId,
-          clerkUserId,
-          reason: adminStatus.reason,
-          method: "PUT",
-          route: "/settings/compute-mode",
-        });
-        scheduleLogFlush();
-        return forbiddenResponse();
-      }
-
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        computeModeValidator
-      );
-      if (parseError || !body) {
-        return parseError;
-      }
-
-      await computeModeService.setComputeMode(
-        user.organizationId,
-        body.computeMode
-      );
-      return successResponse({ computeMode: body.computeMode });
-    } catch (error) {
-      return errorResponse("Failed to set compute mode", error);
-    }
-  }
+export const PUT = withAuth<never, "/settings/compute-mode">(() =>
+  Promise.resolve(loopsRemovedResponse())
 );

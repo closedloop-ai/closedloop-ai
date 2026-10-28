@@ -1,6 +1,5 @@
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
-  AgentSessionState,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
@@ -12,6 +11,7 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  persistedSessionDetail,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -116,7 +116,7 @@ describe("agentSessionsService", () => {
     const sessionUpsert = vi.fn().mockImplementation((args) => {
       const data = persistedRecord ? args.update : args.create;
       applySyncWrite(data);
-      return { artifactId: "persisted-session-1" };
+      return persistedSessionDetail("persisted-session-1");
     });
     const sessionUpdate = vi.fn().mockImplementation(({ data }) => {
       if (persistedRecord) {
@@ -183,7 +183,6 @@ describe("agentSessionsService", () => {
     );
     persistedRecord = {
       ...buildSessionDetailRecord(persistedRecord ?? {}),
-      state: AgentSessionState.Blocked,
     };
     await agentSessionsService.upsertSessions(
       {
@@ -225,19 +224,16 @@ describe("agentSessionsService", () => {
       // of this case is the persisted `state` surviving the resync, which the
       // fold does not touch.
       status: SESSION_STATUS.INACTIVE,
-      state: AgentSessionState.Blocked,
-      branch: "fea-1771-resynced",
       linesAdded: 20,
       linesRemoved: 4,
     });
   });
-  it("clears a persisted branch on an explicit null payload and preserves it when the branch key is absent", async () => {
-    // FEA-2531 AC8: toTraceDetailPatch must let a read-only session (branch:null)
-    // clear a stale cloud branch, while an omitted branch key preserves it. The
-    // upsert `update` arm is the contract boundary — inspect it directly.
+  it("ignores the legacy branch payload on the session detail update arm", async () => {
+    // ISS-4742: the cloud accepts the desktop `branch` key for version skew, but
+    // no longer writes a `session_detail.branch` scalar.
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {
@@ -246,8 +242,7 @@ describe("agentSessionsService", () => {
       },
       slugCounter: buildSlugCounterMock(),
       sessionDetail: buildDefaultAgentSessionMocks({
-        // An existing detail row so the sync takes the update arm; the branch
-        // column is written from toTraceDetailPatch on that arm.
+        // An existing detail row so the sync takes the update arm.
         findUnique: vi.fn().mockResolvedValue({
           artifactId: "persisted-session-1",
           agents: [],
@@ -281,6 +276,22 @@ describe("agentSessionsService", () => {
     await agentSessionsService.upsertSessions(context, {
       ...payloadBase,
       batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba010",
+      sessions: [buildSyncedSession({ branch: "legacy/session-branch" })],
+    });
+    const presentUpdateCall = sessionUpsert.mock.calls.at(-1)?.[0];
+    expect(presentUpdateCall).toBeDefined();
+    const presentUpdate = (
+      presentUpdateCall as {
+        update: Record<string, unknown>;
+      }
+    ).update;
+    expect(Object.hasOwn(presentUpdate, "branch")).toBe(false);
+
+    sessionUpsert.mockClear();
+
+    await agentSessionsService.upsertSessions(context, {
+      ...payloadBase,
+      batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba011",
       sessions: [buildSyncedSession({ branch: null })],
     });
     const nullUpdateCall = sessionUpsert.mock.calls.at(-1)?.[0];
@@ -290,23 +301,6 @@ describe("agentSessionsService", () => {
         update: Record<string, unknown>;
       }
     ).update;
-    expect(Object.hasOwn(nullUpdate, "branch")).toBe(true);
-    expect(nullUpdate.branch).toBeNull();
-
-    sessionUpsert.mockClear();
-
-    await agentSessionsService.upsertSessions(context, {
-      ...payloadBase,
-      batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba011",
-      sessions: [buildSyncedSession()],
-    });
-    const absentUpdateCall = sessionUpsert.mock.calls.at(-1)?.[0];
-    expect(absentUpdateCall).toBeDefined();
-    const absentUpdate = (
-      absentUpdateCall as {
-        update: Record<string, unknown>;
-      }
-    ).update;
-    expect(Object.hasOwn(absentUpdate, "branch")).toBe(false);
+    expect(Object.hasOwn(nullUpdate, "branch")).toBe(false);
   });
 });

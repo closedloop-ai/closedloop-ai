@@ -38,7 +38,7 @@
  * ── What is, and is not, an INDEPENDENT cross-surface guard ───────────────────
  * Sessions and Branches resolve through two SEPARATE call sites
  * (`assembleSyncedSessions` → `resolveBillingModeForRow` in `sync-source.ts`,
- * versus `resolveBranchRowBillingMode` in `branch-reads.ts`), so comparing them
+ * versus `resolveBranchRowBillingModes` in `branch-usage-reads.ts`), so comparing them
  * is a genuine guard: forking one without the other fails here.
  *
  * The local-usage and cloud-sync payloads do NOT have that property — both are
@@ -54,7 +54,7 @@
  * PR #4225 as originally scoped (detection only), but that PR's review round
  * closed both read-path gaps before it merged:
  *
- *   - Branches — `resolveBranchRowBillingMode` (branch-reads.ts) re-resolves
+ *   - Branches: `resolveBranchRowBillingModes` (branch-usage-reads.ts) re-resolves
  *     instead of copying `s.billing_mode`.
  *   - Sessions — `getSessionLedger` reads `SyncedAgentSession.billingMode`,
  *     which `assembleSyncedSessions` (sync-source.ts) populates through
@@ -68,7 +68,7 @@
  * the specific producer it claims to guard:
  *
  *   - `foldUsageAggregate` → raw group value  ⇒ ONLY the aggregate case fails.
- *   - `resolveBranchRowBillingMode` → raw column ⇒ both Branches cases and the
+ *   - `resolveBranchRowBillingModes` → raw column ⇒ both Branches cases and the
  *     cross-surface case fail.
  *   - windowed Branches read collapsed onto the all-time token rows ⇒ ONLY the
  *     all-time-vs-windowed case fails.
@@ -77,7 +77,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test, vi } from "vitest";
 import type { AgentSessionUsageAggregateFilters } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { getSharedBranchUsage } from "../src/main/branch/shared-branches-api.js";
@@ -98,6 +98,14 @@ import {
   type BillingSeedDb,
   seedLegacyUnknownBillingSession,
 } from "./billing-mode-seed-test-helpers.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 const LEGACY_SESSION_ID = "s-legacy-unknown";
 const LEGACY_COST_USD = 1.25;

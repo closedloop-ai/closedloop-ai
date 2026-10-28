@@ -1,5 +1,6 @@
 import { projectKeys } from "@repo/app/projects/hooks/project-keys";
-import { projectTreeKeys } from "@repo/app/projects/hooks/use-project-tree";
+import { projectTreeKeys } from "@repo/app/projects/hooks/project-tree-keys";
+import { projectArtifactBoardPageKeys } from "@repo/app/projects/hooks/use-project-artifact-board-page";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { documentKeys } from "../document-keys";
@@ -7,6 +8,14 @@ import { artifactLinkKeys } from "../use-artifact-links";
 import { invalidateArtifactCaches } from "../use-documents";
 
 const PROJECT_LIST_KEY = projectKeys.list({ teamId: "team-1" });
+const PROJECT_ONE_BOARD_KEY = [
+  ...projectArtifactBoardPageKeys.project("p1"),
+  "status",
+] as const;
+const PROJECT_TWO_BOARD_KEY = [
+  ...projectArtifactBoardPageKeys.project("p2"),
+  "status",
+] as const;
 
 function seededClient(): QueryClient {
   const queryClient = new QueryClient();
@@ -18,6 +27,14 @@ function seededClient(): QueryClient {
   queryClient.setQueryData(projectTreeKeys.detail("p2"), {
     nodes: [],
     externalParents: [],
+  });
+  queryClient.setQueryData(PROJECT_ONE_BOARD_KEY, {
+    pages: [],
+    pageParams: [],
+  });
+  queryClient.setQueryData(PROJECT_TWO_BOARD_KEY, {
+    pages: [],
+    pageParams: [],
   });
   // The team project list carries each project's completionPercentage /
   // empty-population flag (ISS-4679) with a stale time; seed it so the tests
@@ -46,6 +63,8 @@ describe("invalidateArtifactCaches", () => {
     expect(isInvalidated(queryClient, projectTreeKeys.detail("p2"))).toBe(
       false
     );
+    expect(isInvalidated(queryClient, PROJECT_ONE_BOARD_KEY)).toBe(true);
+    expect(isInvalidated(queryClient, PROJECT_TWO_BOARD_KEY)).toBe(false);
     // Creating the first document in a project flips its completion population
     // from empty to non-empty (ISS-4679) — the team project list must refresh.
     expect(isInvalidated(queryClient, PROJECT_LIST_KEY)).toBe(true);
@@ -58,6 +77,8 @@ describe("invalidateArtifactCaches", () => {
 
     expect(isInvalidated(queryClient, projectTreeKeys.detail("p1"))).toBe(true);
     expect(isInvalidated(queryClient, projectTreeKeys.detail("p2"))).toBe(true);
+    expect(isInvalidated(queryClient, PROJECT_ONE_BOARD_KEY)).toBe(true);
+    expect(isInvalidated(queryClient, PROJECT_TWO_BOARD_KEY)).toBe(true);
     expect(
       isInvalidated(queryClient, documentKeys.list({ projectId: "p1" }))
     ).toBe(true);

@@ -1,19 +1,31 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
+import { avatarImageMockModule } from "@repo/app/test/mocks/avatar-image";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TraceCommentItem } from "../trace-comments";
 import { TraceCommentsRail } from "../trace-comments-rail";
 
+vi.mock("@repo/design-system/components/ui/avatar", (importOriginal) =>
+  avatarImageMockModule(importOriginal)
+);
+
 /** Matches a comment body ending in "comment" for stable DOM-order assertions. */
 const COMMENT_BODY_RE = /comment$/;
 /** Matches either sort-button accessible name regardless of the active order. */
 const SORT_BUTTON_RE = /^Sort comments/;
+const AUTHOR_NAME = "Dana Reed";
+const AUTHOR_AVATAR_URL = "https://example.test/dana.png";
+/**
+ * `personInitials` is design-system-private, so the expected initial is
+ * spelled. One initial on every avatar (Nerys, 2026-10-22).
+ */
+const AUTHOR_INITIALS = "D";
 
 const mockUseOrganizationUsers = vi.fn();
 vi.mock("@repo/app/users/hooks/use-users", () => ({
@@ -395,11 +407,76 @@ describe("TraceCommentsRail", () => {
       expect(card?.querySelector(".fp-comment-actions")).not.toBeNull();
     });
   });
+
+  /*
+   * ISS-12269 replaced a fixed glyph that named no one with the author's own
+   * photo-or-initials. Every other fixture in this file carries
+   * `authorAvatarUrl: null`, so without these two the photo arm was never
+   * rendered and a fixed glyph could return green (tamsinb review, PR #8612).
+   *
+   * `AvatarImage` comes from `@repo/app/test/mocks/avatar-image`, whose
+   * docstring carries the bound: real Radix gates on an image load jsdom cannot
+   * supply, and the stand-in forwards only `alt` and `src`. So these claims are
+   * scoped to the SOURCE and the fallback text; the unfiltered
+   * accessible-name claim over real Radix belongs to an e2e.
+   */
+  describe("author avatar (ISS-12269)", () => {
+    it("renders the comment author's own photo when one is served", () => {
+      const { container } = render(
+        <TraceCommentsRail
+          comments={[
+            makeComment({
+              authorAvatarUrl: AUTHOR_AVATAR_URL,
+              authorName: AUTHOR_NAME,
+              canDelete: false,
+              canEdit: false,
+            }),
+          ]}
+          onDelete={vi.fn()}
+          onJump={vi.fn()}
+          onReply={vi.fn()}
+        />
+      );
+
+      expect(
+        container.querySelector<HTMLImageElement>(".fp-comment-card img")?.src
+      ).toBe(AUTHOR_AVATAR_URL);
+    });
+
+    it("falls back to the author's initials, not a fixed glyph, with no photo", () => {
+      const { container } = render(
+        <TraceCommentsRail
+          comments={[
+            makeComment({
+              authorAvatarUrl: null,
+              authorName: AUTHOR_NAME,
+              canDelete: false,
+              canEdit: false,
+            }),
+          ]}
+          onDelete={vi.fn()}
+          onJump={vi.fn()}
+          onReply={vi.fn()}
+        />
+      );
+
+      const card = container.querySelector<HTMLElement>(".fp-comment-card");
+      expect(card?.querySelector("img")).toBeNull();
+      // Derived from THIS author, so any fixed glyph — the retired one or a new
+      // one — fails here rather than passing on a coincidence. Read off the
+      // fallback itself: a lone "D" would also match the author's name.
+      expect(
+        card?.querySelector('[data-slot="avatar-fallback"]')?.textContent
+      ).toBe(AUTHOR_INITIALS);
+    });
+  });
 });
 
 function makeComment(options: {
   canDelete: boolean;
   canEdit: boolean;
+  authorAvatarUrl?: string | null;
+  authorName?: string;
   body?: string;
   createdAt?: string;
   id?: string;
@@ -421,9 +498,9 @@ function makeComment(options: {
       actor: null,
     },
     artifactId: "session-1",
-    authorAvatarUrl: null,
+    authorAvatarUrl: options.authorAvatarUrl ?? null,
     authorId: "user-1",
-    authorName: "Test User",
+    authorName: options.authorName ?? "Test User",
     body: options.body ?? "Original trace note",
     canDelete: options.canDelete,
     canEdit: options.canEdit,
@@ -437,8 +514,8 @@ function makeComment(options: {
     resolvedByName: null,
     resolvedByAvatarUrl: null,
     kind: TraceCommentKind.Comment,
-    surface: TraceCommentSurface.SessionDetail,
-    target: { type: TraceCommentTargetType.Session, id: "session-1" },
+    surface: CommentSurface.SessionDetail,
+    target: { type: CommentTargetType.Session, id: "session-1" },
     threadId: "thread-1",
     updatedAt: createdAt,
     replies: options.replies ?? [],

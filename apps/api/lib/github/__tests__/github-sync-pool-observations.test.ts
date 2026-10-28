@@ -1,5 +1,5 @@
 import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -11,8 +11,8 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
 }));
 
 vi.mock("@repo/github/installation-auth", () => ({
@@ -23,25 +23,44 @@ vi.mock("@repo/observability/log", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { clerkClient } from "@repo/auth/server";
+
+// This suite is the pool's write-back half; every case draws a USER token, so
+// tier 1 must stay uncovered. Mocked rather than answered through the db stub
+// because the lookup is raw SQL (ISS-6578) with nothing for a delegate double
+// to intercept.
+vi.mock("@/lib/github/installation-repository-lookup", () => ({
+  findCoveringInstallation: vi.fn().mockResolvedValue(null),
+}));
+
 import { withDb } from "@repo/database";
 import {
   GITHUB_SYNC_REPO_VERDICT_TTL_MS,
   GitHubSyncHealthState,
 } from "@/lib/github/github-access";
 import { getGitHubSyncClient } from "@/lib/github/github-sync-client-pool";
-import { GitHubSyncRepoAccessOutcome } from "@/lib/github/github-sync-pool-observations";
 import {
+  GITHUB_SYNC_DEFAULT_BACKOFF_MS,
+  GitHubSyncRepoAccessOutcome,
+} from "@/lib/github/github-sync-pool-observations";
+import {
+  drawnLogin,
   FUTURE_RESET,
   makePoolDb,
-  mockDecrypt,
   NOW,
   POOL_INPUT,
   poolConnectionFixture,
   type WithDbMock,
+  wireClerkServedToken,
   wireDb,
 } from "./github-access-test-fixtures";
 
 const mockWithDb = withDb as unknown as WithDbMock;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // The write-back half of the pool, exercised through a drawn client (the
 // production path): rate-limit window merges, backoff, 401 revocation, and
@@ -50,9 +69,7 @@ const mockWithDb = withDb as unknown as WithDbMock;
 describe("sync pool observations (via the drawn client)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecrypt.mockImplementation((encrypted: string) =>
-      Promise.resolve(encrypted.replace("encrypted-", "token-"))
-    );
+    wireClerkServedToken(mockClerkClient);
   });
 
   it("learns repo access lazily with the sync verdict TTL", async () => {
@@ -83,7 +100,30 @@ describe("sync pool observations (via the drawn client)", () => {
     );
   });
 
-  it("marks a 401 through the drawn client unhealthy and names the user", async () => {
+  it("keeps a successful repo-access observation drawable", async () => {
+    const connection = poolConnectionFixture({ id: "a", login: "alice" });
+    const db = makePoolDb([connection]);
+    wireDb(mockWithDb, db);
+
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    await result.value.recordRepoAccess(GitHubSyncRepoAccessOutcome.Ok);
+
+    const created = db.gitHubAccessCapability.create.mock.calls[0]?.[0] as {
+      data: { credentialKind: string; denialReason: string | null };
+    };
+    expect(created.data.denialReason).toBeNull();
+
+    connection.capabilities = [created.data];
+    expect(
+      drawnLogin(await getGitHubSyncClient(POOL_INPUT, { now: NOW }))
+    ).toBe("alice");
+  });
+
+  it("backs a 401 off through the drawn client and names the user", async () => {
     const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
@@ -113,25 +153,57 @@ describe("sync pool observations (via the drawn client)", () => {
       result.value.octokit.rest.repos.get({ owner: "Acme", repo: "widgets" })
     ).rejects.toMatchObject({ status: 401 });
 
-    expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: "a",
-        organizationId: "org-1",
-        revokedAt: null,
-        accessTokenEncrypted: "encrypted-a",
-      },
-      data: {
-        revokedAt: expect.any(Date),
-        healthState: GitHubSyncHealthState.Unhealthy,
-      },
+    // Revocation was a compare-and-set on the stored cipher, which the M5
+    // tail removed — Clerk's token is not ours to revoke. The row is backed
+    // off instead, so a broken credential stops being redrawn every sweep
+    // without disabling a pool row we cannot repair.
+    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "a", organizationId: "org-1" }),
+        data: expect.objectContaining({ backoffUntil: expect.any(Date) }),
+      })
+    );
+    expect(db.gitHubAccessCapability.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a 500", 500],
+    ["a 404", 404],
+    ["a transport error", null],
+  ])("does not back off the token for %s", async (_label, status) => {
+    const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
+    wireDb(mockWithDb, db);
+    const fetchMock = vi.fn(() => {
+      if (status !== null) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ message: "provider failure" }), {
+            status,
+            headers: { "content-type": "application/json" },
+          })
+        );
+      }
+      return Promise.reject(new TypeError("transport failure"));
     });
-    expect(db.gitHubAccessCapability.deleteMany).toHaveBeenCalledWith({
-      where: { githubUserConnectionId: "a", organizationId: "org-1" },
+
+    const result = await getGitHubSyncClient(POOL_INPUT, {
+      now: NOW,
+      fetch: fetchMock,
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    db.gitHubUserConnection.updateMany.mockClear();
+
+    await expect(
+      result.value.octokit.rest.repos.get({ owner: "Acme", repo: "widgets" })
+    ).rejects.toBeDefined();
+    expect(db.gitHubUserConnection.updateMany).not.toHaveBeenCalled();
   });
 
   it("puts a rate-limited token into backoff via the client observer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
@@ -173,6 +245,108 @@ describe("sync pool observations (via the drawn client)", () => {
     });
     const backoffUntil: Date = backoffWrite?.[0]?.data?.backoffUntil;
     expect(backoffUntil.getTime()).toBeGreaterThan(NOW.getTime());
+    expect(backoffUntil.getTime()).toBe(NOW.getTime() + 120_000);
+  });
+
+  it("uses the default backoff when GitHub omits retry-after", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
+    wireDb(mockWithDb, db);
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ message: "API rate limit exceeded for user" }),
+          {
+            status: 403,
+            headers: { "content-type": "application/json" },
+          }
+        )
+      )
+    );
+
+    const result = await getGitHubSyncClient(POOL_INPUT, {
+      now: NOW,
+      fetch: fetchMock,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    await expect(
+      result.value.octokit.rest.repos.get({ owner: "Acme", repo: "widgets" })
+    ).rejects.toMatchObject({ status: 403 });
+
+    const backoffWrite = db.gitHubUserConnection.updateMany.mock.calls.find(
+      (call) => call[0]?.data?.healthState === GitHubSyncHealthState.Backoff
+    );
+    const backoffUntil: Date = backoffWrite?.[0]?.data?.backoffUntil;
+    expect(backoffUntil.getTime()).toBe(
+      NOW.getTime() + GITHUB_SYNC_DEFAULT_BACKOFF_MS
+    );
+  });
+
+  it("counts spend without moving an unanchored rate-limit window", async () => {
+    const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
+    wireDb(mockWithDb, db);
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    db.gitHubUserConnection.updateMany.mockClear();
+
+    await result.value.recordRateLimit({
+      limit: 10_000,
+      cost: 15,
+      remaining: 9876,
+      resetAt: null,
+    });
+
+    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledTimes(1);
+    const write = db.gitHubUserConnection.updateMany.mock.calls[0]?.[0];
+    expect(write).toMatchObject({
+      where: { id: "a", organizationId: "org-1", revokedAt: null },
+      data: {
+        healthState: GitHubSyncHealthState.Healthy,
+        backoffUntil: null,
+        windowSpend: { increment: 15 },
+      },
+    });
+    expect(write?.data?.observedLimit).toBeUndefined();
+    expect(write?.data?.observedRemaining).toBeUndefined();
+    expect(write?.data?.observedResetAt).toBeUndefined();
+  });
+
+  it("omits a null observed limit from an anchored window write", async () => {
+    const db = makePoolDb([
+      poolConnectionFixture({
+        id: "a",
+        login: "alice",
+        observedResetAt: null,
+      }),
+    ]);
+    wireDb(mockWithDb, db);
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    db.gitHubUserConnection.updateMany.mockClear();
+
+    await result.value.recordRateLimit({
+      limit: null,
+      cost: 25,
+      remaining: 9975,
+      resetAt: FUTURE_RESET.toISOString(),
+    });
+
+    const write = db.gitHubUserConnection.updateMany.mock.calls[0]?.[0];
+    expect(write?.data).toHaveProperty("observedLimit", undefined);
+    expect(write?.data).toMatchObject({
+      observedRemaining: 9975,
+      observedResetAt: FUTURE_RESET,
+    });
   });
 
   it("accumulates same-window spend monotonically and resets on a new window", async () => {

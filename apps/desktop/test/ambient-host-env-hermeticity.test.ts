@@ -19,7 +19,7 @@
  * object where possible so this file does not itself become host-coupled.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   classifyRunnerOutcome,
   RunnerOutcomeKind,

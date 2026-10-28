@@ -6,7 +6,19 @@
     // any use of `Buffer`/`process`/`node:*` in a lib module fails typecheck.
     // `TextEncoder`/`TextDecoder`/`URL` come from the base `lib` (DOM + es2022),
     // so universal Web APIs stay available.
-    "types": []
+    "types": [],
+    // Redundant for `tsc` — every `@repo/*` here already resolves through the
+    // workspace symlink to the same files. It is load-bearing for PLAYWRIGHT:
+    // its transform picks the tsconfig NEAREST each file it compiles, so a
+    // `packages/lib` module pulled into a spec is resolved against THIS file,
+    // not the root one that carries the mapping. Without it a bare
+    // `@repo/api/src/types/branch` falls back to Node resolution, which needs
+    // the extension these sources do not write, and the whole spec aborts at
+    // load with `Cannot find module …/node_modules/@repo/api/src/types/branch`
+    // (ISS-6949). Keep this in step with the root tsconfig's `@repo/*` entry.
+    "paths": {
+      "@repo/*": ["../*"]
+    }
   },
   "include": ["**/*.ts"],
   // `vitest.config.ts` imports `vitest/config`, whose types transitively pull in

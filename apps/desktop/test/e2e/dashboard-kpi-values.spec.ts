@@ -47,17 +47,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action.ts";
+import { GITHUB_CONNECT_COPY } from "@repo/app/github/lib/github-connect-copy.ts";
+import {
+  DESKTOP_RECENT_SESSIONS_DESCRIPTION,
+  DESKTOP_RECENT_SESSIONS_TITLE,
+  DESKTOP_SYNCED_SESSIONS_TITLE,
+  WEB_RECENT_SESSIONS_TITLE,
+} from "@repo/app/insights/components/overview/recent-sessions-copy.ts";
 import {
   dashboardOnboardedStorageKey,
   dashboardTourSeenStorageKey,
 } from "../../src/renderer/components/dashboard/dashboard-storage-keys";
+import { DASHBOARD_HEADING } from "./helpers/dashboard-header-copy";
 import {
-  dismissDesktopOnboardingOverlay,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
 } from "./helpers/desktop-app";
 import {
-  seedMergedUnenrichedSinglePrBranch,
+  seedClosedAtOnlySinglePrBranch,
   waitForBranchesSchema,
 } from "./helpers/seed-branches-db";
 
@@ -66,12 +76,30 @@ const SEED = {
   branchName: "fea-2939-dashboard-kpi-e2e",
   sessionId: "fea-2939-dashboard-kpi-e2e-session",
   prNumber: 2939,
-  mergedAt: "2026-05-15T12:00:00.000Z",
+  closedAt: "2026-05-15T12:00:00.000Z",
 } as const;
 
 const CURRENCY_VALUE = /^\$/;
 
 /** The value span the MetricCard renders (label lives in card-description). */
+/**
+ * The stats row's GitHub-truth tiles — `kpi:merged`, `kpi:pr-size`, `kpi:kloc`
+ * — all gated when signed out (ISS-7866). `kpi:sessions` and `kpi:cost` are
+ * local and stay live, which is what keeps the count assertions honest.
+ */
+const GATED_STATS_TILE_COUNT = 3;
+/**
+ * The gated CARD's verb, read from the canonical map rather than spelled here —
+ * this spec is not policing the copy, so a reword should move it rather than
+ * redden it. `dashboard-github-gating.spec.ts` is the one that keeps the literal
+ * on purpose (tamsinb review on #8169).
+ */
+const GATED_CONNECT_CTA_LABEL =
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].cardCtaLabel ??
+  GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].ctaLabel;
+/** `value={null}` renders `MetricCard`'s muted no-data glyph. */
+const GATED_VALUE_TEXT = "No data";
+
 function kpiValue(page: Page, label: string): Locator {
   return page
     .locator('[data-tour="stats"] [data-slot="card"]')
@@ -117,7 +145,7 @@ test.describe("Dashboard KPI values (FEA-2939)", () => {
       }
 
       // Seed the un-enriched merged single-PR branch while the app is DOWN.
-      await seedMergedUnenrichedSinglePrBranch(userDataDir, SEED);
+      await seedClosedAtOnlySinglePrBranch(userDataDir, SEED);
 
       // Launch 2 — the real Dashboard reads the seeded corpus at boot.
       const { page, pageErrors, cleanup } = await launchDesktopApp({
@@ -133,44 +161,70 @@ test.describe("Dashboard KPI values (FEA-2939)", () => {
           page.getByRole("heading", {
             exact: true,
             level: 1,
-            name: "Welcome to Closedloop",
+            name: DASHBOARD_HEADING,
           })
         ).toBeVisible({ timeout: 30_000 });
 
         // Data present, so the dashboard is NOT in its empty state.
         await expect(page.getByText("No agent sessions yet")).toHaveCount(0);
 
-        // The unified GitHub-first account graduated to always-on (FEA-3999), so
-        // a signed-out device (every E2E profile) now gets the first-launch
-        // onboarding overlay layered over the mounted Dashboard. Clear it before
-        // driving Dashboard controls — this spec's subject is the KPI tiles, not
-        // the onboarding gate.
-        await dismissDesktopOnboardingOverlay(page);
-
         // Widen to "All time" so the past-dated seed is in range regardless of
-        // the run clock. `:visible` scopes to the mounted Dashboard.
-        await page.locator('[aria-label="All time"]:visible').click();
+        // the run clock.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // SESSIONS = 1 — the load-bearing, non-empty assertion.
         await expect(kpiValue(page, "Sessions")).toHaveText("1", {
           timeout: 45_000,
         });
-        // MEDIAN PR SIZE = — (FEA-2923): no enriched pull_request artifact is
-        // seeded, so the delivery median has nothing to average and renders the
-        // honest empty state, not a misleading 0.
-        await expect(kpiValue(page, "Median PR size")).toHaveText("—");
-        // KLOC = — (ISS-5412). This assertion previously pinned "0" on the
-        // reasoning that a SUM over an empty set is a real 0. It is not: the
-        // seed is a MERGED PR whose `lines_added`/`lines_removed` are NULL, so
-        // the window contains a PR that certainly changed lines and zero PRs
-        // the projection could size. Summing that to "0.0 thousands of lines
-        // changed in captured PRs" reports an unmeasured value as a measured
-        // zero. `capturedPrLocTotals` now returns null when no captured PR is
-        // sized, and `formatKpiValue` renders null as "—" — matching the cloud
-        // twin, which has always dashed this state. A genuine zero (a sized PR
-        // with 0 lines) still renders "0", so the two claims stay distinct.
-        await expect(kpiValue(page, "KLOC captured")).toHaveText("—");
-        // COST renders a currency value (not the "—" placeholder).
+        // ISS-9996: the local, unbounded card names its source, not recency.
+        const sessions = page.locator('[data-tour="sessions"]');
+        await expect(
+          sessions.getByText(DESKTOP_RECENT_SESSIONS_TITLE, { exact: true })
+        ).toBeVisible();
+        const caption = sessions.getByText(
+          DESKTOP_RECENT_SESSIONS_DESCRIPTION,
+          { exact: true }
+        );
+        await expect(caption).toBeVisible();
+        await expect(caption).not.toContainText("latest");
+        await expect(
+          sessions.getByText(WEB_RECENT_SESSIONS_TITLE, { exact: true })
+        ).toHaveCount(0);
+        await expect(
+          sessions.getByText(DESKTOP_SYNCED_SESSIONS_TITLE, { exact: true })
+        ).toHaveCount(0);
+        // BEHAVIOR CHANGE (ISS-7866). These two tiles used to assert "—" here:
+        // FEA-2923 and ISS-5412 established that an unsized captured-PR cohort
+        // must render the honest empty rather than a measured 0, and that claim
+        // still holds — but it is no longer the claim this signed-out profile
+        // can make. `kpi:pr-size` and `kpi:kloc` are GitHub-truth tiles now, and
+        // signed out resolves to a definite Disconnected, so the whole row's
+        // GitHub-derived half is GATED: no value at all, and an ask instead.
+        //
+        // Their labels moved too. A gated card is named by the CATALOG title,
+        // not by the local producer's "Median captured PR size" / "KLOC
+        // captured" — labelling the ask with the captured population would
+        // promise that connecting GitHub lights up a local-capture median. So
+        // this asserts the gated STATE across the row rather than re-guessing
+        // three labels.
+        const statsCards = page.locator(
+          '[data-tour="stats"] [data-slot="card"]'
+        );
+        await expect(
+          statsCards.getByRole("button", {
+            exact: true,
+            name: GATED_CONNECT_CTA_LABEL,
+          })
+        ).toHaveCount(GATED_STATS_TILE_COUNT);
+        // And the gated cards withdraw the value rather than dashing it, which
+        // is what distinguishes "we cannot see this" from FEA-2923's "we looked
+        // and there was nothing to average".
+        await expect(
+          statsCards.filter({ hasText: GATED_VALUE_TEXT })
+        ).toHaveCount(GATED_STATS_TILE_COUNT);
+        // COST is local and ungated — it still renders a currency value. The
+        // counterweight: without it, the assertions above would pass just as
+        // well against a dashboard that gated every tile, or rendered none.
         await expect(kpiValue(page, "Cost")).toHaveText(CURRENCY_VALUE);
 
         await page.screenshot({

@@ -11,7 +11,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { InstallStateStatus } from "./install-state-status";
 
-// FEA-4081 — the aggregate rollup shown above the matrix grid. The Parker
+// FEA-4081 — the aggregate rollup shown above the matrix grid. The Pascoe
 // reconciliation principle: the card MUST reconcile with the rows. Every count
 // here is computed from the SAME flat cell set the grid renders
 // (`countMatrixStates(filtered.cells)`), so the card can never claim a number

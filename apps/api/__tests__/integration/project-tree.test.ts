@@ -3,6 +3,7 @@ import { DocumentType } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
+import { createLegacyProducesLinks } from "@/__tests__/support/artifact-links/legacy-produces-cycle.test-helpers";
 import { projectTreeService } from "@/app/artifacts/project-tree-service";
 import { documentService } from "@/app/documents/document-service";
 import {
@@ -394,10 +395,17 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         content: "content",
       });
 
-      // A → B → C → A (cycle)
+      // A → B → C → A, closed by a pre-admission legacy edge
       await createArtifactLink(orgId, a!.id, b!.id);
       await createArtifactLink(orgId, b!.id, c!.id);
-      await createArtifactLink(orgId, c!.id, a!.id);
+      await createLegacyProducesLinks([
+        {
+          organizationId: orgId,
+          sourceId: c!.id,
+          targetId: a!.id,
+          linkType: LinkType.Produces,
+        },
+      ]);
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
@@ -677,7 +685,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
     });
   });
 
-  it("picks earliest-created entity as root when multiple have zero incoming edges", async () => {
+  it("keeps both parentless entities as roots and nests the shared target under one real edge", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
@@ -709,13 +717,20 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
-      expect(result.nodes).toHaveLength(1);
-      // source1 is earliest → should be root
-      expect(result.nodes[0]!.root.id).toBe(source1!.id);
-      // source2 and target are children
-      const childIds = result.nodes[0]!.children.map((c) => c.id);
-      expect(childIds).toContain(source2!.id);
-      expect(childIds).toContain(target!.id);
+      // Both sources are parentless, so both are roots; the shared target hangs
+      // off whichever link came first.
+      expect(result.nodes).toHaveLength(2);
+      expect(result.nodes.map((node) => node.root.id).sort()).toEqual(
+        [source1!.id, source2!.id].sort()
+      );
+
+      const childrenOf = (rootId: string) =>
+        result.nodes
+          .find((node) => node.root.id === rootId)!
+          .children.map((child) => child.id);
+
+      expect(childrenOf(source1!.id)).toEqual([target!.id]);
+      expect(childrenOf(source2!.id)).toEqual([]);
     });
   });
 });

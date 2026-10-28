@@ -8,8 +8,29 @@
  * here — raw bytes only.
  */
 
-import { isMaterializedTranscriptHarness } from "@repo/api/src/types/desktop-transcripts";
+import {
+  isMaterializedTranscriptHarness,
+  TranscriptForbiddenCode,
+} from "@repo/api/src/types/desktop-transcripts";
+import type { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { exponentialBackoffMs } from "../../shared/exponential-backoff.js";
+import {
+  LANE_STALL_CEILING_MS,
+  LANE_STALL_MAX_RETRY_MS,
+  LANE_STALL_RETRY_FLOOR_MS,
+  type LaneStallSchedule,
+  laneStallDelayMs,
+  laneStallRetryMs,
+} from "../../shared/lane-stall-clock.js";
+import {
+  chargesItemBudget,
+  classifySyncFailure,
+  TRANSCRIPT_CONTROL_ROUTE_PROFILE,
+} from "../../shared/sync-failure-classification.js";
+import type {
+  TranscriptSyncClass,
+  TranscriptSyncStatus,
+} from "../../shared/transcript-sync-status-contract.js";
 
 // FEA-2715 / ISS-4719: the archive-lane `TranscriptSyncStatus` /
 // `TranscriptSyncClass` const unions (and their DB-string narrowers
@@ -24,11 +45,6 @@ import { exponentialBackoffMs } from "../../shared/exponential-backoff.js";
 // objects' members and the narrowers) import them directly from the contract
 // (Biome's `noBarrelFile` forbids re-exporting the runtime bindings).
 export type {
-  TranscriptSyncClass,
-  TranscriptSyncStatus,
-} from "../../shared/transcript-sync-status-contract.js";
-
-import type {
   TranscriptSyncClass,
   TranscriptSyncStatus,
 } from "../../shared/transcript-sync-status-contract.js";
@@ -172,6 +188,14 @@ export type TranscriptFingerprint = {
   missingSourceCount: number;
   nextAttemptAt: string | null;
   lastError: string | null;
+  /**
+   * ISS-7097: the start of this row's current unbroken LANE-WIDE failure run
+   * (a 5xx/429 — the cloud is unreachable, nothing about this row is wrong), or
+   * `null` when it is not in one. Those failures deliberately do not advance
+   * {@link TranscriptFingerprint.retryCount}, so this is what bounds them
+   * instead: see {@link TRANSCRIPT_LANE_STALL_CEILING_MS}.
+   */
+  laneStalledSince: string | null;
 };
 
 /**
@@ -188,7 +212,7 @@ export type TranscriptMainBlobState = {
   syncedByteOffset: number;
   syncedComputeTargetId: string | null;
   /**
-   * ISS-4815 (wongk, #4253): the durable cloud `uploaded` acknowledgement, and
+   * ISS-4815 (whitlockk, #4253): the durable cloud `uploaded` acknowledgement, and
    * the compute target whose cloud gave it. A missing-source file the cloud
    * already holds settles `idle` at a ZERO cursor, so without these fields the
    * projection reads "nothing readable" and discloses `syncing` forever — while
@@ -198,6 +222,20 @@ export type TranscriptMainBlobState = {
    */
   cloudUploadedAt: string | null;
   cloudUploadedComputeTargetId: string | null;
+  /**
+   * ISS-9884 (migration 0090): WHY this row died, for a `dead` row — `null`
+   * when it is not terminal, when it died before 0090, or when the persisted
+   * label is one this build does not recognize.
+   *
+   * The local verdict mapped every `dead` row to `failedPermanent`
+   * unconditionally before this, and structurally had to: the settle path
+   * nulls `laneStalledSince` at the moment of death and `lastError` is an
+   * unparseable client message, so the row kept no evidence of its cause. In
+   * the bucket-unset case — the DEFAULT local-developer path — that made the
+   * desktop's own list say "permanently failed" about a transcript the cloud
+   * reports as merely paused.
+   */
+  terminalSkipReason: TranscriptSkipReason | null;
 };
 
 const REDACTED_ARCHIVE_CURSOR_SUFFIX = "#redacted-jsonl-v1";
@@ -269,9 +307,10 @@ export const TRANSCRIPT_SYNC_CONCURRENCY = 2;
  * losing the exact data operators most need on the biggest, most expensive runs.
  *
  * The whole executor path is streamed, never buffered: {@link findNewlineBoundary}
- * back-scans in fixed blocks, {@link computeWindowChecksums} hashes in a single
- * streamed pass, and the upload streams byte-range parts (multipart for large
- * deltas) — "multi-GB transcripts are never loaded into memory" (PRD FR4 / AC5).
+ * back-scans in fixed blocks, upload-window preparation hashes redacted bytes
+ * in a single streamed pass, and the upload streams byte-range parts (multipart
+ * for large deltas) — "multi-GB transcripts are never loaded into memory"
+ * (PRD FR4 / AC5).
  * So size does not threaten memory, and a slow large upload is strictly better
  * than dropping the primary transcript. The cap is therefore raised well above
  * any realistic main transcript; only a genuinely pathological file (a runaway
@@ -407,4 +446,301 @@ export function missingSourceAttemptLimit(sourceHarness: string): number {
   return isBatchMaterializedHarness(sourceHarness)
     ? TRANSCRIPT_SYNC_MAX_MATERIALIZED_SOURCE_ATTEMPTS
     : TRANSCRIPT_SYNC_MAX_MISSING_SOURCE_ATTEMPTS;
+}
+
+/**
+ * ISS-7097: how long a durable `uploading` claim stays valid before the sweep's
+ * reclaim treats it as stranded and re-arms the row.
+ *
+ * Sized to exceed the longest legitimate single-file upload by a wide margin.
+ * The reported wedge was a ~90 MiB transcript, and the sweep that runs this
+ * reclaim ticks every 30 min, so worst-case recovery latency is this bound plus
+ * one sweep.
+ *
+ * Reclaiming too EARLY is the failure to avoid, and two things make an
+ * over-eager reclaim survivable rather than corrupting: the drain's in-memory
+ * `inFlight` Set still refuses to hand the same file to a second concurrent task
+ * in this process (and the desktop holds a single-instance lock, so there is no
+ * second process), and a duplicate `complete` for an already-verified upload is
+ * answered `200 uploaded` by the server rather than a conflict. The cost of
+ * being wrong is therefore a wasted transfer, not a corrupt row — but it is a
+ * 90 MiB transfer, hence the generous bound.
+ */
+export const TRANSCRIPT_UPLOAD_LEASE_MS = 60 * 60_000;
+
+/**
+ * ISS-7097: how long ONE row may sit in an unbroken lane-wide failure run
+ * (5xx/429) before it is dead-lettered anyway.
+ *
+ * Lane-wide failures deliberately do not advance `retryCount`, because a cloud
+ * outage is not this row's fault and must not burn the per-row budget toward a
+ * `retries_exhausted` skip the cloud would then believe (`sync/AGENTS.md`
+ * invariant 4). That removes the only bound those failures had, and invariant 5
+ * is explicit that every terminal path must stay reachable — so the bound moves
+ * from attempts to wall-clock, measured from `laneStalledSince`.
+ *
+ * 24h matches the server's own stale-upload backstop, past which it aborts an
+ * in-flight multipart upload: a stall this long is no longer a blip the lane
+ * should keep silently absorbing.
+ *
+ * ISS-8615 (PRD-699 §7.3): the session lane's ceiling was a hand-kept copy of
+ * this value, equal on purpose so two lanes measuring the same outage cannot
+ * disagree about when to give up. Both are now this one constant, so the
+ * agreement is a fact rather than a comment two files have to keep honoring.
+ */
+export const TRANSCRIPT_LANE_STALL_CEILING_MS = LANE_STALL_CEILING_MS;
+
+/**
+ * ISS-7097: the FLOOR of the lane-wide retry schedule — the delay a stall run
+ * opens on, and the shortest wait any lane-wide failure ever gets.
+ *
+ * ISS-8689 turned this from the whole schedule into its first rung. What must
+ * not change is WHY the schedule cannot be the row ladder: that ladder is a
+ * function of `retryCount`, which a lane-wide failure deliberately does not
+ * advance, so reusing it would pin every stalled row to whatever rung it
+ * happened to be on — for a healthy row (`retryCount = 0`) a 15-second hammer
+ * against an already-failing cloud. The staged schedule is keyed off the stall
+ * CLOCK instead; see {@link transcriptLaneStallRetryMs}.
+ *
+ * Five minutes as the floor polls a fresh outage ~12 times an hour per row
+ * instead of 240, and equals `SESSION_LANE_STALL_RETRY_MS` on the session lane
+ * so two lanes measuring the same outage open on the same cadence.
+ */
+export const TRANSCRIPT_LANE_STALL_RETRY_MS = LANE_STALL_RETRY_FLOOR_MS;
+
+/**
+ * ISS-7097: is this HTTP status the CLOUD failing, rather than this row being
+ * wrong? A thin adapter over the shared classification module (ISS-8614) — the
+ * lane keeps the QUESTION and the module owns the ANSWER.
+ *
+ * `TRANSCRIPT_ROW_LADDER_STATUSES` used to live here as a hand-written
+ * allow-list of `{400, 403, 409, 413}`. It is deleted: those four are now
+ * `TRANSCRIPT_CONTROL_ROUTE_PROFILE` resolved against Appendix A's default
+ * table, which assigns 400 and 413 ITEM on every route and holds the lane's two
+ * genuine departures — the uncoded 403 (ISS-10002) and the `StaleUpload` 409
+ * (ISS-10001) — as ledger entries that each name the ticket coding them away.
+ * Read those entries for the reasoning; it is not repeated here, so there is one
+ * copy to keep true.
+ *
+ * The resolved set is FIVE, not four: PRD-699 v2 (amended 2026-09-09) made 422
+ * ITEM on every route, and this lane inherits that rather than recording a
+ * deviation against it. The control route does not emit a 422 today, so the
+ * widening is latent — but the desktop is version-skewed against the cloud, so
+ * it is what an already-installed build would do the day the route starts, and
+ * `sync-classification-standard-conformance.test.ts` pins it.
+ *
+ * ISS-9693 / ISS-9695 INVERTED this predicate and the module preserves that
+ * shape: lane-wide is everything the classification does NOT call ITEM, so a
+ * status no build has ever seen inherits ENVIRONMENTAL by omission rather than
+ * by an edit. Before the inversion a platform deploy-skew 404 and any
+ * unrecognized 4xx burned the per-row budget and walked healthy transcripts to
+ * an acked `retries_exhausted` skip the cloud then records as authoritative —
+ * the ISS-7730 shape, which is LOSS rather than retry cadence.
+ *
+ * `undefined` — no HTTP answer was received at all — is ENVIRONMENTAL, and
+ * ISS-9793 CHOSE that rather than inheriting it. It used to keep the ladder on
+ * the reasoning that each caller settles the non-HTTP case for itself before
+ * asking, and `transcript-drain-queue`'s `recordFailure` never did — so all
+ * SEVEN status-less throws in `desktop-transcripts-client.ts` took the
+ * `retryCount + 1` arm. The ISS-7730 shape again, on the commonest failure there
+ * is. Each was ruled on separately; none keeps the ladder:
+ *
+ * - **`postControl` fetch rejection / `AbortSignal.timeout`** and **`put` fetch
+ *   rejection / upload timeout** — the ordinary offline period and the stalled
+ *   uplink. No server judged these bytes, and nothing about them caused either.
+ *   **`put`'s catch is WIDER than those two, and the third condition is this
+ *   list's one exception (marisolashgrove review).** Its body is
+ *   `openBoundedReadStream(stagedPath, …)` from `transcript-upload-window.ts`,
+ *   so a read failure on THIS row's own staged window rejects inside undici and
+ *   arrives as the same status-less throw. That one genuinely is the row's, and
+ *   it is frozen with the rest rather than split out: both reach here as a
+ *   `TranscriptSyncClientError` with no status and a `${label} failed:` message,
+ *   so this call site holds no discriminator to split them by. It is bounded by
+ *   the 24h stall ceiling below, so it terminates rather than retrying forever.
+ * - **access token unavailable**, **"not signed in"**, **invalid API origin** —
+ *   properties of the session or the configuration, identical for every row.
+ *   Signed-out reads as a PAUSE rather than an outage, and a third state that
+ *   neither charges the row nor engages the stall clock was considered and NOT
+ *   built: the answers available here are "spend the budget", which is loss, and
+ *   "freeze it", which is a visible `failed`.
+ * - **non-JSON body** — a captive portal or proxy page. The control bodies are
+ *   deterministic and ~8 KiB, so no request could have provoked one.
+ * - **response failed schema validation** — the one that READS row-attributable
+ *   and is not. It is version skew, a property of the DEPLOYED SERVER: every row
+ *   on that endpoint gets the same rejection, and re-sending cannot change it
+ *   any more than waiting can. Its status-side twin — an unrecognized STATUS
+ *   from that same skewed server — is already environmental by construction, so
+ *   charging the row here would make the cost of one skew depend on which door
+ *   it arrived through.
+ *
+ * The cost is the one `docs/desktop-sync/transcript-lane.md` ("The cost of
+ * ack-gated terminals") blesses, but carry the clause it depends
+ * on (marisolashgrove review): a condition that never lifts leaves the row visibly
+ * `failed` rather than reaching `dead` — not lost — **while the stall clock is
+ * still inside `TRANSCRIPT_LANE_STALL_CEILING_MS`, or while the same condition
+ * also refuses the SKIP.** Past the ceiling with a skip the cloud CAN ack,
+ * `recordFailure`'s `deadEligible` is true on the FIRST failure of the run and
+ * the row is retired at once. A laptop offline for a week comes back with a
+ * week-old `laneStalledSince` already past the ceiling, so one ordinary 503 from
+ * an otherwise reachable server is enough. That is not a regression from this
+ * change — the pre-ISS-9793 `retryCount` path landed in the same place — but a
+ * multi-day offline stretch is far commoner than a multi-day outage, so the
+ * past-ceiling case is not the corner it reads as. Pinned by the past-ceiling
+ * case in `transcript-lane-stall-backoff.test.ts`.
+ *
+ * **The PRESIGNED UPLOAD arm does not rely on this predicate alone (ISS-8608).**
+ * Everything above argues from the CONTROL PLANE, but `recordFailure` also
+ * classifies the upload arm, where the "deterministic ~8 KiB body" reasoning for
+ * 400/413 never reached a multi-MB streamed part. `classifyS3PutFailure` in
+ * `transcript-s3-put-classification.ts` refines 400/403 there by S3's own
+ * `<Code>`; the two compose with OR at the call site, so a status that
+ * refinement declines still lands exactly where this sends it.
+ *
+ * Status-based FOR THE CONTROL PLANE, on purpose: for every status but 403
+ * `postControl` throws before reading the response body, so the status is the
+ * only discriminator available at that call site — which is also why both ledger
+ * entries above exist and why coding them away needs the client to start reading
+ * the body. That deliberately folds a PLATFORM 5xx (load balancer, deployment
+ * window) in with an application one, which is correct: an edge 503 is exactly
+ * as lane-wide as the API's own.
+ */
+export function isLaneWideHttpStatus(status: number | undefined): boolean {
+  if (status === undefined) {
+    return true;
+  }
+  return !chargesItemBudget(
+    classifySyncFailure(TRANSCRIPT_CONTROL_ROUTE_PROFILE, status)
+  );
+}
+
+/**
+ * ISS-8689: the ceiling on ONE lane-wide retry delay, distinct from
+ * {@link TRANSCRIPT_LANE_STALL_CEILING_MS}, which bounds the whole RUN.
+ *
+ * An hour is where staging stops paying: past it the extra patience saves a
+ * handful of requests over the 24h run while adding an hour to how long a
+ * recovered cloud goes unnoticed. This caps what the SCHEDULE will choose on its
+ * own; a server `Retry-After` may still ask for longer, bounded instead by the
+ * run ceiling.
+ */
+export const TRANSCRIPT_LANE_STALL_MAX_RETRY_MS = LANE_STALL_MAX_RETRY_MS;
+
+/**
+ * ISS-8615: this lane's stall policy, as the shared {@link LaneStallSchedule}.
+ *
+ * The ceiling is the part every lane must agree on; the floor and per-delay cap
+ * are the part a lane may legitimately choose — which is exactly why the shared
+ * primitive takes a schedule rather than reading three module constants.
+ */
+const TRANSCRIPT_LANE_STALL_SCHEDULE: LaneStallSchedule = {
+  floorMs: TRANSCRIPT_LANE_STALL_RETRY_MS,
+  maxRetryMs: TRANSCRIPT_LANE_STALL_MAX_RETRY_MS,
+  ceilingMs: TRANSCRIPT_LANE_STALL_CEILING_MS,
+};
+
+/**
+ * ISS-8689 (PRD-699 F8): the lane-wide retry delay for a stall that has been
+ * open for `stallAgeMs`, doubling from {@link TRANSCRIPT_LANE_STALL_RETRY_MS}
+ * to {@link TRANSCRIPT_LANE_STALL_MAX_RETRY_MS}: 5, 10, 20, 40, 60 minutes.
+ *
+ * Keyed off the stall CLOCK, never off `retryCount` — that counter is frozen
+ * for this class by design (`sync/AGENTS.md` invariant 4), so a delay derived
+ * from it would not move. The age is the only thing that grows during a stall,
+ * which is what makes it the right rung index.
+ *
+ * A non-finite or negative age reads as a fresh stall and gets the floor: a
+ * clock we cannot subtract is not evidence that anything should wait longer.
+ */
+export function transcriptLaneStallRetryMs(stallAgeMs: number): number {
+  return laneStallRetryMs(stallAgeMs, TRANSCRIPT_LANE_STALL_SCHEDULE);
+}
+
+/**
+ * ISS-8689: how long the lane waits before its next attempt on a row whose
+ * stall run opened at `stalledSinceMs`.
+ *
+ * `Retry-After` is a MINIMUM wait, so honoring it means never scheduling
+ * earlier than the server asked — hence `max`, not `min`. A `min` here would
+ * let the transient 60-second hint pin the schedule to its first rung forever
+ * and defeat the staging entirely (PRD-699 F8), while a long configuration
+ * hint would simply be ignored.
+ *
+ * While budget REMAINS, the result is capped by it, so `nextAttemptAt` can never
+ * land past the give-up instant. Without that cap a server hint issued late in a
+ * run would push the next attempt beyond the ceiling, and the ceiling is only
+ * evaluated when an attempt actually runs — the terminal path would be scheduled
+ * out of reach.
+ *
+ * Once the budget is SPENT the cap stops applying, and that is deliberate: a row
+ * past its ceiling is dead-letter-eligible on every attempt, but dead-lettering
+ * is ack-gated, so a cloud that cannot record the terminal skip leaves the row
+ * on this schedule with a negative budget. Clamping that to zero would retry it
+ * on every tick — a hot loop strictly worse than the flat delay this replaced,
+ * and reachable in exactly the outage where the ack is least likely to land.
+ */
+export function transcriptLaneStallDelayMs(input: {
+  stalledSinceMs: number;
+  nowMs: number;
+  retryAfterMs?: number;
+}): number {
+  return laneStallDelayMs({
+    stalledSinceMs: input.stalledSinceMs,
+    nowMs: input.nowMs,
+    retryAfterMs: input.retryAfterMs,
+    schedule: TRANSCRIPT_LANE_STALL_SCHEDULE,
+  });
+}
+
+/**
+ * ISS-8599 (PRD-699 §6 item 8): is this 403 the CLOUD refusing every file on
+ * this target identically, rather than this row being wrong?
+ *
+ * Both coded 403s are, and neither may burn the per-row retry budget
+ * (`sync/AGENTS.md` invariant 4 — "attributable to the item" means REPRODUCIBLE
+ * FROM THE PERSISTED ROW, and no byte of the file participates in either
+ * verdict). They are still two different failures, which is why the server
+ * spells them apart and why this build records which one it got:
+ *
+ * - `NotOwned` is the transcript twin of the session lane's `target_not_owned`,
+ *   which FEA-3425 already defers without touching a counter. RECOVERABLE, and
+ *   recoverable by an event this lane sees — a sign-in, or the compute-target
+ *   rewrite that follows one. What that rewrite drops is the STAND-DOWN
+ *   DEADLINE (`nextAttemptAt`), so the new target is tried at once rather than
+ *   serving out the old target's wait (`revivedNextAttemptAt`, ISS-8689). It
+ *   does NOT clear the 24h clock: `laneStalledSince` survives, because an
+ *   observation is not an event in the run and only a settle ends one
+ *   (`sync/AGENTS.md` invariant 5, pinned by
+ *   `transcript-sync-store-lane-stall.test.ts` — "the run still keeps its
+ *   origin — a rewrite is not a settle").
+ * - `PolicyDisabled` is recoverable only by an org admin re-enabling the policy,
+ *   which nothing local can provoke — so it just burns the wall clock. That is
+ *   the correct outcome and not a stall: the terminal that clock reaches is an
+ *   ack-gated `retries_exhausted` skip, and while the policy is off the SKIP
+ *   route answers the same 403, so the ack never lands and the cloud is never
+ *   told a policy-denied transcript permanently failed. The row stays `failed`
+ *   and truthful rather than walking to `dead` on a refusal it did not cause.
+ *
+ * `undefined` — no code, or a code from a newer cloud this build cannot name —
+ * answers FALSE, which is the pre-ISS-8599 ladder. That is deliberately the
+ * opposite default from the session lane's unknown ACK REASON (ISS-8595 treats
+ * that as environmental): there the peer named a class and only the name was
+ * unfamiliar, here there is no name at all and a bare 403 is what an unpatched
+ * server has always sent. Widening it would change behaviour against every
+ * server in the fleet on the strength of no signal.
+ */
+export function isLaneWideTranscriptForbidden(
+  code: TranscriptForbiddenCode | undefined
+): boolean {
+  if (code === undefined) {
+    return false;
+  }
+  // Exhaustive over the closed union so a new code fails `tsc` right here until
+  // it is deliberately classified, rather than silently inheriting either answer.
+  // biome-ignore lint/style/useDefaultSwitchClause: a default would hide contract growth behind an inherited classification — the thing this switch exists to prevent.
+  switch (code) {
+    case TranscriptForbiddenCode.NotOwned:
+      return true;
+    case TranscriptForbiddenCode.PolicyDisabled:
+      return true;
+  }
 }

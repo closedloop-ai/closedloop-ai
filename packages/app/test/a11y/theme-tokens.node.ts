@@ -55,6 +55,14 @@ export function themeToken(theme: A11yTheme, name: string): string {
   return value;
 }
 
+/** Whether `name` is declared in either theme block. */
+export function isThemeToken(name: string): boolean {
+  return (
+    loadThemeTokens(A11yTheme.Light).has(name) ||
+    loadThemeTokens(A11yTheme.Dark).has(name)
+  );
+}
+
 /**
  * Resolves an authored CSS colour expression to a concrete colour for `theme`.
  *

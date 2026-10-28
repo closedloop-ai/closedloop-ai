@@ -15,8 +15,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
+import type { IngestStorePort } from "../src/main/collectors/engine/ingest-store-port.js";
 import {
   CODEX_CHILD_UUID,
   CODEX_PARENT_UUID,
@@ -25,6 +26,11 @@ import {
   minimalCodexRollout,
   writeCodexCollectorRollout,
 } from "./codex-rollout-fixture.js";
+import {
+  createFailingIngestStore,
+  createMemoryIngestStore,
+  type MemoryIngestStore,
+} from "./ingest-store-test-utils.js";
 import {
   cleanupTempDirs,
   makeTempDir,
@@ -41,11 +47,11 @@ const LINKAGE_CACHE_VERSION = 1;
 
 const ORIGINAL_TZ = process.env.TZ;
 
-before(() => {
+beforeAll(() => {
   process.env.TZ = "UTC";
 });
 
-after(() => {
+afterAll(() => {
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {
@@ -58,13 +64,13 @@ after(() => {
 function collectorOver(
   root: string,
   sources: string[],
-  linkageCachePath?: string
+  linkageStore?: IngestStorePort
 ) {
   return createCodexCollector({
     sessionsDir: root,
     archivedDir: path.join(root, "archive"),
     listSources: () => sources,
-    linkageCachePath,
+    ...(linkageStore ? { linkageStore } : {}),
   });
 }
 
@@ -151,12 +157,12 @@ function staleCacheEntry(sourcePath: string): Record<string, unknown> {
   };
 }
 
-function writeLinkageCache(
-  cachePath: string,
+/** A linkage-cache port pre-seeded with `entries` at `version`. */
+function seededLinkageStore(
   entries: Record<string, unknown>,
   version = LINKAGE_CACHE_VERSION
-): void {
-  writeFileSync(cachePath, JSON.stringify({ version, entries }), "utf8");
+): MemoryIngestStore {
+  return createMemoryIngestStore({ version, entries });
 }
 
 describe("Codex collector — descriptor surface", () => {
@@ -187,8 +193,7 @@ describe("Codex collector — persisted linkage cache", () => {
     const childPath = writeChild(root, childLines());
     // The cached nickname deliberately differs from the one on disk
     // (`child-3333`), so the folded subagent's name proves which side won.
-    const cachePath = path.join(root, "linkage-cache.json");
-    writeLinkageCache(cachePath, {
+    const store = seededLinkageStore({
       [childPath]: cacheEntry(childPath, {
         rolloutId: CODEX_CHILD_UUID,
         parentThreadId: CODEX_PARENT_UUID,
@@ -196,7 +201,7 @@ describe("Codex collector — persisted linkage cache", () => {
         agentNickname: "from-the-cache",
       }),
     });
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+    const collector = collectorOver(root, [parentPath, childPath], store);
 
     const [parent] = await collector.parse(parentPath);
 
@@ -208,7 +213,6 @@ describe("Codex collector — persisted linkage cache", () => {
     const root = makeTempDir("codex-cache-stale-");
     const parentPath = writeParent(root);
     const childPath = writeChild(root, childLines());
-    const cachePath = path.join(root, "linkage-cache.json");
     const entry = cacheEntry(childPath, {
       rolloutId: CODEX_CHILD_UUID,
       parentThreadId: CODEX_PARENT_UUID,
@@ -216,8 +220,8 @@ describe("Codex collector — persisted linkage cache", () => {
       agentNickname: "from-the-cache",
     });
     entry.size = (entry.size as number) + 1;
-    writeLinkageCache(cachePath, { [childPath]: entry });
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+    const store = seededLinkageStore({ [childPath]: entry });
+    const collector = collectorOver(root, [parentPath, childPath], store);
 
     const [parent] = await collector.parse(parentPath);
 
@@ -233,9 +237,8 @@ describe("Codex collector — persisted linkage cache", () => {
       const root = makeTempDir("codex-cache-reject-");
       const parentPath = writeParent(root);
       const childPath = writeChild(root, childLines());
-      const cachePath = path.join(root, "linkage-cache.json");
-      writeLinkageCache(cachePath, { [childPath]: entryFor(childPath) });
-      const collector = collectorOver(root, [parentPath, childPath], cachePath);
+      const store = seededLinkageStore({ [childPath]: entryFor(childPath) });
+      const collector = collectorOver(root, [parentPath, childPath], store);
 
       const [parent] = await collector.parse(parentPath);
 
@@ -249,45 +252,53 @@ describe("Codex collector — persisted linkage cache", () => {
     });
   }
 
-  test("ignores a cache file with an unknown version", async () => {
-    const root = makeTempDir("codex-cache-version-");
-    const parentPath = writeParent(root);
-    const childPath = writeChild(root, childLines());
-    const cachePath = path.join(root, "linkage-cache.json");
-    writeLinkageCache(
-      cachePath,
-      {
-        [childPath]: cacheEntry(childPath, {
-          rolloutId: CODEX_CHILD_UUID,
-          parentThreadId: CODEX_PARENT_UUID,
-          depth: 1,
-          agentNickname: "from-a-future-version",
-        }),
-      },
-      LINKAGE_CACHE_VERSION + 1
-    );
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+  for (const version of [
+    LINKAGE_CACHE_VERSION - 1,
+    LINKAGE_CACHE_VERSION + 1,
+  ]) {
+    test(`ignores a cached snapshot at version ${version}`, async () => {
+      // ISS-9837 R3: the version discriminates the whole store's FORMAT, so a
+      // snapshot at any other version is discarded wholesale — not partially
+      // retained — and the graph is rebuilt from disk.
+      const root = makeTempDir("codex-cache-version-");
+      const parentPath = writeParent(root);
+      const childPath = writeChild(root, childLines());
+      const store = seededLinkageStore(
+        {
+          [childPath]: cacheEntry(childPath, {
+            rolloutId: CODEX_CHILD_UUID,
+            parentThreadId: CODEX_PARENT_UUID,
+            depth: 1,
+            agentNickname: "from-a-foreign-version",
+          }),
+        },
+        version
+      );
+      const collector = collectorOver(root, [parentPath, childPath], store);
 
-    const [parent] = await collector.parse(parentPath);
+      const [parent] = await collector.parse(parentPath);
 
-    assert.equal(
-      parent.subagents?.[0].name,
-      `child-${CODEX_CHILD_UUID.slice(0, 4)}`
-    );
-    // ...and the collector rewrites the file at the version it does understand.
-    const rewritten = JSON.parse(readFileSync(cachePath, "utf8")) as {
-      version: number;
-    };
-    assert.equal(rewritten.version, LINKAGE_CACHE_VERSION);
-  });
+      assert.equal(
+        parent.subagents?.[0].name,
+        `child-${CODEX_CHILD_UUID.slice(0, 4)}`
+      );
+      // ...and the collector rewrites the snapshot at the version it does
+      // understand, so the foreign one cannot be re-read next launch either.
+      assert.equal(store.peek()?.version, LINKAGE_CACHE_VERSION);
+    });
+  }
 
-  test("ignores a corrupt cache file rather than failing the scan", async () => {
+  test("ignores an absent cached snapshot rather than failing the scan", async () => {
+    // ISS-9838: an unreadable payload never reaches the collector — the
+    // provider decodes it and hands `hydrated: null`.
     const root = makeTempDir("codex-cache-corrupt-");
     const parentPath = writeParent(root);
     const childPath = writeChild(root, childLines());
-    const cachePath = path.join(root, "linkage-cache.json");
-    writeFileSync(cachePath, '{"version":1,"entries":{ truncated', "utf8");
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+    const collector = collectorOver(
+      root,
+      [parentPath, childPath],
+      createMemoryIngestStore(null)
+    );
 
     const [parent] = await collector.parse(parentPath);
 
@@ -302,9 +313,8 @@ describe("Codex collector — persisted linkage cache", () => {
     const root = makeTempDir("codex-cache-prune-sync-");
     const parentPath = writeParent(root);
     const childPath = writeChild(root, childLines());
-    const cachePath = path.join(root, "linkage-cache.json");
     const stalePath = path.join(root, "2026", "06", "24", "rollout-gone.jsonl");
-    writeLinkageCache(cachePath, {
+    const store = seededLinkageStore({
       [parentPath]: cacheEntry(parentPath, { rolloutId: CODEX_PARENT_UUID }),
       [childPath]: cacheEntry(childPath, {
         rolloutId: CODEX_CHILD_UUID,
@@ -313,42 +323,39 @@ describe("Codex collector — persisted linkage cache", () => {
       }),
       [stalePath]: staleCacheEntry(stalePath),
     });
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+    const collector = collectorOver(root, [parentPath, childPath], store);
 
     await collector.parse(parentPath);
 
-    assert.deepEqual(readCacheKeys(cachePath), [parentPath, childPath].sort());
+    assert.deepEqual(readCacheKeys(store), [parentPath, childPath].sort());
   });
 
   test("prunes persisted entries whose source is gone, on the cooperative build", async () => {
     const root = makeTempDir("codex-cache-prune-async-");
     const parentPath = writeParent(root);
-    const cachePath = path.join(root, "linkage-cache.json");
     const stalePath = path.join(root, "2026", "06", "24", "rollout-gone.jsonl");
-    writeLinkageCache(cachePath, {
+    const store = seededLinkageStore({
       [parentPath]: cacheEntry(parentPath, { rolloutId: CODEX_PARENT_UUID }),
       [stalePath]: staleCacheEntry(stalePath),
     });
-    const collector = collectorOver(root, [parentPath], cachePath);
+    const collector = collectorOver(root, [parentPath], store);
 
     await collector.prepareSourceBatch?.([parentPath]);
 
-    assert.deepEqual(readCacheKeys(cachePath), [parentPath]);
+    assert.deepEqual(readCacheKeys(store), [parentPath]);
   });
 
-  test("keeps parsing when the cache path cannot be written", async () => {
+  test("keeps parsing when the linkage store refuses the write", async () => {
     const root = makeTempDir("codex-cache-unwritable-");
     const parentPath = writeParent(root);
     const childPath = writeChild(root, childLines());
-    // A regular file where the cache directory would have to be: the mkdir
-    // (and therefore the write) fails.
-    const blocker = path.join(root, "blocker");
-    writeFileSync(blocker, "not-a-directory", "utf8");
-    const cachePath = path.join(blocker, "linkage-cache.json");
-    const collector = collectorOver(root, [parentPath, childPath], cachePath);
+    // ISS-9838: the unwritable cache path is now a port that throws on save.
+    const store = createFailingIngestStore();
+    const collector = collectorOver(root, [parentPath, childPath], store);
 
     const [parent] = await collector.parse(parentPath);
 
+    assert.ok(store.attempts() > 0, "the write was attempted and refused");
     assert.equal(parent.subagents?.length, 1);
     assert.equal(parent.subagents?.[0].id, CODEX_CHILD_UUID);
   });
@@ -465,12 +472,9 @@ describe("Codex collector — graph lifecycle", () => {
   });
 });
 
-/** Read the persisted linkage cache's entry keys, in file order. */
-function readCacheKeys(cachePath: string): string[] {
-  const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as {
-    entries: Record<string, unknown>;
-  };
-  return Object.keys(parsed.entries).sort();
+/** Read the persisted linkage cache's entry keys, sorted. */
+function readCacheKeys(store: MemoryIngestStore): string[] {
+  return Object.keys(store.peek()?.entries ?? {}).sort();
 }
 
 /**

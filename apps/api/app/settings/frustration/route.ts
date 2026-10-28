@@ -1,16 +1,19 @@
 import type { SessionFrustrationSettingResponse } from "@repo/api/src/types/settings";
-import { log } from "@repo/observability/log";
+import { SettingsCommandCapability } from "@repo/api/src/types/settings-command";
+import { SettingsDomainId } from "@repo/api/src/types/settings-domain";
 import { z } from "zod";
-import { getOrgAdminStatus } from "@/lib/auth/org-admin";
+import {
+  getSettingsCommandDecision,
+  settingsCommandDenialReason,
+  settingsCommandDenialResponse,
+} from "@/lib/auth/settings-command";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
-  errorResponse,
-  forbiddenResponse,
-  parseBody,
-  scheduleLogFlush,
-  successResponse,
-} from "@/lib/route-utils";
+  OrgAdminGate,
+  reportOrgAdminDenial,
+} from "@/lib/observability/admin-denial-telemetry";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { frustrationSettingService } from "../frustration-setting-service";
 
 const frustrationSettingValidator = z.object({
@@ -47,17 +50,20 @@ export const PUT = withAuth<
   "/settings/frustration"
 >(async ({ user, clerkOrgId, clerkUserId }, request) => {
   try {
-    const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
-    if (!adminStatus.isAdmin) {
-      log.warn("Denied frustration setting update for non-admin user", {
+    const decision = await getSettingsCommandDecision({
+      clerkOrgId,
+      clerkUserId,
+      domain: SettingsDomainId.Sync,
+      capability: SettingsCommandCapability.Admin,
+    });
+    if (!decision.allowed) {
+      reportOrgAdminDenial({
         clerkOrgId,
         clerkUserId,
-        reason: adminStatus.reason,
-        method: "PUT",
-        route: "/settings/frustration",
+        gate: OrgAdminGate.FrustrationSetting,
+        reason: settingsCommandDenialReason(decision.code),
       });
-      scheduleLogFlush();
-      return forbiddenResponse();
+      return settingsCommandDenialResponse(decision.code);
     }
 
     const { body, errorResponse: parseError } = await parseBody(

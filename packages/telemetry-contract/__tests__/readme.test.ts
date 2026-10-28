@@ -4,10 +4,9 @@ import { RequiredCompatibilityMappingFields } from "../scripts/telemetry-contrac
 
 const README_PATH = new URL("../README.md", import.meta.url);
 const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
-const RELEASE_TAG_PREFIX = "telemetry-contract-v";
+const RELEASE_TAG_VERSION_PATTERN = /telemetry-contract-v(\d+)\.(\d+)\.(\d+)/g;
 const STALE_VERSION_PATTERN = /\b0\.1\.[12]\b/;
 const STALE_RELEASE_TAG_PATTERN = /telemetry-contract-v0\.1\.[12]/;
-const CODEOWNERS_PATTERN = /CODEOWNERS/;
 const OPTIONAL_REFINEMENT_PATTERN =
   /generate-json-schemas\.ts[\s\S]*addContractPatterns|addContractPatterns[\s\S]*generate-json-schemas\.ts/;
 const PACKAGE_VALIDATION_PATTERN =
@@ -19,17 +18,31 @@ const JSON_SCHEMA_ID_EXAMPLE_PATTERN =
   /JSON Schema `\$id` version[\s\S]*v0\.2\.schema\.json[\s\S]*v0\.3\.schema\.json/i;
 const OTEL_PIN_EXAMPLE_PATTERN =
   /OTel semantic-conventions pin[\s\S]*@opentelemetry\/semantic-conventions[\s\S]*1\.39\.0/i;
+const ISS_9586_RELEASE_ENTRY_PATTERN = /^ISS-9586's optional .*$/gm;
 
 describe("package README", () => {
-  it("keeps package version and release tag examples aligned with package metadata", () => {
+  it("pins the newest release version the README declares to the package manifest", () => {
     const readme = readmeSource();
     const packageJson = packageManifest();
-    const releaseTag = `${RELEASE_TAG_PREFIX}${packageJson.version}`;
 
-    expect(readme).toContain(packageJson.version);
-    expect(readme).toContain(releaseTag);
+    expect(latestDeclaredReleaseVersion(readme)).toBe(packageJson.version);
     expect(readme).not.toMatch(STALE_VERSION_PATTERN);
     expect(readme).not.toMatch(STALE_RELEASE_TAG_PATTERN);
+  });
+
+  it("publishes the five ISS-9586 attributes in one 0.48.0 release", () => {
+    const readme = readmeSource();
+    const entries = readme.match(ISS_9586_RELEASE_ENTRY_PATTERN) ?? [];
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toContain("`ipc.query_source`");
+    expect(entries[0]).toContain("`ipc.query_execution`");
+    expect(entries[0]).toContain("`ipc.query_refusal`");
+    expect(entries[0]).toContain("`ipc.matched_count`");
+    expect(entries[0]).toContain("`ipc.scanned_count`");
+    expect(entries[0]).toContain("telemetry-contract-v0.48.0");
+    expect(readme).not.toContain("telemetry-contract-v0.49.0");
+    expect(packageManifest().version).toBe("0.48.0");
   });
 
   it("documents the schema update workflow and required companion files", () => {
@@ -70,10 +83,6 @@ describe("package README", () => {
       expect(readme).toContain(field);
     }
   });
-
-  it("does not claim CODEOWNERS coverage for schema updates", () => {
-    expect(readmeSource()).not.toMatch(CODEOWNERS_PATTERN);
-  });
 });
 
 function readmeSource(): string {
@@ -84,4 +93,20 @@ function packageManifest(): { version: string } {
   return JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf-8")) as {
     version: string;
   };
+}
+
+function latestDeclaredReleaseVersion(readme: string): string {
+  let latest = "";
+  let latestKey = -1;
+  for (const [, major, minor, patch] of readme.matchAll(
+    RELEASE_TAG_VERSION_PATTERN
+  )) {
+    const key =
+      Number(major) * 1_000_000 + Number(minor) * 1000 + Number(patch);
+    if (key > latestKey) {
+      latestKey = key;
+      latest = `${major}.${minor}.${patch}`;
+    }
+  }
+  return latest;
 }

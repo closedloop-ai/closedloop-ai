@@ -71,8 +71,13 @@ const AUTONOMY_IDLE_GAP_MS = 30 * 60 * 1000;
  *
  *   1 — FEA-3581: `0.6 * unattendedFraction + 0.4 * steeringScore`.
  *   2 — FEA-3781: attended-time attribution (the current formula).
+ *   3 — ISS-7259: `headless` also honours the harness's OWN launch attribution
+ *       (agent-spawned thread, or an SDK-injected first prompt), so a run the
+ *       harness stated was unattended no longer has to be inferred from the
+ *       entrypoint string alone. The arithmetic is unchanged; the input widened,
+ *       which moves the score for sessions that were being read as attended.
  */
-export const AUTONOMY_FORMULA_VERSION = 2;
+export const AUTONOMY_FORMULA_VERSION = 3;
 
 export type AutonomyInput = {
   /** `role:"human"` turn timestamps — genuine human steering only. */
@@ -98,6 +103,123 @@ export type AutonomyInput = {
    */
   sessionEnded?: boolean;
 };
+
+export type AutonomyAccumulator = {
+  pushAgent(timeMs: number): void;
+  pushPrompt(timeMs: number): void;
+  finish(): { autonomy: number | null; steeringEpisodes: number | null };
+};
+
+/**
+ * Incremental form of the canonical autonomy formula. Inputs must be finite and
+ * chronological; for an equal timestamp, agent activity is pushed before the
+ * prompt because attribution windows are `(prompt, nextPrompt]`.
+ */
+export function createAutonomyAccumulator(input: {
+  headless: boolean;
+  sessionEnded: boolean;
+}): AutonomyAccumulator {
+  let agentEvidence = false;
+  let promptEvidence = false;
+  let previousPromptMs: number | null = null;
+  let currentPromptMs: number | null = null;
+  let previousAgentMs: number | null = null;
+  let lastAgentMs: number | null = null;
+  let latestEvidenceMs = Number.NEGATIVE_INFINITY;
+  let episodeCount = 0;
+  let agentWorkingMs = 0;
+  let humanAttendingMs = 0;
+
+  function closeWindow(windowEndMs: number): void {
+    if (currentPromptMs === null) {
+      return;
+    }
+    if (!input.headless) {
+      humanAttendingMs += Math.min(
+        Math.max(0, windowEndMs - (lastAgentMs ?? currentPromptMs)),
+        AUTONOMY_IDLE_GAP_MS
+      );
+    }
+  }
+
+  return {
+    pushAgent(timeMs) {
+      if (!Number.isFinite(timeMs)) {
+        return;
+      }
+      agentEvidence = true;
+      latestEvidenceMs = Math.max(latestEvidenceMs, timeMs);
+      if (currentPromptMs === null || timeMs <= currentPromptMs) {
+        return;
+      }
+      agentWorkingMs += Math.min(
+        timeMs - (previousAgentMs ?? currentPromptMs),
+        AUTONOMY_IDLE_GAP_MS
+      );
+      previousAgentMs = timeMs;
+      lastAgentMs = timeMs;
+    },
+    pushPrompt(timeMs) {
+      if (!Number.isFinite(timeMs)) {
+        return;
+      }
+      promptEvidence = true;
+      latestEvidenceMs = Math.max(latestEvidenceMs, timeMs);
+      closeWindow(timeMs);
+      if (
+        previousPromptMs === null ||
+        timeMs - previousPromptMs > AUTONOMY_PROMPT_BURST_MS
+      ) {
+        episodeCount += 1;
+      }
+      previousPromptMs = timeMs;
+      currentPromptMs = timeMs;
+      previousAgentMs = null;
+      lastAgentMs = null;
+    },
+    finish() {
+      if (!(agentEvidence || promptEvidence)) {
+        return { autonomy: null, steeringEpisodes: null };
+      }
+      if (!promptEvidence) {
+        return input.headless
+          ? { autonomy: 100, steeringEpisodes: 0 }
+          : { autonomy: null, steeringEpisodes: null };
+      }
+      closeWindow(latestEvidenceMs);
+      const steeringEpisodes = input.headless
+        ? 0
+        : Math.max(0, episodeCount - 1);
+      const attributedMs = agentWorkingMs + humanAttendingMs;
+      if (attributedMs <= 0) {
+        if (input.headless) {
+          return { autonomy: 100, steeringEpisodes: 0 };
+        }
+        return input.sessionEnded
+          ? { autonomy: 0, steeringEpisodes }
+          : { autonomy: null, steeringEpisodes };
+      }
+      return {
+        autonomy: Math.round(clamp01(agentWorkingMs / attributedMs) * 100),
+        steeringEpisodes,
+      };
+    },
+  };
+}
+
+/** Apply one timestamp's evidence in the formula's canonical tie order. */
+export function pushAutonomyEvidenceAtTimestamp(
+  accumulator: AutonomyAccumulator,
+  timeMs: number,
+  evidence: { agent: boolean; prompt: boolean }
+): void {
+  if (evidence.agent) {
+    accumulator.pushAgent(timeMs);
+  }
+  if (evidence.prompt) {
+    accumulator.pushPrompt(timeMs);
+  }
+}
 
 /**
  * FEA-3781: this module's label vocabulary, expressed over the canonical tiers.
@@ -177,79 +299,32 @@ export function deriveAutonomyAndSteering(input: AutonomyInput): {
 } {
   const promptTimes = sortedFiniteTimes(input.promptTimestamps);
   const agentTimes = sortedFiniteTimes(input.agentActivityTimestamps);
-  if (promptTimes.length === 0 && agentTimes.length === 0) {
-    // An empty shell: no prompts, no agent activity, nothing to measure.
-    return { autonomy: null, steeringEpisodes: null };
-  }
-
-  const episodes = groupPromptEpisodes(promptTimes);
-  if (episodes.length === 0) {
-    // FEA-2870: a headless run's prompts are injected by a driver, so having
-    // none is expected and the run is autonomous by construction. For an
-    // interactive session it means the human turns were not captured — the
-    // deriver cannot tell "nobody steered" from "we failed to record it", so it
-    // reports unknown rather than asserting a perfect score. (The ancestor named
-    // above draws the same line via its `hasEstimate: false`.)
-    return input.headless
-      ? { autonomy: 100, steeringEpisodes: 0 }
-      : { autonomy: null, steeringEpisodes: null };
-  }
-
-  // A headless run's injected prompts are not human steering, so they are
-  // reported as zero interventions AND contribute no attended time below.
-  const steeringEpisodes = input.headless
-    ? 0
-    : Math.max(0, episodes.length - 1);
-  const attribution = attributeAutonomySpans({
-    promptTimes,
-    agentTimes,
-    // The session extends to whichever came last, the agent or the human.
-    sessionEndMs: Math.max(
-      agentTimes.at(-1) ?? Number.NEGATIVE_INFINITY,
-      promptTimes.at(-1) ?? Number.NEGATIVE_INFINITY
-    ),
+  const accumulator = createAutonomyAccumulator({
     headless: input.headless === true,
+    sessionEnded: input.sessionEnded !== false,
   });
-  const attributedMs =
-    attribution.agentWorkingMs + attribution.humanAttendingMs;
-  if (attributedMs <= 0) {
-    // Prompts exist but no measurable agent work followed any of them — the
-    // agent never responded, or every row shares the prompt's own timestamp.
-    //
-    // For an INTERACTIVE session that is evidence of non-autonomy: a person
-    // demonstrably prompted and nothing came back, so the truthful score is the
-    // bottom of the scale, NOT null (FEA-3781: null must mean "no data", never
-    // "no work").
-    //
-    // For a HEADLESS run it is not. There was no human — the prompts were
-    // injected by a driver — so 0/Manual would assert a person drove a run
-    // nobody attended. It stays fully agentic, matching the no-prompts headless
-    // branch above and this function's stated contract. The unmeasurable case is
-    // the whole reason that contract exists: a headless run whose lone injected
-    // prompt shares its first agent row's timestamp has no elapsed span to
-    // attribute, and its autonomy is a property of how it was launched.
-    //
-    // And for a session STILL RUNNING it is not either. The sync payload is
-    // rebuilt on every tick, so between the prompt landing and the agent's first
-    // output there is a window where this looks identical to "the agent never
-    // responded" — and answering 0 there renders "Manual | 0/100" about a
-    // session nobody has measured yet, and moves the row out of the Unknown
-    // facet into Guided for a reason that is not autonomy. That is a
-    // loading-vs-true-zero conflation; unknown is the honest answer until the
-    // session is over. It self-corrects on the next sync either way.
-    if (input.headless) {
-      return { autonomy: 100, steeringEpisodes: 0 };
+  let promptIndex = 0;
+  let agentIndex = 0;
+  while (promptIndex < promptTimes.length || agentIndex < agentTimes.length) {
+    const prompt = promptTimes[promptIndex] ?? Number.POSITIVE_INFINITY;
+    const agent = agentTimes[agentIndex] ?? Number.POSITIVE_INFINITY;
+    const timeMs = Math.min(prompt, agent);
+    let hasAgent = false;
+    while (agentTimes[agentIndex] === timeMs) {
+      hasAgent = true;
+      agentIndex += 1;
     }
-    return input.sessionEnded === false
-      ? { autonomy: null, steeringEpisodes }
-      : { autonomy: 0, steeringEpisodes };
+    let hasPrompt = false;
+    while (promptTimes[promptIndex] === timeMs) {
+      hasPrompt = true;
+      promptIndex += 1;
+    }
+    pushAutonomyEvidenceAtTimestamp(accumulator, timeMs, {
+      agent: hasAgent,
+      prompt: hasPrompt,
+    });
   }
-  return {
-    autonomy: Math.round(
-      clamp01(attribution.agentWorkingMs / attributedMs) * 100
-    ),
-    steeringEpisodes,
-  };
+  return accumulator.finish();
 }
 
 function sortedFiniteTimes(values: readonly string[]): number[] {
@@ -257,112 +332,4 @@ function sortedFiniteTimes(values: readonly string[]): number[] {
     .map((value) => Date.parse(value))
     .filter(Number.isFinite)
     .sort((left, right) => left - right);
-}
-
-function groupPromptEpisodes(times: readonly number[]): {
-  start: number;
-  end: number;
-}[] {
-  const episodes: { start: number; end: number }[] = [];
-  for (const time of times) {
-    const current = episodes.at(-1);
-    if (current && time - current.end <= AUTONOMY_PROMPT_BURST_MS) {
-      current.end = time;
-      continue;
-    }
-    episodes.push({ start: time, end: time });
-  }
-  return episodes;
-}
-
-/**
- * FEA-3781: split a session's wall time into agent-working and human-attending
- * milliseconds, discarding idle. Walks INDIVIDUAL prompts in order; each opens a
- * window running to the next prompt (or the session end). Inside a window the
- * agent works from the prompt until its last output, and the human attends from
- * that output until they speak again.
- *
- * Deliberately NOT over prompt episodes. An episode is a 90-second burst, and
- * attributing from the burst's END discarded any agent work that happened
- * between two prompts inside it: prompt -> reply 30s later -> follow-up at 60s
- * collapsed to one episode ending at 60s, so the reply vanished and a session
- * with real work could score 0. Walking raw prompts costs nothing and prices
- * that interleaved reply correctly. Episodes still define `steeringEpisodes` —
- * a burst is one intervention — which is why `groupPromptEpisodes` stays.
- *
- * Both streams are pre-sorted, so a single cursor walks the agent timestamps
- * once across all windows rather than re-scanning per prompt.
- */
-function attributeAutonomySpans(input: {
-  promptTimes: readonly number[];
-  agentTimes: readonly number[];
-  sessionEndMs: number;
-  headless: boolean;
-}): { agentWorkingMs: number; humanAttendingMs: number } {
-  let agentWorkingMs = 0;
-  let humanAttendingMs = 0;
-  let cursor = 0;
-  for (let index = 0; index < input.promptTimes.length; index++) {
-    const promptMs = input.promptTimes[index];
-    if (promptMs === undefined) {
-      continue;
-    }
-    const windowEndMs = input.promptTimes[index + 1] ?? input.sessionEndMs;
-    const worked = attributeAgentWindow({
-      windowStartMs: promptMs,
-      windowEndMs,
-      agentTimes: input.agentTimes,
-      fromIndex: cursor,
-    });
-    agentWorkingMs += worked.agentWorkingMs;
-    cursor = worked.nextIndex;
-    if (input.headless) {
-      continue;
-    }
-    // Whatever is left of the window after the agent's last output is the person
-    // reading it and deciding what to say next. Capped, so a session left open
-    // overnight stops accruing attention 30 minutes in rather than reading as a
-    // human sitting there all night.
-    humanAttendingMs += Math.min(
-      Math.max(0, windowEndMs - (worked.lastAgentMs ?? promptMs)),
-      AUTONOMY_IDLE_GAP_MS
-    );
-  }
-  return { agentWorkingMs, humanAttendingMs };
-}
-
-/**
- * FEA-3781: agent-working milliseconds inside one post-prompt window
- * `(windowStartMs, windowEndMs]`, plus where the agent's work ended.
- *
- * Consecutive agent timestamps bound the work; each step is capped at
- * {@link AUTONOMY_IDLE_GAP_MS} so a long stall inside the agent's own turn (a
- * rate-limit wait, a session resumed the next morning) is discarded rather than
- * banked as autonomous work. Timestamps at or before `windowStartMs` are skipped
- * — an agent row sharing the prompt's exact millisecond is session scaffolding,
- * not a response to it, and contributes no elapsed work either way.
- */
-function attributeAgentWindow(input: {
-  windowStartMs: number;
-  windowEndMs: number;
-  agentTimes: readonly number[];
-  fromIndex: number;
-}): { agentWorkingMs: number; lastAgentMs: number | null; nextIndex: number } {
-  let agentWorkingMs = 0;
-  let previousMs = input.windowStartMs;
-  let lastAgentMs: number | null = null;
-  let index = input.fromIndex;
-  while (index < input.agentTimes.length) {
-    const stamp = input.agentTimes[index];
-    if (stamp === undefined || stamp > input.windowEndMs) {
-      break;
-    }
-    if (stamp > input.windowStartMs) {
-      agentWorkingMs += Math.min(stamp - previousMs, AUTONOMY_IDLE_GAP_MS);
-      previousMs = stamp;
-      lastAgentMs = stamp;
-    }
-    index++;
-  }
-  return { agentWorkingMs, lastAgentMs, nextIndex: index };
 }

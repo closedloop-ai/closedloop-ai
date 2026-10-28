@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Queue of GitHub scopes waiting to be reconciled, read only by the dirty-scope service."
+}

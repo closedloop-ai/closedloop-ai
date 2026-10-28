@@ -3,7 +3,7 @@
  * @description Token-count extraction for the OpenCode parser. Reads the
  * per-message / per-step / session-column token shapes OpenCode emits and
  * normalizes them to `NormalizedTokenCounts`. Split out of `opencode-parser.ts`
- * (ISS-4380) so the grandfathered parser shrinks rather than accumulating this
+ * (ISS-4380) so the parser shrinks rather than accumulating this
  * cohesive concern.
  *
  * OpenCode reports `input` as FRESH/uncached with `cache_read`/`cache_write` as

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { encodeBranchId } from "@repo/api/src/types/branch.js";
+import { describe, test } from "vitest";
 import {
   getSharedBranchDetail,
   getSharedBranches,

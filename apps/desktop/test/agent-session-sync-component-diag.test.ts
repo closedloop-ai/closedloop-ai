@@ -14,8 +14,8 @@
  * microtasks so the async component lane settles before the next tick.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";
 import type { AgentComponentCursorRow } from "../src/main/agent-sync/agent-session-sync-source.js";

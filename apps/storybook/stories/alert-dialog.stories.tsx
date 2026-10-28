@@ -16,9 +16,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * a response.
  */
 const meta: Meta<typeof AlertDialog> = {
-  title: "Design System/Primitives/Alert Dialog",
+  title: "Primitives v1.0/Overlays/Alert Dialog",
   component: AlertDialog,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   render: (args) => (
     <AlertDialog {...args}>

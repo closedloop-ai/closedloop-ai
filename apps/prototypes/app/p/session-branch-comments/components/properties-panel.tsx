@@ -7,8 +7,11 @@
 // auto-fit label/value grid. The pattern currently lives only as raw
 // `.sd3-props` / `.prd-props` CSS in packages/app/styles.css, shared by the
 // session-detail and branch-detail surfaces. Before productionizing, promote it
-// via a separate DS PR (component + story + catalog:sync), then swap this local
-// stand-in for the real import. See the "Component gaps" section of the PR.
+// via /componentize-prototype in promotion mode (or, as the alternative, a
+// standalone design-system PR: component + story + catalog:sync), then swap
+// this local stand-in for the real import and delete this marker. See the
+// DS-GAP note in .claude/skills/prototype/SKILL.md ("When no catalog component
+// fits").
 
 import { cn } from "@repo/design-system/lib/utils";
 import { ChevronRightIcon } from "lucide-react";

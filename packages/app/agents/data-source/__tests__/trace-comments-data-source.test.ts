@@ -1,8 +1,8 @@
 import {
+  CommentSurface,
   ThreadStatus,
   type TraceComment,
   TraceCommentKind,
-  TraceCommentSurface,
   type TraceCommentTarget,
   type TraceTextAnchor,
 } from "@repo/api/src/types/comment";
@@ -47,7 +47,7 @@ function makeComment(overrides: Partial<TraceComment> = {}): TraceComment {
     resolvedByName: null,
     resolvedByAvatarUrl: null,
     status: ThreadStatus.Open,
-    surface: TraceCommentSurface.SessionDetail,
+    surface: CommentSurface.SessionDetail,
     target: TARGET,
     threadId: "thread-1",
     updatedAt: createdAt,
@@ -92,13 +92,13 @@ describe("createHttpTraceCommentsDataSource kind normalization (FEA-4171)", () =
 
     await source.list(branchTarget);
     await source.list(branchTarget, {
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
     });
     await source.create(
       branchTarget,
       { anchor: makeAnchor(), body: "Note" },
       {
-        surface: TraceCommentSurface.BranchTimeline,
+        surface: CommentSurface.BranchTimeline,
       }
     );
     await source.list(TARGET);

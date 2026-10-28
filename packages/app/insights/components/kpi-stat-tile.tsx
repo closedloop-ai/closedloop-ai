@@ -1,6 +1,8 @@
 "use client";
 
 import type { KpiStat } from "@repo/api/src/types/insights";
+import { TOTAL_ESTIMATED_COST_COPY } from "@repo/api/src/types/total-estimated-cost-copy";
+import { useMetricCardHideUnavailable } from "@repo/app/shared/feature-flags/use-metric-card-hide-unavailable";
 import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import { Button } from "@repo/design-system/components/ui/button";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
@@ -24,6 +26,7 @@ import {
 import type { ReactNode } from "react";
 import { formatDelta, formatKpiTileValue } from "../lib/format";
 import { kpiNoComparisonReason } from "../lib/kpi-no-comparison-copy";
+import { INSIGHTS_COST_KPI_TILE_ID } from "../lib/tile-catalog";
 import { EmptyTile } from "./empty-tile";
 import { InfoTip } from "./info-tip";
 import { KpiDeltaPlaceholder } from "./kpi-delta-placeholder";
@@ -47,7 +50,7 @@ export function KpiMetricTile({
   onResizeWidth,
   showDragHandle = false,
   showResizeControls = false,
-  bodyOverride,
+  availabilityDetail,
 }: {
   tileId: string;
   title: string;
@@ -65,22 +68,70 @@ export function KpiMetricTile({
   onResizeWidth?: (id: string, width: number) => void;
   showDragHandle?: boolean;
   showResizeControls?: boolean;
-  bodyOverride?: ReactNode;
+  /**
+   * What this tile says INSTEAD of a value when it is gated or unavailable
+   * (`renderTileAvailabilityDetail`). It fills the card's caption slot; it does
+   * NOT replace the card, so the metric keeps its name (ISS-7866).
+   */
+  availabilityDetail?: ReactNode;
 }) {
   // ISS-5842, default OFF (ISS-4779): the tile's delta family flips together
   // with the `MetricCard` chip family, so one product never shows both.
   const deltaTreatment = useMetricDeltaTreatment();
+  const hideUnavailable = useMetricCardHideUnavailable();
+  // ISS-9971: the cost tile's label and tooltip come from the one canonical
+  // copy object; every other tile keeps the producer's `sub`. One whole copy
+  // object, so the two `MetricCard` branches below cannot spell the tile
+  // differently.
+  const copy =
+    tileId === INSIGHTS_COST_KPI_TILE_ID
+      ? {
+          label: TOTAL_ESTIMATED_COST_COPY.label,
+          info: TOTAL_ESTIMATED_COST_COPY.info,
+        }
+      : {
+          label: title,
+          info: kpi?.sub ? { what: kpi.sub } : undefined,
+        };
+  // The overlay is a SIBLING of the card, not a child, so returning only a
+  // hidden card would leave a pin/info/drag cluster floating over nothing.
+  if (
+    hideUnavailable &&
+    !availabilityDetail &&
+    kpi &&
+    isKpiValueAbsent(kpi.value)
+  ) {
+    return null;
+  }
   let body: ReactNode = <EmptyTile />;
-  if (bodyOverride) {
+  // ISS-9749 ruled this tile OUT of `metric-card-hide-unavailable`. Its only
+  // valueless card is the branch below, and ISS-7866 built that card precisely
+  // so a gated metric KEEPS its name beside the ask — hiding it would restore
+  // the defect that ticket fixed, and take the affordance with it. This is the
+  // same exclusion the Branches strip makes for a filter-blamed caption: an
+  // absence the reader can act on is not an absence nobody could compute.
+  if (availabilityDetail) {
+    // ISS-7866: a gated / unavailable KPI keeps its LABEL. This used to replace
+    // the whole MetricCard with a bare bordered box, which dropped the metric's
+    // name — so a "Connect GitHub" ask sat in an unnamed card and the reader
+    // could not tell which metric connecting would unlock. Same shape the
+    // Branches list card used until ISS-9961 removed it: real label, `null`
+    // value (the muted "No data" glyph), affordance in the caption slot.
     body = (
-      <div className="h-full rounded-lg border bg-card">{bodyOverride}</div>
+      <MetricCard
+        className="h-full"
+        detail={availabilityDetail}
+        info={copy.info}
+        label={copy.label}
+        value={null}
+      />
     );
   } else if (kpi) {
     body = (
       <MetricCard
         className="h-full"
-        info={kpi.sub ? { what: kpi.sub } : undefined}
-        label={kpi.label || title}
+        info={copy.info}
+        label={copy.label}
         trend={
           <TrendBadge
             deltaPct={kpi.deltaPct}
@@ -179,7 +230,7 @@ function TrendBadge({
   // A non-finite deltaPct (NaN / ±Infinity — e.g. a percent-change over a zero
   // prior base) is "no comparison", not a real movement: without this guard
   // `NaN > 0` is false, so a lower-is-better tile would render a bogus down-arrow
-  // + "NaN%" + green "better" (shafty023 review on #4148). Fall to the
+  // + "NaN%" + green "better" (davetho review on #4148). Fall to the
   // no-comparison placeholder instead of grading a non-number.
   if (deltaPct === null || !delta || !isComparableDelta(deltaPct)) {
     // Render a placeholder instead of hiding the slot so the chip layout stays
@@ -229,4 +280,24 @@ function TrendDirectionIcon({ deltaPct }: { deltaPct: number }) {
     return <ArrowUpIcon className="size-3" />;
   }
   return <ArrowDownIcon className="size-3" />;
+}
+
+/**
+ * Whether a KPI figure is the settled, successfully-read, genuinely-absent one —
+ * the only state `metric-card-hide-unavailable` retires on a KPI surface.
+ *
+ * The decision is taken on the VALUE, above {@link formatKpiTileValue}, never on
+ * the dash it prints: that formatter answers `KPI_NO_VALUE` for an absent figure,
+ * which leaves `MetricCard`'s own `noData` false, and keying on the dash would
+ * also retire a real zero-millisecond duration, which prints one and is a fact.
+ *
+ * NON-FINITE IS NOT ABSENT. `NaN`/`±Infinity` are reachable even though
+ * `KpiStat.value` is `number | null` — the desktop path carries a NaN sentinel
+ * across IPC intact, where the type is no longer enforced — and they are corrupt
+ * input rather than a successful read of nothing. Retiring them would delete the
+ * reader's only evidence that the metric arrived malformed, so they stay on
+ * screen in the formatter's degraded state.
+ */
+export function isKpiValueAbsent(value: number | null | undefined): boolean {
+  return value == null;
 }

@@ -1,16 +1,16 @@
 /**
- * Core integration tests: TS-I.1, TS-I.3, TS-I.4, TS-I.5, TS-I.6, TS-I.7
+ * Core integration tests: TS-I.1, TS-I.4, TS-I.5, TS-I.7
  *
  * Covers:
  *   TS-I.1  Team and Projects created and queryable (AC-001, AC-002)
- *   TS-I.3  Loops cover all 7 LoopStatus values with >=4 LoopCommand types (AC-004)
  *   TS-I.4  Artifacts cover all ArtifactType and DocumentStatus values (AC-005)
  *   TS-I.5  Feature artifacts exist for all FeatureStatus values (AC-005)
- *   TS-I.6  No duplicate active loops violating partial unique index (AC-008)
  *   TS-I.7  Template unique constraint (one per subtype per org) (AC-009)
  *
  * TS-I.2 (workstreams cover all WorkstreamState values) was deleted with the
- * workstream concept in PLN-787.
+ * workstream concept in PLN-787. TS-I.3 and TS-I.6 (loop status coverage and
+ * active loop uniqueness) were deleted with Loops in ISS-12435; the seed now
+ * writes no Loop rows.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -19,8 +19,6 @@ import {
   ArtifactType,
   DocumentStatus,
   FeatureStatus,
-  LoopCommand,
-  LoopStatus,
 } from "../../../../generated/client";
 import { runSeed } from "../../index";
 import {
@@ -104,55 +102,19 @@ describe.skipIf(!DATABASE_URL_SET)(
     });
 
     // -------------------------------------------------------------------------
-    // TS-I.3: Loops cover all 7 LoopStatus values with >=4 LoopCommand types (AC-004)
+    // ISS-12435: Loops are retired, so the seed writes no Loop rows.
     // -------------------------------------------------------------------------
 
-    describe("TS-I.3 — Loops cover all 7 LoopStatus values with >=4 LoopCommand types (AC-004)", () => {
-      it("seeds at least one loop per LoopStatus value", async () => {
-        const loops = await ctx.prisma.loop.findMany({
-          where: { organizationId: BASELINE_ORG_ID },
-          select: { status: true },
-        });
-
-        const seededStatuses = new Set(loops.map((l) => l.status));
-        const allStatuses = Object.values(LoopStatus);
-
-        for (const status of allStatuses) {
-          expect(
-            seededStatuses.has(status),
-            `Expected loop status ${status} to be seeded`
-          ).toBe(true);
-        }
-      });
-
-      it("seeds loops with at least 4 distinct LoopCommand types", async () => {
-        const loops = await ctx.prisma.loop.findMany({
-          where: { organizationId: BASELINE_ORG_ID },
-          select: { command: true },
-        });
-
-        const seededCommands = new Set(loops.map((l) => l.command));
-        expect(seededCommands.size).toBeGreaterThanOrEqual(4);
-      });
-
-      it("seeds loops using at least PLAN, EXECUTE, CHAT, and EVALUATE_PRD commands", async () => {
-        const loops = await ctx.prisma.loop.findMany({
-          where: { organizationId: BASELINE_ORG_ID },
-          select: { command: true },
-        });
-
-        const seededCommands = new Set(loops.map((l) => l.command));
-        for (const expected of [
-          LoopCommand.PLAN,
-          LoopCommand.EXECUTE,
-          LoopCommand.CHAT,
-          LoopCommand.EVALUATE_PRD,
-        ]) {
-          expect(
-            seededCommands.has(expected),
-            `Expected LoopCommand.${expected} to be seeded`
-          ).toBe(true);
-        }
+    describe("ISS-12435: the seed writes no Loop rows", () => {
+      it("leaves the Loop and LoopEvent tables empty for the seeded org", async () => {
+        const [loopCount, loopEventCount] = await Promise.all([
+          ctx.prisma.loop.count({ where: { organizationId: BASELINE_ORG_ID } }),
+          ctx.prisma.loopEvent.count({
+            where: { loop: { organizationId: BASELINE_ORG_ID } },
+          }),
+        ]);
+        expect(loopCount).toBe(0);
+        expect(loopEventCount).toBe(0);
       });
     });
 
@@ -235,66 +197,6 @@ describe.skipIf(!DATABASE_URL_SET)(
             `Expected FEATURE artifact with FeatureStatus.${status} to be seeded`
           ).toBe(true);
         }
-      });
-    });
-
-    // -------------------------------------------------------------------------
-    // TS-I.6: No duplicate active loops violating partial unique index (AC-008)
-    // -------------------------------------------------------------------------
-
-    describe("TS-I.6 — No duplicate active loops violating partial unique index (AC-008)", () => {
-      it("has no two PENDING loops sharing the same (artifactId, command, artifactVersion)", async () => {
-        const pendingLoops = await ctx.prisma.loop.findMany({
-          where: {
-            organizationId: BASELINE_ORG_ID,
-            status: LoopStatus.PENDING,
-            artifactId: { not: null },
-            artifactVersion: { not: null },
-          },
-          select: { artifactId: true, command: true, artifactVersion: true },
-        });
-
-        const keys = pendingLoops.map(
-          (l) => `${l.artifactId}|${l.command}|${l.artifactVersion}`
-        );
-        const unique = new Set(keys);
-        expect(unique.size).toBe(keys.length);
-      });
-
-      it("has no two CLAIMED loops sharing the same (artifactId, command, artifactVersion)", async () => {
-        const claimedLoops = await ctx.prisma.loop.findMany({
-          where: {
-            organizationId: BASELINE_ORG_ID,
-            status: LoopStatus.CLAIMED,
-            artifactId: { not: null },
-            artifactVersion: { not: null },
-          },
-          select: { artifactId: true, command: true, artifactVersion: true },
-        });
-
-        const keys = claimedLoops.map(
-          (l) => `${l.artifactId}|${l.command}|${l.artifactVersion}`
-        );
-        const unique = new Set(keys);
-        expect(unique.size).toBe(keys.length);
-      });
-
-      it("has no two RUNNING loops sharing the same (artifactId, command, artifactVersion)", async () => {
-        const runningLoops = await ctx.prisma.loop.findMany({
-          where: {
-            organizationId: BASELINE_ORG_ID,
-            status: LoopStatus.RUNNING,
-            artifactId: { not: null },
-            artifactVersion: { not: null },
-          },
-          select: { artifactId: true, command: true, artifactVersion: true },
-        });
-
-        const keys = runningLoops.map(
-          (l) => `${l.artifactId}|${l.command}|${l.artifactVersion}`
-        );
-        const unique = new Set(keys);
-        expect(unique.size).toBe(keys.length);
       });
     });
 

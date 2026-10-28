@@ -16,6 +16,7 @@ import {
   DocumentStatus,
   DocumentType,
   IssueStatus,
+  SourceLinkedPlanPolicy,
 } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
@@ -151,6 +152,61 @@ describe("createDocumentValidator", () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe("source-linked implementation plan policy", () => {
+    it("accepts an opt-in implementation plan create with a source artifact", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        sourceId: "PRD-12",
+        sourceLinkedPlanPolicy: SourceLinkedPlanPolicy.ReuseOrCreate,
+        status: DocumentStatus.Draft,
+        type: DocumentType.ImplementationPlan,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects opt-in reuse for non-implementation plan creates", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        sourceId: "PRD-12",
+        sourceLinkedPlanPolicy: SourceLinkedPlanPolicy.ReuseOrCreate,
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects opt-in reuse without a source artifact", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        sourceLinkedPlanPolicy: SourceLinkedPlanPolicy.ReuseOrCreate,
+        status: DocumentStatus.Draft,
+        type: DocumentType.ImplementationPlan,
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects inline images on opt-in reuse", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        inlineImages: [
+          {
+            dataBase64: "aW1hZ2U=",
+            filename: "diagram.png",
+            mimeType: "image/png",
+            placeholder: "[[diagram]]",
+          },
+        ],
+        sourceId: "PRD-12",
+        sourceLinkedPlanPolicy: SourceLinkedPlanPolicy.ReuseOrCreate,
+        status: DocumentStatus.Draft,
+        type: DocumentType.ImplementationPlan,
+      });
+
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -189,9 +245,19 @@ describe("updateDocumentValidator", () => {
         dueDate: null,
         projectId: "PRD-42",
         assigneeId: VALID_UUID,
+        expectedStatus: DocumentStatus.Draft,
         sortOrder: 5,
       });
       expect(result.success).toBe(true);
+    });
+
+    it("rejects an empty expectedStatus guard", () => {
+      const result = updateDocumentValidator.safeParse({
+        expectedStatus: "",
+        status: DocumentStatus.Approved,
+      });
+
+      expect(result.success).toBe(false);
     });
 
     it("normalizes a timezone-qualified dueDate", () => {

@@ -8,7 +8,7 @@ import { ActivityActor } from "./activity-actor";
 import {
   type ActivityDirectory,
   ActivityDirectoryStatus,
-} from "./activity-directory";
+} from "./activity-types";
 
 /**
  * The actor cell's six visually distinct states.
@@ -17,7 +17,7 @@ import {
  * a person is unknown only when the directory settled and really does not have
  * them, and say nothing at all when the read failed — and a string-level test
  * keeps passing straight through a layout or avatar-fallback regression that
- * breaks how those states read (PR #4329 review, wongk). Three of them are
+ * breaks how those states read (PR #4329 review, whitlockk). Three of them are
  * effectively unreachable on demand in the running app: a lookup mid-flight, a
  * member who has left, and a directory outage.
  *
@@ -59,8 +59,8 @@ const meta = {
     directory: directoryOf(ActivityDirectoryStatus.Ready, [DANA]),
   },
   parameters: { layout: "padded" },
-  tags: ["autodocs"],
-  title: "App Core/Documents/Activity Actor",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Documents/Activity Actor",
 } satisfies Meta<typeof ActivityActor>;
 
 export default meta;
@@ -97,11 +97,22 @@ export const DirectoryUnavailable: Story = {
 };
 
 /**
- * A non-human row, de-cluttered (ISS-5767 / ISS-5972). It used to state its kind
- * four times inside about thirty characters — gear/robot avatar glyph, the word
- * "Agent" as the name, and a pill repeating both. Now: the glyph, and the name.
+ * An API-key write whose key owner is in the directory (Nerys, 2026-10-07):
+ * the owner's avatar and name, plus an "API" badge naming the channel, so the
+ * row never reads as the owner's own edit.
  */
 export const Agent: Story = {
+  args: {
+    actor: { kind: ActivityFeedActorKind.Agent, id: DANA.id },
+    directory: directoryOf(ActivityDirectoryStatus.Ready, [DANA]),
+  },
+};
+
+/**
+ * An API-key write whose owner cannot be resolved: the robot glyph and the
+ * word "Agent" (stated once, ISS-5767 / ISS-5972), with the same "API" badge.
+ */
+export const AgentOwnerUnknown: Story = {
   args: {
     actor: { kind: ActivityFeedActorKind.Agent, id: "agent-1" },
     directory: directoryOf(ActivityDirectoryStatus.Ready, [DANA]),
@@ -124,11 +135,14 @@ export const System: Story = {
  * secondary cue — nothing here is encoded in hue (WCAG 1.4.1).
  *
  * Includes the human-with-photo row, the most common real row in production.
- * Note what it still does: `AvatarImage alt={displayName}` repeats the name the
- * span two nodes along already carries. That is the NAME axis, not the kind axis
- * this ticket closed, and it is tracked as ISS-6174.
+ * ISS-5955 closed the NAME axis on that row: the photo now carries `alt=""`, so
+ * it is decorative and the adjacent name span is the row's only announcement of
+ * who acted. The initials in a photo-less fallback are still exposed and are
+ * deliberately left — "DR" is not the name, and that half of ISS-6174 was
+ * canceled rather than folded in here.
  */
 export const KindMatrix: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col gap-3">
       {KIND_MATRIX.map(({ label, actor, directory }) => (

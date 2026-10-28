@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ChunkGatingDecision,
   type ChunkGatingInput,
+  type PendingChunkPatch,
   resolveChunkGating,
 } from "./chunk-revision-gating";
 
@@ -117,7 +118,11 @@ describe("resolveChunkGating", () => {
       expect(d.pendingChunkPatch).toEqual({ pendingChunkReceived: 1 });
     });
 
-    it("replaying an already-received interior chunk is idempotent (no double-count)", () => {
+    it("chunk 0 re-firing on a partly-received sequence resets the counter rather than inflating it", () => {
+      // ISS-8131: this case is named for what it actually drives. Index 0 is
+      // not an INTERIOR chunk — it takes the `startsSequence` arm, not the
+      // `chunkIndex < priorReceived` replay arm. The genuine interior replay is
+      // covered in "outbox replay of an interior chunk" below.
       const d = gate({
         incomingRevision: 7,
         existingRevision: 6,
@@ -216,7 +221,7 @@ describe("resolveChunkGating", () => {
   });
 
   describe("null / absent revision", () => {
-    it("never commits or stages when the payload carries no dataRevision", () => {
+    it("never commits, and stages no REVISION, when a chunked payload carries no dataRevision", () => {
       const d = gate({
         incomingRevision: null,
         existingRevision: 4,
@@ -224,6 +229,13 @@ describe("resolveChunkGating", () => {
       });
       expect(d.shouldReplace).toBe(false);
       expect(d.shouldCommitRevision).toBe(false);
+      // ISS-8131: this case was named "never commits OR STAGES" while asserting
+      // neither. It does stage — the contiguous counter advances — so the name
+      // now claims only what the patch shows: no revision is staged, which is
+      // why every later chunk of such a sequence reads a null `stagedRevision`
+      // and comes back foreign. That limb is a separate defect, pinned (not
+      // fixed) in the ISS-8131 block below.
+      expect(d.pendingChunkPatch).toEqual({ pendingChunkReceived: 1 });
     });
   });
 
@@ -453,7 +465,7 @@ describe("resolveChunkGating", () => {
     });
   });
 
-  // wongk on PR #4946: a sequence's identity is the PAIR (revision, total). The
+  // whitlockk on PR #4946: a sequence's identity is the PAIR (revision, total). The
   // ISS-6167 re-open makes a re-prepared re-send at the COMMITTED revision a
   // routine event, so a re-send that also RE-CHUNKS is reachable — and judging
   // its chunks on revision alone lets a short sequence close a long one.
@@ -552,45 +564,334 @@ describe("resolveChunkGating", () => {
       expect(d.pendingChunkPatch).toEqual({});
     });
   });
+
+  // ISS-8131 BUG 2. `dataRevision` is `.nullish()` on the wire, so a payload
+  // carrying none is a first-class shape — an older desktop sends none, and
+  // `wire-data-revision.ts` folds the unchunked MAINTENANCE_STALE sentinel to
+  // the same thing. An UNCHUNKED one is never foreign — `isStaleRevision` shorts
+  // on `incoming != null`, and the following-chunk arm cannot apply to chunk 0 —
+  // so before the fix it reached the clear arm and nulled all three columns of a
+  // sequence it had no claim to. (A revision-less FOLLOWING chunk is foreign;
+  // the orphan case below covers what that costs.)
+  describe("a revision-less unchunked payload must not end a sequence it does not own (ISS-8131)", () => {
+    const ASSEMBLING_41_OVER_39 = {
+      existingRevision: 39,
+      existingPendingRevision: 41,
+      existingPendingTotal: 3,
+      existingPendingReceived: 1,
+    } satisfies Partial<ChunkGatingInput>;
+
+    it("omits all three pending keys so the staged marker survives", () => {
+      const d = gate({
+        ...ASSEMBLING_41_OVER_39,
+        incomingRevision: null,
+        chunk: null,
+      });
+      // Not foreign, and not committing — which is exactly why it used to fall
+      // into the unchunked clear.
+      expect(d.isForeignChunk).toBe(false);
+      expect(d.shouldCommitRevision).toBe(false);
+      expect(d.pendingChunkPatch).toEqual({});
+    });
+
+    // ISS-8131: the marker surviving is only half the fix. `{}` stops the wipe
+    // but the payload still applies ADDITIVELY, so the caller needs a separate
+    // signal to withhold its children. Each case below fixes one arm of that
+    // condition — drop any one and a real shape changes answer.
+    it("flags a revision-less UNCHUNKED payload landing mid-sequence", () => {
+      expect(
+        gate({
+          ...ASSEMBLING_41_OVER_39,
+          incomingRevision: null,
+          chunk: null,
+        }).revisionlessMidSequence
+      ).toBe(true);
+    });
+
+    it("flags a revision-less CHUNK 0 landing mid-sequence, which the unchunked guard alone does not cover", () => {
+      // No live producer emits this today (the wire fold skips chunked
+      // sentinel-0), but it reaches the identical additive path, so one
+      // condition closes both rather than leaving a latent twin.
+      expect(
+        gate({
+          ...ASSEMBLING_41_OVER_39,
+          incomingRevision: null,
+          chunk: { index: 0, total: 3 },
+        }).revisionlessMidSequence
+      ).toBe(true);
+    });
+
+    it("does NOT flag a revision-less payload when no sequence is staged", () => {
+      // The ordinary older-desktop delivery. Holding it would strand a client
+      // that has done nothing wrong, so the staged marker is load-bearing.
+      expect(
+        gate({
+          ...NO_PENDING,
+          existingRevision: 39,
+          incomingRevision: null,
+          chunk: null,
+        }).revisionlessMidSequence
+      ).toBe(false);
+    });
+
+    it("does NOT flag a payload that carries a real revision mid-sequence", () => {
+      expect(
+        gate({
+          ...ASSEMBLING_41_OVER_39,
+          incomingRevision: 41,
+          chunk: { index: 1, total: 3 },
+        }).revisionlessMidSequence
+      ).toBe(false);
+    });
+
+    it("does NOT flag a revision-less FOLLOWING chunk — already refused as foreign", () => {
+      const d = gate({
+        ...ASSEMBLING_41_OVER_39,
+        incomingRevision: null,
+        chunk: { index: 1, total: 3 },
+      });
+      expect(d.isForeignChunk).toBe(true);
+      // Foreign already no-writes unconditionally; flagging it too would make
+      // the caller's two refusal paths overlap and hide which one fired.
+      expect(d.revisionlessMidSequence).toBe(false);
+    });
+
+    it("lets the interrupted rev-41 sequence still complete and commit", () => {
+      // `{}` on its own does not prove the sequence SURVIVED — only driving the
+      // tail against the state that payload left behind does. Before the fix
+      // the marker was gone here and both chunks below came back foreign.
+      let pending: PendingState = {
+        existingPendingRevision: 41,
+        existingPendingTotal: 3,
+        existingPendingReceived: 1,
+      };
+      pending = applyPendingPatch(
+        pending,
+        gate({ ...ASSEMBLING_41_OVER_39, incomingRevision: null, chunk: null })
+          .pendingChunkPatch
+      );
+      expect(pending).toEqual({
+        existingPendingRevision: 41,
+        existingPendingTotal: 3,
+        existingPendingReceived: 1,
+      });
+
+      const interior = resolveChunkGating({
+        ...pending,
+        incomingRevision: 41,
+        existingRevision: 39,
+        chunk: { index: 1, total: 3 },
+      });
+      expect(interior.isForeignChunk).toBe(false);
+      pending = applyPendingPatch(pending, interior.pendingChunkPatch);
+
+      const last = resolveChunkGating({
+        ...pending,
+        incomingRevision: 41,
+        existingRevision: 39,
+        chunk: { index: 2, total: 3 },
+      });
+      expect(last.isForeignChunk).toBe(false);
+      expect(last.shouldCommitRevision).toBe(true);
+    });
+
+    it("keeps an ABANDONED marker too — the disclosed cost of the fix", () => {
+      // The gate is pure, so it cannot tell a live sequence from one whose tail
+      // will never arrive: this is the SAME input as the case above. Before the
+      // fix a revision-less payload cleared an abandoned marker as a side
+      // effect; that garbage collection is what the fix gives up, deliberately.
+      // A payload at a revision >= the staged one still clears it, and so does
+      // the desktop's own `abandonUnpersistedChunkTail` re-send from chunk 0.
+      const d = gate({
+        existingRevision: 39,
+        existingPendingRevision: 41,
+        existingPendingTotal: 3,
+        existingPendingReceived: 1,
+        incomingRevision: null,
+        chunk: null,
+      });
+      expect(d.pendingChunkPatch).toEqual({});
+    });
+
+    it("leaves a chunked chunk-0 ORPHAN counter alone (behaviour pinned, not fixed)", () => {
+      // A chunked chunk 0 carrying no revision stages a counter beside a NULL
+      // revision, so its own later chunks come back foreign. That limb is a
+      // separate defect and is deliberately NOT fixed here. What changes is
+      // that the orphan now SURVIVES a later revision-less payload instead of
+      // being cleared by it — pinned so the next reader does not read it as
+      // unchanged.
+      const orphaning = gate({
+        incomingRevision: null,
+        existingRevision: 4,
+        chunk: { index: 0, total: 2 },
+      });
+      expect(orphaning.pendingChunkPatch).toEqual({ pendingChunkReceived: 1 });
+
+      const later = gate({
+        incomingRevision: null,
+        existingRevision: 4,
+        chunk: null,
+        existingPendingRevision: null,
+        existingPendingTotal: null,
+        existingPendingReceived: 1,
+      });
+      expect(later.pendingChunkPatch).toEqual({});
+    });
+  });
+
+  describe("high-water mark when NOTHING is committed yet (ISS-8131 item 7)", () => {
+    it("flags a lower unchunked payload as foreign against a pending-only session", () => {
+      // A brand-new session whose FIRST chunked sequence is mid-assembly, hit
+      // by a lower-revision whole-session payload. The bar is
+      // max(committed, pending) and committed is NULL here, so the pending
+      // revision alone has to carry it — the limb no other case executes.
+      const d = gate({
+        incomingRevision: 5,
+        chunk: null,
+        existingRevision: null,
+        existingPendingRevision: 7,
+        existingPendingTotal: 3,
+        existingPendingReceived: 1,
+      });
+      // Mutating `maxRevision`'s `return pending ?? null` to `return null` makes
+      // this payload "advance" against a null bar: foreign flips false,
+      // shouldReplace flips true, and it delete-replaces the assembling rev-7
+      // partial and commits rev 5.
+      expect(d.isForeignChunk).toBe(true);
+      expect(d.shouldReplace).toBe(false);
+      expect(d.shouldCommitRevision).toBe(false);
+      expect(d.pendingChunkPatch).toEqual({});
+    });
+  });
+
+  describe("outbox replay of an interior chunk (ISS-8131 item 8)", () => {
+    const ASSEMBLING_7_OF_4 = {
+      incomingRevision: 7,
+      existingRevision: 6,
+      existingPendingRevision: 7,
+      existingPendingTotal: 4,
+      existingPendingReceived: 3,
+    } satisfies Partial<ChunkGatingInput>;
+
+    it("leaves the contiguous counter unchanged when chunk 1 is redelivered", () => {
+      // Chunks 0,1,2 landed; the bounded-retry outbox redelivers chunk 1.
+      const d = gate({ ...ASSEMBLING_7_OF_4, chunk: { index: 1, total: 4 } });
+      expect(d.isForeignChunk).toBe(false);
+      expect(d.shouldCommitRevision).toBe(false);
+      // Neither inflated to 4 nor regressed to 2. A mutant returning
+      // `chunkIndex + 1` here writes 2, after which chunk 3 finds
+      // `index !== priorReceived`, never advances, and the sequence can never
+      // commit until a fresh chunk 0.
+      expect(d.pendingChunkPatch).toEqual({ pendingChunkReceived: 3 });
+    });
+
+    it("still commits on the real last chunk after that replay", () => {
+      const d = gate({ ...ASSEMBLING_7_OF_4, chunk: { index: 3, total: 4 } });
+      expect(d.isForeignChunk).toBe(false);
+      expect(d.shouldCommitRevision).toBe(true);
+      // The completing chunk CLEARS the marker; it does not leave a count of 4.
+      expect(d.pendingChunkPatch).toEqual({
+        pendingChunkRevision: null,
+        pendingChunkTotal: null,
+        pendingChunkReceived: null,
+      });
+    });
+  });
+
+  describe("unchunked payload AT the revision a sequence is assembling (ISS-8131 item 9)", () => {
+    it("replaces and commits, abandoning the staged sequence", () => {
+      // Reachable when the desktop re-prepares a session that shrank below the
+      // chunking threshold, or when two producers race the same
+      // externalSessionId. This pins CURRENT behaviour: the module header
+      // describes the equal-to-COMMITTED unchunked case as an idempotent no-op
+      // and is silent on equal-to-PENDING, which is what this is.
+      const d = gate({
+        incomingRevision: 41,
+        existingRevision: 39,
+        chunk: null,
+        existingPendingRevision: 41,
+        existingPendingTotal: 3,
+        existingPendingReceived: 1,
+      });
+      expect(d.isForeignChunk).toBe(false);
+      expect(d.shouldReplace).toBe(true);
+      expect(d.shouldCommitRevision).toBe(true);
+      expect(d.pendingChunkPatch).toEqual({
+        pendingChunkRevision: null,
+        pendingChunkTotal: null,
+        pendingChunkReceived: null,
+      });
+    });
+
+    it("strands the abandoned sequence's remaining chunks as foreign no-ops", () => {
+      // The other half of the same story: rev 41 is now committed and nothing
+      // is staged, so the old sequence's chunk 1 has no marker to match.
+      const d = gate({
+        incomingRevision: 41,
+        existingRevision: 41,
+        chunk: { index: 1, total: 3 },
+      });
+      expect(d.isForeignChunk).toBe(true);
+      expect(d.shouldCommitRevision).toBe(false);
+      expect(d.pendingChunkPatch).toEqual({});
+    });
+  });
 });
+
+/** The three persisted staging columns a decision's patch is applied to. */
+type PendingState = {
+  existingPendingRevision: number | null;
+  existingPendingTotal: number | null;
+  existingPendingReceived: number | null;
+};
+
+/**
+ * Apply a decision's patch the way the per-session apply's spread does: an
+ * omitted key leaves the persisted value untouched, an explicit `null` clears
+ * it. ONE definition, so a test that threads a sequence by hand and
+ * {@link driveSequence} cannot drift on what an omitted key means.
+ */
+function applyPendingPatch(
+  state: PendingState,
+  patch: PendingChunkPatch
+): PendingState {
+  return {
+    existingPendingRevision:
+      "pendingChunkRevision" in patch
+        ? (patch.pendingChunkRevision ?? null)
+        : state.existingPendingRevision,
+    existingPendingTotal:
+      "pendingChunkTotal" in patch
+        ? (patch.pendingChunkTotal ?? null)
+        : state.existingPendingTotal,
+    existingPendingReceived:
+      "pendingChunkReceived" in patch
+        ? (patch.pendingChunkReceived ?? null)
+        : state.existingPendingReceived,
+  };
+}
 
 /**
  * Drive a whole chunked sequence the way the per-session apply does: feed each
  * decision's `pendingChunkPatch` forward as the next chunk's persisted staging
  * state, so a chunk can only be judged against what its predecessors actually
- * wrote. An omitted patch key leaves the persisted value untouched.
+ * wrote.
  */
 function driveSequence(args: {
   incomingRevision: number;
   existingRevision: number | null;
   total: number;
 }) {
-  let pendingRevision: number | null = null;
-  let pendingTotal: number | null = null;
-  let pendingReceived: number | null = null;
+  let pending: PendingState = NO_PENDING;
   const decisions: ChunkGatingDecision[] = [];
   for (let index = 0; index < args.total; index += 1) {
     const decision = resolveChunkGating({
+      ...pending,
       incomingRevision: args.incomingRevision,
       existingRevision: args.existingRevision,
-      existingPendingRevision: pendingRevision,
-      existingPendingTotal: pendingTotal,
-      existingPendingReceived: pendingReceived,
       chunk: { index, total: args.total },
     });
-    const patch = decision.pendingChunkPatch;
-    pendingRevision =
-      "pendingChunkRevision" in patch
-        ? (patch.pendingChunkRevision ?? null)
-        : pendingRevision;
-    pendingTotal =
-      "pendingChunkTotal" in patch
-        ? (patch.pendingChunkTotal ?? null)
-        : pendingTotal;
-    pendingReceived =
-      "pendingChunkReceived" in patch
-        ? (patch.pendingChunkReceived ?? null)
-        : pendingReceived;
+    pending = applyPendingPatch(pending, decision.pendingChunkPatch);
     decisions.push(decision);
   }
   return decisions;

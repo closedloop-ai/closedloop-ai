@@ -11,11 +11,10 @@ const SECRET_LEAK = /sk_live|token|Bearer/i;
 
 /**
  * FEA-2794: `signInPendingMessage` maps the in-flight desktop auth status to the
- * user-facing sign-in copy shared by the Settings Account tab and the app-wide
- * session-expired banner, keeping the two surfaces in sync. Neither consumer's
- * test asserts the status→string mapping today (the banner test only renders
+ * user-facing sign-in copy the app-wide session-expired banner renders. The
+ * banner's test does not assert the status→string mapping (it only renders
  * `refresh_failed`, which hits the fallback, and never checks the text), so a
- * mis-mapped status would silently regress copy on both surfaces. Pin the two
+ * mis-mapped status would silently regress that copy. Pin the two
  * distinguished statuses plus the fallback for every other status.
  */
 describe("signInPendingMessage", () => {
@@ -47,9 +46,9 @@ describe("signInPendingMessage", () => {
 
 /**
  * ISS-5301: the FAILURE half of the same shared copy, which had no coverage.
- * The Settings Account tab and the Sessions KPI-card sign-in CTA both read it,
- * so a missing arm shows the wrong reason in two places at once — and, unlike
- * the pending copy above, these strings are what a user acts on to recover.
+ * Every `useDesktopSignIn` caller reads it, so a missing arm shows the wrong
+ * reason wherever sign-in fails — and, unlike the pending copy above, these
+ * strings are what a user acts on to recover.
  */
 
 const ALL_FAILURE_REASONS_MAP: Record<DesktopBrowserSignInFailure, true> = {
@@ -61,6 +60,7 @@ const ALL_FAILURE_REASONS_MAP: Record<DesktopBrowserSignInFailure, true> = {
   state_mismatch: true,
   expired: true,
   cancelled: true,
+  declined: true,
   exchange_failed: true,
 };
 const ALL_FAILURE_REASONS = Object.keys(

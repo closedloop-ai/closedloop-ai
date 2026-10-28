@@ -11,51 +11,30 @@ import { autonomyTierRange } from "@repo/api/src/session-autonomy-tiers";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { SUBSCRIPTION_BILLING_MODES } from "@repo/api/src/types/billing-mode";
-import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
-import {
-  DISPLAYED_SESSION_STATUS,
-  normalizeSessionStatus,
-  RECOGNIZED_SESSION_STATUS_VALUES,
-  SESSION_STATUS,
-  STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
-  TERMINAL_SESSION_STATUSES,
-} from "@repo/api/src/types/session-status";
+import { RETIRED_DISPLAY_FACET_SPELLINGS } from "@repo/api/src/types/session-status";
 import { Prisma, withDb } from "@repo/database";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
+import { escapeSqlLikeLiteral } from "@/lib/sql-like";
+import { buildComponentSessionScope } from "../../agent-components/service/component-session-scope";
 import type {
   AgentSessionListQuery,
   AgentSessionUsageQuery,
 } from "../validators";
 import { isUuid } from "./coercion";
+import { buildPriorityFacetWhere } from "./priority-facet-where";
 import { buildProjectLinkWhere } from "./project-link-where";
-import { toAgentSessionState } from "./projections";
 import {
   type AgentSessionScope,
   type SourceArtifactSummaryRecord,
   sourceArtifactSummarySelect,
 } from "./records";
 import { buildDbSortOrderBy } from "./session-sort-order";
+import { SESSION_SUBSTANTIVE_WHERE } from "./session-substantive-predicate";
 
 export const ANALYTICS_QUERY_BATCH_SIZE = 200;
-
-// FEA-4298: the single date field the whole Sessions SURFACE windows on — the
-// table/list AND the summary cards above it. For a given date range these are
-// ONE cohort (the cards summarize exactly the population the table lists), so
-// both must window on the same timestamp column with the same null-handling, or
-// the cards reconcile against a different set than the table shows. The list is
-// ordered by `lastActivityAt` and windows on it (FEA-2180: "active in this
-// window", with the null-safe fallback to `sessionStartedAt` in
-// `applyDateFilter`), so the summary read is pinned to the SAME field here
-// rather than the analytics/export default of `sessionStartedAt`. Both
-// `findSessions` (table) and `getUsageSummary` (cards) pass this constant to
-// `buildWhere`, so the two cohorts cannot silently drift onto different columns.
-export const SESSIONS_SURFACE_DATE_FIELD = "lastActivityAt" as const;
-
-// The analytics read's date field: a session belongs to the period it STARTED
-// in (`buildWhere`'s default), distinct from the list/summary "active in this
-// window" `lastActivityAt`. Named so the analytics cohort's cost-reconciled
-// `buildUsageSummaryWhere` call (ISS-4481 thread wongk) keeps its own window
-// semantics while sharing the reconciled cost-bucket resolution.
-export const SESSIONS_ANALYTICS_DATE_FIELD = "sessionStartedAt" as const;
 
 // "Has changes" is defined against every LOC signal the Sessions row renders:
 // the scalar `+linesAdded / -linesRemoved` / files-changed columns (which back
@@ -127,10 +106,9 @@ export const SESSION_HAS_PR_WHERE: Prisma.SessionDetailWhereInput = {
           sourceLinks: {
             some: {
               linkType: LinkType.RelatesTo,
-              metadata: {
-                path: ["linkKind"],
-                equals: SessionArtifactLinkKind.SessionPr,
-              },
+              // ISS-5823 Metric: this facet renders a COUNT and filters the
+              // list. A prose mention is not the session having a PR.
+              ...sessionPrLinkKindWhere(SessionPrLinkAudience.Metric),
             },
           },
         },
@@ -139,28 +117,9 @@ export const SESSION_HAS_PR_WHERE: Prisma.SessionDetailWhereInput = {
   ],
 };
 
-// FEA-3284: the SQL twin of the `isSubstantiveSession` JS SSOT
-// (`@repo/api/src/agent-session-filters`). A session is substantive when it has
-// at least one turn, OR any token was consumed (input + output + cache read +
-// cache write), OR at least one tool was used. `turns` is a nullable Int (null =
-// no signal → idle); the token/tool columns are non-null with a 0 default. This
-// OR is kept byte-for-byte equivalent to the JS predicate and the desktop read
-// (`isSubstantiveSession` on the hydrated session) so a row buckets as idle vs
-// substantive identically on cloud, desktop, and the shared UI — the FEA-3149
-// lockstep contract. Any edit here MUST be mirrored in both twins.
-const SESSION_SUBSTANTIVE_WHERE: Prisma.SessionDetailWhereInput = {
-  OR: [
-    { turns: { gt: 0 } },
-    { inputTokens: { gt: 0 } },
-    { outputTokens: { gt: 0 } },
-    { cacheReadTokens: { gt: 0 } },
-    { cacheWriteTokens: { gt: 0 } },
-    { toolUseCount: { gt: 0 } },
-  ],
-};
-
 // The null-safe complement of SESSION_SUBSTANTIVE_WHERE: an idle session has no
-// turn (null or <= 0) AND zero of every token AND no tool use. Expressed
+// turn (null or <= 0) AND zero of every token AND no tool use AND no component
+// invocation (ISS-5801). Expressed
 // positively (rather than a structural `NOT` over the OR) because `turns` is a
 // nullable Int — a `NOT ((turns>0) OR …)` evaluates to SQL NULL for a null-turns
 // row (three-valued logic) and would silently drop it, whereas coalescing null
@@ -174,6 +133,7 @@ export const SESSION_IDLE_WHERE: Prisma.SessionDetailWhereInput = {
     { cacheReadTokens: { lte: 0 } },
     { cacheWriteTokens: { lte: 0 } },
     { toolUseCount: { lte: 0 } },
+    { componentInvocationCount: { lte: 0 } },
   ],
 };
 
@@ -182,7 +142,8 @@ export const SESSION_IDLE_WHERE: Prisma.SessionDetailWhereInput = {
 // FEA-4329 unique tiebreaker and FEA-4330 nulls-last invariants; `buildAgentSessionOrderBy`
 // below re-exports the DB-native builder for the existing call sites.
 
-export function buildWhere(
+// ISS-12645 resolves component identity before every population-dependent read.
+export async function buildWhere(
   scope: AgentSessionScope,
   filters: AgentSessionUsageQuery | AgentSessionListQuery,
   // Which timestamp the date window filters on. Analytics keeps the
@@ -193,13 +154,13 @@ export function buildWhere(
   // `lastActivityAt` branch below (FEA-2180/FEA-4298/FEA-4326). The export
   // reaches this field via `buildUsageSummaryWhere`, not directly.
   dateField: "sessionStartedAt" | "lastActivityAt" = "sessionStartedAt"
-): Prisma.SessionDetailWhereInput {
-  // Hoisted fields (organizationId, projectId, and plain-equality statuses) are
-  // filtered through the parent `artifact` relation; session-specific fields
-  // (userId, harness, sessionStartedAt) stay on the detail row. The Waiting and
-  // Active status facets are the exception — they reference SessionDetail fields
-  // (`awaitingInputSince`/`sessionEndedAt`) and so are built at the session level
-  // in `applyStatusFacetFilter`, not here.
+): Promise<Prisma.SessionDetailWhereInput> {
+  // Hoisted fields (organizationId, projectId, status, and other plain-equality
+  // facets) are filtered through the parent `artifact` relation; session-specific
+  // fields (harness, sessionStartedAt) stay on the detail row. ISS-9939 /
+  // ISS-10629 moved Status into this hoisted set — it no longer references any
+  // SessionDetail field, so it no longer needs the session-level treatment its
+  // Waiting/Active/Stale predicate used to require.
   const artifactWhere: Prisma.ArtifactWhereInput = {
     organizationId: scope.organizationId,
   };
@@ -209,20 +170,28 @@ export function buildWhere(
 
   if (isMissingTeamScope(filters)) {
     where.artifactId = { in: [] };
-    return where;
+    return Promise.resolve(where);
   }
 
   applySessionFacetFilters(where, filters);
+  applySearchFilter(where, filters);
   applyArtifactFacetFilters(artifactWhere, filters);
-  // ISS-4559: the per-viewer `sessions-displayed-status-parity` gate, resolved at
-  // the route and carried on the scope. Absent (every internal/legacy caller) it
-  // reads false, which is the pre-ISS-4559 predicate.
-  applyStatusFacetFilter(where, filters, scope.displayedStatusParity === true);
   applyQualityFilter(where, filters);
   applyDateFilter(where, filters, dateField);
   applyCompletionFilter(where, filters);
-  applyViewerScope(where, scope, filters);
+  applyViewerScope(artifactWhere, scope, filters);
 
+  if (filters.componentSlug) {
+    return {
+      AND: [
+        where,
+        await buildComponentSessionScope(
+          scope.organizationId,
+          filters.componentSlug
+        ),
+      ],
+    };
+  }
   return where;
 }
 
@@ -231,23 +200,28 @@ export function buildWhere(
  * on the dashboard / personal Sessions page was only a client courtesy — the
  * request passed a `userId` filter (or, in the Recent Sessions card, nothing at
  * all), and the server never pinned the result to the authenticated user, so a
- * dropped/forged param silently widened the read to the whole org. When the
- * viewer asks for self scope we OVERRIDE any client-sent user filter with the
- * authenticated viewer's own id, so a self read can never return another user's
- * sessions. Applied LAST (after `applySessionFacetFilters` set `where.userId`
- * from the client params) so self scope wins. A self request without a resolved
- * `viewerId` fails closed to an impossible predicate rather than leaking org-wide
- * rows.
+ * dropped/forged param silently widened the read to the whole org. Self scope
+ * now pins the read to the authenticated viewer's own id, so a self read can
+ * never return another user's sessions. A self request without a resolved
+ * `viewerId` fails closed to an impossible predicate rather than leaking
+ * org-wide rows.
+ *
+ * ISS-12251: of the client-sent person filters, self scope replaces only the
+ * singular `userId` deep link ({@link applyArtifactPersonFilters} skips it under
+ * self scope). The Owner facet `userIds` still applies as its own conjunct on
+ * the assignee, so a self read filtered by Owner is "my sessions that X owns".
+ * Self scope itself pins Created by (`artifacts.created_by_id`, PLN-2176 D-4),
+ * the column the typed-SQL statements match `creatorUserIds` against.
  */
 function applyViewerScope(
-  where: Prisma.SessionDetailWhereInput,
+  artifactWhere: Prisma.ArtifactWhereInput,
   scope: AgentSessionScope,
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
   if (filters.viewerScope !== AgentSessionViewerScope.Self) {
     return;
   }
-  where.userId = scope.viewerId ?? { in: [] };
+  artifactWhere.createdById = scope.viewerId ?? { in: [] };
 }
 
 /**
@@ -283,19 +257,30 @@ function applyQualityFilter(
  * and swapping the substantive clause for its idle complement, so the two counts
  * (visible substantive rows + hidden idle rows) partition the same filtered set.
  */
-export function buildIdleCountWhere(
+export async function buildIdleCountWhere(
   scope: AgentSessionScope,
   filters: AgentSessionUsageQuery | AgentSessionListQuery,
   dateField: "sessionStartedAt" | "lastActivityAt" = "sessionStartedAt"
-): Prisma.SessionDetailWhereInput {
+): Promise<Prisma.SessionDetailWhereInput> {
   // Reuse buildWhere with quality forced OFF (so it carries every OTHER filter
   // but not the substantive clause), then AND the idle complement.
-  const where = buildWhere(scope, { ...filters, quality: "all" }, dateField);
+  const where = await buildWhere(
+    scope,
+    { ...filters, quality: "all" },
+    dateField
+  );
   appendAndClauses(where, [SESSION_IDLE_WHERE]);
   return where;
 }
 
-function isMissingTeamScope(
+/**
+ * ISS-8554 Phase 3: exported so the list-sort SQL reader can mirror this
+ * early-return before issuing a query, since the SQL statement's facet
+ * predicates have no spelling for "team scope requested with no team id" —
+ * `buildWhere` answers it with an impossible `artifactId` predicate instead of
+ * a WHERE clause this reader could reuse.
+ */
+export function isMissingTeamScope(
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): boolean {
   return (
@@ -310,9 +295,9 @@ function isMissingTeamScope(
  * first. Shared by the session-facet and status-facet builders so they merge
  * their clauses identically.
  */
-function appendAndClauses(
-  where: Prisma.SessionDetailWhereInput,
-  clauses: Prisma.SessionDetailWhereInput[]
+function appendAndClauses<Where extends { AND?: Where | Where[] }>(
+  where: Where,
+  clauses: Where[]
 ): void {
   if (clauses.length === 0) {
     return;
@@ -322,22 +307,45 @@ function appendAndClauses(
     : clauses;
 }
 
+/**
+ * PRD-721: the toolbar's free-text search. A case-insensitive substring match
+ * over the fields the row carries and the desktop list source already matches
+ * (`matchesSessionsSearch`): the session name (the owner's rename or the
+ * collected name), its external id, harness, repository and primary model.
+ */
+function applySearchFilter(
+  where: Prisma.SessionDetailWhereInput,
+  filters: AgentSessionUsageQuery | AgentSessionListQuery
+): void {
+  const term = filters.search?.trim();
+  if (!term) {
+    return;
+  }
+  // Prisma's `contains` compiles to a bare ILIKE with no ESCAPE clause, so the
+  // term's `%` and `_` are escaped to match literally (as the Documents and Tags
+  // searches do).
+  const contains = {
+    contains: escapeSqlLikeLiteral(term),
+    mode: "insensitive",
+  } as const;
+  appendAndClauses(where, [
+    {
+      OR: [
+        { nameOverride: contains },
+        { artifact: { is: { name: contains } } },
+        { externalSessionId: contains },
+        { harness: contains },
+        { repositoryFullName: contains },
+        { model: contains },
+      ],
+    },
+  ]);
+}
+
 function applySessionFacetFilters(
   where: Prisma.SessionDetailWhereInput,
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
-  applyUserScope(where, filters);
-  if (filters.teamId) {
-    where.user = {
-      is: {
-        teamMemberships: {
-          some: {
-            teamId: filters.teamId,
-          },
-        },
-      },
-    };
-  }
   if (filters.repositories && filters.repositories.length > 0) {
     where.repositoryFullName = { in: filters.repositories };
   }
@@ -361,55 +369,39 @@ function applySessionFacetFilters(
   }
   // Autonomy / cost / change / PR facets each OR their selected options; the OR
   // groups are ANDed together (and with the rest of the where) via `where.AND`,
-  // which keeps them independent of the date filter's own `where.OR` clause.
+  // which keeps them independent of the date filter's own clause on
+  // `lastActivityAt`/`sessionStartedAt`.
   appendAndClauses(where, buildFacetAndClauses(filters));
 }
 
 /**
- * FEA-4304: apply the user scope as an AND constraint that the Owner facet can
- * never silently widen.
+ * ISS-12251: both person filters match the session's Owner, the artifact's
+ * assignee (operator ruling, Kerensa Whitlock 2026-10-13: "If the UI says owner, it
+ * should filter by owner. The owner is the assignee.").
  *
- * Two params can carry a user cohort: the single-value `userId` (the FIXED
- * cross-surface scope — e.g. the user-scoped deep link, whose badge claims
- * "Showing sessions for the selected user") and the `userIds` multi-select (the
- * Owner facet). The prior code let a nonempty `userIds` REPLACE `userId`, so an
- * alternate Owner value reaching the request (stale UI state, a saved view, or a
- * crafted query) widened/replaced the supposedly fixed scope while the UI badge
- * still claimed the scope was intact — leaking another user's sessions under a
- * false label. Because both the list and summary/usage reads resolve through this
- * one seam (`buildWhere` → `applySessionFacetFilters`), that leak affected both.
+ *   • `userIds` — the Owner facet's multi-select.
+ *   • `userId` — the singular deep link. Skipped under `viewerScope=self`, which
+ *     pins the viewer instead ({@link applyViewerScope}).
  *
- * The invariant: a scoped `userId` is an AND constraint. When both are present,
- * intersect them — the Owner facet may only NARROW within the scoped user, never
- * widen past it:
- *   • `userIds` includes the scoped user  → pin to the scoped user (the facet is
- *     redundant or a superset; the AND collapses to the single user).
- *   • `userIds` excludes the scoped user  → the intersection is empty, so pin to
- *     an impossible predicate (`{ in: [] }`) rather than honoring the wider facet.
- *     The scoped user is never violated; the request simply returns no rows.
- * With no scoped `userId`, the Owner facet stands alone (its `in` set); with no
- * facet, the scoped `userId` stands alone. The later `viewerScope=self` override
- * (`applyViewerScope`) is a stricter self-pin and still wins on top of this.
+ * FEA-4304: the two AND on the one column rather than one replacing the other,
+ * so the Owner facet can never widen the scoped `userId`. Sending both returns
+ * their intersection: nothing unless `userId` is in `userIds`. The typed-SQL
+ * statements fold the same intersection into `ownerUserIds`
+ * (`usage-summary-sql.ts`), so the shadow comparisons stay at parity.
  */
-function applyUserScope(
-  where: Prisma.SessionDetailWhereInput,
+function applyArtifactPersonFilters(
+  artifactWhere: Prisma.ArtifactWhereInput,
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
-  const facetUserIds =
-    filters.userIds && filters.userIds.length > 0 ? filters.userIds : undefined;
-  const scopedUserId = filters.userId;
-
-  if (scopedUserId) {
-    // Scoped `userId` present: AND with the facet. Honor the facet only when it
-    // keeps the scoped user in the cohort; otherwise the intersection is empty.
-    where.userId =
-      facetUserIds && !facetUserIds.includes(scopedUserId)
-        ? { in: [] }
-        : scopedUserId;
-    return;
+  const assignee: Prisma.StringNullableFilter<"Artifact"> = {};
+  if (filters.userIds && filters.userIds.length > 0) {
+    assignee.in = filters.userIds;
   }
-  if (facetUserIds) {
-    where.userId = { in: facetUserIds };
+  if (filters.userId && filters.viewerScope !== AgentSessionViewerScope.Self) {
+    assignee.equals = filters.userId;
+  }
+  if (assignee.in !== undefined || assignee.equals !== undefined) {
+    artifactWhere.assigneeId = assignee;
   }
 }
 
@@ -495,12 +487,9 @@ const SESSION_COST_KNOWN_WHERE: Prisma.SessionDetailWhereInput = {
  * "Unknown" filter option and the "—" render share one definition and never
  * overlap a numeric bucket or a genuine $0.00 subscription (which is KNOWN).
  *
- * NOTE: this DB clause keys on the STALE `estimatedCost` rollup, so a legacy row
- * whose rollup is 0 but whose reconciled per-event cost is > 0 would be mislabeled
- * unknown here. That divergence is exactly why the Unknown filter routes through
- * the reconciled path (`isCostReconciliationSensitiveQuery`), where the match runs
- * on the reconciled value; this clause is the DB twin kept correct as a fallback
- * for any non-reconciled caller.
+ * ISS-7176: `estimatedCost` is the sole cost authority now, on both this filter
+ * and the list/detail displays — there is no separate reconciled per-event value
+ * for it to diverge from, and no reconciled path this clause needs to defer to.
  *
  * It is the EXACT complement of `SESSION_COST_KNOWN_WHERE`: a cost is unknown when
  * `estimatedCost <= 0` AND the session is NOT a worked subscription — i.e. either
@@ -515,14 +504,26 @@ const SESSION_COST_KNOWN_WHERE: Prisma.SessionDetailWhereInput = {
  * every row.
  */
 const SESSION_COST_UNKNOWN_WHERE: Prisma.SessionDetailWhereInput = {
-  estimatedCost: { lte: 0 },
-  OR: [
-    { billingMode: null },
-    { billingMode: { notIn: [...SUBSCRIPTION_BILLING_MODES] } },
+  AND: [
+    // ISS-7176: `estimatedCost` is NULLABLE now, and null IS the unknown case —
+    // it is what the desktop's authoritative rollup stores when nothing was
+    // priced. It must be admitted EXPLICITLY: in SQL `NULL <= 0` evaluates to
+    // NULL, not TRUE, so the bare `lte` this replaces matched no null row. That
+    // is the same three-valued-logic trap the `billingMode` disjunct below
+    // already documents, and left unfixed it would drop every unknown-cost
+    // session out of BOTH this clause and `SESSION_COST_KNOWN_WHERE` — visible
+    // as rows vanishing from the Unknown filter rather than as an error.
+    { OR: [{ estimatedCost: null }, { estimatedCost: { lte: 0 } }] },
     {
-      AND: [
-        { billingMode: { in: [...SUBSCRIPTION_BILLING_MODES] } },
-        SESSION_IDLE_WHERE,
+      OR: [
+        { billingMode: null },
+        { billingMode: { notIn: [...SUBSCRIPTION_BILLING_MODES] } },
+        {
+          AND: [
+            { billingMode: { in: [...SUBSCRIPTION_BILLING_MODES] } },
+            SESSION_IDLE_WHERE,
+          ],
+        },
       ],
     },
   ],
@@ -537,7 +538,7 @@ const SESSION_COST_UNKNOWN_WHERE: Prisma.SessionDetailWhereInput = {
  *
  * FEA-4293: the bounds come from `costBucketRawBounds`, which half-cent-shifts
  * each bucket edge so the RAW-column predicate selects exactly the rows whose
- * DISPLAYED (2dp-rounded) cost falls in the bucket, on Mike's INCLUSIVE upper /
+ * DISPLAYED (2dp-rounded) cost falls in the bucket, on Marisol's INCLUSIVE upper /
  * exclusive lower partition. A raw `1.0` that displays `$1.00` is INCLUDED in
  * "≤ $1" (and excluded from "$1 to $10"), matching the reconciled/desktop
  * matchers that round in memory.
@@ -637,6 +638,14 @@ function applyArtifactFacetFilters(
   artifactWhere: Prisma.ArtifactWhereInput,
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
+  applyArtifactPersonFilters(artifactWhere, filters);
+  // ISS-12251 D-4: team scope is "sessions created by a member of the team",
+  // the `tm.user_id = a.created_by_id` predicate `facet-common.sql` applies.
+  if (filters.teamId) {
+    artifactWhere.createdBy = {
+      is: { teamMemberships: { some: { teamId: filters.teamId } } },
+    };
+  }
   if (filters.projectId) {
     artifactWhere.projectId = filters.projectId;
   }
@@ -655,340 +664,43 @@ function applyArtifactFacetFilters(
       some: buildProjectLinkWhere(projectIds),
     };
   }
-  // Status is NOT a plain `artifact.status` match: the Waiting and Active facets
-  // derive from `awaitingInputSince` (a SessionDetail field), so the predicate
-  // spans both tables and is built at the session level — see
-  // {@link applyStatusFacetFilter}.
+  const priorityWhere = buildPriorityFacetWhere(filters.priorities);
+  if (priorityWhere) {
+    appendAndClauses(artifactWhere, [priorityWhere]);
+  }
+  applyStatusFacetFilter(artifactWhere, filters);
 }
 
 /**
- * ISS-4559: the SQL statement of "this row DISPLAYS as Waiting", minus the raw
- * status test each branch carries itself — `awaitingInputSince` set AND the
- * session has not ended. It is the SQL half of
- * `projectDisplayedSessionStatus`'s Waiting condition
- * (`session-status-projection.ts`).
+ * ISS-9939 / ISS-10629: the Sessions status FILTER is a plain equality against
+ * the persisted `artifacts.status` column — active/inactive/error, the same
+ * three values SORT already moved to in ISS-10262. It is deliberately no
+ * longer the projected Waiting/Active-exclusion/Stale/Unknown/reconciliation
+ * predicate `buildStatusFacetPredicate` used to build here. That predicate and
+ * the `status-facet-predicate.ts` module around it are DELETED (ISS-10629
+ * follow-through): `status-counts.ts` moved onto this same equality in the
+ * same ruling, so nothing was left calling it.
  *
- * Stated once and used in opposite senses: WAITING selects it (with the
- * non-terminal status test), ACTIVE and the raw-status fallback exclude it via
- * {@link DOES_NOT_DISPLAY_AS_WAITING} (with their own status tests). That is the
- * whole point — a row is excluded from Active EXACTLY when it projects to
- * Waiting, so the two facets partition the awaiting-input rows between them and
- * none can fall through both. Two parallel conditions is what drifted in the
- * first place.
- */
-const DISPLAYS_AS_WAITING: Prisma.SessionDetailWhereInput = {
-  awaitingInputSince: { not: null },
-  sessionEndedAt: null,
-};
-
-/**
- * ISS-4559: the NEGATION of {@link DISPLAYS_AS_WAITING}, written as an explicit
- * disjunction rather than as `NOT: DISPLAYS_AS_WAITING`.
+ * DISPLAY is unchanged: a session that BADGES Waiting or Stale still stores
+ * `active` and still matches an Active filter — it is simply no longer
+ * isolatable as its own filter value, the accepted capability loss the ruling
+ * names. A status value that is not one of the three persisted ones (a stale
+ * bookmarked `?status=waiting`, a retired `completed`/`abandoned` spelling)
+ * matches nothing, the same honest fallthrough every other unrecognized
+ * status value already gets.
  *
- * Prisma 7.8 does compile a multi-key `NOT` as the GROUPED
- * `NOT(a AND b)` — verified against real Postgres, which emits
- * `NOT ("awaitingInputSince" IS NOT NULL AND "sessionEndedAt" IS NULL)` and
- * returns the same rows as this disjunction. But Prisma's own documented gloss
- * for `NOT` ("all conditions must return false") reads as the DISTRIBUTED
- * `NOT(a) AND NOT(b)`, which is a different predicate that would drop every live
- * running session from the Active facet. Spelling the disjunction out means the
- * predicate does not depend on resolving that ambiguity, and it reads the same
- * to the next person as it does to the query compiler.
- *
- * It also keeps the clause composable. `NOT` is a single reserved key in a
- * `where` object, so a branch that needs BOTH this exclusion and another
- * negation (the ISS-5366 staleness cutoff, in the ACTIVE branch below) cannot
- * express them as two `NOT`s — the second silently overwrites the first.
- */
-const DOES_NOT_DISPLAY_AS_WAITING: Prisma.SessionDetailWhereInput = {
-  OR: [{ awaitingInputSince: null }, { sessionEndedAt: { not: null } }],
-};
-
-/**
- * Build the where-predicate for a single canonical status facet, mirroring the
- * two desktop implementations (`matchesStatusFilter` in
- * `shared-agent-sessions-api.ts` and `buildUsageStatusPredicate` in
- * `sync-source.ts`) so the shared UI's canonical `SESSION_STATUS` value buckets
- * sessions identically on every surface:
- *   • `waiting` → an awaiting-input session: `awaitingInputSince` is set, the
- *     session has not ended (`sessionEndedAt` is null), and the status is
- *     non-terminal (matching `status = 'waiting'` returns nothing, because that
- *     value is never persisted). The `sessionEndedAt: null` guard mirrors the
- *     projection in {@link toAgentSessionState}, which only reports
- *     PendingApproval while `!sessionEndedAt` — an ended-but-not-yet-canonicalized
- *     row projects to a terminal state and so must not surface as Waiting. Cloud
- *     persists the raw canonical status (`error`, never the desktop-local
- *     `failed` alias), so the shared canonical {@link TERMINAL_SESSION_STATUSES}
- *     set ({inactive, error}) is exactly the terminal set to exclude
- *     here. The retired spellings are NOT unioned back in: ISS-5981's total
- *     ingest fold means no row can store one.
- *   • `active` → `status = 'active'` AND the row does not display as Waiting
- *     ({@link DISPLAYS_AS_WAITING} negated), so awaiting-input sessions are
- *     excluded exactly while they would render as Waiting.
- *   • anything else → a plain `artifact.status` equality.
- *
- * FEA-4301: the Status-column SORT projects the same displayed status via
- * `projectDisplayedSessionStatus` (`session-status-projection.ts`) — the SQL
- * WAITING predicate here and that JS projection are the one derivation, so a
- * displayed-Waiting row sorts, filters, and renders as Waiting consistently.
- *
- * ISS-4559: that was true of WAITING but NOT of ACTIVE, which carried an extra
- * `awaitingInputSince: null` with no counterpart in the projection — so an ended +
- * awaiting-input row displayed Active and was returned by neither facet. Behind
- * `displayedStatusParity` the ACTIVE branch negates the WAITING clause instead,
- * making "excluded from Active" and "projects to Waiting" one statement.
- */
-/**
- * ISS-5366: the SQL half of the display staleness cutoff — the two branches that
- * together mean "this row's staleness anchor is older than the threshold".
- *
- * Two branches rather than one because the anchor is `lastActivityAt ?? started`
- * (the reaper's own fallback, mirrored by `resolveDisplayedSessionStatus`) and
- * Prisma has no COALESCE in `where`. Reading only `lastActivityAt` would exempt
- * precisely the least-evidenced rows — a null activity timestamp is no evidence
- * of life, not evidence of freshness.
- *
- * Built fresh per call so the cutoff is computed against the CURRENT request
- * rather than a module-load constant that would drift stale over a long-lived
- * server process.
- */
-function buildStaleAnchorBranches(): Prisma.SessionDetailWhereInput[] {
-  const cutoff = new Date(
-    Date.now() - STALE_SESSION_DISPLAY_THRESHOLD_HOURS * 60 * 60 * 1000
-  );
-  return [
-    // ISS-4556: the `not: null` is load-bearing, not defensive. `lastActivityAt`
-    // is nullable, and a bare `last_activity_at < $cutoff` is SQL NULL — not
-    // FALSE — for a null column. The ACTIVE facet negates this disjunction, and
-    // `NOT NULL` is NULL, which SQL's WHERE rejects: a row with a null activity
-    // timestamp and a FRESH `sessionStartedAt` (branch two false) was returned by
-    // NEITHER Active nor Stale while displaying Active, the same invisible-row
-    // defect this batch exists to close, one column over. Making the branch
-    // FALSE rather than NULL for those rows keeps the negation two-valued and
-    // the two facets exact complements.
-    { lastActivityAt: { not: null, lt: cutoff } },
-    { lastActivityAt: null, sessionStartedAt: { lt: cutoff } },
-  ];
-}
-
-/**
- * ISS-5366: the statuses a row can store and NOT display as "Unknown".
- *
- * Every value the display fold recognizes, minus `unknown` itself — a row that
- * literally stores `unknown` does display as Unknown, so it must not be
- * excluded from the facet that gathers them. `stale` stays in the list because
- * it folds to Stale, not Unknown.
- */
-const UNKNOWN_EXCLUDED_STATUS_VALUES = RECOGNIZED_SESSION_STATUS_VALUES.filter(
-  (value) => value !== DISPLAYED_SESSION_STATUS.UNKNOWN
-);
-
-function buildStatusFacetPredicate(
-  status: string,
-  displayedStatusParity = false
-): Prisma.SessionDetailWhereInput {
-  if (status === DISPLAYED_SESSION_STATUS.WAITING) {
-    const projectedWaiting: Prisma.SessionDetailWhereInput = {
-      ...DISPLAYS_AS_WAITING,
-      artifact: {
-        is: {
-          status: { notIn: [...TERMINAL_SESSION_STATUSES] },
-        },
-      },
-    };
-    if (!displayedStatusParity) {
-      return projectedWaiting;
-    }
-    // ISS-4559: `waiting` is BOTH a projected display value and a legacy
-    // PERSISTED one (`DISPLAYED_SESSION_STATUS.WAITING`, kept for version-skew until the
-    // vocabulary migration runs). A row literally stored `waiting` DISPLAYS as
-    // Waiting — `projectDisplayedSessionStatus` returns the raw status whenever
-    // the projection does not fire — yet matched NEITHER facet: this branch
-    // demanded `awaitingInputSince`, and ACTIVE demands `status = 'active'`. Same
-    // invisible-row defect as the ended + awaiting case, through a different
-    // door. Union the stored value in so the facet covers every way a row can
-    // come to display Waiting.
-    return { OR: [projectedWaiting, { artifact: { is: { status } } }] };
-  }
-  if (status === SESSION_STATUS.ACTIVE) {
-    // ISS-4559: ON, exclude a row from Active EXACTLY when it projects to
-    // Waiting — the SAME clause the WAITING branch above selects, negated. OFF
-    // (the closed-by-default rollout state), the pre-ISS-4559 predicate applies:
-    // it dropped EVERY awaiting-input row regardless of `sessionEndedAt`, so an
-    // ended + awaiting-input row was returned by neither facet.
-    return {
-      ...(displayedStatusParity
-        ? DOES_NOT_DISPLAY_AS_WAITING
-        : { awaitingInputSince: null }),
-      artifact: { is: { status: SESSION_STATUS.ACTIVE } },
-      // ISS-5366: a live-looking row silent past the cutoff DISPLAYS as Stale,
-      // so it must leave the Active bucket — otherwise Status = Active returns a
-      // page whose badges read "Stale", which is the contradiction this batch
-      // exists to remove. `NOT` over the same two-branch anchor test the STALE
-      // predicate uses keeps the two exactly complementary.
-      NOT: { OR: buildStaleAnchorBranches() },
-    };
-  }
-  if (status === DISPLAYED_SESSION_STATUS.STALE) {
-    return {
-      OR: [
-        // A producer that literally persists `stale` (none does today) keeps the
-        // plain equality the fallback branch used to give it — INCLUDING that
-        // branch's waiting-exclusion, which this arm was missing.
-        //
-        // ISS-5656: the Waiting projection fires ahead of everything and does not
-        // read the raw spelling — `stale` folds to `active`, which is
-        // non-terminal — so a row storing `stale` while awaiting input BADGES
-        // "Waiting". Unconditional, this arm returned it from Stale as well: one
-        // row under two facets, one of them contradicting its own badge, which is
-        // the double-count the UNKNOWN branch below already subtracts one status
-        // over. The same declared `DOES_NOT_DISPLAY_AS_WAITING` clause ACTIVE
-        // negates and the raw-status fallback spreads, read here too, so all
-        // three stored-status arms subtract ONE population rather than three
-        // hand-written spellings of it.
-        //
-        // Spread rather than wrapped in `AND` (unlike the sibling arm below):
-        // this object has no `OR` key of its own for the disjunction to
-        // overwrite, exactly as in the raw-status fallback.
-        {
-          ...(displayedStatusParity ? DOES_NOT_DISPLAY_AS_WAITING : {}),
-          artifact: { is: { status: DISPLAYED_SESSION_STATUS.STALE } },
-        },
-        {
-          // Exactly the rows the ACTIVE predicate above now excludes: the old
-          // Active population PARTITIONS into Active + Stale, so no row is lost
-          // between the two facets and none appears in both.
-          //
-          // ISS-4559: that partition only holds while BOTH branches subtract the
-          // SAME awaiting-input population, so this reads the same gated clause
-          // ACTIVE negates. Left on the ungated `awaitingInputSince: null`, an
-          // ended + awaiting + long-silent row is dropped from Active by the
-          // stale anchor and from Stale by the awaiting test — returned by
-          // neither facet, which is the invisible-row defect this batch removes.
-          //
-          // Wrapped in `AND` rather than spread: DOES_NOT_DISPLAY_AS_WAITING is
-          // written as a disjunction, and its `OR` key would silently overwrite
-          // the stale-anchor `OR` below (one reserved key per `where` object).
-          //
-          // Matched on the literal `active` for the same reason the ACTIVE
-          // branch is — a row stored under the legacy `running` alias is not
-          // reachable by the Active facet today either. That narrowness is
-          // pre-existing and deliberately left the same size here: widening it
-          // on one side only would put a row in Stale that Active never offered.
-          ...(displayedStatusParity
-            ? { AND: [DOES_NOT_DISPLAY_AS_WAITING] }
-            : { awaitingInputSince: null }),
-          artifact: { is: { status: SESSION_STATUS.ACTIVE } },
-          OR: buildStaleAnchorBranches(),
-        },
-      ],
-    };
-  }
-  if (status === DISPLAYED_SESSION_STATUS.UNKNOWN) {
-    // A status the display fold does not RECOGNIZE renders "Unknown"
-    // (`foldSessionStatus`), as does a row literally storing `unknown`. Matching
-    // by exclusion — rather than listing the unknown values, which by definition
-    // cannot be listed — is what lets the facet reach a version-skewed row a
-    // future producer writes.
-    const unrecognized: Prisma.SessionDetailWhereInput = {
-      artifact: {
-        is: { status: { notIn: [...UNKNOWN_EXCLUDED_STATUS_VALUES] } },
-      },
-    };
-    if (!displayedStatusParity) {
-      return unrecognized;
-    }
-    // ISS-4559: `projectDisplayedSessionStatus` applies the Waiting projection
-    // BEFORE the unrecognized fold, so a version-skewed row that is also
-    // awaiting input DISPLAYS as Waiting, not Unknown. Without this exclusion
-    // both the Waiting and the Unknown facet return it — double-counted, under a
-    // facet whose name contradicts its own badge, in exactly the version-skew
-    // case Unknown exists to serve.
-    return { ...DOES_NOT_DISPLAY_AS_WAITING, ...unrecognized };
-  }
-  // ISS-4586 made `inactive` the canonical terminal-but-not-failed state, and
-  // ISS-4985 widened this predicate both ways: a selected Inactive also matched
-  // not-yet-migrated `completed`/`abandoned` rows, and a caller FILTERING by a
-  // retired spelling was routed here rather than falling through to an exact
-  // match on a value the vocabulary no longer had.
-  //
-  // ISS-5592 removed both directions. The ingest fold makes either spelling
-  // unwritable and a production count confirmed the column stores none, so the
-  // population the widening reached is empty — and matching a value nothing
-  // stores only made the cloud disagree with desktop, which never widened. A
-  // retired filter value now falls through to the exact-match fallback and
-  // returns nothing, which is the honest answer for a spelling with no rows.
-  if (status === SESSION_STATUS.INACTIVE) {
-    return {
-      artifact: {
-        is: {
-          status: SESSION_STATUS.INACTIVE,
-        },
-      },
-    };
-  }
-  // ISS-4556: the terminal test is the projection's own —
-  // `TERMINAL_SESSION_STATUSES.has(normalizeSessionStatus(status))`, byte-for-byte
-  // what `projectDisplayedSessionStatus` asks before it projects Waiting — NOT a
-  // bare membership check on the raw string. `TERMINAL_SESSION_STATUSES` holds
-  // only the two CANONICAL terminals ({inactive, error}); the fold is what also
-  // resolves the `failed` alias onto them. Testing the raw string called a
-  // version-skewed row NON-terminal here while the projection called it
-  // terminal, so the negation below applied to a row that never projects to
-  // Waiting: filtering by that exact stored spelling returned ZERO rows while
-  // the unfiltered list served the row and badged it as its terminal state. One
-  // definition of "terminal", asked the same way on both sides.
-  //
-  // ISS-5592 left `failed` as the only alias this fold still catches: the
-  // retired spellings no longer return from the Inactive branch above and reach
-  // here unrecognized (thadeusb, #5075). The fold stays asked this way
-  // regardless — it is the projection's own test, and a future alias must not
-  // have to rediscover that.
-  if (
-    !displayedStatusParity ||
-    TERMINAL_SESSION_STATUSES.has(normalizeSessionStatus(status))
-  ) {
-    return { artifact: { is: { status } } };
-  }
-  // ISS-4559: a NON-TERMINAL row that displays as Waiting belongs to the Waiting
-  // facet and to no other, so it must not also come back under its raw status —
-  // the same "matched by exactly the facet it displays" rule the Active branch
-  // above encodes. Terminal statuses are excluded from this negation above: a
-  // finished row holding a stale `awaitingInputSince` never projects to Waiting,
-  // so subtracting it here would wrongly hide it from its own facet.
-  return { ...DOES_NOT_DISPLAY_AS_WAITING, artifact: { is: { status } } };
-}
-
-/**
- * Apply the status facet at the session level, covering both the `statuses`
- * multi-select (its predicates OR together) and the single-value `status`
- * back-compat param. Kept separate from {@link applyArtifactFacetFilters}
- * because the Waiting/Active predicates reference `awaitingInputSince`, a
- * SessionDetail field rather than an `artifact` column.
+ * Covers both the `statuses` multi-select and the single-value `status`
+ * back-compat param via the shared {@link resolvePersistedStatusFilter}.
  */
 function applyStatusFacetFilter(
-  where: Prisma.SessionDetailWhereInput,
-  filters: AgentSessionUsageQuery | AgentSessionListQuery,
-  displayedStatusParity: boolean
+  artifactWhere: Prisma.ArtifactWhereInput,
+  filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
-  let statuses: string[] = [];
-  if (filters.statuses && filters.statuses.length > 0) {
-    statuses = filters.statuses;
-  } else if (filters.status) {
-    statuses = [filters.status];
-  }
-  if (statuses.length === 0) {
+  const statuses = resolvePersistedStatusFilter(filters);
+  if (statuses === null) {
     return;
   }
-  const clause: Prisma.SessionDetailWhereInput =
-    statuses.length === 1
-      ? buildStatusFacetPredicate(statuses[0], displayedStatusParity)
-      : {
-          OR: statuses.map((status) =>
-            buildStatusFacetPredicate(status, displayedStatusParity)
-          ),
-        };
-  appendAndClauses(where, [clause]);
+  artifactWhere.status = statuses.length === 1 ? statuses[0] : { in: statuses };
 }
 
 function applyDateFilter(
@@ -1006,14 +718,13 @@ function applyDateFilter(
       // filter on the same field — "active in this window", not "started in
       // this window" — otherwise a recently-active session that started before
       // the window ranks at the top yet gets filtered out (the dashboard /
-      // Sessions-list mismatch, FEA-2180). Pre-backfill rows have a null
-      // lastActivityAt; fall back to sessionStartedAt for those, mirroring the
-      // list projection (`record.lastActivityAt ?? record.sessionStartedAt`)
-      // and the nulls-last ordering, so they aren't silently dropped.
-      where.OR = [
-        { lastActivityAt: range },
-        { lastActivityAt: null, sessionStartedAt: range },
-      ];
+      // Sessions-list mismatch, FEA-2180).
+      //
+      // ISS-6463: one comparison, not a disjunction. The second branch existed
+      // for pre-backfill rows with a null lastActivityAt; the column is NOT NULL
+      // now, so it matched nothing. Assigning the field rather than `where.OR`
+      // also stops this from clobbering a disjunction another filter owns.
+      where.lastActivityAt = range;
     } else {
       where.sessionStartedAt = range;
     }
@@ -1129,4 +840,64 @@ export function buildLastSyncTargetWhere(
   }
 
   return where;
+}
+
+/**
+ * The statuses a filter set requests, covering both the `statuses` multi-select
+ * and the single-value `status` back-compat param. Empty when neither is set.
+ *
+ * ISS-8858 had this exported from `status-facet-predicate.ts` so the counts read
+ * could share it with the list. ISS-10629 deleted that module — the display
+ * projection it existed for has no callers left — and this returned here,
+ * unexported, to {@link applyStatusFacetFilter}.
+ *
+ * RAW, and therefore not what a predicate may be built from: the retirement
+ * strip below is the other half. {@link resolvePersistedStatusFilter} is the
+ * one a caller wants.
+ */
+function resolveRequestedStatuses(
+  filters: AgentSessionUsageQuery | AgentSessionListQuery
+): string[] {
+  if (filters.statuses && filters.statuses.length > 0) {
+    return filters.statuses;
+  }
+  return filters.status ? [filters.status] : [];
+}
+
+/**
+ * The WHOLE status resolution — both spellings reconciled AND the retired
+ * display values stripped — as the three-valued answer any status predicate
+ * needs. ISS-10753 exports it because the TypedSQL summary composer
+ * (`usage-summary-sql.ts`) builds its own predicate now; returning the raw
+ * resolver to it would have shipped half of this, and the half it left behind
+ * is the half that changes the answer.
+ *
+ * `null` — no status selection, no narrowing.
+ * `[]`   — every requested value was a display-only status no producer
+ *          persists (`waiting`/`unknown`/`stale`). That is a request for a
+ *          population that cannot exist, NOT an absent filter: `artifacts.status`
+ *          is freeform and rows literally storing `waiting` exist, so falling
+ *          through to "no predicate" would widen it to every session — the exact
+ *          silent widening the retirement prevents, and what the published API
+ *          and MCP docs promise it does not do (davetho review, ISS-10629).
+ * non-empty — the values to compare the stored column against. An unrecognised
+ *          spelling that is not display-only (a retired `completed`) stays in
+ *          and matches nothing on its own, the honest fallthrough it already got.
+ *
+ * Both consumers map that onto their own "match nothing" spelling —
+ * `status: { in: [] }` for Prisma, an empty `text[]` against the
+ * `$16::text[] IS NULL` guard for the statements — so neither has to re-derive
+ * which values are selectable.
+ */
+export function resolvePersistedStatusFilter(
+  filters: AgentSessionUsageQuery | AgentSessionListQuery
+): string[] | null {
+  const requested = resolveRequestedStatuses(filters);
+  if (requested.length === 0) {
+    return null;
+  }
+  return requested.filter(
+    (status) =>
+      !(RETIRED_DISPLAY_FACET_SPELLINGS as readonly string[]).includes(status)
+  );
 }

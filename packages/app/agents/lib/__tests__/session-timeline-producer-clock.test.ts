@@ -14,7 +14,7 @@ import {
 } from "./session-timeline-geometry-fixtures";
 
 /**
- * #4949 review (wongk) — a bin is placed by ITS OWN clock, not by dividing the
+ * #4949 review (whitlockk) — a bin is placed by ITS OWN clock, not by dividing the
  * page's window.
  *
  * ITS OWN FILE because the rest of `session-timeline-projection.test.ts` cannot
@@ -113,7 +113,6 @@ function projectBurst() {
     limitDotEvents: [],
     markers: [],
     scale: TimelineScale.FiveMinutes,
-    segmentRows: [],
     source: {
       buckets: withProducerBinBounds(costedBins(BURST_COLUMNS.length), {
         endMs: BURST_END_MS,
@@ -121,6 +120,14 @@ function projectBurst() {
       }),
       // Deliberately NOT the span the bins were stamped over.
       endMs: PAGE_WINDOW_END_MS,
+      /*
+       * ISS-5850: this suite pins where the BINS land, which is answered from
+       * each bin's own bounds and is independent of coverage. `null` keeps
+       * every column `Unknown` — the pre-ISS-5850 render — so these
+       * expectations still describe the same placement. Coverage itself is
+       * pinned in `session-timeline-source-extent.test.ts`.
+       */
+      extent: null,
       startMs: PAGE_WINDOW_START_MS,
     },
     windowStart: 0,

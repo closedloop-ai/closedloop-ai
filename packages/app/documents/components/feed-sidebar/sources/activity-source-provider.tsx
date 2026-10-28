@@ -1,5 +1,6 @@
 "use client";
 
+import type { DocumentType } from "@repo/api/src/types/document";
 import { createContext, type ReactNode, useContext } from "react";
 
 export type ActivitySourceContextValue = {
@@ -10,6 +11,7 @@ export type ActivitySourceContextValue = {
    * mirrors `LiveblocksSourceProvider`.
    */
   documentId: string;
+  documentType: DocumentType;
 };
 
 const ActivitySourceContext = createContext<ActivitySourceContextValue | null>(

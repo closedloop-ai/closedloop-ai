@@ -7,7 +7,7 @@ import {
 import type { ReactNode } from "react";
 import { InstallState } from "../mock";
 
-// One status per component (Parker: say it once). Each install state maps to
+// One status per component (Pascoe: say it once). Each install state maps to
 // exactly one status-icon-primitives glyph plus a text label, never icon + badge
 // + word for the same state. Status is carried by icon SHAPE and LABEL, not by
 // color alone (check / swap glyphs, dashed ring), so it reads without color

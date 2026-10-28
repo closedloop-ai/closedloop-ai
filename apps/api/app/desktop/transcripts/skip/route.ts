@@ -1,11 +1,17 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import {
   type TranscriptSkipResponse,
   transcriptSkipRequestSchema,
 } from "@repo/api/src/types/desktop-transcripts";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import { parseBody, successResponse } from "@/lib/route-utils";
 import { transcriptSyncService } from "../service";
 import { transcriptErrorResponse } from "../transcript-route-helpers";
+import { transcriptSkipReceiptWrite } from "../transcript-skip-receipt";
 
 /** Max control-plane request body — identity + reason only, no bytes. */
 const TRANSCRIPT_SKIP_MAX_BYTES = 8192;
@@ -21,25 +27,36 @@ const TRANSCRIPT_SKIP_MAX_BYTES = 8192;
 export const POST = withAnyAuth<
   TranscriptSkipResponse,
   "/desktop/transcripts/skip"
->(async ({ user, clerkUserId }, request) => {
-  const { body, errorResponse: bodyError } = await parseBody(
-    request,
-    transcriptSkipRequestSchema,
-    { maxBytes: TRANSCRIPT_SKIP_MAX_BYTES }
-  );
-  if (bodyError) {
-    return bodyError;
-  }
+>(
+  withOperationReceipts(
+    OperationKind.DesktopSync,
+    async ({ user, clerkUserId, authMethod }, request, _params, receipts) => {
+      const { body, errorResponse: bodyError } = await parseBody(
+        request,
+        transcriptSkipRequestSchema,
+        { maxBytes: TRANSCRIPT_SKIP_MAX_BYTES }
+      );
+      if (bodyError) {
+        return bodyError;
+      }
 
-  const result = await transcriptSyncService.markPermanentlySkipped({
-    request: body,
-    organizationId: user.organizationId,
-    userId: user.id,
-    clerkUserId,
-  });
+      const result = await transcriptSyncService.markPermanentlySkipped(
+        {
+          request: body,
+          organizationId: user.organizationId,
+          userId: user.id,
+          clerkUserId,
+          authMethod,
+        },
+        receipts.whenRecording((tx, written) =>
+          receipts.record(tx, transcriptSkipReceiptWrite(written))
+        )
+      );
 
-  if (result.ok) {
-    return successResponse(result.value);
-  }
-  return transcriptErrorResponse(result.error);
-});
+      if (result.ok) {
+        return successResponse(withOperationReceipt(result.value, receipts));
+      }
+      return transcriptErrorResponse(result.error);
+    }
+  )
+);

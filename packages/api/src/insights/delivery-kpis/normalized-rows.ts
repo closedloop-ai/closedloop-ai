@@ -62,7 +62,7 @@ export type NormalizedPr = {
   author?: string;
   /**
    * True when this PR is the single/only PR produced by its originating branch.
-   * Lets branch↔PR line attribution stay unambiguous for KLOC variants that
+   * Lets branch↔PR line attribution stay unambiguous for LOC variants that
    * count "lines generated in a branch" rather than "lines in a PR".
    */
   isSinglePr?: boolean;
@@ -120,7 +120,7 @@ export type NormalizedSession = {
 
 /**
  * A branch projected into the contract. Carries its own line totals so branch-
- * scoped KLOC / size variants can be computed without re-deriving them from PRs.
+ * scoped LOC / size variants can be computed without re-deriving them from PRs.
  * `startedAt` is the branch creation time; `settledAt` is when it reached a
  * terminal status (merged/abandoned), or null while still active.
  */

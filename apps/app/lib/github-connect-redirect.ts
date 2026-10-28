@@ -1,7 +1,13 @@
 import {
+  DESKTOP_AUTHORIZE_PATHNAME,
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DesktopSignInFraming,
+  DesktopSignInMethod,
   DesktopSignInProvider,
-  parseDesktopSignInProvider,
+  decodeDesktopEmailHint,
+  parseDesktopSignInFraming,
+  parseDesktopSignInMethod,
+  providerForSignInMethod,
 } from "@repo/api/src/types/desktop-authorize-url";
 
 /**
@@ -41,21 +47,15 @@ export const GITHUB_CONNECT_PATHNAME = "/connect/github";
 export const GITHUB_CONNECT_REDIRECT_PARAM = "redirect_url";
 
 /**
- * Bare desktop authorize path. The proxy rewrites this to the org-scoped page
- * once a session with an active org exists, so an UNAUTHENTICATED request is
- * always still on the bare form — which is exactly the case this deep link
- * intercepts.
- */
-const DESKTOP_AUTHORIZE_PATHNAME = "/settings/integrations/desktop/authorize";
-
-/**
  * Whether an unauthenticated request for `pathname` should be sent to the
  * GitHub connect deep link rather than the generic sign-in page.
  *
- * Only the desktop authorize path qualifies. Every other signed-out route keeps
- * the normal sign-in embed, which still presents GitHub as the primary CTA via
- * `githubFirstAuthPageAppearance` — this deep link is for the one entry point
- * whose originating click already named GitHub.
+ * Only the BARE authorize path qualifies, and that is the whole test: the proxy
+ * rewrites it to the org-scoped page once the session has an active org, so a
+ * signed-out request is always still on the bare form. Every other signed-out
+ * route keeps the normal sign-in embed, which still presents GitHub as the
+ * primary CTA via `githubFirstAuthPageAppearance` — this deep link is for the
+ * one entry point whose originating click already named GitHub.
  */
 export function shouldDeepLinkGitHubConnect(pathname: string): boolean {
   return pathname === DESKTOP_AUTHORIZE_PATHNAME;
@@ -124,22 +124,50 @@ export function buildGitHubConnectRedirectUrl(requestUrl: URL): URL {
   const deepLink = new URL(GITHUB_CONNECT_PATHNAME, requestUrl.origin);
   deepLink.searchParams.set(GITHUB_CONNECT_REDIRECT_PARAM, target);
 
-  // ISS-5112: the desktop already asked which provider the person wanted, so
-  // carry that answer forward instead of restarting GitHub for everyone. It
-  // rides as its own param rather than being re-read out of the nested
-  // `redirect_url`, so the deep link is self-describing and the page never has
-  // to parse a URL inside a URL to know which flow to start.
+  // ISS-5112/ISS-5954: the desktop already asked which method the person
+  // wanted, so carry that answer forward instead of restarting GitHub for
+  // everyone. It rides as its own param rather than being re-read out of the
+  // nested `redirect_url`, so the deep link is self-describing and the page
+  // never has to parse a URL inside a URL to know which flow to start.
   //
-  // Set ONLY when the incoming URL named a provider we recognize: an older
-  // desktop build omits it entirely, and omission has to keep meaning GitHub.
-  const provider = parseDesktopSignInProvider(
+  // Set ONLY when the incoming URL named a method we recognize (`email`
+  // included — dropping it at this hop would strand every email pick on the
+  // GitHub default): an older desktop build omits it entirely, and omission has
+  // to keep meaning GitHub.
+  const method = parseDesktopSignInMethod(
     requestUrl.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider)
   );
-  if (provider) {
-    deepLink.searchParams.set(
-      DESKTOP_AUTHORIZE_QUERY_PARAMS.provider,
-      provider
+  if (method) {
+    deepLink.searchParams.set(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider, method);
+  }
+
+  // ISS-5954 M5: the typed-address prefill rides the email branch only — it
+  // exists for the one flow that renders a form, and every other branch would
+  // put an address in a URL for nothing. Carried still-encoded, and only when
+  // it decodes to a plausible address, so a mangled or hostile value dies at
+  // this hop instead of reaching the page.
+  if (method === DesktopSignInMethod.Email) {
+    const rawEmailHint = requestUrl.searchParams.get(
+      DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint
     );
+    if (rawEmailHint && decodeDesktopEmailHint(rawEmailHint)) {
+      deepLink.searchParams.set(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint,
+        rawEmailHint
+      );
+    }
+    // ISS-5954: the door's framing rides the email branch only, like the
+    // hint — it decides which Clerk embed that branch renders. Carried only
+    // when recognized; absent keeps meaning the sign-up embed.
+    const framing = parseDesktopSignInFraming(
+      requestUrl.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.framing)
+    );
+    if (framing) {
+      deepLink.searchParams.set(
+        DESKTOP_AUTHORIZE_QUERY_PARAMS.framing,
+        framing
+      );
+    }
   }
 
   return deepLink;
@@ -189,19 +217,80 @@ export function resolveGitHubConnectRedirectFromSearchParams(
  * no authority either — it picks a sign-in strategy and is never an input to the
  * PKCE/PoP checks that actually gate the authorize mint.
  *
- * Takes the FIRST value of a repeated key, matching
- * {@link resolveGitHubConnectRedirectFromSearchParams}, so a second appended
- * copy cannot displace the real one.
+ * Composed from {@link resolveDesktopSignInMethodFromSearchParams} +
+ * {@link providerForSignInMethod} so the raw-param handling (first value of a
+ * repeated key, unknown → GitHub) exists exactly once. An explicit `email` has
+ * no OAuth provider and falls back to GitHub — the same answer the
+ * provider-typed parse always gave that value.
  */
 export function resolveDesktopSignInProviderFromSearchParams(
   searchParams: Record<string, string | string[] | undefined>
 ): DesktopSignInProvider {
-  const raw = searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.provider];
-  const rawProvider = Array.isArray(raw) ? raw[0] : raw;
-
   return (
-    parseDesktopSignInProvider(rawProvider) ?? DesktopSignInProvider.GitHub
+    providerForSignInMethod(
+      resolveDesktopSignInMethodFromSearchParams(searchParams)
+    ) ?? DesktopSignInProvider.GitHub
   );
+}
+
+/**
+ * Which sign-in METHOD the connect entry should start (ISS-5954 M2) — the
+ * widened sibling of {@link resolveDesktopSignInProviderFromSearchParams},
+ * recognizing `email` alongside the social providers. `/connect/github`
+ * branches on this; `/sso-callback` keeps the provider-typed resolver because
+ * only social flows pass through it.
+ *
+ * Defaults to GitHub, deliberately. The param is a HINT sent by a
+ * version-skewed desktop build, so "absent" and "unrecognized" both have to
+ * mean the flow this route has always started; only an explicit, known value
+ * diverges. It carries no authority either — it picks a sign-in flow and is
+ * never an input to the PKCE/PoP checks that actually gate the authorize mint.
+ *
+ * Takes the FIRST value of a repeated key, matching
+ * {@link resolveGitHubConnectRedirectFromSearchParams}, so a second appended
+ * copy cannot displace the real one.
+ */
+export function resolveDesktopSignInMethodFromSearchParams(
+  searchParams: Record<string, string | string[] | undefined>
+): DesktopSignInMethod {
+  const raw = searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.provider];
+  const rawMethod = Array.isArray(raw) ? raw[0] : raw;
+
+  return parseDesktopSignInMethod(rawMethod) ?? DesktopSignInMethod.GitHub;
+}
+
+/**
+ * The typed-address prefill for the email landing branch (ISS-5954 M5), or
+ * null when absent or implausible. Untrusted input narrowed on the way in; the
+ * result reaches nothing but the sign-up form's field value — Clerk still
+ * verifies the address for real.
+ *
+ * Takes the FIRST value of a repeated key, matching the other resolvers here.
+ */
+export function resolveDesktopEmailHintFromSearchParams(
+  searchParams: Record<string, string | string[] | undefined>
+): string | null {
+  const raw = searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint];
+  const rawHint = Array.isArray(raw) ? raw[0] : raw;
+
+  return decodeDesktopEmailHint(rawHint);
+}
+
+/**
+ * Which Clerk embed the email landing branch renders (ISS-5954): the sign-IN
+ * embed for a returning-user desktop door, the sign-up embed otherwise.
+ * Defaults to sign-up, deliberately — absent and unrecognized both have to
+ * mean the embed this branch has always rendered. A HINT with no authority.
+ *
+ * Takes the FIRST value of a repeated key, matching the other resolvers here.
+ */
+export function resolveDesktopSignInFramingFromSearchParams(
+  searchParams: Record<string, string | string[] | undefined>
+): DesktopSignInFraming {
+  const raw = searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.framing];
+  const rawFraming = Array.isArray(raw) ? raw[0] : raw;
+
+  return parseDesktopSignInFraming(rawFraming) ?? DesktopSignInFraming.SignUp;
 }
 
 function safeParseUrl(value: string, base?: URL): URL | null {
@@ -213,17 +302,26 @@ function safeParseUrl(value: string, base?: URL): URL | null {
 }
 
 /** The standard sign-in route, used as the manual recovery destination. */
-const SIGN_IN_PATHNAME = "/sign-in";
+export const SIGN_IN_PATHNAME = "/sign-in";
 
 /**
- * Hard ceiling on either transitional route before it offers a manual way out.
+ * Hard ceiling on a transitional route's wait; what it ends differs by route.
  *
- * Shared so the two stops cannot drift: `/sso-callback` shipped without one at
- * first, which left a user whose handshake stalled watching a spinner with no
- * recovery — on the LATER stop, after they had already spent the whole GitHub
- * round trip and with their desktop app sitting on a loopback listener. Ten
- * seconds is generous for a redirect and short enough to still feel like the
- * page noticed.
+ * On all three routes it now ends only the PRE-FLIGHT phase — the window in
+ * which nothing is outstanding. Once a request is in flight, reaching the
+ * ceiling escalates the message to a still-working state and offers a way out,
+ * and that phase carries its own longer bound (`DEFAULT_API_TIMEOUT_MS`)
+ * rather than this one: `/connect/github/link` first (ISS-10411), then
+ * `/connect/github` and `/sso-callback` (ISS-10564). `/sso-callback` has no
+ * pre-flight phase at all, because Clerk's callback component starts the
+ * handshake on mount, so there this ceiling can only ever escalate.
+ *
+ * Shared so the ceiling itself cannot drift between them: `/sso-callback`
+ * shipped without one at first, which left a user whose handshake stalled
+ * watching a spinner with no recovery — on the LATER stop, after they had
+ * already spent the whole GitHub round trip and with their desktop app sitting
+ * on a loopback listener. Ten seconds is generous for a redirect and short
+ * enough to still feel like the page noticed.
  */
 export const AUTH_TRANSITION_TIMEOUT_MS = 10_000;
 

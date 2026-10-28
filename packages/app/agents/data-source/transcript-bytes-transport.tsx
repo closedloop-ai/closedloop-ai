@@ -18,8 +18,8 @@ import { TranscriptFetchError } from "../lib/parse-transcript";
  * - **Desktop:** an implementation (injected by the renderer shell) that hands
  *   the file id to the main process — which mints the signed URL and fetches the
  *   bytes itself — and returns an opaque same-origin
- *   `app://renderer/transcripts/…` URL. So the renderer stays under
- *   `connect-src 'self' app:` and the (multi-MB) bytes never cross the IPC
+ *   `app://renderer/transcripts/…` URL. So no transcript origin joins the
+ *   renderer's `connect-src` and the (multi-MB) bytes never cross the IPC
  *   bridge (FEA-3324 Option B2).
  *
  * Either way the returned URL flows into the same `fetchAndParseTranscript`, so

@@ -81,7 +81,7 @@ export function formatKpiValue(
  *
  * Identical to {@link formatKpiValue} for every format EXCEPT `Currency`, where
  * it renders whole dollars (`$9,061`) via the shared {@link formatCurrencyWhole}
- * — matching the Branches/Sessions "AI spend" summary cards — instead of the
+ * — matching the Sessions summary cost card — instead of the
  * compact, precision-cliffed `$9.1k` that `formatKpiValue` produces. Use this
  * for the overview headline spend/cost KPIs (AI spend, estimated cost,
  * cost-per-merged-PR) so the same magnitude reads the same on web and desktop.

@@ -12,6 +12,8 @@ import {
   usageMetricPresentation,
   usageOtherSeriesLabel,
 } from "../../../insights/components/overview/usage-graph-toggles";
+import { useFeatureFlagEnabledOptional } from "../../../shared/feature-flags/use-feature-flag-enabled";
+import { TOKEN_TREND_WINDOW_DISCLOSURE_FEATURE_FLAG_KEY } from "../../../shared/lib/feature-flags";
 import { useChartMaxSeries } from "../../../shared/lib/use-chart-max-series";
 import { useAgentComponentTokenTrend } from "../../hooks/use-agent-component-token-trend";
 import {
@@ -19,6 +21,7 @@ import {
   buildVersionMarkers,
   type UsageSessionVersion,
 } from "../../lib/token-trend-chart-data";
+import { tokenTrendWindowReadout } from "../../lib/token-trend-window-readout";
 import { resolveUsageSignal, UsageSignal } from "../../lib/usage-signal";
 
 /**
@@ -63,6 +66,23 @@ export function TokenTrendChart({
   // ISS-5523: undefined until the gate opens, which leaves the chart drawing
   // every model exactly as it does today.
   const maxSeries = useChartMaxSeries();
+  // ISS-9622: closed by default, so the chart says nothing new until the gate
+  // opens. Read through the OPTIONAL variant for the same reason the series cap
+  // is — this component mounts under Storybook and unit tests with no
+  // feature-flag provider, where the gate must read closed rather than throw.
+  const windowDisclosureEnabled = useFeatureFlagEnabledOptional(
+    TOKEN_TREND_WINDOW_DISCLOSURE_FEATURE_FLAG_KEY
+  );
+  // Recomputed only when the payload changes: `appliedWindow.until` is omitted
+  // for a read unbounded above, so the open end resolves against the instant the
+  // data arrived rather than re-rounding on every unrelated re-render.
+  const windowNotice = useMemo(
+    () =>
+      windowDisclosureEnabled
+        ? tokenTrendWindowReadout(data, Date.now())
+        : null,
+    [data, windowDisclosureEnabled]
+  );
 
   const chart = useMemo(() => {
     const source = buildTokenTrendSeries(data, metric);
@@ -79,7 +99,7 @@ export function TokenTrendChart({
   // usage the Invocations and Sessions cards had already shown directly above.
   // `detail.sessions` is the count on those cards, so keying off it ties the
   // copy to a number the reader can see rather than to a roster they cannot.
-  // ISS-5363 (wongk): `sessions ?? usageSessions.length` collapsed an UNMEASURED
+  // ISS-5363 (whitlockk): `sessions ?? usageSessions.length` collapsed an UNMEASURED
   // count into the roster length, so a detail whose Sessions card reads `—`
   // printed "No usage recorded for this component yet" underneath it. The shared
   // three-state signal keeps the denial for the measured-zero case only.
@@ -129,6 +149,9 @@ export function TokenTrendChart({
           valueFormatter={presentation.formatValue}
         />
       </div>
+      {windowNotice ? (
+        <p className="mt-2 text-muted-foreground text-sm">{windowNotice}</p>
+      ) : null}
     </div>
   );
 }
@@ -159,7 +182,7 @@ export function TokenTrendChart({
 const EMPTY_COPY: Record<UsageMetric, Record<UsageSignal, string>> = {
   [UsageMetric.Cost]: {
     [UsageSignal.None]: "No usage recorded for this component yet",
-    [UsageSignal.Present]: "No model spend attributed to these sessions yet",
+    [UsageSignal.Present]: "No model cost attributed to these sessions yet",
     [UsageSignal.Unknown]: "Usage for this component isn't available here",
   },
   [UsageMetric.Tokens]: {

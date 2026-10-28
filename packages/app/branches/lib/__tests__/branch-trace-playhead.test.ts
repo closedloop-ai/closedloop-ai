@@ -33,6 +33,18 @@ describe("buildTraceTimeIndex", () => {
     expect(index.map((entry) => entry.row)).toEqual([0, 1, 2]);
     expect(index.find((entry) => entry.row === 3)).toBeUndefined();
   });
+
+  it("skips an unparseable timestamp and sorts out-of-order rows by time", () => {
+    const index = buildTraceTimeIndex([
+      sayItem("2026-06-10T12:00:00.000Z"),
+      sayItem("garbage"),
+      sayItem("2026-06-10T09:00:00.000Z"),
+    ]);
+    expect(index).toEqual([
+      { row: 2, t: "2026-06-10T09:00:00.000Z", tMs: Date.UTC(2026, 5, 10, 9) },
+      { row: 0, t: "2026-06-10T12:00:00.000Z", tMs: Date.UTC(2026, 5, 10, 12) },
+    ]);
+  });
 });
 
 describe("nearestRowForTimestamp", () => {
@@ -46,6 +58,24 @@ describe("nearestRowForTimestamp", () => {
   it("clamps before the first and after the last entry", () => {
     expect(nearestRowForTimestamp(index, "2026-06-10T08:00:00.000Z")).toBe(0);
     expect(nearestRowForTimestamp(index, "2026-06-10T23:00:00.000Z")).toBe(2);
+  });
+
+  it("returns the exact row when a probe lands on an interior entry", () => {
+    const wide = buildTraceTimeIndex([
+      sayItem("2026-06-10T10:00:00.000Z"),
+      sayItem("2026-06-10T10:10:00.000Z"),
+      sayItem("2026-06-10T10:20:00.000Z"),
+      sayItem("2026-06-10T10:30:00.000Z"),
+      sayItem("2026-06-10T10:40:00.000Z"),
+    ]);
+    expect(nearestRowForTimestamp(wide, "2026-06-10T10:10:00.000Z")).toBe(1);
+    expect(nearestRowForTimestamp(wide, "2026-06-10T10:30:00.000Z")).toBe(3);
+  });
+
+  it("prefers the earlier row when it is closer or tied", () => {
+    expect(nearestRowForTimestamp(index, "2026-06-10T10:10:00.000Z")).toBe(0);
+    expect(nearestRowForTimestamp(index, "2026-06-10T10:15:00.000Z")).toBe(0);
+    expect(nearestRowForTimestamp(index, "2026-06-10T10:16:00.000Z")).toBe(1);
   });
 
   it("returns null for an empty index or an unparseable timestamp", () => {

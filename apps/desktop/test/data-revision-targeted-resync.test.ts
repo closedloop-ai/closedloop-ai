@@ -20,11 +20,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { describe, test } from "vitest";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { resolveRebuildSyncComputeTargetId } from "../src/main/dashboard/rebuild-sync-compute-target.js";
 import { OutboxStatus } from "../src/shared/sync-lane-contract.js";
 import { openTestDb } from "./agent-db-test-utils.js";
@@ -96,7 +96,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
 
       const after = await readSessionRow(db, "noop-session");
       // data_revision was healed to current (so it is not re-rebuilt next boot)...
-      assert.equal(after.data_revision, DATA_REVISION);
+      assert.equal(after.data_revision, effectiveDataRevision());
       // ...but the sync watermark (updated_at) was NOT bumped.
       assert.equal(after.updated_at, before.updated_at);
       assert.equal(after.updated_at, STALE_WATERMARK);
@@ -146,7 +146,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       assert.deepEqual(summary.changedSessionIds, ["changed-session"]);
 
       const after = await readSessionRow(db, "changed-session");
-      assert.equal(after.data_revision, DATA_REVISION);
+      assert.equal(after.data_revision, effectiveDataRevision());
       // updated_at advanced to the rebuild clock — the row must re-sync.
       assert.notEqual(after.updated_at, before.updated_at);
       assert.equal(after.updated_at, REBUILD_CLOCK);
@@ -211,7 +211,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       assert.deepEqual(summary.changedSessionIds, ["child-changed-session"]);
 
       const after = await readSessionRow(db, "child-changed-session");
-      assert.equal(after.data_revision, DATA_REVISION);
+      assert.equal(after.data_revision, effectiveDataRevision());
       assert.equal(after.updated_at, REBUILD_CLOCK);
     } finally {
       await db.close();
@@ -265,7 +265,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       assert.deepEqual(summary.changedSessionIds, ["segment-changed-session"]);
 
       const after = await readSessionRow(db, "segment-changed-session");
-      assert.equal(after.data_revision, DATA_REVISION);
+      assert.equal(after.data_revision, effectiveDataRevision());
       assert.equal(after.updated_at, REBUILD_CLOCK);
     } finally {
       await db.close();
@@ -277,7 +277,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
     // FEA-4010 (AA-10): the child-row fingerprint sums row LENGTHS and samples
     // only the first character of the concatenation (which belongs to `phase`),
     // so a same-width slug substitution was invisible to it — and AA-10 makes
-    // those its normal output. Golden `019ef60d` moves PLN-1095 → FEA-2108 on
+    // those its normal output. Golden `ea05d76f` moves PLN-1095 → FEA-2108 on
     // both segments with the fingerprint frozen at `128:2:212`. The
     // activity-segment backfill cannot rescue it (gated on
     // ACTIVITY_CLASSIFIER_VERSION, which AA-10 does not bump), so this rebuild is
@@ -502,7 +502,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       );
       await db.run(
         "UPDATE sessions SET data_revision = $1, updated_at = $2 WHERE id = $3",
-        DATA_REVISION - 1,
+        effectiveDataRevision() - 1,
         STALE_WATERMARK,
         sessionId
       );
@@ -524,7 +524,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       assert.equal(Number(after.cache_write_1h_tokens), oneHourTokens);
       assert.ok(Math.abs(Number(after.cost_usd_estimated) - 1.801_82) < 1e-9);
       const rebuiltSession = await readSessionRow(db, sessionId);
-      assert.equal(rebuiltSession.data_revision, DATA_REVISION);
+      assert.equal(rebuiltSession.data_revision, effectiveDataRevision());
       assert.equal(rebuiltSession.updated_at, REBUILD_CLOCK);
 
       const visibleToSync = await db.syncSource.listUpdatedSessionCursorRows(
@@ -603,7 +603,7 @@ describe("FEA-3659 Part 1 — split change-gate (rebuild is a true no-op when un
       assert.deepEqual(summary.changedSessionIds, [sessionId]);
 
       const after = await readSessionRow(db, sessionId);
-      assert.equal(after.data_revision, DATA_REVISION);
+      assert.equal(after.data_revision, effectiveDataRevision());
       assert.equal(after.updated_at, REBUILD_CLOCK);
       const [row] = await db.prisma.client.$queryRawUnsafe<
         { last_activity_at: string }[]
@@ -714,7 +714,7 @@ describe("FEA-3659 Part 2 — targeted enqueue + cursor survival (no stranding, 
       // The unchanged rows kept their original watermark; the changed rows advanced.
       for (const id of ids) {
         const row = await readSessionRow(db, id);
-        assert.equal(row.data_revision, DATA_REVISION);
+        assert.equal(row.data_revision, effectiveDataRevision());
         if (id.startsWith("s-changed")) {
           assert.equal(row.updated_at, REBUILD_CLOCK);
         } else {

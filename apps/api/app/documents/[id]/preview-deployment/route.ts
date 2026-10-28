@@ -3,11 +3,11 @@ import { success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { deploymentService } from "@/app/deployments/deployment-service";
 import { deploymentArtifactToInfo } from "@/lib/artifact-adapters";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   DeploymentArtifact | null,
   "/documents/[id]/preview-deployment"
 >(async ({ user }, _request, params) => {

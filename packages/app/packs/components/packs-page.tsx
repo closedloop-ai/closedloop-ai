@@ -5,6 +5,7 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { BlocksIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { PacksContext } from "../lib/packs-context";
+import { YOUR_PACKS_EMPTY_TITLE } from "./member-view";
 import { PacksLoadFailed } from "./packs-load-failed";
 
 // FEA-4087 Slice 1: the top-level Packs page spine. One route, one job, but the
@@ -98,7 +99,7 @@ export const PacksPage = ({
         <EmptyState
           description="Nothing has been distributed to your org yet, and there's nothing in the catalog to install."
           icon={BlocksIcon}
-          title="No packs yet"
+          title={YOUR_PACKS_EMPTY_TITLE}
         />
       </div>
     );

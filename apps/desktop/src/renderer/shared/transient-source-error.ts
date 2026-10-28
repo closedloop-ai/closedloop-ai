@@ -39,7 +39,7 @@ import { isTransientDbHostErrorMessage } from "../../shared/transient-db-host-er
  * error card. The raw underlying message is never attached, preserving the
  * no-leak contract that `runSource` enforces for fatal failures too.
  *
- * review cid 3679616172 (wongk): the `code` is passed in by the caller, not
+ * review cid 3679616172 (whitlockk): the `code` is passed in by the caller, not
  * hardcoded — this class is shared by Sessions, Branches, and Agent Components,
  * each of which carries its OWN source-specific transient code so a settled
  * transient error names the source it came from rather than always claiming to be
@@ -63,7 +63,7 @@ export class TransientSourceError extends Error {
  *     running` / `db-host is closed`), the signatures a mid-restart request rejects
  *     with — used on the Sessions path, where the raw message survives IPC;
  *   - a message that IS a known sanitized transient CODE (ISS-4483 review cid
- *     3679616167, wongk): the Branches main-process boundary
+ *     3679616167, whitlockk): the Branches main-process boundary
  *     (`rethrowAsSourceError`) discards the raw error and rethrows only the
  *     transient code, so the raw "db-host exited" text never reaches here — the
  *     code carries the classification across that sanitizing boundary instead.
@@ -104,7 +104,7 @@ function messageCarriesTransientCode(message: string | null): boolean {
  * (or an equivalent error rebuilt across the IPC boundary, which loses the
  * prototype). One per local data source — Sessions, Branches, Agent Components —
  * so a settled transient error names the source it came from
- * (review cid 3679616172, wongk).
+ * (review cid 3679616172, whitlockk).
  */
 const KNOWN_TRANSIENT_ERROR_CODES: ReadonlySet<string> = new Set([
   SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE,
@@ -119,7 +119,7 @@ const KNOWN_TRANSIENT_ERROR_CODES: ReadonlySet<string> = new Set([
  *   - any object carrying a known transient `.code` property (an equivalent error
  *     rebuilt across a boundary that loses the prototype but keeps the field);
  *   - an `Error` whose MESSAGE is a known transient code (ISS-4483 review cid
- *     3679616167, wongk): the Branches main-process boundary sanitizes to a bare
+ *     3679616167, whitlockk): the Branches main-process boundary sanitizes to a bare
  *     `Error(code)` with no `.code` property, so the code arrives in the message.
  * For ANY source's transient code, not just the agent-sessions one.
  */

@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createUtilityProcessHistoricalParseRunner } from "../src/main/collectors/engine/utility-process-historical-parse-runner.js";
 import { Harness } from "../src/main/collectors/types.js";
 
@@ -146,7 +146,7 @@ test("ISS-4444: abortInFlightParse is a safe no-op when no worker is active", ()
   runner.stop();
 });
 
-test("ISS-4572 (shafty023 / wongk review): stop() invalidates a turn queued behind the dispatch tail so it does NOT fork a worker after shutdown", async () => {
+test("ISS-4572 (davetho / whitlockk review): stop() invalidates a turn queued behind the dispatch tail so it does NOT fork a worker after shutdown", async () => {
   // A first turn holds the serialized dispatch tail; a second turn is enqueued
   // BEHIND it (chained on the tail, not yet dispatched). `stop()` then tears the
   // runner down. Without the generation guard the queued second turn would run
@@ -205,7 +205,7 @@ test("ISS-4572 (shafty023 / wongk review): stop() invalidates a turn queued behi
   await assert.rejects(afterStop);
 });
 
-test("ISS-4572 (wongk review): the second real runner turn dispatches (fires onDispatch) only AFTER the first settles", async () => {
+test("ISS-4572 (whitlockk review): the second real runner turn dispatches (fires onDispatch) only AFTER the first settles", async () => {
   // Pins the PRODUCTION serialized-dispatch contract that the fake runner in
   // `ingest-parse-dispatch-deadline.test.ts` stands in for: two real
   // `parseSource` turns share ONE worker, and the second's `onDispatch` (the

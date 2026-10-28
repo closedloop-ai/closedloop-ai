@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { makePopulatedSession } from "./normalized-session-test-utils.js";
 
@@ -121,7 +121,7 @@ test("two delegations, one parser subagent exactly claiming the SECOND: both lan
 });
 
 test("mixed-alias contest: the invocation row cannot name a contested child while the agents lane keeps the fallback", async () => {
-  // ISS-5105 review (shafty023): tier 0 counted claimants by RAW provider id
+  // ISS-5105 review (davetho): tier 0 counted claimants by RAW provider id
   // while the dedup index canonicalizes through `delegationClaimKey`, so two
   // children claiming ONE tool use through DIFFERENT id forms read as a single
   // unopposed claimant at tier 0 and one of them won — while the `agents` lane,

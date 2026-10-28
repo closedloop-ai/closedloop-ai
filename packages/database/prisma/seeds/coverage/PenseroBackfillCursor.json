@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Per-org cursor for the Pensero delivery backfill cron (ISS-8761)."
+}

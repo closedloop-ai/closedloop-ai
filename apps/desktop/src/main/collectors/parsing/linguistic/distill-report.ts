@@ -21,6 +21,7 @@
  * a deep-equal report (the harness's reproducibility contract).
  */
 
+import type { ActivityPhase } from "@repo/api/src/types/activity-phase";
 import { microCentsToUsd, usdToMicroCents } from "../../../cost/cost-math.js";
 import {
   type ActivityState,
@@ -32,7 +33,6 @@ import {
   confidenceBucketFor,
   type SessionCohort,
 } from "../../../telemetry/attribution-metrics.js";
-import type { ActivityPhase } from "../activity-taxonomy.js";
 import {
   detectLinguisticSignal,
   type LinguisticSignal,

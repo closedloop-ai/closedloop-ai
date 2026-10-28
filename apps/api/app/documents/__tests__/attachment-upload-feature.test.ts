@@ -39,13 +39,16 @@ describe("isMcpAttachmentUploadEnabled", () => {
   it.each([
     ["false", false],
     ["null", null],
-  ])("fails closed when the feature provider returns %s", async (_label, value) => {
-    vi.mocked(isFeatureFlagEnabledForDistinctId).mockResolvedValue(value);
+  ])(
+    "fails closed when the feature provider returns %s",
+    async (_label, value) => {
+      vi.mocked(isFeatureFlagEnabledForDistinctId).mockResolvedValue(value);
 
-    await expect(
-      isMcpAttachmentUploadEnabled({ userId: "user-1" })
-    ).resolves.toBe(false);
-  });
+      await expect(
+        isMcpAttachmentUploadEnabled({ userId: "user-1" })
+      ).resolves.toBe(false);
+    }
+  );
 
   it("fails closed when feature evaluation throws", async () => {
     vi.mocked(isFeatureFlagEnabledForDistinctId).mockRejectedValue(

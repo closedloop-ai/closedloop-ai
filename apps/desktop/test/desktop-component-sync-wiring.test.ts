@@ -21,8 +21,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import { ComponentSyncSendOutcome } from "../src/main/agent-sync/agent-component-sync-dead-letter.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import { createDesktopComponentsClient } from "../src/main/dashboard/desktop-components-client.js";
@@ -45,6 +45,7 @@ const COMPUTE_TARGET = "target-gap-b";
 
 function componentsClientOptions(overrides: {
   fetch: typeof fetch;
+  onUnauthorized?: (rejectedToken: string) => void;
   token?: string | null;
   origin?: string;
   computeTargetId?: string | null;
@@ -60,6 +61,7 @@ function componentsClientOptions(overrides: {
       "computeTargetId" in overrides
         ? (overrides.computeTargetId ?? null)
         : COMPUTE_TARGET,
+    onUnauthorized: overrides.onUnauthorized,
   };
 }
 
@@ -170,9 +172,42 @@ test("createDesktopComponentsClient reports LaneFailure on a 403 (auth/policy �
 
   const result = await client.sync(PAYLOAD);
 
-  // ISS-4542 (shafty023): a 403 is a lane-wide denial — it must NOT walk the
+  // ISS-4542 (davetho): a 403 is a lane-wide denial — it must NOT walk the
   // inventory forward by charging the poison budget.
   assert.equal(result.outcome, ComponentSyncSendOutcome.LaneFailure);
+});
+
+test("createDesktopComponentsClient invalidates the exact rejected session token on 401 only", async () => {
+  const invalidations: string[] = [];
+  const unauthorized = fetchStub(new Response("unauthorized", { status: 401 }));
+  const client = createDesktopComponentsClient(
+    componentsClientOptions({
+      fetch: unauthorized.fetchImpl,
+      onUnauthorized: (rejectedToken) => {
+        invalidations.push(rejectedToken);
+      },
+    })
+  );
+
+  await client.sync(PAYLOAD);
+  assert.deepEqual(invalidations, ["access-token"]);
+
+  const forbidden = fetchStub(new Response("forbidden", { status: 403 }));
+  const forbiddenClient = createDesktopComponentsClient(
+    componentsClientOptions({
+      fetch: forbidden.fetchImpl,
+      onUnauthorized: (rejectedToken) => {
+        invalidations.push(rejectedToken);
+      },
+    })
+  );
+
+  await forbiddenClient.sync(PAYLOAD);
+  assert.deepEqual(
+    invalidations,
+    ["access-token"],
+    "a non-401 failure must not invalidate the cached credential"
+  );
 });
 
 test("createDesktopComponentsClient reports BatchRejected on a permanent per-batch 4xx (422)", async () => {

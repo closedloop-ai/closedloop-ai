@@ -13,12 +13,14 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop renderer resolves the byte-for-byte-equal key from its Labs
- *    registry (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge
+ *    (`apps/desktop/src/shared/feature-flags-labs-surfaces.ts` holds the
+ *    alias).
  *
  * Importing one constant on both sides means a future rename touches a single
- * definition — it can't silently split PostHog and the Desktop Labs toggle the
- * way two parallel string literals could.
+ * definition — it can't silently split the two surfaces the way two parallel
+ * string literals could.
  */
 export const SESSIONS_BRANCHES_TAB_TITLES_FLAG_KEY =
   "sessions-branches-tab-titles" as const;

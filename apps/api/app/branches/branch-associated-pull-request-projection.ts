@@ -8,15 +8,18 @@ import {
   type BranchAssociatedPullRequestSelection,
   BranchAssociatedPullRequestSelectionReason,
   type BranchSelectedPullRequestIdentity,
+  isUnobservedPullRequest,
   selectBranchAssociatedPullRequests,
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { ReviewDecision } from "@repo/api/src/types/branch-checks";
 import { deriveBranchMergedState } from "@repo/api/src/types/branch-merged-state";
-import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import { toBranchStatus } from "@repo/api/src/types/branch-status-derivation";
+import { hasObservedPullRequestEvidence } from "@repo/api/src/types/pull-request-lifecycle-observation";
+import { branchOwnsPullRequestDetail } from "./branch-canonical-pull-request";
 import { BRANCH_REVIEWED_PARTICIPANTS_LIMIT } from "./branch-read-selects";
-import { toBranchStatus } from "./branch-status-derivation";
+import { selectedPullRequestRepositoryFullName } from "./selected-pull-request-repository-identity";
 
-/** Project every persisted cloud PR owned by a Branch through the shared selector. */
+/** Project every persisted cloud PR linked to a Branch through the shared selector. */
 export function projectCloudBranchAssociatedPullRequests<
   Detail extends CloudPullRequestProjectionInput,
 >(
@@ -27,15 +30,41 @@ export function projectCloudBranchAssociatedPullRequests<
   return projectAssociatedPullRequests(row);
 }
 
-/** Detail variant preserves review rows on the selected source record. */
-export function projectCloudBranchDetailAssociatedPullRequests<
+/** Preserve linked history but expose a default only when the Branch owns it. */
+export function projectCloudOwnedBranchAssociatedPullRequests<
   Detail extends CloudPullRequestProjectionInput,
 >(
   row: CloudBranchProjectionInput<Detail>
 ): BranchAssociatedPullRequestSelection<
   CloudAssociatedPullRequestCandidate<Detail>
 > {
-  return projectAssociatedPullRequests(row);
+  const associated = projectAssociatedPullRequests(row);
+  if (
+    !associated.selected ||
+    branchOwnsSelectedPullRequest(row, associated.selected)
+  ) {
+    return associated;
+  }
+  return {
+    collection: {
+      ...associated.collection,
+      selectedId: null,
+      selectionReason: BranchAssociatedPullRequestSelectionReason.None,
+    },
+    selected: null,
+  };
+}
+
+function branchOwnsSelectedPullRequest<
+  Detail extends CloudPullRequestProjectionInput,
+>(
+  row: CloudBranchProjectionInput<Detail>,
+  selected: CloudAssociatedPullRequestCandidate<Detail>
+): boolean {
+  if (!row.branch) {
+    return false;
+  }
+  return branchOwnsPullRequestDetail(row.branch, selected.source);
 }
 
 /**
@@ -70,7 +99,7 @@ export function resolveCloudBranchAssociatedPullRequest<
     pullRequestDetails: row.pullRequestDetails.filter(
       (detail) =>
         detail.number === selected.number &&
-        pullRequestRepositoryFullName(row, detail) ===
+        selectedPullRequestRepositoryFullName(row, detail) ===
           selected.repositoryFullName
     ),
   }).selected;
@@ -87,17 +116,6 @@ export function resolveCloudBranchAssociatedPullRequest<
   };
 }
 
-function pullRequestRepositoryFullName<
-  Detail extends CloudPullRequestProjectionInput,
->(row: CloudBranchProjectionInput<Detail>, detail: Detail): string | null {
-  const fullName =
-    detail.repository?.fullName ??
-    detail.repositoryFullName ??
-    row.branch?.repository?.fullName ??
-    row.branch?.repositoryFullName;
-  return fullName ? normalizeRepoFullName(fullName) : null;
-}
-
 function projectAssociatedPullRequests<
   Detail extends CloudPullRequestProjectionInput,
 >(
@@ -105,30 +123,8 @@ function projectAssociatedPullRequests<
 ): BranchAssociatedPullRequestSelection<
   CloudAssociatedPullRequestCandidate<Detail>
 > {
-  const branchRepositoryFullName =
-    row.branch?.repository?.fullName ?? row.branch?.repositoryFullName ?? null;
-  const candidates: CloudAssociatedPullRequestCandidate<Detail>[] =
-    row.pullRequestDetails
-      .filter((detail) => detail.branchArtifactId === row.id)
-      .map((detail) => ({
-        source: detail,
-        repositoryFullName:
-          detail.repository?.fullName ??
-          detail.repositoryFullName ??
-          branchRepositoryFullName,
-        number: detail.number,
-        title: detail.title,
-        url: detail.htmlUrl,
-        state: detail.prState,
-        isDraft: detail.isDraft,
-        reviewDecision: detail.reviewDecision,
-        openedAt: toIso(detail.githubCreatedAt),
-        closedAt: toIso(detail.closedAt),
-        mergedAt: toIso(detail.mergedAt),
-        observedAt: toIso(detail.lastVerifiedAt),
-      }));
   return selectBranchAssociatedPullRequests(
-    candidates,
+    cloudAssociatedPullRequestCandidates(row),
     BranchAssociatedPullRequestProvenance.PersistedCloud
   );
 }
@@ -173,23 +169,61 @@ export function projectCloudReviewedParticipants(
   };
 }
 
-/** Preserve existing Branch status semantics while changing PR selection authority. */
+/**
+ * Preserve existing Branch status semantics while changing PR selection
+ * authority.
+ *
+ * ISS-8422: a selected PR nobody observed is derived as NO connected PR — the
+ * same branch-level verdict a branch with no PR at all gets, rather than the
+ * `pr_state` column default restated as a measurement. Kerensa ruled 2026-08-31
+ * that this is the correct target: `BranchStatus.Open` is a statement about the
+ * BRANCH (a PR-less branch already derives it), not a claim about a PR, so no
+ * new status member is needed and none was added.
+ */
 export function statusForSelectedCloudPullRequest(
   artifactStatus: string,
-  selected: CloudStatusPullRequest | null
+  selected: SelectedCloudPullRequestCandidate | null
 ) {
+  const observedPrState = observedPrStateForSelectedCloudPullRequest(selected);
+  const hasObservedPr = observedPrState !== null;
   const mergedState = deriveBranchMergedState({
-    connectedPrState: selected?.prState ?? null,
-    connectedMergedAt: selected?.mergedAt ?? null,
-    hasConnectedPrEvidence: Boolean(selected),
+    connectedPrState: observedPrState,
+    connectedMergedAt: hasObservedPr
+      ? (selected?.source.mergedAt ?? null)
+      : null,
+    hasConnectedPrEvidence: hasObservedPr,
     localArtifactStatus: artifactStatus,
   });
   return toBranchStatus(
     artifactStatus,
-    selected?.prState ?? null,
-    selected?.isDraft ?? false,
+    observedPrState,
+    hasObservedPr ? (selected?.source.isDraft ?? false) : false,
     mergedState
   );
+}
+
+/**
+ * The selected PR's lifecycle state AS MEASURED, or null when no producer ever
+ * observed it (ISS-8422). `pr_state` is `NOT NULL` with a `@default(OPEN)`, so
+ * reading the column straight through reports a schema default as a
+ * measurement; the row-level `prState` field is already NULL-legal on the wire
+ * (`packages/api/src/types/branch.ts`), which is what makes emitting null here
+ * additive rather than a contract change.
+ */
+export function observedPrStateForSelectedCloudPullRequest(
+  selected: SelectedCloudPullRequestCandidate | null
+): CloudPullRequestProjectionInput["prState"] {
+  if (!selected) {
+    return null;
+  }
+  // The candidate's OWN resolved verdict, not a re-derivation from its raw row.
+  // Recomputing here answered a different question than selection had: the
+  // selector resolves observation across every duplicate snapshot of a PR,
+  // while the raw row is only the newest of them, so a factless re-sync of a
+  // PR observed earlier reported a null state for a row selection had accepted
+  // as observed (davetho review on #6313). An absent flag means observed, per
+  // the shared candidate contract.
+  return isUnobservedPullRequest(selected) ? null : selected.source.prState;
 }
 
 function toIso(value: Date | null): string | null {
@@ -203,7 +237,10 @@ export type CloudBranchProjectionInput<
   branch: {
     repositoryId: string | null;
     repositoryFullName: string | null;
-    repository: { fullName: string } | null;
+    repository: {
+      fullName: string;
+      githubRepoId?: string | null;
+    } | null;
   } | null;
   pullRequestDetails: readonly Detail[];
 };
@@ -212,7 +249,10 @@ export type CloudPullRequestProjectionInput = {
   branchArtifactId: string;
   repositoryId: string | null;
   repositoryFullName?: string | null;
-  repository?: { fullName: string } | null;
+  repository?: {
+    fullName: string;
+    githubRepoId?: string | null;
+  } | null;
   number: number;
   title: string | null;
   htmlUrl: string | null;
@@ -223,12 +263,27 @@ export type CloudPullRequestProjectionInput = {
   closedAt: Date | null;
   mergedAt: Date | null;
   lastVerifiedAt: Date | null;
+  // ISS-8422: observed facts, not rendered fields — a row carrying LOC was
+  // fetched from the provider. Every select that feeds this input carries all
+  // three, so that one consumer cannot classify a row as observed while another
+  // calls the same row factless (davetho review on #6313).
+  additions: number | null;
+  deletions: number | null;
+  changedFiles: number | null;
 };
 
-type CloudStatusPullRequest = Pick<
-  CloudPullRequestProjectionInput,
-  "isDraft" | "mergedAt" | "prState"
->;
+/**
+ * The selected candidate as the shared selector returns it: the raw row plus the
+ * observation verdict RESOLVED across every duplicate snapshot of that PR.
+ * Status derivation reads the verdict, never the row's own fields.
+ */
+type SelectedCloudPullRequestCandidate = {
+  lifecycleObserved?: boolean;
+  source: Pick<
+    CloudPullRequestProjectionInput,
+    "isDraft" | "mergedAt" | "prState"
+  >;
+};
 
 type CloudReviewedPullRequest = {
   number: number;
@@ -241,3 +296,44 @@ type CloudReviewedPullRequest = {
     htmlUrl: string | null;
   }[];
 };
+
+/** Map a cloud branch row's own PR details into shared selector candidates. */
+export function cloudAssociatedPullRequestCandidates<
+  Detail extends CloudPullRequestProjectionInput,
+>(
+  row: CloudBranchProjectionInput<Detail>
+): CloudAssociatedPullRequestCandidate<Detail>[] {
+  return row.pullRequestDetails
+    .filter((detail) => detail.branchArtifactId === row.id)
+    .map((detail) => ({
+      source: detail,
+      repositoryFullName: selectedPullRequestRepositoryFullName(row, detail),
+      number: detail.number,
+      title: detail.title,
+      url: detail.htmlUrl,
+      state: detail.prState,
+      isDraft: detail.isDraft,
+      reviewDecision: detail.reviewDecision,
+      openedAt: toIso(detail.githubCreatedAt),
+      closedAt: toIso(detail.closedAt),
+      mergedAt: toIso(detail.mergedAt),
+      observedAt: toIso(detail.lastVerifiedAt),
+      // ISS-8422: only a producer reading the raw row can say this. The cloud
+      // `pr_state` column is NOT NULL with a `@default(OPEN)`, so an
+      // unwritten state reads as a measurement; the shared selector must not
+      // guess that from a provenance token, because callers that build a
+      // candidate from an already-corrected cloud response pass the same one.
+      lifecycleObserved: hasObservedPullRequestEvidence({
+        prState: detail.prState,
+        isDraft: detail.isDraft,
+        title: detail.title,
+        reviewDecision: detail.reviewDecision,
+        additions: detail.additions,
+        deletions: detail.deletions,
+        changedFiles: detail.changedFiles,
+        mergedAt: detail.mergedAt,
+        closedAt: detail.closedAt,
+        githubCreatedAt: detail.githubCreatedAt,
+      }),
+    }));
+}

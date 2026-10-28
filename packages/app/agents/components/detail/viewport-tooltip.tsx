@@ -39,12 +39,12 @@ const REACH_CLASS = "reach";
 /**
  * The anchor for a Session Timeline control's tooltip — a cost bar or a dot.
  *
- * ISS-5548 (design review): with the column hit target on, a `.reach` bar's
- * clickable and outlined region is its `::before` — the full column — but
+ * ISS-5548 (design review): a `.reach` bar's clickable and outlined region is
+ * its `::before` — the full column — but
  * `getBoundingClientRect()` reports the element's own border box and ignores an
  * overflowing pseudo-element. Anchoring to that box put the readout down at the
  * column floor while the outline lit up around a pointer as much as ~55px above
- * it, on exactly the quiet buckets this flag exists to make reachable. The
+ * it, on exactly the quiet buckets reach exists to make reachable. The
  * outline is the affordance now, so the label hangs off it.
  *
  * The extended rect is derived from the DOM rather than restated: `.sd3-bars2`
@@ -54,9 +54,10 @@ const REACH_CLASS = "reach";
  * to. Reading it back off the laid-out parent means the tooltip cannot drift
  * from the box if those custom properties change.
  *
- * Without `.reach` — flag off, anchorless bucket, a disabled strip, or any dot
- * on the rail below, none of which carry the class — this is the element's own
- * rect, unchanged. That is why the dot rail shares this helper rather than
+ * Without `.reach` — flag off, a bucket whose jump is blocked (anchorless, or
+ * ISS-8727's anchored-but-unresolvable), a disabled strip, or any dot on the
+ * rail below, none of which carry the class — this is the element's own rect,
+ * unchanged. That is why the dot rail shares this helper rather than
  * keeping a second one: one call answers "where does this control's readout
  * hang", and a tall bar's column and bar nearly coincide anyway, so the visible
  * effect is on the short bars alone.

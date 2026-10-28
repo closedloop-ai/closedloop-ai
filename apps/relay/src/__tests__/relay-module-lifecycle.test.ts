@@ -2,7 +2,7 @@
  * Tests for relay-server module lifecycle: startRelayServer/stopRelayServer
  * re-entrancy and no-op, handleShutdown keepalive-timer and redis-deregistration
  * paths, initializeTargetRegistry mode selection, module-init env guards
- * (RELAY_PORT, LOOP_PERF, INTERNAL_API_SECRET, CLOSEDLOOP_API_URL), and
+ * (RELAY_PORT, INTERNAL_API_SECRET, CLOSEDLOOP_API_URL), and
  * parseOptionalBoundedEnvInt bounds checking.
  *
  * No real HTTP port is bound — node:http is mocked via createMockHttpServerFactory.
@@ -19,6 +19,11 @@ const mocks = vi.hoisted(() => ({
   // io.close call tracker (incremented by MockServer.close)
   ioCloseCallCount: 0,
 
+  // ISS-8698: the options index.ts actually hands `new Server(...)`. Captured
+  // rather than asserted inside the double so the assertion lives in a test body
+  // that fails loudly, not in a mock that could stop running unnoticed.
+  ioConstructorOptions: null as Record<string, unknown> | null,
+
   // node:http createServer call tracker — proves the re-entrancy guard skips
   // the whole bind path on a second startRelayServer(), not just the close.
   httpCreateServerCallCount: 0,
@@ -27,8 +32,8 @@ const mocks = vi.hoisted(() => ({
   mockDeregisterAllByInstance: vi.fn().mockResolvedValue(0),
   mockDeregisterInstance: vi.fn().mockResolvedValue(undefined),
   mockRegisterInstance: vi.fn().mockResolvedValue(undefined),
-  mockLookup: vi.fn().mockResolvedValue(null),
-  mockLookupInstance: vi.fn().mockResolvedValue(null),
+  mockLookup: vi.fn().mockResolvedValue({ outcome: "missing" }),
+  mockLookupInstance: vi.fn().mockResolvedValue({ outcome: "missing" }),
 
   // @repo/redis
   mockRedisConnect: vi.fn().mockResolvedValue(undefined),
@@ -55,6 +60,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("socket.io", () => ({
   Server: class MockServer {
+    // Engine.IO stub: index.ts attaches a `connection_error` listener to
+    // `io.engine` at module load, so a Server double without one crashes on import.
+    engine = { on: vi.fn() };
+    constructor(_httpServer?: unknown, options?: Record<string, unknown>) {
+      mocks.ioConstructorOptions = options ?? null;
+    }
     of(_ns?: string) {
       return { use: vi.fn(), on: vi.fn() };
     }
@@ -77,7 +88,27 @@ vi.mock("node:http", async () => {
 });
 
 vi.mock("../target-registry.js", () => {
+  const RegistryLookupOutcome = {
+    Found: "found",
+    Missing: "missing",
+    Unreadable: "unreadable",
+    Error: "error",
+  } as const;
+  const TargetRegistryBackend = {
+    InMemory: "in_memory",
+    Redis: "redis",
+  } as const;
+  const ReclaimOutcome = {
+    Reclaimed: "reclaimed",
+    Refused: "refused",
+    Error: "error",
+  } as const;
+  const RegistryOperation = {
+    Reclaim: "reclaim",
+  } as const;
   class MockRegistry {
+    readonly backend = TargetRegistryBackend.Redis;
+
     lookup(...args: unknown[]) {
       return mocks.mockLookup(...args);
     }
@@ -105,7 +136,11 @@ vi.mock("../target-registry.js", () => {
   }
   return {
     InMemoryTargetRegistry: MockRegistry,
+    RegistryLookupOutcome,
+    RegistryOperation,
+    ReclaimOutcome,
     RedisTargetRegistry: MockRegistry,
+    TargetRegistryBackend,
   };
 });
 
@@ -332,6 +367,45 @@ describe("handleShutdown (L1659/L1663)", () => {
     expect(mocks.mockDeregisterInstance).toHaveBeenCalled();
   });
 
+  it("reports how many targets the shutdown sweep actually deregistered (ISS-7976)", async () => {
+    // The caller used to append `.catch(() => {})` AND discard the return
+    // value, so a sweep that deregistered nothing was indistinguishable from
+    // one that deregistered everything — no signal at all, not even the 0.
+    // Anything the sweep misses stays routable to this dead instance for the
+    // full TARGET_TTL_MS, so this count is the only pre-mortem evidence.
+    vi.useFakeTimers();
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("RELAY_RUNTIME_MODE", "redis");
+    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
+    applyValidEnv();
+    mocks.mockDeregisterAllByInstance.mockResolvedValue(3);
+
+    let exitResolve!: (code: number | undefined) => void;
+    const exitPromise = new Promise<number | undefined>((r) => {
+      exitResolve = r;
+    });
+    vi.spyOn(process, "exit").mockImplementation(
+      (code?: number | string | null) => {
+        exitResolve(typeof code === "number" ? code : undefined);
+        return undefined as never;
+      }
+    );
+
+    vi.resetModules();
+    await import("../index");
+    await vi.advanceTimersByTimeAsync(0);
+
+    process.emit("SIGTERM");
+    await exitPromise;
+
+    // The 3 is what makes this non-vacuous: a caller that still discarded the
+    // return value could log the line but never this number.
+    expect(mocks.mockLogInfo).toHaveBeenCalledWith(
+      "Relay shutdown: deregistered instance targets",
+      expect.objectContaining({ deregisteredTargets: 3 })
+    );
+  });
+
   it("skips redis deregistration in in-memory mode on SIGTERM (L1663 in-memory arm)", async () => {
     vi.useFakeTimers();
     vi.stubEnv("NODE_ENV", "development");
@@ -495,16 +569,45 @@ describe("module-init env guards", () => {
     expect(process.exit).toHaveBeenCalledWith(1);
   });
 
-  it("warns and defaults LOOP_PERF rate limit to 240 when value is non-positive (L110-L117)", async () => {
+  it("warns and defaults HEARTBEAT_DEGRADED_THRESHOLD_MS to 60000 when the value is empty", async () => {
     applyValidEnv();
-    process.env.LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE = "-5";
+    process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS = "";
     vi.resetModules();
 
     await import("../index");
 
     expect(mocks.mockLogWarn).toHaveBeenCalledWith(
-      "Invalid LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE, defaulting to 240"
+      "Invalid HEARTBEAT_DEGRADED_THRESHOLD_MS, defaulting to 60000",
+      { value: "" }
     );
+  });
+
+  it("warns and defaults HEARTBEAT_DEGRADED_THRESHOLD_MS to 60000 when the value is non-numeric", async () => {
+    applyValidEnv();
+    process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS = "abc";
+    vi.resetModules();
+
+    await import("../index");
+
+    expect(mocks.mockLogWarn).toHaveBeenCalledWith(
+      "Invalid HEARTBEAT_DEGRADED_THRESHOLD_MS, defaulting to 60000",
+      { value: "abc" }
+    );
+  });
+
+  it("accepts a valid HEARTBEAT_DEGRADED_THRESHOLD_MS without warning", async () => {
+    applyValidEnv();
+    process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS = "45000";
+    vi.resetModules();
+
+    await import("../index");
+
+    const warnedAboutThreshold = mocks.mockLogWarn.mock.calls.some(
+      ([message]: unknown[]) =>
+        typeof message === "string" &&
+        message.includes("HEARTBEAT_DEGRADED_THRESHOLD_MS")
+    );
+    expect(warnedAboutThreshold).toBe(false);
   });
 
   it("calls process.exit(1) when INTERNAL_API_SECRET is missing (L120-L123)", async () => {
@@ -593,5 +696,72 @@ describe("parseOptionalBoundedEnvInt (L751/L755)", () => {
     const [, opts] = mocks.mockRegisterKeylessTelemetryNamespace.mock
       .calls[0] as [unknown, { maxInflightExports?: number }];
     expect(opts.maxInflightExports).toBe(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-8698 — socket.io ping policy is explicit at the call site
+// ---------------------------------------------------------------------------
+
+describe("socket.io ping policy (ISS-8698)", () => {
+  let envSnap: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    envSnap = { ...process.env };
+    resetAllMocks();
+    applyValidEnv();
+    // applyValidEnv does not clear the override, and an inherited value would
+    // satisfy the default case below without the default ever being read.
+    Reflect.deleteProperty(process.env, "RELAY_PING_TIMEOUT_MS");
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnap);
+    vi.restoreAllMocks();
+  });
+
+  it("hands the relay Server 25s/60s ping options, not socket.io's 25s/20s defaults", async () => {
+    // Force a fresh evaluation: an earlier test in this file already imported
+    // the module, and ESM caches it — without this the capture below would be
+    // whatever that import left behind, i.e. a test-order dependency rather
+    // than a measurement.
+    vi.resetModules();
+    mocks.ioConstructorOptions = null;
+    await import("../index");
+
+    const options = mocks.ioConstructorOptions;
+    expect(options).not.toBeNull();
+    // Literals, deliberately, not the module's own constants: importing those
+    // back would make this assertion restate whatever the source currently
+    // says, so lowering PING_TIMEOUT_MS would leave it green. These are the
+    // approved values, and an edit to either has to come back through here.
+    expect(options?.pingInterval).toBe(25_000);
+    expect(options?.pingTimeout).toBe(60_000);
+  });
+
+  it("lets RELAY_PING_TIMEOUT_MS raise the pong deadline without a relay build", async () => {
+    process.env.RELAY_PING_TIMEOUT_MS = "90000";
+    vi.resetModules();
+
+    const { PING_TIMEOUT_MS } = await import("../socket-server.js");
+
+    expect(PING_TIMEOUT_MS).toBe(90_000);
+  });
+
+  it("raises a RELAY_PING_TIMEOUT_MS under two ping intervals to the floor, and says so", async () => {
+    // The knob's failure mode: 30s is still above socket.io's 20s default and
+    // still "wider than the interval", so it reads plausible — but it leaves
+    // barely 5s of lateness tolerated, which is the incident condition back
+    // again. The floor is what stops an env rollback from reinstating it.
+    process.env.RELAY_PING_TIMEOUT_MS = "30000";
+    vi.resetModules();
+
+    const { PING_TIMEOUT_MS } = await import("../socket-server.js");
+
+    expect(PING_TIMEOUT_MS).toBe(50_000);
+    expect(mocks.mockLogWarn).toHaveBeenCalledWith(
+      expect.stringContaining("RELAY_PING_TIMEOUT_MS"),
+      expect.objectContaining({ value: "30000" })
+    );
   });
 });

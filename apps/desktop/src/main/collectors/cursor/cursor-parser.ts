@@ -13,6 +13,9 @@
 import fs from "node:fs";
 import readline from "node:readline";
 import { parseCursorTranscript } from "@repo/lib/harness/cursor/parse-cursor";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
+import { stampFileCreatedAt } from "../file-created-at.js";
 import type { NormalizedSession } from "../types.js";
 import { sessionIdFromTranscriptPath } from "./cursor-home.js";
 
@@ -23,7 +26,8 @@ import { sessionIdFromTranscriptPath } from "./cursor-home.js";
  * best-effort.
  */
 export async function parseTranscriptFile(
-  filePath: string
+  filePath: string,
+  parsePolicy: ParsePolicy = effectiveParsePolicy()
 ): Promise<NormalizedSession | null> {
   const sessionId = sessionIdFromTranscriptPath(filePath);
 
@@ -32,13 +36,18 @@ export async function parseTranscriptFile(
     crlfDelay: Number.POSITIVE_INFINITY,
   });
 
-  const session = await parseCursorTranscript(rl, { sessionId });
+  const session = await parseCursorTranscript(rl, {
+    sessionId,
+    attributionEvidence: parsePolicy.attributionEvidence,
+  });
   if (!session) {
     return null;
   }
 
   try {
-    session.fileModifiedAt = fs.statSync(filePath).mtimeMs;
+    const fileStats = fs.statSync(filePath);
+    session.fileModifiedAt = fileStats.mtimeMs;
+    stampFileCreatedAt(session, fileStats);
   } catch {
     /* non-fatal */
   }

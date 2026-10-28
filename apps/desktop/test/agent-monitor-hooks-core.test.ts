@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 
 import {
   applyHookInstall,
@@ -32,6 +32,12 @@ import {
   makeClaudeHookEntry,
   uninstallAgentMonitorHooks,
 } from "../src/main/agent-monitor/agent-monitor-hooks-core.js";
+import {
+  installSessionMeshHooks,
+  isSessionMeshClaudeEntry,
+  makeSessionMeshClaudeHookEntry,
+  SESSION_MESH_CLAUDE_HOOK_TYPES,
+} from "../src/main/session-mesh/session-mesh-hook-installer-core.js";
 import {
   buildManagedOtelBlock,
   type CodexOtelFileSystem,
@@ -52,6 +58,8 @@ const FAKE_EXEC = "/fake/Electron";
 const CLAUDE_HANDLER = "/fake/userData/agent-monitor/hook-handler.js";
 const LIFECYCLE_LOGS_ENDPOINT_RE = /127\.0\.0\.1:54321/;
 const LIFECYCLE_MANAGED_MARKER_RE = /closedloop_agent_monitor_managed = true/;
+const SESSION_MESH_HANDLER =
+  "/fake/userData/session-mesh/session-mesh-hook-handler.js";
 
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "fea1444-hooks-"));
@@ -82,6 +90,71 @@ test("isClaudeEntry matches only its own handler entries", () => {
 
   assert.equal(isClaudeEntry(claudeEntry), true);
   assert.equal(isClaudeEntry(otherEntry), false);
+});
+
+test("Session Mesh entry ownership uses its handler, never a lane or slot alias", () => {
+  const ours = makeSessionMeshClaudeHookEntry(
+    FAKE_EXEC,
+    SESSION_MESH_HANDLER,
+    "SessionStart"
+  );
+  const agentMonitor = makeClaudeHookEntry(
+    FAKE_EXEC,
+    CLAUDE_HANDLER,
+    "SessionStart"
+  );
+  assert.equal(isSessionMeshClaudeEntry(ours), true);
+  assert.equal(isSessionMeshClaudeEntry(agentMonitor), false);
+});
+
+test("Session Mesh install is idempotent and preserves a user's Claude hook", () => {
+  const claudeFile = join(tempRoot, "claude", "settings.json");
+  const codexFile = join(tempRoot, "codex", "config.toml");
+  mkdirSync(join(tempRoot, "claude"), { recursive: true });
+  writeFileSync(
+    claudeFile,
+    JSON.stringify({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: "command", command: "echo user-hook" }] },
+        ],
+      },
+    })
+  );
+  const receiver: OtlpReceiverState = {
+    available: true,
+    host: DEFAULT_OTLP_RECEIVER_HOST,
+    port: 4318,
+  };
+  const input = {
+    file: claudeFile,
+    execPath: FAKE_EXEC,
+    handler: SESSION_MESH_HANDLER,
+    codexConfigFile: codexFile,
+    receiverState: receiver,
+    nativeAsyncSupport: { claude: true, codex: true },
+  };
+  const first = installSessionMeshHooks(input);
+  const second = installSessionMeshHooks(input);
+  assert.equal(first.installed, SESSION_MESH_CLAUDE_HOOK_TYPES.length);
+  assert.equal(second.installed, 0);
+  assert.equal(second.repaired, SESSION_MESH_CLAUDE_HOOK_TYPES.length);
+
+  const settings = readJson(claudeFile) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+  };
+  assert.equal(settings.hooks.SessionStart.length, 2);
+  assert.equal(
+    settings.hooks.SessionStart[0].hooks[0].command,
+    "echo user-hook"
+  );
+  for (const hookType of SESSION_MESH_CLAUDE_HOOK_TYPES) {
+    assert.equal(
+      settings.hooks[hookType].filter(isSessionMeshClaudeEntry).length,
+      1
+    );
+  }
+  assert.match(readFileSync(codexFile, "utf8"), LIFECYCLE_MANAGED_MARKER_RE);
 });
 
 test("makeClaudeHookEntry applies '*' matcher only to gated events", () => {

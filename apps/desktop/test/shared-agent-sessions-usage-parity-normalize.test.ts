@@ -12,8 +12,8 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import type { AgentSessionCostSplitFields } from "@repo/api/src/types/agent-session-cost-split";
+import { test } from "vitest";
 import { emptySharedAgentSessionsUsageSummary } from "../src/shared/shared-agent-sessions-contract.js";
 import {
   COST_SPLIT_FIELDS,

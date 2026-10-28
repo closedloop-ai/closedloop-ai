@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "MCP OAuth refresh tokens, read only by the MCP server."
+}

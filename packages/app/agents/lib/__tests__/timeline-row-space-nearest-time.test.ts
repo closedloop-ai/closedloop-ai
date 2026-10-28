@@ -19,7 +19,7 @@ describe("nearest-time fallback for a divergent web trace (FEA-4252 / FEA-3586)"
   // The two projections mint their strong ids from DIFFERENT pipelines, so on a
   // real web session almost no turn shares an identity. Before the fallback, a
   // dot/column click on any such turn resolved to null and scrolled NOWHERE
-  // (Mike: "neither the dots nor the columns scroll to the proper place"). These
+  // (Marisol: "neither the dots nor the columns scroll to the proper place"). These
   // sessions run for hours, so the clicked turn is often well past the first
   // hour — the exact FEA-3586 territory where the wrong-row bug bit hardest.
   const sourceRows: TurnItem[] = [

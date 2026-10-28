@@ -16,7 +16,8 @@
  *
  *  - falsy id / malformed session ⇒ refuse without touching the store
  *  - session row absent           ⇒ `{ rebuilt: false, activeRace: false }`
- *  - session NON-TERMINAL         ⇒ `{ rebuilt: false, activeRace: true }` (heals via import)
+ *  - session a LIVE CAPTURE       ⇒ `{ rebuilt: false, activeRace: true }` (heals via import)
+ *  - session WEDGED non-terminal  ⇒ proceeds (ISS-8601: no import is coming for it)
  *  - session already at revision  ⇒ `{ rebuilt: false, activeRace: false }` (a no-op, not a rebuild)
  *
  * Plus the isolation contract that makes the boot sweep survivable: a rebuild
@@ -25,43 +26,27 @@
  * the rest.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import { createMaintenanceFacade } from "../src/main/database/sqlite-maintenance-facade.js";
+import { test } from "vitest";
 import { type OpenTestPrisma, openTestPrisma } from "./prisma-test-utils.js";
+import { maintenanceFacadeFor, NOW } from "./session-sweep-fixtures.js";
 
 type Store = OpenTestPrisma["db"];
 
-const NOW = "2026-06-22T12:00:00.000Z";
 const CURRENT_REVISION = 42;
-
-function facadeFor(
-  prisma: OpenTestPrisma["prisma"],
-  log: (message: string) => void = () => {
-    /* most tests assert return values, not logs */
-  }
-) {
-  return createMaintenanceFacade({
-    prisma,
-    log,
-    nowFn: () => NOW,
-    detectBillingMode: () => "unknown",
-    supportsRowDigest: () => Promise.resolve(false),
-    tokenUsage: {} as Parameters<
-      typeof createMaintenanceFacade
-    >[0]["tokenUsage"],
-  });
-}
 
 async function seedSession(
   store: Store,
   id: string,
   status: string,
-  dataRevision: number
+  dataRevision: number,
+  // ISS-8601: the age anchor. Defaults to NOW, so every pre-existing caller keeps
+  // seeding a LIVE row and keeps testing the contract it was written for.
+  lastActivityAt: string = NOW
 ): Promise<void> {
   await store.query(
-    "INSERT INTO sessions (id, status, updated_at, last_activity_at, data_revision) VALUES ($1, $2, $3, $3, $4)",
-    [id, status, NOW, dataRevision]
+    "INSERT INTO sessions (id, status, updated_at, last_activity_at, data_revision) VALUES ($1, $2, $3, $4, $5)",
+    [id, status, NOW, lastActivityAt, dataRevision]
   );
 }
 
@@ -106,7 +91,7 @@ test("ISS-5400: a falsy sessionId short-circuits BEFORE the write transaction op
     await seedSession(store, "s1", SESSION_STATUS.INACTIVE, 1);
     const before = await countAgentComponentInvocations(store);
     const { spied, writes } = writeCountingPrisma(prisma);
-    const facade = facadeFor(spied);
+    const facade = maintenanceFacadeFor(spied);
 
     const result = await facade.rebuildComponentInvocationsFromStoredRows(
       "",
@@ -136,7 +121,7 @@ test("ISS-5400: a falsy sessionId short-circuits BEFORE the write transaction op
 test("ISS-5400: an absent session is not a rebuild and not an active race", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
-    const result = await facadeFor(
+    const result = await maintenanceFacadeFor(
       prisma
     ).rebuildComponentInvocationsFromStoredRows(
       "never-imported",
@@ -156,7 +141,7 @@ test("ISS-5400: a NON-TERMINAL session reports an active race so import heals it
     // snapshot, so the writer tx re-checks and defers to ordinary import.
     await seedSession(store, "still-running", "active", 1);
 
-    const result = await facadeFor(
+    const result = await maintenanceFacadeFor(
       prisma
     ).rebuildComponentInvocationsFromStoredRows(
       "still-running",
@@ -173,7 +158,37 @@ test("ISS-5400: a NON-TERMINAL session reports an active race so import heals it
   }
 });
 
-test("ISS-5400: a terminal session ALREADY at the current revision is a no-op, not a rebuild (wongk #4255)", async () => {
+test("ISS-8601: a WEDGED non-terminal session is admitted, because no import is coming for it", async () => {
+  const { db: store, prisma, close } = await openTestPrisma();
+  try {
+    // Same status as the case above — the difference is entirely the anchor. A
+    // row silent past the staleness bound is one the stale-active sweep left
+    // untouched, so nothing else will ever re-derive it; refusing it here is what
+    // kept those rows stale forever.
+    const wedged = new Date(
+      Date.parse(NOW) - 48 * 60 * 60 * 1000
+    ).toISOString();
+    await seedSession(store, "wedged-running", "active", 1, wedged);
+
+    const result = await maintenanceFacadeFor(
+      prisma
+    ).rebuildComponentInvocationsFromStoredRows(
+      "wedged-running",
+      CURRENT_REVISION
+    );
+
+    assert.notDeepEqual(
+      result,
+      { rebuilt: false, activeRace: true },
+      "a wedged row must NOT be reported as an active race — that refusal is exactly what this ticket removes"
+    );
+    assert.equal(result.rebuilt, true, "it proceeds to the rebuild");
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-5400: a terminal session ALREADY at the current revision is a no-op, not a rebuild (whitlockk #4255)", async () => {
   const { db: store, prisma, close } = await openTestPrisma();
   try {
     // A watcher import sealed this session at the current revision after the
@@ -188,7 +203,7 @@ test("ISS-5400: a terminal session ALREADY at the current revision is a no-op, n
       CURRENT_REVISION
     );
 
-    const result = await facadeFor(
+    const result = await maintenanceFacadeFor(
       prisma
     ).rebuildComponentInvocationsFromStoredRows(
       "already-fresh",
@@ -206,7 +221,7 @@ test("ISS-5400: a terminal, stale session IS rebuilt", async () => {
   try {
     await seedSession(store, "stale-terminal", SESSION_STATUS.INACTIVE, 1);
 
-    const result = await facadeFor(
+    const result = await maintenanceFacadeFor(
       prisma
     ).rebuildComponentInvocationsFromStoredRows(
       "stale-terminal",
@@ -230,7 +245,7 @@ test("ISS-5400: a throwing rebuild is logged and reported, never propagated (the
     // Close the store out from under the facade so the write transaction raises.
     await close();
 
-    const result = await facadeFor(prisma, (message) =>
+    const result = await maintenanceFacadeFor(prisma, (message) =>
       logged.push(message)
     ).rebuildComponentInvocationsFromStoredRows(
       "any-session",
@@ -257,7 +272,7 @@ test("ISS-5400: a throwing rebuild is logged and reported, never propagated (the
 test("ISS-5400: rebuildSessionFromParse refuses a session missing its id or startedAt", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
-    const facade = facadeFor(prisma);
+    const facade = maintenanceFacadeFor(prisma);
     const bare = { sessionId: "", startedAt: NOW } as Parameters<
       typeof facade.rebuildSessionFromParse
     >[0];

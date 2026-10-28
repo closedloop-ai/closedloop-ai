@@ -44,7 +44,7 @@ const PRECISE_COST_ABOVE_NEGATIVE_FLOOR = `> -$${PRECISE_COST_SMALLEST_UNIT.toFi
 )}`;
 
 /**
- * FEA-4178 / wongk review: precise USD display for a FINE-GRAINED trace cost
+ * FEA-4178 / whitlockk review: precise USD display for a FINE-GRAINED trace cost
  * that can legitimately fall below one cent (a single sub-agent's attributed
  * spend). Fixed-2dp `formatTraceCostUsd` renders any nonzero value under $0.005
  * as a flat "$0.00", which reads as a broken/lying stat next to a run that
@@ -96,7 +96,7 @@ export function formatTraceCostPrecise(value: number): string {
  * the box drops the empty part. A present nonzero figure — including a sub-cent
  * one — renders precisely (`formatTraceCostPrecise`) rather than being floored
  * to "$0.00" or hidden: a real sub-cent cost is a distinct state from "no data"
- * and must not collapse into it (wongk review, mirroring `formatCostPrecise` in
+ * and must not collapse into it (whitlockk review, mirroring `formatCostPrecise` in
  * the branch activity timeline). Only a `null` input yields `null` here.
  */
 export function formatTraceCostForDisplay(value: number | null): string | null {

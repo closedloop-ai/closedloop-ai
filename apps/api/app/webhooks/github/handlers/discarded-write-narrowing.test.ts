@@ -48,63 +48,76 @@ const PAIRED_ACTIONS = [
 ] as const;
 
 describe("applyPullRequestAction discarded writes", () => {
-  it.each(
-    PAIRED_ACTIONS
-  )("PARITY: %s writes the artifact status and its detail row", async (action) => {
-    const tx = createRecordingTx();
+  it.each(PAIRED_ACTIONS)(
+    "PARITY: %s writes the artifact status and its detail row",
+    async (action) => {
+      const tx = createRecordingTx();
 
-    await applyPullRequestAction(tx.client, prEvent(action), existingPr());
+      await applyPullRequestAction(tx.client, prEvent(action), existingPr());
 
-    const artifactUpdate = tx.only("artifact", "update");
-    expect(artifactUpdate.where).toEqual({ id: PR_ARTIFACT_ID });
+      const artifactUpdate = tx.only("artifact", "update");
+      expect(artifactUpdate.where).toEqual({ id: PR_ARTIFACT_ID });
 
-    const detailUpdate = tx.only("pullRequestDetail", "update");
-    expect(detailUpdate.where).toEqual({ githubId: String(GITHUB_PR_ID) });
-    expect(detailUpdate.data).toMatchObject({ number: 4242 });
-  });
+      const detailUpdate = tx.only("pullRequestDetail", "update");
+      expect(detailUpdate.where).toEqual({ githubId: String(GITHUB_PR_ID) });
+      // ISS-8243: this expectation CHANGED, and the BEHAVIOR changed with it. It
+      // read `{ number: 4242 }` — a mapped column standing in for "the payload
+      // reached the write". The webhook lane no longer writes `number` on UPDATE:
+      // with the column present the ISS-6421 atom-barrier cases blocked until
+      // their concurrent FK writers timed out, and they pass without it. Why the
+      // lock behaves that way is still contested — see ISS-8243. `title` is the
+      // same fixture's payload through the same builder, so the parity contract
+      // this test owns is unchanged; only the column carrying it moved.
+      expect(detailUpdate.data).toMatchObject({ title: "ISS-6319 fixture" });
+      expect(detailUpdate.data).not.toHaveProperty("number");
+    }
+  );
 
-  it.each(
-    PAIRED_ACTIONS
-  )("PARITY: %s still rejects with P2025 when the artifact row is absent", async (action) => {
-    const tx = createRecordingTx({
-      reject: { model: "artifact", method: "update" },
-    });
+  it.each(PAIRED_ACTIONS)(
+    "PARITY: %s still rejects with P2025 when the artifact row is absent",
+    async (action) => {
+      const tx = createRecordingTx({
+        reject: { model: "artifact", method: "update" },
+      });
 
-    await expect(
-      applyPullRequestAction(tx.client, prEvent(action), existingPr())
-    ).rejects.toMatchObject({ code: "P2025" });
+      await expect(
+        applyPullRequestAction(tx.client, prEvent(action), existingPr())
+      ).rejects.toMatchObject({ code: "P2025" });
 
-    // The throw aborts the slice, so the dependent detail write never runs.
-    expect(tx.calls("pullRequestDetail", "update")).toHaveLength(0);
-  });
+      // The throw aborts the slice, so the dependent detail write never runs.
+      expect(tx.calls("pullRequestDetail", "update")).toHaveLength(0);
+    }
+  );
 
-  it.each(
-    PAIRED_ACTIONS
-  )("PARITY: %s still rejects with P2025 when the detail row is absent", async (action) => {
-    const tx = createRecordingTx({
-      reject: { model: "pullRequestDetail", method: "update" },
-    });
+  it.each(PAIRED_ACTIONS)(
+    "PARITY: %s still rejects with P2025 when the detail row is absent",
+    async (action) => {
+      const tx = createRecordingTx({
+        reject: { model: "pullRequestDetail", method: "update" },
+      });
 
-    await expect(
-      applyPullRequestAction(tx.client, prEvent(action), existingPr())
-    ).rejects.toMatchObject({ code: "P2025" });
-  });
+      await expect(
+        applyPullRequestAction(tx.client, prEvent(action), existingPr())
+      ).rejects.toMatchObject({ code: "P2025" });
+    }
+  );
 
-  it.each(
-    PAIRED_ACTIONS
-  )("NARROWING: %s RETURNINGs only each row's primary key", async (action) => {
-    const tx = createRecordingTx();
+  it.each(PAIRED_ACTIONS)(
+    "NARROWING: %s RETURNINGs only each row's primary key",
+    async (action) => {
+      const tx = createRecordingTx();
 
-    await applyPullRequestAction(tx.client, prEvent(action), existingPr());
+      await applyPullRequestAction(tx.client, prEvent(action), existingPr());
 
-    expect(tx.only("artifact", "update").select).toEqual({ id: true });
-    // PullRequestDetail is keyed on `id`, NOT `artifactId` — it is the one
-    // `*Detail` table that is not class-table-inheritance keyed.
-    expect(tx.only("pullRequestDetail", "update").select).toEqual({
-      id: true,
-    });
-    expect(wideWrites(tx)).toEqual([]);
-  });
+      expect(tx.only("artifact", "update").select).toEqual({ id: true });
+      // PullRequestDetail is keyed on `id`, NOT `artifactId` — it is the one
+      // `*Detail` table that is not class-table-inheritance keyed.
+      expect(tx.only("pullRequestDetail", "update").select).toEqual({
+        id: true,
+      });
+      expect(wideWrites(tx)).toEqual([]);
+    }
+  );
 
   it("PARITY: closed carries the merged state onto both rows", async () => {
     const tx = createRecordingTx();
@@ -264,7 +277,7 @@ function pullRequestPayload(overrides: Partial<PullRequest> = {}): PullRequest {
     id: GITHUB_PR_ID,
     number: 4242,
     title: "ISS-6319 fixture",
-    html_url: "https://github.com/closedloop-ai/symphony-alpha/pull/4242",
+    html_url: "https://github.com/closedloop-ai/closedloop-ai/pull/4242",
     body: null,
     state: "open",
     draft: false,

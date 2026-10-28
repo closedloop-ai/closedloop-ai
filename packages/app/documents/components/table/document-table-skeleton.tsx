@@ -30,7 +30,7 @@ const DEFAULT_LABEL = "Loading…";
 // horizontally-scrolling grid that snaps to cards the moment data lands (the
 // exact layout shift this treatment prevents). ISS-4788: reads the shared
 // constant `DocumentRow` now reads too, rather than a third copy of the 768
-// literal, so loading and content cannot split apart (wongk review).
+// literal, so loading and content cannot split apart (whitlockk review).
 
 /**
  * Loading treatment for the documents table. Renders the real
@@ -54,10 +54,10 @@ export function DocumentTableSkeleton({
   const showCard = containerWidth < CARD_FALLBACK_BREAKPOINT;
   const rows = Array.from({ length: rowCount }, (_, index) => index);
 
+  // Full-width observed wrapper so the ResizeObserver reports the real
+  // available width rather than the grid's overflowed intrinsic width — the
+  // same pattern the real `DocumentRow` uses to decide the card fallback.
   return (
-    // Full-width observed wrapper so the ResizeObserver reports the real
-    // available width rather than the grid's overflowed intrinsic width — the
-    // same pattern the real `DocumentRow` uses to decide the card fallback.
     <div
       aria-busy="true"
       aria-live="polite"

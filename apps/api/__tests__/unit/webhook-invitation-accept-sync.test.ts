@@ -88,16 +88,8 @@ describe("organizationMembership.created (invitation accepted)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(organizationsService.findOrCreateByClerkId).mockResolvedValue({
-      active: true,
       clerkId: CLERK_ORG_ID,
-      createdAt: new Date(),
       id: EXISTING_ORG_DB_ID,
-      name: "Acme",
-      searchIncludeTranscripts: false,
-      sessionSyncPolicyEnabled: false,
-      settings: {},
-      slug: "acme",
-      updatedAt: new Date(),
     });
   });
 

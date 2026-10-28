@@ -19,7 +19,8 @@ import {
 } from "../types.js";
 import type { CatchupCache } from "./catchup-cache.js";
 import { yieldToEventLoop } from "./cooperative-yield.js";
-import { HistoricalParseWorkerLimits } from "./historical-parse-worker-limits.js";
+import { HistoricalParseWorkerLimits } from "./historical-parse-worker-limits-and-clamping.js";
+import { isMeasurableByteCount } from "./ingest-pending-bytes.js";
 import {
   IMPORT_QUARANTINE_COOLDOWN_MS,
   type ParseQuarantine,
@@ -154,7 +155,7 @@ export async function collectPendingSources(
     // ISS-4444 (codex P1): pass the current fingerprint so a corrected transcript
     // at the same path (a human fixed the poison file) invalidates the stale entry
     // and is re-attempted, instead of the path-only key skipping it forever.
-    // ISS-4444 (shafty023 review): only a source with an existing quarantine
+    // ISS-4444 (davetho review): only a source with an existing quarantine
     // entry can be skipped here, and only for such a source does the freshness
     // fingerprint matter. Gate the per-source `stat` on `hasEntry` so the common
     // no-entry case (the vast majority of a large history) does not pay a stat at
@@ -231,7 +232,12 @@ function resolveNonBatchSourceDecision(
   }
   const skipUnchanged =
     status.unchanged &&
-    !isOrphanedFromDb(collector, source, existingSessionIds);
+    !isOrphanedFromDb(
+      collector,
+      source,
+      existingSessionIds,
+      status.yieldedNoSession
+    );
   if (skipUnchanged) {
     return { skip: true };
   }
@@ -276,13 +282,24 @@ function foldedChildSessionIdForSource(
  * steady-state boots never re-parse every transcript. When the id IS derivable
  * and IS present in `existingSessionIds`, the source is still skipped — normal
  * steady state is unchanged.
+ *
+ * ISS-12036: `yieldedNoSession` is the one answer that is NOT divergence. A
+ * source whose last pass parsed it to zero sessions at these same bytes has no
+ * row because there is none to have — a Codex root rollout the burst classifier
+ * drops, or one with no usable timestamp — so the self-heal re-listed, re-parsed
+ * and re-dropped it on every pass forever, and `willSourceBeRescanned` kept it
+ * out of `processed` while it did. A DB reset does not change that: there is
+ * still nothing to re-derive. The mark is scoped to the fingerprint, so the
+ * moment the transcript could yield something it is re-parsed; see
+ * {@link CatchupCache.isUnchanged}.
  */
 function isOrphanedFromDb(
   collector: HarnessCollector,
   source: string,
-  existingSessionIds: ReadonlySet<string> | undefined
+  existingSessionIds: ReadonlySet<string> | undefined,
+  yieldedNoSession: boolean
 ): boolean {
-  if (!existingSessionIds) {
+  if (!existingSessionIds || yieldedNoSession) {
     return false;
   }
   // sessionIdForSource is file-only; batch collectors are never orphan-checked
@@ -404,7 +421,19 @@ const SOURCE_TIMEOUT_STAGE_REASON: Record<SourceTimeoutStage, string> = {
 };
 
 /**
- * ISS-6115 (wongk review): how each stage's quarantine ENDS. The two differ, and
+ * ISS-12036: why an IMPORT-stage quarantine was charged, when the cause was not
+ * the bound. The stage's own reason above names a deadline, and a log line that
+ * named one for a source whose import simply never landed would be false — so
+ * the charge that is not a timeout carries its own words.
+ *
+ * Only the Import stage has a second cause: a parse quarantine is always a
+ * wedged parse.
+ */
+const IMPORT_DID_NOT_LAND_REASON =
+  "was re-offered repeatedly without its import landing";
+
+/**
+ * ISS-6115 (whitlockk review): how each stage's quarantine ENDS. The two differ, and
  * an incident reading this line needs to know which one it is looking at — a
  * parse quarantine waits on the transcript, an import quarantine waits on a clock
  * because its cause is the sink, not the bytes.
@@ -420,9 +449,9 @@ const SOURCE_TIMEOUT_STAGE_RETRY: Record<SourceTimeoutStage, string> = {
  * (ISS-6115) for a source and, when it crosses the quarantine threshold on THIS
  * call, report that it will no longer be retried. Persisted best-effort by the
  * caller's end-of-pass flush. Lives beside {@link quarantineFingerprintFromStat}
- * — the fingerprint it records — rather than in the grandfathered manager.
+ * — the fingerprint it records — rather than in the manager.
  *
- * ISS-5028 (wongk review): returns whether THIS attempt quarantined the source.
+ * ISS-5028 (whitlockk review): returns whether THIS attempt quarantined the source.
  * A timed-out parse normally leaves the source unmarked so it retries, which is
  * why the caller reports it as a non-durable outcome — but the attempt that
  * crosses the threshold is TERMINAL: {@link collectPendingSources} filters a
@@ -439,7 +468,10 @@ export function recordSourceTimeout(
   // the freshness fingerprint the store records so a later content change
   // invalidates the entry.
   stat: { mtimeMs: number; size: number } | null,
-  log: (message: string) => void
+  log: (message: string) => void,
+  // ISS-12036: the words for a charge whose cause is not this stage's deadline.
+  // Defaulted, so every existing caller keeps the line it already logged.
+  reason: string = SOURCE_TIMEOUT_STAGE_REASON[stage]
 ): boolean {
   if (!quarantine) {
     return false;
@@ -451,7 +483,7 @@ export function recordSourceTimeout(
   );
   if (nowQuarantined) {
     log(
-      `${stage} quarantine [${harness}]: ${source} ${SOURCE_TIMEOUT_STAGE_REASON[stage]} and is now quarantined; ${SOURCE_TIMEOUT_STAGE_RETRY[stage]}`
+      `${stage} quarantine [${harness}]: ${source} ${reason} and is now quarantined; ${SOURCE_TIMEOUT_STAGE_RETRY[stage]}`
     );
   }
   return nowQuarantined;
@@ -461,8 +493,8 @@ export function recordSourceTimeout(
  * ISS-6115: settle one source's quarantine state at the end of its pass, and
  * report whether THIS pass quarantined it.
  *
- * The rule is one sentence: a pass that BURNED A DEADLINE on the source charges
- * an attempt; a pass that did not clears the tally.
+ * The rule is one sentence: a pass that FAILED TO LAND the source charges an
+ * attempt; a pass that landed it clears the tally.
  *
  *   - `timedOut` — the source burned the historical import bound, exactly as a
  *     wedged parse burns the parse bound. The ISS-4476 isolate path leaves a
@@ -470,17 +502,28 @@ export function recordSourceTimeout(
  *     re-attempted at full cost on every pass forever (measured: 8 days of
  *     `codex 0/2465`). `main/sync/AGENTS.md` invariant 5 — "unbounded retry is
  *     never acceptable, every terminal path must be reachable" — forbids that.
- *   - otherwise the source parsed within its bound and no session's import hit
- *     the import bound, so it is not a deadline-burner and its prior attempts are
+ *   - `didNotLand` (ISS-12036) — a session's import came back `failed`,
+ *     `incomplete`, or a no-row refusal, so the source is re-offered next pass
+ *     with the same work still to do. ISS-6115 charged only the deadline and
+ *     deliberately CLEARED on this case, reasoning that it is not a deadline
+ *     burn; what that left behind is the same unbounded retry one level down, and
+ *     it is the loop ISS-12036 measured — `sources_remaining` flat at 66 for 48h
+ *     and 134 of 208 windows reporting `wedged`. ISS-4444's concern still holds:
+ *     attempts accrete only across passes that actually failed to land, and the
+ *     clear below still runs for every pass that went fine, so nothing can
+ *     accumulate across unrelated passes.
+ *   - otherwise the source parsed within its bound, no session's import hit the
+ *     import bound, and what it offered landed — so its prior attempts are
  *     cleared. This is ISS-4444's clear, moved off the parse step: the parse step
  *     could not see the import outcome, so it wiped an import-timeout tally
- *     before it could ever converge. Deliberately NOT gated on the source having
- *     COMMITTED — an `incomplete` record group or a session-local `failed` import
- *     leaves the source unmarked for retry but is not a deadline burn, and gating
- *     on it would let old attempts accrete across unrelated passes, which is
- *     precisely what ISS-4444's clear existed to prevent.
+ *     before it could ever converge.
  *
- * A genuine import REJECTION reaches neither branch: it propagates out of
+ * A BYTE-IDENTICAL re-offer is not a failure to land and never charges: there was
+ * nothing left to write. That is what keeps a source the orphan self-heal merely
+ * re-lists from being quarantined for being healthy — see
+ * `isUnlandedImportOffer`, which owns the distinction.
+ *
+ * A genuine import REJECTION reaches neither failing branch: it propagates out of
  * `importSessionBounded` and aborts the harness pass by design (ISS-4410), so it
  * is never charged as an attempt.
  *
@@ -497,7 +540,7 @@ export function recordSourceTimeout(
  * `active` is the caller's generation check re-read AFTER its awaits: the import
  * bound spans two minutes, in which a stop()/restart can supersede the epoch and
  * re-import the source cleanly, and a stale epoch must not mutate the shared
- * store (wongk review, ISS-4444).
+ * store (whitlockk review, ISS-4444).
  */
 export function settleSourceQuarantine(options: {
   quarantine: ParseQuarantine | undefined;
@@ -505,6 +548,8 @@ export function settleSourceQuarantine(options: {
   source: string;
   stat: { mtimeMs: number; size: number } | null;
   timedOut: boolean;
+  /** ISS-12036: a session's import did not land, so the source comes back. */
+  didNotLand: boolean;
   batchSource: boolean;
   active: boolean;
   log: (message: string) => void;
@@ -513,7 +558,7 @@ export function settleSourceQuarantine(options: {
   if (!(quarantine && options.active)) {
     return false;
   }
-  if (!options.timedOut) {
+  if (!(options.timedOut || options.didNotLand)) {
     quarantine.clear(options.source);
     return false;
   }
@@ -526,12 +571,17 @@ export function settleSourceQuarantine(options: {
     options.harness,
     options.source,
     options.stat,
-    options.log
+    options.log,
+    // The deadline is the louder fact when a pass burned one AND left work
+    // behind, so it names the line; either way the two share ONE charge.
+    options.timedOut
+      ? SOURCE_TIMEOUT_STAGE_REASON[SourceTimeoutStage.Import]
+      : IMPORT_DID_NOT_LAND_REASON
   );
 }
 
 /**
- * ISS-6115 (wongk review): one source's retry budget for one pass, settled EXACTLY
+ * ISS-6115 (whitlockk review): one source's retry budget for one pass, settled EXACTLY
  * ONCE however the pass leaves that source.
  *
  * {@link settleSourceQuarantine} used to be called only on the import loop's
@@ -544,10 +594,10 @@ export function settleSourceQuarantine(options: {
  * mid-source yield, which is reachable only from the watcher-driven pass (the boot
  * pass supplies no yield controls).
  *
- * Owning the timed-out flag as well as the settle is what makes "settled once" a
- * property of this object rather than of the caller's control flow: the two facts
- * cannot drift apart, and the memoized result stays readable after the `finally`
- * for the caller's own durability reporting.
+ * Owning the failure flags as well as the settle is what makes "settled once" a
+ * property of this object rather than of the caller's control flow: the facts
+ * cannot drift apart from the charge, and the memoized result stays readable
+ * after the `finally` for the caller's own durability reporting.
  */
 export function createSourceBudgetSettler(options: {
   quarantine: ParseQuarantine | undefined;
@@ -562,21 +612,33 @@ export function createSourceBudgetSettler(options: {
   /** One of this source's sessions burned the historical import bound. */
   noteImportTimedOut(): void;
   /**
+   * ISS-12036: one of this source's sessions was offered and did not land, so the
+   * source is re-offered next pass with the same work outstanding. Separate from
+   * {@link noteImportTimedOut} because the two name different causes in the log,
+   * not because they charge differently — a pass that does both is one attempt.
+   */
+  noteImportDidNotLand(): void;
+  /**
    * Charge or clear the budget, and report whether THIS pass quarantined the
    * source. Idempotent: later calls return the first call's answer.
    */
   settle(): boolean;
 } {
   let timedOut = false;
+  let didNotLand = false;
   let settled: boolean | null = null;
   return {
     noteImportTimedOut(): void {
       timedOut = true;
     },
+    noteImportDidNotLand(): void {
+      didNotLand = true;
+    },
     settle(): boolean {
       settled ??= settleSourceQuarantine({
         active: options.isActive(),
         batchSource: options.batchSource,
+        didNotLand,
         harness: options.harness,
         log: options.log,
         quarantine: options.quarantine,
@@ -614,17 +676,125 @@ export function createSourceBudgetSettler(options: {
  * change after this pass imported it is readmitted by the ordinary
  * `cache.isUnchanged` check instead, which is genuinely new work rather than a
  * double count of the same work.
+ *
+ * ISS-7306: a FOLDED BURST CHILD is orphaned by construction and must not be
+ * read as orphan-readmittable. A Codex subagent rollout whose parent is present
+ * parses to zero sessions BY DESIGN — its content is folded into the root
+ * parent, and the loop then DELETES any row under the child's own id — so the
+ * orphan rule is permanently true for it while the scan skips it as burst ahead
+ * of that same check (`resolveNonBatchSourceDecision`). Measured on the ISS-7286
+ * populated-store run, that was the WHOLE of the reported shortfall: 992 of
+ * 3,352 codex sources, set-equal to the folded-child set, holding `processed` at
+ * 2,360/3,352 and leaving a 992-source `unfinished` that keeps the tracker's
+ * `drained` signal false for the pass.
+ *
+ * The exemption is scoped to the ORPHAN reason, exactly like the byte-change
+ * carve-out above it, and claims nothing more. The scan's burst gate is a
+ * CONJUNCTION — `status.unchanged && isBurstArtifactSource(source)` — and the
+ * `unchanged` half is unknowable here, since it is a fact about the next scan,
+ * not this one. A burst child whose cache entry goes stale (Codex derives
+ * `extraMtime` from the source's DIRECTORY and descendants, so a sibling's
+ * workflow journal moves it) is therefore re-listed by the ordinary
+ * `cache.isUnchanged` path — which this predicate has never answered for any
+ * source, burst or not. The cost of that is one extra unit on the resume
+ * denominator, against a shortfall that otherwise never clears.
+ *
+ * Scope: a cold catchup cache — first launch, or a cache/DB reset. Once the
+ * cache holds the children they are burst-skipped by the scan and never enter
+ * the pass at all, so the shortfall does not recur on a warm boot.
  */
 export function willSourceBeRescanned(
   collector: HarnessCollector,
   source: string,
   existingSessionIds: ReadonlySet<string> | undefined,
-  importedThisPass: ReadonlySet<string>
+  importedThisPass: ReadonlySet<string>,
+  // ISS-12036: this pass parsed the source to ZERO sessions, so the mark it just
+  // wrote to the catchup cache will keep the next scan's orphan check off it.
+  // Passed in rather than read back out of the cache so the two sites cannot
+  // disagree about the same pass, exactly as `importedThisPass` is.
+  yieldedNoSession = false
 ): boolean {
-  if (!isOrphanedFromDb(collector, source, existingSessionIds)) {
+  if (
+    !isOrphanedFromDb(collector, source, existingSessionIds, yieldedNoSession)
+  ) {
     return false;
   }
   const { fileCollector } = narrowHarness(collector);
+  if (fileCollector?.isBurstArtifactSource?.(source) === true) {
+    return false;
+  }
   const sessionId = fileCollector?.sessionIdForSource?.(source) ?? null;
   return sessionId !== null && !importedThisPass.has(sessionId);
+}
+
+/**
+ * ISS-8346: this pass's pending population measured in BYTES, plus the per-source
+ * sizes the import loop subtracts as each source lands.
+ *
+ * `totalBytes` is `null` only when there are sources to import and not one of
+ * them could be sized — the answer a batch collector would give from `stat`
+ * alone, since `collectPendingSources` never reads one for it. A source that
+ * cannot be sized after the fallback stat below (the file went away between
+ * enumeration and here) contributes nothing to either side of the ledger, so the
+ * pair stays consistent and the only cost is that progress reads slightly ahead
+ * by that file's bytes.
+ */
+export type PendingSourceByteMeasurement = {
+  totalBytes: number | null;
+  bytesBySource: ReadonlyMap<string, number>;
+};
+
+/** One source's size, or `null` when the file cannot be stat'd at all. */
+async function readSourceSize(source: string): Promise<number | null> {
+  try {
+    const stat = await statAsync(source);
+    return isMeasurableByteCount(stat.size) ? stat.size : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Size this pass's pending sources.
+ *
+ * Most already carry the stat `collectPendingSources` read for the catchup
+ * fingerprint. The rest — every source of a batch collector, which has no cache
+ * and so no stat — are stat'd here, at the same bounded concurrency as the
+ * prewarm and against an OS stat cache that pass already warmed.
+ */
+export async function measurePendingSourceBytes(
+  pendingSources: readonly PendingSource[]
+): Promise<PendingSourceByteMeasurement> {
+  const bytesBySource = new Map<string, number>();
+  const unsized: string[] = [];
+  for (const pending of pendingSources) {
+    const size = pending.stat?.size;
+    if (isMeasurableByteCount(size)) {
+      bytesBySource.set(pending.source, size);
+    } else {
+      unsized.push(pending.source);
+    }
+  }
+  for (
+    let index = 0;
+    index < unsized.length;
+    index += PREWARM_STAT_CONCURRENCY
+  ) {
+    const batch = unsized.slice(index, index + PREWARM_STAT_CONCURRENCY);
+    const sizes = await Promise.all(batch.map(readSourceSize));
+    for (const [offset, size] of sizes.entries()) {
+      const source = batch[offset];
+      if (size !== null && source !== undefined) {
+        bytesBySource.set(source, size);
+      }
+    }
+  }
+  if (pendingSources.length > 0 && bytesBySource.size === 0) {
+    return { totalBytes: null, bytesBySource };
+  }
+  let totalBytes = 0;
+  for (const size of bytesBySource.values()) {
+    totalBytes += size;
+  }
+  return { totalBytes, bytesBySource };
 }

@@ -63,11 +63,7 @@ describe("desktopTelemetryService.receive", () => {
   });
 
   it("maps handler validation failures to a bad-request error", async () => {
-    vi.mocked(handleTelemetryEvent).mockReturnValueOnce({
-      ok: false,
-      validationFailed: true,
-      emits: [],
-    });
+    vi.mocked(handleTelemetryEvent).mockReturnValueOnce({ ok: false });
 
     const result = await desktopTelemetryService.receive(RECEIVE_INPUT);
 

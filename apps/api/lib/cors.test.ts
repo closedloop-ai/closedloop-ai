@@ -1,3 +1,5 @@
+import { ARTIFACT_LINK_CONTINUATION_HEADERS } from "@repo/api/src/types/artifact";
+import { DOCUMENT_LIST_CONTINUATION_HEADERS } from "@repo/api/src/types/document";
 import {
   DEPLOYMENT_ID_HEADER,
   ORG_IDENTITY_HEADER,
@@ -23,6 +25,33 @@ describe("getCorsHeaders", () => {
     expect(allowed).toContain("content-type");
   });
 
+  // ISS-6941: `GET /documents` states its pagination continuation in response
+  // headers. A response header a cross-origin browser caller may READ has to be
+  // named in Access-Control-Expose-Headers — otherwise the browser hands
+  // JavaScript only the safelisted ones and `headers.get(...)` returns null with
+  // no error, so the metadata would look absent rather than blocked.
+  it("exposes the document-list continuation response headers", () => {
+    const exposed = getCorsHeaders(null)
+      ["Access-Control-Expose-Headers"].split(",")
+      .map((header) => header.trim().toLowerCase());
+
+    expect(exposed).toContain(DOCUMENT_LIST_CONTINUATION_HEADERS.Total);
+    expect(exposed).toContain(DOCUMENT_LIST_CONTINUATION_HEADERS.HasMore);
+    expect(exposed).toContain(DOCUMENT_LIST_CONTINUATION_HEADERS.NextOffset);
+  });
+
+  // ISS-10102: same contract for the artifact-link tree. Unexposed, a browser
+  // caller reads `null` from `headers.get(...)` with no error — indistinguishable
+  // from "this page is complete", which is the exact confusion these exist to end.
+  it("exposes the artifact-link continuation response headers", () => {
+    const exposed = getCorsHeaders(null)
+      ["Access-Control-Expose-Headers"].split(",")
+      .map((header) => header.trim().toLowerCase());
+
+    expect(exposed).toContain(ARTIFACT_LINK_CONTINUATION_HEADERS.HasMore);
+    expect(exposed).toContain(ARTIFACT_LINK_CONTINUATION_HEADERS.NextCursor);
+  });
+
   it("omits origin-specific headers when there is no origin", () => {
     const headers = getCorsHeaders(null);
     expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
@@ -37,6 +66,16 @@ describe("getCorsHeaders", () => {
     const allowed = allowedRequestHeaders(null);
     expect(allowed).toContain("traceparent");
     expect(allowed).toContain("tracestate");
+  });
+
+  // ISS-11929: posthog-js sends all three to the cl-api host together, so one
+  // missing name fails the preflight for every app→api request. Literals, not
+  // the shared constant: these are posthog-js's wire names, not ours.
+  it("advertises the PostHog session request headers", () => {
+    const allowed = allowedRequestHeaders(null);
+    expect(allowed).toContain("x-posthog-session-id");
+    expect(allowed).toContain("x-posthog-window-id");
+    expect(allowed).toContain("x-posthog-distinct-id");
   });
 
   it("grants Timing-Allow-Origin to a trusted origin so RUM sees resource timing", () => {

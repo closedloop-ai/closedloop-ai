@@ -5,6 +5,8 @@ import type {
   InsightsScope,
   UtilizationInsightsResponse,
 } from "@repo/api/src/types/insights";
+import type { SessionMeshInsights } from "@repo/api/src/types/session-mesh";
+import { resolveBrowserTimeZone } from "../../shared/lib/browser-time-zone";
 import type { InsightsDataSource } from "./insights-data-source";
 
 /**
@@ -19,6 +21,14 @@ export type InsightsReads = Pick<
   InsightsDataSource,
   "getDelivery" | "getUtilization" | "getAgents"
 >;
+
+export type SessionMeshInsightsRead = {
+  getSessionMeshInsights: (
+    scope: "me" | "org",
+    period: "7" | "30" | "90" | "all",
+    userId?: string
+  ) => Promise<SessionMeshInsights>;
+};
 
 /** The slice of the API client the HTTP insights reads need. */
 type InsightsHttpClient = {
@@ -51,6 +61,20 @@ export function createHttpInsightsReads(
   };
 }
 
+export function createHttpSessionMeshInsightsRead(
+  api: InsightsHttpClient
+): SessionMeshInsightsRead {
+  return {
+    getSessionMeshInsights: (scope, period, userId) => {
+      const params = new URLSearchParams({ period, scope });
+      if (scope === "me" && userId) {
+        params.set("userId", userId);
+      }
+      return api.get<SessionMeshInsights>(`/session-mesh/insights?${params}`);
+    },
+  };
+}
+
 export function insightsPath(
   section: string,
   period: InsightsPeriod,
@@ -70,12 +94,4 @@ export function insightsPath(
     params.set("timeZone", timeZone);
   }
   return `/insights/${section}?${params.toString()}`;
-}
-
-function resolveBrowserTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-  } catch {
-    return undefined;
-  }
 }

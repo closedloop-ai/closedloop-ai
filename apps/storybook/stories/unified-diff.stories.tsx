@@ -2,9 +2,9 @@ import { UnifiedDiff } from "@repo/design-system/components/ui/primitives/unifie
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Unified Diff",
+  title: "Primitives v1.0/Content/Unified Diff",
   component: UnifiedDiff,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     hunks: [

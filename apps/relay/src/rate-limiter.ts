@@ -1,11 +1,3 @@
-import { log } from "@repo/observability/log";
-
-let maxPerMinute = Number(process.env.TELEMETRY_RATE_LIMIT_PER_MINUTE ?? "60");
-if (!Number.isFinite(maxPerMinute) || maxPerMinute <= 0) {
-  log.warn("Invalid TELEMETRY_RATE_LIMIT_PER_MINUTE, defaulting to 60");
-  maxPerMinute = 60;
-}
-
 const WINDOW_MS = 60_000;
 
 type RateLimiter = {
@@ -58,14 +50,3 @@ export function createRateLimiter(
 
   return { isRateLimited, remove, prune };
 }
-
-const defaultRateLimiter = createRateLimiter(maxPerMinute);
-
-/**
- * Attempt to record an event for `key`.
- * Returns `true` if the event is rate-limited, `false` if allowed.
- */
-export const isRateLimited = defaultRateLimiter.isRateLimited;
-
-/** Clean up state for a disconnected key. */
-export const remove = defaultRateLimiter.remove;

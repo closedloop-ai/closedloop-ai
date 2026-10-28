@@ -15,13 +15,14 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import { test } from "vitest";
 import {
   buildMigrationFailureTelemetryError,
   DesktopMigrationError,
   MigrationRefusalKind,
+  migrationRefusalTelemetryMessage,
   userFacingMigrationRefusal,
 } from "../src/main/lifecycle/migration-refusal.js";
 import { sanitizeDesktopException } from "../src/shared/exception-sanitizer.js";
@@ -66,8 +67,8 @@ test("the stable telemetry error strips the migration name/checksum a raw refusa
   );
   assert.equal(
     message,
-    userFacingMigrationRefusal(MigrationRefusalKind.ChecksumDrift),
-    "the stable message is the fixed per-kind user-facing copy"
+    migrationRefusalTelemetryMessage(MigrationRefusalKind.ChecksumDrift),
+    "the stable message is the fixed per-kind telemetry message"
   );
   assert.equal(
     attributes[TelemetryAttribute.ExceptionType],
@@ -99,7 +100,77 @@ test("the stable projection message is fixed per refusal kind (low cardinality)"
   assert.equal(a.message, b.message);
   assert.equal(
     a.message,
-    userFacingMigrationRefusal(MigrationRefusalKind.Downgrade)
+    migrationRefusalTelemetryMessage(MigrationRefusalKind.Downgrade)
+  );
+});
+
+/**
+ * ISS-6339 — the field could not tell store CORRUPTION (checksum drift) from
+ * VERSION SKEW (history gap), because the telemetry projection reused the
+ * user-facing copy, which answers both with one sentence on purpose. The
+ * expectation changed here deliberately: the projection now carries its own
+ * per-kind message, and the shared user-facing sentence is unchanged.
+ */
+test("checksum drift and a history gap are distinguishable in telemetry", () => {
+  const drift = buildMigrationFailureTelemetryError(
+    new DesktopMigrationError(
+      MigrationRefusalKind.ChecksumDrift,
+      `checksum drift on ${MIGRATION_NAME}: expected ${CHECKSUM_FRAGMENT}`
+    )
+  );
+  const gap = buildMigrationFailureTelemetryError(
+    new DesktopMigrationError(
+      MigrationRefusalKind.HistoryGap,
+      `${MIGRATION_NAME} is applied locally but absent from this build`
+    )
+  );
+
+  assert.notEqual(
+    drift.message,
+    gap.message,
+    "corruption and version skew must not collapse to one telemetry message"
+  );
+  for (const [kind, stable] of [
+    [MigrationRefusalKind.ChecksumDrift, drift],
+    [MigrationRefusalKind.HistoryGap, gap],
+  ] as const) {
+    const attributes = sanitizeDesktopException({
+      error: stable,
+      origin: AppExceptionOrigin.Main,
+    });
+    const message = attributes[TelemetryAttribute.ExceptionMessage] ?? "";
+    assert.equal(message, migrationRefusalTelemetryMessage(kind));
+    assert.ok(
+      !(
+        message.includes(MIGRATION_NAME) || message.includes(CHECKSUM_FRAGMENT)
+      ),
+      "the split message must still carry no migration name or checksum"
+    );
+  }
+
+  // The USER-FACING copy stays shared — the two failures have one remedy, and
+  // changing what a user reads is not this issue's call to make.
+  assert.equal(
+    userFacingMigrationRefusal(MigrationRefusalKind.ChecksumDrift),
+    userFacingMigrationRefusal(MigrationRefusalKind.HistoryGap)
+  );
+});
+
+/**
+ * ISS-6339 — `Record<MigrationRefusalKind, string>` makes the map exhaustive
+ * over the enum, so a new kind cannot be forgotten. It does NOT stop a new kind
+ * being given a message another kind already uses, which is the exact collapse
+ * this issue was filed for — and the sibling catalog in the same module shares
+ * one sentence across two kinds, so a copy-the-neighbour edit lands on a
+ * duplicate. Assert the property over the WHOLE enum rather than one pair.
+ */
+test("every refusal kind has a telemetry message no other kind uses", () => {
+  const kinds = Object.values(MigrationRefusalKind);
+  const messages = kinds.map(migrationRefusalTelemetryMessage);
+  assert.equal(
+    new Set(messages).size,
+    kinds.length,
+    `two refusal kinds share a telemetry message: ${messages.join(" | ")}`
   );
 });
 

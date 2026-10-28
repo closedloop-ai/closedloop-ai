@@ -5,7 +5,7 @@
  * ISS-5375 — run the desktop `tsc` projects concurrently instead of chaining
  * them with `&&`.
  *
- * The five projects are independent (no `references`, no `composite`), so the
+ * The projects are independent (no `references`, no `composite`), so the
  * old serial chain paid the SUM of their runtimes for no correctness benefit.
  * Measured cold on the dev box: 75s summed against a 37s largest project.
  *
@@ -17,9 +17,9 @@
  * promoted out of the pnpm script silently stops running on all three. Keeping
  * one script that parallelizes internally gets the same wall-clock win with none
  * of that blast radius, and `desktop#typecheck` is already cacheable as a whole
- * (ISS-5370), so the residual gain from five separately-invalidated turbo tasks
- * is small — the projects overlap on all 64 files under `src/shared/`, so a
- * shared-code edit would invalidate several of them together anyway.
+ * (ISS-5370), so the residual gain from per-project turbo tasks is small — the
+ * projects overlap on all 64 files under `src/shared/`, so a shared-code edit
+ * would invalidate several of them together anyway.
  *
  * This file is ONLY the command: it binds the real inventory and the environment
  * to `runTypecheckPasses` and translates the aggregate into an exit code. It

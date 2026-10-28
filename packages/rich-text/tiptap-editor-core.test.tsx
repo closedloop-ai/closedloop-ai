@@ -7,7 +7,9 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { EditorProps } from "@tiptap/pm/view";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createEditorSelectionFixture } from "./__tests__/editor-selection-fixture";
 import { TiptapEditorCore } from "./tiptap-editor-core";
 
 const mocks = vi.hoisted(() => ({
@@ -69,12 +71,19 @@ vi.mock("@tiptap/markdown", () => ({
   Markdown: { configure: vi.fn(() => ({ name: "markdown" })) },
 }));
 
-vi.mock("./inline-image-extension", () => ({
-  InlineImageExtension: { configure: mocks.inlineImageConfigure },
-}));
+vi.mock("./inline-image-extension", async () => {
+  const { createContext } = await import("react");
+  return {
+    InlineImageExtension: {
+      configure: mocks.inlineImageConfigure,
+      name: "inlineImage",
+    },
+    InlineImageResolverContext: createContext<unknown>(undefined),
+  };
+});
 
 vi.mock("./mermaid-extension", () => ({
-  MermaidExtension: { configure: mocks.mermaidConfigure },
+  MermaidExtension: { configure: mocks.mermaidConfigure, name: "mermaid" },
 }));
 
 vi.mock("./inline-image-upload-placeholder", () => ({
@@ -121,6 +130,39 @@ beforeEach(() => {
 });
 
 describe("TiptapEditorCore", () => {
+  it.each([
+    { key: "b", mark: "bold" },
+    { key: "i", mark: "italic" },
+    { key: "u", mark: "underline" },
+  ])(
+    "wires native selection synchronization before the $mark shortcut",
+    ({ key, mark }) => {
+      render(
+        <TiptapEditorCore onChange={vi.fn()} value="Typed into the editor." />
+      );
+      const fixture = createEditorSelectionFixture({
+        handleKeyDown: getEditorOptions().editorProps.handleKeyDown,
+      });
+      try {
+        fixture.selectNative(0, 5);
+        expect(fixture.view.state.selection.to).toBe(5);
+        const event = new globalThis.KeyboardEvent("keydown", {
+          key,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        });
+        fixture.view.dom.dispatchEvent(event);
+        expect(fixture.view.state.selection.to).toBe(6);
+        expect(
+          fixture.view.state.doc.rangeHasMark(5, 6, fixture.schema.marks[mark])
+        ).toBe(true);
+        expect(event.defaultPrevented).toBe(true);
+      } finally {
+        fixture.destroy();
+      }
+    }
+  );
   it("configures the public editor defaults and forwards editor callbacks", () => {
     const onChange = vi.fn();
     const onEditorReady = vi.fn();
@@ -143,13 +185,15 @@ describe("TiptapEditorCore", () => {
       placeholder: "Start writing",
       showOnlyWhenEditable: false,
     });
-    expect(mocks.mermaidConfigure).toHaveBeenCalledWith({
-      enhancementsEnabled: false,
-    });
-    expect(mocks.inlineImageConfigure).toHaveBeenCalledWith({
-      enabled: false,
-      resolveInlineImages: undefined,
-    });
+    // The mermaid viewer is no longer flag-gated, so the extension is added
+    // unconfigured rather than handed an `enhancementsEnabled` option.
+    expect(mocks.mermaidConfigure).not.toHaveBeenCalled();
+    // ISS-9795: the resolver reaches node views through
+    // `InlineImageResolverContext`, not through extension options, so the
+    // extension is added unconfigured — nothing about it is fixed at
+    // construction any more. The DOM proof that the live value follows the host
+    // in both directions is `inline-image-attachment-ref-render.test.tsx`.
+    expect(mocks.inlineImageConfigure).not.toHaveBeenCalled();
 
     act(() => options.onCreate?.({ editor: mocks.editor! }));
     expect(onEditorReady).toHaveBeenCalledWith(mocks.editor);
@@ -234,6 +278,20 @@ describe("TiptapEditorCore", () => {
         liveblocksIsReady
         onChange={vi.fn()}
         value="# changed"
+      />
+    );
+
+    expect(mocks.setEditorMarkdown).not.toHaveBeenCalled();
+  });
+
+  it("never seeds an empty ready room when the service seeds it", () => {
+    render(
+      <TiptapEditorCore
+        liveblocksExtension={{ name: "docSyncCollaboration" } as never}
+        liveblocksIsReady
+        onChange={vi.fn()}
+        skipEmptyRoomSeed
+        value="# seed"
       />
     );
 
@@ -478,6 +536,7 @@ type EditorOptions = {
   contentType?: string;
   editable: boolean;
   editorProps: {
+    handleKeyDown: NonNullable<EditorProps["handleKeyDown"]>;
     handleDOMEvents: {
       drop: (view: unknown, event: TransferEvent) => boolean;
       paste: (view: unknown, event: TransferEvent) => boolean;

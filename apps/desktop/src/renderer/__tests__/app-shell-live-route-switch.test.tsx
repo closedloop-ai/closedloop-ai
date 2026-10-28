@@ -7,6 +7,8 @@ import {
   createDesktopNavigation,
   type DesktopNavigation,
 } from "../navigation/desktop-adapter";
+import { DesktopAppCoreProvider } from "../shared-agent-sessions/desktop-app-core-provider";
+import { setupReturningInstallStorage } from "./local-storage-fixture";
 
 /**
  * ISS-4772 (Step 1): a route change must update the RENDERED view immediately.
@@ -25,7 +27,7 @@ import {
 // read) before rendering the marker. Reset per test.
 const detailControls = vi.hoisted(() => ({
   suspendUntil: null as null | Promise<void>,
-  // ISS-4772 (wongk cid 3696061975): every sessionId the detail mock has
+  // ISS-4772 (whitlockk cid 3696061975): every sessionId the detail mock has
   // MOUNTED for, in order. React identity is the thing under test in the
   // remount case below, and a mount log is the only direct evidence of it — a
   // re-render with a new prop looks identical from the DOM.
@@ -38,9 +40,6 @@ vi.mock("../components/desktop-session-expired-banner", () => ({
 }));
 vi.mock("../components/desktop-sync-prompt", () => ({
   DesktopSyncPrompt: () => null,
-}));
-vi.mock("../components/first-launch-import-banner", () => ({
-  FirstLaunchImportBanner: () => null,
 }));
 vi.mock("../components/opt-in-distributions-banner", () => ({
   OptInDistributionsBanner: () => null,
@@ -64,6 +63,11 @@ vi.mock("../components/layout/mac-window-controls-underlay", () => ({
 // booleans for nav gating, irrelevant to routing. Stub the flag hook off.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
+  // ISS-9092: the shell now also mounts `UndoKeybindingLayer`, which reads the
+  // OPTIONAL variant from this same module. A partial mock naming only
+  // `useFeatureFlagEnabled` leaves that export `undefined` at every mount site
+  // below, so the whole suite fails on a hook this suite does not test.
+  useFeatureFlagEnabledOptional: () => false,
 }));
 
 // The list view is a light marker so this suite asserts routing, not the
@@ -143,8 +147,8 @@ function installStubs() {
           ready: true,
         })
       ),
-      getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
       getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
+      notifyRendererReady: vi.fn(),
       onDbChanged: vi.fn(() => () => undefined),
     },
   });
@@ -164,7 +168,11 @@ function renderShell(initialHash: string) {
   activeNavigations.add(navigation);
   return {
     navigation,
-    ...render(<DesktopNavigationApp navigation={navigation} />),
+    ...render(
+      <DesktopAppCoreProvider>
+        <DesktopNavigationApp navigation={navigation} />
+      </DesktopAppCoreProvider>
+    ),
   };
 }
 
@@ -180,6 +188,10 @@ async function navigateHash(hash: string): Promise<void> {
 }
 
 describe("App shell live-id route switch (ISS-4772)", () => {
+  // This suite asserts the app shell, so it must not launch as a first run:
+  // the guided onboarding modal covers the shell when no first-run key is stored.
+  setupReturningInstallStorage();
+
   beforeEach(() => {
     detailControls.suspendUntil = null;
     installStubs();
@@ -213,7 +225,7 @@ describe("App shell live-id route switch (ISS-4772)", () => {
   });
 
   it("REMOUNTS the detail view on a detail A -> B switch, rather than reusing the instance", async () => {
-    // ISS-4772 (wongk cid 3696061975) — the `key={detailSessionId}` guarantee.
+    // ISS-4772 (whitlockk cid 3696061975) — the `key={detailSessionId}` guarantee.
     //
     // Without the key React reuses the element at this tree position across the
     // two ids: only the `sessionId` prop and the query key change, never the

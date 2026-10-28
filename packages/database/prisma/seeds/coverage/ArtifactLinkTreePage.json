@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Pagination snapshot the link-tree read writes for itself; purged by the cleanup-artifact-link-tree-pages cron."
+}

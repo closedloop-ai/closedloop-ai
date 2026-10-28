@@ -3,7 +3,7 @@
  * migration `20260802180000_iss4778_backfill_phantom_command_components`.
  *
  * Runs the committed migration SQL verbatim against a REAL Postgres (the same
- * migrated database the CI `test` job provisions), inside a transaction that is
+ * migrated database the CI `test-shard` job provisions), inside a transaction that is
  * always rolled back, so the suite seeds its own fixture and leaves nothing
  * behind. Only a real database can prove the two things that matter here: that
  * the usage merge does not trip the
@@ -254,7 +254,7 @@ describe.skipIf(!DATABASE_URL)(
       expect(await readComponentIds(client)).toEqual(firstComponents);
     });
 
-    // wongk (PR #4247): the count merge must survive a re-run after a PARTIAL
+    // whitlockk (PR #4247): the count merge must survive a re-run after a PARTIAL
     // application. Deploy recovery marks a failed migration rolled back and
     // re-runs it, so summing the phantom's counts into the survivor in one
     // statement and deleting the phantom bucket in the NEXT one would add the
@@ -297,7 +297,7 @@ describe.skipIf(!DATABASE_URL)(
       ]);
     });
 
-    // wongk (PR #4247): a pre-existing skill bucket can legitimately carry a
+    // whitlockk (PR #4247): a pre-existing skill bucket can legitimately carry a
     // NULL `agent_component_id` (usage can be recorded before the inventory row
     // syncs). Deleting the phantom bucket would otherwise throw away the only
     // inventory link this session/branch had.
@@ -316,7 +316,7 @@ describe.skipIf(!DATABASE_URL)(
       expect(result.rows).toEqual([{ agent_component_id: SKILL_COMPONENT_ID }]);
     });
 
-    // wongk (PR #4247): picking the lowest component UUID does not resolve the
+    // whitlockk (PR #4247): picking the lowest component UUID does not resolve the
     // install scope. When the same skill key is installed at more than one scope
     // on one target the row does not identify WHICH install ran, so the repaired
     // rows must keep a NULL link rather than be permanently attributed to one.
@@ -352,7 +352,7 @@ describe.skipIf(!DATABASE_URL)(
       expect(usage.rows).toEqual([{ agent_component_id: null }]);
     });
 
-    // wongk (PR #4247): matching by (kind, key) rather than by the phantom link
+    // whitlockk (PR #4247): matching by (kind, key) rather than by the phantom link
     // converts a genuine RESOLVED `/review` command's rows too, whenever it
     // shares the key with an older unresolved shadow on the same target. An
     // unlinked row cannot prove which of the two it belongs to, so it is left.
@@ -441,8 +441,8 @@ async function seedFixture(client: Client): Promise<void> {
   await client.query(
     `INSERT INTO session_detail (
        artifact_id, compute_target_id, external_session_id,
-       session_started_at, session_updated_at, updated_at
-     ) VALUES ($1, $2, 'external-iss4778', $3, $3, $3)`,
+       session_started_at, session_updated_at, last_activity_at, updated_at
+     ) VALUES ($1, $2, 'external-iss4778', $3, $3, $3, $3)`,
     [SESSION_ID, TARGET_ID, AT]
   );
   await seedComponents(client);

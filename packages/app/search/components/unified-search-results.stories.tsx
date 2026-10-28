@@ -1,18 +1,18 @@
 import { DocumentType } from "@repo/api/src/types/document";
-import type { SearchHit } from "@repo/api/src/types/search";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
+import type { OfferedSearchHit } from "../lib/search-display";
 import { UnifiedSearchResults } from "./unified-search-results";
 
-const results: SearchHit[] = [
+const results: OfferedSearchHit[] = [
   {
     entityType: SearchEntityType.Document,
     entityId: "doc-1",
     entitySubtype: DocumentType.Prd,
     slug: "unified-search",
     title: "Unified search across artifacts",
-    snippet: "one ranked list for <b>search</b> across documents and loops",
+    snippet: "one ranked list for <b>search</b> across documents",
     rank: 0.92,
     updatedAt: new Date("2026-08-04T09:12:00.000Z"),
     deepLink: "/documents/doc-1",
@@ -28,21 +28,12 @@ const results: SearchHit[] = [
     updatedAt: new Date("2026-08-02T16:40:00.000Z"),
     deepLink: "/documents/doc-2",
   },
-  {
-    entityType: SearchEntityType.Loop,
-    entityId: "loop-1",
-    title: "Alpha search rollout loop",
-    snippet: "rolling out the <b>search</b> projection to the alpha org",
-    rank: 0.44,
-    updatedAt: new Date("2026-07-29T11:05:00.000Z"),
-    deepLink: "/loops/loop-1",
-  },
 ];
 
 const meta = {
-  title: "App Core/Search/Unified Search Results",
+  title: "Composites v1.0/Search/Unified Search Results",
   component: UnifiedSearchResults,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     results,

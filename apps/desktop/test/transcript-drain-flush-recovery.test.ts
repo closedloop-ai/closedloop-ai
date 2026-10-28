@@ -5,7 +5,8 @@
  * 1. IN-PROCESS recovery for a failed batch flush. When the coalesced
  *    `recordBatchSettled` rejects, every file in that batch is left `uploading`
  *    — a status `listReady` excludes — and the only thing that re-armed them
- *    (`requeueStale`) is boot-only. A transient blip therefore stranded a whole
+ *    (the sweep recovery) was boot-latched at the time. A transient blip
+ *    therefore stranded a whole
  *    batch of already-uploaded transcripts until the operator restarted the app.
  * 2. REAL-executor batch coverage. The ISS-4723 tests drove a fake executor that
  *    hand-invoked `settleCollector`; nothing exercised `makeSettleSink` or a
@@ -16,7 +17,7 @@
  * assertions are observable row transitions — not logs, not timing.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { TranscriptSettle } from "../src/main/database/transcript-sync-settle.js";
 import {
   createTranscriptSyncStore,
@@ -45,7 +46,7 @@ const NOW = "2026-07-09T00:00:00.000Z";
 const COMPUTE_TARGET = "ct-1";
 /** The simulated batch-flush failure this suite drives. */
 const FLUSH_FAILED = /flush failed/;
-/** Matches the drain-queue's `MAX_FLUSH_RECOVERY_ATTEMPTS`. */
+/** Matches `MAX_FLUSH_RECOVERY_ATTEMPTS` in `transcript-uploading-recovery.ts`. */
 const MAX_FLUSH_RECOVERY_ATTEMPTS = 3;
 
 function observeInput(
@@ -106,7 +107,7 @@ function batchingFakeExecutor(
       fp: TranscriptFingerprint,
       options?: TranscriptSyncFileOptions
     ): Promise<TranscriptSyncResult> {
-      await store.markUploading(fp.externalSessionId, fp.fileKey, NOW);
+      await store.markUploading(fp.externalSessionId, fp.fileKey, NOW, "ct-1");
       options?.settleCollector?.(makeSettle(fp));
       return { kind: "uploaded", caughtUp: true };
     },
@@ -144,6 +145,46 @@ test("ISS-4849: a REJECTED batch flush re-queues the stranded rows in-process (n
         `sess-${index} was re-armed in-process instead of stranded uploading`
       );
     }
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-8138: a rejected recovery preserves the original batch flush error", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    const store = createTranscriptSyncStore(prisma);
+    await store.observe(observeInput("sess-db-down"));
+    const flushError = new Error("flush failed");
+    const recoveryError = new Error("requeue failed");
+    const unavailableStore: TranscriptSyncStore = {
+      ...store,
+      recordBatchSettled: () => Promise.reject(flushError),
+      requeueUnsettledBatch: () => Promise.reject(recoveryError),
+    };
+    const drain = makeDrainQueue(
+      unavailableStore,
+      batchingFakeExecutor(unavailableStore, uploadedSettle),
+      1
+    );
+
+    await assert.rejects(
+      () => drain.drainOnce(),
+      (error) => {
+        assert.equal(
+          error,
+          flushError,
+          "the actionable flush failure must not be replaced by recovery"
+        );
+        return true;
+      }
+    );
+
+    assert.equal(
+      (await store.get("sess-db-down", "main"))?.status,
+      TranscriptSyncStatus.Uploading,
+      "a row whose recovery also failed stays in the state boot recovery expects"
+    );
   } finally {
     await close();
   }
@@ -242,7 +283,7 @@ test("ISS-4849: in-process recovery is BOUNDED — a persistently failing flush 
     assert.equal(
       row?.status,
       TranscriptSyncStatus.Uploading,
-      "past the cap the row is left uploading — exactly what requeueStale expects on boot"
+      "past the cap the row is left uploading — exactly what the sweep's lease reclaim picks up"
     );
   } finally {
     await close();
@@ -362,7 +403,7 @@ test("ISS-4849: a batch driven through the REAL executor collects its settle ins
   }
 });
 
-test("ISS-4849 (wongk review): an EMPTY overlapping flush does NOT reset the recovery budget", async () => {
+test("ISS-4849 (whitlockk review): an EMPTY overlapping flush does NOT reset the recovery budget", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     const store = createTranscriptSyncStore(prisma);
@@ -379,8 +420,14 @@ test("ISS-4849 (wongk review): an EMPTY overlapping flush does NOT reset the rec
         settles.length > 0
           ? Promise.reject(new Error("flush failed"))
           : store.recordBatchSettled(settles),
-      listReady: (now: string, limit: number) =>
-        emptyTick ? Promise.resolve([]) : store.listReady(now, limit),
+      listReady: (
+        now: string,
+        limit: number,
+        computeTargetId: string | null
+      ) =>
+        emptyTick
+          ? Promise.resolve([])
+          : store.listReady(now, limit, computeTargetId),
     };
     const drain = makeDrainQueue(
       flakyStore,
@@ -419,7 +466,7 @@ test("ISS-4849 (wongk review): an EMPTY overlapping flush does NOT reset the rec
     assert.equal(
       (await store.get("sess-0", "main"))?.status,
       TranscriptSyncStatus.Uploading,
-      "past the cap the row is left uploading — what requeueStale expects on boot"
+      "past the cap the row is left uploading — what the sweep's lease reclaim picks up"
     );
   } finally {
     await close();

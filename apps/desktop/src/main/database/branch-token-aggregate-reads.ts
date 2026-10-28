@@ -37,8 +37,9 @@ type BranchTokenAggregateRawRow = {
 type ActiveWriteLinkSql = (linkAlias: string, artifactAlias: string) => string;
 
 /**
- * Read all Desktop branch/model aggregates while keeping Product output and the
- * pre-publication attribution divisor under separate authorities.
+ * Read all Desktop branch/model aggregates while keeping Product output and
+ * the attribution divisor under separate authorities (both publication-gated
+ * since ISS-8148).
  */
 export function queryBranchTokenAggregateRows(
   prisma: DbHostPrisma,
@@ -63,8 +64,8 @@ export function queryBranchTokenAggregateRows(
 }
 
 /**
- * Read one Product-visible branch while retaining the global pre-publication
- * denominator used to attribute its shared Session cost.
+ * Read one Product-visible branch while retaining the global
+ * publication-gated denominator used to attribute its shared Session cost.
  */
 export function queryBranchTokenAggregateRowsForBranch(
   prisma: DbHostPrisma,
@@ -97,7 +98,6 @@ function branchTokenAggregateSql(
   visibleKeys?: readonly BranchTokenAggregateKey[],
   denominatorKeys?: readonly BranchTokenAggregateKey[]
 ): string {
-  const eligibilityCte = eligibilityCteSql(visibleKeys, denominatorKeys);
   const visibleArtifactSql = visibleKeys
     ? `AND EXISTS (
            SELECT 1 FROM visible_branches vb
@@ -121,7 +121,14 @@ function branchTokenAggregateSql(
     ? "ORDER BY t.model ASC"
     : "ORDER BY l.branch_name ASC, t.model ASC";
 
-  return `${eligibilityCte}
+  return `WITH ${branchTokenAggregateCtes({
+    activeWriteLinkSql,
+    denominatorArtifactSql,
+    scopeSql,
+    visibleArtifactSql,
+    visibleKeys,
+    denominatorKeys,
+  }).join(",\n")}
        SELECT
          l.repo_full_name AS repo_full_name,
          l.branch_name AS branch_name,
@@ -133,48 +140,10 @@ function branchTokenAggregateSql(
          SUM(t.cost_usd_estimated) AS raw_cost_usd_estimated,
          SUM(t.cost_usd_estimated / CAST(l.branch_count AS REAL)) AS cost_usd_estimated
        FROM token_usage t
-       JOIN (
-         SELECT d.session_id, d.repo_full_name, d.branch_name,
-                (SELECT COUNT(*) FROM (
-                   SELECT DISTINCT sal2.session_id, a2.repo_full_name, a2.branch_name
-                   FROM session_artifact_links sal2
-                   JOIN artifacts a2 ON a2.id = sal2.artifact_id AND a2.kind = 'branch'
-                   WHERE a2.branch_name IS NOT NULL AND sal2.session_id = d.session_id
-                     AND ${activeWriteLinkSql("sal2", "a2")}
-                     ${denominatorArtifactSql}
-                )) AS branch_count
-         FROM (
-           SELECT DISTINCT sal.session_id, a.repo_full_name, a.branch_name
-           FROM session_artifact_links sal
-           JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
-           WHERE ${scopeSql} ${activeWriteLinkSql("sal", "a")}
-             ${visibleArtifactSql}
-         ) d
-       ) l ON l.session_id = t.session_id
+       JOIN visible_session_branches_with_counts l
+         ON l.session_id = t.session_id
        GROUP BY l.repo_full_name, l.branch_name, t.model
        ${orderSql}`;
-}
-
-function eligibilityCteSql(
-  visibleKeys?: readonly BranchTokenAggregateKey[],
-  denominatorKeys?: readonly BranchTokenAggregateKey[]
-): string {
-  const ctes: string[] = [];
-  if (visibleKeys) {
-    ctes.push(`visible_branches AS (
-          SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
-                 json_extract(value, '$.branchName') AS branch_name
-          FROM json_each(?)
-        )`);
-  }
-  if (denominatorKeys) {
-    ctes.push(`denominator_branches AS (
-          SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
-                 json_extract(value, '$.branchName') AS branch_name
-          FROM json_each(?)
-        )`);
-  }
-  return ctes.length > 0 ? `WITH ${ctes.join(",\n")}` : "";
 }
 
 function serializeEligibilityParameters(
@@ -238,4 +207,64 @@ function branchEvenSplitTokenTextSql(
 
 function tokenCount(value: unknown, fieldName: string): number {
   return branchUsageTokenCount(value, fieldName);
+}
+
+function branchTokenAggregateCtes(input: {
+  activeWriteLinkSql: ActiveWriteLinkSql;
+  denominatorArtifactSql: string;
+  scopeSql: string;
+  visibleArtifactSql: string;
+  visibleKeys?: readonly BranchTokenAggregateKey[];
+  denominatorKeys?: readonly BranchTokenAggregateKey[];
+}): string[] {
+  const ctes: string[] = [];
+  if (input.visibleKeys) {
+    ctes.push(`visible_branches AS (
+          SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
+                 json_extract(value, '$.branchName') AS branch_name
+          FROM json_each(?)
+        )`);
+  }
+  if (input.denominatorKeys) {
+    ctes.push(`denominator_branches AS (
+          SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
+                 json_extract(value, '$.branchName') AS branch_name
+          FROM json_each(?)
+        )`);
+  }
+  ctes.push(
+    `visible_session_branches AS (
+          SELECT DISTINCT sal.session_id, a.repo_full_name, a.branch_name
+          FROM session_artifact_links sal
+          JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
+          WHERE ${input.scopeSql} ${input.activeWriteLinkSql("sal", "a")}
+            ${input.visibleArtifactSql}
+        )`,
+    `visible_sessions AS (
+          SELECT DISTINCT session_id FROM visible_session_branches
+        )`,
+    `denominator_session_branches AS (
+          SELECT DISTINCT sal2.session_id, a2.repo_full_name, a2.branch_name
+          FROM session_artifact_links sal2
+          JOIN visible_sessions visible
+            ON visible.session_id = sal2.session_id
+          JOIN artifacts a2 ON a2.id = sal2.artifact_id AND a2.kind = 'branch'
+          WHERE a2.branch_name IS NOT NULL
+            AND ${input.activeWriteLinkSql("sal2", "a2")}
+            ${input.denominatorArtifactSql}
+        )`,
+    `denominator_session_branch_counts AS (
+          SELECT session_id, COUNT(*) AS branch_count
+          FROM denominator_session_branches
+          GROUP BY session_id
+        )`,
+    `visible_session_branches_with_counts AS (
+          SELECT visible.session_id, visible.repo_full_name, visible.branch_name,
+                 COALESCE(counts.branch_count, 0) AS branch_count
+          FROM visible_session_branches visible
+          LEFT JOIN denominator_session_branch_counts counts
+            ON counts.session_id = visible.session_id
+        )`
+  );
+  return ctes;
 }

@@ -1,6 +1,6 @@
 /**
  * @file cloud-read-lane-applicability.ts
- * @description ISS-6206 (shafty023 review on #5050): why a sync lane is not
+ * @description ISS-6206 (davetho review on #5050): why a sync lane is not
  * applicable to this app's CONFIGURATION, as distinct from why it happens not to
  * be running at this instant.
  *
@@ -60,7 +60,7 @@ export type CloudReadLaneConfig = {
  * Why {@link lane} is not applicable under {@link config}, or `null` when it is
  * applicable — or when no configuration switch governs it.
  *
- * Four of the five lanes have no such switch: they are gated on identity,
+ * Every other lane has no such switch: they are gated on identity,
  * connectivity and org policy, all of which are live state that reopens. They
  * answer `null` by design, and that keeps a surface waiting on them.
  */

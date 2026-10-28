@@ -16,7 +16,8 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
  * - {@link Errored} — the read failed. Error chrome, and an action.
  * - {@link Syncing} — the local source has not hydrated yet. Deliberately NO
  *   error chrome and no Retry; nothing failed and there is nothing to retry.
- * - {@link Filtered} — rows exist, the filters exclude them. Offers the fix.
+ * - {@link Filtered} — rows exist, the filters exclude them. Offers the fix;
+ *   {@link FilteredByDateRange} when the window alone excludes them.
  * - {@link GenuinelyEmpty} / {@link OnboardingNoAgentConnected} — the scope
  *   really is empty, with the onboarding CTA only when the org has never
  *   connected a compute target.
@@ -27,9 +28,9 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
  * tone, because one is a breakage and the other is just not-yet.
  */
 const meta = {
-  title: "App Core/Agents/Sessions Empty State",
+  title: "Composites v1.0/Sessions/Sessions Empty State",
   component: SessionsEmptyState,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -84,6 +85,18 @@ export const Filtered: Story = {
   args: {
     signals: { isUnavailable: false, hasActiveFilters: true },
     onClearFilters: () => undefined,
+  },
+};
+
+/**
+ * ISS-11913: the date window alone hides sessions that exist, so the filtered
+ * empty names the window and offers "Show all time" — Branches' date-range
+ * empty with "sessions" for "branches".
+ */
+export const FilteredByDateRange: Story = {
+  args: {
+    signals: { isUnavailable: false, hasActiveFilters: true },
+    onShowAllTime: () => undefined,
   },
 };
 

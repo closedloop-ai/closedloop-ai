@@ -1,5 +1,7 @@
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import type { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { isTranscriptUploadPaused } from "@repo/app/agents/lib/session-sync-status";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import {
   Tooltip,
@@ -29,7 +31,12 @@ import {
  * - the session IS in the cloud and the last transcript upload FAILED
  *   ("Transcript sync failed"). #4150: the detail transcript panel shows this row
  *   as a destructive "Transcript upload failed" with a Retry, so the list must not
- *   reuse the in-flight "syncs automatically" copy and tell the user to relax.
+ *   reuse the in-flight "syncs automatically" copy and tell the user to relax;
+ * - the session IS in the cloud and the desktop's transcript lane STOPPED
+ *   attempting because its environment was unavailable ("Transcript upload
+ *   paused", ISS-9884). Same disposition as the row above and a different
+ *   fact: nothing failed and nothing is retrying, so both of the other two
+ *   sentences would be false.
  *
  * The producer distinguishes them: it publishes `transcriptDisposition` only
  * when the row itself is in the cloud, so an in-flight/failed transcript verdict
@@ -50,6 +57,7 @@ export const CloudSyncDisclosure = {
   LocalOnly: "localOnly",
   TranscriptSyncing: "transcriptSyncing",
   TranscriptFailedTransient: "transcriptFailedTransient",
+  TranscriptUploadPaused: "transcriptUploadPaused",
 } as const;
 export type CloudSyncDisclosure =
   (typeof CloudSyncDisclosure)[keyof typeof CloudSyncDisclosure];
@@ -103,6 +111,20 @@ const DISCLOSURE_COPY: Record<CloudSyncDisclosure, CloudSyncDisclosureCopy> = {
     tooltip:
       "This session is in the cloud, but the last transcript upload failed. It retries automatically.",
   },
+  [CloudSyncDisclosure.TranscriptUploadPaused]: {
+    // ISS-9884. The arm above is the re-queued-with-backoff producer and its
+    // "It retries automatically" is a promise; an environmental give-up has
+    // stopped attempting, so making that promise about it is the exact lie this
+    // ticket exists to end. Label matches the detail panel's "Transcript upload
+    // paused" title for the same state so the chip, the Sync row and the panel
+    // do not read as three states for one fact.
+    label: "Transcript upload paused",
+    ariaLabel:
+      "Transcript upload paused, the session is in the cloud but its transcript archive is unavailable so the upload stopped.",
+    // Says what resumes it without promising a retry that is not scheduled.
+    tooltip:
+      "This session is in the cloud, but its transcript archive isn't available, so the upload stopped. It resumes automatically once that's restored.",
+  },
 };
 
 export type CloudSyncStateBadgeProps = {
@@ -119,19 +141,32 @@ export type CloudSyncStateBadgeProps = {
    * "Local only" wording, which is the safe reading when the gap is unknown.
    */
   transcriptDisposition?: TranscriptDisposition;
+  /**
+   * ISS-9884: the terminal skip reason behind that verdict, when its producer
+   * computed one. Only the `failedTransient` + `environment_unavailable` PAIR
+   * means "paused"; a producer that omits it keeps the pre-ISS-9884 copy, which
+   * is the safe reading when the cause is unknown.
+   */
+  transcriptDispositionReason?: TranscriptSkipReason;
   className?: string;
 };
 
 export function CloudSyncStateBadge({
   cloudSyncState,
   transcriptDisposition,
+  transcriptDispositionReason,
   className,
 }: CloudSyncStateBadgeProps) {
   if (cloudSyncState !== AgentSessionCloudSyncState.Pending) {
     return null;
   }
   const copy =
-    DISCLOSURE_COPY[resolveCloudSyncDisclosure(transcriptDisposition)];
+    DISCLOSURE_COPY[
+      resolveCloudSyncDisclosure(
+        transcriptDisposition,
+        transcriptDispositionReason
+      )
+    ];
 
   return (
     <Tooltip>
@@ -163,6 +198,11 @@ export function CloudSyncStateBadge({
  *   failed" with a Retry, so a list chip claiming "syncs automatically" told the
  *   user to relax while the detail told them to act. This copy admits the failure
  *   while noting the retry.
+ * - `failedTransient` WITH `environment_unavailable` (ISS-9884) ⇒ "Transcript
+ *   upload paused". Same disposition, different producer: the lane gave up on
+ *   the environment and is not retrying, so the arm above would promise a
+ *   retry that is not scheduled. Checked BEFORE the switch, which keys on the
+ *   disposition and cannot separate the two producers.
  *
  * Every other value — a settled verdict, or none at all (the desktop-outbox case
  * or a version-skewed producer that omits the field) — falls back to the broader
@@ -170,17 +210,27 @@ export function CloudSyncStateBadge({
  * is unknown.
  *
  * `reconcileCloudSyncState` and this switch read the SAME `TranscriptDisposition`
- * const. #4150 (wongk): the settled members are spelled out and the `default`
+ * const. #4150 (whitlockk): the settled members are spelled out and the `default`
  * is a `never`-checked fallback for runtime-unknown strings ONLY — so a NEWLY
  * added "behind" disposition fails typecheck here (it is not in the `case`
  * arms) rather than silently compiling into "Local only" while
  * `reconcileCloudSyncState` reports `pending`. The two cannot drift.
  */
 export function resolveCloudSyncDisclosure(
-  transcriptDisposition: TranscriptDisposition | undefined
+  transcriptDisposition: TranscriptDisposition | undefined,
+  transcriptDispositionReason?: TranscriptSkipReason
 ): CloudSyncDisclosure {
   if (transcriptDisposition === undefined) {
     return CloudSyncDisclosure.LocalOnly;
+  }
+  // ISS-9884: the paused PAIR is resolved before the disposition switch,
+  // because `failedTransient` is reached by two different producers and the
+  // switch below can only see one of them. Read from the SSOT predicate the
+  // list label uses rather than re-deriving the pair here.
+  if (
+    isTranscriptUploadPaused(transcriptDisposition, transcriptDispositionReason)
+  ) {
+    return CloudSyncDisclosure.TranscriptUploadPaused;
   }
   switch (transcriptDisposition) {
     case TranscriptDisposition.Syncing:

@@ -9,7 +9,10 @@ import {
   TranscriptBytesTransportProvider,
 } from "../../../data-source/transcript-bytes-transport";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
-import { SessionTranscriptPanel } from "../session-transcript-panel";
+import {
+  SessionTranscriptPanel,
+  TRANSCRIPT_RETRY_LABEL,
+} from "../session-transcript-panel";
 import { TranscriptForceArchiveAction } from "../transcript-force-archive-action";
 
 /**
@@ -258,7 +261,7 @@ describe("SessionTranscriptPanel force-archive (FEA-3489)", () => {
 
   it("the terminal force action wins over the local oversized 'Load full transcript' gate", async () => {
     stubBytes();
-    // wongk review: on the production transport the local `.jsonl` for a
+    // whitlockk review: on the production transport the local `.jsonl` for a
     // too-large-for-cloud transcript is still on disk and over the 25 MiB
     // auto-load cap, so `resolveFetchUrl` resolves `oversized`. That would show
     // "Load full transcript" (a LOCAL-only render) and pre-empt the force action
@@ -437,7 +440,6 @@ describe("SessionTranscriptPanel force-archive (FEA-3489)", () => {
 });
 
 const STILL_SYNCING_TITLE = "Transcript still syncing";
-const RETRY_BUTTON_NAME = /retry/i;
 const MATERIALIZED_UNAVAILABLE_NOTICE =
   /source wasn.t ready when it was last archived/i;
 
@@ -487,7 +489,11 @@ describe("SessionTranscriptPanel materialized-source-unavailable (ISS-4695 item 
       screen.getByText(MATERIALIZED_UNAVAILABLE_NOTICE)
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
+      screen.queryByRole("button", { name: isRetryButtonName })
     ).not.toBeInTheDocument();
   });
 });
+
+function isRetryButtonName(name: string): boolean {
+  return name.toLowerCase().includes(TRANSCRIPT_RETRY_LABEL.toLowerCase());
+}

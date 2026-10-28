@@ -34,10 +34,8 @@ const PROJECT_RELATIVE_HINTS = ["--directory .", "--directory=.", " -C ."];
  *
  * Must cover EVERY harness the catalog can list, or an `auto` install of a pack
  * that only lists the missing ones reports `ENOCLI` on a machine that in fact
- * has the CLI. `closedloop-web-command-pack` lists `cursor` and `opencode`
- * alongside `claude`/`codex` in `catalog-seed.json`, so all four are mapped —
- * the same harness-to-binary pairing `command-pack-factory.ts` already uses for
- * its adapters.
+ * has the CLI. The catalog harness set includes `cursor` and `opencode`
+ * alongside `claude`/`codex`, so all four are mapped.
  *
  * NULL-PROTOTYPE (ISS-5248), as hardening rather than a live fix: both callers
  * pass a seed-derived name (`entry.harnesses`, or `withCommand` derived from it),

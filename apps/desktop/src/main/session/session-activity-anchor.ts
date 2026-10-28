@@ -1,5 +1,5 @@
 /**
- * ISS-6270 (wongk, #5111): the ONE timestamp projection behind a Local Sessions
+ * ISS-6270 (whitlockk, #5111): the ONE timestamp projection behind a Local Sessions
  * row — the activity instant `mapListItem` actually SERVES, and therefore the
  * only anchor a main-process consumer may fold a displayed status against.
  *
@@ -38,5 +38,12 @@ import { parseSessionDate } from "./session-instant.js";
 export function servedSessionActivityAt(
   session: Pick<SyncedAgentSession, "lastActivityAt" | "startedAt">
 ): Date {
-  return parseSessionDate(session.lastActivityAt ?? session.startedAt);
+  return parseSessionDate(servedSessionActivityRawAt(session));
+}
+
+/** The unfloored string {@link servedSessionActivityAt} parses. */
+function servedSessionActivityRawAt(
+  session: Pick<SyncedAgentSession, "lastActivityAt" | "startedAt">
+): string {
+  return session.lastActivityAt ?? session.startedAt;
 }

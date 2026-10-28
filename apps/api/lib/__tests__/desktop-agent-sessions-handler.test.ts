@@ -18,9 +18,7 @@ import {
   SessionTracePhaseSourceType,
   SessionTraceThrottleSourceType,
 } from "@repo/lib/session-trace/derivation";
-import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TokenEventTransportIdentityCollisionError } from "../desktop-agent-sessions-errors";
 import {
   DesktopAgentSessionsRateLimiter,
   handleDesktopAgentSessionsEvent,
@@ -29,20 +27,9 @@ import { parseDesktopAgentSessionsPayload } from "../desktop-agent-sessions-sche
 import {
   desktopAgentSessionsHandlerContext as baseContext,
   upsertBatchMock,
+  validationFailedAck,
   validDesktopAgentSessionsPayload as validPayload,
 } from "./desktop-agent-sessions-handler-fixtures";
-
-// ISS-5090: the ingest ack now carries an optional, value-free field/path
-// `detail` so the desktop can log WHY a payload was rejected. Built here so the
-// expected shape (including its ABSENCE for a detail-less rejection) is stated
-// once instead of re-spelled at every assertion.
-function validationFailedAck(detail?: string) {
-  return {
-    accepted: false,
-    reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    ...(detail ? { detail } : {}),
-  };
-}
 
 const { mockEmitTelemetryMetric, mockLog } = vi.hoisted(() => ({
   mockEmitTelemetryMetric: vi.fn(),
@@ -80,59 +67,10 @@ describe("handleDesktopAgentSessionsEvent", () => {
         },
         baseContext,
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch: upsertBatchMock(),
         }
       )
     ).resolves.toEqual(validationFailedAck("session_count_mismatch"));
-  });
-
-  it("returns feature_disabled when server sync support is off", async () => {
-    await expect(
-      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => false,
-        isOrgPolicyEnabled: async () => true,
-        upsertBatch: upsertBatchMock(),
-      })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-  });
-
-  it("FEA-4169: denies ingest when the org session-sync policy is OFF, without persisting", async () => {
-    const upsertBatch = upsertBatchMock();
-    // The org policy gate runs BEFORE the per-user feature flag: even with the
-    // feature flag ON, a policy-off org must be rejected and never persisted.
-    await expect(
-      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => false,
-        upsertBatch,
-      })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-    expect(upsertBatch).not.toHaveBeenCalled();
-    // Telemetry reason stays in lockstep with the ack reason.
-    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "agent_sessions.sync.failed",
-        reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-      })
-    );
-  });
-
-  it("FEA-4169: passes the authenticated org id to the org-policy gate", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => true);
-    await handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-      isFeatureEnabled: async () => true,
-      isOrgPolicyEnabled,
-      upsertBatch: upsertBatchMock(),
-    });
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(baseContext.organizationId);
   });
 
   it("upserts accepted batches", async () => {
@@ -140,8 +78,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -151,9 +87,9 @@ describe("handleDesktopAgentSessionsEvent", () => {
         organizationId: "org-1",
         userId: "user-1",
         computeTargetId: "target-1",
-        gatewaySessionId: "session-1",
       },
-      validPayload
+      validPayload,
+      undefined
     );
     expect(mockEmitTelemetryMetric).not.toHaveBeenCalled();
   });
@@ -179,8 +115,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -209,8 +143,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payloadWithIgnoredFields, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -221,60 +153,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
     expect(syncedSession).not.toHaveProperty("userId");
   });
 
-  it("returns ingestion_failed for ingestion failures", async () => {
-    await expect(
-      handleDesktopAgentSessionsEvent(
-        validPayload,
-        { ...baseContext, relaySocketId: "relay-1" },
-        {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
-          upsertBatch: () => Promise.reject(new Error("db down")),
-        }
-      )
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    });
-    // The failure telemetry reason must stay in lockstep with the ack reason so
-    // dashboards that join the two on `reason` don't drift (FEA-2847).
-    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "agent_sessions.sync.failed",
-        reason: DesktopAgentSessionsAckReason.IngestionFailed,
-      })
-    );
-    // FEA-2917: the ingestion-failure error log must carry the gateway session
-    // identifiers so an operator can pivot from this Datadog error back to the
-    // originating gateway session.
-    expect(mockLog.error).toHaveBeenCalledWith(
-      "Desktop agent sessions ingestion failed",
-      expect.objectContaining({
-        gatewaySessionIdHash: redactGatewaySessionId("session-1"),
-        relaySocketId: "relay-1",
-      })
-    );
-  });
-
-  it("returns validation_failed for a deterministic token transport collision", async () => {
-    await expect(
-      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
-        upsertBatch: () =>
-          Promise.reject(new TokenEventTransportIdentityCollisionError()),
-      })
-    ).resolves.toEqual(validationFailedAck());
-
-    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "agent_sessions.sync.failed",
-        reason: DesktopAgentSessionsAckReason.ValidationFailed,
-      })
-    );
-    expect(mockLog.error).not.toHaveBeenCalled();
-  });
-
   it("rate limits overly chatty targets", async () => {
     const rateLimiter = new DesktopAgentSessionsRateLimiter();
     const upsertBatch = upsertBatchMock();
@@ -282,8 +160,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
     for (let index = 0; index < 120; index += 1) {
       await expect(
         handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch,
           rateLimiter,
           now: () => 0,
@@ -293,8 +169,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
         rateLimiter,
         now: () => 0,
@@ -340,8 +214,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(dirtyPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -359,25 +231,21 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
   it("FEA-2258: rejects a session whose required id collapses to empty after NUL stripping", async () => {
     const upsertBatch = upsertBatchMock();
-    const payload = {
-      ...validPayload,
-      sessions: [
-        {
-          ...validPayload.sessions[0],
-          externalSessionId: String.fromCharCode(0),
-        },
-      ],
+    const nulIdSession = {
+      ...validPayload.sessions[0],
+      externalSessionId: String.fromCharCode(0),
     };
+    const payload = { ...validPayload, sessions: [nulIdSession] };
 
     // Sanitize-before-validate: "\0" strips to "" and fails the required
     // min(1), so the batch is rejected rather than persisted with an empty key.
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
-    ).resolves.toEqual(validationFailedAck("session_invalid"));
+    ).resolves.toEqual(
+      validationFailedAck("session_invalid:sessions[0].externalSessionId")
+    );
     expect(upsertBatch).not.toHaveBeenCalled();
   });
 
@@ -409,8 +277,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual(validationFailedAck("payload_nested_too_deeply"));
@@ -487,7 +353,6 @@ describe("parseDesktopAgentSessionsPayload — sanitized-key collisions (FEA-269
               type: "main",
               subagentType: null,
               status: "active",
-              task: null,
               currentTool: null,
               startedAt: "2026-05-20T17:00:00.000Z",
               updatedAt: "2026-05-20T17:05:00.000Z",
@@ -611,19 +476,10 @@ describe("parseDesktopAgentSessionsPayload — activitySegmentRows (FEA-3568)", 
     ).toBe(false);
   });
 
-  it("rejects a tiling past the MAX_SYNCED_ACTIVITY_SEGMENTS cap", () => {
-    const overflow = Array.from(
-      { length: MAX_SYNCED_ACTIVITY_SEGMENTS + 1 },
-      (_unused, index) => ({
-        ...segment,
-        startMs: index * 10,
-        endMs: index * 10 + 5,
-      })
-    );
-    expect(parseDesktopAgentSessionsPayload(withSegments(overflow)).ok).toBe(
-      false
-    );
-  });
+  // ISS-8051 deleted the companion "rejects a tiling past the cap" case with the
+  // contract it tested: the cloud no longer bounds `activitySegmentRows`, so
+  // there is no rejection left to assert. Acceptance past the cap is covered in
+  // `desktop-agent-sessions-array-cardinality-schema.test.ts`.
 
   // FEA-3779: the raised cap must cover observed p95+ so a real ~1051-segment
   // session syncs its FULL tiling instead of being truncated to the first 500.
@@ -710,21 +566,11 @@ describe("parseDesktopAgentSessionsPayload — deviceTimeZone (FEA-1459)", () =>
     expect(result.ok).toBe(true);
   });
 
-  it("rejects wrong schema versions and unknown sync modes", () => {
+  it("rejects unknown schema versions and unknown sync modes", () => {
     expect(
       parseDesktopAgentSessionsPayload({
         ...validPayload,
         schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION + 1,
-      }).ok
-    ).toBe(false);
-
-    // FEA-2718 (PLN-1294): the pre-bump schema version (1) is now rejected, so a
-    // stale desktop that has not updated to the slim contract cannot sync — the
-    // deploy skew is loud and immediate rather than silently accepted.
-    expect(
-      parseDesktopAgentSessionsPayload({
-        ...validPayload,
-        schemaVersion: 1,
       }).ok
     ).toBe(false);
 
@@ -781,20 +627,6 @@ describe("parseDesktopAgentSessionsPayload — deviceTimeZone (FEA-1459)", () =>
         {
           ...validPayload.sessions[0],
           deviceTimeZone: "",
-        },
-      ],
-    };
-    const result = parseDesktopAgentSessionsPayload(payload);
-    expect(result.ok).toBe(false);
-  });
-
-  it("rejects deviceTimeZone longer than 64 characters", () => {
-    const payload = {
-      ...validPayload,
-      sessions: [
-        {
-          ...validPayload.sessions[0],
-          deviceTimeZone: "A".repeat(65),
         },
       ],
     };
@@ -893,9 +725,9 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
   };
 
   const validPrRef = {
-    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     prNumber: 42,
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     relationType: SessionPrRelationType.Created,
   };
 
@@ -975,7 +807,7 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
   it("parses a branch-kind artifactRef end-to-end (FEA-2729)", () => {
     const branchRef = {
       kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       branchName: "feat/x",
       method: ArtifactRefMethod.GitCommand,
       relation: "created",
@@ -1003,7 +835,7 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
             // A future/unknown kind must not fail the whole payload.
             {
               kind: "some_future_kind",
-              repositoryFullName: "closedloop-ai/symphony-alpha",
+              repositoryFullName: "closedloop-ai/closedloop-ai",
               sha: "abc123",
               method: ArtifactRefMethod.GitCommand,
               relation: "created",
@@ -1024,7 +856,7 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
   it("keeps a well-formed commit-kind artifactRef (FEA-2731 — commit is now a known kind)", () => {
     const commitRef = {
       kind: "commit",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       branchName: "feat/x",
       sha: "1a2b3c4",
       method: ArtifactRefMethod.GitCommand,
@@ -1071,26 +903,11 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
     }
   });
 
-  // ISS-4448+4449: the RAW-array cap is now MAX_SYNCED_ARTIFACT_REFS (500),
-  // raised from 100. An array over the cap still rejects even when padded with
-  // unknown kinds — the raw length is bounded before unknown-kind entries are
-  // dropped, so a client can't smuggle an oversized array past `.max()`.
-  it("rejects an oversized raw artifactRefs array even when padded with unknown kinds (FEA-2729)", () => {
-    const oversized = Array.from(
-      { length: MAX_SYNCED_ARTIFACT_REFS + 1 },
-      () => ({
-        kind: "some_future_kind",
-        repositoryFullName: "acme/web",
-        sha: "abc",
-      })
-    );
-    const payload = {
-      ...validPayload,
-      sessions: [{ ...validPayload.sessions[0], artifactRefs: oversized }],
-    };
-    const result = parseDesktopAgentSessionsPayload(payload);
-    expect(result.ok).toBe(false);
-  });
+  // ISS-8051 deleted the companion "rejects an oversized raw artifactRefs array
+  // even when padded with unknown kinds" case, and the smuggling guard it tested,
+  // with the `.max()` they both existed to serve. An over-length all-unknown-kind
+  // array now takes the no-op path asserted directly above (undefined, never an
+  // explicit `[]`), which is the behavior that actually protects existing links.
 
   // ISS-4448+4449: an array AT the raised cap (500) must be accepted. This is the
   // boundary the cap raise exists to admit — a payload the old 100-cap rejected.
@@ -1179,26 +996,9 @@ describe("parseDesktopAgentSessionsPayload — Session Trace source arrays", () 
     }
   });
 
-  it("rejects source arrays over the max and invalid dates", () => {
-    expect(
-      parseDesktopAgentSessionsPayload({
-        ...validPayload,
-        sessions: [
-          {
-            ...validPayload.sessions[0],
-            tracePhaseSources: Array.from(
-              { length: DERIVATION_SOURCE_LIMITS.phaseSources + 1 },
-              () => ({
-                sourceType: SessionTracePhaseSourceType.Explicit,
-                phaseKey: "implement",
-                startedAt: "2026-05-20T17:01:00.000Z",
-              })
-            ),
-          },
-        ],
-      }).ok
-    ).toBe(false);
-
+  // ISS-8051 removed the over-the-max half of this case with the cardinality
+  // bound it asserted; the invalid-date half is a live contract and stays.
+  it("rejects an invalid date on a trace source", () => {
     expect(
       parseDesktopAgentSessionsPayload({
         ...validPayload,
@@ -1232,7 +1032,6 @@ describe("parseDesktopAgentSessionsPayload — Session Trace source arrays", () 
               type: "main",
               subagentType: null,
               status: "active",
-              task: null,
               currentTool: null,
               startedAt: "2026-05-20T17:00:00.000Z",
               updatedAt: "2026-05-20T17:05:00.000Z",
@@ -1310,7 +1109,11 @@ describe("parseDesktopAgentSessionsPayload — Session Trace source arrays", () 
     });
   });
 
-  it("accepts derived phases and phaseLoopbacks up to the phaseSources limit (FEA-2563)", () => {
+  // FEA-2563 raised this bound from 50 after a phase-cycling session dropped a
+  // whole batch; ISS-8051 removed it entirely, so the over-the-limit rejection
+  // this case used to also assert is gone. What survives is the half that still
+  // holds and is worth pinning: a hundred phases and loopbacks round-trip intact.
+  it("carries a hundred derived phases and phaseLoopbacks through intact (FEA-2563)", () => {
     const phase = (index: number) => ({
       key: `phase-${index}`,
       label: `Phase ${index}`,
@@ -1343,18 +1146,6 @@ describe("parseDesktopAgentSessionsPayload — Session Trace source arrays", () 
       expect(okResult.payload.sessions[0]?.phases).toHaveLength(limit);
       expect(okResult.payload.sessions[0]?.phaseLoopbacks).toHaveLength(limit);
     }
-
-    expect(
-      parseDesktopAgentSessionsPayload({
-        ...validPayload,
-        sessions: [
-          {
-            ...validPayload.sessions[0],
-            phases: Array.from({ length: limit + 1 }, (_, i) => phase(i)),
-          },
-        ],
-      }).ok
-    ).toBe(false);
   });
 
   it("applies source payload bounds per session instead of per batch", () => {
@@ -1422,57 +1213,5 @@ describe("Session Trace contract literal guard", () => {
         expect(source).not.toContain(`kind: "${value}"`);
       }
     }
-  });
-});
-
-describe("sync round-trip — sanitize → JSON stringify → parse (FEA-1684 AC 48)", () => {
-  const artifactRef = {
-    kind: ArtifactRefTargetKind.ClosedloopArtifact,
-    slug: "FEA-1684",
-    isPrimary: true,
-    method: ArtifactRefMethod.SlugInBranch,
-  };
-
-  const prRef = {
-    repositoryFullName: "closedloop-ai/symphony-alpha",
-    prNumber: 7,
-    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/7",
-    relationType: SessionPrRelationType.Referenced,
-  };
-
-  const payloadWithRefs = {
-    ...validPayload,
-    sessions: [
-      {
-        ...validPayload.sessions[0],
-        artifactRefs: [artifactRef],
-        prRefs: [prRef],
-      },
-    ],
-  };
-
-  it("session with refs survives JSON stringify → parse → Zod validation (AC 48)", () => {
-    const serialized = JSON.stringify(payloadWithRefs);
-    const deserialized: unknown = JSON.parse(serialized);
-    const result = parseDesktopAgentSessionsPayload(deserialized);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.payload.sessions[0].artifactRefs).toEqual([artifactRef]);
-      expect(result.payload.sessions[0].prRefs).toEqual([prRef]);
-    }
-  });
-
-  it("sanitize spread preserves artifactRefs and prRefs (AC 43)", () => {
-    // The sanitizeSessionForSync function uses {...session, agents: ..., events: ...}
-    // which must preserve all other top-level fields including artifactRefs and prRefs.
-    // Verify that a spread that overrides agents and events does not drop the refs fields.
-    const session = payloadWithRefs.sessions[0];
-    const sanitized = {
-      ...session,
-      agents: [],
-      events: [],
-    };
-    expect(sanitized.artifactRefs).toEqual([artifactRef]);
-    expect(sanitized.prRefs).toEqual([prRef]);
   });
 });

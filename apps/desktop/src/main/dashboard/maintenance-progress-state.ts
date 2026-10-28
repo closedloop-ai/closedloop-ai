@@ -106,7 +106,7 @@ export function createMaintenanceProgressState(
       if (!isActive(generation) || progress.phase !== phase) {
         return;
       }
-      // shafty023 review: a report the producer cannot substantiate — a zero or
+      // davetho review: a report the producer cannot substantiate — a zero or
       // negative population, a fractional or non-finite count, or a numerator
       // that outruns its denominator — is REJECTED to the indeterminate state,
       // never coerced into a believable one. Clamping `101/100` to `100/100`

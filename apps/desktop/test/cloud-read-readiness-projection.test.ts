@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   buildCloudReadReadinessProjectorDeps,
   createCloudReadReadinessProjector,
@@ -18,7 +18,7 @@ import {
 } from "./helpers/sync-burndown-fixtures.js";
 
 /**
- * ISS-6206 (wongk review on #5050): the projection reads THIS app's settings.
+ * ISS-6206 (whitlockk review on #5050): the projection reads THIS app's settings.
  *
  * `ipc-registration-wiring.test.ts` can only assert the shape of the call —
  * importing the composition root boots Electron — so binding the literal `false`
@@ -116,11 +116,14 @@ describe("createCloudReadReadinessProjector — the settings answer is real", ()
 
   it("carries the import gate through rather than assuming it complete", () => {
     for (const isImportComplete of [true, false]) {
-      const snapshot = createCloudReadReadinessProjector({
-        isImportComplete: () => isImportComplete,
-        getLatestSnapshot: stoppedTranscriptSample,
-        getTranscriptSyncEnabled: () => true,
-      })();
+      // Annotated because `isImportComplete` shadows the getter it feeds, which
+      // is enough to send the object literal's inference circular.
+      const snapshot: CloudReadReadinessSnapshot =
+        createCloudReadReadinessProjector({
+          isImportComplete: () => isImportComplete,
+          getLatestSnapshot: stoppedTranscriptSample,
+          getTranscriptSyncEnabled: () => true,
+        })();
       assert.equal(snapshot.importComplete, isImportComplete);
     }
   });

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { IssueStatus } from "@repo/api/src/types/document";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ArtifactType } from "../../generated/enums";
 import type { TransactionClient } from "../../index";
-import {
-  type ProjectionRow,
-  toSearchBackfillClient,
-} from "../../scripts/backfill-search-documents";
+import { toSearchBackfillClient } from "../../scripts/backfill-search-documents";
+import type { ProjectionRow } from "../../scripts/search-backfill-types";
 import {
   type EphemeralDbContext,
   setupEphemeralDb,
@@ -219,6 +219,60 @@ describe.skipIf(!process.env.DATABASE_URL)(
     it("short-circuits an empty page without touching the database", async () => {
       // Guards against emitting `VALUES ()`, which is a syntax error.
       await expect(client.upsertProjectionRows([])).resolves.toBe(0);
+    });
+
+    // ISS-9938: a status write that commits between the sweep's page read and
+    // this write has already been copied onto the row by its trigger (or found
+    // no row), so the page's status is stale by the time it is written.
+    it("writes a document's current source status, not the page's", async () => {
+      const documentId = randomUUID();
+      await ctx.prisma.$executeRawUnsafe(
+        `INSERT INTO artifacts (id, organization_id, type, name, status, created_at, updated_at)
+         VALUES ($1::uuid, $2::uuid, $3::"ArtifactType", 'iss9938 upsert', $4, now(), now())`,
+        documentId,
+        ctx.organizationId,
+        ArtifactType.DOCUMENT,
+        IssueStatus.Done
+      );
+      const page = [
+        row({
+          organizationId: ctx.organizationId,
+          entityType: SearchEntityType.Document,
+          entityId: documentId,
+          status: IssueStatus.InProgress,
+        }),
+      ];
+
+      try {
+        // Insert, then the conflict update: both must take the source's value.
+        await client.upsertProjectionRows(page);
+        expect(await readStatus()).toBe(IssueStatus.Done);
+        await client.upsertProjectionRows(page);
+        expect(await readStatus()).toBe(IssueStatus.Done);
+      } finally {
+        await ctx.prisma.$executeRawUnsafe(
+          'DELETE FROM "search_document" WHERE "organization_id" = $1::uuid AND "entity_id" = $2::uuid',
+          ctx.organizationId,
+          documentId
+        );
+        await ctx.prisma.$executeRawUnsafe(
+          'DELETE FROM "artifacts" WHERE "id" = $1::uuid',
+          documentId
+        );
+      }
+
+      async function readStatus() {
+        const rows = await ctx.prisma.$queryRawUnsafe<
+          { status: string | null }[]
+        >(
+          `SELECT "status" FROM "search_document"
+            WHERE "organization_id" = $1::uuid AND "entity_type" = $2 AND "entity_id" = $3::uuid`,
+          ctx.organizationId,
+          SearchEntityType.Document,
+          documentId
+        );
+        return rows[0]?.status;
+      }
     });
   }
 );

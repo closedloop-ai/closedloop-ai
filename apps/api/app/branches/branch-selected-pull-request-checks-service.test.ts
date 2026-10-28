@@ -1,16 +1,5 @@
-import {
-  type BranchPageDetail,
-  BranchStatus,
-} from "@repo/api/src/types/branch";
-import {
-  BranchAssociatedPullRequestCompletenessState,
-  BranchAssociatedPullRequestProvenance,
-  BranchAssociatedPullRequestSelectionReason,
-} from "@repo/api/src/types/branch-associated-pull-request";
-import {
-  ChecksStatus,
-  ReviewDecision,
-} from "@repo/api/src/types/branch-checks";
+import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import { ReviewDecision } from "@repo/api/src/types/branch-checks";
 import {
   BranchSelectedPullRequestChecksAvailability,
   BranchSelectedPullRequestChecksSummary,
@@ -24,13 +13,12 @@ import {
   SelectedPullRequestChecksCompleteness,
   type SelectedPullRequestChecksEvidence,
   SelectedPullRequestChecksHistoryMode,
-  SelectedPullRequestChecksPartialReason,
 } from "@repo/api/src/types/selected-pull-request-checks-evidence";
 import {
   SelectedPullRequestEvidenceAvailability,
   SelectedPullRequestEvidenceUnavailableReason,
 } from "@repo/api/src/types/selected-pull-request-evidence";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   artifactFindFirst: vi.fn(),
@@ -65,7 +53,7 @@ import { branchSelectedPullRequestChecksService } from "./branch-selected-pull-r
 const BRANCH_ID = "11111111-1111-4111-8111-111111111111";
 const ORGANIZATION_ID = "22222222-2222-4222-8222-222222222222";
 const USER_ID = "33333333-3333-4333-8333-333333333333";
-const REPOSITORY_FULL_NAME = "closedloop-ai/symphony-alpha";
+const REPOSITORY_FULL_NAME = "closedloop-ai/closedloop-ai";
 const PULL_REQUEST_NUMBER = 4394;
 const OCTOKIT = { marker: "octokit" };
 
@@ -102,7 +90,7 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
           id: BRANCH_ID,
           organizationId: ORGANIZATION_ID,
           type: "BRANCH",
-          branch: { deletedAt: null },
+          branch: { isNot: null },
         },
       })
     );
@@ -110,14 +98,14 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
       {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
-        target: { owner: "closedloop-ai", repo: "symphony-alpha" },
+        target: { owner: "closedloop-ai", repo: "closedloop-ai" },
       },
       expect.any(Function)
     );
     expect(mocks.getChecksEvidence).toHaveBeenCalledWith(
       OCTOKIT,
       "closedloop-ai",
-      "symphony-alpha",
+      "closedloop-ai",
       PULL_REQUEST_NUMBER,
       {
         signal: controller.signal,
@@ -126,17 +114,10 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
     );
     expect(result).toEqual(
       expect.objectContaining({
-        response: expect.objectContaining({
-          status: BranchSelectedPullRequestChecksAvailability.Available,
-          value: expect.objectContaining({
-            summary: BranchSelectedPullRequestChecksSummary.Successful,
-          }),
+        status: BranchSelectedPullRequestChecksAvailability.Available,
+        value: expect.objectContaining({
+          summary: BranchSelectedPullRequestChecksSummary.Successful,
         }),
-        legacy: {
-          checksStatus: ChecksStatus.Passing,
-          checksPassed: 28,
-          checksTotal: 28,
-        },
       })
     );
   });
@@ -162,12 +143,9 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
         expectedSelection()
       )
     ).resolves.toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-        reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
-      },
-      legacy: { checksStatus: null, checksPassed: null, checksTotal: null },
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
     });
     expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
   });
@@ -187,6 +165,104 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
     expect(mocks.getChecksEvidence).not.toHaveBeenCalled();
   });
 
+  it("fails closed when Product eligibility disappears during context hydration", async () => {
+    mocks.branchHasCloudEligibility
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
+    expect(mocks.getChecksEvidence).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Product eligibility is revoked after stale context projection", async () => {
+    const row = branchRow();
+    const selected = row.pullRequestDetails[0];
+    if (!selected) {
+      throw new Error("Expected selected PR fixture");
+    }
+    row.pullRequestDetails[0] = {
+      ...selected,
+      headRefOid: "c".repeat(40),
+    };
+    mocks.artifactFindFirst.mockResolvedValueOnce(row);
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after checks provider success", async () => {
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getChecksEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after checks access failure", async () => {
+    mocks.runBranchViewRead.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        reason: GitHubAccessDenialReason.RateLimited,
+        retryAfterSeconds: 20,
+      },
+    });
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.runBranchViewRead).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after checks evidence failure", async () => {
+    mocks.getChecksEvidence.mockResolvedValueOnce({
+      status: SelectedPullRequestEvidenceAvailability.Unavailable,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
+    });
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getChecksEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
   it("pins checks to persisted PR head when the Branch head differs", async () => {
     const row = branchRow();
     row.branch.headSha = "b".repeat(40);
@@ -198,7 +274,7 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
       BRANCH_ID,
       expectedSelection()
     );
-    expect(result?.response.status).toBe(
+    expect(result?.status).toBe(
       BranchSelectedPullRequestChecksAvailability.Available
     );
     expect(mocks.runBranchViewRead).toHaveBeenCalledTimes(1);
@@ -220,13 +296,10 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
         expectedSelection()
       )
     ).resolves.toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Access,
-        reason: GitHubAccessDenialReason.RateLimited,
-        retryAfterSeconds: 20,
-      },
-      legacy: { checksStatus: null, checksPassed: null, checksTotal: null },
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Access,
+      reason: GitHubAccessDenialReason.RateLimited,
+      retryAfterSeconds: 20,
     });
 
     mocks.getChecksEvidence.mockResolvedValueOnce({
@@ -241,12 +314,9 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
         expectedSelection()
       )
     ).resolves.toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-        reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
-      },
-      legacy: { checksStatus: null, checksPassed: null, checksTotal: null },
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
     });
   });
 
@@ -264,14 +334,36 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
     );
 
     expect(result).toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-        reason: SelectedPullRequestEvidenceUnavailableReason.MalformedResponse,
-      },
-      legacy: { checksStatus: null, checksPassed: null, checksTotal: null },
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.MalformedResponse,
     });
   });
+
+  it.each([`${REPOSITORY_FULL_NAME}/extra`, "closedloop-ai"])(
+    "does not match the structurally invalid identity %s onto its first two segments (ISS-7548)",
+    async (repositoryFullName) => {
+      // The row and the expected selection agree on the name, so the identity
+      // comparison passes and the parse is what rejects. Truncating
+      // `owner/repo/extra` to `owner/repo` would read a DIFFERENT repository's
+      // check runs and report them as this branch's.
+      mocks.artifactFindFirst.mockResolvedValueOnce(
+        branchRow(repositoryFullName)
+      );
+
+      const result = await branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection(repositoryFullName)
+      );
+
+      expect(result?.status).toBe(
+        BranchSelectedPullRequestChecksAvailability.Unavailable
+      );
+      expect(mocks.getChecksEvidence).not.toHaveBeenCalled();
+    }
+  );
 
   it("classifies provider evidence for a changed selected head as stale", async () => {
     mocks.getChecksEvidence.mockResolvedValueOnce({
@@ -287,56 +379,20 @@ describe("branchSelectedPullRequestChecksService.getChecks", () => {
     );
 
     expect(result).toEqual({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Unavailable,
-        source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
-        reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
-      },
-      legacy: { checksStatus: null, checksPassed: null, checksTotal: null },
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
     });
   });
 });
 
-describe("branchSelectedPullRequestChecksService.enrichBranchDetail", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
+describe("branchSelectedPullRequestChecksService.enrichBranchDetail (ISS-12278)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.artifactFindFirst.mockResolvedValue(branchRow());
-    mocks.branchHasCloudEligibility.mockResolvedValue(true);
-    mocks.getChecksEvidence.mockResolvedValue({
-      status: SelectedPullRequestEvidenceAvailability.Available,
-      value: checksEvidence(),
-    });
-    mocks.runBranchViewRead.mockImplementation(
-      async (
-        _input: unknown,
-        read: (octokit: unknown) => Promise<unknown>
-      ) => ({ ok: true, value: await read(OCTOKIT) })
-    );
   });
 
-  it("replaces persisted null/28 with complete selected-PR evidence", async () => {
-    const result =
-      await branchSelectedPullRequestChecksService.enrichBranchDetail(
-        ORGANIZATION_ID,
-        USER_ID,
-        branchDetail()
-      );
-
-    expect(result.checksStatus).toBe(ChecksStatus.Passing);
-    expect(result.checksPassed).toBe(28);
-    expect(result.checksTotal).toBe(28);
-    expect(result.selectedPullRequestChecks?.status).toBe(
-      BranchSelectedPullRequestChecksAvailability.Available
-    );
-  });
-
-  it("clears persisted legacy counts without reading GitHub when selection is unavailable", async () => {
-    const detail = branchDetail();
-    detail.associatedPullRequests = undefined;
+  it("returns a detail that names no selected PR unchanged, without reads", async () => {
+    const detail = { id: BRANCH_ID } as BranchPageDetail;
 
     const result =
       await branchSelectedPullRequestChecksService.enrichBranchDetail(
@@ -345,99 +401,106 @@ describe("branchSelectedPullRequestChecksService.enrichBranchDetail", () => {
         detail
       );
 
-    expect(result).toEqual({
-      ...detail,
-      checksStatus: null,
-      checksPassed: null,
-      checksTotal: null,
-    });
-    expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
-  });
-
-  it("keeps partial evidence additive and clears legacy counts", async () => {
-    mocks.getChecksEvidence.mockResolvedValueOnce({
-      status: SelectedPullRequestEvidenceAvailability.Available,
-      value: {
-        ...checksEvidence(),
-        coverage: {
-          completeness: SelectedPullRequestChecksCompleteness.Partial,
-          reasons: [SelectedPullRequestChecksPartialReason.CountMismatch],
-        },
-      },
-    });
-
-    const result =
-      await branchSelectedPullRequestChecksService.enrichBranchDetail(
-        ORGANIZATION_ID,
-        USER_ID,
-        branchDetail()
-      );
-
-    expect(result.checksStatus).toBeNull();
-    expect(result.checksPassed).toBeNull();
-    expect(result.checksTotal).toBeNull();
-    expect(result.selectedPullRequestChecks?.status).toBe(
-      BranchSelectedPullRequestChecksAvailability.Available
-    );
-  });
-
-  it("rejects available evidence that fails the attach-time selected identity check", async () => {
-    vi.spyOn(
-      branchSelectedPullRequestChecksService,
-      "getChecks"
-    ).mockResolvedValueOnce({
-      response: {
-        status: BranchSelectedPullRequestChecksAvailability.Available,
-        value: {
-          ...checksEvidence({ number: PULL_REQUEST_NUMBER + 1 }),
-          summary: BranchSelectedPullRequestChecksSummary.Successful,
-        },
-      },
-      legacy: {
-        checksStatus: ChecksStatus.Passing,
-        checksPassed: 28,
-        checksTotal: 28,
-      },
-    });
-
-    const result =
-      await branchSelectedPullRequestChecksService.enrichBranchDetail(
-        ORGANIZATION_ID,
-        USER_ID,
-        branchDetail()
-      );
-
-    expect(result.checksStatus).toBeNull();
-    expect(result.checksPassed).toBeNull();
-    expect(result.checksTotal).toBeNull();
-    expect(result.selectedPullRequestChecks).toBeUndefined();
+    expect(result).toBe(detail);
+    expect(mocks.artifactFindFirst).not.toHaveBeenCalled();
+    expect(mocks.getChecksEvidence).not.toHaveBeenCalled();
   });
 });
 
-function expectedSelection() {
+describe("branchSelectedPullRequestChecksService.getChecks provider failure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.artifactFindFirst.mockResolvedValue(branchRow());
+    mocks.branchHasCloudEligibility.mockResolvedValue(true);
+  });
+
+  it("answers typed provider-failure evidence when acquisition throws", async () => {
+    mocks.runBranchViewRead.mockRejectedValueOnce(
+      new Error("credential acquisition failed")
+    );
+
+    const result = await branchSelectedPullRequestChecksService.getChecks(
+      ORGANIZATION_ID,
+      USER_ID,
+      BRANCH_ID,
+      expectedSelection()
+    );
+
+    expect(result).toEqual({
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
+    });
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("still fails closed after acquisition throws", async () => {
+    mocks.runBranchViewRead.mockRejectedValueOnce(
+      new Error("credential acquisition failed")
+    );
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection()
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("rethrows an acquisition failure once the caller aborted", async () => {
+    const controller = new AbortController();
+    const failure = new Error("aborted");
+    mocks.runBranchViewRead.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(failure);
+    });
+
+    await expect(
+      branchSelectedPullRequestChecksService.getChecks(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        expectedSelection(),
+        controller.signal
+      )
+    ).rejects.toBe(failure);
+  });
+});
+
+function mockFinalEligibilityRevoked(): void {
+  mocks.branchHasCloudEligibility
+    .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(false);
+}
+
+function expectedSelection(repositoryFullName = REPOSITORY_FULL_NAME) {
   return {
     headSha: "a".repeat(40),
-    repositoryFullName: REPOSITORY_FULL_NAME,
+    repositoryFullName,
     pullRequestNumber: PULL_REQUEST_NUMBER,
   };
 }
 
-function branchRow() {
+function branchRow(repositoryFullName = REPOSITORY_FULL_NAME) {
   return {
     id: BRANCH_ID,
     organizationId: ORGANIZATION_ID,
     branch: {
       headSha: "a".repeat(40),
       repositoryId: "repository-id",
-      repositoryFullName: REPOSITORY_FULL_NAME,
-      repository: { fullName: REPOSITORY_FULL_NAME },
+      repositoryFullName,
+      repository: { fullName: repositoryFullName },
     },
     pullRequestDetails: [
       {
         branchArtifactId: BRANCH_ID,
         repositoryId: "repository-id",
-        repositoryFullName: REPOSITORY_FULL_NAME,
-        repository: { fullName: REPOSITORY_FULL_NAME },
+        repositoryFullName,
+        repository: { fullName: repositoryFullName },
         number: PULL_REQUEST_NUMBER,
         title: "Selected PR",
         htmlUrl: `https://github.com/${REPOSITORY_FULL_NAME}/pull/${PULL_REQUEST_NUMBER}`,
@@ -493,90 +556,5 @@ function checksEvidence(
       completeness: SelectedPullRequestChecksCompleteness.Complete,
       reasons: [],
     },
-  };
-}
-
-function branchDetail(): BranchPageDetail {
-  return {
-    id: BRANCH_ID,
-    artifactId: BRANCH_ID,
-    branchName: "feature/selected-pr-checks",
-    baseBranch: "main",
-    repoFullName: REPOSITORY_FULL_NAME,
-    owner: "user",
-    status: BranchStatus.Open,
-    prNumber: PULL_REQUEST_NUMBER,
-    prTitle: "Selected PR",
-    prState: GitHubPRState.Open,
-    prUrl: `https://github.com/${REPOSITORY_FULL_NAME}/pull/${PULL_REQUEST_NUMBER}`,
-    multiPrWarning: false,
-    checksStatus: null,
-    checksPassed: null,
-    checksTotal: 28,
-    reviewDecision: null,
-    ahead: null,
-    behind: null,
-    additions: null,
-    deletions: null,
-    filesChanged: null,
-    estimatedCostUsd: null,
-    lastActivityAt: "2026-08-04T00:00:00.000Z",
-    sessionIds: [],
-    associatedPullRequests: {
-      items: [
-        {
-          id: `${REPOSITORY_FULL_NAME}#${PULL_REQUEST_NUMBER}`,
-          repositoryFullName: REPOSITORY_FULL_NAME,
-          number: PULL_REQUEST_NUMBER,
-          title: "Selected PR",
-          url: `https://github.com/${REPOSITORY_FULL_NAME}/pull/${PULL_REQUEST_NUMBER}`,
-          state: GitHubPRState.Open,
-          isDraft: false,
-          reviewDecision: null,
-          openedAt: null,
-          closedAt: null,
-          mergedAt: null,
-        },
-      ],
-      selectedId: `${REPOSITORY_FULL_NAME}#${PULL_REQUEST_NUMBER}`,
-      selectionReason: BranchAssociatedPullRequestSelectionReason.Active,
-      completeness: {
-        state: BranchAssociatedPullRequestCompletenessState.Complete,
-        reasons: [],
-        provenance: BranchAssociatedPullRequestProvenance.PersistedCloud,
-      },
-    },
-    selectedPullRequest: {
-      id: `${REPOSITORY_FULL_NAME}#${PULL_REQUEST_NUMBER}`,
-      repositoryFullName: REPOSITORY_FULL_NAME,
-      number: PULL_REQUEST_NUMBER,
-      title: "Selected PR",
-      url: `https://github.com/${REPOSITORY_FULL_NAME}/pull/${PULL_REQUEST_NUMBER}`,
-      state: GitHubPRState.Open,
-      isDraft: false,
-      reviewDecision: null,
-      openedAt: null,
-      closedAt: null,
-      mergedAt: null,
-      body: null,
-      headRefOid: "a".repeat(40),
-      mergeCommitSha: null,
-      changedFiles: null,
-      additions: null,
-      deletions: null,
-    },
-    prBody: null,
-    prBodyHtmlUrl: null,
-    headSha: "a".repeat(40),
-    mergeCommitSha: null,
-    mergedAt: null,
-    closedAt: null,
-    openedAt: null,
-    commits: [],
-    sessions: [],
-    mergedTrace: [],
-    leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
-    linkedPrNumbers: [PULL_REQUEST_NUMBER],
-    linkedArtifacts: [],
   };
 }

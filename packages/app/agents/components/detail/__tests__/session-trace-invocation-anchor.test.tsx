@@ -1,7 +1,8 @@
 import { AgentComponentInvocationAnchorKind } from "@repo/api/src/types/agent-component-invocation";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import { SessionTrace } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 const mockUseOrganizationUsers = vi.fn();
 

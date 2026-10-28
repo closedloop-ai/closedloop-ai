@@ -14,34 +14,27 @@
  * The split is by AST, not text scan (multi-line imports, and the repo's
  * no-raw-text-source-scan gate). A module is Vitest-eligible when ALL hold:
  *
- *   1. every specifier it imports from `node:test` is one the Vitest shim
- *      re-implements (`test`/`it`/`describe`/`before`/`after`/`beforeEach`/
- *      `afterEach`, plus the default export, which node:test defines as `test`);
- *      a NAMESPACE import is not, because a namespace object's members are the
- *      module's export set, so rule 2 cannot tell `nodeTest.mock` from
- *      `nodeTest.describe`;
- *   2. none of its test callbacks take the node:test `TestContext` parameter
- *      (`t.after`, `t.diagnostic`, `t.mock`), which Vitest's context does not
- *      implement, and it reads no property off a node:test import that the shim
- *      does not hang there;
- *   3. it does not install a Node ESM loader hook (see
+ *   1. it imports nothing from `node:test`. Suites import `vitest` directly
+ *      (ISS-11262 converted the tree and retired the alias shim that let
+ *      node:test's lifecycle names run under Vitest), so a node:test import
+ *      now means the file needs the real `tsx --test` runner;
+ *   2. it does not install a Node ESM loader hook (see
  *      {@link installsLoaderHook}); and
- *   4. it is not in {@link VITEST_INCOMPATIBLE_FILES}, the short, reasoned list
+ *   3. it is not in {@link VITEST_INCOMPATIBLE_FILES}, the short, reasoned list
  *      of files that depend on `tsx --test`'s RUNTIME rather than on
- *      node:test's API, including suites whose production imports the outer c8
- *      lane cannot attribute through Vitest's transformed fork runtime.
+ *      node:test's API.
  *
  * A test file must ALSO import no `test/` helper that fails those same rules —
  * the golden suites' `describe`/`it` live in `test/golden/*.ts`, not in the
  * `.test.ts` files, so a rule reading only the test file's own imports would
  * pass judgement on nothing at all for nine of them.
  *
- * ISS-4934 converted rules 1 and 2 away — the `mock`/`mock.timers` files and
- * the TestContext users — and took the legacy lane from 144 files to 14. Rules 3
- * and 4 are facts about the two RUNNERS rather than about the tests, so the lane
- * SHRANK but did not disappear, and the two `VITEST_INCOMPATIBLE_FILES` entries
- * mean it never will. What is left besides those two is the loader-hook helper's
- * importers plus five files held back by the file-size ratchet (ISS-6258).
+ * Rules 1 and 2 route no file today. What the legacy lane runs is exactly the
+ * {@link VITEST_INCOMPATIBLE_FILES} entries, which need `tsx --test`'s
+ * runtime, so it never disappears. `node-test-census.test.ts` ratchets its
+ * size so the rules cannot refill it unnoticed, and the repo-wide
+ * `no-node-test-import` source gate rejects a new node:test import anywhere
+ * else.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -57,60 +50,15 @@ const desktopDir = dirname(
 export const TEST_DIR = join(desktopDir, "test");
 
 /**
- * Run separately (`test:prisma-baseline`) rather than in this suite: Linux Node
- * can hit a native V8 allocator check after this WASM-heavy test has already
- * passed (observed on 24.16.0).
- */
-export const EXCLUDED_TEST_FILES = new Set([
-  "prisma-baseline-equivalence.test.ts",
-]);
-
-/**
- * `import test from "node:test"` — the shim exports a default too (ISS-4934).
+ * Files another script runs, deliberately not collected here. Each entry must
+ * name that script — an excluded file with no runner is a file nobody executes.
  *
- * Not a member of {@link SHIMMED_NODE_TEST_SPECIFIERS} because that set is
- * asserted equal to the shim's NAMED export set, and `default` is not one.
+ * - `no-token-surface-dist.test.ts` → `test:dist-token-surface`, run by the
+ *   `desktop-build` job right after `Build desktop` (ISS-6367). It REQUIRES
+ *   `apps/desktop/dist`, and no lane that runs this suite compiles one since
+ *   `desktop-node` / `desktop-renderer` moved to `build:prereqs`.
  */
-export const DEFAULT_IMPORT_SPECIFIER = "<default>";
-
-/**
- * `import * as nodeTest from "node:test"` — still disqualifying. Unlike a
- * default binding, whose members the unshimmed-property rule can enumerate, a
- * namespace object's shape IS the module's export set, so `nodeTest.mock` is
- * indistinguishable from a legitimate `nodeTest.describe`.
- */
-export const NAMESPACE_IMPORT_SPECIFIER = "<namespace>";
-
-/**
- * Named exports of `node:test` that `test/support/node-test-vitest-shim.ts`
- * provides. Keep the two in lockstep — `node-test-census.test.ts` asserts it.
- */
-export const SHIMMED_NODE_TEST_SPECIFIERS = new Set([
-  "after",
-  "afterEach",
-  "before",
-  "beforeEach",
-  "describe",
-  "it",
-  "test",
-]);
-
-/**
- * Properties the shim hangs off `test`/`describe` (`test.skip`, `test.after`).
- *
- * Checked as well as the import specifiers so an unrecognised one routes the
- * file to the node:test lane DETERMINISTICALLY. Without this the file would
- * still fail loudly — `TypeError: test.foo is not a function` — but it would
- * fail as a red gate on someone else's PR rather than quietly staying on the
- * runner that supports it.
- */
-export const SHIMMED_NODE_TEST_PROPERTIES = new Set([
-  "after",
-  "afterEach",
-  "before",
-  "beforeEach",
-  "skip",
-]);
+export const EXCLUDED_TEST_FILES = new Set(["no-token-surface-dist.test.ts"]);
 
 /**
  * Glob metacharacters. `vitest.node.config.ts` feeds the Vitest set to
@@ -126,9 +74,10 @@ export const GLOB_METACHARACTERS = /[*?[\]{}()!+@]/;
 const TS_EXTENSION = /\.ts$/;
 
 /**
- * Files that depend on `tsx --test`'s RUNTIME, not on node:test's API, and so
- * cannot be routed by any rule about imports. Each entry is a specific,
- * verified incompatibility with a reason — never "this one failed, park it".
+ * Files that cannot be routed by any rule about imports, because what they
+ * depend on is not an import: they need `tsx --test`'s RUNTIME rather than
+ * node:test's API. Each entry is a specific, verified incompatibility with a
+ * reason, never "this one failed, park it".
  *
  * `node-test-census.test.ts` asserts every entry still exists on disk, so a
  * deleted or renamed file cannot leave a silent no-op sitting here.
@@ -139,20 +88,8 @@ export const VITEST_INCOMPATIBLE_FILES = new Map([
     "Spawns test/agent-sync-poll-timer-lifecycle-child.ts as a real child process to prove the poll timer does not keep one alive. Under `tsx --test` that child inherits tsx's loader and can resolve the suite's extensionless `.js` specifiers; a Vitest worker has no such loader to pass on, so the child dies with ERR_MODULE_NOT_FOUND before it can demonstrate anything.",
   ],
   [
-    "db-host-fire-and-forget.test.ts",
-    "The suite passes under Vitest, but the outer c8 node-coverage lane records no execution for db-host-fire-and-forget.ts through Vitest's transformed fork. Running the same node:test suite through tsx credits the production module, so it must stay on that pool for the required coverage census.",
-  ],
-  [
-    "deep-link-protocol.test.ts",
-    "The suite passes under Vitest, but the outer c8 node-coverage lane records no execution for lifecycle/deep-link.ts through Vitest's transformed fork. Running the same node:test suite through tsx credits the production module, so it must stay on that pool for the required coverage census.",
-  ],
-  [
     "exception-sanitizer.test.ts",
     "Asserts on the frame format of a REAL V8 stack (ISS-6229: that every parenthesised frame location is redacted). Vitest rewrites stacks through its source maps, so the string under test is the runner's rendering rather than V8's, and the case stops describing the behaviour it was written for. The fixture-driven half of that corpus lives in exception-sanitizer-redaction.test.ts and runs fine under Vitest.",
-  ],
-  [
-    "shared-branches-canonical-last-active.test.ts",
-    "This production-path suite owns the Desktop canonical Last-active coverage contract. The outer c8 lane cannot attribute its main-process imports through Vitest's transformed fork, so routing it through tsx --test keeps the measured production branches attached to the assertions that exercise them.",
   ],
 ]);
 
@@ -175,162 +112,11 @@ function isNodeTestImport(statement) {
 }
 
 /**
- * @param {ts.ImportClause} clause
- * @param {Set<string>} specifiers
- * @param {Set<string>} localNames
- */
-function collectClause(clause, specifiers, localNames) {
-  if (clause.name !== undefined) {
-    // `import test from "node:test"` — node:test's default export is `test`,
-    // and the shim exports it. Its `.mock` is reachable, but so is the named
-    // export's, and `reachesPastShim` reads property accesses off BOTH.
-    specifiers.add(DEFAULT_IMPORT_SPECIFIER);
-    localNames.add(clause.name.text);
-  }
-  const bindings = clause.namedBindings;
-  if (bindings === undefined) {
-    return;
-  }
-  if (ts.isNamespaceImport(bindings)) {
-    specifiers.add(NAMESPACE_IMPORT_SPECIFIER);
-    localNames.add(bindings.name.text);
-    return;
-  }
-  for (const element of bindings.elements) {
-    specifiers.add((element.propertyName ?? element.name).text);
-    localNames.add(element.name.text);
-  }
-}
-
-/**
  * @param {ts.SourceFile} sourceFile
- * @returns {{ specifiers: Set<string>, localNames: Set<string> } | null} `null` when the file does not import `node:test`.
+ * @returns {boolean} True when the module imports anything from `node:test`.
  */
-function readNodeTestImports(sourceFile) {
-  /** @type {Set<string>} */
-  const specifiers = new Set();
-  /** @type {Set<string>} */
-  const localNames = new Set();
-  let found = false;
-  for (const statement of sourceFile.statements) {
-    if (!isNodeTestImport(statement)) {
-      continue;
-    }
-    found = true;
-    if (statement.importClause !== undefined) {
-      collectClause(statement.importClause, specifiers, localNames);
-    }
-  }
-  return found ? { specifiers, localNames } : null;
-}
-
-/**
- * True when the file reaches past what the shim implements, either by
- *
- *  - calling a node:test import with a callback that declares a parameter —
- *    node:test's `TestContext`, whose `t.after`/`t.diagnostic`/`t.mock` have no
- *    Vitest equivalent — or
- *  - reading a property off one that the shim does not hang there.
- *
- * @param {ts.SourceFile} sourceFile
- * @param {Set<string>} localNames
- * @returns {boolean}
- */
-function reachesPastShim(sourceFile, localNames) {
-  let found = false;
-  /** @param {ts.Node} node */
-  const visit = (node) => {
-    if (found) {
-      return;
-    }
-    if (
-      readsUnshimmedProperty(node, localNames) ||
-      reachesOpaquely(node, localNames) ||
-      passesTestContext(node, localNames)
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(sourceFile, visit);
-  return found;
-}
-
-/**
- * Any read off a node:test binding that {@link readsUnshimmedProperty} cannot
- * name: `const { mock } = test` (a binding pattern) and `test["mock"]` (an
- * element access, whose key need not even be a literal).
- *
- * Rejected wholesale rather than name-checked, because the point of this rule
- * is that the property rule is the ONLY thing standing between a default import
- * and a shim with no `mock` on it. Both spellings are absent from this tree, so
- * "route it to the runner that definitely supports it" costs nothing and cannot
- * be wrong; name-checking an unresolvable computed key could be.
- *
- * @param {ts.Node} node
- * @param {Set<string>} localNames
- * @returns {boolean}
- */
-function reachesOpaquely(node, localNames) {
-  if (
-    ts.isElementAccessExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    localNames.has(node.expression.text)
-  ) {
-    return true;
-  }
-  return (
-    ts.isVariableDeclaration(node) &&
-    ts.isObjectBindingPattern(node.name) &&
-    node.initializer !== undefined &&
-    ts.isIdentifier(node.initializer) &&
-    localNames.has(node.initializer.text)
-  );
-}
-
-/**
- * `test.somethingTheShimDoesNotHave` — routed to the legacy lane rather than
- * left to crash at import time on a required gate.
- *
- * @param {ts.Node} node
- * @param {Set<string>} localNames
- * @returns {boolean}
- */
-function readsUnshimmedProperty(node, localNames) {
-  return (
-    ts.isPropertyAccessExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    localNames.has(node.expression.text) &&
-    !SHIMMED_NODE_TEST_PROPERTIES.has(node.name.text)
-  );
-}
-
-/**
- * `test("…", async (t) => …)` — node:test's `TestContext`, which Vitest's own
- * context does not match.
- *
- * @param {ts.Node} node
- * @param {Set<string>} localNames
- * @returns {boolean}
- */
-function passesTestContext(node, localNames) {
-  if (!ts.isCallExpression(node)) {
-    return false;
-  }
-  /** @type {ts.Node} */
-  let base = node.expression;
-  while (ts.isPropertyAccessExpression(base)) {
-    base = base.expression;
-  }
-  if (!(ts.isIdentifier(base) && localNames.has(base.text))) {
-    return false;
-  }
-  return node.arguments.some(
-    (argument) =>
-      (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) &&
-      argument.parameters.length > 0
-  );
+function importsNodeTest(sourceFile) {
+  return sourceFile.statements.some(isNodeTestImport);
 }
 
 /**
@@ -353,12 +139,16 @@ function passesTestContext(node, localNames) {
  * @returns {boolean}
  */
 export function installsLoaderHook(source, fileName) {
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ false
-  );
+  return sourceInstallsLoaderHook(parseModule(source, fileName));
+}
+
+/**
+ * {@link installsLoaderHook} over an already-parsed module.
+ *
+ * @param {ts.SourceFile} sourceFile
+ * @returns {boolean}
+ */
+function sourceInstallsLoaderHook(sourceFile) {
   for (const statement of sourceFile.statements) {
     if (
       !(
@@ -405,10 +195,12 @@ export function installsLoaderHook(source, fileName) {
  * @returns {Set<string>}
  */
 function disqualifyingHelperSpecifiers(testDir) {
-  return helperClosure(
-    testDir,
-    (source, fileName) => !isVitestEligible(source, fileName)
-  );
+  if (testDir === TEST_DIR) {
+    defaultDisqualifyingHelpers ??=
+      computeDisqualifyingHelperSpecifiers(TEST_DIR);
+    return defaultDisqualifyingHelpers;
+  }
+  return computeDisqualifyingHelperSpecifiers(testDir);
 }
 
 /**
@@ -443,16 +235,31 @@ function importsAnyOf(sourceFile, specifiers) {
  * @returns {boolean} True when the Vitest node config can run this file.
  */
 export function isVitestEligible(source, fileName, helperSpecifiers) {
+  return sourceFileIsVitestEligible(
+    parseModule(source, fileName),
+    fileName,
+    helperSpecifiers
+  );
+}
+
+/**
+ * {@link isVitestEligible} over an already-parsed module.
+ *
+ * Every caller here parses the file for its own reasons anyway, so the parse is
+ * hoisted to them: classifying one file used to build THREE `ts.SourceFile`s
+ * (this one, `installsLoaderHook`'s, and — for a helper — `helperClosure`'s),
+ * and the census re-does that for the whole tree on every call.
+ *
+ * @param {ts.SourceFile} sourceFile
+ * @param {string} fileName
+ * @param {Set<string>} [helperSpecifiers]
+ * @returns {boolean}
+ */
+function sourceFileIsVitestEligible(sourceFile, fileName, helperSpecifiers) {
   if (VITEST_INCOMPATIBLE_FILES.has(fileName)) {
     return false;
   }
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ true
-  );
-  if (installsLoaderHook(source, fileName)) {
+  if (sourceInstallsLoaderHook(sourceFile)) {
     return false;
   }
   if (
@@ -461,19 +268,7 @@ export function isVitestEligible(source, fileName, helperSpecifiers) {
   ) {
     return false;
   }
-  const imports = readNodeTestImports(sourceFile);
-  if (imports === null) {
-    return true;
-  }
-  for (const specifier of imports.specifiers) {
-    if (
-      specifier !== DEFAULT_IMPORT_SPECIFIER &&
-      !SHIMMED_NODE_TEST_SPECIFIERS.has(specifier)
-    ) {
-      return false;
-    }
-  }
-  return !reachesPastShim(sourceFile, imports.localNames);
+  return !importsNodeTest(sourceFile);
 }
 
 /**
@@ -483,27 +278,15 @@ export function isVitestEligible(source, fileName, helperSpecifiers) {
  * @returns {Census}
  */
 export function censusTestFiles(testDir = TEST_DIR) {
-  /** @type {string[]} */
-  const vitest = [];
-  /** @type {string[]} */
-  const nodeTest = [];
-  const helperSpecifiers = disqualifyingHelperSpecifiers(testDir);
-  const names = readdirSync(testDir, { withFileTypes: true })
-    .filter(
-      (entry) =>
-        entry.isFile() &&
-        entry.name.endsWith(".test.ts") &&
-        !EXCLUDED_TEST_FILES.has(entry.name)
-    )
-    .map((entry) => entry.name)
-    .sort();
-  for (const name of names) {
-    const source = readFileSync(join(testDir, name), "utf8");
-    (isVitestEligible(source, name, helperSpecifiers) ? vitest : nodeTest).push(
-      `test/${name}`
-    );
+  if (testDir !== TEST_DIR) {
+    return computeCensus(testDir);
   }
-  return { vitest, nodeTest };
+  defaultCensus ??= computeCensus(TEST_DIR);
+  // Copied so a caller cannot mutate the memo other callers will read.
+  return {
+    vitest: [...defaultCensus.vitest],
+    nodeTest: [...defaultCensus.nodeTest],
+  };
 }
 
 /**
@@ -527,12 +310,20 @@ export function censusTestFiles(testDir = TEST_DIR) {
  * @returns {boolean}
  */
 export function importsVitest(source, fileName, helperSpecifiers) {
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ false
+  return sourceFileImportsVitest(
+    parseModule(source, fileName),
+    helperSpecifiers
   );
+}
+
+/**
+ * {@link importsVitest} over an already-parsed module.
+ *
+ * @param {ts.SourceFile} sourceFile
+ * @param {Set<string>} [helperSpecifiers]
+ * @returns {boolean}
+ */
+function sourceFileImportsVitest(sourceFile, helperSpecifiers) {
   for (const statement of sourceFile.statements) {
     if (
       !(
@@ -564,7 +355,7 @@ export function importsVitest(source, fileName, helperSpecifiers) {
  * acquire a census disqualifier would reproduce the exact incident the guard
  * exists to prevent.
  *
- * Closed to a FIXED POINT over helper→helper imports, not one hop (wongk
+ * Closed to a FIXED POINT over helper→helper imports, not one hop (whitlockk
  * review). This tree does have helpers importing helpers — `golden-layer3.ts`
  * → `golden-layer3-derive.js` → `golden-corpus.js` → `golden-divergences.js`
  * is four deep — so a one-hop set lets a legacy-routed test reach `vitest`
@@ -575,7 +366,16 @@ export function importsVitest(source, fileName, helperSpecifiers) {
  * @returns {Set<string>}
  */
 export function vitestReachingHelperSpecifiers(testDir = TEST_DIR) {
-  return helperClosure(testDir, importsVitest);
+  if (testDir !== TEST_DIR) {
+    return helperClosure(testDir, (sourceFile) =>
+      sourceFileImportsVitest(sourceFile)
+    );
+  }
+  defaultVitestReachingHelpers ??= helperClosure(TEST_DIR, (sourceFile) =>
+    sourceFileImportsVitest(sourceFile)
+  );
+  // Copied so a caller cannot mutate the memo other callers will read.
+  return new Set(defaultVitestReachingHelpers);
 }
 
 /**
@@ -627,7 +427,7 @@ function resolveHelperSpecifier(importerDir, specifier) {
  * over a cycle adds nothing new. Bounded by the helper count.
  *
  * @param {string} testDir
- * @param {(source: string, fileName: string) => boolean} isSeed Reads one helper in isolation, with no transitive knowledge.
+ * @param {(sourceFile: ts.SourceFile, fileName: string) => boolean} isSeed Reads one helper in isolation, with no transitive knowledge.
  * @returns {Set<string>}
  */
 function helperClosure(testDir, isSeed) {
@@ -654,16 +454,13 @@ function helperClosure(testDir, isSeed) {
       ) {
         continue;
       }
-      const source = readFileSync(join(dir, entry.name), "utf8");
       const specifier = resolveHelperSpecifier(
         relativeDir,
         entry.name.replace(TS_EXTENSION, ".js")
       );
-      const sourceFile = ts.createSourceFile(
-        entry.name,
-        source,
-        ts.ScriptTarget.Latest,
-        /* setParentNodes */ false
+      const sourceFile = parseModule(
+        readFileSync(join(dir, entry.name), "utf8"),
+        entry.name
       );
       imports.set(
         specifier,
@@ -671,7 +468,7 @@ function helperClosure(testDir, isSeed) {
           resolveHelperSpecifier(relativeDir, imported)
         )
       );
-      if (isSeed(source, entry.name)) {
+      if (isSeed(sourceFile, entry.name)) {
         matched.add(specifier);
       }
     }
@@ -693,3 +490,92 @@ function helperClosure(testDir, isSeed) {
   }
   return matched;
 }
+
+/**
+ * One parse of one module, shared by every rule that reads it.
+ *
+ * `setParentNodes` is FALSE. Every walk in this file goes through
+ * `ts.forEachChild` and none of them consults `.parent`, but building the
+ * pointers still costs ~50% on top of the parse (measured over this tree:
+ * 1.24s without, 1.91s with) — and this runs over ~1,500 files.
+ *
+ * @param {string} source
+ * @param {string} fileName
+ * @returns {ts.SourceFile}
+ */
+function parseModule(source, fileName) {
+  return ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ false
+  );
+}
+
+/**
+ * {@link censusTestFiles} without the memo — the derivation itself.
+ *
+ * @param {string} testDir
+ * @returns {Census}
+ */
+function computeCensus(testDir) {
+  /** @type {string[]} */
+  const vitest = [];
+  /** @type {string[]} */
+  const nodeTest = [];
+  const helperSpecifiers = disqualifyingHelperSpecifiers(testDir);
+  const names = readdirSync(testDir, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".test.ts") &&
+        !EXCLUDED_TEST_FILES.has(entry.name)
+    )
+    .map((entry) => entry.name)
+    .sort();
+  for (const name of names) {
+    const sourceFile = parseModule(
+      readFileSync(join(testDir, name), "utf8"),
+      name
+    );
+    (sourceFileIsVitestEligible(sourceFile, name, helperSpecifiers)
+      ? vitest
+      : nodeTest
+    ).push(`test/${name}`);
+  }
+  return { vitest, nodeTest };
+}
+
+/**
+ * {@link disqualifyingHelperSpecifiers} without the memo.
+ *
+ * @param {string} testDir
+ * @returns {Set<string>}
+ */
+function computeDisqualifyingHelperSpecifiers(testDir) {
+  return helperClosure(
+    testDir,
+    (sourceFile, fileName) => !sourceFileIsVitestEligible(sourceFile, fileName)
+  );
+}
+
+/**
+ * Memos for {@link TEST_DIR} — the one directory whose contents cannot change
+ * while a run is in flight, and the one every production caller asks about.
+ *
+ * A single census parses every file under `test/` and costs seconds; the runner
+ * takes one, `vitest.node.config.ts` takes one, and the suites that guard this
+ * machinery take one per case and one more per runner they spawn. Uncached,
+ * every test file added to the tree is paid for by all of them, which is how a
+ * 3% growth in file count bought a 48% slower lane (ISS-9275).
+ *
+ * Only the default directory is memoised. A caller that passes an explicit
+ * `testDir` is driving the derivation over a fixture it just built, and must
+ * see that fixture rather than a cached answer about a different tree.
+ */
+/** @type {Census | undefined} */
+let defaultCensus;
+/** @type {Set<string> | undefined} */
+let defaultDisqualifyingHelpers;
+/** @type {Set<string> | undefined} */
+let defaultVitestReachingHelpers;

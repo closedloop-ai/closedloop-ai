@@ -53,6 +53,21 @@ describe("createRedisClient", () => {
     );
   });
 
+  it("turns off the offline queue and the resend of in-flight commands when asked to fail while disconnected", () => {
+    createRedisClient({
+      url: "redis://localhost:6379",
+      failWhileDisconnected: true,
+    });
+
+    expect(MockRedis).toHaveBeenCalledWith(
+      "redis://localhost:6379",
+      expect.objectContaining({
+        enableOfflineQueue: false,
+        autoResendUnfulfilledCommands: false,
+      })
+    );
+  });
+
   it("registers error, connect, and close event handlers", () => {
     createRedisClient({ url: "redis://localhost:6379" });
 

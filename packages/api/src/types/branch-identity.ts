@@ -22,6 +22,8 @@ export type BranchPersonProvider =
 
 /** The persisted evidence sources that contribute to Collaborators. */
 export const BranchCollaboratorSource = {
+  PullRequestAuthors: "pull_request_authors",
+  Pushes: "pushes",
   PullRequestComments: "pull_request_comments",
   BranchComments: "branch_comments",
   SessionComments: "session_comments",
@@ -50,11 +52,12 @@ export type BranchOwnerIdentity = {
 };
 
 /** Canonical Collaborators union plus per-source evidence availability. */
-export type BranchCollaborators = {
+export type SourceCollaborators<TSource extends string> = {
   availability: BranchIdentityAvailability;
   people: BranchPerson[];
-  sources: Record<BranchCollaboratorSource, BranchIdentityAvailability>;
+  sources: Record<TSource, BranchIdentityAvailability>;
 };
+export type BranchCollaborators = SourceCollaborators<BranchCollaboratorSource>;
 
 /** Candidate accepted by the deterministic Collaborators projector. */
 export type BranchPersonCandidate = {
@@ -68,10 +71,10 @@ export type BranchPersonCandidate = {
  * users are already authenticated people. Linked provider identities dedupe
  * through `userId`, while unlinked identities remain provider-qualified.
  */
-export function projectBranchPeople(
+export function projectArtifactPeople<TSource extends string>(
   candidates: readonly BranchPersonCandidate[],
-  sources: Record<BranchCollaboratorSource, BranchIdentityAvailability>
-): BranchCollaborators {
+  sources: Record<TSource, BranchIdentityAvailability>
+): SourceCollaborators<TSource> {
   const peopleByKey = new Map<string, BranchPerson>();
   let hasUnclassifiedCandidate = false;
   for (const candidate of candidates) {
@@ -90,9 +93,7 @@ export function projectBranchPeople(
         continue;
       }
     }
-    const key = person.userId
-      ? `${BranchPersonProvider.ClosedLoop}:${person.userId}`
-      : `${person.provider}:${person.id}`;
+    const key = branchPersonKey(person);
     const existing = peopleByKey.get(key);
     peopleByKey.set(key, existing ? preferPerson(existing, person) : person);
   }
@@ -116,7 +117,9 @@ export function projectBranchPeople(
   return { availability, people, sources };
 }
 
-function isHumanGitHubActor(actorType: GitHubActorType | undefined): boolean {
+export function isHumanGitHubActor(
+  actorType: GitHubActorType | undefined
+): boolean {
   return (
     actorType === GitHubActorTypeValue.User ||
     actorType === GitHubActorTypeValue.Mannequin ||
@@ -125,10 +128,11 @@ function isHumanGitHubActor(actorType: GitHubActorType | undefined): boolean {
 }
 
 function compareBranchPeople(left: BranchPerson, right: BranchPerson): number {
-  return stablePersonKey(left).localeCompare(stablePersonKey(right));
+  return branchPersonKey(left).localeCompare(branchPersonKey(right));
 }
 
-function stablePersonKey(person: BranchPerson): string {
+/** One provider-qualified key for Owner, Collaborator, facet and sort consumers. */
+export function branchPersonKey(person: BranchPerson): string {
   return person.userId
     ? `${BranchPersonProvider.ClosedLoop}:${person.userId}`
     : `${person.provider}:${person.id}`;
@@ -156,3 +160,6 @@ function preferPerson(left: BranchPerson, right: BranchPerson): BranchPerson {
 function providerIdentityKey(person: BranchPerson): string {
   return `${person.provider}:${person.id}`;
 }
+
+/** Preserve the established Branch projector name for existing consumers. */
+export const projectBranchPeople = projectArtifactPeople;

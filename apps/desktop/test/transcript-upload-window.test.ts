@@ -4,15 +4,22 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
-import { test } from "node:test";
+import { test } from "vitest";
 import { prepareRedactedTranscriptUploadWindow } from "../src/main/transcript-sync/transcript-upload-window.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 
 const A32 = "a".repeat(32);
+const STAGED_UPLOAD_PREFIX = "closedloop-transcript-upload-";
 const { makeTempDir } = createTempDirManager("transcript-upload-window-test-");
+
+function stagedUploadDirectories(root: string): string[] {
+  return readdirSync(root)
+    .filter((entry) => entry.startsWith(STAGED_UPLOAD_PREFIX))
+    .sort();
+}
 
 async function readStream(body: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -101,4 +108,58 @@ test("dispose removes the staged redacted object file", async () => {
       );
     }
   );
+});
+
+test("ISS-8138: a failed preparation removes its staged temp directory", async () => {
+  // Staging goes to `os.tmpdir()`, which every forked node-test worker shares, so
+  // scanning it directly would read a sibling worker's staging directory as this
+  // test's leak. `TMPDIR` is the seam that scopes the production call to one root.
+  const stagingRoot = makeTempDir("transcript-upload-window-staging-root-");
+  const previousTmpDir = process.env.TMPDIR;
+  process.env.TMPDIR = stagingRoot;
+
+  try {
+    await assert.rejects(() =>
+      prepareRedactedTranscriptUploadWindow("/definitely/not/here.jsonl", 100)
+    );
+
+    assert.deepEqual(
+      stagedUploadDirectories(stagingRoot),
+      [],
+      "a persistently failing upload must not leak one temp directory per retry"
+    );
+  } finally {
+    if (previousTmpDir === undefined) {
+      Reflect.deleteProperty(process.env, "TMPDIR");
+    } else {
+      process.env.TMPDIR = previousTmpDir;
+    }
+  }
+});
+
+test("ISS-8138: the archive CRC64NVME is base64-encoded exactly as S3 reports it", async () => {
+  // `complete` verification compares this string against S3's `ChecksumCRC64NVME`,
+  // so the two things our code owns on top of the SDK -- digest byte order and
+  // base64 encoding -- have to be pinned to a literal. `123456789` is the
+  // published CRC-64/NVME check vector (`0xae8b14860a799888` / `rosUhgp5mIg=`);
+  // the expected value below is that same reference algorithm run over the byte
+  // string this line-oriented redactor actually emits, which keeps the check
+  // vector's terminating newline.
+  const rawContent = "123456789\n";
+
+  await withTempTranscript("crc.jsonl", rawContent, async (path) => {
+    const uploadWindow = await prepareRedactedTranscriptUploadWindow(
+      path,
+      Buffer.byteLength(rawContent)
+    );
+    try {
+      assert.equal(uploadWindow.checksums.crc64NvmeBase64, "scWp6qXGJfc=");
+      assert.equal(
+        uploadWindow.checksums.byteLength,
+        Buffer.byteLength(rawContent)
+      );
+    } finally {
+      await uploadWindow.dispose();
+    }
+  });
 });

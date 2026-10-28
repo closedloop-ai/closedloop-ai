@@ -3,7 +3,7 @@
  * @description A real `opencode.db` store, built on disk, for the OpenCode
  * collector tests.
  *
- * Extracted (ISS-5266, wongk review) so the withheld-subagent cases and the
+ * Extracted (ISS-5266, whitlockk review) so the withheld-subagent cases and the
  * worker-carry / upgrade-reconciliation cases build their stores from ONE
  * definition. The SQLite/parse ingest boundary is a trust boundary — the whole
  * point of these tests is that real bytes go through the real parser — so a
@@ -15,6 +15,13 @@ import { DatabaseSync } from "node:sqlite";
 
 export const TIME_CREATED = 1_710_000_000_000;
 export const TIME_UPDATED = 1_710_000_060_000;
+export const SESSION_VERSION = "1.15.5";
+export const SESSION_MODEL_ID = "oc-model";
+export const SESSION_PERMISSION = "";
+
+export function sessionSlug(id: string): string {
+  return `slug-${id}`;
+}
 
 /** A negative token count raises `InvalidTokenCountError`, dropping that row. */
 export const UNPARSEABLE_TOKENS = -5;
@@ -82,13 +89,13 @@ export function insertSession(db: DatabaseSync, spec: SessionSpec): void {
   `).run(
     spec.id,
     spec.parentId ?? null,
-    `slug-${spec.id}`,
+    sessionSlug(spec.id),
     "/workspace/my-project",
     `Title ${spec.id}`,
-    "1.15.5",
+    SESSION_VERSION,
     "build",
-    JSON.stringify({ id: "oc-model", providerID: "opencode" }),
-    "",
+    JSON.stringify({ id: SESSION_MODEL_ID, providerID: "opencode" }),
+    SESSION_PERMISSION,
     timeCreated,
     timeUpdated,
     spec.tokensInput ?? 10,

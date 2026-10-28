@@ -1,11 +1,13 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import { TreeTruncationReason } from "@repo/api/src/types/project-tree";
-import { type ArtifactLink, withDb } from "@repo/database";
+import { type Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 import {
   type ArtifactWithAssignee,
   normalizeArtifactRowSubtype,
+  type ParentEdge,
 } from "./artifact-tree-shared";
+import { readCanonicalHierarchyMetadata } from "./project-tree-service/canonical-parents";
 
 /**
  * Hard bound on how far a chain is walked, in EITHER direction.
@@ -21,7 +23,7 @@ export const MAX_CHAIN_DEPTH = 20;
 /**
  * Hard bound on how many artifacts one response may materialize, across both
  * walks. Depth alone does not bound a wide graph — a single branch can produce
- * hundreds of sessions — so breadth needs its own ceiling (wongk, PR #4461).
+ * hundreds of sessions — so breadth needs its own ceiling (whitlockk, PR #4461).
  */
 export const MAX_TREE_NODES = 2000;
 
@@ -34,9 +36,6 @@ export const MAX_TREE_NODES = 2000;
  * {@link chunkIds}; none of them takes the caller's array directly.
  */
 export const ID_CHUNK_SIZE = 500;
-
-/** A declared PRODUCES edge from a child artifact up to one of its parents. */
-export type ParentEdge = { parentId: string; linkType: LinkType };
 
 export type GraphWalkResult = {
   /** Parent edges keyed by CHILD id, every declared edge preserved. */
@@ -105,7 +104,7 @@ export async function loadArtifactsById(
  * EVERY declared PRODUCES edge is recorded, not just the first: the data model
  * allows an artifact to have several PRODUCES parents, and keeping only one
  * edge here would hide a valid chain or drop a cross-project link before the
- * assembly phase can see it (wongk, PR #4461).
+ * assembly phase can see it (whitlockk, PR #4461).
  */
 export async function collectAncestors(
   organizationId: string,
@@ -240,9 +239,16 @@ export function mergeParentEdges(
 
 function addParentEdge(
   parentEdges: Map<string, ParentEdge[]>,
-  link: ArtifactLink
+  link: ParentEdgeLinkRow
 ): void {
-  const edge: ParentEdge = { parentId: link.sourceId, linkType: link.linkType };
+  const hierarchy = readCanonicalHierarchyMetadata(link.metadata);
+  const edge: ParentEdge = {
+    parentId: link.sourceId,
+    linkType: link.linkType,
+    sortOrder: link.sortOrder,
+    canonical: hierarchy?.canonical,
+    suppressed: hierarchy?.suppressed,
+  };
   const existing = parentEdges.get(link.targetId);
   if (!existing) {
     parentEdges.set(link.targetId, [edge]);
@@ -266,8 +272,8 @@ function addParentEdge(
 async function fetchLinksByTargetIds(
   organizationId: string,
   childIds: string[]
-): Promise<ArtifactLink[]> {
-  const results: ArtifactLink[] = [];
+): Promise<ParentEdgeLinkRow[]> {
+  const results: ParentEdgeLinkRow[] = [];
   for (const chunk of chunkIds(childIds)) {
     const links = await withDb((db) =>
       db.artifactLink.findMany({
@@ -277,6 +283,7 @@ async function fetchLinksByTargetIds(
           targetId: { in: chunk },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: PARENT_EDGE_LINK_SELECT,
       })
     );
     results.push(...links);
@@ -288,8 +295,8 @@ async function fetchLinksByTargetIds(
 async function fetchLinksBySourceIds(
   organizationId: string,
   parentIds: string[]
-): Promise<ArtifactLink[]> {
-  const results: ArtifactLink[] = [];
+): Promise<ParentEdgeLinkRow[]> {
+  const results: ParentEdgeLinkRow[] = [];
   for (const chunk of chunkIds(parentIds)) {
     const links = await withDb((db) =>
       db.artifactLink.findMany({
@@ -299,9 +306,32 @@ async function fetchLinksBySourceIds(
           sourceId: { in: chunk },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: PARENT_EDGE_LINK_SELECT,
       })
     );
     results.push(...links);
   }
   return results;
 }
+
+/** The columns {@link addParentEdge} reads off a PRODUCES link. */
+type ParentEdgeLinkRow = {
+  sourceId: string;
+  targetId: string;
+  linkType: LinkType;
+  sortOrder: number | null;
+  metadata: Prisma.JsonValue | null;
+};
+
+/**
+ * One constant for BOTH directions of the walk. The upward and downward reads
+ * feed the same `addParentEdge`, so a select that drifted between them would
+ * mean one direction resolving edges the other cannot.
+ */
+const PARENT_EDGE_LINK_SELECT = {
+  sourceId: true,
+  targetId: true,
+  linkType: true,
+  sortOrder: true,
+  metadata: true,
+} as const satisfies Record<keyof ParentEdgeLinkRow, true>;

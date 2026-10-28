@@ -5,11 +5,9 @@ import type {
   AgentSessionDetail,
   TurnItem,
 } from "@repo/api/src/types/agent-session";
-import {
-  isRecoverableTranscriptSkipReason,
-  TranscriptAvailability,
-  TranscriptSkipReason,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptAvailability } from "@repo/api/src/types/desktop-transcripts";
+import { SESSION_TRANSCRIPT_NEVER_EXPECTED_FLAG_KEY } from "@repo/api/src/types/session-transcript-never-expected-flag";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import {
   Alert,
   AlertDescription,
@@ -29,11 +27,13 @@ import {
   MessageCircleIcon,
   RefreshCcwIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo } from "react";
-import { TRACE_END_OF_READ_NOTE } from "../../../shared/lib/trace-truncation-copy";
-import { getUserDisplayName } from "../../../shared/lib/user-utils";
+import { type ReactNode, type RefObject, useEffect, useMemo } from "react";
+import { useFeatureFlagEnabledOptional } from "../../../shared/feature-flags/use-feature-flag-enabled";
+import { formatBytes } from "../../../shared/lib/format-utils";
 import type { TranscriptBytesSource } from "../../data-source/transcript-bytes-transport";
 import { useSessionTranscript } from "../../hooks/use-session-transcript";
+import { useTranscriptLoadMore } from "../../hooks/use-transcript-load-more";
+import { useTranscriptTraceItems } from "../../hooks/use-transcript-trace-items";
 import type { TranscriptDownloadProgress } from "../../lib/parse-transcript";
 import { MAIN_TRANSCRIPT_FILE_KEY } from "../../lib/session-transcript-href";
 import { resolveSubagentCount } from "../../lib/subagent-transcripts";
@@ -41,16 +41,20 @@ import {
   buildTraceRowTranslators,
   type TraceRowTranslators,
 } from "../../lib/timeline-row-space";
-import {
-  buildTurnItemsFromNormalizedSession,
-  resolveTranscriptInvocationAnchorRow,
-} from "../../lib/transcript-turn-items";
+import { resolveTranscriptInvocationAnchorRow } from "../../lib/transcript-turn-items";
 import { SessionTrace, type SessionTraceProps } from "./session-trace";
+import type { SessionTraceHandle } from "./session-trace-contract";
+import { useSessionTraceGutterActor } from "./session-trace-gutter-actor";
+import {
+  permanentUnavailableDescription,
+  TRANSCRIPT_NEVER_EXPECTED_DESCRIPTION,
+  TRANSCRIPT_NEVER_EXPECTED_TITLE,
+  terminalUnavailablePresentation,
+  transcriptNounForHarness,
+} from "./session-transcript-status-copy";
 import { TranscriptFileSwitcher } from "./transcript-file-switcher";
 import { TranscriptForceArchiveAction } from "./transcript-force-archive-action";
-
-/** Default swatch for the human actor when the session carries no user color. */
-const HUMAN_ACTOR_FALLBACK_COLOR = "#64748B";
+import { TranscriptLoadMore } from "./transcript-load-more";
 
 type TracePassthroughProps = Pick<
   SessionTraceProps,
@@ -59,7 +63,16 @@ type TracePassthroughProps = Pick<
   | "invocationAnchor"
   | "onJump"
   | "onSubmitTraceComment"
+  | "onTraceSelectionChange"
+  | "renderGutterActor"
+  | "scrollElementRef"
 >;
+
+/** What the panel hands every `SessionTrace` it paints. */
+type RenderedTraceProps = TracePassthroughProps &
+  Pick<SessionTraceProps, "virtualize"> & {
+    ref?: RefObject<SessionTraceHandle | null>;
+  };
 
 export type SessionTranscriptPanelProps = {
   /** The session detail row — supplies harness/model/user for the projection. */
@@ -98,6 +111,41 @@ export type SessionTranscriptPanelProps = {
    * snapshots it in a ref.
    */
   onTraceRowTranslatorChange?: (translators: TraceRowTranslators) => void;
+  /**
+   * ISS-7516: the surface has POSITIVE evidence that no transcript will ever be
+   * archived for this session, because the machine that produced it is on a
+   * data-sync level that keeps transcripts local
+   * (`syncTierAllowsTranscripts` admits only `full`).
+   *
+   * Three-valued on purpose, and `undefined` is the important one:
+   *  - `true`  — settled: the absence is consent, not lag. Renders the
+   *              never-expected state instead of the still-syncing one.
+   *  - `false` — settled the other way, or the surface checked and this session
+   *              is not covered (a session synced from a DIFFERENT machine,
+   *              whose level this one cannot see).
+   *  - absent  — the surface cannot answer at all, and must keep saying "still
+   *              syncing" rather than guess. Reached when neither producer has
+   *              evidence: no served `dataSyncLevel` (a server that predates
+   *              ISS-7516's wire field, or a row written before it) AND no
+   *              local answer from the desktop shell.
+   *
+   * Both surfaces can now supply it. The desktop reads its own consent record,
+   * for sessions produced by that same machine; the web derives it from the
+   * RECORDING machine's level on the session payload
+   * (`resolveTranscriptNeverExpected`), which is also what lets either surface
+   * answer for a session synced from a different machine.
+   *
+   * Absent and `false` render identically today; they are kept distinct because
+   * "we asked and the answer is no" and "we cannot ask" are different claims,
+   * and a future producer that can answer for other machines must not inherit
+   * this one's silence as a negative.
+   */
+  transcriptNeverExpected?: boolean;
+  /**
+   * ISS-12276: the trace's handle, so the host's jumps can bring an unmounted
+   * row into the window before measuring it.
+   */
+  traceRef?: RefObject<SessionTraceHandle | null>;
 } & TracePassthroughProps;
 
 /**
@@ -146,9 +194,13 @@ export function SessionTranscriptPanel({
   highlightAnchor,
   onJump,
   onSubmitTraceComment,
+  onTraceSelectionChange,
   invocationAnchor,
   onInvocationAnchorResolved,
   onTraceRowTranslatorChange,
+  transcriptNeverExpected,
+  scrollElementRef,
+  traceRef,
 }: SessionTranscriptPanelProps) {
   // FEA-2717 Task 4 (cloud-preferred, per surface): attempt the transcript read
   // when the detail carries the FR8 availability summary (`session.transcripts`).
@@ -157,6 +209,12 @@ export function SessionTranscriptPanel({
   // descriptor route is inert, so the hook seeds a LOCAL read descriptor from
   // this summary — see `useSessionTranscript.localTranscripts`). Without a
   // summary the hook stays disabled and the local `fallbackItems` trace renders.
+  // ISS-7516 (ISS-4779 closed-by-default). Read on BOTH surfaces from the one
+  // place they share, so the desktop cannot ship the new wording while the web
+  // is still hidden behind PostHog, or the reverse.
+  const neverExpectedDisclosureEnabled = useFeatureFlagEnabledOptional(
+    SESSION_TRANSCRIPT_NEVER_EXPECTED_FLAG_KEY
+  );
   const hasTranscriptContext = Boolean(session.transcripts?.length);
   const transcript = useSessionTranscript(session.id, {
     harness: session.harness,
@@ -172,38 +230,27 @@ export function SessionTranscriptPanel({
     enabled: hasTranscriptContext,
   });
 
-  const humanActor = useMemo(
-    () => ({
-      name: session.user ? getUserDisplayName(session.user) : "You",
-      color: session.userColor ?? HUMAN_ACTOR_FALLBACK_COLOR,
-    }),
-    [session.user, session.userColor]
-  );
+  const { context, projectedItems, cloudItems, humanUser } =
+    useTranscriptTraceItems({
+      session,
+      fallbackItems,
+      parsedSession: transcript.session,
+    });
 
-  const cloudItems = useMemo(
-    () =>
-      transcript.session
-        ? buildTurnItemsFromNormalizedSession(transcript.session, {
-            harness: session.harness,
-            primaryModel: session.primaryModel ?? session.model,
-            humanActor,
-          })
-        : undefined,
-    [
-      transcript.session,
-      session.harness,
-      session.primaryModel,
-      session.model,
-      humanActor,
-    ]
-  );
-
-  const traceProps: TracePassthroughProps = {
+  // ISS-12276 (PRD-792): window the trace whenever the host owns a scroller,
+  // as Branch detail does. Operator ruling (Marisol Ashgrove, 2026-10-08): the web
+  // browser's find-in-page then only finds turns near the viewport, which is
+  // accepted for this change.
+  const traceProps: RenderedTraceProps = {
     activeRow,
     highlightAnchor,
     onJump,
     onSubmitTraceComment,
+    onTraceSelectionChange,
     invocationAnchor,
+    scrollElementRef,
+    virtualize: Boolean(scrollElementRef),
+    ref: traceRef,
   };
 
   // FEA-2718: on the WEB the parsed cloud transcript is the sole trace source —
@@ -236,12 +283,38 @@ export function SessionTranscriptPanel({
   const allowProjectedFallback =
     !(hasTranscriptContext && hasSummaryForActiveFile) ||
     (transcript.isLocalRead && !hasParsedTraceContent);
+  // ISS-9857: the walk past the detail read's event prefix. Inactive (flag off,
+  // a parsed transcript on screen, a sidechain tab, a source that cannot page)
+  // it returns no items and no control, and everything below reads as before.
+  const loadMore = useTranscriptLoadMore({
+    session,
+    fileKey,
+    projectionRendered: !hasParsedTraceContent && allowProjectedFallback,
+    context,
+  });
+  const projectedOrPagedItems = loadMore.renderedItems ?? projectedItems;
   let renderedItems: readonly TurnItem[] | undefined;
+  // The row space `renderedItems` paints. Re-seating the human colour rewrites
+  // only `actor.color`, so `projectedItems` and `fallbackItems` are the same row
+  // space — but they are no longer the same ARRAY, and FEA-4252's translators
+  // treat `sourceItems === renderedItems` as the only sound structural signal
+  // (`session.turnItems` is passed as `fallbackItems` verbatim). Publishing the
+  // recoloured copy would drop every projection jump onto nearest-time, which
+  // returns `null` on the tie a same-instant session produces — bars and dots go
+  // `no-jump`. So the translators keep reading the uncopied projection.
+  // ISS-9857: a landed page makes the union a different row space, so the
+  // translators read the union itself (event rows keep their strong `eventId`).
+  let renderedRowSpaceItems: readonly TurnItem[] | undefined;
   if (hasParsedTraceContent) {
     renderedItems = cloudItems;
+    renderedRowSpaceItems = cloudItems;
   } else if (allowProjectedFallback) {
-    renderedItems = fallbackItems;
+    renderedItems = projectedOrPagedItems;
+    renderedRowSpaceItems = loadMore.renderedItems ?? fallbackItems;
   }
+  // ISS-12666: the actor avatar the Branch combined trace shows in each turn
+  // gutter, the creator's photo on their own turns.
+  const renderGutterActor = useSessionTraceGutterActor(humanUser);
   const resolvedInvocationRow = useMemo(
     () =>
       resolveTranscriptInvocationAnchorRow(
@@ -272,13 +345,13 @@ export function SessionTranscriptPanel({
       return;
     }
     onTraceRowTranslatorChange(
-      buildTraceRowTranslators(sourceItems ?? [], renderedItems ?? [], {
+      buildTraceRowTranslators(sourceItems ?? [], renderedRowSpaceItems ?? [], {
         allowNearestTime,
       })
     );
   }, [
     onTraceRowTranslatorChange,
-    renderedItems,
+    renderedRowSpaceItems,
     sourceItems,
     allowNearestTime,
   ]);
@@ -293,13 +366,20 @@ export function SessionTranscriptPanel({
   const rendered = renderTranscriptContent({
     transcript,
     cloudItems,
-    fallbackItems: allowProjectedFallback ? fallbackItems : undefined,
+    fallbackItems: allowProjectedFallback ? projectedOrPagedItems : undefined,
     harness: session.harness,
     // FEA-3489: the too-large terminal state's force-archive action needs the
     // local dead-row identity (`externalSessionId`) + the active `fileKey`.
     externalSessionId: session.externalSessionId,
     fileKey,
-    traceProps,
+    traceProps: { ...traceProps, renderGutterActor },
+    // ISS-7516 (ISS-4779 closed-by-default): the never-expected wording is
+    // gated, and the gate is read HERE — the one place both surfaces mount —
+    // so a flag-off desktop and the web behave identically instead of the
+    // desktop adapter deciding for itself.
+    transcriptNeverExpected: neverExpectedDisclosureEnabled
+      ? transcriptNeverExpected === true
+      : false,
   });
 
   return (
@@ -325,9 +405,7 @@ export function SessionTranscriptPanel({
        */}
       {rendered.source === RenderedTraceSource.Projection &&
       session.eventsTruncated ? (
-        <p className="mt-2 text-muted-foreground text-xs">
-          {TRACE_END_OF_READ_NOTE}
-        </p>
+        <TranscriptLoadMore control={loadMore.control} />
       ) : null}
     </>
   );
@@ -341,6 +419,7 @@ function renderTranscriptContent({
   externalSessionId,
   fileKey,
   traceProps,
+  transcriptNeverExpected,
 }: {
   transcript: ReturnType<typeof useSessionTranscript>;
   cloudItems: TurnItem[] | undefined;
@@ -350,7 +429,9 @@ function renderTranscriptContent({
   externalSessionId: string | undefined;
   /** Active transcript file key (`main` or `subagent:{id}`) for force-archive. */
   fileKey: string;
-  traceProps: TracePassthroughProps;
+  traceProps: RenderedTraceProps;
+  /** ISS-7516: already flag-resolved by the caller; see the panel's prop doc. */
+  transcriptNeverExpected: boolean;
 }): { node: ReactNode; source: RenderedTraceSource } {
   // 1. Cloud transcript parsed — the sole source of the web trace. A `stale`
   // upload is still the freshest archived bytes, flagged with a notice. Gate on
@@ -390,7 +471,7 @@ function renderTranscriptContent({
   // these are terminal (no DB behind them — FEA-2718). `fallbackItems` is only
   // ever set on the desktop-local surface, where tier 3 renders the local trace.
   //
-  // FEA-3489 (wongk review): the terminal `permanentlyUnavailable` state MUST win
+  // FEA-3489 (whitlockk review): the terminal `permanentlyUnavailable` state MUST win
   // over this local-render gate. On the production desktop transport
   // (`supportsLocalFallback: true`), a too-large-for-cloud transcript whose local
   // `.jsonl` is still on disk and over the 25 MiB auto-load cap resolves
@@ -450,6 +531,7 @@ function renderTranscriptContent({
       harness,
       externalSessionId,
       fileKey,
+      transcriptNeverExpected,
     }),
     source: RenderedTraceSource.None,
   };
@@ -465,11 +547,13 @@ function renderTranscriptState({
   harness,
   externalSessionId,
   fileKey,
+  transcriptNeverExpected,
 }: {
   transcript: ReturnType<typeof useSessionTranscript>;
   harness: string;
   externalSessionId: string | undefined;
   fileKey: string;
+  transcriptNeverExpected: boolean;
 }): ReactNode {
   if (transcript.isAccessLoading || transcript.isParsing) {
     // FEA-3447: a deferred/oversized download the user explicitly loaded shows
@@ -559,7 +643,9 @@ function renderTranscriptState({
   // Safe to check without an unsupported guard because the branch above
   // already returned for unsupported harnesses.
   if (transcript.availability === TranscriptAvailability.Missing) {
-    return renderMissingTranscript(harness);
+    return transcriptNeverExpected
+      ? renderNeverExpectedTranscript()
+      : renderMissingTranscript(harness);
   }
 
   // A failed descriptor/access fetch (no `access.data`, so `isReadable` is
@@ -673,7 +759,7 @@ function RetryButton({ onRetry }: { onRetry: () => void }) {
   return (
     <Button onClick={onRetry} size="sm" variant="outline">
       <RefreshCcwIcon className="mr-2 h-4 w-4" />
-      Retry
+      {TRANSCRIPT_RETRY_LABEL}
     </Button>
   );
 }
@@ -793,47 +879,6 @@ function TranscriptNotice({
 }
 
 /**
- * Human copy for a permanently-unavailable (skipped) transcript, keyed by the
- * terminal reason (FEA-3476). For the size-cap reason the copy states the
- * situation AND the way out \u2014 "sync it from the machine where the session ran" \u2014
- * because the force-archive override (FEA-3489) IS offered below it: the desktop
- * shows the button that does exactly that, and the web (where the button is not
- * rendered) reads the same line as the reason it can't act here. The other
- * reasons have no override, so their copy is a plain dead-end explanation.
- */
-const PERMANENT_UNAVAILABLE_DESCRIPTIONS: Record<TranscriptSkipReason, string> =
-  {
-    [TranscriptSkipReason.TooLarge]:
-      "This transcript is over the automatic archive size limit. Sync it from the machine where the session ran to view it here.",
-    [TranscriptSkipReason.SourceGone]:
-      "This session\u2019s local transcript was removed before it could be archived, so it can\u2019t be shown here.",
-    // ISS-4621: the desktop stopped retrying after repeated upload failures.
-    // "May still be" \u2014 not "remains" \u2014 because this reason is written from the
-    // transport-failure ladder, which never stats the source (the path that
-    // does emits source_gone instead), so local presence is unverified.
-    [TranscriptSkipReason.RetriesExhausted]:
-      "This transcript couldn\u2019t be uploaded after repeated attempts, so it can\u2019t be shown here. It may still be on the machine where the session ran.",
-    // ISS-4695 item 3: a batch-materialized (OpenCode) source that wasn\u2019t ready
-    // this sweep is REGENERABLE \u2014 the copy points at recovery rather than reading
-    // as a dead end, matching the recoverable cloud disposition (`syncing`, not
-    // `failedPermanent`). Trimmed to the sibling shape (the "regenerated
-    // automatically" internal mechanic is not user-actionable).
-    [TranscriptSkipReason.MaterializedSourceUnavailable]:
-      "This transcript\u2019s source wasn\u2019t ready when it was last archived. It should appear here after the next sync from the machine where the session ran.",
-  };
-
-function permanentUnavailableDescription(
-  reason: TranscriptSkipReason | null
-): string {
-  if (reason === null) {
-    return "This transcript was not archived and can\u2019t be shown here. It remains on the machine where the session ran.";
-  }
-  // Exhaustive Record: a new skip reason fails typecheck here until someone
-  // writes copy for it, instead of silently inheriting the generic sentence.
-  return PERMANENT_UNAVAILABLE_DESCRIPTIONS[reason];
-}
-
-/**
  * The terminal "not archived" state. FEA-3489 (PRD-536): a too-large transcript
  * is terminal for the AUTOMATIC lane, but the user can still force-archive it, so
  * offer the override for the size-cap reason only (a `sourceGone` file has nothing
@@ -880,47 +925,31 @@ function renderPermanentlyUnavailable({
 }
 
 /**
- * Title + icon for a `permanentlyUnavailable` file. ISS-4695 item 3 review
- * (wongk / logical-QA): a RECOVERABLE reason must NOT read as a dead end. It
- * maps to the recoverable `syncing` cloud disposition
- * (`deriveTranscriptDisposition`), so the terminal-frame headline is branched to
- * match — "Transcript still syncing" with `CloudUploadIcon`, the same honest
- * presentation the `uploadPending` / `missing` states use — instead of the hard
- * "Transcript not archived" / `CloudOffIcon` reserved for reasons that are
- * genuinely never coming, plus an unknown/`null` legacy reason.
+ * ISS-7516 — the SETTLED absence: nothing was ever queued for this session, so
+ * nothing is coming.
  *
- * ISS-4820 (wongk review): WHICH reasons are recoverable is not decided here.
- * It is read from `isRecoverableTranscriptSkipReason`, the shared SSOT in the
- * wire contract that carries the exhaustive switch, so the next recoverable
- * reason lands on this surface without a second edit — and cannot default to a
- * hard failure just because nobody remembered to wire the renderer up.
+ * Deliberately NOT a variant of {@link renderMissingTranscript}. That state says
+ * "hasn't synced YET" and points at the source machine, which is a true sentence
+ * for a `full`-level machine mid-upload and a false one here — the machine is
+ * not going to upload it, this run or ever. The two are separate renders so a
+ * copy edit to one cannot silently rewrite the other's claim.
+ *
+ * The distinction is carried in the TITLE and DESCRIPTION text (WCAG 1.4.1),
+ * never in colour or icon alone: `CloudOffIcon` is shared with the terminal
+ * "not archived" state on purpose, because an icon is decoration here and the
+ * sentence is the statement. No `iconClassName` — `TranscriptStatus` already
+ * applies `text-muted-foreground`, and restating a component's own token at the
+ * call site is how that component stops being the one that owns it (Pascoe).
  */
-function terminalUnavailablePresentation(reason: TranscriptSkipReason | null): {
-  title: string;
-  icon: LucideIcon;
-  iconClassName: string;
-} {
-  if (reason !== null && isRecoverableTranscriptSkipReason(reason)) {
-    return {
-      title: "Transcript still syncing",
-      icon: CloudUploadIcon,
-      iconClassName: "text-muted-foreground",
-    };
-  }
-  return {
-    title: "Transcript not archived",
-    icon: CloudOffIcon,
-    iconClassName: "text-muted-foreground",
-  };
+function renderNeverExpectedTranscript(): ReactNode {
+  return (
+    <TranscriptStatus
+      description={TRANSCRIPT_NEVER_EXPECTED_DESCRIPTION}
+      icon={CloudOffIcon}
+      title={TRANSCRIPT_NEVER_EXPECTED_TITLE}
+    />
+  );
 }
-
-/**
- * The literal harness value `apps/api` writes when a sync payload omits one
- * (`agent-sessions/service.ts` — `normalizeNullableString(session.harness) ??
- * "unknown"`). It reaches the client as a real string rather than a null, so it
- * is a sentinel to guard, not a product name to print.
- */
-const UNKNOWN_HARNESS = "unknown";
 
 function renderMissingTranscript(harness: string): ReactNode {
   return (
@@ -932,37 +961,4 @@ function renderMissingTranscript(harness: string): ReactNode {
   );
 }
 
-const HARNESS_DISPLAY_NAMES: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  copilot: "Copilot",
-  opencode: "OpenCode",
-};
-
-function transcriptNounForHarness(harness: string): string {
-  const trimmed = harness.trim();
-  if (!trimmed || trimmed.toLowerCase() === UNKNOWN_HARNESS) {
-    return "transcript";
-  }
-  const label =
-    HARNESS_DISPLAY_NAMES[trimmed.toLowerCase()] ??
-    trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-  return `${label} transcript`;
-}
-
-/** Human-readable byte size for the oversized-file gate. */
-function formatBytes(bytes: number | null): string {
-  if (bytes == null) {
-    return "an unknown size";
-  }
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const rounded = unitIndex === 0 ? value : Math.round(value * 10) / 10;
-  return `${rounded} ${units[unitIndex]}`;
-}
+export const TRANSCRIPT_RETRY_LABEL = "Retry";

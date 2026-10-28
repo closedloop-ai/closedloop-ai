@@ -1,308 +1,596 @@
-/**
- * ISS-5299 wave-3 — closes uncovered branches in git-pr.ts (`GET /git/user`)
- * and git-pr-create.ts.
- *
- * PLN-1535 M5 deletion 2 retired the local-`gh` PR data lane, so the
- * `/pr/files`, `/pr/file-diff` and git-pr-comments-provider cases this file
- * also carried went with the code they covered. The retired routes' 410
- * contract is asserted in gateway-server.test.ts, over all eight paths at once.
- *
- * Drives real handlers (registerGitPrRoutes, registerGitPrCreateRoute) through
- * a scripted fake `gh` binary. No production-source edits, no logic duplication.
- *
- * Structurally unreachable branches — skipped with rationale:
- *   git-pr-create.ts L113 rethrow in resolveCreateRequest — assertRepoAllowed
- *                         only throws DirectoryNotAllowedError
- */
 import assert from "node:assert/strict";
-import { chmod, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import {
+  DesktopGithubPullRequestApiPath,
+  DesktopGithubPullRequestBodyMaxLength,
+  DesktopGithubPullRequestErrorCode,
+  DesktopGithubPullRequestMode,
+  DesktopGithubPullRequestReason,
+  DesktopGithubPullRequestStage,
+  DesktopGithubPullRequestStatus,
+  DesktopGithubPullRequestSuccessMode,
+} from "@repo/api/src/types/desktop-github-pull-request";
+import { afterEach, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
+import { configureBinaryPathsResolver } from "../src/server/operations/binary-path-overrides.js";
 import { registerGitPrRoutes } from "../src/server/operations/git-pr.js";
 import { registerGitPrCreateRoute } from "../src/server/operations/git-pr-create.js";
-import { configureBinaryPathsResolver } from "../src/server/operations/symphony-loop.js";
 import {
   createGitOpTempDirs,
   dispatchOperation,
 } from "./helpers/git-gateway-op-harness.js";
 
-const { makeTempDir } = createGitOpTempDirs("iss5299-pr-wave3-");
+const { makeTempDir } = createGitOpTempDirs("iss8637-pr-create-");
+const tempDirs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   configureBinaryPathsResolver(null);
+  for (const dir of tempDirs.splice(0)) {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async function makeExec(
-  dir: string,
-  name: string,
-  script: string
-): Promise<string> {
-  const p = path.join(dir, name);
-  await writeFile(p, script);
-  await chmod(p, 0o755);
-  return p;
-}
-
-function makePrDispatcher(allowedDirs: string[]): OperationDispatcher {
+test("GET /api/gateway/git/user returns the explicit 410 compatibility stub", async () => {
+  const { ghLog } = await makeBinaryFixture();
   const dispatcher = new OperationDispatcher();
-  registerGitPrRoutes(dispatcher, () => allowedDirs);
-  return dispatcher;
-}
+  registerGitPrRoutes(dispatcher, () => [makeTempDir()]);
 
-function makeCreateDispatcher(allowedDirs: string[]): OperationDispatcher {
-  const dispatcher = new OperationDispatcher();
-  registerGitPrCreateRoute(dispatcher, () => allowedDirs);
-  return dispatcher;
-}
-
-// ─── git-pr.ts: GET /api/gateway/git/user  (L166, L171) ──────────────────────
-
-test("GET /user: empty gh output returns 500 could-not-determine-user (L166)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(binDir, "gh", "#!/bin/sh\nprintf ''");
-  configureBinaryPathsResolver(() => ({ gh: ghBin }));
-  const res = await dispatchOperation({
-    dispatcher: makePrDispatcher([makeTempDir()]),
+  const response = await dispatchOperation({
+    dispatcher,
     method: "GET",
-    pathname: "/api/gateway/git/user",
+    pathname: DesktopGithubPullRequestApiPath.LegacyGatewayGitUser,
   });
-  assert.equal(res.statusCode, 500);
-  assert.equal(res.body.error, "Could not determine GitHub user");
+
+  assert.equal(response.statusCode, 410);
+  assert.equal(response.body.error, "github_data_route_retired");
+  assert.equal(await exists(ghLog), false);
 });
 
-test("GET /user: gh exits non-zero returns 500 failed-to-get-user (L171)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(binDir, "gh", "#!/bin/sh\nexit 1");
-  configureBinaryPathsResolver(() => ({ gh: ghBin }));
-  const res = await dispatchOperation({
-    dispatcher: makePrDispatcher([makeTempDir()]),
-    method: "GET",
-    pathname: "/api/gateway/git/user",
-  });
-  assert.equal(res.statusCode, 500);
+test("POST /api/gateway/git/pr fails closed before push when the API route is missing", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([
+    jsonResponse({ success: false, error: "Not Found" }, 404),
+  ]);
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 503);
   assert.equal(
-    res.body.error,
-    "Failed to get GitHub user. Ensure gh is installed and authenticated."
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.ApiIncompatible
   );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.ApiIncompatible
+  );
+  assert.equal(response.body.stage, DesktopGithubPullRequestStage.ApiPreflight);
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(await commandWasRun(gitLog, "push"), false);
+  assert.equal(await exists(ghLog), false);
+  assert.equal(api.calls.length, 1);
+  assert.deepEqual(api.calls[0]?.body, {
+    contractVersion: 1,
+    mode: DesktopGithubPullRequestMode.Preflight,
+    repoFullName: "acme/widgets",
+  });
 });
 
-// ─── git-pr-create.ts: ticketUrl present (L124) ──────────────────────────────
+test("POST /api/gateway/git/pr treats malformed preflight responses as API-incompatible", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([
+    new Response("<html>old server</html>", { status: 200 }),
+  ]);
 
-test("POST /pr: ticketUrl present → fullBody appended with Linear link → 200 (L124)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
-    '#!/bin/sh\nprintf "https://github.com/o/r/pull/7\\n"'
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.ApiIncompatible
   );
-  const gitBin = await makeExec(binDir, "git", "#!/bin/sh\nprintf 'main\\n'");
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(await commandWasRun(gitLog, "push"), false);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr fails closed when the local branch cannot be read", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture({
+    revParseScript: "echo 'fatal: bad revision HEAD' >&2\nexit 128",
+  });
+  const api = makeFetch([]);
+
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.RepositoryUnavailable
+  );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.RepositoryUnavailable
+  );
+  assert.equal(
+    response.body.stage,
+    DesktopGithubPullRequestStage.LocalPreflight
+  );
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(api.calls.length, 0);
+  assert.equal(await commandWasRun(gitLog, "push"), false);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr validates the server create payload before push", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([]);
+
+  const response = await dispatchCreate(repoDir, api.fetch, {
+    body: "x".repeat(DesktopGithubPullRequestBodyMaxLength + 1),
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.ValidationFailed
+  );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.ValidationFailed
+  );
+  assert.equal(
+    response.body.stage,
+    DesktopGithubPullRequestStage.LocalPreflight
+  );
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(api.calls.length, 0);
+  assert.equal(await commandWasRun(gitLog, "push"), false);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr succeeds through preflight, git push, then server create", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Create,
+      status: DesktopGithubPullRequestStatus.Created,
+      pullRequest: {
+        url: "https://github.com/acme/widgets/pull/42",
+        number: 42,
+        headBranch: "feat/no-gh",
+        baseBranch: "main",
+      },
+      labels: {
+        appliedLabels: ["ISS-8637"],
+        labelsApplied: true,
+      },
+    }),
+  ]);
+
+  const response = await dispatchCreate(repoDir, api.fetch, {
+    labels: [{ name: "ISS-8637", color: "0366d6" }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.success, true);
+  assert.equal(response.body.number, 42);
+  assert.deepEqual(response.body.appliedLabels, ["ISS-8637"]);
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+  assert.equal(api.calls.length, 2);
+  assert.deepEqual(api.calls[0]?.body, {
+    contractVersion: 1,
+    mode: DesktopGithubPullRequestMode.Preflight,
+    repoFullName: "acme/widgets",
+  });
+  assert.equal(api.calls[1]?.body.mode, DesktopGithubPullRequestMode.Create);
+  assert.equal(api.calls[1]?.body.repoFullName, "acme/widgets");
+  assert.equal(api.calls[1]?.body.headBranch, "feat/no-gh");
+});
+
+test("POST /api/gateway/git/pr preserves distinct fetch and pushed head repositories", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture({
+    remoteScript:
+      "if [ \"$3\" = \"--push\" ]; then printf 'git@github.com:daveth/widgets.git\\n'; else printf 'git@github.com:acme/widgets.git\\n'; fi",
+  });
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Create,
+      status: DesktopGithubPullRequestStatus.Created,
+      pullRequest: {
+        url: "https://github.com/acme/widgets/pull/42",
+        number: 42,
+        headBranch: "feat/no-gh",
+        baseBranch: "main",
+      },
+    }),
+  ]);
+
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(api.calls[0]?.body, {
+    contractVersion: 1,
+    mode: DesktopGithubPullRequestMode.Preflight,
+    repoFullName: "acme/widgets",
+    headRepoFullName: "daveth/widgets",
+  });
+  assert.equal(api.calls[1]?.body.mode, DesktopGithubPullRequestMode.Create);
+  assert.equal(api.calls[1]?.body.repoFullName, "acme/widgets");
+  assert.equal(api.calls[1]?.body.headRepoFullName, "daveth/widgets");
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr does not fetch or push without a desktop session token", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([]);
+
+  const response = await dispatchCreate(repoDir, api.fetch, {}, null);
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.AuthenticationRequired
+  );
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(api.calls.length, 0);
+  assert.equal(await commandWasRun(gitLog, "push"), false);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr times out stalled git push without create API or gh fallback", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture({
+    pushScript: "sleep 5\nexit 0",
+  });
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+  ]);
+
+  const response = await dispatchCreate(
+    repoDir,
+    api.fetch,
+    {},
+    "desktop-token",
+    { gitPushTimeoutMs: 50 }
+  );
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.TransientUnavailable
+  );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.TransientUnavailable
+  );
+  assert.equal(response.body.stage, DesktopGithubPullRequestStage.GitPush);
+  assert.equal(response.body.retryable, true);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(api.calls.length, 1);
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr reports push auth failures without create API or gh fallback", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture({
+    pushScript:
+      "echo 'remote: Permission denied' >&2\necho 'fatal: Authentication failed' >&2\nexit 128",
+  });
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+  ]);
+
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.AuthorizationDenied
+  );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.AuthorizationDenied
+  );
+  assert.equal(response.body.stage, DesktopGithubPullRequestStage.GitPush);
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(api.calls.length, 1);
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr classifies push failures from stderr only", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture({
+    revParseScript: "printf 'feature/network-retry\\n'",
+    pushScript: "echo 'remote: rejected push' >&2\nexit 128",
+  });
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+  ]);
+
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(
+    response.body.code,
+    DesktopGithubPullRequestErrorCode.ProviderRejected
+  );
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.ProviderRejected
+  );
+  assert.equal(response.body.stage, DesktopGithubPullRequestStage.GitPush);
+  assert.equal(response.body.retryable, false);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+});
+
+test("POST /api/gateway/git/pr reports post-push create failure without false success", async () => {
+  const { repoDir, gitLog, ghLog } = await makeBinaryFixture();
+  const api = makeFetch([
+    successResponse({
+      success: true,
+      contractVersion: 1,
+      mode: DesktopGithubPullRequestSuccessMode.Preflight,
+      status: DesktopGithubPullRequestStatus.Available,
+      repository: {
+        fullName: "acme/widgets",
+        defaultBranch: "main",
+      },
+      identity: { login: "daveth" },
+    }),
+    jsonResponse(
+      {
+        success: false,
+        error: "GitHub pull request service is temporarily unavailable.",
+        code: DesktopGithubPullRequestErrorCode.TransientUnavailable,
+        details: {
+          reason: DesktopGithubPullRequestReason.TransientUnavailable,
+          stage: DesktopGithubPullRequestStage.ApiCreate,
+          retryable: true,
+          burnRetryBudget: false,
+        },
+      },
+      503
+    ),
+  ]);
+
+  const response = await dispatchCreate(repoDir, api.fetch);
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.success, false);
+  assert.equal(
+    response.body.reason,
+    DesktopGithubPullRequestReason.TransientUnavailable
+  );
+  assert.equal(response.body.stage, DesktopGithubPullRequestStage.ApiCreate);
+  assert.equal(response.body.retryable, true);
+  assert.equal(response.body.burnRetryBudget, false);
+  assert.equal(await commandWasRun(gitLog, "push"), true);
+  assert.equal(await exists(ghLog), false);
+});
+
+function dispatchCreate(
+  repoDir: string,
+  fetchImpl: typeof fetch,
+  extraBody: Record<string, unknown> = {},
+  token: string | null = "desktop-token",
+  apiOptions: { gitPushTimeoutMs?: number } = {}
+): ReturnType<typeof dispatchOperation> {
+  const dispatcher = new OperationDispatcher();
+  registerGitPrCreateRoute(dispatcher, () => [repoDir], {
+    fetch: fetchImpl,
+    getAccessToken: () => Promise.resolve(token),
+    getApiOrigin: () => "https://api.closedloop.test",
+    ...apiOptions,
+  });
+  return dispatchOperation({
+    dispatcher,
     method: "POST",
-    pathname: "/api/gateway/git/pr",
+    pathname: DesktopGithubPullRequestApiPath.LegacyGatewayPullRequest,
     body: JSON.stringify({
-      repoPath: dir,
-      title: "My PR",
-      body: "some description",
-      ticketUrl: "https://linear.app/my-team/issue/ABC-123",
+      repoPath: repoDir,
+      title: "Retire gh PR creation",
+      body: "Use the server-backed API",
+      ...extraBody,
     }),
   });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.success, true);
-  assert.equal(res.body.number, 7);
-});
+}
 
-// ─── git-pr-create.ts: viewExistingPullRequest (L59) ─────────────────────────
+type BinaryFixtureOptions = {
+  revParseScript?: string;
+  remoteScript?: string;
+  pushScript?: string;
+};
 
-test("POST /pr: gh pr create fails with already-exists → viewExistingPullRequest succeeds → 200 (L59)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
+async function makeBinaryFixture(options: BinaryFixtureOptions = {}): Promise<{
+  repoDir: string;
+  gitLog: string;
+  ghLog: string;
+}> {
+  const repoDir = makeTempDir();
+  const binDir = await mkdtemp(path.join(tmpdir(), "iss8637-pr-bin-"));
+  tempDirs.push(binDir);
+  const gitLog = path.join(binDir, "git.log");
+  const ghLog = path.join(binDir, "gh.log");
+  const gitBin = path.join(binDir, "git");
+  const ghBin = path.join(binDir, "gh");
+  await writeFile(
+    gitBin,
     `#!/bin/sh
-case "$2" in
-  create) printf 'A pull request already exists for this branch.\\n' >&2; exit 1 ;;
-  view) printf '{"url":"https://github.com/o/r/pull/55","number":55}\\n' ;;
-  *) exit 0 ;;
-esac`
-  );
-  const gitBin = await makeExec(binDir, "git", "#!/bin/sh\nprintf 'main\\n'");
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
-    method: "POST",
-    pathname: "/api/gateway/git/pr",
-    body: JSON.stringify({ repoPath: dir, title: "My PR" }),
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.success, true);
-  assert.ok(String(res.body.message).includes("already exists"));
-  assert.equal(res.body.number, 55);
-});
-
-// ─── git-pr-create.ts: non-URL from pr create → readPullRequestView (L168, L175)
-
-test("POST /pr: non-URL from gh pr create falls through to readPullRequestView (L168, L175)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
-    `#!/bin/sh
-case "$2" in
-  create) printf 'PR was created successfully\\n' ;;
-  view) printf '{"url":"https://github.com/o/r/pull/77","number":77}\\n' ;;
-  *) exit 0 ;;
-esac`
-  );
-  const gitBin = await makeExec(binDir, "git", "#!/bin/sh\nprintf 'main\\n'");
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
-    method: "POST",
-    pathname: "/api/gateway/git/pr",
-    body: JSON.stringify({ repoPath: dir, title: "My PR" }),
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.number, 77);
-  assert.ok(String(res.body.message).includes("77"));
-});
-
-// ─── git-pr-create.ts: labels present, prNumber absent (L281, L288) ───────────
-
-test("POST /pr: labels requested but prNumber unavailable → labelsApplied false (L281, L288)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  // gh pr view returns no number field
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
-    `#!/bin/sh
-case "$2" in
-  create) printf 'PR was created\\n' ;;
-  view) printf '{"url":"https://github.com/o/r/pull/99"}\\n' ;;
-  *) exit 0 ;;
-esac`
-  );
-  const gitBin = await makeExec(binDir, "git", "#!/bin/sh\nprintf 'main\\n'");
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
-    method: "POST",
-    pathname: "/api/gateway/git/pr",
-    body: JSON.stringify({
-      repoPath: dir,
-      title: "My PR",
-      labels: [{ name: "bug", color: "ff0000" }],
-    }),
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.labelsApplied, false);
-  const unapplied = res.body.unappliedLabels as string[];
-  assert.ok(Array.isArray(unapplied));
-  assert.ok(unapplied.includes("bug"));
-});
-
-// ─── git-pr-create.ts: applyPullRequestLabels no GitHub remote (L337) ─────────
-
-test("POST /pr: labels requested but git remote is not GitHub → unapplied labels reported (L337)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
-    '#!/bin/sh\nprintf "https://github.com/owner/repo/pull/42\\n"'
-  );
-  const gitBin = await makeExec(
-    binDir,
-    "git",
-    `#!/bin/sh
+echo "$@" >> ${JSON.stringify(gitLog)}
 case "$1" in
-  rev-parse) printf 'main\\n' ;;
-  remote) printf 'https://gitlab.com/owner/repo.git\\n' ;;
-  *) exit 0 ;;
-esac`
-  );
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
-    method: "POST",
-    pathname: "/api/gateway/git/pr",
-    body: JSON.stringify({
-      repoPath: dir,
-      title: "My PR",
-      labels: [{ name: "feature", color: "0075ca" }],
-    }),
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.labelsApplied, false);
-});
-
-// ─── git-pr-create.ts: listRepositoryLabelNames catch (L416), description (L440)
-
-test("POST /pr: label-list gh call fails → catch returns [] → label creation proceeds (L416, L440)", {
-  timeout: 10_000,
-}, async () => {
-  const binDir = makeTempDir();
-  // Fail label listing; succeed for pr create and label add calls.
-  const ghBin = await makeExec(
-    binDir,
-    "gh",
-    `#!/bin/sh
-for arg in "$@"; do
-  case "$arg" in
-    *"labels?per_page"*) printf 'label list error\\n' >&2; exit 1 ;;
-  esac
-done
-case "$2" in
-  create) printf 'https://github.com/myowner/myrepo/pull/42\\n' ;;
+  rev-parse) ${options.revParseScript ?? "printf 'feat/no-gh\\n'"} ;;
+  remote) ${options.remoteScript ?? "printf 'git@github.com:acme/widgets.git\\n'"} ;;
+  push) ${options.pushScript ?? "exit 0"} ;;
+  *) exit 1 ;;
 esac
-exit 0`
+`,
+    { mode: 0o755 }
   );
-  const gitBin = await makeExec(
-    binDir,
-    "git",
+  await writeFile(
+    ghBin,
     `#!/bin/sh
-case "$1" in
-  rev-parse) printf 'main\\n' ;;
-  remote) printf 'https://github.com/myowner/myrepo.git\\n' ;;
-  *) exit 0 ;;
-esac`
+echo "$@" >> ${JSON.stringify(ghLog)}
+exit 2
+`,
+    { mode: 0o755 }
   );
-  configureBinaryPathsResolver(() => ({ gh: ghBin, git: gitBin }));
-  const dir = makeTempDir();
-  const res = await dispatchOperation({
-    dispatcher: makeCreateDispatcher([dir]),
-    method: "POST",
-    pathname: "/api/gateway/git/pr",
-    body: JSON.stringify({
-      repoPath: dir,
-      title: "My PR",
-      labels: [{ name: "feat", color: "0075ca", description: "A new feature" }],
-    }),
+  await chmod(gitBin, 0o755);
+  await chmod(ghBin, 0o755);
+  configureBinaryPathsResolver(() => ({ git: gitBin, gh: ghBin }));
+  return { repoDir, gitLog, ghLog };
+}
+
+type FetchCall = {
+  url: string;
+  method?: string;
+  body: Record<string, unknown>;
+  authorization?: string;
+};
+
+function makeFetch(responses: Array<Response | Error>): {
+  fetch: typeof fetch;
+  calls: FetchCall[];
+} {
+  const calls: FetchCall[] = [];
+  const fetchImpl = (
+    input: RequestInfo | URL,
+    init?: RequestInit
+  ): Promise<Response> => {
+    calls.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+      ...methodField(init?.method),
+      ...authorizationHeader(init?.headers),
+    });
+    const next = responses.shift();
+    if (!next) {
+      return Promise.reject(new Error("Unexpected fetch call"));
+    }
+    if (next instanceof Error) {
+      return Promise.reject(next);
+    }
+    return Promise.resolve(next);
+  };
+  return { fetch: fetchImpl as typeof fetch, calls };
+}
+
+function methodField(
+  method: string | undefined
+): Pick<FetchCall, "method"> | Record<string, never> {
+  return method ? { method } : {};
+}
+
+function authorizationHeader(
+  headers: HeadersInit | undefined
+): Pick<FetchCall, "authorization"> | Record<string, never> {
+  const authorization = new Headers(headers).get("authorization");
+  return authorization ? { authorization } : {};
+}
+
+function successResponse(body: Record<string, unknown>): Response {
+  return jsonResponse({ success: true, data: body }, 200);
+}
+
+function jsonResponse(body: Record<string, unknown>, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
   });
-  // Label list catch returns []; createRepositoryLabel runs with description
-  // arg (L440); label add succeeds.
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.success, true);
-});
+}
+
+async function commandWasRun(
+  logPath: string,
+  command: string
+): Promise<boolean> {
+  const contents = await readText(logPath);
+  return contents.split("\n").some((line) => line.startsWith(command));
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readText(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}

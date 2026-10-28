@@ -21,9 +21,7 @@ export const analyticsKeys = {
     [...analyticsKeys.all, "token-trend", slug] as const,
 };
 
-// ---------------------------------------------------------------------------
 // Ranking query (GET /agent-components/ranking)
-// ---------------------------------------------------------------------------
 
 /**
  * Fetches the org-wide component ranking leaderboard.
@@ -39,9 +37,7 @@ export function useAgentComponentRanking() {
   });
 }
 
-// ---------------------------------------------------------------------------
 // Promote mutation (POST /agent-components/promote)
-// ---------------------------------------------------------------------------
 
 /**
  * Promotes a discovered AgentComponent to a CatalogItem + Distribution targeting all.

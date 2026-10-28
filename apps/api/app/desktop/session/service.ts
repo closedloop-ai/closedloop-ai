@@ -139,6 +139,7 @@ export async function issueDesktopSessionCredentials(
         tokenHash: hashToken(refreshToken),
         expiresAt: refreshTokenExpiresAt,
       },
+      select: { id: true },
     });
     return access;
   });
@@ -209,6 +210,10 @@ export const desktopSessionService = {
           id: input.deviceSessionId,
           deviceSessionSecretHash: hashToken(input.deviceSessionSecret),
         },
+        // The secret hash is a WHERE predicate, never a value this flow needs
+        // back; leaving it in the RETURNING list put a live credential digest
+        // in memory for no read.
+        select: DEVICE_SESSION_EXCHANGE_SELECT,
       })
     );
 
@@ -399,14 +404,20 @@ export const desktopSessionService = {
           expiresAt: refreshTokenExpiresAt,
           rotatedFromTokenId: current.id,
         },
+        // ISS-9195: only the new row's id is read, to back-link the token it
+        // replaced. Matches the issuance create above; unnarrowed this one
+        // returned the stored refresh-token hash for no reader.
+        select: { id: true },
       });
       await tx.desktopRefreshToken.update({
         where: { id: current.id },
         data: { replacedByTokenId: created.id },
+        select: { id: true },
       });
       await tx.desktopSession.update({
         where: { id: current.sessionId },
         data: { expiresAt: refreshTokenExpiresAt, lastUsedAt: now },
+        select: { id: true },
       });
       return issueDesktopAccessToken({
         userId: session.userId,
@@ -474,3 +485,32 @@ export const desktopSessionService = {
     return Result.ok(true);
   },
 };
+
+/** The columns `exchange` reads off the approved device-onboarding row. */
+type DeviceSessionExchangeRow = {
+  id: string;
+  status: string;
+  expiresAt: Date;
+  userId: string | null;
+  organizationId: string | null;
+  onboardingAttemptId: string | null;
+  gatewayId: string;
+  gatewayPublicKeyPem: string;
+  machineName: string;
+  platform: string;
+  desktopVersion: string;
+};
+
+const DEVICE_SESSION_EXCHANGE_SELECT = {
+  id: true,
+  status: true,
+  expiresAt: true,
+  userId: true,
+  organizationId: true,
+  onboardingAttemptId: true,
+  gatewayId: true,
+  gatewayPublicKeyPem: true,
+  machineName: true,
+  platform: true,
+  desktopVersion: true,
+} as const satisfies Record<keyof DeviceSessionExchangeRow, true>;

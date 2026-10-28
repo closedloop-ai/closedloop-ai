@@ -1,11 +1,5 @@
 "use client";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@closedloop-ai/design-system/components/ui/avatar";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import { Checkbox } from "@closedloop-ai/design-system/components/ui/checkbox";
+import { PersonAvatar } from "@closedloop-ai/design-system/components/ui/person-avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,35 +11,50 @@ import {
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
 } from "@closedloop-ai/design-system/components/ui/dropdown-menu";
+import { useHeldMenuOptions } from "@closedloop-ai/design-system/hooks/use-held-menu-options";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
-  CalendarIcon,
   CheckIcon,
-  EyeOffIcon,
-  ListFilterIcon,
   SearchIcon,
-  StarIcon,
-  TagIcon,
-  UserIcon,
-  UsersIcon,
   XIcon,
 } from "lucide-react";
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 import {
+  getInitials,
+  OptionCount,
+  OptionLeadingVisual,
+  TagVisual,
+} from "./internal/filter-visuals";
+import {
+  FilterOptionContent,
+  FilterRow,
+} from "./internal/filter-option-row";
+import { FilterPopoverTrigger } from "./internal/filter-popover-trigger";
+import {
   isFilterMenuGroupActive,
-  LeadingVisual,
+  RangeFilterContent,
   RangeSubmenu,
 } from "./filter-range-submenu";
-import { StatusIcon } from "./status-icon";
 import {
   TABLE_DATE_PRESET_LABELS,
   TableDateFilterField,
   TableDatePreset,
+  type FilterMenuGroup,
+  type FilterRangeGroup,
   type TableFilterLabels,
   type TableFilterDatePresetOption,
   type TableFilterOption,
+  type TableFiltersController,
+  type TableFiltersViewModel,
+} from "./table-filters";
+
+export {
+  TableDateFilterField,
+  TableDatePreset,
+  type FilterMenuGroup,
+  type TableFilterCategory,
+  type TableFiltersState,
   type TableFiltersController,
   type TableFiltersViewModel,
 } from "./table-filters";
@@ -56,12 +65,27 @@ type FilterPopoverProps<
 > = {
   controller: TableFiltersController<TStatus, TPriority>;
   viewModel: TableFiltersViewModel<TStatus, TPriority>;
+  /** Optional controlled open state, useful when a table header delegates into this menu. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * Optional Asana-style clear action rendered beside the active trigger.
+   * Opt-in: supplying it is also what turns on the tinted active trigger, so a
+   * toolbar that does not ask for the affordance keeps the plain outline
+   * trigger it has today.
+   */
+  onClear?: () => void;
   /**
    * Optional free-text filter rendered as a search field at the top of the
    * menu. Filters the underlying table by text — independent of the facet
    * filters below it.
    */
   textFilter?: TableTextFilter;
+  /** Preserve a host's existing range-menu behavior while using this filter family. */
+  renderRangeSubmenu?: (
+    group: FilterRangeGroup,
+    clearLabel: string
+  ) => ReactNode;
 };
 
 export type TableTextFilter = {
@@ -105,8 +129,21 @@ const DEFAULT_DATE_PRESETS: TableFilterDatePresetOption[] = [
 export function FilterPopover<
   TStatus extends string = string,
   TPriority extends string = string,
->({ controller, viewModel, textFilter }: FilterPopoverProps<TStatus, TPriority>) {
-  const [open, setOpen] = useState(false);
+>({
+  controller,
+  viewModel,
+  textFilter,
+  open: controlledOpen,
+  onOpenChange,
+  onClear,
+  renderRangeSubmenu,
+}: FilterPopoverProps<TStatus, TPriority>) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (nextOpen: boolean) => {
+    setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  };
   const labels = useLabels(viewModel.labels);
   // Count of applied filters: when generic facet groups drive the menu, count
   // the groups that are active (an options facet with a selection, or a range
@@ -116,29 +153,23 @@ export function FilterPopover<
   const facetFilterCount = viewModel.facetGroups
     ? viewModel.facetGroups.filter(isFilterMenuGroupActive).length
     : controller.activeChips.length;
+  const additionalFacetFilterCount =
+    viewModel.additionalFacetGroups?.filter(isFilterMenuGroupActive).length ?? 0;
   const filterCount =
-    facetFilterCount + ((textFilter?.value ?? "").length > 0 ? 1 : 0);
+    facetFilterCount +
+    additionalFacetFilterCount +
+    ((textFilter?.value ?? "").length > 0 ? 1 : 0);
 
   return (
     <DropdownMenu onOpenChange={setOpen} open={open}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-label={labels.filterButton}
-          className="h-8 shadow-none"
-          size="sm"
-          variant="outline"
-        >
-          <ListFilterIcon />
-          {labels.filterButton}
-          {filterCount > 0 ? (
-            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-medium text-[10px] text-primary-foreground tabular-nums">
-              {filterCount}
-            </span>
-          ) : null}
-        </Button>
-      </DropdownMenuTrigger>
+      <FilterPopoverTrigger
+        filterCount={filterCount}
+        label={labels.filterButton}
+        onClear={onClear}
+      />
       <FilterMenuContent
         controller={controller}
+        renderRangeSubmenu={renderRangeSubmenu}
         textFilter={textFilter}
         viewModel={viewModel}
       />
@@ -149,7 +180,12 @@ export function FilterPopover<
 export function FilterMenuContent<
   TStatus extends string = string,
   TPriority extends string = string,
->({ controller, viewModel, textFilter }: FilterPopoverProps<TStatus, TPriority>) {
+>({
+  controller,
+  viewModel,
+  textFilter,
+  renderRangeSubmenu,
+}: FilterPopoverProps<TStatus, TPriority>) {
   const labels = useLabels(viewModel.labels);
   const {
     filters,
@@ -183,35 +219,12 @@ export function FilterMenuContent<
           />
         )}
         <DropdownMenuGroup>
-          {viewModel.facetGroups.map((group) => {
-            if (group.kind === "range") {
-              return (
-                <RangeSubmenu
-                  clearLabel={labels.clear}
-                  group={group}
-                  key={group.id}
-                />
-              );
-            }
-            return (
-              <OptionsSubmenu
-                count={group.selectedValues.length}
-                emptyLabel={group.emptyLabel}
-                icon={
-                  group.icon ? (
-                    <LeadingVisual>{group.icon}</LeadingVisual>
-                  ) : undefined
-                }
-                key={group.id}
-                label={group.label}
-                onToggle={group.onToggle}
-                options={group.options}
-                searchPlaceholder={labels.filterSearchPlaceholder}
-                selectedValues={group.selectedValues}
-                submenuClassName={group.submenuClassName ?? "w-60"}
-              />
-            );
-          })}
+          <FacetGroupItems
+            clearLabel={labels.clear}
+            groups={viewModel.facetGroups}
+            renderRangeSubmenu={renderRangeSubmenu}
+            searchPlaceholder={labels.filterSearchPlaceholder}
+          />
         </DropdownMenuGroup>
       </DropdownMenuContent>
     );
@@ -236,50 +249,47 @@ export function FilterMenuContent<
               toggleAssignToMe();
             }}
           >
-            <Avatar className="size-[18px] shrink-0">
-              {viewModel.currentUser.avatarUrl && (
-                <AvatarImage alt="" src={viewModel.currentUser.avatarUrl} />
-              )}
-              <AvatarFallback className="text-[9px]">
-                {getInitials(viewModel.currentUser.name)}
-              </AvatarFallback>
-            </Avatar>
+            <PersonAvatar
+              avatarUrl={viewModel.currentUser.avatarUrl}
+              className="size-[18px] shrink-0"
+              fallbackClassName="text-[9px]"
+              initials={getInitials(viewModel.currentUser.name)}
+              name={viewModel.currentUser.name}
+            />
             <span className={cn(filters.assignToMe && "font-medium")}>
               {labels.assignToMe}
             </span>
             {filters.assignToMe && <CheckIcon className="ml-auto size-4" />}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem
-          onSelect={(event) => {
-            event.preventDefault();
-            toggleHideCompletedItems();
-          }}
-        >
-          <LeadingVisual>
-            <EyeOffIcon className="size-3.5" />
-          </LeadingVisual>
-          <span className={cn(filters.hideCompletedItems && "font-medium")}>
-            {labels.hideCompletedItems}
-          </span>
-          {filters.hideCompletedItems && (
-            <CheckIcon className="ml-auto size-4" />
-          )}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onSelect={(event) => {
-            event.preventDefault();
-            toggleFavoritesOnly();
-          }}
-        >
-          <LeadingVisual>
-            <StarIcon className="size-3.5" />
-          </LeadingVisual>
-          <span className={cn(filters.favoritesOnly && "font-medium")}>
-            {labels.favoritesOnly}
-          </span>
-          {filters.favoritesOnly && <CheckIcon className="ml-auto size-4" />}
-        </DropdownMenuItem>
+        {!viewModel.hideCompletedToggle && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              toggleHideCompletedItems();
+            }}
+          >
+            <span className={cn(filters.hideCompletedItems && "font-medium")}>
+              {labels.hideCompletedItems}
+            </span>
+            {filters.hideCompletedItems && (
+              <CheckIcon className="ml-auto size-4" />
+            )}
+          </DropdownMenuItem>
+        )}
+        {!viewModel.hideFavoritesToggle && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              toggleFavoritesOnly();
+            }}
+          >
+            <span className={cn(filters.favoritesOnly && "font-medium")}>
+              {labels.favoritesOnly}
+            </span>
+            {filters.favoritesOnly && <CheckIcon className="ml-auto size-4" />}
+          </DropdownMenuItem>
+        )}
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
       </>
@@ -294,7 +304,6 @@ export function FilterMenuContent<
         )}
         <OptionsSubmenu
           count={statusTotal}
-          icon={<LeadingVisual><StatusIcon status="decorative" /></LeadingVisual>}
           label={labels.status}
           options={viewModel.statusOptions}
           searchPlaceholder={labels.filterSearchPlaceholder}
@@ -302,16 +311,17 @@ export function FilterMenuContent<
           submenuClassName="w-60"
           onToggle={toggleStatus}
         />
-        <OptionsSubmenu
-          count={priorityTotal}
-          icon={<LeadingVisual>{viewModel.priorityOptions[0]?.icon}</LeadingVisual>}
-          label={labels.priority}
-          options={viewModel.priorityOptions}
-          searchPlaceholder={labels.filterSearchPlaceholder}
-          selectedValues={filters.priorities}
-          submenuClassName="w-56"
-          onToggle={togglePriority}
-        />
+        {!viewModel.hidePriority && (
+          <OptionsSubmenu
+            count={priorityTotal}
+            label={labels.priority}
+            options={viewModel.priorityOptions}
+            searchPlaceholder={labels.filterSearchPlaceholder}
+            selectedValues={filters.priorities}
+            submenuClassName="w-56"
+            onToggle={togglePriority}
+          />
+        )}
         <DatesSubmenu
           controller={controller}
           datePresetOptions={datePresetOptions}
@@ -326,8 +336,58 @@ export function FilterMenuContent<
           />
         )}
       </DropdownMenuGroup>
+      {viewModel.additionalFacetGroups?.length ? (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <FacetGroupItems
+              clearLabel={labels.clear}
+              groups={viewModel.additionalFacetGroups}
+              renderRangeSubmenu={renderRangeSubmenu}
+              searchPlaceholder={labels.filterSearchPlaceholder}
+            />
+          </DropdownMenuGroup>
+        </>
+      ) : null}
     </DropdownMenuContent>
   );
+}
+
+function FacetGroupItems({
+  clearLabel,
+  groups,
+  renderRangeSubmenu,
+  searchPlaceholder,
+}: {
+  clearLabel: string;
+  groups: FilterMenuGroup[];
+  renderRangeSubmenu?: FilterPopoverProps["renderRangeSubmenu"];
+  searchPlaceholder: string;
+}) {
+  return groups.map((group) => {
+    if (group.kind === "range") {
+      if (renderRangeSubmenu) {
+        return <Fragment key={group.id}>{renderRangeSubmenu(group, clearLabel)}</Fragment>;
+      }
+      return (
+        <RangeSubmenu clearLabel={clearLabel} group={group} key={group.id} />
+      );
+    }
+    return (
+      <OptionsSubmenu
+        count={group.selectedValues.length}
+        emptyLabel={group.emptyLabel}
+        key={group.id}
+        label={group.label}
+        onSearchChange={group.onSearchChange}
+        onToggle={group.onToggle}
+        options={group.options}
+        searchPlaceholder={searchPlaceholder}
+        selectedValues={group.selectedValues}
+        submenuClassName={group.submenuClassName ?? "w-60"}
+      />
+    );
+  });
 }
 
 export function AssigneeFilterContent<
@@ -336,7 +396,8 @@ export function AssigneeFilterContent<
 >({ controller, viewModel }: FilterPopoverProps<TStatus, TPriority>) {
   const labels = useLabels(viewModel.labels);
   const [search, setSearch] = useState("");
-  const filteredMembers = viewModel.teamMembers.filter((member) =>
+  const heldMembers = useHeldMenuOptions(viewModel.teamMembers);
+  const filteredMembers = heldMembers.filter((member) =>
     (member.searchText ?? member.label)
       .toLowerCase()
       .includes(search.toLowerCase())
@@ -462,55 +523,40 @@ export function TagsFilterContent<
   TStatus extends string = string,
   TPriority extends string = string,
 >({ controller, viewModel }: FilterPopoverProps<TStatus, TPriority>) {
-  const labels = useLabels(viewModel.labels);
-  const tagOptions = viewModel.tagOptions ?? [];
-
-  if (tagOptions.length === 0) {
-    return <DropdownMenuItem disabled>{labels.noTags}</DropdownMenuItem>;
-  }
-
   return (
-    <>
-      {tagOptions.map((tag) => (
-        <FilterRow
-          checked={controller.filters.tagIds.includes(tag.id)}
-          key={tag.id}
-          onToggle={() => controller.toggleTag(tag.id)}
-        >
-          <TagVisual option={tag} />
-          <span className="min-w-0 flex-1 truncate">{tag.label}</span>
-          <OptionCount count={tag.count} />
-        </FilterRow>
-      ))}
-    </>
+    <TagRows
+      emptyLabel={useLabels(viewModel.labels).noTags}
+      options={viewModel.tagOptions ?? []}
+      selectedTagIds={controller.filters.tagIds}
+      toggleTag={controller.toggleTag}
+    />
   );
 }
 
 function OptionsSubmenu<TValue extends string>({
   count,
   emptyLabel,
-  icon,
   label,
   options,
   searchPlaceholder,
   selectedValues,
   submenuClassName,
   onToggle,
+  onSearchChange,
 }: {
   count: number;
   emptyLabel?: string;
-  icon?: ReactNode;
   label: string;
   options: TableFilterOption<TValue>[];
   searchPlaceholder: string;
   selectedValues: TValue[];
   submenuClassName: string;
   onToggle: (value: TValue) => void;
+  onSearchChange?: (search: string) => void;
 }) {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        {icon}
         <span className="flex-1">{label}</span>
         {count > 0 && (
           <span className="text-muted-foreground text-xs">{count}</span>
@@ -523,6 +569,7 @@ function OptionsSubmenu<TValue extends string>({
             options={options}
             searchPlaceholder={searchPlaceholder}
             selectedValues={selectedValues}
+            onSearchChange={onSearchChange}
             onToggle={onToggle}
           />
         </DropdownMenuSubContent>
@@ -531,37 +578,48 @@ function OptionsSubmenu<TValue extends string>({
   );
 }
 
-function OptionsFilterContent<TValue extends string>({
+export function OptionsFilterContent<TValue extends string>({
   emptyLabel,
   options,
   searchPlaceholder,
   selectedValues,
   onToggle,
+  onSearchChange,
 }: {
   emptyLabel?: string;
   options: TableFilterOption<TValue>[];
   searchPlaceholder: string;
   selectedValues: TValue[];
   onToggle: (value: TValue) => void;
+  onSearchChange?: (search: string) => void;
 }) {
   const [search, setSearch] = useState("");
+  const heldOptions = useHeldMenuOptions(options);
 
   // A facet with zero options renders a disabled explanatory row instead of a
   // bare search box, mirroring the built-in tags submenu — "nothing to filter
   // by", not broken/loading. Only when the host supplied a message; otherwise
   // keep the prior (empty) behavior for callers that never pass one.
+  //
+  // Gated on the LIVE list, not the held one: the held list is monotonic, so
+  // reading it here would make the empty row unreachable for the rest of an open
+  // session once any option had been seen, leaving a facet that genuinely
+  // emptied out showing stale rows that no longer exist. Holding rows through a
+  // narrowing list is the point; claiming a facet still has rows when it has
+  // none is the UI lying. This does not give the churn back — a live list that
+  // has gone empty has no row left worth protecting a click for.
   if (options.length === 0 && emptyLabel) {
     return <DropdownMenuItem disabled>{emptyLabel}</DropdownMenuItem>;
   }
 
-  const filteredOptions = options.filter((option) =>
+  const filteredOptions = heldOptions.filter((option) =>
     (option.searchText ?? option.label).toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <>
       <SubMenuSearch
-        onChange={setSearch}
+        onChange={(value) => { setSearch(value); onSearchChange?.(value); }}
         placeholder={searchPlaceholder}
         value={search}
       />
@@ -582,21 +640,41 @@ function OptionsFilterContent<TValue extends string>({
               checked={checked}
               onToggle={() => onToggle(option.id)}
             >
-              <OptionLeadingVisual option={option} />
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate",
-                  checked && "font-medium"
-                )}
-              >
-                {option.label}
-              </span>
+              <FilterOptionContent checked={checked} option={option} />
               <OptionCount count={option.count} />
             </FilterRow>
           </Fragment>
         );
       })}
     </>
+  );
+}
+
+/**
+ * Direct controls for one host-defined facet. Used by column header menus,
+ * where the surrounding Filter submenu is already provided by the grid.
+ */
+export function FilterGroupContent({
+  clearLabel = "Clear",
+  group,
+  searchPlaceholder = "Filter...",
+}: {
+  clearLabel?: string;
+  group: FilterMenuGroup;
+  searchPlaceholder?: string;
+}) {
+  if (group.kind === "range") {
+    return <RangeFilterContent clearLabel={clearLabel} group={group} />;
+  }
+  return (
+    <OptionsFilterContent
+      emptyLabel={group.emptyLabel}
+      options={group.options}
+      searchPlaceholder={searchPlaceholder}
+      selectedValues={group.selectedValues}
+      onSearchChange={group.onSearchChange}
+        onToggle={group.onToggle}
+    />
   );
 }
 
@@ -613,9 +691,6 @@ function AssigneeSubmenu<
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <LeadingVisual>
-          <UsersIcon className="size-3.5" />
-        </LeadingVisual>
         <span className="flex-1">{labels.assignee}</span>
         {controller.filters.assigneeIds.length > 0 && (
           <span className="text-muted-foreground text-xs">
@@ -647,9 +722,6 @@ function DatesSubmenu<
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <LeadingVisual>
-          <CalendarIcon className="size-3.5" />
-        </LeadingVisual>
         <span className="flex-1">{labels.dates}</span>
         {controller.filters.date && (
           <span className="text-muted-foreground text-xs">1</span>
@@ -692,7 +764,6 @@ function DateFieldSubmenu<
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <CalendarIcon className="size-4" />
         <span className="flex-1">{label}</span>
       </DropdownMenuSubTrigger>
       <DropdownMenuPortal>
@@ -722,9 +793,6 @@ function TagsSubmenu({
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <LeadingVisual>
-          <TagIcon className="size-3.5" />
-        </LeadingVisual>
         <span className="flex-1">{labels.tags}</span>
         {selectedTagIds.length > 0 && (
           <span className="text-muted-foreground text-xs">
@@ -734,32 +802,18 @@ function TagsSubmenu({
       </DropdownMenuSubTrigger>
       <DropdownMenuPortal>
         <DropdownMenuSubContent className="w-56">
-          {options.length === 0 ? (
-            <DropdownMenuItem disabled>{labels.noTags}</DropdownMenuItem>
-          ) : (
-            options.map((tag) => (
-              <FilterRow
-                checked={selectedTagIds.includes(tag.id)}
-                key={tag.id}
-                onToggle={() => toggleTag(tag.id)}
-              >
-                <TagVisual option={tag} />
-                <span className="min-w-0 flex-1 truncate">{tag.label}</span>
-                <OptionCount count={tag.count} />
-              </FilterRow>
-            ))
-          )}
+          <TagRows
+            emptyLabel={labels.noTags}
+            options={options}
+            selectedTagIds={selectedTagIds}
+            toggleTag={toggleTag}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuPortal>
     </DropdownMenuSub>
   );
 }
 
-/**
- * Fixed-width box for a menu item's leading icon. Keeps every leading visual the
- * same footprint (so the text labels stay aligned) while letting the avatar fill
- * the box and the icons sit padded/centered inside it.
- */
 function FilterTextSearch({
   value,
   onChange,
@@ -825,82 +879,6 @@ function SubMenuSearch({
   );
 }
 
-function FilterRow({
-  checked,
-  onToggle,
-  children,
-}: {
-  checked: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <DropdownMenuItem
-      className="gap-2"
-      onSelect={(event) => {
-        event.preventDefault();
-        onToggle();
-      }}
-    >
-      <Checkbox
-        checked={checked}
-        className="[&_svg]:!text-current pointer-events-none"
-      />
-      {children}
-    </DropdownMenuItem>
-  );
-}
-
-function OptionLeadingVisual({ option }: { option: TableFilterOption }) {
-  if (option.avatarUrl) {
-    return (
-      <Avatar className="size-5">
-        <AvatarImage alt="" src={option.avatarUrl} />
-        <AvatarFallback className="text-[10px]">
-          {getInitials(option.label)}
-        </AvatarFallback>
-      </Avatar>
-    );
-  }
-
-  if (option.icon) {
-    return <div className="flex size-5 items-center justify-center">{option.icon}</div>;
-  }
-
-  return null;
-}
-
-function TagVisual({ option }: { option: TableFilterOption }) {
-  return (
-    <div className="inline-flex min-w-0 items-center gap-2">
-      <span
-        aria-hidden="true"
-        className="size-2.5 shrink-0 rounded-full border"
-        style={{ backgroundColor: option.color, borderColor: option.color }}
-      />
-    </div>
-  );
-}
-
-function OptionCount({ count }: { count?: number }) {
-  if (count === undefined) {
-    return null;
-  }
-
-  return <span className="text-muted-foreground text-xs">{count}</span>;
-}
-
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) {
-    return "?";
-  }
-  return parts
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
 function useLabels(labels?: TableFilterLabels): Required<TableFilterLabels> {
   return useMemo(
     () => ({
@@ -911,3 +889,45 @@ function useLabels(labels?: TableFilterLabels): Required<TableFilterLabels> {
   );
 }
 
+
+/**
+ * The tag rows, shared by the built-in Tags submenu and the standalone
+ * `TagsFilterContent` chip popover so the hold cannot be wired into one and
+ * forgotten in the other. Held for the same reason the facet options are: both
+ * render portalled, keyed-by-id rows fed from the same churning query data, so
+ * a tag leaving the live list mid-click detaches the row under the pointer.
+ */
+function TagRows({
+  emptyLabel,
+  options,
+  selectedTagIds,
+  toggleTag,
+}: {
+  emptyLabel: string;
+  options: TableFilterOption[];
+  selectedTagIds: string[];
+  toggleTag: (tagId: string) => void;
+}) {
+  const heldOptions = useHeldMenuOptions(options);
+
+  // Live list, not the held one — see the note in `OptionsFilterContent`.
+  if (options.length === 0) {
+    return <DropdownMenuItem disabled>{emptyLabel}</DropdownMenuItem>;
+  }
+
+  return (
+    <>
+      {heldOptions.map((tag) => (
+        <FilterRow
+          checked={selectedTagIds.includes(tag.id)}
+          key={tag.id}
+          onToggle={() => toggleTag(tag.id)}
+        >
+          <TagVisual option={tag} />
+          <span className="min-w-0 flex-1 truncate">{tag.label}</span>
+          <OptionCount count={tag.count} />
+        </FilterRow>
+      ))}
+    </>
+  );
+}

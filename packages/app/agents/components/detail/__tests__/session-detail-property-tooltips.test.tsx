@@ -1,3 +1,4 @@
+import { SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -99,9 +100,15 @@ const CACHE_WRITE_SESSION = createAgentSessionDetailFixture({
 });
 const CACHE_WRITE_FULL_VALUE = "48,360,000 (5m TTL) | 12,480,000 (1h TTL)";
 
-function renderDetail(session = TOKENS_SESSION) {
+// ISS-7737's Tokens sentence, pinned as an independent literal rather than
+// imported from the module that declares it — the copy is the operator's, so an
+// edit to it must surface here rather than be asserted against itself.
+const TOKENS_POPULATION_NOTE =
+  "Tokens counts all round-trips, including delegated work";
+
+function renderDetail(session = TOKENS_SESSION, enabledFlags?: string[]) {
   return render(
-    <AppCoreStoryProviders>
+    <AppCoreStoryProviders enabledFlags={enabledFlags}>
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
@@ -146,12 +153,11 @@ describe("session-detail property tooltips (FEA-4026)", () => {
 
   it("keeps the clipped Cache Write split disclosed by its truncation tooltip", async () => {
     // ISS-5820 retired this row's gate ON, so it renders on packaged Desktop
-    // too. It is a plain measured value, never a hedge, so it must stay on the
-    // TRUNCATION treatment: a focusable span whose tooltip repeats the FULL
-    // split. Routing it through `ExplainedPropertyValue` instead (by giving
-    // `PropertyValue` an `explanation`) swaps the trigger for a <button> and
-    // replaces the tooltip body with the explanation, so the eight-digit value
-    // would still ellipsize with its other half no longer reachable anywhere.
+    // too. It has no sentence to say — no counter is missing and no population
+    // needs naming — so it stays on the TRUNCATION treatment: a focusable span
+    // whose tooltip body is the FULL split and nothing else. Giving it an
+    // `explanation` would swap the span trigger for a <button> and put a
+    // sentence in front of the value it does not need.
     renderDetail(CACHE_WRITE_SESSION);
     await openProperties();
 
@@ -192,5 +198,65 @@ describe("session-detail property tooltips (FEA-4026)", () => {
     expect(tooltips.some((el) => el.textContent === TOKENS_FULL_VALUE)).toBe(
       false
     );
+  });
+
+  /**
+   * ISS-7737. The population sentence lands on the Tokens row through
+   * `explanation`, which routes the value to `ExplainedPropertyValue` — the
+   * treatment that used to REPLACE this file's whole subject. That would have
+   * traded a disclosure for a disclosure: the reader gains the population and
+   * loses everything past the ellipsis, on the longest value in the pane.
+   *
+   * The tooltip therefore leads with the full value and then says the sentence.
+   * Asserted as ONE tooltip body carrying BOTH, not as two independent
+   * `some(...)` checks, because the harm is precisely the sentence arriving
+   * INSTEAD OF the value.
+   */
+  it("keeps the clipped Tokens value readable once the population sentence lands on it", async () => {
+    renderDetail(TOKENS_SESSION, [
+      SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY,
+    ]);
+    await openProperties();
+
+    const tooltips = screen.getAllByTestId("tooltip-content");
+    expect(
+      tooltips.some(
+        (el) =>
+          el.textContent?.includes(TOKENS_FULL_VALUE) &&
+          el.textContent.includes(TOKENS_POPULATION_NOTE)
+      )
+    ).toBe(true);
+  });
+
+  /**
+   * ISS-7737 (visual QA): the value line is for the EYE only. Radix wires the
+   * open tooltip as the trigger's `aria-describedby` and announces
+   * `ariaLabel || children`, so without the label a screen reader reads the
+   * whole token quadruple out of the description and then hears it a second time
+   * from the trigger's own accessible name — which already carries it, since the
+   * value is in the DOM and only visually clipped.
+   */
+  it("keeps the tooltip's announced description to the sentence alone", async () => {
+    renderDetail(TOKENS_SESSION, [
+      SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY,
+    ]);
+    await openProperties();
+
+    // The Tokens row's explained value: the trigger whose own accessible name
+    // already carries the quadruple AND the sentence, which is why the
+    // description must not repeat the quadruple.
+    const trigger = [
+      ...document.querySelectorAll(".prd-prop-value-explained"),
+    ].find((el) => el.textContent?.includes(TOKENS_FULL_VALUE));
+    expect(trigger).toBeDefined();
+    expect(trigger?.textContent).toContain(TOKENS_POPULATION_NOTE);
+
+    const labelled = screen
+      .getAllByTestId("tooltip-content")
+      .filter((el) => el.textContent?.includes(TOKENS_POPULATION_NOTE));
+    expect(labelled).toHaveLength(1);
+    // Announced: the sentence. Rendered: the value, then the sentence.
+    expect(labelled[0]).toHaveAttribute("aria-label", TOKENS_POPULATION_NOTE);
+    expect(labelled[0]?.textContent).toContain(TOKENS_FULL_VALUE);
   });
 });

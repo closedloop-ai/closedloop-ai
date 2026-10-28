@@ -6,8 +6,9 @@
  * reproducible upper-bound uplift) independently of the corpus harness.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { AutonomyBand } from "@repo/api/src/types/session-activity-metrics";
+import { test } from "vitest";
 import {
   buildDistillationReport,
   type DistillSessionInput,
@@ -27,7 +28,6 @@ import {
   type NormalizedToolUse,
 } from "../src/main/collectors/types.js";
 import {
-  AutonomyBand,
   LengthBand,
   type SessionCohort,
 } from "../src/main/telemetry/attribution-metrics.js";

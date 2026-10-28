@@ -71,9 +71,9 @@ function SidebarNavLinkItemDemo() {
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Nav Link Item",
+  title: "Primitives v1.0/Navigation/Sidebar Nav Link Item",
   component: SidebarNavLinkItemDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -83,4 +83,6 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Interactive: Story = {};
+export const Interactive: Story = {
+  tags: ["!manifest"],
+};

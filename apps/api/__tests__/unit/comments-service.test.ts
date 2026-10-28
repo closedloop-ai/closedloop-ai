@@ -1,7 +1,16 @@
+import {
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+} from "@repo/database/generated/enums";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: {
     JsonNull: "DbNull",
@@ -39,10 +48,8 @@ import type {
 } from "@repo/collaboration/server/webhook";
 import { getLiveblocksApiClient } from "@repo/collaboration/server/webhook";
 import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
-import {
-  commentsService,
-  GitHubReviewThreadResolutionAttributionKind,
-} from "@/app/comments/service";
+import { commentsService } from "@/app/comments/service";
+import { GitHubReviewThreadResolutionAttributionKind } from "@/app/comments/service/thread-resolution";
 
 const ORG_ID = "org-123";
 const THREAD_ID = "th_abc";
@@ -141,31 +148,6 @@ describe("commentsService", () => {
         expect.objectContaining({
           create: expect.objectContaining({
             createdAtVersion: 3,
-          }),
-        })
-      );
-    });
-
-    it("handles non-artifact room gracefully", async () => {
-      vi.mocked(parseArtifactRoomId).mockImplementation(() => {
-        throw new Error("Invalid room ID format");
-      });
-
-      const mockDb = {
-        commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
-      };
-      mockWithDbCall(mockDb);
-
-      await commentsService.upsertThreadFromLiveblocks(
-        ORG_ID,
-        makeThread({ roomId: "some-other-room" })
-      );
-
-      expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          create: expect.objectContaining({
-            artifactId: null,
-            createdAtVersion: null,
           }),
         })
       );

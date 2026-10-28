@@ -10,8 +10,9 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
+import { parseQualityIngestFailures } from "../src/main/collectors/engine/collector-ingest-failure.js";
 import {
   cleanupTempDirs,
   makeTempDir,
@@ -157,6 +158,7 @@ describe("Claude parser parse quality", () => {
       totalLines: 5,
       malformedLines: 1,
       truncatedFinalLine: false,
+      foldedChildMalformedLines: 1,
     });
     const midFileMalformed =
       (parsed.parseQuality?.malformedLines ?? 0) -
@@ -197,10 +199,51 @@ describe("Claude parser parse quality", () => {
       totalLines: 4,
       malformedLines: 0,
       truncatedFinalLine: false,
+      // ISS-6336: the discount the line above just applied, recorded. The line
+      // stays in `totalLines` — it was attempted — so a ratio reader needs to
+      // be told it was never available to be counted corrupt.
+      childTruncatedFinalLines: 1,
     });
     const midFileMalformed =
       (parsed.parseQuality?.malformedLines ?? 0) -
       (parsed.parseQuality?.truncatedFinalLine ? 1 : 0);
     assert.equal(midFileMalformed, 0);
+  });
+  // ISS-6336 (whitlockk review): the case the aggregate could not express. Each
+  // sidecar's benign trailing truncation is discounted out of `malformedLines`
+  // while its line stays in `totalLines`, so with only one parent-level
+  // truncation flag to spend, a session with SEVERAL truncated children
+  // measured its own corruption against a denominator that still counted lines
+  // nothing could ever have reported. Driven through the real parser, because
+  // the fold is where the discount happens and a hand-built parse quality would
+  // assert the arithmetic rather than the behavior.
+  test("Claude parser tallies EVERY truncated subagent, so a live multi-agent session reports no ingest failure (ISS-6336)", async () => {
+    const dir = makeTempDir("claude-pq-subagents-truncated-");
+    const sessionId = "claude-pq-subagents-truncated";
+    const filePath = path.join(dir, `${sessionId}.jsonl`);
+    writeFileSync(filePath, `${userLine}\n${assistantLine}\n`, "utf8");
+
+    // Three subagents mid-write at the moment of the parse — the ordinary shape
+    // of a running fan-out, not a defect.
+    const subagentsDir = path.join(dir, sessionId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    for (const agent of ["agent-one", "agent-two", "agent-three"]) {
+      writeFileSync(
+        path.join(subagentsDir, `${agent}.jsonl`),
+        `${subAssistantLine}\n${truncatedLine}\n`,
+        "utf8"
+      );
+    }
+
+    const parsed = await parseClaudeFile(filePath);
+    assert.ok(parsed, "expected a parsed Claude transcript");
+    assert.deepEqual(parsed.parseQuality, {
+      totalLines: 8,
+      malformedLines: 0,
+      truncatedFinalLine: false,
+      childTruncatedFinalLines: 3,
+    });
+    // The whole point: a healthy fan-out mid-write is not an ingest failure.
+    assert.deepEqual(parseQualityIngestFailures(parsed.parseQuality), []);
   });
 });

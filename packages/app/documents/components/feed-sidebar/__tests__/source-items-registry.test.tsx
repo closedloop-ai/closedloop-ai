@@ -3,9 +3,13 @@ import { render } from "@testing-library/react";
 import { MessageSquare } from "lucide-react";
 import { useMemo, useState } from "react";
 import { describe, expect, it } from "vitest";
-
+import { eraseFeedSource } from "../erase-feed-source";
 import { FeedItemKind } from "../feed-item";
-import type { FeedSource, FeedSourceUseItemsResult } from "../feed-source";
+import type {
+  AnyFeedSource,
+  FeedSource,
+  FeedSourceUseItemsResult,
+} from "../feed-source";
 import {
   FeedRuntime,
   type SourceItemsRegistry,
@@ -24,8 +28,8 @@ type StubItem = {
 function makeStubSource(
   id: string,
   itemsResult: FeedSourceUseItemsResult<StubItem>
-): FeedSource<StubItem, { tag: string }> {
-  return {
+): AnyFeedSource {
+  return eraseFeedSource<StubItem, { tag: string }>({
     id,
     kind: FeedItemKind.PrComment,
     label: id,
@@ -35,7 +39,7 @@ function makeStubSource(
     applyFilter: (items) => items,
     isFiltered: (state) => state.tag !== "all",
     renderItem: (item) => <div data-testid={`item-${item.id}`}>{item.id}</div>,
-  };
+  });
 }
 
 type Captured<T> = { current: T | null };
@@ -199,7 +203,10 @@ describe("FeedRuntime + source registry", () => {
         }),
         []
       );
-      const sources = useMemo(() => [sourceA, sourceB], [sourceA, sourceB]);
+      const sources = useMemo(
+        () => [eraseFeedSource(sourceA), eraseFeedSource(sourceB)],
+        [sourceA, sourceB]
+      );
       return (
         <>
           <button

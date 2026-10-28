@@ -11,17 +11,20 @@
  *   - the base payload is stripped of the tiling once paginated (no whole-tiling
  *     replication into every chunk);
  *   - version skew: when multi-part is NOT supported the tiling rides the base
- *     whole (old behavior) — which either fits or DEAD-LETTERS the whole session
- *     for a larger-payload retry, never a silent partial;
+ *     whole (old behavior) — which either fits or yields no chunk at all, never
+ *     a silent partial. ISS-9865 added a second way to reach that empty return
+ *     under the capability (a tiling that exhausts the chunk budget); in both
+ *     cases the caller DEGRADES to a tiling-stripped, owed delivery rather than
+ *     dead-lettering the session;
  *   - mutation guard: reverting to truncate-and-drop (shipping only a prefix)
  *     fails the full-fidelity assertion.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   MAX_SYNCED_ACTIVITY_SEGMENTS,
   type SyncedActivitySegmentRow,
 } from "@repo/api/src/types/agent-session";
+import { describe, test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   chunkOversizedSession,
@@ -65,6 +68,16 @@ function buildSegments(count: number, pad = 0): SyncedActivitySegmentRow[] {
     evidenceLayers: ["structural"],
     version: 7,
     ...(padValue ? { workItemRef: padValue } : {}),
+  }));
+}
+
+/** ISS-10259: an EVENTS stream, so the chunker packs an events chunk ahead of the tiling. */
+function buildEvents(count: number): SyncedAgentSession["events"] {
+  return Array.from({ length: count }, (_, i) => ({
+    externalEventId: `evt-${i}`,
+    eventType: "ToolUse",
+    toolName: "Read",
+    createdAt: "2026-06-10T10:30:00.000Z",
   }));
 }
 
@@ -168,6 +181,56 @@ describe("ISS-4541: activity-segment tiling is chunked, never truncated", () => 
       totalDelivered,
       segments.length,
       "the tiling is delivered once (paginated), not replicated per chunk"
+    );
+  });
+
+  test("ISS-10259: every non-tiling chunk carries an EXPLICIT empty tiling, never an absent key", () => {
+    // The cloud reads these two shapes DIFFERENTLY and the difference is the
+    // whole of ISS-10259. `persistSessionActivitySegments` treats an ABSENT
+    // `activitySegmentRows` as "leave the stored tiling untouched" and an
+    // EXPLICIT `[]` on an opening chunk as the clear that makes room for the
+    // slices behind it. Omitting the key here would leave the PREVIOUS
+    // revision's tiling in place and let this revision's slices append on top
+    // of it — a mixed tiling — while every cloud-side suite stayed green,
+    // because none of them can see what this producer emits (review,
+    // davetho P2).
+    // EVENT-BEARING, unlike the fixtures above: `appendRequiredStreamChunks`
+    // packs the events stream first, so this is what puts a NON-tiling chunk at
+    // index 0 — the chunk that has to carry the explicit clear.
+    const segments = buildSegments(40, 400);
+    const session = buildSession({
+      activitySegmentRows: segments,
+      events: buildEvents(30),
+    });
+    const maxBytes =
+      estimateSessionPayloadBytes(
+        buildSession({ activitySegmentRows: [], events: [] })
+      ) + 2000;
+
+    const chunks = chunkOversizedSession(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      SUPPORTED
+    );
+
+    assert.ok(chunks.length > 1, "the fixture must actually paginate");
+    for (const [index, chunk] of chunks.entries()) {
+      assert.ok(
+        Object.hasOwn(chunk, "activitySegmentRows"),
+        `chunk ${index} omits activitySegmentRows; an absent key means "leave the stored tiling alone" to the receiver`
+      );
+      assert.ok(
+        Array.isArray(chunk.activitySegmentRows),
+        `chunk ${index} must carry an array, empty or a slice`
+      );
+    }
+    // And at least one of them is the EMPTY clear, not merely a slice-bearing
+    // chunk — the events-first packing is what puts it at index 0.
+    assert.ok(
+      chunks.some((chunk) => (chunk.activitySegmentRows ?? []).length === 0),
+      "no chunk carried the explicit empty tiling that clears the prior revision"
     );
   });
 
@@ -277,6 +340,66 @@ describe("ISS-4541: activity-segment tiling is chunked, never truncated", () => 
       shippedEvents,
       5,
       "the rest of the session (events) reaches the wire despite the deferred tiling"
+    );
+  });
+
+  test("ISS-9865: a tiling that exhausts the chunk budget on a CAPABLE server strips, it does not dead-letter the session", () => {
+    // Before ISS-9865 the reader omitted any tiling past its 50,000-row ceiling,
+    // so the rest of such a session always synced. Now the tiling is read in full
+    // and paginated — which means one can exceed the shared
+    // MAX_SESSION_SYNC_CHUNKS budget and make the CAPABLE path return [] too.
+    // Dead-lettering there would withhold the events, agents and metadata that
+    // the old omit still delivered, i.e. the fix would have made this session
+    // strictly worse off. The bounded fallback must cover this path as well, and
+    // stamp the strip so the ISS-7265 debt is recorded and re-queued.
+    const segments = buildSegments(400, 800);
+    const session = buildSession({
+      activitySegmentRows: segments,
+      events: buildEventSlice(5),
+    });
+    // ~930 B per padded row against a ~2 KB row budget: about two rows per chunk,
+    // so 400 rows need far more than the 100-chunk budget.
+    const maxBytes =
+      estimateSessionPayloadBytes(buildSession({ activitySegmentRows: [] })) +
+      2000;
+
+    assert.deepEqual(
+      chunkOversizedSession(session, maxBytes, undefined, undefined, SUPPORTED),
+      [],
+      "precondition: the tiling really does exhaust the chunk budget"
+    );
+
+    const prepared = prepareAgentSessionPayload(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      SUPPORTED
+    );
+
+    assert.notEqual(
+      prepared.kind,
+      "dead-letter",
+      "the session must NOT dead-letter — the rest of it syncs, tiling deferred"
+    );
+    const shipped = shippedSessions(prepared);
+    assert.ok(shipped.length > 0, "the session must ship");
+    for (const part of shipped) {
+      assert.equal(
+        part.activitySegmentRows,
+        undefined,
+        "the tiling is OMITTED (absent key), a cloud no-op — never a partial"
+      );
+      assert.equal(
+        part.activitySegmentRowsStripped,
+        true,
+        "the strip is stamped, so the confirmed delivery records the tiling debt"
+      );
+    }
+    assert.equal(
+      shipped.reduce((sum, part) => sum + part.events.length, 0),
+      5,
+      "the rest of the session reaches the wire despite the deferred tiling"
     );
   });
 

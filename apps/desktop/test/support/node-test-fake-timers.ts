@@ -34,8 +34,8 @@
  * nothing is currently mistranslated — but a subject that starts to would go
  * quiet rather than red, so it is written down instead of left to be
  * rediscovered. `node:timers/promises` is NOT part of this: neither runner
- * fakes it, so `src/server/operations/learnings.ts` behaves identically on
- * both, and it is recorded here so the non-difference is not re-raised as one.
+ * fakes it, so a subject that awaits it behaves identically on both, and it
+ * is recorded here so the non-difference is not re-raised as one.
  */
 
 import { vi } from "vitest";

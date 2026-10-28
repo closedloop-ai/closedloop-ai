@@ -19,6 +19,7 @@ import { createCodexCollector } from "../codex/codex-collector.js";
 import { createOpencodeCollector } from "../opencode/opencode-collector.js";
 import type { HarnessCollector } from "../types.js";
 import {
+  assertExhaustiveClassification,
   classifyRawFiles,
   listDossierDirs,
   listDossierRawDirs,
@@ -84,8 +85,15 @@ export function createGoldenCollectors(stagingDir: string): HarnessCollector[] {
       for (const rollout of classification.rollouts) {
         codexRolloutSources.push(path.join(dir, rollout));
       }
-    } else {
+    } else if (classification.kind === "claude") {
       claudeMainSources.push(path.join(dir, classification.main));
+    } else {
+      // ISS-7504: the trailing `else` used to narrow to {kind:"claude", main}
+      // only because no other member carries `main` — a fourth member that did
+      // would have been staged as a Claude transcript with no tsc failure. The
+      // explicit claude branch makes the rejection deliberate rather than a
+      // side effect of the current union's field shapes.
+      assertExhaustiveClassification(classification);
     }
   }
 
@@ -95,6 +103,11 @@ export function createGoldenCollectors(stagingDir: string): HarnessCollector[] {
       createClaudeCollector({
         listSources: () => [...claudeMainSources],
         watchRoots: () => [stagingDir],
+        // ISS-7198: explicitly OFF. The Desktop origin sidecars live outside the
+        // staged corpus, on the developer's own machine, so consulting them here
+        // would make a golden run depend on host state. An empty-by-accident
+        // directory is not the same statement as this one.
+        desktopSessionsDir: null,
       })
     );
   }
@@ -109,17 +122,14 @@ export function createGoldenCollectors(stagingDir: string): HarnessCollector[] {
       })
     );
   }
-  if (opencodeDataDirs.length > 1) {
-    // CollectorManager keys its bookkeeping maps by collector.key, so two
-    // "opencode" collectors would silently collide. The corpus has exactly one
-    // opencode dossier today; multi-dossier support means teaching the opencode
-    // collector multiple data dirs, not stacking same-key collectors.
-    throw new Error(
-      `golden corpus has ${opencodeDataDirs.length} opencode dossiers but the opencode collector supports one data dir; extend CreateOpencodeCollectorOptions before adding more`
-    );
-  }
-  for (const dataDir of opencodeDataDirs) {
-    collectors.push(createOpencodeCollector({ dataDir }));
+  if (opencodeDataDirs.length > 0) {
+    // ONE collector over every staged dossier, never one collector per dossier:
+    // CollectorManager keys its bookkeeping maps by collector.key, so a second
+    // "opencode" collector would collide rather than add a store. ISS-8561
+    // taught the opencode collector several data dirs, each with its own ingest
+    // state, which is what the corpus needed once it held more than one
+    // opencode dossier.
+    collectors.push(createOpencodeCollector({ dataDirs: opencodeDataDirs }));
   }
   return collectors;
 }
@@ -134,4 +144,23 @@ function assertDisjoint(corpusDir: string, stagingDir: string): void {
       `golden staging dir must be disjoint from the corpus dir (staging=${staging}, corpus=${corpus})`
     );
   }
+}
+
+/**
+ * FEA-2648: resolve the staging tree for a golden profile and stage the frozen
+ * corpus into it, before any collector sees it — even a readOnly open of the
+ * WAL-mode `opencode.db` would drop `-wal`/`-shm` sidecars into the frozen
+ * `raw/` dirs. `null` when golden mode is off, which is what the runtime keys
+ * every other golden branch off.
+ */
+export function stageGoldenCorpusInto(
+  golden: { corpusDir: string } | null,
+  userDataPath: string
+): string | null {
+  if (!golden) {
+    return null;
+  }
+  const stagingDir = path.join(userDataPath, "corpus-staging");
+  stageGoldenCorpus(golden.corpusDir, stagingDir);
+  return stagingDir;
 }

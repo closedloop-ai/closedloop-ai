@@ -6,5 +6,6 @@ export type { TraceCommentsDataSource } from "../../shared/trace-comments/trace-
 // biome-ignore lint/performance/noBarrelFile: compatibility path retained until version-skewed consumers migrate.
 export {
   createHttpTraceCommentsDataSource,
-  normalizedTraceCommentSurface,
+  normalizedCommentSurface,
+  normalizedCommentSurface as normalizedTraceCommentSurface,
 } from "../../shared/trace-comments/trace-comments-data-source";

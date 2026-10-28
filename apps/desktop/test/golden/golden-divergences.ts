@@ -46,6 +46,11 @@ export const KNOWN_DIVERGENCES: KnownDivergence[] = [
   // codex parser now maps `compacted` records / `context_compacted` events
   // into compactions (a paired record+echo counts once). Both keys are hard
   // assertions now.
+  // ISS-8659 (Claude fork replay) entries resolved 2026-09-02: the Claude
+  // parser now excludes `forkedFrom`-stamped records — a verbatim replay of
+  // the parent session — from every tally, and stamps the parent's id as
+  // lineage. All 14 keys on `aff9f567` are hard assertions now, and its
+  // parent `0e0036cc` is in the corpus as the control arm.
 ];
 
 export function findDivergence(

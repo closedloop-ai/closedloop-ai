@@ -9,6 +9,12 @@
 import { type Dirent, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  type DirectoryWalkSkipOptions,
+  DirectoryWalkSkipReason,
+  type DirectoryWalkSkipSink,
+  reportReaddirSkip,
+} from "../engine/directory-walk-skip.js";
 
 export function getClaudeHome(): string {
   return process.env.CLAUDE_HOME || path.join(os.homedir(), ".claude");
@@ -27,16 +33,22 @@ export function sessionIdFromTranscriptPath(filePath: string): string {
  * Enumerate the top-level session transcript files (one per session) across all
  * project directories. Deliberately one level deep per project dir so subagent
  * transcripts under `<sessionId>/subagents/` are NOT returned as sessions.
+ *
+ * `onSkip` is optional and off by default: the walk stays error-tolerant and
+ * returns the same short listing either way, but a caller measuring the corpus
+ * is told which project directories it could not read (ISS-8506).
  */
-export function listAllTranscriptFiles(): string[] {
+export function listAllTranscriptFiles({
+  onSkip,
+}: DirectoryWalkSkipOptions = {}): string[] {
   const projectsDir = getProjectsDir();
   const out: string[] = [];
-  for (const d of safeReaddir(projectsDir)) {
+  for (const d of safeReaddir(projectsDir, onSkip)) {
     if (!d.isDirectory()) {
       continue;
     }
     const projPath = path.join(projectsDir, d.name);
-    for (const f of safeReaddir(projPath)) {
+    for (const f of safeReaddir(projPath, onSkip)) {
       if (f.isFile() && f.name.endsWith(".jsonl")) {
         out.push(path.join(projPath, f.name));
       }
@@ -55,11 +67,18 @@ export type ClaudeSubagentTranscriptFile = {
   filePath: string;
 };
 
-/** Read a directory's entries, returning `[]` on any IO/permission error. */
-function safeReaddir(dir: string): Dirent[] {
+/**
+ * Read a directory's entries, returning `[]` on any IO/permission error.
+ *
+ * The `[]` is unchanged and load-bearing — one unreadable branch must not abort
+ * an import. `onSkip` only OBSERVES it, and never fires for an absent directory,
+ * which is a real zero rather than something we failed to see (ISS-8506).
+ */
+function safeReaddir(dir: string, onSkip?: DirectoryWalkSkipSink): Dirent[] {
   try {
     return readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    reportReaddirSkip(dir, error, onSkip);
     return [];
   }
 }
@@ -94,7 +113,7 @@ const SUBAGENT_PERCENT_RE = /%/g;
 const SUBAGENT_UNDERSCORE_RE = /_/g;
 
 /**
- * FEA-3420 review (Thadeus): `__` is only an injective join delimiter if no path
+ * FEA-3420 review (Tamsin): `__` is only an injective join delimiter if no path
  * segment contains `__` itself — otherwise two distinct nested paths (e.g.
  * `wf__1/agent-x` vs `wf/1/agent-x`) fold to the SAME relId and one agent's
  * transcript silently overwrites the other's row (the exact token-loss the
@@ -178,14 +197,16 @@ export function relIdFromSubagentPath(
  * journal / index files that do not match are ignored.
  */
 export function walkSubagentTranscripts(
-  subagentsDir: string
+  subagentsDir: string,
+  { onSkip }: DirectoryWalkSkipOptions = {}
 ): SubagentWalkEntry[] {
   const out: SubagentWalkEntry[] = [];
   const visit = (dir: string, depth: number) => {
     if (depth > SUBAGENT_WALK_MAX_DEPTH) {
+      onSkip?.(dir, DirectoryWalkSkipReason.MaxDepth);
       return;
     }
-    for (const entry of safeReaddir(dir)) {
+    for (const entry of safeReaddir(dir, onSkip)) {
       const childPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         visit(childPath, depth + 1);
@@ -232,10 +253,11 @@ export function walkSubagentTranscripts(
  */
 function subagentFilesForSession(
   projPath: string,
-  sessionName: string
+  sessionName: string,
+  { onSkip }: DirectoryWalkSkipOptions = {}
 ): ClaudeSubagentTranscriptFile[] {
   const subagentsPath = path.join(projPath, sessionName, "subagents");
-  return walkSubagentTranscripts(subagentsPath).map((entry) => ({
+  return walkSubagentTranscripts(subagentsPath, { onSkip }).map((entry) => ({
     parentSessionId: sessionName,
     fileId: entry.relId,
     filePath: entry.filePath,
@@ -252,17 +274,21 @@ function subagentFilesForSession(
  * is the user's own local data and one unreadable branch must not abort
  * discovery.
  */
-export function listClaudeSubagentTranscriptFiles(): ClaudeSubagentTranscriptFile[] {
+export function listClaudeSubagentTranscriptFiles({
+  onSkip,
+}: DirectoryWalkSkipOptions = {}): ClaudeSubagentTranscriptFile[] {
   const projectsDir = getProjectsDir();
   const out: ClaudeSubagentTranscriptFile[] = [];
-  for (const project of safeReaddir(projectsDir)) {
+  for (const project of safeReaddir(projectsDir, onSkip)) {
     if (!project.isDirectory()) {
       continue;
     }
     const projPath = path.join(projectsDir, project.name);
-    for (const sessionDir of safeReaddir(projPath)) {
+    for (const sessionDir of safeReaddir(projPath, onSkip)) {
       if (sessionDir.isDirectory()) {
-        out.push(...subagentFilesForSession(projPath, sessionDir.name));
+        out.push(
+          ...subagentFilesForSession(projPath, sessionDir.name, { onSkip })
+        );
       }
     }
   }

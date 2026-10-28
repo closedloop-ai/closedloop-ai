@@ -2,7 +2,7 @@
  * Unit tests for `resolveContentHashIdentity` (FEA-4335).
  *
  * `resolveContentHashIdentity` maps a content-hash route fingerprint back to the
- * name-level identity it covers. The security-relevant contract (shafty023, PR
+ * name-level identity it covers. The security-relevant contract (davetho, PR
  * #3907) is that the EXACT server-derived `definitionHash` namespace is never
  * unioned with the coarse, content-derived `contentHash` namespace: an exact
  * `definitionHash` route must resolve to definition-linked rows ONLY, and the
@@ -16,7 +16,10 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { resolveContentHashIdentity } from "../content-hash-identity";
+import {
+  resolveContentHashIdentity,
+  resolveDetailIdentityScope,
+} from "../content-hash-identity";
 
 const ORG = "org-chi-1111";
 const KIND = "subagent";
@@ -136,5 +139,69 @@ describe("resolveContentHashIdentity (FEA-4335)", () => {
       new Set(["reviewer", "code-review"])
     );
     expect(identity?.contentHashes).toEqual([rowA.contentHash]);
+  });
+});
+
+describe("nameLevelInventoryWhere escaping (ISS-6757)", () => {
+  // Prisma compiles `equals` + `mode: "insensitive"` to a bare `ILIKE $1`, so an
+  // unescaped `_` in the bound key matches ANY character: a `mcp__closedloop__ping`
+  // detail would pull in a `mcpXXclosedloopYYping` inventory row and attribute
+  // its invocations. `invocationReadWhere`'s unattributed arm now matches the
+  // persisted folded key with a real equality, so this predicate — which
+  // resolves the `inventoryIds` that arm ORs against — has to mean the same
+  // thing, or one detail runs on two identity rules.
+  const legacyScope = (key: string) =>
+    resolveDetailIdentityScope(null as never, ORG, KIND, null, key);
+
+  it("escapes LIKE metacharacters in a legacy name key", async () => {
+    const scope = await legacyScope("mcp__closedloop__ping");
+
+    expect(scope.inventoryWhere).toEqual({
+      OR: [
+        {
+          componentKey: {
+            equals: String.raw`mcp\_\_closedloop\_\_ping`,
+            mode: "insensitive",
+          },
+        },
+        {
+          componentKey: null,
+          name: {
+            equals: String.raw`mcp\_\_closedloop\_\_ping`,
+            mode: "insensitive",
+          },
+        },
+      ],
+    });
+    // The key itself is NOT escaped — it is the identity label the usage reads
+    // and the response carry, not a SQL pattern.
+    expect(scope.key).toBe("mcp__closedloop__ping");
+  });
+
+  it("escapes `%` and the escape character itself", async () => {
+    const scope = await legacyScope(String.raw`100%_a\b`);
+
+    expect(scope.inventoryWhere).toMatchObject({
+      OR: [
+        {
+          componentKey: {
+            equals: String.raw`100\%\_a\\b`,
+            mode: "insensitive",
+          },
+        },
+        {},
+      ],
+    });
+  });
+
+  it("leaves a metacharacter-free key untouched", async () => {
+    const scope = await legacyScope("code-review");
+
+    expect(scope.inventoryWhere).toMatchObject({
+      OR: [
+        { componentKey: { equals: "code-review", mode: "insensitive" } },
+        {},
+      ],
+    });
   });
 });

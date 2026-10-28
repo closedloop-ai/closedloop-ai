@@ -1,8 +1,6 @@
-import type { Octokit } from "@octokit/rest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   countScheduledJobs,
-  listOpenPullRequestHeads,
   listPullRequestCommentPage,
   listQueuedWorkflowRuns,
   type OpenPullRequestsReadResult,
@@ -10,20 +8,28 @@ import {
   type QueuedRunsReadResult,
   QueuedRunsReadStatus,
 } from "../never-scheduled-runs";
+// The PR-node and page shapes are shared with
+// `open-pull-requests-partial-read.test.ts`; see that module's header.
+import {
+  createOctokitMock,
+  expectOkPullRequests,
+  HEAD_SHA,
+  OWNER,
+  pullRequestNode,
+  pullRequestsResponse,
+  REPO,
+  readPullRequests as readHeads,
+} from "./never-scheduled-runs-fixtures";
 
 // Credential-agnostic by construction (the Octokit is injected), so these tests
 // need no App env and no auth mocking.
-const mockRequest = vi.fn();
-const mockGraphql = vi.fn();
-const octokit = {
+const {
   request: mockRequest,
   graphql: mockGraphql,
-} as unknown as Octokit;
+  octokit,
+} = createOctokitMock();
 
-const OWNER = "acme";
-const REPO = "my-repo";
 const RUNS_PAGE_SIZE = 100;
-const HEAD_SHA = "a".repeat(40);
 
 function workflowRun(overrides: Record<string, unknown> = {}) {
   return {
@@ -32,6 +38,7 @@ function workflowRun(overrides: Record<string, unknown> = {}) {
     head_sha: HEAD_SHA,
     head_branch: "feat/thing",
     run_started_at: "2026-08-06T19:05:08Z",
+    run_attempt: 1,
     ...overrides,
   };
 }
@@ -51,67 +58,8 @@ function expectOkRuns(result: QueuedRunsReadResult) {
   return result;
 }
 
-function pullRequestNode(overrides: Record<string, unknown> = {}) {
-  return {
-    number: 4711,
-    headRefName: "feat/thing",
-    headRefOid: HEAD_SHA,
-    // Non-null in GitHub's schema, and read by the readiness sweep (ISS-6018)
-    // rather than by the never-scheduled derivation.
-    baseRefName: "main",
-    isDraft: false,
-    mergeable: "MERGEABLE",
-    commits: {
-      nodes: [
-        {
-          commit: {
-            statusCheckRollup: {
-              contexts: {
-                totalCount: 1,
-                nodes: [
-                  {
-                    __typename: "CheckRun",
-                    name: "typecheck",
-                    conclusion: "SUCCESS",
-                    completedAt: "2026-08-12T12:00:00Z",
-                    startedAt: null,
-                    checkSuite: { app: { databaseId: 15_368 } },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      ],
-    },
-    ...overrides,
-  };
-}
-
-function pullRequestsResponse(
-  nodes: unknown[],
-  totalCount?: number,
-  pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
-    hasNextPage: false,
-    endCursor: null,
-  }
-) {
-  return {
-    repository: {
-      pullRequests: { totalCount: totalCount ?? nodes.length, pageInfo, nodes },
-    },
-  };
-}
-
 function readPullRequests(): Promise<OpenPullRequestsReadResult> {
-  return listOpenPullRequestHeads(octokit, OWNER, REPO);
-}
-
-function expectOkPullRequests(result: OpenPullRequestsReadResult) {
-  if (result.status !== OpenPullRequestsReadStatus.Ok) {
-    throw new Error(`expected Ok, got ${result.status}: ${result.detail}`);
-  }
-  return result;
+  return readHeads(octokit);
 }
 
 beforeEach(() => {
@@ -129,8 +77,17 @@ describe("listQueuedWorkflowRuns", () => {
         headSha: HEAD_SHA,
         headBranch: "feat/thing",
         runStartedAt: "2026-08-06T19:05:08Z",
+        runAttempt: 1,
       },
     ]);
+  });
+
+  it("keeps a run GitHub sent without an attempt, reading the attempt as null", async () => {
+    mockRequest.mockResolvedValue(
+      runsResponse([workflowRun({ run_attempt: undefined })])
+    );
+
+    expect(expectOkRuns(await readRuns()).runs[0]?.runAttempt).toBeNull();
   });
 
   it("asks only for queued runs, since a run with a job is never in this state", async () => {
@@ -240,6 +197,39 @@ describe("listOpenPullRequestHeads", () => {
     expect(mockGraphql.mock.calls[0]?.[0]).toContain(
       "orderBy: {field: UPDATED_AT, direction: DESC}"
     );
+  });
+
+  it("asks for a page GitHub can actually answer, with the rollup left whole", async () => {
+    // Both halves are load-bearing and they pull in opposite directions
+    // (ISS-6012). Measured against closedloop-ai/closedloop-ai on 2026-09-15
+    // at 93 open PRs: `first: 100` with this rollup nested under it made GitHub
+    // abort the query server-side at ~11.5s, 3 samples of 3, so the read could
+    // never succeed — the stall cron then omitted
+    // `symphony.ci.workflow_run.never_scheduled` on every tick for 34 days and
+    // `ready-to-enqueue` wrote an empty plan. `first: 25` completes the whole
+    // walk in 14.2s.
+    //
+    // The tempting other fix is shrinking the rollup instead, and it silently
+    // does nothing: open PRs here carry 50-66 rollup contexts (min/max over 25
+    // PRs), so a 20- or 50-node rollup page marks every PR truncated and leaves
+    // the gauge exactly as dark. Hence an EXACT pin on one and a floor on the
+    // other, not a single "make it smaller".
+    //
+    // Exact, not a `<= 25` ceiling: a ceiling also accepts 1, and against
+    // `MAX_OPEN_PR_PAGES` that reads 40 of the repository's open PRs and marks
+    // the rest truncated — the cron resolves that to Unknown and omits the
+    // gauge again, which is the bug this test is here to prevent. Both
+    // directions are measured, so both are pinned.
+    mockGraphql.mockResolvedValue(pullRequestsResponse([]));
+
+    await readPullRequests();
+
+    const variables = mockGraphql.mock.calls[0]?.[1] as {
+      first: number;
+      rollupFirst: number;
+    };
+    expect(variables.first).toBe(25);
+    expect(variables.rollupFirst).toBeGreaterThanOrEqual(100);
   });
 
   it("carries each comment's node id, which no comment id can outgrow", async () => {
@@ -442,7 +432,12 @@ describe("listOpenPullRequestHeads", () => {
 
   it("stops at the page cap and reports the population as incomplete", async () => {
     // A connection that always claims another page would otherwise spin inside
-    // a five-minute tick.
+    // a five-minute tick. Exact, not a ceiling: the cap is stated in OPEN PRs,
+    // not in pages, so `OPEN_PR_PAGE_SIZE` coming down must be paid for here.
+    // At 25 per page, 40 pages is the 1,000-PR ceiling the walk had when the
+    // page was 100 — and `scripts/ci/ready-to-enqueue.ts` has no deadline, so
+    // for that caller this cap IS the bound and a low one silently stops
+    // refreshing every PR past it.
     mockGraphql.mockResolvedValue(
       pullRequestsResponse([pullRequestNode()], 9999, {
         hasNextPage: true,
@@ -453,7 +448,7 @@ describe("listOpenPullRequestHeads", () => {
     const result = expectOkPullRequests(await readPullRequests());
 
     expect(result.truncated).toBe(true);
-    expect(mockGraphql.mock.calls.length).toBeLessThanOrEqual(10);
+    expect(mockGraphql.mock.calls.length).toBe(40);
   });
 
   it("fails rather than reporting an empty set when the repository is invisible", async () => {
@@ -472,7 +467,10 @@ describe("listOpenPullRequestHeads", () => {
     const result = await readPullRequests();
 
     expect(result.status).toBe(OpenPullRequestsReadStatus.Failed);
-    expect(result).toMatchObject({ detail: "boom" });
+    // Carries the page even when the error names no selection at all
+    // (ISS-10438): the walk is paged, so WHICH read failed belongs in every
+    // failure detail, not only in the ones that carry a GraphQL path.
+    expect(result).toMatchObject({ detail: "page 0: boom" });
   });
 });
 

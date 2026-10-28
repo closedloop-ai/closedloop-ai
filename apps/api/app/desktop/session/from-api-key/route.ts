@@ -1,6 +1,7 @@
 import "server-only";
 
 import { desktopContractError } from "@/app/desktop/contract";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 
 /**
  * Compatibility tombstone for the removed non-interactive API-key →
@@ -28,10 +29,12 @@ export const DesktopSessionFromApiKeyRemoval = {
   Retryable: false,
 } as const;
 
-export function POST() {
+function handlePost() {
   return desktopContractError(
     410,
     DesktopSessionFromApiKeyRemoval.Code,
     DesktopSessionFromApiKeyRemoval.Retryable
   );
 }
+
+export const POST = withRequestCompleted(handlePost);

@@ -9,6 +9,7 @@ import { FeatureFlagAdapterProvider } from "../../../../shared/feature-flags/pro
 import { createStaticFeatureFlagAdapter } from "../../../../shared/feature-flags/static-feature-flag-adapter";
 import { CHART_DISTINGUISHABLE_SERIES_FEATURE_FLAG_KEY } from "../../../../shared/lib/feature-flags";
 import { ModelUsageChart } from "../model-usage-chart";
+import { UsageGrouping, usageOtherSeriesLabel } from "../usage-graph-toggles";
 
 // ISS-5523 — the WIRING, not the fold. The sibling suites prove the chart caps
 // and that the kernel's arithmetic is right; nothing there notices if a call
@@ -27,7 +28,6 @@ vi.mock("../../../../agents/hooks/use-agent-component-token-trend", () => ({
 const MODEL_COUNT = CHART_SERIES_COLOR_LIMIT + 7;
 const FOLDED_COUNT = MODEL_COUNT - CHART_SERIES_COLOR_LIMIT;
 const AGGREGATE_NAME = `Other models (${FOLDED_COUNT})`;
-const RE_ANY_AGGREGATE = /^Other/;
 
 const modelKeys = Array.from(
   { length: MODEL_COUNT },
@@ -96,7 +96,7 @@ describe("ModelUsageChart series-cap wiring (ISS-5523)", () => {
       false
     );
 
-    expect(screen.queryByText(RE_ANY_AGGREGATE)).not.toBeInTheDocument();
+    expect(screen.queryByText(isAnyAggregateLabel)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: modelKeys.at(-1) as string })
     ).toBeInTheDocument();
@@ -113,7 +113,7 @@ describe("chart series cap without a feature-flag provider (ISS-5523)", () => {
       <ModelUsageChart series={manyModelSeries} tokenSeries={undefined} />
     );
 
-    expect(screen.queryByText(RE_ANY_AGGREGATE)).not.toBeInTheDocument();
+    expect(screen.queryByText(isAnyAggregateLabel)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: modelKeys.at(-1) as string })
     ).toBeInTheDocument();
@@ -162,6 +162,12 @@ describe("TokenTrendChart series-cap wiring (ISS-5523)", () => {
       false
     );
 
-    expect(screen.queryByText(RE_ANY_AGGREGATE)).not.toBeInTheDocument();
+    expect(screen.queryByText(isAnyAggregateLabel)).not.toBeInTheDocument();
   });
 });
+
+function isAnyAggregateLabel(content: string): boolean {
+  return Object.values(UsageGrouping).some((grouping) =>
+    content.startsWith(usageOtherSeriesLabel(grouping))
+  );
+}

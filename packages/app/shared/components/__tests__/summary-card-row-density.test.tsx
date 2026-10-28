@@ -189,7 +189,7 @@ describe("SummaryCardRow density (ISS-5068)", () => {
 });
 
 /**
- * ISS-5068 (wongk review): the per-card floor can move under an ALREADY MOUNTED
+ * ISS-5068 (whitlockk review): the per-card floor can move under an ALREADY MOUNTED
  * column derivation, without a remount, so `useSummaryCardColumns` takes the
  * resolved floor as a declared dependency (`minWidthPx`) and re-measures when it
  * moves. Nothing in the effect BODY reads that value — it is purely the caller's

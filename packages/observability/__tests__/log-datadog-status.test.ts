@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type DatadogLogEntry, LogLevel } from "../log";
+import type { DatadogLogEntry } from "../log";
+import { LogLevel } from "../log-emit-rule";
 import {
   deleteEnvForTest,
   importLogWithFetch,
@@ -108,14 +109,15 @@ describe.each([
   ["agentless intake payload", emitToIntake],
   ["structured console line", emitToConsole],
 ])("%s carries status alongside level", (_sink, emit) => {
-  it.each(
-    LEVELS
-  )("log.%s emits status and level as the same severity", async (level) => {
-    const entry = await emit(level, "severity probe");
+  it.each(LEVELS)(
+    "log.%s emits status and level as the same severity",
+    async (level) => {
+      const entry = await emit(level, "severity probe");
 
-    expect(entry.level).toBe(level);
-    expect(entry.status).toBe(level);
-  });
+      expect(entry.level).toBe(level);
+      expect(entry.status).toBe(level);
+    }
+  );
 
   it("keeps the emitted severity authoritative over a caller's meta status", async () => {
     // The shape 45 production call sites use: an HTTP status code in meta,

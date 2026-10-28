@@ -1,9 +1,4 @@
-import { describe, expect, it } from "vitest";
-import type {
-  AnalyticsData,
-  EventWithSession,
-  WorkflowQueryData,
-} from "../../../../shared/agent-db-contract";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseGeneratedTips } from "../agent-coaching-generate-parse";
 import {
   buildAgentCoachingLlmRequest,
@@ -16,8 +11,23 @@ import {
   summarizeLookback,
 } from "../agent-coaching-lookback";
 import type { AgentCoachingInput } from "../agent-coaching-types";
-
-const GENERATED_AT = new Date("2026-06-18T12:00:00.000Z");
+import {
+  errorEvent,
+  GENERATED_AT,
+  localIso,
+  makeAnalyticsWithoutPerDayCost,
+  makeGroupedTokenInput,
+  makeInput,
+  makeInputWithTokens,
+  makeWorkflow,
+  planEvent,
+  promptEvent,
+  shellEvent,
+  timestampedEvent,
+  toolEvent,
+  userEvent,
+} from "./fixtures/agent-coaching-input";
+import { useGermanDefaultLocale } from "./german-default-locale";
 
 describe("summarizeLookback", () => {
   it("windows token totals from per-day history and derives grounded metrics", () => {
@@ -45,15 +55,7 @@ describe("summarizeLookback", () => {
   });
 
   it("reports null cost when byDay window is empty", () => {
-    const analytics = makeAnalytics();
-    const metrics = summarizeLookback(
-      makeInput({
-        analytics: {
-          ...analytics,
-          tokens: { ...analytics.tokens, byDay: [] },
-        },
-      })
-    );
+    const metrics = summarizeLookback(makeInputWithTokens({ byDay: [] }));
 
     expect(metrics.totalTokens).toBe(450);
     expect(metrics.estimatedCostUsd).toBeNull();
@@ -111,19 +113,6 @@ describe("summarizeLookback", () => {
 });
 
 describe("hasSubstantiveCoachingActivity", () => {
-  // An all-empty corpus: no analytics/workflow (so 0 sessions/events/tokens) and
-  // no captured recent events. Nothing to ground a quantified tip in.
-  function makeEmptyInput(): AgentCoachingInput {
-    return {
-      analytics: null,
-      feedback: [],
-      generatedAt: GENERATED_AT,
-      recentEvents: [],
-      skills: [],
-      workflow: null,
-    };
-  }
-
   it("is false when there is no session, event, token, or captured-event signal", () => {
     expect(hasSubstantiveCoachingActivity(makeEmptyInput())).toBe(false);
   });
@@ -161,15 +150,9 @@ describe("groundedMetricsHaveActivity", () => {
   });
 
   it("is false when the metrics have zero sessions, events, and tokens", () => {
-    const emptyMetrics = summarizeLookback({
-      analytics: null,
-      feedback: [],
-      generatedAt: GENERATED_AT,
-      recentEvents: [],
-      skills: [],
-      workflow: null,
-    });
-    expect(groundedMetricsHaveActivity(emptyMetrics)).toBe(false);
+    expect(
+      groundedMetricsHaveActivity(summarizeLookback(makeEmptyInput()))
+    ).toBe(false);
   });
 
   it("is true when the metrics reflect real sessions and token spend", () => {
@@ -198,7 +181,7 @@ describe("computePeakFrustration (FEA-3399)", () => {
     expect(peak?.nearbyErrorCount).toBe(2);
     // No raw secret leaves the device.
     expect(peak?.excerpt).not.toContain("sk_live_deadbeefsecret");
-    expect(peak?.excerpt).toContain("[REDACTED_SECRET]");
+    expect(peak?.excerpt).toContain("[REDACTED:sk_live]");
     expect(peak?.sessionName).toBe("Session");
   });
 
@@ -260,29 +243,22 @@ describe("summarizeLookback fun-fact signals", () => {
     });
 
     it("ranks multiple models by share and sums input+output tokens", () => {
-      const analytics = makeAnalytics();
       const metrics = summarizeLookback(
-        makeInput({
-          analytics: {
-            ...analytics,
-            tokens: {
-              ...analytics.tokens,
-              byModel: [
-                {
-                  model: "claude-opus-4-8",
-                  inputTokens: 100,
-                  outputTokens: 100,
-                  sessions: 1,
-                },
-                {
-                  model: "claude-sonnet-4-6",
-                  inputTokens: 400,
-                  outputTokens: 400,
-                  sessions: 3,
-                },
-              ],
+        makeInputWithTokens({
+          byModel: [
+            {
+              model: "claude-opus-4-8",
+              inputTokens: 100,
+              outputTokens: 100,
+              sessions: 1,
             },
-          },
+            {
+              model: "claude-sonnet-4-6",
+              inputTokens: 400,
+              outputTokens: 400,
+              sessions: 3,
+            },
+          ],
         })
       );
 
@@ -296,15 +272,7 @@ describe("summarizeLookback fun-fact signals", () => {
     });
 
     it("is null when there is no per-model token attribution", () => {
-      const analytics = makeAnalytics();
-      const metrics = summarizeLookback(
-        makeInput({
-          analytics: {
-            ...analytics,
-            tokens: { ...analytics.tokens, byModel: [] },
-          },
-        })
-      );
+      const metrics = summarizeLookback(makeInputWithTokens({ byModel: [] }));
       expect(metrics.modelMix).toBeNull();
     });
   });
@@ -377,7 +345,7 @@ describe("summarizeLookback fun-fact signals", () => {
         })
       );
       const text = metrics.topPrompts?.prompts[0]?.text ?? "";
-      expect(text).toContain("[REDACTED_SECRET]");
+      expect(text).toContain("[REDACTED:sk_live]");
       expect(text).not.toContain("sk_live_");
     });
   });
@@ -554,15 +522,8 @@ describe("renderAgentCoachingPrompt", () => {
   // request construction must thread the selected range so the prompt renders
   // "all time", not the 30-day default framing all-time token totals as a month.
   it("renders the window label as all time when the selected range is null", () => {
-    const analytics = makeAnalytics();
-    const allTimeInput = makeInput({
-      analytics: {
-        ...analytics,
-        tokens: { ...analytics.tokens, windowDays: 0 },
-      },
-    });
     const request = buildAgentCoachingLlmRequest(
-      allTimeInput,
+      makeInputWithTokens({ windowDays: 0 }),
       [],
       undefined,
       null
@@ -595,6 +556,39 @@ describe("renderAgentCoachingPrompt", () => {
   it("falls back to the built-in defaults when pack signals are empty", () => {
     const request = buildAgentCoachingLlmRequest(makeInput(), [], []);
     expect(request.bestPracticeSignals.join(" ")).toContain("Claude Code");
+  });
+});
+
+// ISS-7336 (review follow-up): the prompt's own token line is a reader-facing
+// figure, because a generated batch REPLACES the seed tips and every tip must
+// restate a quantified figure. The suite's other prompt assertions use the 450
+// fixture total, which is ungrouped and therefore renders identically in every
+// locale — so they stay green under a revert of the pin. These use totals large
+// enough for the group separator to be observable.
+describe("renderAgentCoachingPrompt under a non-US default locale (ISS-7336)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("puts the prompt suite on a German-default machine", () => {
+    useGermanDefaultLocale();
+    // Guards the harness: if this stub stops biting, the assertions below pass
+    // against the exact bug they exist to catch.
+    expect((8_888_888).toLocaleString()).toBe("8.888.888");
+    expect((8_888_888).toLocaleString("en-US")).toBe("8,888,888");
+  });
+
+  it("pins the windowed token figures to the canonical locale", () => {
+    useGermanDefaultLocale();
+    const request = buildAgentCoachingLlmRequest(makeGroupedTokenInput(), []);
+    const prompt = renderAgentCoachingPrompt(request);
+
+    expect(prompt).toContain(
+      "- tokens: 8,888,888 (in 1,234,567, out 7,654,321)"
+    );
+    expect(prompt).not.toContain("8.888.888");
+    expect(prompt).not.toContain("1.234.567");
+    expect(prompt).not.toContain("7.654.321");
   });
 });
 
@@ -697,217 +691,17 @@ describe("parseGeneratedTips", () => {
   });
 });
 
-function makeInput(
-  overrides: Partial<AgentCoachingInput> = {}
-): AgentCoachingInput {
+// An all-empty corpus: no analytics/workflow (so 0 sessions/events/tokens) and
+// no captured recent events. Nothing to ground a quantified tip in.
+function makeEmptyInput(): AgentCoachingInput {
   return {
-    analytics: makeAnalytics(),
+    analytics: null,
     feedback: [],
     generatedAt: GENERATED_AT,
     recentEvents: [],
-    skills: [{ invocationCount: 4 }],
-    workflow: makeWorkflow(),
-    ...overrides,
+    skills: [],
+    workflow: null,
   };
-}
-
-function makeAnalytics(): AnalyticsData {
-  return {
-    agentsByStatus: [],
-    agentsByType: [],
-    dailyEvents: [],
-    eventsByType: [],
-    sessionsByStatus: [],
-    toolUsage: [],
-    tokens: {
-      byDay: [
-        {
-          day: "2026-06-16",
-          inputTokens: 100,
-          outputTokens: 50,
-          estimatedCostUsd: 1.5,
-        },
-        {
-          day: "2026-06-17",
-          inputTokens: 200,
-          outputTokens: 100,
-          estimatedCostUsd: 3,
-        },
-      ],
-      // All-time spend is higher than the per-day window sum (4.5) so tests can
-      // prove the windowed cost comes from byDay, not this lifetime total.
-      byModel: [
-        {
-          estimatedCostUsd: 9,
-          inputTokens: 300,
-          model: "claude-sonnet-4-5",
-          outputTokens: 150,
-          sessions: 2,
-        },
-      ],
-      totalCacheReadTokens: 0,
-      totalCacheWriteTokens: 0,
-      totalInputTokens: 300,
-      totalOutputTokens: 150,
-      windowDays: 30,
-    },
-    totalAgents: 4,
-    totalEvents: 40,
-    totalSessions: 2,
-  };
-}
-
-// Older per-day rows can predate cost estimation and lack estimatedCostUsd.
-function makeAnalyticsWithoutPerDayCost(): AnalyticsData {
-  const analytics = makeAnalytics();
-  return {
-    ...analytics,
-    tokens: {
-      ...analytics.tokens,
-      byDay: analytics.tokens.byDay.map(
-        ({ estimatedCostUsd: _drop, ...rest }) => rest
-      ),
-    },
-  };
-}
-
-function makeWorkflow(): WorkflowQueryData {
-  return {
-    cooccurrence: [],
-    effectiveness: [],
-    orchestration: {
-      compactions: { sessions: 0, total: 0 },
-      edges: [],
-      mainCount: 2,
-      outcomes: [],
-      sessionCount: 2,
-      subagentTypes: [],
-    },
-    stats: {
-      avgCompactions: 0,
-      avgDepth: 1,
-      avgDurationSec: 120,
-      avgSubagents: 1,
-      successRate: 0.9,
-      topFlow: null,
-      totalAgents: 4,
-      totalCompactions: 0,
-      totalSessions: 2,
-      totalSubagents: 2,
-    },
-    toolFlow: { toolCounts: [], transitions: [] },
-  };
-}
-
-function shellEvent(
-  summary: string,
-  sessionId = "session-1"
-): EventWithSession {
-  return {
-    agentId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    data: null,
-    eventType: "tool_use",
-    id: `event-${summary}-${sessionId}`,
-    sessionId,
-    sessionName: "Session",
-    summary,
-    toolName: "Bash",
-  };
-}
-
-let frustrationEventSeq = 0;
-
-function userEvent(summary: string): EventWithSession {
-  frustrationEventSeq += 1;
-  return {
-    agentId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    data: null,
-    eventType: "UserMessage",
-    id: `user-event-${frustrationEventSeq}`,
-    sessionId: "session-1",
-    sessionName: "Session",
-    summary,
-    toolName: null,
-  };
-}
-
-function errorEvent(): EventWithSession {
-  frustrationEventSeq += 1;
-  return {
-    agentId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    data: null,
-    eventType: "error",
-    id: `error-event-${frustrationEventSeq}`,
-    sessionId: "session-1",
-    sessionName: "Session",
-    summary: "command failed",
-    toolName: null,
-  };
-}
-
-// A tool-call event carrying an arbitrary toolName (FEA-3397 plan-mode detect).
-function toolEvent(
-  toolName: string,
-  sessionId = "session-1"
-): EventWithSession {
-  return {
-    agentId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    data: null,
-    eventType: "PreToolUse",
-    id: `tool-${toolName}-${sessionId}`,
-    sessionId,
-    sessionName: "Session",
-    summary: null,
-    toolName,
-  };
-}
-
-function planEvent(sessionId = "session-1"): EventWithSession {
-  return toolEvent("ExitPlanMode", sessionId);
-}
-
-// A human-turn event (eventRole → "human") carrying prompt text.
-function promptEvent(text: string, sessionId = "session-1"): EventWithSession {
-  return {
-    agentId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    data: null,
-    eventType: "UserPromptSubmit",
-    id: `prompt-${text}-${sessionId}`,
-    sessionId,
-    sessionName: "Session",
-    summary: text,
-    toolName: null,
-  };
-}
-
-function timestampedEvent(createdAt: string | null): EventWithSession {
-  return {
-    agentId: null,
-    createdAt,
-    data: null,
-    eventType: "tool_use",
-    id: `ts-${createdAt}`,
-    sessionId: "session-1",
-    sessionName: "Session",
-    summary: "activity",
-    toolName: "Bash",
-  };
-}
-
-// Build an ISO string from LOCAL date components so hour bucketing is
-// timezone-independent in the test (cadence uses local getHours/getDay).
-function localIso(
-  year: number,
-  monthIndex: number,
-  day: number,
-  hour: number
-): string {
-  return new Date(year, monthIndex, day, hour, 0, 0, 0).toISOString();
 }
 
 function validTip() {

@@ -1,19 +1,27 @@
 import {
-  DISPLAYED_SESSION_STATUS,
   SESSION_STATUS,
   TERMINAL_SESSION_STATUSES,
 } from "@repo/api/src/types/session-status";
 import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockWithDb, mockWithDbTx, mockFindMany, mockLogError } = vi.hoisted(
-  () => ({
-    mockWithDb: vi.fn(),
-    mockWithDbTx: vi.fn(),
-    mockFindMany: vi.fn(),
-    mockLogError: vi.fn(),
-  })
-);
+const {
+  mockWithDb,
+  mockWithDbTx,
+  mockFindMany,
+  mockLogError,
+  mockCaptureStatus,
+} = vi.hoisted(() => ({
+  mockWithDb: vi.fn(),
+  mockWithDbTx: vi.fn(),
+  mockFindMany: vi.fn(),
+  mockLogError: vi.fn(),
+  mockCaptureStatus: vi.fn(),
+}));
+
+vi.mock("@/lib/artifact-activity-recording", () => ({
+  captureSystemSessionStatusChange: mockCaptureStatus,
+}));
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -32,7 +40,14 @@ vi.mock("@repo/database", async (importOriginal) => {
   };
 });
 
-import { SessionOrigin } from "@repo/database";
+import {
+  IndexKeyOrigin,
+  indexKeyLookupCandidates,
+} from "@/lib/index-key-lookup";
+import {
+  INDEX_KEY_MAX_BYTES,
+  projectIndexKey,
+} from "@/lib/index-key-projection";
 import {
   FALLBACK_STALE_SESSION_AGE_HOURS,
   staleSessionReaperService,
@@ -42,8 +57,8 @@ const { runStaleSessionSweep, getStaleSessionAgeHours } =
   staleSessionReaperService;
 
 const NOW = new Date("2026-07-24T18:00:00.000Z");
+const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const CUTOFF = new Date("2026-07-23T18:00:00.000Z");
-const STALE_STARTED_AT = new Date("2026-07-20T10:00:00.000Z");
 const STALE_ACTIVITY_AT = new Date("2026-07-21T10:00:00.000Z");
 const FRESH_ACTIVITY_AT = new Date("2026-07-24T17:00:00.000Z");
 const ORIGINAL_STALE_SESSION_AGE_HOURS = process.env.STALE_SESSION_AGE_HOURS;
@@ -93,17 +108,28 @@ describe("stale session reaper", () => {
       where: {
         id: candidate.artifactId,
         status: {
-          in: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.WAITING],
+          in: [SESSION_STATUS.ACTIVE],
         },
       },
       data: { status: SESSION_STATUS.INACTIVE },
     });
+    // ISS-6274: the reap discards this row, so the write asks Postgres for the
+    // primary key alone — the narrowest `select` Prisma accepts — instead of
+    // `RETURNING *`. Widen it and this reddens.
     expect(tx.sessionDetail.update).toHaveBeenCalledWith({
       where: { artifactId: candidate.artifactId },
       data: {
         sessionEndedAt: STALE_ACTIVITY_AT,
         awaitingInputSince: null,
       },
+      select: { artifactId: true },
+    });
+    expect(mockCaptureStatus).toHaveBeenCalledWith({
+      tx,
+      organizationId: ORGANIZATION_ID,
+      artifactId: candidate.artifactId,
+      before: SESSION_STATUS.ACTIVE,
+      after: SESSION_STATUS.INACTIVE,
     });
   });
 
@@ -124,16 +150,39 @@ describe("stale session reaper", () => {
       where: {
         id: candidate.artifactId,
         status: {
-          in: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.WAITING],
+          in: [SESSION_STATUS.ACTIVE],
         },
       },
       data: { status: SESSION_STATUS.ERROR },
     });
+    expect(mockCaptureStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ after: SESSION_STATUS.ERROR })
+    );
   });
 
-  it("reaps a stale waiting session and clears awaiting input", async () => {
+  it("classifies a failed activity receipt as a failed reap", async () => {
     const candidate = makeCandidate();
-    const tx = makeTransaction({ status: DISPLAYED_SESSION_STATUS.WAITING });
+    const tx = makeTransaction();
+    mockFindMany.mockResolvedValue([candidate]);
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback(tx)
+    );
+    mockCaptureStatus.mockRejectedValueOnce(new Error("receipt unavailable"));
+
+    const result = await runStaleSessionSweep();
+
+    expect(result.reaped).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(mockLogError).toHaveBeenCalled();
+  });
+
+  it("ISS-10364: does NOT reap a candidate whose re-checked status is the legacy waiting spelling — it is no longer in the reapable set", async () => {
+    // Cosimo confirmed on 2026-09-23 that no row has ever stored `waiting`, which
+    // is what let ISS-10364 drop it from REAPABLE_SESSION_STATUSES. Kept as a
+    // counterfactual: if a row somehow still carries the spelling, the sweep
+    // must leave it alone rather than silently reaping it again.
+    const candidate = makeCandidate();
+    const tx = makeTransaction({ status: "waiting" });
     mockFindMany.mockResolvedValue([candidate]);
     mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
       callback(tx)
@@ -141,14 +190,11 @@ describe("stale session reaper", () => {
 
     const result = await runStaleSessionSweep();
 
-    expect(result.reaped).toBe(1);
-    expect(tx.sessionDetail.update).toHaveBeenCalledWith({
-      where: { artifactId: candidate.artifactId },
-      data: {
-        sessionEndedAt: STALE_ACTIVITY_AT,
-        awaitingInputSince: null,
-      },
-    });
+    expect(result.reaped).toBe(0);
+    expect(result.skippedByRecheck).toBe(1);
+    expect(tx.artifact.updateMany).not.toHaveBeenCalled();
+    expect(tx.sessionDetail.update).not.toHaveBeenCalled();
+    expect(mockCaptureStatus).not.toHaveBeenCalled();
   });
 
   it("leaves fresh sessions untouched and applies the bounded scan predicate", async () => {
@@ -165,73 +211,42 @@ describe("stale session reaper", () => {
     });
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
-        origin: SessionOrigin.DESKTOP_SYNC,
         artifact: {
           is: {
             status: {
-              in: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.WAITING],
+              in: [SESSION_STATUS.ACTIVE],
             },
           },
         },
-        OR: [
-          { lastActivityAt: { lt: CUTOFF } },
-          {
-            lastActivityAt: null,
-            sessionStartedAt: { lt: CUTOFF },
-          },
-        ],
+        lastActivityAt: { lt: CUTOFF },
       },
       select: {
         artifactId: true,
         externalSessionId: true,
         lastActivityAt: true,
-        sessionStartedAt: true,
       },
       take: 500,
     });
     expect(mockWithDbTx).not.toHaveBeenCalled();
   });
 
-  it("uses session start as the null-activity fallback for predicate and endedAt", async () => {
-    const candidate = makeCandidate({ lastActivityAt: null });
-    const tx = makeTransaction({ lastActivityAt: null });
-    mockFindMany.mockResolvedValue([candidate]);
-    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
-      callback(tx)
-    );
+  // ISS-6463 deleted the null-activity fallback test that sat here. Its subject
+  // — reaping a row whose `lastActivityAt` was null by falling back to
+  // `sessionStartedAt` for both the scan predicate and the stamped
+  // `sessionEndedAt` — is a retired contract, not an uncovered one: the column
+  // is NOT NULL, so that row cannot exist. The half of it that still holds, that
+  // a reap stamps `sessionEndedAt` from the activity anchor, is asserted by the
+  // INACTIVE reap and the stale-waiting reap above — the two tests that pin
+  // `sessionEndedAt: STALE_ACTIVITY_AT`. (The ERROR reap asserts the status fold
+  // only, so it is not one of them.)
 
-    const result = await runStaleSessionSweep();
-
-    expect(result.reaped).toBe(1);
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [
-            { lastActivityAt: { lt: CUTOFF } },
-            {
-              lastActivityAt: null,
-              sessionStartedAt: { lt: CUTOFF },
-            },
-          ],
-        }),
-      })
-    );
-    expect(tx.sessionDetail.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: {
-          sessionEndedAt: STALE_STARTED_AT,
-          awaitingInputSince: null,
-        },
-      })
-    );
-  });
-
-  it("excludes loop-origin sessions in the candidate scan", async () => {
+  it("ISS-11129: scans every origin, with no origin filter", async () => {
+    // Operator ruling, 2026-09-24: every origin is reaped at the same cutoff.
+    // A mutation that scoped the scan back to one origin fails this.
     await runStaleSessionSweep();
 
     const query = mockFindMany.mock.calls[0]?.[0];
-    expect(query.where.origin).toBe(SessionOrigin.DESKTOP_SYNC);
-    expect(query.where.origin).not.toBe(SessionOrigin.LOOP);
+    expect(query.where).not.toHaveProperty("origin");
   });
 
   it("does not reap terminal, desktop-failure, or unknown statuses", async () => {
@@ -334,6 +349,48 @@ describe("stale session reaper", () => {
     });
     expect(secondTx.sessionDetail.update).toHaveBeenCalledOnce();
     expect(mockLogError).not.toHaveBeenCalled();
+  });
+
+  it("counts the adapter-pg envelope as contention without relying on the message", async () => {
+    // ISS-8804: the shape a raw statement actually raises on 7.10 — Prisma's own
+    // P2010 on `code`, the driver SQLSTATE under driverAdapterError. The message
+    // deliberately does NOT contain "lock timeout", so this case can only pass
+    // through the structured read. Both pre-existing contention tests pass via
+    // the regex, so without this one the whole structured read is deletable
+    // with nothing going red.
+    mockFindMany.mockResolvedValue([makeCandidate()]);
+    mockWithDbTx.mockRejectedValueOnce(
+      Object.assign(new Error("could not obtain lock on relation"), {
+        code: "P2010",
+        meta: { driverAdapterError: { cause: { originalCode: "55P03" } } },
+      })
+    );
+
+    const result = await runStaleSessionSweep();
+
+    expect(result.skippedByContention).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(mockLogError).not.toHaveBeenCalled();
+  });
+
+  it("counts an EXTERNAL statement cancel as failed, not contention", async () => {
+    // 57014 is deliberately NOT accepted here. `reapCandidate` sets only
+    // `lock_timeout`, so it cannot have caused this cancel — it is a session or
+    // role timeout, a pooler, or an operator. Counting it as contention would
+    // suppress the log.error that is the only signal such a reap exists.
+    mockFindMany.mockResolvedValue([makeCandidate()]);
+    mockWithDbTx.mockRejectedValueOnce(
+      Object.assign(new Error("canceling statement due to statement timeout"), {
+        code: "P2010",
+        meta: { driverAdapterError: { cause: { originalCode: "57014" } } },
+      })
+    );
+
+    const result = await runStaleSessionSweep();
+
+    expect(result.skippedByContention).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(mockLogError).toHaveBeenCalled();
   });
 
   it("counts a lock-timeout message without code as contention", async () => {
@@ -440,19 +497,9 @@ describe("stale session reaper", () => {
     expect(mockFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            {
-              lastActivityAt: {
-                lt: new Date("2026-07-24T12:00:00.000Z"),
-              },
-            },
-            {
-              lastActivityAt: null,
-              sessionStartedAt: {
-                lt: new Date("2026-07-24T12:00:00.000Z"),
-              },
-            },
-          ],
+          lastActivityAt: {
+            lt: new Date("2026-07-24T12:00:00.000Z"),
+          },
         }),
       })
     );
@@ -494,6 +541,50 @@ describe("stale session reaper", () => {
       candidate.externalSessionId,
     ]);
   });
+
+  /**
+   * ISS-8200 (review): the sweep locks a session it READ OUT of the column, so
+   * its identity is a STORED key. The case above cannot see this — `session-1`
+   * is inside the byte budget, so it has one candidate whichever origin the
+   * caller passes, and both origins produce identical SQL.
+   *
+   * A re-keyed session is where they diverge. `projectIndexKey` is deliberately
+   * not idempotent, so sending a stored PROJECTED key down the wire path
+   * projects it AGAIN into a third value that no writer anywhere holds: the
+   * sweep would take a slot of its own while the ingest holds the real one, and
+   * the mutual exclusion this lock exists for would be gone precisely for the
+   * sessions ISS-8069 re-keyed.
+   */
+  it("locks a re-keyed session under its STORED key, on a slot the ingest also takes", async () => {
+    const rawSessionId = "s".repeat(INDEX_KEY_MAX_BYTES + 1);
+    const storedSessionId = projectIndexKey(rawSessionId).value;
+    const candidate = makeCandidate({ externalSessionId: storedSessionId });
+    const tx = makeTransaction();
+    mockFindMany.mockResolvedValue([candidate]);
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback(tx)
+    );
+
+    await runStaleSessionSweep();
+
+    // The stored key VERBATIM. Re-projecting it yields a different string, so
+    // this assertion is what fails if the sweep ever takes the wire path again.
+    const lockedIdentities = tx.$executeRaw.mock.calls
+      .slice(1)
+      .map((call) => call[1] as string);
+    expect(lockedIdentities).toEqual([storedSessionId, storedSessionId]);
+    expect(lockedIdentities).not.toContain(
+      projectIndexKey(storedSessionId).value
+    );
+
+    // And the property that actually matters: the ingest, which holds the RAW
+    // wire id for this same session, locks a set that OVERLAPS the sweep's.
+    const ingestKeys = indexKeyLookupCandidates(
+      rawSessionId,
+      IndexKeyOrigin.Wire
+    );
+    expect(ingestKeys).toContain(storedSessionId);
+  });
 });
 
 function makeCandidate(
@@ -503,21 +594,20 @@ function makeCandidate(
     artifactId: "artifact-1",
     externalSessionId: "session-1",
     lastActivityAt: STALE_ACTIVITY_AT,
-    sessionStartedAt: STALE_STARTED_AT,
     ...overrides,
   };
 }
 
+// Mirrors the production `select` exactly (ISS-6463 dropped `sessionStartedAt`
+// from it): a mock that returns a column the code no longer reads would keep a
+// deleted fallback looking supported.
 function makeTransaction(options: TransactionOptions = {}) {
   const current = {
-    lastActivityAt:
-      options.lastActivityAt === undefined
-        ? STALE_ACTIVITY_AT
-        : options.lastActivityAt,
-    sessionStartedAt: options.sessionStartedAt ?? STALE_STARTED_AT,
+    lastActivityAt: options.lastActivityAt ?? STALE_ACTIVITY_AT,
     endsWithError: options.endsWithError ?? null,
     artifact: {
       status: options.status ?? SESSION_STATUS.ACTIVE,
+      organizationId: ORGANIZATION_ID,
     },
   };
   return {
@@ -540,17 +630,19 @@ function restoreStaleSessionAgeHours(): void {
   process.env.STALE_SESSION_AGE_HOURS = ORIGINAL_STALE_SESSION_AGE_HOURS;
 }
 
+// A local restatement of the service's own (unexported) candidate shape. Kept in
+// step with it by hand: ISS-6463 dropped `sessionStartedAt` from the production
+// `select` and made `lastActivityAt` non-null, so a copy still carrying either
+// would let this file build candidates the production query can never return.
 type StaleSessionCandidate = {
   artifactId: string;
   externalSessionId: string;
-  lastActivityAt: Date | null;
-  sessionStartedAt: Date;
+  lastActivityAt: Date;
 };
 
 type TransactionOptions = {
   status?: string;
   endsWithError?: boolean | null;
-  lastActivityAt?: Date | null;
-  sessionStartedAt?: Date;
+  lastActivityAt?: Date;
   casCount?: number;
 };

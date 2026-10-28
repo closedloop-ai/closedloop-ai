@@ -7,7 +7,7 @@
  * and preserves submission order.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { makeRecordingQueue, openTestPrisma } from "./prisma-test-utils.js";
 
 // query_only rejects a write with SQLITE_READONLY (extended code 8); the adapter
@@ -194,6 +194,60 @@ test("concurrent writes serialize in submission order", async () => {
 
     assert.deepEqual(order, ["a", "b"]);
     assert.equal(queue.runs, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-6339: a throwing statement observer cannot fail the statement it observes", async () => {
+  // `onStatementSettled` is wired in PRODUCTION on every statement, and its
+  // async call site is a `.then` handler whose promise nobody holds — an
+  // escaping throw there becomes an unhandled rejection in the db-host
+  // utilityProcess, which is how that process has died before. The synchronous
+  // branch would be worse still: the throw would replace the caller's result.
+  const observed: string[] = [];
+  const { prisma, close } = await openTestPrisma(undefined, {
+    onStatementSettled: (sql) => {
+      observed.push(sql);
+      throw new Error("the telemetry recorder is broken");
+    },
+  });
+  try {
+    // The read must return its real value, not the observer's error.
+    assert.equal(await prisma.client.packCatalog.count(), 0);
+    assert.ok(observed.length > 0, "the observer was never called");
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-6339: a transactional statement reaches the settle observer", async () => {
+  // Statements inside a transaction are served by the adapter's own
+  // `Transaction` object, not by the adapter — so before ISS-6339 widened the
+  // spy the store's heaviest work (analytics fan-out, importer, backfill) was
+  // structurally invisible to the duration signal while the emitted total still
+  // called itself the store's statement count.
+  const observed: string[] = [];
+  const { prisma, close } = await openTestPrisma(undefined, {
+    onStatementSettled: (sql) => observed.push(sql),
+  });
+  try {
+    await prisma.write((client) =>
+      client.$transaction(async (tx) => {
+        await tx.packCatalog.create({
+          data: {
+            packId: "tx-observed",
+            displayName: "TX",
+            githubUrl: "https://example.test/tx",
+          },
+          select: { packId: true },
+        });
+      })
+    );
+    assert.ok(
+      observed.some((sql) => sql.toUpperCase().includes("INSERT")),
+      `no transactional INSERT observed; saw ${JSON.stringify(observed)}`
+    );
   } finally {
     await close();
   }

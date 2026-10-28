@@ -26,16 +26,10 @@ export type SchemaSnapshot = {
 
 // PSL cannot express EXPRESSION indexes (partial ones it can, via the
 // `partialIndexes` preview feature), so those stay hand-carried in migration SQL
-// and are excluded from the schema↔migrations comparison. Fidelity of each entry
-// is covered by a focused test instead — named beside it below.
-const PSL_INEXPRESSIBLE_INDEXES = new Set<string>([
-  // ISS-5735, migration 0058. Both index `substr(<sha column>, 1, 7)` so the
-  // boot-time commit-SHA → PR correlation can seek instead of walking every PR
-  // artifact per commit. Covered by test/commit-sha-pr-correlation-scan.test.ts,
-  // which asserts the correlation's real statement plans onto them.
-  "idx_artifacts_head_sha_p7",
-  "idx_artifacts_merge_commit_sha_p7",
-]);
+// and are excluded from the schema↔migrations comparison. Name each one here
+// beside the test that covers its fidelity. Empty since ISS-12709 dropped the
+// two `substr(<sha column>, 1, 7)` artifact indexes.
+const PSL_INEXPRESSIBLE_INDEXES = new Set<string>();
 
 export async function snapshotSchema(
   db: SqliteExecutor

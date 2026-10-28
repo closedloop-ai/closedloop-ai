@@ -3,7 +3,7 @@
  * @description ISS-4771: the three best-effort one-shot startup maintenance
  * passes the Agent Dashboard runtime runs behind its background-work gate —
  * seeding the local `pack_catalog`, scanning the installed pack inventory, and
- * backfilling `~/.claude/plans`. Extracted out of the shrink-only grandfathered
+ * backfilling `~/.claude/plans`. Extracted out of
  * `agent-dashboard-design-system-runtime.ts`; each pass still swallows its own
  * failure into a log line so a failed pass can never break boot.
  */
@@ -16,20 +16,33 @@ import type {
   InvokeStoreOp,
 } from "./agent-dashboard-runtime-options.js";
 
+/**
+ * Seed the local `pack_catalog`. Never throws — a failed pass must not break
+ * boot — so it reports the outcome instead.
+ *
+ * ISS-6170: the return value is load-bearing, not decoration. Callers use the
+ * seed as the signal that `pack_catalog` is POPULATED, and an install failing
+ * with `ENOTFOUND` against an empty catalog is transient rather than a pack this
+ * build cannot install. Swallowing the failure and still announcing readiness
+ * told the required-plugin installer the opposite and let it latch a legitimately
+ * installable pack as permanently dead.
+ */
 export async function seedAgentDashboardCatalog(
   invokeStoreOp: InvokeStoreOp,
   log: AgentDashboardLog
-): Promise<void> {
+): Promise<boolean> {
   try {
     // FEA-2038: upsertCatalogSeed uses prisma.write — runs in the DB host. The
     // seed doc is plain JSON, so it forwards as a structured-clone-safe arg.
     await invokeStoreOp("catalog.seed", [catalogSeed]);
     log("agent-dashboard", "Catalog seed applied");
+    return true;
   } catch (e) {
     log(
       "agent-dashboard",
       `Catalog seed failed: ${e instanceof Error ? e.message : String(e)}`
     );
+    return false;
   }
 }
 

@@ -2,9 +2,10 @@ import {
   KEYLESS_TELEMETRY_EXPORT_EVENT,
   KEYLESS_TELEMETRY_HANDSHAKE_EVENT,
   type KeylessTelemetryExportAck,
+  KeylessTelemetryRejectionReason,
   type KeylessTelemetrySessionAck,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveClientIp } from "../keyless-otlp-ingress";
 import {
   connectClient,
@@ -13,6 +14,28 @@ import {
   type KeylessClient,
   makeHarness,
 } from "./keyless-harness";
+
+/**
+ * Lets one case make the metric sink throw. Defaults to the real emitter, so
+ * every other case in this file is unaffected.
+ */
+const metricSink = vi.hoisted(() => ({ throwOnEmit: false }));
+
+vi.mock("@repo/observability/telemetry/metrics", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@repo/observability/telemetry/metrics")
+    >();
+  return {
+    ...actual,
+    emitTelemetryMetric: (metric: unknown) => {
+      if (metricSink.throwOnEmit) {
+        throw new Error("metric sink exploded");
+      }
+      return (actual.emitTelemetryMetric as (m: unknown) => void)(metric);
+    },
+  };
+});
 
 const PROTOBUF = "application/x-protobuf";
 
@@ -34,6 +57,9 @@ async function client(url: string): Promise<KeylessClient> {
 }
 
 afterEach(async () => {
+  // Unconditional: a failed assertion between the flip and a case-local reset
+  // would otherwise leave a throwing metric sink for every later case.
+  metricSink.throwOnEmit = false;
   for (const c of clients.splice(0)) {
     c.disconnect();
   }
@@ -41,6 +67,27 @@ afterEach(async () => {
     await h.close();
   }
 });
+
+/**
+ * Resolves when `c` is disconnected, or `false` at the bound. A bounded event
+ * wait, not a fixed sleep: the fence's `socket.disconnect()` is an observable
+ * event, so there is no need to guess how long it takes.
+ */
+function waitForDisconnect(
+  c: KeylessClient,
+  timeoutMs = 2000
+): Promise<boolean> {
+  if (!c.socket.connected) {
+    return Promise.resolve(true);
+  }
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    c.socket.once("disconnect", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
 
 function exportEnvelope(sessionId: string) {
   return {
@@ -167,6 +214,34 @@ describe("keyless telemetry — connection cap", () => {
     await delay(60);
     expect(h.handle.activeConnections()).toBe(0);
   });
+
+  it("still enforces the cap when the capacity metric emitter throws (ISS-7976)", async () => {
+    // emitCapacityMetric runs BEFORE the socket.disconnect() that enforces the
+    // fence. Unguarded, a throw from the metric sink skipped that disconnect,
+    // so the fence leaked sockets on the UNAUTHENTICATED namespace during
+    // exactly the connection storm it exists to survive. The authenticated
+    // twin (safeEmitConnectionStateCount, index.ts) has been guarded since
+    // ISS-7201; this is that guard applied to the keyless side.
+    const h = await harness({ maxConnections: 1 });
+    const c1 = await client(h.url);
+    await delay(30);
+    expect(h.handle.activeConnections()).toBe(1);
+
+    metricSink.throwOnEmit = true;
+    const c2 = await connectClient(h.url).catch(() => null);
+
+    // The fence must still close it, and must not have taken a slot for it.
+    expect(c2 === null || (await waitForDisconnect(c2))).toBe(true);
+    expect(h.handle.activeConnections()).toBe(1);
+    c2?.disconnect();
+
+    // The namespace is still serving after the throw: the first client keeps
+    // its slot and releases it normally.
+    metricSink.throwOnEmit = false;
+    c1.disconnect();
+    await delay(60);
+    expect(h.handle.activeConnections()).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -227,5 +302,48 @@ describe("keyless telemetry — back-pressure", () => {
     );
     expect(ok.accepted).toBe(true);
     expect(gated.calls()).toBe(3);
+  });
+
+  it("still sheds and reclaims the permit when the shed metric throws (ISS-7976)", async () => {
+    // The SECOND emitCapacityMetric call site. It runs inside the shed arm
+    // before the rate_limited ack, so an unguarded throw would both lose the
+    // ack (the client waits out its own timeout) and skip the release path
+    // that hands the permit back.
+    const gated = makeGatedFetch();
+    const h = await harness(
+      {
+        collectorUrl: "http://collector.test",
+        fetchImpl: gated.fetchImpl,
+        maxInflightExports: 1,
+      },
+      { withCollector: false }
+    );
+    const c = await client(h.url);
+    const sessionId = await openSession(c);
+
+    const pending = c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      exportEnvelope(sessionId)
+    );
+    await delay(40);
+    expect(h.handle.inFlightExports()).toBe(1);
+
+    metricSink.throwOnEmit = true;
+    const shed = await c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      exportEnvelope(sessionId)
+    );
+    metricSink.throwOnEmit = false;
+
+    expect(shed.accepted).toBe(false);
+    if (!shed.accepted) {
+      expect(shed.reason).toBe(KeylessTelemetryRejectionReason.RateLimited);
+    }
+    // The shed must not have consumed a collector call or a permit.
+    expect(gated.calls()).toBe(1);
+
+    gated.release();
+    expect((await pending).accepted).toBe(true);
+    expect(h.handle.inFlightExports()).toBe(0);
   });
 });

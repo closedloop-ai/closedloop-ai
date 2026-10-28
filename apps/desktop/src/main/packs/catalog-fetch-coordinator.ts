@@ -3,7 +3,7 @@
  * Pack Catalog fetch (ISS-5274).
  *
  * Same read→compute→apply dance the pack scan uses (FEA-3628), for the same
- * reason: `catalog.fetch.run` did its ~20 `gh`/HTTPS calls INSIDE the db-host,
+ * reason: `catalog.fetch.run` did its ~20 HTTPS calls INSIDE the db-host,
  * measured at 13.4s of a store op whose budget is 100ms, during which renderer
  * DB reads queue behind it.
  *
@@ -42,17 +42,6 @@ export type CatalogFetchCoordinator = {
 
 export function createCatalogFetchCoordinator(deps: {
   rawStoreOp: RawStoreOp;
-  /**
-   * Whether the local `gh` CLI is usable.
-   *
-   * INJECTED, and asynchronous, on purpose: the catalog fetcher's own
-   * `ghCliAvailable()` resolves through a SYNCHRONOUS login shell (2,667ms in
-   * the perf baseline). Calling that here would move a multi-second freeze onto
-   * the Electron MAIN thread — strictly worse than the db-host stall this
-   * coordinator exists to remove — while leaving every test green. Production
-   * must supply the async resolver.
-   */
-  resolveGhAvailable: () => Promise<boolean>;
   log?: (message: string) => void;
   /** Test seam for the GitHub calls; production uses the real transport. */
   transport?: CatalogFetchTransport;
@@ -69,9 +58,7 @@ export function createCatalogFetchCoordinator(deps: {
       const rows = (await deps.rawStoreOp(
         "catalog.fetch.rows"
       )) as CatalogFetchRow[];
-      const ghAvailable = await deps.resolveGhAvailable();
       plan = await collectCatalogFetchPlan(rows, {
-        ghAvailable,
         transport: deps.transport,
         // Teardown must actually stop the network work. This runs in the main
         // process now, so — unlike when it lived in the db-host, whose exit

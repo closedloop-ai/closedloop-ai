@@ -13,12 +13,14 @@ import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
   type SyncedAgentSession,
+  type SyncedAgentSessionAgent,
 } from "@repo/api/src/types/agent-session";
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { persistedSessionDetail } from "@/__tests__/support/agent-sessions/service.test-harness";
 
 // ---------------------------------------------------------------------------
 // Module-level mock singletons (vi.hoisted so they're available to vi.mock
@@ -30,6 +32,8 @@ const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   emitTelemetryMetric: vi.fn(),
   generateSlug: vi.fn().mockResolvedValue("SES-0001"),
+  writeSessionArtifactMetadata: vi.fn(() => Promise.resolve(null)),
+  captureCommittedSessionMetadata: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -51,6 +55,11 @@ vi.mock("@/lib/slug-generator", () => ({
   generateSlug: mocks.generateSlug,
 }));
 
+vi.mock("./service/session-ingest-metadata-activity", () => ({
+  writeSessionArtifactMetadata: mocks.writeSessionArtifactMetadata,
+  captureCommittedSessionMetadata: mocks.captureCommittedSessionMetadata,
+}));
+
 import { agentSessionsService } from "./service";
 
 // ---------------------------------------------------------------------------
@@ -68,6 +77,21 @@ const AWAITING_SINCE_ISO = "2026-07-24T10:00:00.000Z";
 const LAST_ACTIVITY_ISO = "2026-07-24T09:45:00.000Z";
 /** Strictly newer than the fixture's `sessionEndedAt`, so a reopen can fire. */
 const REOPEN_EVENT_AT = new Date("2026-07-24T11:00:00.000Z");
+/** ISS-8604: the anchor on the row a sweep deletes mid-apply. */
+const SWEPT_ANCHOR = new Date("2026-07-19T07:00:00.000Z");
+const SWEPT_AGENT_ID = "swept-agent";
+const PAYLOAD_AGENT_ID = "payload-agent";
+/** The revision a staged chunk sequence is assembling. */
+const CHUNK_REVISION = 42;
+
+function buildAgent(externalAgentId: string): SyncedAgentSessionAgent {
+  return {
+    externalAgentId,
+    name: externalAgentId,
+    type: "primary",
+    status: SESSION_STATUS.ACTIVE,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,12 +103,25 @@ const REOPEN_EVENT_AT = new Date("2026-07-24T11:00:00.000Z");
  */
 function buildExistingRow(
   persistedArtifactStatus: string,
-  awaitingInputSince: Date | null = null
+  awaitingInputSince: Date | null = null,
+  agents: SyncedAgentSessionAgent[] = [],
+  // ISS-8604: the staged chunk sequence the UPDATE arm's gate reads. Absent by
+  // default, which is every case that is not about chunking.
+  stagedChunkSequence: {
+    pendingChunkRevision: number | null;
+    pendingChunkTotal: number | null;
+    pendingChunkReceived: number | null;
+  } = {
+    pendingChunkRevision: null,
+    pendingChunkTotal: null,
+    pendingChunkReceived: null,
+  }
 ) {
   return {
     artifactId: PERSISTED_ARTIFACT_ID,
-    agents: [],
+    agents,
     dataRevision: null,
+    ...stagedChunkSequence,
     sessionStartedAt: SESSION_STARTED_AT,
     sessionUpdatedAt: SESSION_UPDATED_AT,
     sessionEndedAt: new Date("2026-07-24T09:15:00.000Z"),
@@ -99,7 +136,7 @@ function buildSyncedSession(
   return {
     externalSessionId: "ext-sess-awaiting-1",
     name: "Awaiting Test Session",
-    status: DISPLAYED_SESSION_STATUS.WAITING,
+    status: LEGACY_WAITING_WIRE_STATUS,
     harness: "claude",
     cwd: "/tmp/project",
     model: "claude-sonnet-4",
@@ -144,7 +181,7 @@ function buildContext() {
 function installDb(existingRow: ReturnType<typeof buildExistingRow> | null) {
   const sessionDetailUpsert = vi
     .fn()
-    .mockResolvedValue({ artifactId: PERSISTED_ARTIFACT_ID });
+    .mockResolvedValue(persistedSessionDetail(PERSISTED_ARTIFACT_ID));
   const sessionDetailUpdate = vi.fn().mockResolvedValue({});
 
   const db = {
@@ -164,7 +201,7 @@ function installDb(existingRow: ReturnType<typeof buildExistingRow> | null) {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     // No attribution → resolveProjectResolution skips artifact.findMany.
-    // No artifactRefs → resolveArtifactSlugMap and resolveBranchRepoMap are
+    // No artifactRefs → resolveArtifactSlugMap and resolveSessionRepositoryIdentity are
     // no-ops and never call gitHubInstallation or artifact.findMany.
     sessionDetail: {
       // ISS-5981 (#5018 review): HONOR the `select`, do not ignore it. A mock
@@ -257,7 +294,7 @@ describe("upsertSessions — FEA-3810 awaitingInputSince invariant", () => {
     const { sessionDetailUpsert } = installDb(existingRow);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: AWAITING_SINCE_ISO,
     });
 
@@ -329,7 +366,7 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
     const { sessionDetailUpsert } = installDb(null);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: AWAITING_SINCE_ISO,
     });
 
@@ -348,16 +385,16 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
   });
 
   it("falls back to the STORED anchor when a `waiting` payload declares none", async () => {
-    // The failure this prevents: `detailData.awaitingInputSince` is spread into
-    // both upsert arms unconditionally, so every sync rewrites the column. With
-    // no stored fallback the rewrite is a null, and a run blocked for three days
-    // loses its anchor on the very next batch.
+    // The failure this prevents: the update arm rewrites this column on every
+    // sync. With no stored fallback the rewrite is a null, and a run blocked for
+    // three days loses its anchor on the very next batch. (ISS-8604 scoped the
+    // stored tier to this arm; the create arm's is asserted further down.)
     const storedAnchor = new Date("2026-07-20T08:00:00.000Z");
     const existingRow = buildExistingRow(SESSION_STATUS.ACTIVE, storedAnchor);
     const { sessionDetailUpsert } = installDb(existingRow);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: null,
     });
 
@@ -378,7 +415,7 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
     const { sessionDetailUpsert } = installDb(existingRow);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: AWAITING_SINCE_ISO,
     });
 
@@ -401,7 +438,7 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
     const { sessionDetailUpsert } = installDb(null);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: null,
       lastActivityAt: LAST_ACTIVITY_ISO,
     });
@@ -423,14 +460,11 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
   // rewrites the status to `active`, so without a synthesis tier those rows drop
   // out of the Waiting facet — a read-visible migration this fold must not make.
   it("synthesizes an anchor for a legacy stored-`waiting` row that has none", async () => {
-    const existingRow = buildExistingRow(
-      DISPLAYED_SESSION_STATUS.WAITING,
-      null
-    );
+    const existingRow = buildExistingRow(LEGACY_WAITING_WIRE_STATUS, null);
     const { sessionDetailUpsert } = installDb(existingRow);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: null,
       lastActivityAt: LAST_ACTIVITY_ISO,
     });
@@ -473,7 +507,7 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
     ]);
 
     const session = buildSyncedSession({
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      status: LEGACY_WAITING_WIRE_STATUS,
       awaitingInputSince: null,
     });
 
@@ -525,7 +559,7 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
 
     // `sessionDetail.update` is reached ONLY from the reopen (session-reopen.ts);
     // the ordinary write goes through `sessionDetail.upsert`. So "update was not
-    // called" IS "the reopen did not fire" (thadeusb, #5156).
+    // called" IS "the reopen did not fire" (tamsinb, #5156).
     //
     // Asserting the upsert DID run first is what keeps this from passing
     // vacuously: an earlier draft looped over `update`'s calls and asserted on
@@ -585,5 +619,187 @@ describe("upsertSessions — ISS-5981 awaiting anchor survives the waiting fold"
 
     const upsertArg = sessionDetailUpsert.mock.calls[0][0];
     expect(upsertArg.update.awaitingInputSince).toBeNull();
+  });
+});
+
+/*
+ * ISS-8604: the CREATE arm's residue from the READ COMMITTED delete race.
+ *
+ * Which arm the upsert takes is decided by the DATABASE, not by the pre-upsert
+ * `existing` read. `acquireSessionAdvisoryLocks` serializes every concurrent
+ * INGEST writer for one `externalSessionId`, so the racer here is a deleter
+ * that does not take that lock (retention, phantom retention): it commits
+ * between the read and the upsert, and Postgres then takes the CREATE arm while
+ * this apply still holds a snapshot of a row that no longer exists.
+ *
+ * `installDb(existingRow)` reproduces exactly that state — the finder returns a
+ * row, and BOTH arms of the single upsert call are inspected. The create arm's
+ * object is what Postgres would write had the row been swept; the update arm's
+ * is what it writes when the row survives. Asserting both in one call is the
+ * point: it pins that the arms disagree BY DESIGN here, rather than that a
+ * guard was removed from the arm that still needs it.
+ *
+ * WHAT THESE DO NOT COVER, and where that coverage lives (review, whitlockk). This
+ * mock never makes a database CHOOSE an arm: it asserts the object handed to
+ * Prisma, so it cannot show that the read → delete → upsert ordering actually
+ * lands on the create arm, nor what the created ROW then holds. That is
+ * `session-create-arm-race.integration.test.ts`, which commits the sweep inside
+ * the slice's read-write window against real Postgres and reads the persisted
+ * row back. Read these as the per-column argument and that one as the proof.
+ *
+ * These cover the values whose CONTENT came off the deleted row — `metadata`'s
+ * withheld-key merge is the fourth and is covered against the store in the
+ * integration suite named above. The columns that only DECLINE against the stale
+ * read — the token rollup, `estimatedCost`, `authoritativeCostUsd`, frustration,
+ * `endsWithError`, the trace-duration triple, the tiling strip —
+ * are deliberately still shared: ISS-8515 chose that suppression for this same
+ * race, and splitting it needs ISS-8619's phase split because the post-upsert
+ * `persistSessionChildren` shares the flag. The PR lanes are the exception and
+ * are NOT in that bound (`pullRequests` here, the link lane in
+ * `create-arm-race-repair.ts`) — a suppressed column is one the next fresher
+ * batch simply writes, while a skipped PR link is an absence nothing recreates.
+ */
+describe("upsertSessions — ISS-8604 create-arm race residue", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("keeps a created row's awaiting anchor agreeing with the status it writes", async () => {
+    // The residue named at the ISS-5648 create-arm comment: the read saw a
+    // TERMINAL row, so the shared `detailData` nulled the anchor off
+    // `guardedStatus` — while the create arm writes the INCOMING status. A row
+    // born from this race read `active` carrying no awaiting timestamp, so a
+    // `waiting` run was created already invisible to the Waiting facet.
+    const existingRow = buildExistingRow(SESSION_STATUS.INACTIVE, SWEPT_ANCHOR);
+    const { sessionDetailUpsert } = installDb(existingRow);
+
+    await agentSessionsService.upsertSessions(
+      buildContext(),
+      buildPayload(
+        buildSyncedSession({
+          status: LEGACY_WAITING_WIRE_STATUS,
+          awaitingInputSince: null,
+          lastActivityAt: LAST_ACTIVITY_ISO,
+        })
+      )
+    );
+
+    const upsertArg = sessionDetailUpsert.mock.calls[0][0];
+    expect(upsertArg.create.artifact.create.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(upsertArg.create.awaitingInputSince).toEqual(
+      new Date(LAST_ACTIVITY_ISO)
+    );
+    expect(mocks.writeSessionArtifactMetadata).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        artifactId: PERSISTED_ARTIFACT_ID,
+        status: SESSION_STATUS.INACTIVE,
+      })
+    );
+    expect(upsertArg.update.awaitingInputSince).toBeNull();
+  });
+
+  it("does not seed a created row's anchor from the swept row's anchor", async () => {
+    // The second residue path, with terminal-wins out of the picture: the STORED
+    // tier of `resolveIngestAwaitingInputSince`. Reading a swept row's anchor
+    // onto a brand-new row backdates "asked at" to a run this row never had.
+    const existingRow = buildExistingRow(SESSION_STATUS.ACTIVE, SWEPT_ANCHOR);
+    const { sessionDetailUpsert } = installDb(existingRow);
+
+    await agentSessionsService.upsertSessions(
+      buildContext(),
+      buildPayload(
+        buildSyncedSession({
+          status: LEGACY_WAITING_WIRE_STATUS,
+          awaitingInputSince: null,
+          lastActivityAt: LAST_ACTIVITY_ISO,
+        })
+      )
+    );
+
+    const upsertArg = sessionDetailUpsert.mock.calls[0][0];
+    // The SYNTHESIZED tier, which is what a first delivery is entitled to.
+    expect(upsertArg.create.awaitingInputSince).toEqual(
+      new Date(LAST_ACTIVITY_ISO)
+    );
+    // Same call: the stored tier is untouched for the row that survives.
+    expect(upsertArg.update.awaitingInputSince).toEqual(SWEPT_ANCHOR);
+  });
+
+  it("does not stamp a created row with the swept row's chunk-sequence count", async () => {
+    // The quiet half of the ack residue. The stored row is mid-sequence at
+    // `(42, total 3, received 1)`; chunk 1 of 3 arrives. The shared gate reads
+    // that marker off the swept row and emits `pendingChunkReceived: 2` while
+    // omitting the revision and total, so a created row carried a contiguous
+    // count for a sequence it has no identity for. The loud half — the FINAL
+    // chunk committing `dataRevision` onto a one-chunk row — is proven against
+    // the store in `session-create-arm-race.integration.test.ts`.
+    const existingRow = buildExistingRow(SESSION_STATUS.ACTIVE, null, [], {
+      pendingChunkRevision: CHUNK_REVISION,
+      pendingChunkTotal: 3,
+      pendingChunkReceived: 1,
+    });
+    const { sessionDetailUpsert } = installDb(existingRow);
+
+    await agentSessionsService.upsertSessions(
+      buildContext(),
+      buildPayload(
+        buildSyncedSession({
+          status: SESSION_STATUS.ACTIVE,
+          dataRevision: CHUNK_REVISION,
+          chunk: { index: 1, total: 3 },
+        })
+      )
+    );
+
+    const upsertArg = sessionDetailUpsert.mock.calls[0][0];
+    // A row with no sequence in flight and no committed revision, which is what
+    // a first delivery of chunk 1 is entitled to say.
+    expect(upsertArg.create).toMatchObject({
+      dataRevision: null,
+      pendingChunkRevision: null,
+      pendingChunkTotal: null,
+      pendingChunkReceived: null,
+    });
+    // Same call: the surviving row still advances its own staged sequence.
+    expect(upsertArg.update.pendingChunkReceived).toBe(2);
+    expect(upsertArg.update.dataRevision).toBeUndefined();
+  });
+
+  it("does not seed a created row's roster from the swept row's agents", async () => {
+    // The payload carries no `dataRevision`, so the chunk gate does not entitle
+    // it to delete-replace and the shared roster takes the MERGE path — the one
+    // that reads `existing.agents`. A created row inherited agents whose events
+    // went with the deleted row, and `agentCount` counted them.
+    const existingRow = buildExistingRow(SESSION_STATUS.ACTIVE, null, [
+      buildAgent(SWEPT_AGENT_ID),
+    ]);
+    const { sessionDetailUpsert } = installDb(existingRow);
+
+    await agentSessionsService.upsertSessions(
+      buildContext(),
+      buildPayload(
+        buildSyncedSession({
+          status: SESSION_STATUS.ACTIVE,
+          agents: [buildAgent(PAYLOAD_AGENT_ID)],
+        })
+      )
+    );
+
+    const upsertArg = sessionDetailUpsert.mock.calls[0][0];
+    expect(
+      upsertArg.create.agents.map(
+        (agent: SyncedAgentSessionAgent) => agent.externalAgentId
+      )
+    ).toEqual([PAYLOAD_AGENT_ID]);
+    expect(upsertArg.create.agentCount).toBe(1);
+    // Same call: the surviving row still MERGES, so an additive delivery cannot
+    // drop an agent it did not carry.
+    expect(
+      upsertArg.update.agents.map(
+        (agent: SyncedAgentSessionAgent) => agent.externalAgentId
+      )
+    ).toEqual([SWEPT_AGENT_ID, PAYLOAD_AGENT_ID]);
+    expect(upsertArg.update.agentCount).toBe(2);
   });
 });

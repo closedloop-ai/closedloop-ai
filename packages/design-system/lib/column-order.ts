@@ -67,6 +67,41 @@ export function moveColumnByDirection(
 }
 
 /**
+ * The four placements a column-options "Move column" submenu offers. Owned here
+ * rather than re-declared at each host, because `moveColumnPlacement` below is
+ * the only thing that may decide what each of them means.
+ */
+export type ColumnMovePlacement = "start" | "left" | "right" | "end";
+
+/**
+ * Apply one "Move column" menu selection (ISS-8490). `TableGridColumnMenu`
+ * reports all four placements through a single `onMove`, and every host must
+ * answer all four — so each one answering by hand meant `left`/`right`
+ * delegating here while `start`/`end` were re-derived per host, with nothing
+ * keeping the two halves agreeing about an id the order does not contain.
+ */
+export function moveColumnPlacement(
+  columnIds: readonly string[],
+  columnId: string,
+  placement: ColumnMovePlacement
+): string[] {
+  if (placement === "left" || placement === "right") {
+    return moveColumnByDirection(
+      columnIds,
+      columnId,
+      placement === "left" ? ColumnMoveDirection.Left : ColumnMoveDirection.Right
+    );
+  }
+  if (!columnIds.includes(columnId)) {
+    return [...columnIds];
+  }
+  const withoutColumn = columnIds.filter((id) => id !== columnId);
+  return placement === "start"
+    ? [columnId, ...withoutColumn]
+    : [...withoutColumn, columnId];
+}
+
+/**
  * Order the given columns by a caller-supplied `columnOrder` id list. Columns
  * whose id appears in `columnOrder` are emitted in that order first; any column
  * absent from `columnOrder` (a new column the persisted order predates) keeps
@@ -174,11 +209,12 @@ export const COLUMN_RESIZE_KEYBOARD_STEP_PX = 16;
 
 /**
  * The `md` breakpoint (768px): below this measured container width `GridTable`
- * renders its responsive card list instead of the grid.
+ * renders its legacy responsive cards and `GridTableV2` projects its canonical
+ * one-column narrow list.
  *
- * This is a card-fallback threshold and nothing else. For a table that supplies
- * `cardRender` it happens to also be the narrowest container the grid itself
- * ever renders at, which makes it a useful basis for a column-placement budget —
+ * This is a layout threshold and nothing else. For a legacy `GridTable` that
+ * supplies `cardRender` it also happens to be the narrowest container the grid
+ * itself ever renders at, which makes it a useful basis for a column-placement budget —
  * but that is a SEPARATE question with a separate answer, so it gets a separate
  * constant at the caller rather than a second meaning here (ISS-4788; see
  * `SESSIONS_LEGIBLE_COLUMN_BUDGET_PX` in the Sessions table, the one such

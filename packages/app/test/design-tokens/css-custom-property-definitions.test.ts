@@ -257,7 +257,7 @@ describe("design-token custom properties", () => {
 
   /*
    * `.sd3-status-dot` is shared by Session detail and Branch detail, and the two
-   * screens round it DIFFERENTLY on purpose (wongk, #4943): the handed-off
+   * screens round it DIFFERENTLY on purpose (whitlockk, #4943): the handed-off
    * Branch prototype styles both of its dots `rounded-[0.1875rem]`, so Branch's
    * approved shape is a 3px rounded square while Session's is a circle. Pinning
    * the whole set rather than demanding one radius keeps that deliberate

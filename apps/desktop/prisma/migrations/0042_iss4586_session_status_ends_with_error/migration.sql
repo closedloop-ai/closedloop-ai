@@ -22,7 +22,7 @@ ALTER TABLE "sessions" ADD COLUMN "ends_with_error" INTEGER;
 UPDATE sessions SET ends_with_error = 1 WHERE status = 'error';
 UPDATE sessions SET ends_with_error = 0 WHERE status IN ('completed', 'abandoned', 'inactive');
 
--- @wongk: FEA-3580 repair for pre-fix abandoned rows MUST run here, BEFORE the
+-- @whitlockk: FEA-3580 repair for pre-fix abandoned rows MUST run here, BEFORE the
 -- collapse below — `healSweptSessionEndedAt` (write-core.ts) selects only
 -- `status = 'abandoned'`, so once these rows become `inactive` that boot heal can
 -- never reach them and their inflated `ended_at` (sweep time, not last activity)
@@ -40,7 +40,7 @@ UPDATE sessions SET ended_at = last_activity_at
 -- state. `error` is unchanged; active/waiting/running are unchanged.
 UPDATE sessions SET status = 'inactive' WHERE status IN ('completed', 'abandoned');
 
--- shafty023: the `session_analytics` rollup carries its own denormalized status
+-- davetho: the `session_analytics` rollup carries its own denormalized status
 -- and its boot backfill skips already-present rows, so collapse it here too — an
 -- upgraded row must not keep a legacy `completed`/`abandoned` analytics status
 -- that diverges from its `sessions.status`. (This rollup is a LOCAL derivation,

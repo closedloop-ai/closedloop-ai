@@ -13,7 +13,8 @@
  * (reader) so the producer and consumer can never drift. It is intentionally a
  * LEAF, BROWSER-SAFE module:
  *   - no `node:*` imports (it must bundle into the renderer);
- *   - only depends on `zod` and the leaf harness `types.ts` contract.
+ *   - depends only on `zod`, the leaf harness `types.ts` contract, and the
+ *     leaf `security/proto-safe-record` codec (itself zod-only).
  *
  * Wire format: every line is exactly one JSON object with a discriminant
  * `t` field (record kind). The first line is always the `session` header
@@ -31,6 +32,7 @@
  * serialized as `null`).
  */
 import { z } from "zod";
+import { protoSafeRecord } from "../../security/proto-safe-record";
 import type {
   NormalizedApiError,
   NormalizedDiffStats,
@@ -103,7 +105,16 @@ export const opencodeSessionRecordSchema = z.object({
   permissionMode: z.string().nullable(),
   entrypoint: z.string(),
   fileModifiedAt: z.number().nullable(),
-  tokensByModel: z.record(z.string(), fullTokenCountsSchema),
+  // ISS-12251: optional, so a header materialized before the field parses.
+  fileCreatedAt: z.number().optional(),
+  /*
+   * ISS-10178: `protoSafeRecord`, not `z.record`. This is the session-level
+   * token aggregate the parser cannot re-derive from the child records, and
+   * `z.record` silently deletes an own `__proto__` key — so a model by that
+   * name would cost the session its whole spend for that model, with
+   * `success: true` and no issue raised.
+   */
+  tokensByModel: protoSafeRecord(z.string(), fullTokenCountsSchema),
   messageTimestamps: z.array(z.string()),
   diffStats: diffStatsSchema.nullable(),
 });
@@ -127,6 +138,13 @@ const opencodeToolUseRecordSchema = z.object({
   timestamp: z.string().nullable(),
   input: z.unknown().optional(),
   output: z.unknown().optional(),
+  /**
+   * ISS-10736: the count of the FULL result, taken by the collector before
+   * `output` above was capped. It rides the projection because it cannot be
+   * recomputed from `output`, which is a capped prefix. Optional and additive:
+   * an older projection simply omits it and the footprint stays absent.
+   */
+  outputFootprintTokens: z.number().optional(),
   isError: z.boolean().optional(),
   diffDelta: z.object({ add: z.number(), del: z.number() }).optional(),
 });
@@ -220,6 +238,7 @@ export function buildOpencodeSessionRecord(input: {
   permissionMode: string | null;
   entrypoint: string;
   fileModifiedAt: number | null;
+  fileCreatedAt?: number;
   tokensByModel: OpencodeSessionRecord["tokensByModel"];
   messageTimestamps: string[];
   diffStats: NormalizedDiffStats | null;
@@ -257,6 +276,7 @@ export function buildOpencodeToolUseRecord(
     timestamp: toolUse.timestamp,
     input: toolUse.input,
     output: toolUse.output,
+    outputFootprintTokens: toolUse.outputFootprintTokens,
     isError: toolUse.isError,
     diffDelta: toolUse.diffDelta,
   });

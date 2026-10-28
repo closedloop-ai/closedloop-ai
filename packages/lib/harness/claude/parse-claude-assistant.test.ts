@@ -13,7 +13,7 @@
  * the token totals. That was asserted nowhere on either side.
  */
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 
 const USER_LINE = JSON.stringify({
   type: "user",

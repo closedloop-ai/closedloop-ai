@@ -133,7 +133,7 @@ describe("toTraceDetailPatch — trace-duration freshness gate (ISS-4688)", () =
   });
 
   it("omits the triple when the batch is STALE, so an older-after-newer delivery can't pin Duration to the old value", () => {
-    // wongk (#4121): a delayed sync arriving at the SAME dataRevision, after a
+    // whitlockk (#4121): a delayed sync arriving at the SAME dataRevision, after a
     // newer one already landed, resolves includeTraceDurations=false at the
     // caller. The stale wallClock must stay off the patch entirely — writing it
     // would overwrite the newer stored value and pin the Sessions list cell, the

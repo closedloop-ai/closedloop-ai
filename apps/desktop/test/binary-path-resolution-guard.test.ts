@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(testDir, "..");
@@ -444,11 +444,7 @@ describe("binary path resolution source guards", () => {
   });
 
   test("desktop source only declares approved getResolvedXxxPath wrappers", () => {
-    const allowed = new Set([
-      "getResolvedClaudePath",
-      "getResolvedGitPath",
-      "getResolvedGhPath",
-    ]);
+    const allowed = new Set(["getResolvedClaudePath", "getResolvedGitPath"]);
     const sourceFiles = collectProductionSourceFiles(srcRoot);
     const declarations: string[] = [];
 
@@ -477,7 +473,6 @@ describe("binary path resolution source guards", () => {
     const files = [
       ...collectDesktopProductionFiles(),
       readScannedFile("test/resolve-binary.test.ts"),
-      readScannedFile("test/symphony-loop-binary-resolution.test.ts"),
     ];
     const violations = collectRegexViolations(
       files,

@@ -7,8 +7,9 @@ import {
 } from "@repo/app/shared/hooks/use-column-visibility";
 import type { SortDirection } from "@repo/app/shared/lib/table-utils";
 import { ROW_ACTIONS_COLUMN } from "@repo/design-system/components/ui/grid-table";
-import { TableGridHeader } from "@repo/design-system/components/ui/table-grid-header";
+import { TableGridHeaderV2 } from "@repo/design-system/components/ui/table-grid-header-v2";
 import { ariaColumnHeaderProps } from "@repo/design-system/lib/grid-table-aria";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   getDocumentRowGridTemplateColumns,
   getDocumentTableColumnCount,
@@ -17,6 +18,7 @@ import {
 type NameSortOption = { readonly key: string; readonly label: string };
 
 type DocumentTableHeaderProps = {
+  className?: string;
   visibleColumns: DocumentColumn[];
   sortBy: string | null;
   sortDir: SortDirection;
@@ -29,8 +31,11 @@ type DocumentTableHeaderProps = {
   onClearSort?: () => void;
   /**
    * FEA-4165: column reorder. Receives the full new VISIBLE column-id order the
-   * caller merges back into its persisted order. Omit → static headers (no drag
-   * handles), preserving the prior layout for callers that don't reorder.
+   * caller merges back into its persisted order. Wired, each data column header
+   * is the v2 options menu (Sort ascending, Sort descending, Move column) and
+   * the column drags by its header (ISS-11412 Decision 6). Omit and the headers
+   * stay click-to-sort with no menu, which is what the Projects list and the
+   * skeleton render.
    */
   onReorderColumns?: (nextVisibleOrder: string[]) => void;
   /**
@@ -41,12 +46,13 @@ type DocumentTableHeaderProps = {
    *
    * This header owns its own `trailingCell` (the More-menu track), so it also
    * owns that cell's `columnheader` role, `aria-colindex`, and accessible name —
-   * `TableGridHeader` cannot infer any of the three for caller-supplied markup.
+   * `TableGridHeaderV2` cannot infer any of the three for caller-supplied markup.
    */
   insideAriaTable?: boolean;
 };
 
 export function DocumentTableHeader({
+  className,
   visibleColumns,
   sortBy,
   sortDir,
@@ -65,8 +71,12 @@ export function DocumentTableHeader({
   );
 
   return (
-    <TableGridHeader
+    <TableGridHeaderV2
       allSelected={allSelected}
+      // The legacy flat Project Detail host is the only DocumentsView host
+      // wrapped in `min-w-fit`. Keep its main-compatible max-content table
+      // without changing card fallback on the other flat document surfaces.
+      className={cn("[.min-w-fit_&]:min-w-max", className)}
       columns={visibleColumns.map((column) => ({
         id: column,
         label: ARTIFACT_COLUMN_LABELS[column],
@@ -102,7 +112,7 @@ export function DocumentTableHeader({
             getDocumentTableColumnCount(visibleColumns.length),
             ROW_ACTIONS_COLUMN.ariaLabel
           )}
-          className="h-10 border-l"
+          className="h-full border-l"
         />
       }
     />

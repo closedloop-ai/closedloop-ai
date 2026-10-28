@@ -17,50 +17,18 @@
  * and its summary cards cannot drift onto different columns. The desktop
  * analogue is the same: one field constant per read surface, one SQL expression
  * resolver, one JS value resolver.
- */
-
-import type { SyncedAgentSession } from "./agent-session-sync-contract.js";
-
-/** Which session timestamp a `startDate`/`endDate` window is measured against. */
-export const SessionDateWindowField = {
-  /** Genuine activity — "active in this window". */
-  LastActivity: "lastActivityAt",
-  /** Session start — "started in this window". */
-  Started: "startedAt",
-} as const;
-export type SessionDateWindowField =
-  (typeof SessionDateWindowField)[keyof typeof SessionDateWindowField];
-
-/**
- * The field the whole Sessions SURFACE windows on — the list AND the summary
- * cards (usage/KPI) above it AND the count-only badge read. For a given range
- * these are ONE cohort: the cards summarize exactly the population the table
- * lists, so they must bound on the same timestamp or the cards reconcile
- * against a different set than the table shows.
  *
- * `lastActivityAt` is the correct basis because it is the field the list is
- * ORDERED by (FEA-2180): bounding on start time while sorting by activity drops
- * recently-active sessions that started before the window even though they rank
- * at the top. The denormalized `sessions.last_activity_at` is
- * `COALESCE(MAX(events.created_at), <started_at floor>)`
- * (`recomputeSessionLastActivityAt`), so it already folds the started-at floor
- * in and never falls below the start — verified on a 3,154-session local
- * corpus, where zero rows have `last_activity_at < started_at`. That is why the
- * window can only ever ADD the started-before/active-inside rows, never drop a
- * row the started-at basis included.
+ * ISS-10604 moved the VOCABULARY half — `SessionDateWindowField` and the two
+ * per-surface field constants — into `shared/session-date-window-contract.ts`,
+ * because the renderer now resolves the analytics field and sends it to main.
+ * Import those from there; this module owns the SQL and hydrated-fold
+ * resolvers that turn one of them into a predicate.
  */
-export const SESSIONS_SURFACE_DATE_WINDOW_FIELD =
-  SessionDateWindowField.LastActivity;
 
-/**
- * The analytics read's field. A session belongs to the period it STARTED in —
- * a deliberately different cohort from the list/summary "active in this window",
- * and the exact split cloud draws between `SESSIONS_SURFACE_DATE_FIELD` and
- * `SESSIONS_ANALYTICS_DATE_FIELD`. Named so the analytics window keeps its own
- * semantics while sharing this module's single predicate.
- */
-export const SESSIONS_ANALYTICS_DATE_WINDOW_FIELD =
-  SessionDateWindowField.Started;
+import { SessionDateWindowField } from "../../shared/session-date-window-contract.js";
+import { sessionStartedAtFloor } from "../database/session-timestamp-form.js";
+import { parseNullableSessionDate } from "../session/session-instant.js";
+import type { SyncedAgentSession } from "./agent-session-sync-contract.js";
 
 /**
  * The epoch sentinel. Two distinct jobs, deliberately the same literal so they
@@ -112,13 +80,54 @@ export function sessionDateWindowTsExpr(field: SessionDateWindowField): string {
 }
 
 /**
+ * The NULL guard that belongs with {@link sessionDateWindowTsExpr}'s field.
+ *
+ * ISS-10604: the started-at expression routes a NULL/malformed value to EPOCH
+ * rather than dropping it, which is right for the list's filter and wrong for an
+ * all-time analytics window — there `startIso` IS epoch, so an inclusive bound
+ * would silently admit every row whose start was never captured and report it as
+ * a measured session. Every caller that swaps its column through the resolver
+ * pairs it with this, so the two arms keep the same population they had before
+ * the column became a parameter.
+ *
+ * THE TWO ARMS ARE DELIBERATELY ASYMMETRIC, and this is the part worth reading.
+ * `last_activity_at` is `NOT NULL` (migration 0005) so the guard cannot drop a
+ * row for nullness — but epoch is a SENTINEL on this column too ("not computed
+ * yet"), and a session with no `started_at` and no events sits there. This arm
+ * does NOT exclude it, and must not: `buildListCursorFilterClause` applies no
+ * such guard either, so excluding it here would make the dashboard drop a row
+ * the Sessions list counts and re-open the exact split ISS-10604's ruling
+ * closed. On the started-at arm the same row is excluded because epoch there is
+ * where an ABSENT value was routed, not where a computed one landed.
+ *
+ * COVERAGE, stated honestly: only the LAST-ACTIVITY arm is pinned, by
+ * `local-insights-activity-window-alignment.test.ts`'s all-time case. That file
+ * used to assert both arms; ISS-10541 retired the insights basis it needed to
+ * reach the started-at one, so no test asserts that arm today. It stays
+ * reachable through `getSharedAgentSessionAnalytics`, which still passes
+ * `SESSIONS_ANALYTICS_DATE_WINDOW_FIELD` — so this is a live branch with no
+ * assertion, not dead code. Do not read the paragraph above as tested.
+ */
+export function sessionDateWindowNotNullSql(
+  field: SessionDateWindowField
+): string {
+  if (field === SessionDateWindowField.LastActivity) {
+    return "s.last_activity_at IS NOT NULL";
+  }
+  return "s.started_at IS NOT NULL";
+}
+
+/**
  * The hydrated-row counterpart of {@link sessionDateWindowTsExpr}: the raw
  * timestamp string a `startDate`/`endDate` bound is compared against for the
  * given window field. The `?? startedAt` fallback mirrors the list's own sort
- * key (`session.lastActivityAt ?? session.startedAt`) and cloud's
- * `record.lastActivityAt ?? record.sessionStartedAt` projection, so a row that
- * predates the `last_activity_at` backfill is windowed at its start rather than
- * silently dropped.
+ * key (`session.lastActivityAt ?? session.startedAt`), so a row with no activity
+ * timestamp is windowed at its start rather than silently dropped.
+ *
+ * It no longer mirrors a cloud counterpart: ISS-6463 made
+ * `session_detail.last_activity_at` NOT NULL and deleted the cloud projection's
+ * `?? record.sessionStartedAt`. Cloud now windows on the bare column. This
+ * fallback stays because desktop hydrates rows whose timestamp can be absent.
  */
 export function sessionDateWindowValue(
   session: Pick<SyncedAgentSession, "startedAt" | "lastActivityAt">,
@@ -165,4 +174,74 @@ export function resolveSessionLastActivityAt(
     return derivedLastActivityAt;
   }
   return storedLastActivityAt;
+}
+
+/**
+ * The EVENT-DERIVED activity instant for a hydrated session row: the latest
+ * usable `events.created_at`, floored at the session start. Returned as stored
+ * text, because it is the fallback {@link resolveSessionLastActivityAt} weighs
+ * against the denormalized column.
+ *
+ * This is the JS half of the `MAX(started_at floor, MAX(events.created_at))`
+ * the store writes into that column (`SESSION_LAST_ACTIVITY_AT_VALUE_SQL`), so
+ * the BASE is weighed exactly as {@link sessionStartedAtFloor} weighs it there:
+ * a `started_at` the date-prefix GLOB rejects is compared as EPOCH, and epoch
+ * loses to any real event. One the GLOB KEEPS is compared as itself, parseable
+ * or not — the SQL side's `MAX` over such a value is byte-wise, which this fold
+ * does not reproduce and ISS-6795 does not change.
+ *
+ * Each timestamp is parsed exactly once — the running max is carried as an epoch
+ * beside the text rather than re-parsed on every iteration.
+ *
+ * ISS-6795: the base used to be seeded with a raw `new Date(startedAt)`, so a
+ * `started_at` the floor REJECTS (`not-a-date`) seeded NaN, which no `>` can
+ * beat — every event was discarded and the row kept the malformed string as its
+ * activity instant, while the column held the event max. The Status facet folds
+ * the served instant (ISS-6795) and its SQL twin reads the column, so a row the
+ * two answered differently about landed in NEITHER the Active nor the Stale
+ * facet. Reading the floor's own value closes that; a row with no usable event
+ * still returns its raw `started_at` exactly as before, and the hydrate path
+ * floors it at epoch on read (`parseSessionDate`).
+ */
+export function deriveSessionLastActivityAt(
+  startedAt: string | null,
+  eventRows: readonly { created_at: string | null }[]
+): string | null {
+  const accumulator = createSessionLastActivityAccumulator(startedAt);
+  for (const eventRow of eventRows) {
+    accumulator.push(eventRow.created_at);
+  }
+  return accumulator.finish();
+}
+
+/**
+ * The instant {@link deriveSessionLastActivityAt} compares its base against —
+ * what `SESSION_STARTED_AT_FLOOR_SQL` puts on the SQL side of the same `MAX`.
+ * `NaN` when the floor keeps a value that does not parse, which is that value
+ * winning the comparison, as it does today.
+ */
+function flooredStartedAtEpoch(startedAt: string | null): number {
+  const floored = sessionStartedAtFloor(startedAt);
+  return floored === startedAt ? new Date(floored).getTime() : 0;
+}
+
+/** Incremental adapter for the canonical event-derived last-activity fold. */
+export function createSessionLastActivityAccumulator(startedAt: string | null) {
+  let lastActivityAt = startedAt;
+  let lastActivityEpoch = flooredStartedAtEpoch(startedAt);
+  return {
+    push(createdAt: string | null): void {
+      // An unusable reading is not a candidate. NaN cannot be a running max —
+      // it beats nothing and nothing beats it — so one would otherwise discard
+      // every event after it.
+      const eventEpoch = parseNullableSessionDate(createdAt)?.getTime();
+      if (eventEpoch !== undefined && eventEpoch > lastActivityEpoch) {
+        lastActivityAt = createdAt;
+        lastActivityEpoch = eventEpoch;
+      }
+    },
+    finish(): string | null {
+      return lastActivityAt;
+    },
+  };
 }

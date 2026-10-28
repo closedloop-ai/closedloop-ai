@@ -3,9 +3,9 @@
 import type { RefObject } from "react";
 import { useEffect, useRef } from "react";
 
-const HIGHLIGHT_DURATION_MS = 1600;
+export const HIGHLIGHT_DURATION_MS = 1600;
 const HIGHLIGHT_ATTR = "data-permalink-highlight";
-const RETRY_DELAY_MS = 250;
+export const RETRY_DELAY_MS = 250;
 
 export const PermalinkResolution = {
   Resolved: "resolved",
@@ -17,9 +17,10 @@ export type PermalinkResolution =
 export type UseThreadPermalinkScrollOptions = {
   /**
    * The thread ID extracted from the `?thread=<id>` query parameter, or
-   * null when no permalink is being resolved. When this transitions from
-   * a value to null, the hook does nothing (resolution only fires on the
-   * initial mount value).
+   * null when no permalink is being resolved. A transition to null is a
+   * target change like any other: the active highlight is dropped and the
+   * resolved target unpinned, so re-opening the same permalink resolves
+   * again. `onResolved` does not fire for it — nothing resolved.
    */
   targetThreadId: string | null;
   /**
@@ -68,14 +69,59 @@ export function useThreadPermalinkScroll({
 }: UseThreadPermalinkScrollOptions): void {
   const resolvedForRef = useRef<string | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightedElementRef = useRef<HTMLElement | null>(null);
+
+  // Unmount-scoped rather than folded into the resolution effect below: that
+  // effect re-runs whenever `hasThread` or `threadsReady` change identity, and
+  // a cleanup there would strip a live highlight well before its duration.
+  // Only the timer is dropped — `highlightedElementRef` survives so the
+  // re-arm below can tell a cancelled fade from a finished one.
+  useEffect(
+    () => () => {
+      if (highlightTimerRef.current !== null) {
+        clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    if (targetThreadId === null || !threadsReady) {
+    if (targetThreadId === null) {
+      // Clearing `?thread` must not leave the anchor pinned:
+      // `document-editor-scaffold.tsx:212` feeds the param through a provider
+      // that stays mounted, so without this reset `th_1 -> cleared -> th_1`
+      // re-enters with `resolvedForRef` still holding th_1 and the second
+      // permalink visit silently does nothing. `onResolved` stays quiet —
+      // nothing resolved, and firing it would raise the not-found banner on a
+      // plain dismissal.
+      clearPendingHighlight(highlightTimerRef, highlightedElementRef);
+      resolvedForRef.current = null;
+      return;
+    }
+    if (!threadsReady) {
       return;
     }
     if (resolvedForRef.current === targetThreadId) {
+      // Settled for this target, so nothing may scroll or notify again. A lit
+      // card with no timer means StrictMode's simulated unmount cancelled the
+      // fade while leaving the card mounted; re-arm it so dev fades exactly
+      // as production does.
+      if (
+        highlightedElementRef.current !== null &&
+        highlightTimerRef.current === null
+      ) {
+        scheduleHighlightFade(highlightTimerRef, highlightedElementRef);
+      }
       return;
     }
+
+    // Past the guard above the permalink target genuinely changed, so any
+    // highlight still lit belongs to the previous thread. Drop it now instead
+    // of leaving a stale card lit until its own timer fires — or, when the new
+    // target never resolves, for the rest of the session.
+    clearPendingHighlight(highlightTimerRef, highlightedElementRef);
 
     function attempt(): boolean {
       if (targetThreadId === null) {
@@ -95,9 +141,8 @@ export function useThreadPermalinkScroll({
       }
       element.scrollIntoView({ behavior: "smooth", block: "center" });
       element.setAttribute(HIGHLIGHT_ATTR, "true");
-      globalThis.setTimeout(() => {
-        element.removeAttribute(HIGHLIGHT_ATTR);
-      }, HIGHLIGHT_DURATION_MS);
+      highlightedElementRef.current = element;
+      scheduleHighlightFade(highlightTimerRef, highlightedElementRef);
       return true;
     }
 
@@ -129,4 +174,33 @@ export function useThreadPermalinkScroll({
       }
     };
   }, [targetThreadId, threadsReady, hasThread, containerRef, onResolved]);
+}
+
+function scheduleHighlightFade(
+  timerRef: RefObject<ReturnType<typeof setTimeout> | null>,
+  elementRef: RefObject<HTMLElement | null>
+): void {
+  const element = elementRef.current;
+  if (element === null) {
+    return;
+  }
+  timerRef.current = globalThis.setTimeout(() => {
+    timerRef.current = null;
+    elementRef.current = null;
+    element.removeAttribute(HIGHLIGHT_ATTR);
+  }, HIGHLIGHT_DURATION_MS);
+}
+
+function clearPendingHighlight(
+  timerRef: RefObject<ReturnType<typeof setTimeout> | null>,
+  elementRef: RefObject<HTMLElement | null>
+): void {
+  if (timerRef.current !== null) {
+    clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }
+  if (elementRef.current !== null) {
+    elementRef.current.removeAttribute(HIGHLIGHT_ATTR);
+    elementRef.current = null;
+  }
 }

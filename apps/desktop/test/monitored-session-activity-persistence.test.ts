@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   MONITORED_ACTIVITY_TEST_ACTION_AT as ACTION_AT,
@@ -28,7 +28,7 @@ test("ISS-6060: an activity-only ref persists privately without creating local m
           timestamp: ACTION_AT,
           input: {
             owner: "closedloop-ai",
-            repo: "symphony-alpha",
+            repo: "closedloop-ai",
             branch: BRANCH,
           },
           output: { ref: `refs/heads/${BRANCH}` },

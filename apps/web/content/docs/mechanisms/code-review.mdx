@@ -83,10 +83,6 @@ Each run creates `.closedloop-ai/code-review/cr-<RANDOM>/` with:
 - `shared_prompt.txt`, `bha_suffix.txt`
 - `patches_all.txt` and per-partition patches
 
-## Automatic post-loop review
-
-When a loop completes, `run-loop.sh` automatically runs `/code-review:start --base <start_sha>` against the diff. If the verdict is not `approve`, an optional fix cycle runs to resolve non-approving findings. Cycles default to 2 and are capped by the `POST_LOOP_REVIEW_CYCLES` environment variable. The cycle aborts early after two consecutive fix failures.
-
 ## Related reading
 
 <Cards>

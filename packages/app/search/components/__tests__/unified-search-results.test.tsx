@@ -1,6 +1,13 @@
-import type { SearchHit } from "@repo/api/src/types/search";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
-import { render, screen } from "@testing-library/react";
+import { DOCUMENT_ROUTE_PREFIX } from "@repo/api/src/types/document";
+import {
+  OFFERED_SEARCH_ENTITY_TYPES,
+  SearchEntityType,
+} from "@repo/api/src/types/search-entity-kind";
+import {
+  type OfferedSearchHit,
+  SEARCH_ENTITY_TYPE_LABELS,
+} from "@repo/app/search/lib/search-display";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,16 +24,16 @@ vi.mock("@repo/navigation/use-org-path", () => ({
 
 import { UnifiedSearchResults } from "../unified-search-results";
 
-const RE_ALPHA_LOOP = /Alpha loop/;
 const RE_ALPHA_DOC = /Alpha doc/;
 const RE_ALPHA_PROJECT = /Alpha project/;
 const RE_SEARCH_ERROR = /Couldn't load results/;
 const RE_REMOVE_FILTER = /Remove .* filter/;
+const ACTIVE_TYPE_FILTERS = "Active type filters";
 // The "no results" empty state, matched by BOTH its title and its description so
 // renaming either one still trips the assertion rather than passing vacuously.
 const RE_NO_RESULTS = /No results|Nothing matched your query/;
 
-function hit(overrides: Partial<SearchHit> = {}): SearchHit {
+function hit(overrides: Partial<OfferedSearchHit> = {}): OfferedSearchHit {
   return {
     entityType: SearchEntityType.Document,
     entityId: "doc-1",
@@ -61,23 +68,24 @@ describe("UnifiedSearchResults", () => {
     renderResults({
       results: [
         hit({
-          title: "Alpha loop",
-          entityType: SearchEntityType.Loop,
-          entityId: "loop-1",
-          snippet: "run the <b>alpha</b> loop",
+          title: "Alpha project",
+          entityType: SearchEntityType.Project,
+          entityId: "proj-1",
+          teamId: "team-1",
+          snippet: "run the <b>alpha</b> project",
         }),
       ],
     });
 
-    const link = screen.getByRole("link", { name: RE_ALPHA_LOOP });
-    expect(link).toHaveAttribute("href", "/acme/loops/loop-1");
+    const link = screen.getByRole("link", { name: RE_ALPHA_PROJECT });
+    expect(link).toHaveAttribute("href", "/acme/teams/team-1/projects/proj-1");
 
     // The highlighted token is wrapped in a <mark>.
     const mark = screen.getByText("alpha");
     expect(mark.tagName).toBe("MARK");
   });
 
-  it("renders a facet chip per Phase-1 type and toggles on click", async () => {
+  it("renders a facet chip per offered type and toggles on click", async () => {
     const user = userEvent.setup();
     const { onToggleType } = renderResults();
 
@@ -87,9 +95,9 @@ describe("UnifiedSearchResults", () => {
   });
 
   it("marks the active facet as pressed", () => {
-    renderResults({ activeTypes: [SearchEntityType.Loop] });
+    renderResults({ activeTypes: [SearchEntityType.Project] });
 
-    expect(screen.getByRole("button", { name: "Loop" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Project" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
@@ -102,7 +110,7 @@ describe("UnifiedSearchResults", () => {
   it("renders every facet as pressed when no filter is active (empty means all)", () => {
     renderResults({ activeTypes: [] });
 
-    for (const label of ["Document", "Project", "Loop"]) {
+    for (const label of ["Document", "Project"]) {
       expect(screen.getByRole("button", { name: label })).toHaveAttribute(
         "aria-pressed",
         "true"
@@ -110,23 +118,31 @@ describe("UnifiedSearchResults", () => {
     }
   });
 
-  it("renders a routable loop hit as a clickable link (by id)", () => {
-    renderResults({
-      results: [
-        hit({
-          title: "Alpha loop",
-          entityType: SearchEntityType.Loop,
-          entityId: "loop-1",
-        }),
-      ],
-    });
+  // PRD-795: the retired Loop kind is accepted by the API but never offered.
+  it("offers no facet chip for a kind that is not offered", () => {
+    renderResults();
 
-    expect(screen.getByRole("link", { name: RE_ALPHA_LOOP })).toHaveAttribute(
-      "href",
-      "/acme/loops/loop-1"
+    const facets = screen.getByRole("group", {
+      name: "Filter results by type",
+    });
+    expect(facets.querySelectorAll("button")).toHaveLength(
+      OFFERED_SEARCH_ENTITY_TYPES.length
     );
   });
 
+  it("renders no active filter group when only a retired kind is active", () => {
+    renderResults({ activeTypes: [SearchEntityType.Project] });
+    expect(
+      screen.getByRole("group", { name: ACTIVE_TYPE_FILTERS })
+    ).toBeInTheDocument();
+    cleanup();
+
+    renderResults({ activeTypes: [SearchEntityType.Loop] });
+
+    expect(
+      screen.queryByRole("group", { name: ACTIVE_TYPE_FILTERS })
+    ).not.toBeInTheDocument();
+  });
   it("renders a document hit with slug + subtype as a type-and-slug link", () => {
     renderResults({
       results: [
@@ -141,7 +157,7 @@ describe("UnifiedSearchResults", () => {
 
     expect(screen.getByRole("link", { name: RE_ALPHA_DOC })).toHaveAttribute(
       "href",
-      "/acme/prds/alpha-doc"
+      `/acme/${DOCUMENT_ROUTE_PREFIX}/alpha-doc`
     );
   });
 
@@ -209,12 +225,16 @@ describe("UnifiedSearchResults", () => {
 
   it("hides the type-facet strip and active-facet chips when hideTypeFacets is set (FEA-4134)", () => {
     renderResults({
-      activeTypes: [SearchEntityType.Loop],
+      activeTypes: [SearchEntityType.Project],
       hideTypeFacets: true,
     });
 
     // Neither the picker chip nor the removable active-facet chip renders.
-    expect(screen.queryByRole("button", { name: "Document" })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: SEARCH_ENTITY_TYPE_LABELS[SearchEntityType.Document],
+      })
+    ).toBeNull();
     expect(screen.queryByRole("button", { name: RE_REMOVE_FILTER })).toBeNull();
   });
 
@@ -227,14 +247,14 @@ describe("UnifiedSearchResults", () => {
   it("renders active facets as removable chips and removes on click", async () => {
     const user = userEvent.setup();
     const { onToggleType } = renderResults({
-      activeTypes: [SearchEntityType.Loop],
+      activeTypes: [SearchEntityType.Project],
     });
 
     // The removable chip carries the accessible "Remove <label> filter" name.
     await user.click(
-      screen.getByRole("button", { name: "Remove Loop filter" })
+      screen.getByRole("button", { name: "Remove Project filter" })
     );
-    expect(onToggleType).toHaveBeenCalledWith(SearchEntityType.Loop);
+    expect(onToggleType).toHaveBeenCalledWith(SearchEntityType.Project);
   });
 
   it("does not render the removable-chip row when no facet is active", () => {

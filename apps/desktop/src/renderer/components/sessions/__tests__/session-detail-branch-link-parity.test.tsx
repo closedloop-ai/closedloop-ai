@@ -1,5 +1,4 @@
 /**
- * @file session-detail-branch-link-parity.test.tsx
  * @description ISS-5567: the Branch row of the shared session-detail Properties
  * pane, exercised through BOTH shells' adapters.
  *
@@ -28,7 +27,6 @@
  *    withheld — is NOT covered here; the payload is supplied by the IPC stub.
  *    That burden is carried by `apps/desktop/test/session-detail-branch-route.test.ts`.
  */
-import { AgentSessionState } from "@repo/api/src/types/agent-session";
 import { encodeBranchId } from "@repo/api/src/types/branch";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { AgentSessionDetailView } from "@repo/app/agents/components/detail/agent-session-detail-view";
@@ -39,6 +37,7 @@ import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {
   act,
+  configure,
   fireEvent,
   render,
   screen,
@@ -48,8 +47,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopAuthStatus } from "../../../../shared/contracts";
 import { DESKTOP_SESSION_DETAIL_READ_SOURCE_FEATURE_FLAG_KEY } from "../../../../shared/feature-flags";
+import { deferredDomDumpElementError } from "../../../__tests__/deferred-dom-dump-element-error";
 import { matchRoute } from "../../../navigation/route-table";
-import { drainedReadiness } from "../../../shared-agent-sessions/__tests__/fixtures/cloud-read-cutover-fixtures";
 import { DesktopAppCoreMode } from "../../../shared-agent-sessions/desktop-app-core-mode";
 import {
   DesktopAppCoreProvider,
@@ -58,6 +57,11 @@ import {
 import type { DesktopAuthState } from "../../../types/desktop-api";
 import { SessionDetailView } from "../SessionDetailView";
 import { SessionReadSourceTopbarAction } from "../session-read-source-topbar-action";
+import {
+  type BranchRowSample,
+  stopBranchRowWatchers,
+  watchBranchRow,
+} from "./fixtures/branch-row-watcher";
 import { sessionDetail } from "./fixtures/session-detail-fixture";
 
 const { searchParamsMock } = vi.hoisted(() => ({ searchParamsMock: vi.fn() }));
@@ -71,8 +75,30 @@ vi.mock("@repo/navigation/use-search-params-value", () => ({
   useSearchParamsValue: searchParamsMock,
 }));
 
+/**
+ * Testing Library's `configure` mutates module-global state, so this budget is
+ * file-wide whatever scope it is written in — both describes below drive the
+ * same heavy session-detail render and both want it.
+ *
+ * `testTimeout` then has to stay clear of that budget rather than match it.
+ * Vitest's 5s default against a 5s settle is a dead heat Vitest wins, which
+ * swaps Testing Library's "Unable to find element by: ..." for a bare "Test
+ * timed out" and loses the name of the element that never arrived. The deepest
+ * chain here is `branchRowHref()` -> `openProperties()`'s two settles plus the
+ * caller's own `waitFor`, so the deadline has to clear three consecutive
+ * budgets, not one.
+ */
+const ASYNC_SETTLE_TIMEOUT_MS = 5000;
+const TEST_TIMEOUT_MS = 30_000;
+
+configure({
+  asyncUtilTimeout: ASYNC_SETTLE_TIMEOUT_MS,
+  getElementError: deferredDomDumpElementError,
+});
+vi.setConfig({ testTimeout: TEST_TIMEOUT_MS });
+
 const SESSION_ID = "branch-link-session";
-const REPO_FULL_NAME = "closedloop-ai/symphony-alpha";
+const REPO_FULL_NAME = "closedloop-ai/closedloop-ai";
 const BRANCH_NAME = "feat/fea-1943-session-details-local-data";
 const ORG_SLUG = "closedloop-ai";
 /** The desktop main process's route id for this branch (`session-branch-route.ts`). */
@@ -88,6 +114,20 @@ const BRANCH_ROW_LABEL = /^branch$/i;
 /** The shared pane's settled not-found state (`SessionDetailNotFound`). */
 const SESSION_NOT_FOUND_TEXT = /session not found/i;
 
+/**
+ * How many further auth-store updates each retraction check drives (ISS-7606).
+ *
+ * A COUNT OF EVENTS, not a duration. These checks used to sit on a fixed 50 ms
+ * of `setTimeout`, which proves nothing about a non-occurrence — it only says no
+ * retraction happened to land inside an arbitrary window on that runner. What
+ * the row actually has to survive is subsequent updates of the state its link
+ * gate reads, so the suite emits those updates itself and asserts after each
+ * one. Three covers the update, the render it causes, and the work that render
+ * schedules; a regression fails on the first of them rather than on whichever
+ * sample happened to land after it.
+ */
+const RETRACTION_PROBE_UPDATES = 3;
+
 function branchLinkSession(branchArtifactId?: string) {
   return sessionDetail({
     id: SESSION_ID,
@@ -96,7 +136,6 @@ function branchLinkSession(branchArtifactId?: string) {
       branch: BRANCH_NAME,
       ...(branchArtifactId ? { branchArtifactId } : {}),
     },
-    state: AgentSessionState.Running,
     status: "active",
   });
 }
@@ -117,15 +156,24 @@ function installDesktopApi(branchArtifactId?: string) {
         getWorkflowData: vi.fn(),
       },
       getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      traceCommentsApi: {
-        create: vi.fn(),
-        delete: vi.fn(),
-        list: vi.fn(async () => []),
-        reply: vi.fn(),
-        update: vi.fn(),
-      },
     },
   });
+}
+
+/**
+ * A FRESH authenticated snapshot every call.
+ *
+ * Freshness is load-bearing for {@link installAuthPushChannel}: `useDesktopAuth`
+ * reads through `useSyncExternalStore`, which bails on an `Object.is`-equal
+ * snapshot, so re-pushing one reference would render nothing and an "update" the
+ * row is asked to survive would be no update at all.
+ */
+function authenticatedSnapshot(): DesktopAuthState {
+  return {
+    organizationId: "org-1",
+    status: DesktopAuthStatus.Authenticated,
+    userId: "user-1",
+  };
 }
 
 /**
@@ -136,22 +184,28 @@ function installDesktopApi(branchArtifactId?: string) {
  */
 function installDeferredAuthenticatedOffline(): {
   settle: () => Promise<void>;
+  goOnline: () => Promise<void>;
 } {
-  vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+  const onLine = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
   let release: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
   Object.assign(window.desktopApi, {
-    getDesktopAuthState: vi.fn(() =>
-      gate.then(() => ({
-        organizationId: "org-1",
-        status: DesktopAuthStatus.Authenticated,
-        userId: "user-1",
-      }))
-    ),
+    getDesktopAuthState: vi.fn(() => gate.then(authenticatedSnapshot)),
   });
   return {
+    // Connectivity returning is the one input that moves an authenticated
+    // reader Local → Cloud, which rebuilds the app-core QueryClient and drops
+    // the payload the link was built from. It is therefore a REAL retraction,
+    // which is what the instrument self-test needs to drive.
+    goOnline: async () => {
+      onLine.mockReturnValue(true);
+      await act(async () => {
+        window.dispatchEvent(new Event("online"));
+        await Promise.resolve();
+      });
+    },
     settle: async () => {
       release?.();
       await act(async () => {
@@ -162,13 +216,55 @@ function installDeferredAuthenticatedOffline(): {
 }
 
 /**
- * The surviving ISS-5567 source split, post-ISS-5714: online, drained, and
- * authenticated WITHOUT an organization id.
+ * A live auth push channel, for driving the retraction checks with EVENTS rather
+ * than with a clock (ISS-7606).
  *
- * The two surfaces answer to different identity rules and that is deliberate —
- * see `CloudReadCutoverDecision.cloudHoldsHistory`. `resolveCloudReadCutover`
- * never looks at the organization, so Sessions cuts over to the cloud and the
- * detail it reads carries a cloud Branch ARTIFACT UUID.
+ * `branchLinkResolvable` in `SessionDetailView` is a function of the auth state
+ * and the two read sources derived from it, all mirrored into the renderer by
+ * `createDesktopAuthStore`. So an emission here is a genuine update of the exact
+ * input that could retract the link — which is what "the row survives N updates"
+ * has to mean if the count is to come from the events instead of from elapsed
+ * milliseconds. `createBridgeStore` notifies on every push without deduping, so
+ * N emissions are N renders.
+ */
+function installAuthPushChannel(): {
+  emit: (next?: DesktopAuthState) => Promise<void>;
+} {
+  let push: ((next: DesktopAuthState) => void) | undefined;
+  Object.assign(window.desktopApi, {
+    onDesktopAuthStateChanged: (onChange: (next: DesktopAuthState) => void) => {
+      push = onChange;
+      return () => {
+        push = undefined;
+      };
+    },
+  });
+  return {
+    emit: async (next = authenticatedSnapshot()) => {
+      // Throw rather than no-op: an unsubscribed channel would let every
+      // assertion below pass while nothing was ever driven, which is the exact
+      // vacuous shape the poll loops were replaced to avoid.
+      if (!push) {
+        throw new Error(
+          "auth push channel has no subscriber — the emitted update would be a no-op"
+        );
+      }
+      const emitPush = push;
+      await act(async () => {
+        emitPush(next);
+        await Promise.resolve();
+      });
+    },
+  };
+}
+
+/**
+ * The surviving ISS-5567 source split: online, authenticated, and permitted to
+ * sync, but WITHOUT an organization id.
+ *
+ * The two surfaces answer to different identity rules and that is deliberate.
+ * `resolveDesktopAppCoreMode` never looks at the organization, so Sessions reads
+ * the cloud and the detail it reads carries a cloud Branch ARTIFACT UUID.
  * `canonicalBranchesIdentityKey` does require one, so `/branches/:id` is still
  * served by the LOCAL source, which decodes `encodeBranchId` composites and
  * would find nothing under a uuid. The gate must withhold the builder.
@@ -176,7 +272,16 @@ function installDeferredAuthenticatedOffline(): {
  * The session payload therefore comes over the cloud transport here, not the IPC
  * stub: reading it locally would mint the other source's id and test nothing.
  */
-function installCloudSessionRead() {
+function installCloudSessionRead(): { emit: () => Promise<void> } {
+  // Identity-INCOMPLETE on purpose (no organization id) — that missing field is
+  // the whole split. An emitted update must therefore carry this snapshot and
+  // not the complete one, or the two sources would agree and the row under
+  // assertion would correctly become a link.
+  const snapshot = (): DesktopAuthState => ({
+    organizationId: null,
+    status: DesktopAuthStatus.Authenticated,
+    userId: "user-1",
+  });
   Object.assign(window.desktopApi, {
     cloudApiFetch: vi.fn(() =>
       Promise.resolve({
@@ -190,52 +295,39 @@ function installCloudSessionRead() {
         }),
       })
     ),
-    getCloudReadReadiness: vi.fn(() => Promise.resolve(drainedReadiness())),
-    getDesktopAuthState: vi.fn(() =>
-      Promise.resolve({
-        organizationId: null,
-        status: DesktopAuthStatus.Authenticated,
-        userId: "user-1",
-      })
-    ),
+    getDesktopAuthState: vi.fn(() => Promise.resolve(snapshot())),
   });
+  const channel = installAuthPushChannel();
+  return { emit: () => channel.emit(snapshot()) };
 }
 
 /**
- * A LIVE auth bridge, signed out but flippable — plus the drained readiness the
- * cutover requires — so a test can move the app-core mode Local → Cloud on a
- * mounted tree. `installDesktopApi` alone omits `getDesktopAuthState`, which
+ * A LIVE auth bridge, signed out but flippable, so a test can move the app-core
+ * mode Local → Cloud on a mounted tree. `installDesktopApi` alone omits `getDesktopAuthState`, which
  * makes the store settle to a bridge-absent signed-out snapshot that can never
  * change.
  */
-function installFlippableAuth(): { signIn: () => Promise<void> } {
-  let push: ((next: DesktopAuthState) => void) | undefined;
+function installFlippableAuth(): {
+  signIn: () => Promise<void>;
+  emit: () => Promise<void>;
+} {
   let current: DesktopAuthState = {
     organizationId: null,
     status: DesktopAuthStatus.SignedOut,
     userId: null,
   };
   Object.assign(window.desktopApi, {
-    getCloudReadReadiness: vi.fn(() => Promise.resolve(drainedReadiness())),
     getDesktopAuthState: vi.fn(() => Promise.resolve(current)),
-    onDesktopAuthStateChanged: (onChange: (next: DesktopAuthState) => void) => {
-      push = onChange;
-      return () => {
-        push = undefined;
-      };
-    },
   });
+  const channel = installAuthPushChannel();
   return {
+    // Re-push the CURRENT state as a fresh object: an update that carries no
+    // state change, which is precisely what "does a later update retract this
+    // row?" has to ask.
+    emit: () => channel.emit({ ...current }),
     signIn: async () => {
-      current = {
-        organizationId: "org-1",
-        status: DesktopAuthStatus.Authenticated,
-        userId: "user-1",
-      };
-      await act(async () => {
-        push?.(current);
-        await Promise.resolve();
-      });
+      current = authenticatedSnapshot();
+      await channel.emit(current);
     },
   };
 }
@@ -330,6 +422,9 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
   });
 
   afterEach(() => {
+    // Same reasoning as the descriptor restore below: an observer left attached
+    // by a test that threw would keep sampling every test after it.
+    stopBranchRowWatchers();
     // Two different mechanisms pin connectivity here — a getter spy for the
     // fixed-offline fixture, `Object.defineProperty` for the one that has to
     // CHANGE mid-test — and only the first is a mock. Restore the property
@@ -355,9 +450,7 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     renderDesktopShell();
     // The link is withheld until the auth read settles (it must never appear and
     // then retract), so wait for it to arrive rather than sampling first paint.
-    await waitFor(async () => expect(await branchRowHref()).not.toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
     const desktopHref = await branchRowHref();
 
     expect({ desktop: desktopHref, web: webHref }).toEqual({
@@ -373,9 +466,31 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     ).getByRole("link");
     link.focus();
     expect(document.activeElement).toBe(link);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Watch from before the wait. This case used to sit on a fixed
+    // `setTimeout(resolve, 0)` — the last real-clock window in this file after
+    // ISS-7606 converted the three poll loops, and the banned shape for proving
+    // a non-occurrence: it says only that no retraction happened to land inside
+    // an arbitrary macrotask turn on that runner. The watcher reads no clock and
+    // records every commit, so a retraction that reverted between two reads —
+    // the focus-loss regression wearing the clothes of no change at all — is a
+    // second entry rather than a sample that was never taken.
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+    // Let every render the settled read scheduled reach the DOM. `act`'s async
+    // form drains React's work loop until quiescent, which makes the commit a
+    // precondition of the assertions below instead of something a sleep hopes
+    // for.
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(await branchRowHref()).toBe(desktopHref);
     expect(document.activeElement).toBe(link);
+    // ...and it was the SAME anchor throughout, not merely at the instant above.
+    // An anchor destroyed and rebuilt with an identical `href` takes focus with
+    // it while looking unchanged to a reader that compares only destinations, so
+    // the sample carries the element's identity.
+    expect(watcher.samples()).toEqual([
+      { anchor: 1, href: desktopHref, kind: "link" },
+    ]);
 
     // The desktop href is a real destination, not a URL-shaped string: the
     // desktop router must resolve it back to this branch's detail.
@@ -411,6 +526,7 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     // unobservable and this test would pass with or without the fix.
     installDesktopApi(DESKTOP_BRANCH_ID);
     const auth = installDeferredAuthenticatedOffline();
+    const channel = installAuthPushChannel();
 
     renderDesktopShell();
     await openProperties();
@@ -428,22 +544,99 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     // unchanged and is asserted on the transition itself: the row went text →
     // link, never link → text. A link that appears is a link the user can use; a
     // link that VANISHES takes focus with it.
-    await waitFor(async () => expect(await branchRowHref()).not.toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
     const settledHref = await branchRowHref();
     expect(settledHref).toBe(
       `/branches/${encodeURIComponent(DESKTOP_BRANCH_ID)}?from=${NavReferrerSurface.Session}`
     );
-    // And it STAYS. Poll rather than sampling once, so a late retraction cannot
-    // slip through between assertions.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      });
+    // And it STAYS — across updates of the state the link gate reads, not across
+    // an arbitrary stretch of wall clock (ISS-7606). Each emission is a genuine
+    // auth-store notification, so the assertion count comes from the events.
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+    for (let update = 0; update < RETRACTION_PROBE_UPDATES; update += 1) {
+      await channel.emit();
       expect(await branchRowHref()).toBe(settledHref);
     }
+    // ...and it was that link at every commit BETWEEN those assertions too, not
+    // merely at the instants they ran. A row that never moved records exactly
+    // one sample, so any retraction — even one that reverted — is a second entry
+    // this diff prints.
+    expect(watcher.samples()).toEqual([
+      { anchor: 1, href: settledHref, kind: "link" },
+    ]);
     expect(screen.getByText(BRANCH_NAME)).toBeDefined();
+  });
+
+  it("sees a retraction when one is injected, so the checks above cannot pass empty", async () => {
+    // The three "stays put" checks in this file assert a NON-occurrence, and a
+    // non-occurrence assertion is only worth its line if the instrument can see
+    // the occurrence. So drive a real one: an authenticated reader that goes
+    // ONLINE moves the app core Local → Cloud, which rebuilds the stack's
+    // QueryClient and drops the payload the link was built from. The link must
+    // retract — and `watchBranchRow` must say so. Weaken the watcher and this
+    // test fails first.
+    installDesktopApi(DESKTOP_BRANCH_ID);
+    const auth = installDeferredAuthenticatedOffline();
+
+    renderDesktopShell();
+    await openProperties();
+    await auth.settle();
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
+    const settledHref = await branchRowHref();
+
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+    // The same starting state the checks above hold: one sample, a link.
+    expect(watcher.samples()).toEqual([
+      { anchor: 1, href: settledHref, kind: "link" },
+    ]);
+
+    await auth.goOnline();
+
+    // A bounded event wait, which is the right tool HERE and the wrong one
+    // above: this proves something happens, and the reload it waits on is
+    // asynchronous. Proving the opposite is what the emitted-update loops do.
+    await waitFor(() => {
+      const [, ...afterInjection] = watcher.samples();
+      expect(afterInjection.some((sample) => sample.kind !== "link")).toBe(
+        true
+      );
+    });
+  });
+
+  it("sees an anchor unmounted and restored inside a single commit batch", async () => {
+    // Codex review on ISS-7606. Batching means a retraction that reverts before
+    // the observer is handed its records leaves the FINAL DOM identical, so an
+    // href-only history would call that "never moved" — while the anchor the
+    // user had focused was destroyed all the same. The link sample therefore
+    // carries the anchor's identity, and this drives that exact case: remove the
+    // anchor and rebuild an equivalent one in the SAME synchronous task, so both
+    // mutations arrive in one batch. Drop the identity term and this fails.
+    installDesktopApi(DESKTOP_BRANCH_ID);
+    const auth = installDeferredAuthenticatedOffline();
+
+    renderDesktopShell();
+    await openProperties();
+    await auth.settle();
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
+    const settledHref = await branchRowHref();
+
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+    expect(watcher.samples()).toEqual([
+      { anchor: 1, href: settledHref, kind: "link" },
+    ]);
+
+    const anchor = within(
+      screen.getByText(BRANCH_ROW_LABEL).closest("div") as HTMLElement
+    ).getByRole("link");
+    const host = anchor.parentElement as HTMLElement;
+    const rebuilt = anchor.cloneNode(true);
+    anchor.remove();
+    host.append(rebuilt);
+
+    expect(watcher.samples()).toEqual([
+      { anchor: 1, href: settledHref, kind: "link" },
+      { anchor: 2, href: settledHref, kind: "link" },
+    ]);
   });
 
   it("does not carry the previous mode's href across a read-source cutover", async () => {
@@ -464,16 +657,20 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     renderDesktopShellWithModeProbe();
     // Signed out and online: Sessions reads local, Branches reads local, so the
     // local composite id is minted and painted.
-    await waitFor(async () => expect(await branchRowHref()).not.toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
     const localModeHref = await branchRowHref();
     expect(localModeHref).toBe(
       `/branches/${encodeURIComponent(DESKTOP_BRANCH_ID)}?from=${NavReferrerSurface.Session}`
     );
 
-    // Authenticated + online + drained → the cutover moves the reader to the
-    // cloud. Both selectors now say cloud, so the gate alone would permit a link.
+    // Watch from BEFORE the flip. The old loop started only after the cutover
+    // had been proven, so a stale anchor that appeared and vanished inside the
+    // sign-in window was invisible to the check written to catch exactly that.
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+
+    // Authenticated + online + permitted to sync → the cutover moves the reader
+    // to the cloud. Both selectors now say cloud, so the gate alone would permit
+    // a link.
     await auth.signIn();
     // Prove the cutover landed — otherwise the assertion below could pass because
     // the mode never moved and the source-split gate closed instead, which is a
@@ -484,16 +681,30 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
       )
     );
 
-    // The local id must not survive the flip, at any point after it. Poll rather
-    // than sampling once: a preserved cache would keep rendering the stale anchor
-    // steadily, and a single post-flip read could land in a loading frame and
-    // pass for the wrong reason.
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      });
+    // The local id must not survive the flip, at any point after it. A single
+    // post-flip read could land in a loading frame and pass for the wrong
+    // reason, so drive further auth-store updates and assert after each — a
+    // preserved cache would keep rendering the stale anchor across all of them.
+    for (let update = 0; update < RETRACTION_PROBE_UPDATES; update += 1) {
+      await auth.emit();
       expect(document.querySelector(`a[href="${localModeHref}"]`)).toBeNull();
     }
+
+    // And it never came back at any commit in between. Anchored on the first
+    // sample that is NOT the local link, which also proves the row DEPARTED it:
+    // "the stale href is absent from the tail" would hold just as well over a
+    // history where the row never linked at all.
+    const samples = watcher.samples();
+    const isLocalLink = (sample: BranchRowSample) =>
+      sample.kind === "link" && sample.href === localModeHref;
+    expect(samples[0]).toEqual({
+      anchor: 1,
+      href: localModeHref,
+      kind: "link",
+    });
+    const departure = samples.findIndex((sample) => !isLocalLink(sample));
+    expect(departure).toBeGreaterThan(0);
+    expect(samples.slice(departure).filter(isLocalLink)).toEqual([]);
   });
 
   it("withholds the desktop link when Branches would read a different source", async () => {
@@ -501,10 +712,10 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     // built here would land on "not found".
     //
     // ISS-5714 moved WHERE that split lives, and this case moved with it. Bare
-    // authenticated-but-offline is no longer a split: both surfaces now stay
-    // local until the cutover establishes that the cloud holds this machine's
-    // history, and a local id read beside a local Branches source is a live
-    // link. The axis that still diverges is IDENTITY COMPLETENESS — see
+    // authenticated-but-offline is no longer a split: both surfaces follow the
+    // one read-source rule and stay local together, and a local id read beside a
+    // local Branches source is a live link. The axis that still diverges is
+    // IDENTITY COMPLETENESS — see
     // `installCloudSessionRead` — and it is the mirror image of the old case:
     // Sessions is on the cloud and mints a Branch artifact uuid, while
     // `/branches/:id` is still served locally and would find nothing under it.
@@ -514,12 +725,10 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
     // the fixture simply never links. The first half proves it does.
     installDesktopApi(DESKTOP_BRANCH_ID);
     const agreed = renderDesktopShell();
-    await waitFor(async () => expect(await branchRowHref()).not.toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(async () => expect(await branchRowHref()).not.toBeNull());
     agreed.unmount();
 
-    installCloudSessionRead();
+    const cloudRead = installCloudSessionRead();
     render(
       withProviders(
         <>
@@ -539,15 +748,16 @@ describe("ISS-5567: the shared Branch-row link gate, through both shells", () =>
 
     // `branchRowHref` opens the (collapsed) Properties pane and THROWS if the
     // Branch row is absent, so this cannot pass on a pane that never rendered.
-    await waitFor(async () => expect(await branchRowHref()).toBeNull(), {
-      timeout: 5000,
-    });
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      });
+    await waitFor(async () => expect(await branchRowHref()).toBeNull());
+    const watcher = watchBranchRow(BRANCH_ROW_LABEL);
+    for (let update = 0; update < RETRACTION_PROBE_UPDATES; update += 1) {
+      await cloudRead.emit();
       expect(await branchRowHref()).toBeNull();
     }
+    // `text`, not `absent`, and at every commit in between: a pane that stopped
+    // rendering the row would report no href too, and that is the vacuous reason
+    // to find no link rather than the withheld-builder one under test.
+    expect(watcher.samples()).toEqual([{ kind: "text" }]);
     expect(screen.getByText(BRANCH_NAME)).toBeDefined();
   });
 });
@@ -655,7 +865,7 @@ describe("ISS-5607: the session-detail read-source badge", () => {
   });
 
   it("observes the pane's read without issuing one of its own", () => {
-    // wongk cid 3776137731. The badge mounts in the Topbar, OUTSIDE the lazy
+    // whitlockk cid 3776137731. The badge mounts in the Topbar, OUTSIDE the lazy
     // detail boundary, so an ENABLED observer here would be the one that opens
     // the detail read — and the desktop `details()` key defaults carry a 5 s
     // `refetchInterval` plus `refetchOnMount: "always"`, both per-observer, so a

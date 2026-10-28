@@ -13,7 +13,7 @@
  * Everything here is synthetic — no corpus files, no SQLite.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { nullableNum } from "./golden/golden-layer3-facts.js";
 
 /**

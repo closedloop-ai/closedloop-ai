@@ -3,12 +3,9 @@ import {
   BranchMetricDisclosure,
   BranchMetricPeriod,
 } from "@repo/api/src/types/branch-metrics";
-import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution";
 import { describe, expect, it } from "vitest";
-import {
-  type BranchListMetricInput,
-  calculateBranchListMetrics,
-} from "./branch-list-metrics";
+import type { BranchListMetricInput } from "./branch-list-metrics";
+import { calculateMetricsWithSpendFacts as calculateBranchListMetrics } from "./branch-list-metrics.test-helpers";
 import { buildAdjacentBranchMetricWindows } from "./branch-metric-windows";
 
 const NOW = new Date("2026-08-03T21:00:00.000Z");
@@ -79,7 +76,7 @@ describe("canonical Branch List metrics", () => {
     expect(result.aiSpendUsd.current).toEqual(complete(20));
   });
 
-  it("marks paired exclusions partial without leaking one side into either total", () => {
+  it("keeps independent LOC and cost totals when one Branch lacks cost", () => {
     const input = emptyInput(1);
     input.cohortSize = 2;
     input.statusSnapshots = [
@@ -97,10 +94,12 @@ describe("canonical Branch List metrics", () => {
       input,
       buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
     );
+    // ISS-6543 deliberately supersedes complete-pair exclusion: all verified
+    // LOC remains in the numerator and the known cost subtotal remains in the
+    // denominator, with partial disclosure for the missing cost evidence.
     expect(result.locPerDollar.current).toEqual({
       state: BranchMetricAvailability.Partial,
-      value: 5,
-      coverage: { included: 1, total: 2 },
+      value: 205,
       disclosure: BranchMetricDisclosure.LocIncomplete,
     });
     expect(result.locPerDollar.comparison?.deltaPct.state).toBe(
@@ -125,6 +124,11 @@ describe("canonical Branch List metrics", () => {
     zeroDenominator.locContributions = [loc("zero-cost", "a", CURRENT, 10, 0)];
     zeroDenominator.locCompleteBranchIds = ["a"];
     zeroDenominator.costCompleteBranchIds = ["a"];
+    zeroDenominator.locPerDollarCostContributions = [
+      cost("zero-cost", "a", CURRENT, 0, 1),
+    ];
+    zeroDenominator.locPerDollarQualifyingSessionIds = ["session-zero-cost"];
+    zeroDenominator.locPerDollarCostCoverageComplete = true;
     expect(
       calculateBranchListMetrics(
         zeroDenominator,
@@ -157,7 +161,8 @@ describe("canonical Branch List metrics", () => {
         missing,
         buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
       ).aiSpendUsd.current.state
-    ).toBe(BranchMetricAvailability.Unavailable);
+      // ISS-12346 C6: an unknown price stars the figure rather than hiding it.
+    ).toBe(BranchMetricAvailability.Partial);
   });
 
   it("keeps a missing prior status snapshot unavailable", () => {
@@ -192,33 +197,23 @@ describe("canonical Branch List metrics", () => {
     );
   });
 
-  it("returns a complete zero spend when complete evidence has no contributions", () => {
-    const input = emptyInput(1);
+  it("uses the PR-size disclosure for mixed known and missing merged PR sizes", () => {
+    const input = emptyInput(2);
+    input.pullRequests = [
+      pullRequest("repo#known", CURRENT, null, 10, 30),
+      pullRequest("repo#missing", CURRENT, null, null, 20),
+    ];
     const result = calculateBranchListMetrics(
       input,
       buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
     );
-    expect(result.aiSpendUsd.current).toEqual(complete(0));
-  });
 
-  it("degrades conflicting stable identities deterministically", () => {
-    const first = emptyInput(1);
-    first.costContributions = [
-      cost("same", "a", CURRENT, 10, 1),
-      cost("same", "a", PRIOR, 20, 1),
-    ];
-    const second = emptyInput(1);
-    second.costContributions = [...first.costContributions].reverse();
-    const windows = buildAdjacentBranchMetricWindows(
-      BranchMetricPeriod.SevenDays,
-      NOW
-    );
-    expect(
-      calculateBranchListMetrics(first, windows).aiSpendUsd.current
-    ).toEqual(calculateBranchListMetrics(second, windows).aiSpendUsd.current);
-    expect(
-      calculateBranchListMetrics(first, windows).aiSpendUsd.current.state
-    ).toBe(BranchMetricAvailability.Unavailable);
+    expect(result.medianPrSize.current).toEqual({
+      state: BranchMetricAvailability.Partial,
+      value: 40,
+      coverage: { included: 1, total: 2 },
+      disclosure: BranchMetricDisclosure.PrIncomplete,
+    });
   });
 
   it("finds Last active without spreading a large cohort into function arguments", () => {
@@ -249,27 +244,31 @@ describe("canonical Branch List metrics", () => {
     });
   });
 
-  it("excludes ambiguous phase costs from canonical spend and LOC per dollar", () => {
+  // ISS-9970 AC-3. This case previously asserted the OPPOSITE — that a cost
+  // event no phase segment could claim was dropped from both the spend total
+  // and the LOC/$ denominator. That expectation is deliberately reversed: the
+  // dollar is total estimated cost, phase is not a dimension of it, and money
+  // the cohort demonstrably spent may not vanish from a denominator because
+  // the lifecycle classifier could not place it.
+  it("counts a Session cost that sits outside Build, Review and Rework", () => {
     const input = emptyInput(1);
     input.locContributions = [loc("loc", "a", CURRENT, 50, 50)];
     input.locCompleteBranchIds = ["a"];
-    input.costContributions = [
-      {
-        ...cost("ambiguous", "a", CURRENT, 10, 1),
-        phase: null,
-      },
-    ];
+    input.costContributions = [cost("unphased", "a", CURRENT, 10, 1)];
     input.costCompleteBranchIds = ["a"];
     const result = calculateBranchListMetrics(
       input,
       buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
     );
-    expect(result.aiSpendUsd.current.state).toBe(
-      BranchMetricAvailability.Unavailable
-    );
-    expect(result.locPerDollar.current.state).toBe(
-      BranchMetricAvailability.NotApplicable
-    );
+    expect(result.aiSpendUsd.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 10,
+    });
+    // 100 lines over the full $10 — the unphased dollar is IN the denominator.
+    expect(result.locPerDollar.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 10,
+    });
   });
 
   it("uses undated lifetime LOC only for all-time metrics", () => {
@@ -288,7 +287,11 @@ describe("canonical Branch List metrics", () => {
       buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
     );
 
-    expect(allTime.locPerDollar.current).toEqual(complete(10));
+    expect(allTime.locPerDollar.current).toEqual({
+      state: BranchMetricAvailability.Partial,
+      value: 10,
+      disclosure: BranchMetricDisclosure.LocIncomplete,
+    });
     expect(finite.locPerDollar.current.state).toBe(
       BranchMetricAvailability.Unavailable
     );
@@ -322,7 +325,6 @@ describe("canonical Branch List metrics", () => {
     expect(result.locPerDollar.current).toEqual({
       state: BranchMetricAvailability.Partial,
       value: 110,
-      coverage: { included: 1, total: 1 },
       disclosure: BranchMetricDisclosure.LocIncomplete,
     });
   });
@@ -391,7 +393,6 @@ function cost(
     branchId,
     sessionId: `session-${sourceEventId}`,
     occurredAt,
-    phase: BranchVisibleLifecyclePhase.Build,
     costUsd,
     qualifyingBranchCount,
   };

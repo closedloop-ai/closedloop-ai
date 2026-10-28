@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 // one `.recharts-area` per drawn <Area> into the DOM, so beyond the accessible
 // toggle contract (role + aria-pressed) we assert the PLOT itself changed —
 // hiding a series drops its rendered area path — so a lost `hide` binding can't
-// leave these suites green while the chart never moves (wongk review).
+// leave these suites green while the chart never moves (whitlockk review).
 //
 // The two series below both carry non-zero values so the range is non-empty and
 // the chart renders its legend (a multi-series chart draws <ChartLegend>).
@@ -181,7 +181,7 @@ describe("TimeSeriesAreaChart interactive legend (web adapter)", () => {
 
     // The <Area> for the hidden series is gone from the plot — proving the
     // legend's hide flag reached Recharts, not only the aria-pressed toggle
-    // (wongk review). Restore and the area comes back.
+    // (whitlockk review). Restore and the area comes back.
     expect(drawnAreaCount(container)).toBe(1);
 
     await user.click(legendButton("gpt-5"));
@@ -192,7 +192,7 @@ describe("TimeSeriesAreaChart interactive legend (web adapter)", () => {
     const user = userEvent.setup();
     // Same component instance across the rerender (no key change) — only the
     // resetKey moves, standing in for a metric-picker preview swapping which
-    // metric it draws (wongk review). Without the reset, a series hidden under
+    // metric it draws (whitlockk review). Without the reset, a series hidden under
     // one identity would carry into the next and hide an unrelated same-named
     // bucket.
     const { rerender } = render(
@@ -235,7 +235,7 @@ describe("TimeSeriesAreaChart interactive legend (web adapter)", () => {
     await user.click(legendButton("Prev period"));
 
     // Toggling the comparison entry off drops the line from the plot too, so the
-    // comparison series honors the same hide contract as the areas (wongk).
+    // comparison series honors the same hide contract as the areas (whitlockk).
     expect(legendButton("Prev period")).toHaveAttribute(
       "aria-pressed",
       "false"
@@ -244,7 +244,7 @@ describe("TimeSeriesAreaChart interactive legend (web adapter)", () => {
   });
 });
 
-// FEA-4264 (wongk review): the donut opts OUT of the interactive legend — a
+// FEA-4264 (whitlockk review): the donut opts OUT of the interactive legend — a
 // part-to-whole ring has no on-screen denominator, so hiding a slice would
 // silently misread the survivors. This is the WEB adapter's coverage that the
 // shared DonutChart mounts and renders a STATIC (non-toggle) legend: an entry

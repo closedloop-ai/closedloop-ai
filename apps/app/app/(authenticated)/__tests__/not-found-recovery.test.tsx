@@ -1,5 +1,5 @@
 /**
- * FEA-4228 (wongk, thread 2): a flag-off direct route hit must land on the REAL
+ * FEA-4228 (whitlockk, thread 2): a flag-off direct route hit must land on the REAL
  * in-shell "Page not found" recovery state with a working "Back to dashboard"
  * link — not a blank page, and not merely "the old page is absent". The gate's
  * flag-off branch raises `notFound()`, which the App Router resolves to this

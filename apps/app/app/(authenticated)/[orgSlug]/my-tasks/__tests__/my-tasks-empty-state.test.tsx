@@ -8,10 +8,9 @@ vi.mock(
   "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-document-modal",
   () => ({ CreateDocumentModal: () => null })
 );
-vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal",
-  () => ({ CreateIssueModal: () => null })
-);
+vi.mock("@repo/app/issues/components/create-issue-modal", () => ({
+  CreateIssueModal: () => null,
+}));
 vi.mock("@/app/(authenticated)/[orgSlug]/teams/components/team-modal", () => ({
   TeamModal: () => null,
 }));

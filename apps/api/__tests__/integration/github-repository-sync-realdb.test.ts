@@ -494,6 +494,157 @@ describe.skipIf(!hasDatabase)(
       expect(isolatedAfter.defaultBranchObservedAt).toBeNull();
     });
 
+    it("retains a known public default on a later poorer observation and accepts a later available one", async () => {
+      const githubRepoId = `public-cas-${randomUUID()}`;
+      const row = await withDb((db) =>
+        db.publicRepository.create({
+          data: {
+            organizationId: ORG_ID,
+            githubRepoId,
+            fullName: `acme/${githubRepoId}`,
+            owner: "acme",
+            name: githubRepoId,
+            htmlUrl: `https://github.com/acme/${githubRepoId}`,
+          },
+        })
+      );
+      await refreshExistingPublicRepositoryAuthority(
+        ORG_ID,
+        githubRepoId,
+        repoWithAuthority(
+          githubRepoId,
+          "main",
+          "public-known",
+          "2026-08-10T16:00:00.000Z"
+        ).defaultAuthority
+      );
+
+      await refreshExistingPublicRepositoryAuthority(
+        ORG_ID,
+        githubRepoId,
+        repoWithAuthority(
+          githubRepoId,
+          null,
+          "public-poorer",
+          "2026-08-10T17:00:00.000Z"
+        ).defaultAuthority
+      );
+      const afterPoorer = await withDb((db) =>
+        db.publicRepository.findUniqueOrThrow({ where: { id: row.id } })
+      );
+      expect(afterPoorer.defaultBranchName).toBe("main");
+      expect(afterPoorer.defaultBranchAvailability).toBe(
+        RepositoryDefaultAvailability.Stale
+      );
+      expect(afterPoorer.defaultBranchCompleteness).toBe(
+        RepositoryDefaultCompleteness.Partial
+      );
+      expect(afterPoorer.defaultBranchObservationKey).toBe("public-poorer");
+
+      await refreshExistingPublicRepositoryAuthority(
+        ORG_ID,
+        githubRepoId,
+        repoWithAuthority(
+          githubRepoId,
+          "trunk",
+          "public-available",
+          "2026-08-10T18:00:00.000Z"
+        ).defaultAuthority
+      );
+      const afterAvailable = await withDb((db) =>
+        db.publicRepository.findUniqueOrThrow({ where: { id: row.id } })
+      );
+      expect(afterAvailable.defaultBranchName).toBe("trunk");
+      expect(afterAvailable.defaultBranchAvailability).toBe(
+        RepositoryDefaultAvailability.Available
+      );
+      expect(afterAvailable.defaultBranchCompleteness).toBe(
+        RepositoryDefaultCompleteness.Complete
+      );
+      expect(afterAvailable.defaultBranchObservationKey).toBe(
+        "public-available"
+      );
+    });
+
+    it("leaves a stored public authority and its provenance untouched when a strictly older observation arrives", async () => {
+      const githubRepoId = `public-older-${randomUUID()}`;
+      const row = await withDb((db) =>
+        db.publicRepository.create({
+          data: {
+            organizationId: ORG_ID,
+            githubRepoId,
+            fullName: `acme/${githubRepoId}`,
+            owner: "acme",
+            name: githubRepoId,
+            htmlUrl: `https://github.com/acme/${githubRepoId}`,
+          },
+        })
+      );
+      await refreshExistingPublicRepositoryAuthority(
+        ORG_ID,
+        githubRepoId,
+        repoWithAuthority(
+          githubRepoId,
+          "trunk",
+          "public-fresh",
+          "2026-08-10T18:00:00.000Z"
+        ).defaultAuthority
+      );
+      const afterFresh = await withDb((db) =>
+        db.publicRepository.findUniqueOrThrow({ where: { id: row.id } })
+      );
+
+      const olderBase = repoWithAuthority(
+        githubRepoId,
+        "main",
+        "public-older",
+        "2026-08-10T17:00:00.000Z"
+      ).defaultAuthority;
+      // The older writer carries DISTINCT provenance on purpose: with the
+      // helper's identical provenance, a leaked write would restamp the same
+      // values and every assertion below would still pass.
+      const older: RepositoryDefaultAuthority = {
+        ...olderBase,
+        provenance: {
+          ...olderBase.provenance,
+          source: RepositoryDefaultSource.RepositoryGraphql,
+          mechanism: GitHubFetchMechanism.Graphql,
+          trigger: GitHubFetchTrigger.Backfill,
+          credentialType: GitHubFetchCredentialType.UserOAuth,
+        },
+      };
+      await refreshExistingPublicRepositoryAuthority(
+        ORG_ID,
+        githubRepoId,
+        older
+      );
+
+      const afterOlder = await withDb((db) =>
+        db.publicRepository.findUniqueOrThrow({ where: { id: row.id } })
+      );
+      expect(afterOlder.defaultBranchName).toBe("trunk");
+      expect(afterOlder.defaultBranchAvailability).toBe(
+        RepositoryDefaultAvailability.Available
+      );
+      expect(afterOlder.defaultBranchCompleteness).toBe(
+        RepositoryDefaultCompleteness.Complete
+      );
+      expect(afterOlder.defaultBranchObservationKey).toBe("public-fresh");
+      expect(afterOlder.defaultBranchObservedAt).toEqual(
+        afterFresh.defaultBranchObservedAt
+      );
+      expect(afterOlder.defaultBranchSource).toBe(
+        RepositoryDefaultSource.InstallationRepositoriesRest
+      );
+      expect(afterOlder.defaultBranchMechanism).toBe(GitHubFetchMechanism.Rest);
+      expect(afterOlder.defaultBranchTrigger).toBe(
+        GitHubFetchTrigger.UserAction
+      );
+      expect(afterOlder.defaultBranchCredentialType).toBe(
+        GitHubFetchCredentialType.GitHubApp
+      );
+    });
+
     it("durably rejects a D1/D2/D1 installation webhook replay", async () => {
       const githubRepoId = `webhook-replay-${randomUUID()}`;
       await githubService.addRepositories(INSTALLATION_ID, [
@@ -624,8 +775,8 @@ describe.skipIf(!hasDatabase)(
       ).toBe("trunk");
     });
 
-    it("reconciles a grant across configured chunk boundaries against real Postgres (ISS-4619 CR: shafty023)", async () => {
-      // shafty023 CR: the mocked unit test proves the helper's chunk LOOP
+    it("reconciles a grant across configured chunk boundaries against real Postgres (ISS-4619 CR: davetho)", async () => {
+      // davetho CR: the mocked unit test proves the helper's chunk LOOP
       // iterates across multiple statements, but with `$executeRaw`
       // mocked it cannot catch a production-scale regression — a chunk that
       // overflows Postgres's 65,535 bind-parameter ceiling, or a batch that
@@ -669,7 +820,7 @@ describe.skipIf(!hasDatabase)(
       );
       expect(pastBoundary?.fullName).toBe(`acme/${secondChunkRepoId}`);
       expect(pastBoundary?.removedAt).toBeNull();
-    }, 30_000);
+    });
   }
 );
 

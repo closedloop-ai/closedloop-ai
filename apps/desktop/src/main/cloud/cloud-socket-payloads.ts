@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { DesktopCommandEvent } from "./cloud-protocol.js";
+import { clampTimerDelayMs } from "@repo/shared-platform/parse-env-ms";
+import type {
+  DesktopCommandEvent,
+  DesktopPresenceEvent,
+} from "./cloud-protocol.js";
 import { PROTOCOL_VERSION } from "./cloud-protocol.js";
 
 /**
@@ -49,22 +53,16 @@ export function parseDesktopCommand(
     headers: asStringRecord(event.headers) ?? undefined,
     query: asQueryRecord(event.query) ?? undefined,
     body: event.body,
-    timeoutMs: asFiniteInteger(event.timeoutMs) ?? undefined,
+    // Clamped here rather than inside `asFiniteInteger`, which is shared with
+    // `event.sequence` on the command-event ack — where 0 is a legitimate value
+    // meaning "nothing acked yet" (`lastSequenceAcked` defaults to 0). Flooring
+    // that to 1 would mark the first event acked and drop it from replay. A
+    // cloud old enough to send an unclamped timeout still gets bounded (ISS-8233).
+    timeoutMs: clampTimerDelayMs(event.timeoutMs),
     queuedAt: asNonEmptyString(event.queuedAt) ?? undefined,
     lockKey: asNonEmptyString(event.lockKey) ?? undefined,
     requiresApproval: Boolean(event.requiresApproval),
     approvalReason: asNonEmptyString(event.approvalReason) ?? undefined,
-    ...(asNonEmptyString(event.signature)
-      ? { signature: asNonEmptyString(event.signature)! }
-      : {}),
-    ...(asNonEmptyString(event.signaturePayload)
-      ? { signaturePayload: asNonEmptyString(event.signaturePayload)! }
-      : {}),
-    ...(asNonEmptyString(event.publicKeyFingerprint)
-      ? {
-          publicKeyFingerprint: asNonEmptyString(event.publicKeyFingerprint)!,
-        }
-      : {}),
   };
 }
 
@@ -127,13 +125,18 @@ export function asStringRecord(value: unknown): Record<string, string> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const out: Record<string, string> = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const out: Record<string, string> = Object.create(null);
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry === "string") {
       out[key] = entry;
     }
   }
-  return out;
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...out };
 }
 
 export function asQueryRecord(
@@ -142,7 +145,10 @@ export function asQueryRecord(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const out: Record<string, string | string[]> = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const out: Record<string, string | string[]> = Object.create(null);
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry === "string") {
       out[key] = entry;
@@ -155,7 +161,9 @@ export function asQueryRecord(
       out[key] = [...entry];
     }
   }
-  return out;
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...out };
 }
 
 export function looksLikeAuthError(error: unknown): boolean {
@@ -190,4 +198,43 @@ function readStatusCode(record: Record<string, unknown>): number {
     return record.status;
   }
   return 0;
+}
+
+/** The presence error reported while the operator has paused cloud commands. */
+export const CLOUD_COMMANDS_PAUSED_ERROR = "cloud commands paused by user";
+
+export type PausedAwarePresenceInput = {
+  cloudOnline: boolean;
+  paused: boolean;
+  gatewayHealthy: boolean;
+  activeCommands: number;
+  queueDepth: number;
+};
+
+/** The presence payload minus the envelope `sendPresence` stamps on. */
+export type CloudPresencePayload = Pick<
+  DesktopPresenceEvent,
+  "state" | "error" | "activeCommands" | "queueDepth"
+>;
+
+/**
+ * The presence a queue-stats tick or a pause-toggle reports.
+ *
+ * Both callers report `online` only when all three of the link, the operator's
+ * pause switch, and local gateway health agree, and both attach the pause
+ * reason. They were the same block copied twice in the composition root, so
+ * either could drift into reporting `online` on a sick gateway. The
+ * cloud-online transition deliberately reports WITHOUT the gateway-health term
+ * — it runs before the first probe — and so does not use this builder.
+ */
+export function buildPausedAwarePresence(
+  input: PausedAwarePresenceInput
+): CloudPresencePayload {
+  const online = input.cloudOnline && !input.paused && input.gatewayHealthy;
+  return {
+    state: online ? "online" : "degraded",
+    ...(input.paused ? { error: CLOUD_COMMANDS_PAUSED_ERROR } : {}),
+    activeCommands: input.activeCommands,
+    queueDepth: input.queueDepth,
+  };
 }

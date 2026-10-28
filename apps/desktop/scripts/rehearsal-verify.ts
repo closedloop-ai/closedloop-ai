@@ -16,8 +16,10 @@
  * Assertions: zero failed rebuild sessions, zero sessions left at
  * DATA_REVISION_IMPORT_PENDING or a stale revision, `PRAGMA foreign_key_check`
  * empty (via `assertStoreIntegrity`, ISS-5100 — this is what attributes an
- * ISS-5098-class strand to its table), and no session that had invocation/
- * analytics rows before the rebuild loses them.
+ * ISS-5098-class strand to its table), and no projection loss in ANY of the four
+ * consuming views (ISS-9284 — `ProjectionTarget`: sessions, branches, owner,
+ * aggregate), classified independently so a record valid for one view and broken
+ * for another is reported as exactly that.
  *
  * Usage: pnpm exec tsx scripts/rehearsal-verify.ts --store <dir>
  * (`<dir>` is the `--out` dir a prior rehearsal-build-store run produced.)
@@ -25,15 +27,14 @@
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  DATA_REVISION,
-  DATA_REVISION_IMPORT_PENDING,
-} from "../src/main/collectors/engine/data-revision.js";
+import { DATA_REVISION_IMPORT_PENDING } from "../src/main/collectors/engine/data-revision.js";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { createGoldenCollectors } from "../src/main/collectors/golden/golden-collectors.js";
 import { assertStoreIntegrity } from "../test/agent-db-test-utils.js";
 import {
   assertBackfillsClean,
+  collectFixtureAgentReferences,
   collectSessionStates,
   openRehearsalDb,
   REHEARSAL_MANIFEST_FILE,
@@ -41,6 +42,7 @@ import {
   stageCorpusIntoTemp,
 } from "./rehearsal-build-store.js";
 import {
+  agentReferenceViolations,
   collectRehearsalViolations,
   rehearsalManifestSchema,
 } from "./rehearsal-verify-checks.js";
@@ -87,11 +89,10 @@ async function main(): Promise<void> {
 
     // Quiesce writers BEFORE snapshotting and sweeping. `writeQueue.drain()`
     // alone can observe an empty queue between boot-maintenance passes, so wait
-    // for that chain to settle first; then stop the scheduler and drain, which
-    // mirrors openTestDb's close ordering. All three are idempotent, so the
-    // close() below re-runs them safely.
+    // for that chain to settle first; then drain, which mirrors openTestDb's
+    // close ordering. Both are idempotent, so the close() below re-runs them
+    // safely.
     await db.whenBootMaintenanceSettled();
-    await db.scheduler.stop().catch(() => undefined);
     await db.writeQueue.drain();
 
     const postSessions = await collectSessionStates(db);
@@ -99,9 +100,20 @@ async function main(): Promise<void> {
       manifest,
       postSessions,
       outcome: summary,
-      currentRevision: DATA_REVISION,
+      currentRevision: effectiveDataRevision(),
       importPendingSentinel: DATA_REVISION_IMPORT_PENDING,
     });
+    // ISS-5466: the agent-reference half of the stored-row positive control.
+    // Kept out of `collectRehearsalViolations` because it needs a store read the
+    // manifest does not carry; the decision itself stays pure.
+    violations.push(
+      ...agentReferenceViolations(
+        await collectFixtureAgentReferences(
+          db,
+          manifest.missingSourceFixtureIds
+        )
+      )
+    );
     // The FK sweep is the ISS-5098-class detector: its failure message names
     // the table holding the dangling rows (e.g. agent_component_invocations).
     try {
@@ -116,7 +128,7 @@ async function main(): Promise<void> {
     }
     log(
       `rehearsal PASSED (${Math.round((Date.now() - startedAt) / 1000)}s): ` +
-        `${postSessions.length} sessions clean at revision ${DATA_REVISION}`
+        `${postSessions.length} sessions clean at revision ${effectiveDataRevision()}`
     );
   } finally {
     await db.close();

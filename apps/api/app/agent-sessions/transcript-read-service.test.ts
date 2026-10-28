@@ -16,9 +16,11 @@ const mocks = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({ withDb: mocks.withDb }));
 // The service imports the real minting helper; tests inject a fake via deps, so
 // this mock only prevents the AWS SDK from loading at import time.
-vi.mock("@repo/aws", () => ({ getSignedTranscriptDownloadUrl: vi.fn() }));
+vi.mock("@repo/aws/transcript-storage", () => ({
+  getSignedTranscriptDownloadUrl: vi.fn(),
+}));
 
-import { getSignedTranscriptDownloadUrl } from "@repo/aws";
+import { getSignedTranscriptDownloadUrl } from "@repo/aws/transcript-storage";
 import {
   transcriptReadService,
   transcriptReadServiceInternalsForTesting,
@@ -271,6 +273,56 @@ describe("transcriptReadService.findTranscriptAccess", () => {
       ["main", TranscriptAvailability.Available],
       ["subagent:a", TranscriptAvailability.UploadPending],
     ]);
+  });
+
+  describe("scoped to a requested fileKey (ISS-12276)", () => {
+    function twoReadableFiles() {
+      mocks.db.sessionTranscript.findMany.mockResolvedValue([
+        transcriptRow({ fileKey: "main" }),
+        transcriptRow({
+          fileKey: "subagent:a",
+          objectStorageKey: "subagent-a-key",
+          storedEtag: "etag-subagent-a",
+        }),
+      ]);
+    }
+
+    it("presigns only the requested file and still reports every file's availability", async () => {
+      twoReadableFiles();
+      const mintDownloadUrl = vi.fn().mockResolvedValue("https://s3/subagent");
+
+      const result = await transcriptReadService.findTranscriptAccess({
+        id: SESSION_ID,
+        organizationId: ORG,
+        fileKey: "subagent:a",
+        deps: { mintDownloadUrl },
+      });
+
+      expect(mintDownloadUrl).toHaveBeenCalledTimes(1);
+      expect(mintDownloadUrl).toHaveBeenCalledWith(
+        "subagent-a-key",
+        "etag-subagent-a"
+      );
+      expect(
+        result?.files.map((f) => [f.fileKey, f.availability, f.url])
+      ).toEqual([
+        ["main", TranscriptAvailability.Available, null],
+        ["subagent:a", TranscriptAvailability.Available, "https://s3/subagent"],
+      ]);
+    });
+
+    it("presigns every readable file when no fileKey is requested (older clients)", async () => {
+      twoReadableFiles();
+      const mintDownloadUrl = vi.fn().mockResolvedValue("https://s3/any");
+
+      await transcriptReadService.findTranscriptAccess({
+        id: SESSION_ID,
+        organizationId: ORG,
+        deps: { mintDownloadUrl },
+      });
+
+      expect(mintDownloadUrl).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

@@ -24,7 +24,7 @@ function JudgeDetailContent() {
   const searchParams = useSearchParamsValue();
   const metricName =
     typeof params.metricName === "string" ? params.metricName : "";
-  const promptName = decodeURIComponent(metricName);
+  const promptName = decodeMetricNameParam(metricName);
   const reportTypeParam = searchParams.get("reportType");
   let reportType: EvaluationReportType = EvaluationReportType.Plan;
   if (reportTypeParam === EvaluationReportType.Code) {
@@ -101,7 +101,7 @@ function JudgeDetailBodySkeleton() {
 }
 
 /**
- * ISS-5037 (ISS-4779 closed-by-default), wongk review on PR #4341: the judge
+ * ISS-5037 (ISS-4779 closed-by-default), whitlockk review on PR #4341: the judge
  * DETAIL route is a Labs destination too. It does not inherit the parent
  * route's gate — Next.js segments are gated independently — so a direct
  * `/judges-analytics/<metric>` URL was still mounting `useJudgeDetail` (and
@@ -130,4 +130,37 @@ export default function JudgeDetailPage() {
       </FeatureFlagRouteGate>
     </div>
   );
+}
+
+/**
+ * ISS-8534: the `[metricName]` segment, decoded so it can never throw during
+ * render.
+ *
+ * `decodeURIComponent` raises `URIError` on a malformed escape (`%`, `%zz`, a
+ * truncated `%E0%A4`), and this is a `"use client"` component, so the bare call
+ * took the whole page to the error boundary — past the route's own error alert,
+ * which is the correct answer for a nonsense URL. Falling back to the raw
+ * segment is the same contract `normalizeAgentSlug`
+ * (`packages/app/agents/lib/agent-slug-label.ts`) states for the sibling route:
+ * `useJudgeDetail` then fails its lookup and the existing alert renders.
+ *
+ * The decode itself is kept, not dropped. This is a SINGLE decode, unlike the
+ * API side, where ISS-6908 removed a second one: the web adapter returns Next's
+ * client route param percent-ENCODED (`useParams()` via
+ * `apps/app/lib/navigation/next-adapter.tsx`), so dropping this would change
+ * what a validly-escaped name resolves to.
+ *
+ * Not dead code, though nothing reaches it through a document navigation today:
+ * Next answers a malformed path segment with its own `400` before this renders.
+ * The guard holds the COMPONENT boundary, where a route param is just a string —
+ * `useRouteParams` is a port with a second (desktop) adapter that decodes
+ * segments itself, and the framework's edge behaviour is not this file's to
+ * assume.
+ */
+function decodeMetricNameParam(metricName: string): string {
+  try {
+    return decodeURIComponent(metricName);
+  } catch {
+    return metricName;
+  }
 }

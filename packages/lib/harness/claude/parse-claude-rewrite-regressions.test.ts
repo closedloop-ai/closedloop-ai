@@ -10,11 +10,8 @@
  * they do not depend on a corpus sample existing.
  */
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript, scanTranscriptLines } from "./parse-claude";
 import { createSessionAccumulator } from "./parse-claude-accumulator";
-import {
-  parseClaudeTranscript,
-  scanTranscriptLines,
-} from "./parse-claude-core";
 import { reportUnknownRecords } from "./parse-claude-drift";
 
 const BASE_USAGE = { input_tokens: 10, output_tokens: 5 };
@@ -70,7 +67,7 @@ describe("skills are counted once per invocation", () => {
   it("still counts a subagent-only Skill call that the session never saw", async () => {
     // The paired control: the fold exists because an agent's own calls are NOT
     // in `session.toolUses`. Excluding by identity must not exclude those.
-    const accumulator = createSessionAccumulator();
+    const accumulator = createSessionAccumulator({ collectDiagnostics: false });
     await scanTranscriptLines([USER_LINE], accumulator);
     accumulator.subagents.set("agent-x", {
       id: "agent-x",
@@ -91,7 +88,7 @@ describe("skills are counted once per invocation", () => {
       ],
     });
     const { buildSession, deriveSessionUsage, ownDiffStats } = await import(
-      "./parse-claude-core"
+      "./parse-claude"
     );
     const session = buildSession(accumulator, {
       sessionId: "skills-merged",
@@ -271,7 +268,7 @@ describe("nonsensical numbers never reach a persisted field", () => {
   });
 
   it("keeps a compaction marker stamped with a numeric epoch on the timeline", async () => {
-    // `isoTs` exists to tolerate the epoch-number shape; reading the field with
+    // `toIso` exists to tolerate the epoch-number shape; reading the field with
     // `stringValue` instead dropped the marker's timestamp to null.
     const compaction = JSON.stringify({
       type: "user",
@@ -344,9 +341,9 @@ describe("the schema-drift report", () => {
       );
     }
     lines.push(
-      JSON.stringify({ type: "alpha-kind", timestamp: TIMESTAMPS[3] })
+      JSON.stringify({ type: "alpha-kind", timestamp: TIMESTAMPS[3] }),
+      JSON.stringify({ type: "beta-kind", timestamp: TIMESTAMPS[4] })
     );
-    lines.push(JSON.stringify({ type: "beta-kind", timestamp: TIMESTAMPS[4] }));
 
     const messages: string[] = [];
     const accumulator = createSessionAccumulator({ collectDiagnostics: true });
@@ -355,7 +352,7 @@ describe("the schema-drift report", () => {
 
     // Highest count first; ties broken by name, so the line is stable across runs.
     expect(messages).toContain(
-      "Unknown record types: zeta-kind (3), alpha-kind (1), beta-kind (1)"
+      'Unknown record types: "zeta-kind" (3), "alpha-kind" (1), "beta-kind" (1)'
     );
   });
 
@@ -378,7 +375,7 @@ describe("the schema-drift report", () => {
     // Attributes sorted and comma-joined, so the same transcript always reports
     // the same line.
     expect(messages).toContain(
-      "Unknown attributes for record type ai-title: anotherNewField, brandNewField"
+      'Unknown attributes for record type "ai-title": "anotherNewField", "brandNewField"'
     );
   });
 
@@ -406,7 +403,7 @@ describe("the schema-drift report", () => {
       message.startsWith("Unknown attributes")
     );
     expect(attributeLines).toEqual([
-      "Unknown attributes for record type ai-title: repeatedNewField",
+      'Unknown attributes for record type "ai-title": "repeatedNewField"',
     ]);
   });
 

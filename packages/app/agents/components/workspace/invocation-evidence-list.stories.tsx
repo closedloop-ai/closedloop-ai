@@ -18,7 +18,7 @@ import { AGENTS_PAGE_SIZE } from "../../lib/agents-timeframe";
 import { InvocationEvidenceList } from "./invocation-evidence-list";
 
 /**
- * ISS-4805 (wongk review, #4322): canvas for the invocation evidence list, which
+ * ISS-4805 (whitlockk review, #4322): canvas for the invocation evidence list, which
  * had no story anywhere.
  *
  * The risk this pins is LAYOUT, not the formatted string. ISS-4805 changed what
@@ -165,7 +165,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Invocation Evidence List",
+  title: "Composites v1.0/Agents/Workspace/Invocation Evidence List",
+  tags: ["deprecated"],
   component: InvocationEvidenceList,
   parameters: { layout: "fullscreen" },
   args: {
@@ -215,7 +216,7 @@ export const TruncatedWithAttributionExceptions: Story = {
 };
 
 /**
- * ISS-5520 (wongk story review, #4716): the ONLY place the floor/"+" arm can be
+ * ISS-5520 (whitlockk story review, #4716): the ONLY place the floor/"+" arm can be
  * eyeballed.
  *
  * Both producers read their rows and their count in two queries that are not in

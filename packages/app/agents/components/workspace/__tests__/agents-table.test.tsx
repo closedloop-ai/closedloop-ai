@@ -294,7 +294,7 @@ describe("AgentsTable low-variance collapse — FEA-3968", () => {
     expect(screen.getAllByText("Tool").length).toBeGreaterThan(0);
   });
 
-  // FEA-4248 core regression (wongk): the production failure shape is a constant
+  // FEA-4248 core regression (whitlockk): the production failure shape is a constant
   // Harness through the FULL table path — on `?kind=skill` every skill shares one
   // Harness value, so the Harness column used to collapse entirely (column AND
   // grid track gone), reading as missing data and diverging from the other kind
@@ -395,7 +395,7 @@ describe("AgentsTable low-variance collapse — FEA-3968", () => {
   });
 
   it("never collapses the active sort column even when it is constant", () => {
-    // FEA-3968 (wongk): sorting runs before pagination, so a column can go
+    // FEA-3968 (whitlockk): sorting runs before pagination, so a column can go
     // constant on the current page while the persisted sort still controls which
     // bucket shows. Dropping its header would strand the user with no way to
     // reverse the sort — so a constant sort column must stay.

@@ -30,6 +30,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import pg, { type Pool } from "pg";
 import { settleAll } from "../../../../__tests__/test-helpers/settle-all";
 import { PrismaClient } from "../../../../generated/client";
+import { DB_POOL_MAX_DATABASE_URL_DEFAULT } from "../../../../pool-config";
 import { isLocalhostUrl, resolveSslOption } from "../../../db-utils";
 import {
   BASELINE_ORG_ID,
@@ -54,6 +55,22 @@ export type EphemeralDbContext = {
 };
 
 /**
+ * Options accepted by `setupEphemeralDb`.
+ */
+export type EphemeralDbOptions = {
+  /**
+   * Max pooled connections the fixture's `pg.Pool` may hold at once.
+   *
+   * Defaults to `DB_POOL_MAX_DATABASE_URL_DEFAULT`, the number production picks
+   * on the same branch. A suite that measures concurrency has to size this
+   * against the width it fans out to, and it cannot do that by inheriting a
+   * value nobody in this repo chose — the same reason FEA-3315 stopped the
+   * production `DATABASE_URL` pool inheriting pg's default implicitly.
+   */
+  poolMax?: number;
+};
+
+/**
  * Creates a PrismaClient connected to the database at `process.env.DATABASE_URL`
  * and returns an `EphemeralDbContext` for use within an integration test suite.
  *
@@ -63,7 +80,9 @@ export type EphemeralDbContext = {
  * @throws When `DATABASE_URL` is not set — callers should guard with
  *   `describe.skipIf(!process.env.DATABASE_URL)` before calling setup.
  */
-export async function setupEphemeralDb(): Promise<EphemeralDbContext> {
+export async function setupEphemeralDb(
+  options: EphemeralDbOptions = {}
+): Promise<EphemeralDbContext> {
   if (!process.env.DATABASE_URL) {
     throw new Error(
       "setupEphemeralDb: DATABASE_URL is not set. " +
@@ -89,6 +108,7 @@ export async function setupEphemeralDb(): Promise<EphemeralDbContext> {
   const pool = new pg.Pool({
     connectionString: url.toString(),
     ssl,
+    max: options.poolMax ?? DB_POOL_MAX_DATABASE_URL_DEFAULT,
   });
 
   const adapter = new PrismaPg(pool);

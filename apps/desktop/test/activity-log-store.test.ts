@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { ActivityLogStore } from "../src/main/diagnostics/activity-log-store.js";
 
 const tempDirs: string[] = [];

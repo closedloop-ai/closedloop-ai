@@ -8,7 +8,7 @@ import type {
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { after, afterEach, beforeEach } from "node:test";
+import { afterAll, afterEach, beforeEach } from "vitest";
 import type { OperationDispatcher } from "../../src/server/operation-dispatcher.js";
 import type {
   ExecResult,
@@ -39,28 +39,6 @@ export type ExecOptions = { timeoutMs?: number };
  */
 const FINISH_TIMEOUT_MS = 10_000;
 
-/**
- * One scripted `spawnStreaming` result: the lines the child "emits" on stdout,
- * followed by its exit. ISS-5299 — `terminal-chat`, `ticket-chat` and
- * `run-viewer-chat` reach the process manager through `spawnStreaming`, not
- * `exec`, and `asProcessManager()` casts through `unknown`, so a missing method
- * surfaced as a runtime `spawnStreaming is not a function` rather than a type
- * error.
- */
-export type StreamingScript = {
-  lines?: string[];
-  exitCode?: number | null;
-  signal?: NodeJS.Signals | null;
-  pid?: number;
-};
-
-export type RecordedSpawn = {
-  command: string;
-  args: string[];
-  cwd?: string;
-  input?: string;
-};
-
 export type RecordedExec = {
   command: string;
   args: string[];
@@ -78,75 +56,10 @@ export type RecordedExec = {
  */
 export class FakeProcessManager {
   readonly calls: RecordedExec[] = [];
-  readonly spawns: RecordedSpawn[] = [];
   private readonly results: ExecResult[];
-  private readonly streamingScripts: StreamingScript[];
 
-  constructor(
-    results: ExecResult[] = [],
-    streamingScripts: StreamingScript[] = []
-  ) {
+  constructor(results: ExecResult[] = []) {
     this.results = [...results];
-    this.streamingScripts = [...streamingScripts];
-  }
-
-  /**
-   * Scripted stand-in for {@link ProcessManager.spawnStreaming}. Records the
-   * invocation, then replays the next queued script: each line is delivered
-   * through the caller's `onLine`, followed by `onExit`. Delivery is deferred to
-   * the macrotask queue so callers that register handlers or write to stdin
-   * after the await still observe them, mirroring a real child process.
-   *
-   * An exhausted queue REJECTS, as `exec` does — but be aware that, unlike
-   * `exec`, that rejection is NOT a reliable test failure on its own: every
-   * streaming consumer (`terminal-chat`, `ticket-chat`, `run-viewer-chat`,
-   * `chat-providers`) catches it, writes an `error` event and still calls
-   * `finish()`, which emits `done`. So a test whose only assertion is "a `done`
-   * event arrived" passes identically against an empty queue. Assert on a
-   * stream-derived observable that only the success path produces (a `result`
-   * with `success: true`, a scripted `text` line, the persisted history), and
-   * ideally also assert that no `error` event was emitted.
-   */
-  spawnStreaming(options: {
-    command: string;
-    args?: string[];
-    cwd?: string;
-    input?: string;
-    onLine?: (line: string) => void;
-    onError?: (error: Error) => void;
-    onExit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
-  }): Promise<{ pid: number; process: unknown }> {
-    this.spawns.push({
-      command: options.command,
-      args: options.args ?? [],
-      cwd: options.cwd,
-      input: options.input,
-    });
-    if (this.streamingScripts.length === 0) {
-      return Promise.reject(
-        new Error(
-          `FakeProcessManager: no queued streaming script for spawnStreaming("${options.command}", [${(
-            options.args ?? []
-          ).join(", ")}]); queue is exhausted`
-        )
-      );
-    }
-    const script = this.streamingScripts.shift() as StreamingScript;
-    // `setImmediate`, not `queueMicrotask`: a microtask queued here runs BEFORE
-    // the caller's own `await spawnStreaming(...)` continuation, so `onExit`
-    // fired before the caller could emit its post-spawn "running" event and the
-    // observed SSE order was `spawning, result, running, done` — the reverse of
-    // production, where a real child cannot exit before its spawn promise
-    // resolves. Deferring to the macrotask queue restores
-    // `spawning, running, result, done` so these suites can actually catch a
-    // stream-lifecycle ordering regression.
-    setImmediate(() => {
-      for (const line of script.lines ?? []) {
-        options.onLine?.(line);
-      }
-      options.onExit?.(script.exitCode ?? 0, script.signal ?? null);
-    });
-    return Promise.resolve({ pid: script.pid ?? 4242, process: {} });
   }
 
   exec(
@@ -194,8 +107,8 @@ export type DispatchInput = {
   query?: Record<string, string>;
   body?: string;
   /**
-   * ISS-5299 — request headers the handler reads directly (`symphony-upload`
-   * and `run-viewer-extract` branch on `content-type` before touching the body).
+   * ISS-5299 — request headers the handler reads directly (a handler may
+   * branch on `content-type` before touching the body).
    */
   headers?: IncomingHttpHeaders;
   /**
@@ -382,36 +295,6 @@ export function createGitOpTempDirs(prefix: string): {
 }
 
 /**
- * Assert that a streamed SSE response actually reached its success path.
- *
- * A `done` event alone proves nothing. Every streaming consumer
- * (`terminal-chat`, `ticket-chat`, `run-viewer-chat`, `chat-providers`) catches
- * a spawn rejection, writes an `error` event and still calls `finish()`, which
- * emits `done` — so `events.some(e => e.type === "done")` is green whether the
- * child streamed its scripted lines or `FakeProcessManager` rejected on an
- * exhausted queue. Requiring the ABSENCE of `error` is what gives the assertion
- * the ability to fail.
- *
- * Throws rather than asserting: biome's `noMisplacedAssertion` reserves the
- * assertion helpers for test bodies, and a throw fails the test just as hard.
- */
-export function assertStreamSucceeded(
-  events: readonly Record<string, unknown>[]
-): void {
-  const errorEvents = events.filter((event) => event.type === "error");
-  if (errorEvents.length > 0) {
-    throw new Error(
-      `stream emitted error event(s) instead of completing its success path: ${JSON.stringify(errorEvents)}`
-    );
-  }
-  if (!events.some((event) => event.type === "done")) {
-    throw new Error(
-      `stream never emitted a done event; saw: ${JSON.stringify(events.map((event) => event.type))}`
-    );
-  }
-}
-
-/**
  * Pin `SYMPHONY_WORKTREE_PARENT_DIR` unset for the enclosing suite, restoring
  * whatever the host had once it finishes.
  *
@@ -433,7 +316,7 @@ export function pinDefaultWorktreeParentDir(): void {
     Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
   });
 
-  after(() => {
+  afterAll(() => {
     if (saved === undefined) {
       Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
     } else {

@@ -1,71 +1,40 @@
 import {
-  Avatar,
-  AvatarFallback,
-} from "@closedloop-ai/design-system/components/ui/avatar";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@closedloop-ai/design-system/components/ui/dropdown-menu";
-import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarHeader,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
   SidebarNavLinkItem,
   Sidebar as SidebarRoot,
 } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { SidebarCollapsibleSection } from "@closedloop-ai/design-system/components/ui/sidebar-collapsible-section";
-import { ThemeSubmenu } from "@closedloop-ai/design-system/components/ui/theme-submenu";
 import { AgentsNavBadge } from "@repo/app/agents/components/agents-nav-badge";
-import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
-import { SessionLimitsNav } from "@repo/app/session-limits/components/session-limits-nav";
-import { SessionLimitsStatus } from "@repo/app/session-limits/types";
-import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
+import { useOptionalAuthSnapshot } from "@repo/app/shared/auth/use-auth-snapshot";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
-import { Link } from "@repo/navigation/link";
-import { useNavigation } from "@repo/navigation/use-navigation";
-import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import {
-  CheckIcon,
-  ChevronsUpDownIcon,
-  LogInIcon,
-  SunMoonIcon,
-  UserPlusIcon,
-  UserRoundIcon,
-} from "lucide-react";
-import { useEffect, useState } from "react";
-import { DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
-import { useSessionLimits } from "../../hooks/use-session-limits";
+  PROJECTS_PORTABLE_SURFACE_FEATURE_FLAG_KEY,
+  SHELL_SIDEBAR_V2_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
+import type { ReactNode } from "react";
+import { DESKTOP_LABS_NAV_FEATURE_FLAG_KEY } from "../../../shared/feature-flags-labs-detail";
 import {
   type NavEntry,
   NavSection,
   navItemsForSection,
 } from "../../navigation/nav-config";
 import { hrefForNavId, NavId } from "../../navigation/route-table";
-import { isMacOS } from "../../platform";
-import { useDesktopAuth } from "../../shared-agent-sessions/desktop-auth-provider";
-import { useDesktopIdentity } from "../../shared-agent-sessions/use-desktop-identity";
-import {
-  GuestSignupIntent,
-  useGuestSignup,
-} from "../onboarding/guest-signup-provider";
-import {
-  InviteSpotlightAnchor,
-  InviteSpotlightPopover,
-  useInviteSpotlightHighlight,
-} from "../onboarding/invite-spotlight";
-import {
-  canOfferAccount,
-  useGuestOnboarding,
-} from "../onboarding/use-guest-onboarding";
-import { ClosedloopMark } from "./closedloop-mark";
+import { DesktopGuidedOnboardingDialogHost } from "../onboarding/desktop-guided-onboarding-dialog-host";
+import { DesktopSidebarTeams } from "../teams/desktop-sidebar-teams";
+import { DesktopShellSidebar } from "./shell-navigation/desktop-shell-sidebar";
 import { DESKTOP_LABS_NAV_SECTION_STORAGE_KEY } from "./sidebar-persistence";
+import {
+  DesktopSidebarFooterItems,
+  SidebarMacDragStrip,
+  useDesktopFooterKeepsInvite,
+  useDesktopSidebarSearch,
+} from "./sidebar-shared-items";
+import { DesktopWorkspaceHeaderSlot } from "./workspace-header-slot";
 
 type SidebarProps = {
   activeNav: NavId;
@@ -74,17 +43,67 @@ type SidebarProps = {
 };
 
 /**
- * Desktop sidebar mirroring the finalized web GlobalSidebar: search on top, the
- * shared top-level / Artifacts / Gateway / Labs nav structure from nav-config,
- * and a footer account menu (identity trigger + Settings/Diagnostics + theme),
- * mirroring web's AccountMenu. Items render port links (hrefForNavId), so
- * navigation flows through the desktop navigation adapter exactly like shared
- * component links do.
+ * The desktop sidebar mount, and the ONE site on this shell that reads the v2
+ * rollout key (ISS-9734, PLN-2016 D1).
+ *
+ * The key picks between two WHOLE trees rather than being handed down, so no
+ * descendant can re-answer it and disagree with the tree it renders inside. Off
+ * is today's sidebar, unchanged — and off is what every read that has not
+ * resolved, every errored read and everyone outside the rollout gets, because
+ * `DesktopFeatureFlagProvider` resolves the signed-in account's PostHog
+ * assignment and fails closed on every other outcome. One key covers both
+ * shells (ISS-4779): there is no desktop Labs toggle to pair with it and no
+ * desktop flag-registry entry to add.
+ *
+ * The guided-onboarding dialog host sits OUTSIDE the branch, so it mounts under
+ * both arms exactly as it did before there were two.
  */
 export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
-  const { navigate } = useNavigation();
-  const searchParams = useSearchParamsValue();
-  const [search, setSearch] = useState(searchParams.get("search") ?? "");
+  const shellSidebarV2Enabled = useFeatureFlagEnabled(
+    SHELL_SIDEBAR_V2_FEATURE_FLAG_KEY
+  );
+
+  return (
+    <>
+      <DesktopGuidedOnboardingDialogHost />
+      {shellSidebarV2Enabled ? (
+        <DesktopShellSidebar
+          activeNav={activeNav}
+          hiddenNavIds={hiddenNavIds}
+        />
+      ) : (
+        <LegacyDesktopSidebar
+          activeNav={activeNav}
+          hiddenNavIds={hiddenNavIds}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Today's desktop sidebar, mirroring the finalized web GlobalSidebar: the
+ * top-level / Artifacts / Labs nav structure from nav-config, the Search control
+ * inside Labs, the guided-onboarding recovery card in the footer under every
+ * experience (ISS-8353), and the workspace header (ISS-8370 D7, below).
+ * ISS-10195 retired the workspace-experience gate and deleted the legacy footer
+ * account menu, so this tree has no experience branching of its own. Items
+ * render port links (hrefForNavId), so navigation flows through the desktop
+ * navigation adapter exactly like shared component links do.
+ *
+ * ISS-8759 (desktop mirror, operator direction 2026-09-03): Search moved out of
+ * the fixed slot above the nav and into the Labs section, and the Gateway group
+ * folded into Labs with everything else. Which SECTION an entry lands in stays
+ * owned by `nav-config`'s `displaySection` — this file renders the sections it
+ * is handed and never re-derives the grouping.
+ *
+ * It is NOT dead code while `shell-sidebar-v2` is closed by default: it is what
+ * every desktop user has. Retiring it is the flag-retirement step — delete the
+ * read, keep the on branch, delete this one, follow the orphans.
+ */
+function LegacyDesktopSidebar({ activeNav, hiddenNavIds }: SidebarProps) {
+  const searchControl = useDesktopSidebarSearch();
+  const footerKeepsInvite = useDesktopFooterKeepsInvite();
   const isHidden = (entry: NavEntry) =>
     hiddenNavIds?.includes(entry.id) ?? false;
   const visible = (section: Parameters<typeof navItemsForSection>[0]) =>
@@ -92,41 +111,23 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
 
   const mainItems = visible(NavSection.Main);
   const artifactItems = visible(NavSection.Artifacts);
-  const gatewayItems = visible(NavSection.Gateway);
   const labsItems = visible(NavSection.Labs);
-  // ISS-4478: Settings + Diagnostics render inside the footer account menu
-  // (mirroring web's AccountMenu), not as a top-level sidebar section.
-  const accountItems = visible(NavSection.Account);
-
-  useEffect(() => {
-    setSearch(searchParams.get("search") ?? "");
-  }, [searchParams]);
-
-  const handleSearchSubmit = (submittedSearch: string) => {
-    navigate(buildSessionsSearchHref(submittedSearch));
-  };
-
-  const clearSearch = () => {
-    setSearch("");
-    navigate(hrefForNavId(NavId.Sessions));
-  };
 
   return (
     <SidebarRoot collapsible="offcanvas" variant="inset">
-      {/* macOS hides the native title bar (main/window.ts), so the stoplight
-          buttons overlay the top-left of the window. Reserve a draggable strip
-          here — its height lines the search up with the content below the
-          Topbar, and the strip doubles as the window-move handle. */}
-      {isMacOS() && (
-        <div aria-hidden="true" className="app-region-drag h-7 shrink-0" />
-      )}
-      <SidebarSearchForm
-        onClear={clearSearch}
-        onSubmit={handleSearchSubmit}
-        onValueChange={setSearch}
-        showClear={!!search || !!searchParams.get("search")}
-        value={search}
-      />
+      <SidebarMacDragStrip />
+      {/* ISS-8370 D7: the workspace menu heads navigation and owns the
+          account menu's old destinations (Settings, Diagnostics, the guest
+          door). The guided card STAYS in the desktop footer — it is onboarding
+          recovery that no menu owns.
+
+          ISS-10362 moved the invite entry OUT of that footer and into this
+          menu, where web's invite row already sits. Members is still
+          unavailable here (ISS-8368 — Clerk's `<OrganizationProfile>` cannot
+          mount in this renderer), so what the menu gained is an invite-only row
+          rather than web's "Invite and manage members": the dialog needs
+          nothing but `POST /organizations/invitations`, which desktop has. */}
+      <WorkspaceSidebarHeader />
       <SidebarContent className="gap-1 pt-2">
         {mainItems.length > 0 && (
           <SidebarGroup className="px-0 py-1">
@@ -140,261 +141,45 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
           </SidebarCollapsibleSection>
         )}
 
-        {gatewayItems.length > 0 && (
-          <SidebarCollapsibleSection className="px-0 py-1" title="Gateway">
-            <NavSectionMenu activeNav={activeNav} items={gatewayItems} />
-          </SidebarCollapsibleSection>
-        )}
-
-        {labsItems.length > 0 && (
-          <SidebarCollapsibleSection
-            className="px-0 py-1"
-            // ISS-4478: Labs starts collapsed by default (expands on click, its
-            // open state then persists). Explicitly `false` rather than derived
-            // from FOCUS_MODE so it stays collapsed even if FOCUS_MODE is later
-            // turned off.
-            defaultOpen={false}
-            persistenceKey={DESKTOP_LABS_NAV_SECTION_STORAGE_KEY}
-            title="Labs"
-          >
-            <NavSectionMenu activeNav={activeNav} items={labsItems} />
-          </SidebarCollapsibleSection>
-        )}
+        <LabsNavSection
+          activeNav={activeNav}
+          items={labsItems}
+          leading={searchControl}
+        />
       </SidebarContent>
-      <SidebarFooter className="px-0 pt-1 pb-0">
-        <SessionLimitsFooter />
-        <SidebarMenu>
-          <InviteTeamMenuItem />
-          <AccountMenu accountItems={accountItems} activeNav={activeNav} />
-        </SidebarMenu>
+      {/* `pb-1` only once the invite row has actually left this footer: the
+          guided card is then the last child and would otherwise sit flush
+          against the sidebar's bottom edge. While the row is still here — a
+          signed-in reader with the key closed, or ISS-11247's signed-in reader
+          whose workspace menu cannot hold the entry — nothing about the shipped
+          footer moves. ISS-10942: a guest never holds it, so the padding
+          reads the same hook rather than the key alone. */}
+      <SidebarFooter
+        className={`px-0 pt-1 ${footerKeepsInvite ? "pb-0" : "pb-1"}`}
+      >
+        <DesktopSidebarFooterItems />
       </SidebarFooter>
     </SidebarRoot>
   );
 }
 
 /**
- * Subscription session-limit summary (PRD-538) above the gateway menu, behind
- * the `subscriptionSessionLimits` Labs toggle (ISS-4779 closed-by-default;
- * default off — the feature is not product-approved yet, Mike 2026-08-07).
- *
- * The gate is checked HERE rather than inside the nav so that with the toggle
- * off the reading component never mounts at all: no snapshot IPC, no interval,
- * nothing. One key covers the whole feature — the same flag suppresses the
- * credential read and the `/usage` request in the main process (PRD-538 R5) —
- * so capture can never run while the bars stay hidden. Desktop-only, so there is
- * no PostHog twin to keep in lockstep.
+ * The v2 header (ISS-8370 D7): the workspace menu at the top of navigation,
+ * wrapped the way `packages/app/shell/v2/components/shell-sidebar.tsx` wraps
+ * its `workspaceHeader` slot, so the node lands in the same place under both
+ * arms — which is also why the slot's contents are shared rather than spelled
+ * out here (ISS-10362 gave them the arrival nudge's anchor).
  */
-function SessionLimitsFooter() {
-  const enabled = useFeatureFlagEnabled(
-    DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY
-  );
-  if (!enabled) {
-    return null;
-  }
-  return <SessionLimitsFooterContent />;
-}
-
-/**
- * The gated half, split out so the snapshot hook is not called at all while the
- * flag is off (hooks cannot live behind a conditional in one component).
- */
-function SessionLimitsFooterContent() {
-  const state = useSessionLimits();
-  if (state.status === SessionLimitsStatus.Unavailable) {
-    return null;
-  }
-  return <SessionLimitsNav state={state} />;
-}
-
-/**
- * "Invite your team" affordance (PRD-532 §5.4 / M9). Opens the shared
- * {@link InviteTeamDialog}, which mints real Clerk org invitations through the
- * BFF route; on accept the Clerk membership webhook syncs a durable MEMBER into
- * the existing org.
- */
-function InviteTeamMenuItem() {
-  const guest = useGuestOnboarding();
-  const { requestSignup, resuming, clearResume } = useGuestSignup();
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const spotlightHighlight = useInviteSpotlightHighlight(
-    InviteSpotlightAnchor.Sidebar
-  );
-
-  // Resume the interrupted job: someone who signed up FROM here wanted to
-  // invite a teammate, so give them the dialog they were reaching for.
-  useEffect(() => {
-    if (resuming !== GuestSignupIntent.Invite) {
-      return;
-    }
-    setInviteOpen(true);
-    clearResume();
-  }, [resuming, clearResume]);
-
-  // ISS-5112: a guest has no organization to invite anyone INTO. The dialog
-  // mints real Clerk invitations against an org id, so opening it signed out is
-  // a control that cannot do its job — ask for the account first.
-  if (canOfferAccount(guest)) {
-    return (
-      <SidebarMenuItem>
-        <SidebarMenuButton
-          onClick={() => requestSignup(GuestSignupIntent.Invite)}
-          tooltip="Invite your team"
-        >
-          <UserPlusIcon className="size-4" />
-          <span className="truncate">Invite your team</span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
-    );
-  }
-
+function WorkspaceSidebarHeader() {
   return (
-    <SidebarMenuItem>
-      {/* ISS-5489 (PLN-1694 M2): the arrival nudge points HERE — at where invite
-          actually lives — whenever this item is on screen. Renders the plain
-          dialog trigger otherwise. */}
-      <InviteSpotlightPopover anchor={InviteSpotlightAnchor.Sidebar}>
-        <InviteTeamDialog
-          onOpenChange={setInviteOpen}
-          open={inviteOpen}
-          trigger={
-            <SidebarMenuButton
-              className={spotlightHighlight}
-              tooltip="Invite your team"
-            >
-              <UserPlusIcon className="size-4" />
-              <span className="truncate">Invite your team</span>
-            </SidebarMenuButton>
-          }
-        />
-      </InviteSpotlightPopover>
-    </SidebarMenuItem>
+    <SidebarHeader className="px-0 pt-1 pb-0">
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <DesktopWorkspaceHeaderSlot />
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarHeader>
   );
-}
-
-/**
- * Footer account menu mirroring the web AccountMenu shape: the trigger shows the
- * signed-in organization (or account) name with the Closedloop mark as the
- * avatar, so it reads as "me and my stuff" — a target someone hunting for
- * Settings can aim at — rather than product branding (ISS-4478 review). The
- * account destinations (Settings, Diagnostics) live here as `<Link>` menu items,
- * the same pattern web's AccountMenu uses for its Settings link, above the theme
- * controls. The active destination carries a trailing check, matching web's
- * active-org row, so opening the menu while on Settings shows you are there.
- */
-function AccountMenu({
-  accountItems,
-  activeNav,
-}: {
-  accountItems: NavEntry[];
-  activeNav: NavId;
-}) {
-  const accountLabel = useAccountLabel();
-  const guest = useGuestOnboarding();
-  const { requestSignup } = useGuestSignup();
-
-  // ISS-5112: the signed-in trigger reads an organization name, and the fallback
-  // reads "Account" — both claim a thing a guest does not have. An empty-state
-  // avatar and the literal word "Guest" say what is actually true.
-  //
-  // The MENU itself stays, and that is the whole point: Settings and Diagnostics
-  // have no other link site in the renderer and no Electron app-menu entry, and
-  // Settings is where the Labs tab lives — including the `guest-onboarding`
-  // toggle. A guest-only branch that dropped the dropdown would strip a
-  // signed-out user of Settings, Diagnostics and the theme controls, and trap
-  // them with no way to switch this very flag back off.
-  const isGuest = canOfferAccount(guest);
-
-  return (
-    <SidebarMenuItem>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <SidebarMenuButton
-            aria-label="Open account menu"
-            className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-            size="lg"
-            tooltip={isGuest ? "Guest" : accountLabel}
-          >
-            {isGuest ? (
-              // An Avatar with only its fallback — a person with no picture yet,
-              // which is what a guest is. An earlier revision used a dashed
-              // border, but a dashed outline means "nothing here yet" in this
-              // product (the dashboard's own empty card is the other one), and a
-              // guest is a person, not a missing thing.
-              <Avatar className="size-8 shrink-0 rounded-lg">
-                <AvatarFallback className="rounded-lg bg-muted text-muted-foreground">
-                  <UserRoundIcon aria-hidden="true" className="size-4" />
-                </AvatarFallback>
-              </Avatar>
-            ) : (
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--foreground)] text-[var(--background)]">
-                <ClosedloopMark />
-              </div>
-            )}
-            <span className="truncate font-medium">
-              {isGuest ? "Guest" : accountLabel}
-            </span>
-            <ChevronsUpDownIcon className="ml-auto size-4 opacity-60" />
-          </SidebarMenuButton>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-md"
-          side="top"
-          sideOffset={4}
-        >
-          {isGuest && (
-            <>
-              <DropdownMenuItem
-                onSelect={() => requestSignup(GuestSignupIntent.Header)}
-              >
-                <LogInIcon className="size-4" />
-                {/* "Create account", not "Sign In". Desktop auth is a single
-                    loopback OAuth door, so a differently-named control here
-                    promises a second path that does not exist — the same reason
-                    `account-dialog` dropped its "Already have an account?"
-                    footer — and this one opened a dialog headed "Create your
-                    account". It was also the only Title Case sign-in string in
-                    the renderer. */}
-                Create account
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          )}
-          {accountItems.map((item) => {
-            const isActive = activeNav === item.id;
-            return (
-              <DropdownMenuItem asChild key={item.id}>
-                <Link
-                  aria-current={isActive ? "page" : undefined}
-                  href={hrefForNavId(item.id)}
-                >
-                  <item.icon className="size-4" />
-                  {item.label}
-                  {isActive && (
-                    <CheckIcon className="ml-auto size-4 text-muted-foreground" />
-                  )}
-                </Link>
-              </DropdownMenuItem>
-            );
-          })}
-          <ThemeSubmenu icon={<SunMoonIcon className="size-4" />} />
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </SidebarMenuItem>
-  );
-}
-
-/**
- * The signed-in display name for the footer account trigger: organization name,
- * then the user's name, then email, falling back to a generic "Account" label so
- * the trigger always reads as an account slot even before the identity fetch
- * settles, when signed out, or when the identity bridge is absent (test stubs).
- */
-function useAccountLabel(): string {
-  const { state } = useDesktopAuth();
-  const { identity } = useDesktopIdentity(state.status, state.userId);
-  const userName = identity ? getUserNamePart(identity) : "";
-  return identity?.organizationName || userName || identity?.email || "Account";
 }
 
 function NavSectionMenu({
@@ -433,11 +218,67 @@ function NavSectionMenu({
   );
 }
 
-function buildSessionsSearchHref(search: string): string {
-  const trimmed = search.trim();
-  if (!trimmed) {
-    return hrefForNavId(NavId.Sessions);
+/**
+ * The Labs sidebar section, and the one place a non-item surface joins it.
+ *
+ * `leading` renders INSIDE the collapsible body, above the rows — deliberately.
+ * Operator ruling 2026-09-01, carried over from web's ISS-8759: "search should
+ * not be visible when Labs is not present or collapsed." So collapsing Labs
+ * hides Search with the rows, and the `labsNav` container gate emptying the
+ * section (every id lands in `hiddenNavIds`) removes Search along with it.
+ *
+ * The section ships CLOSED, so on first load Search is not on screen. That is
+ * the intended reading of the ruling above, not a regression: the PostHog
+ * `labsNav` flag is what opens this surface, and a localStorage default must not
+ * stand in for it (operator ruling 2026-09-03, "Labs ships closed under the
+ * PostHog FF").
+ *
+ * The slot is app-local composition — plain children of the shared
+ * `SidebarCollapsibleSection`. Web tried pinning Search outside the body via a
+ * `leading` prop ADDED to that shared primitive; the same ruling retired both
+ * the behaviour and the API change, so the primitive stays untouched here.
+ */
+function LabsNavSection({
+  items,
+  activeNav,
+  leading,
+}: {
+  items: NavEntry[];
+  activeNav: NavId;
+  leading?: ReactNode;
+}) {
+  const teamsEnabled = useFeatureFlagEnabled(
+    PROJECTS_PORTABLE_SURFACE_FEATURE_FLAG_KEY
+  );
+  const labsEnabled = useFeatureFlagEnabled(DESKTOP_LABS_NAV_FEATURE_FLAG_KEY);
+  const { isLoaded, orgId, userId } = useOptionalAuthSnapshot();
+  if (
+    items.length === 0 &&
+    !(teamsEnabled && labsEnabled && isLoaded && orgId && userId)
+  ) {
+    return null;
   }
-  const params = new URLSearchParams({ search: trimmed });
-  return `${hrefForNavId(NavId.Sessions)}?${params.toString()}`;
+  return (
+    <SidebarCollapsibleSection
+      className="px-0 py-1"
+      // ISS-4478: Labs starts collapsed by default (expands on click, its open
+      // state then persists). Explicitly `false` rather than derived from
+      // FOCUS_MODE so it stays collapsed even if FOCUS_MODE is later turned off.
+      //
+      // Unchanged by the Search/Gateway move, deliberately. The gate that
+      // decides whether this surface exists is the PostHog `labsNav` flag; a
+      // localStorage default is not a gate and must not act like one (operator
+      // ruling 2026-09-03). Keeping the original key with it: with a collapsed
+      // default, a fresh key would buy nothing and would discard the preference
+      // of the one user it touches — someone who had EXPANDED Labs and whose
+      // stored `"true"` is still exactly what they asked for.
+      defaultOpen={false}
+      persistenceKey={DESKTOP_LABS_NAV_SECTION_STORAGE_KEY}
+      title="Labs"
+    >
+      {leading}
+      <NavSectionMenu activeNav={activeNav} items={items} />
+      <DesktopSidebarTeams />
+    </SidebarCollapsibleSection>
+  );
 }

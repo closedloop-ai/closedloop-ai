@@ -1,4 +1,5 @@
 import { formatDateForInput } from "@repo/app/shared/lib/date-utils";
+import { redactSecrets } from "@repo/lib/security/redact-secrets";
 import { buildCapabilityGapCandidates } from "./agent-coaching-capability-gap";
 import {
   buildCostCandidate,
@@ -15,7 +16,6 @@ import {
   testSequencingLeverWarranted,
 } from "./agent-coaching-lever-gate";
 import { computePeakFrustration } from "./agent-coaching-lookback";
-import { redactSecrets } from "./agent-coaching-redaction";
 import {
   type AgentCoachingCandidate,
   type AgentCoachingLever,
@@ -39,6 +39,7 @@ import {
   type AgentCoachingGroundedMetrics,
   type AgentCoachingInput,
   type AgentCoachingTip,
+  COACHING_NUMBER_LOCALE,
 } from "./agent-coaching-types";
 
 const TOP_COMMAND_LIMIT = 3;
@@ -342,13 +343,13 @@ function buildContextCandidate(
     id: "context-checkpoint",
     title: "Set a hard context checkpoint before sessions sprawl",
     category: "context_management",
-    body: `${followUp.prefix}Your local desktop history averages ${averageEvents.toLocaleString()} events and ${averageTokens.toLocaleString()} tokens per session. Add a checkpoint before long sessions become the only decision trail.`,
+    body: `${followUp.prefix}Your local desktop history averages ${averageEvents.toLocaleString(COACHING_NUMBER_LOCALE)} events and ${averageTokens.toLocaleString(COACHING_NUMBER_LOCALE)} tokens per session. Add a checkpoint before long sessions become the only decision trail.`,
     whyItMatters:
       "Checkpointing reduces repeated context, keeps decisions inspectable, and makes compaction or restart safer.",
     evidence: [
-      `${totalSessions.toLocaleString()} local sessions analyzed`,
-      `${totalEvents.toLocaleString()} captured events`,
-      `${averageTokens.toLocaleString()} average tokens per session`,
+      `${totalSessions.toLocaleString(COACHING_NUMBER_LOCALE)} local sessions analyzed`,
+      `${totalEvents.toLocaleString(COACHING_NUMBER_LOCALE)} captured events`,
+      `${averageTokens.toLocaleString(COACHING_NUMBER_LOCALE)} average tokens per session`,
     ],
     experiment:
       "Before the next long task crosses 120 turns, ask for decisions, changed files, risks, and next commands, then continue from that recap.",
@@ -360,7 +361,7 @@ function buildContextCandidate(
         "Start the next phase from that recap when the task gets large.",
         "Track whether the next session needs fewer corrective turns.",
       ],
-      whyThisRecommendation: `${followUp.why}The local sessions average ${averageEvents.toLocaleString()} events, so the main risk is stale context and repeated rediscovery.`,
+      whyThisRecommendation: `${followUp.why}The local sessions average ${averageEvents.toLocaleString(COACHING_NUMBER_LOCALE)} events, so the main risk is stale context and repeated rediscovery.`,
       autoApply:
         "Desktop can draft the checkpoint prompt. Starting a new session or pruning context should stay user-confirmed.",
     },
@@ -422,7 +423,7 @@ function buildWorkflowCandidate(
       "Stable operational prompts are expensive to re-send and easy to drift. A workflow makes the agent faster and more consistent.",
     evidence: [
       `${candidate?.count ?? 0} repeated ${pattern} command events`,
-      `${skillCount.toLocaleString()} local skill invocations`,
+      `${skillCount.toLocaleString(COACHING_NUMBER_LOCALE)} local skill invocations`,
     ],
     experiment:
       "Draft one reusable workflow for the repeated review path and compare whether the next run needs fewer corrective turns.",
@@ -554,7 +555,10 @@ function buildHarnessCandidate(
       "Different agent tools are improving in different places. Matching task shape to tool strength is now part of agentic-development skill.",
     evidence: harnessLikeSignals
       .slice(0, 3)
-      .map((tool) => `${tool.toolName}: ${tool.count.toLocaleString()} events`),
+      .map(
+        (tool) =>
+          `${tool.toolName}: ${tool.count.toLocaleString(COACHING_NUMBER_LOCALE)} events`
+      ),
     experiment:
       "Classify the next task as decomposition-heavy, remote-execution-heavy, MCP/provider-heavy, or review-heavy before launch.",
     detail: {
@@ -625,8 +629,8 @@ function buildTokenEfficiencyCandidate(
     whyItMatters:
       "This cuts token load, reduces command quoting mistakes, and gives the agent a smaller action surface to reason over.",
     evidence: [
-      `${observedCalls.toLocaleString()} observed ${pattern} calls or events`,
-      `${input.recentEvents.length.toLocaleString()} recent local events inspected`,
+      `${observedCalls.toLocaleString(COACHING_NUMBER_LOCALE)} observed ${pattern} calls or events`,
+      `${input.recentEvents.length.toLocaleString(COACHING_NUMBER_LOCALE)} recent local events inspected`,
       candidate
         ? `representative commands: ${candidate.representativeCommands.length}`
         : "no representative commands were available from summaries",
@@ -642,7 +646,7 @@ function buildTokenEfficiencyCandidate(
         "Confirm before writing the skill locally.",
         "Check tomorrow whether the repeated probe count drops.",
       ],
-      whyThisRecommendation: `${followUp.why}${pattern} appeared ${observedCalls.toLocaleString()} times in local desktop evidence. Promoting it to ${skillName} should reduce repeated command text and raw output by about ${savings}%.`,
+      whyThisRecommendation: `${followUp.why}${pattern} appeared ${observedCalls.toLocaleString(COACHING_NUMBER_LOCALE)} times in local desktop evidence. Promoting it to ${skillName} should reduce repeated command text and raw output by about ${savings}%.`,
       candidateFromThisDryRun: {
         pattern,
         observedCalls,
@@ -684,7 +688,7 @@ function buildTokenEfficiencyCandidate(
   // per-call savings. Only a real repeated command family (`candidate.count`)
   // is repetition; the `topShellTool` fallback is the aggregate shell-tool count
   // across UNRELATED commands, so feeding it to the reuse scorer would let 80
-  // one-off shell calls rank like 80 repetitions of one probe (wongk review).
+  // one-off shell calls rank like 80 repetitions of one probe (whitlockk review).
   // When there is no repeated family, the reuse repetition signal is 0 and the
   // tip stands on savings alone, so a genuinely-grounded lever outranks it.
   const repeatedCallCount = candidate?.count ?? 0;
@@ -731,7 +735,7 @@ function buildResilienceCandidate(
     evidence: [
       `peak frustration excerpt: "${peak.excerpt}"`,
       `frustration intensity score: ${peak.score}`,
-      `${peak.nearbyErrorCount.toLocaleString()} error/fail events near the peak turn`,
+      `${peak.nearbyErrorCount.toLocaleString(COACHING_NUMBER_LOCALE)} error/fail events near the peak turn`,
     ],
     experiment:
       "Next time a turn spikes like this, stop and switch to plan mode or halve the scope before re-prompting, then note whether it resolved in fewer turns.",
@@ -761,7 +765,7 @@ function buildResilienceCandidate(
   // clustered around it. `peak.score` already FOLDS IN nearbyErrorCount (see
   // computePeakFrustration), so pass the text-only frustration score
   // (score − nearbyErrorCount) as the intensity input; otherwise the nearby
-  // errors would be counted twice and over-rank resilience (wongk review).
+  // errors would be counted twice and over-rank resilience (whitlockk review).
   const textFrustrationScore = peak.score - peak.nearbyErrorCount;
   return toCandidate(
     tip,
@@ -787,6 +791,20 @@ const JSON_BLOB_PATTERN = /^\s*[[{]/;
  * tool JSON; otherwise falls back to a plain `summary`/`data` string. Returns
  * null when nothing usable remains OR the recovered value still looks like a
  * JSON blob — so a malformed field can never reach the slug/name/prose path.
+ *
+ * ISS-6709: the recovered command is redacted HERE, before it is returned, and
+ * this is the redaction boundary for every command-derived value on the coaching
+ * seam. It has to happen at this choke point rather than at each emit site
+ * because the family classifiers (`classifyCommand` for seed tips,
+ * `commandFamily` for grounded metrics) read the command's FIRST TOKEN — so an
+ * env-prefixed invocation (`OPENAI_API_KEY=<credential> curl …`) makes the
+ * credential itself the family string, and the family is copied into the reuse
+ * tip, its derived skill name, and `repeatedCommandFamilies` before any emit-site
+ * redaction runs. Every consumer (`findReusableCommandCandidate`,
+ * `computeRepeatedFamilies`, `sampledShellCommands`) goes through this function,
+ * so redacting on the way out is what makes the guarantee hold for all of them.
+ * Character counts derived from the result therefore measure the redacted
+ * command — the string that actually reaches the provider.
  */
 export function extractShellCommand(
   event: AgentCoachingInput["recentEvents"][number]
@@ -800,7 +818,7 @@ export function extractShellCommand(
   if (!trimmed || JSON_BLOB_PATTERN.test(trimmed)) {
     return null;
   }
-  return trimmed;
+  return redactSecrets(trimmed);
 }
 
 /**
@@ -1014,7 +1032,7 @@ function commandSkillName(pattern: string): string {
  * A tool row is bucketed into the first work mode whose pattern it matches, and
  * only the number of distinct buckets is returned — so `bash` + `exec_command`
  * (both execution) count as ONE mode, not two, and aliases can't inflate the
- * routing signal (wongk review, FEA-3265).
+ * routing signal (whitlockk review, FEA-3265).
  */
 function countDistinctWorkModes(tools: Array<{ toolName: string }>): number {
   const modes = new Set<string>();

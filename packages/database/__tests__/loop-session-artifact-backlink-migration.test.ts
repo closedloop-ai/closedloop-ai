@@ -151,8 +151,8 @@ async function insertSession(
   await client.query(
     `INSERT INTO session_detail
        (artifact_id, compute_target_id, external_session_id, source_loop_id,
-        session_started_at, session_updated_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+        session_started_at, session_updated_at, last_activity_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $5, $6)`,
     [
       artifactId,
       TARGET_ID,
@@ -385,7 +385,7 @@ describe.skipIf(!DATABASE_URL)(`${BACKFILL_MIGRATION_DIR} behaviour`, () => {
     expect(await readLoopLink(client, LOOP_UNLINKED)).toBe(SESSION_SIMPLE);
   });
 
-  // wongk (review): session_detail.artifact_id is only an FK into the POLYMORPHIC
+  // whitlockk (review): session_detail.artifact_id is only an FK into the POLYMORPHIC
   // artifacts table, so a malformed persisted row can point at a FEATURE or
   // DOCUMENT. The org join proves ownership, never type.
   it("never links a non-SESSION artifact to a loop", async () => {
@@ -423,7 +423,7 @@ describe.skipIf(!DATABASE_URL)(`${BACKFILL_MIGRATION_DIR} behaviour`, () => {
     );
   });
 
-  // wongk (review): without this the phantom sweep deletes the artifact and
+  // whitlockk (review): without this the phantom sweep deletes the artifact and
   // ON DELETE SET NULL erases the back-link inside a retention window.
   it("marks backfilled loop-materialized rows as LOOP origin", async () => {
     await insertLoop(client, LOOP_MULTI_SESSION);

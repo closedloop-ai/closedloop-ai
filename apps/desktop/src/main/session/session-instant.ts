@@ -26,7 +26,7 @@ export function parseSessionDate(value: string): Date {
 /**
  * A NULLABLE instant — `null` when the stored string is absent OR unparseable.
  *
- * ISS-6455 (wongk, #5099 review): deliberately NOT {@link parseSessionDate}'s
+ * ISS-6455 (whitlockk, #5099 review): deliberately NOT {@link parseSessionDate}'s
  * epoch floor. `ended_at` says whether the run is over and `awaiting_input_since`
  * says whether it is blocked on a human, and epoch 0 answers both with a
  * confident, wrong "yes, in 1970". That is the fabricated instant the display

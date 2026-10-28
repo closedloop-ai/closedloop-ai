@@ -11,6 +11,7 @@ import {
   describeIdOrSlug,
   encodePathSegment,
   readNumber,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -63,12 +64,18 @@ export function registerMoveArtifact(
       description:
         "Reorder a root artifact within its project's stack rank (the human-curated priority order on the project page). Requires write scope.\n\nStack rank is a project-wide, root-level ordering: only top-level documents/features participate, not nested children. Use `top` / `bottom` to move to the ends, or `before` / `after` with `referenceArtifactId` to position relative to another artifact. Read `sortOrder` from list-documents / get-document to see the current order (lower sorts first).",
       inputSchema: {
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
-        artifactId: z
-          .string()
-          .describe(
-            `${describeIdOrSlug("Artifact", ["PRD-7", "PLN-12", "FEA-42"])} The artifact to move.`
-          ),
+        projectId: requiredIdOrSlug(
+          "Project",
+          "PRO-7",
+          "Use list-projects to find one."
+        ),
+        artifactId: requiredIdOrSlug(
+          "Artifact",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ).describe(
+          `${describeIdOrSlug("Artifact", ["PRD-7", "PLN-12", "FEA-42"])} The artifact to move.`
+        ),
         position: z
           .enum(MovePosition)
           .describe(

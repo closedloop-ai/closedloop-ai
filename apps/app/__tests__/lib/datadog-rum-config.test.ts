@@ -20,7 +20,7 @@ describe("getDatadogRumConfig", () => {
   });
 
   it("builds the Datadog RUM config from public env vars and app environment", async () => {
-    process.env.NEXT_PUBLIC_APP_URL = "https://app.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.stage.example";
     process.env.NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID = "rum-app-id";
     process.env.NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN = "rum-client-token";
     process.env.NEXT_PUBLIC_DATADOG_RUM_SITE = "datadoghq.com";
@@ -51,8 +51,8 @@ describe("getDatadogRumConfig", () => {
   // takes the app down rather than merely losing a trace.
   it("does not propagate trace context unless explicitly enabled", async () => {
     clearRumEnv();
-    process.env.NEXT_PUBLIC_APP_URL = "https://app.closedloop-stage.ai";
-    process.env.NEXT_PUBLIC_API_URL = "https://api.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.stage.example";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.stage.example";
     process.env.NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID = "rum-app-id";
     process.env.NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN = "rum-client-token";
     process.env.NEXT_PUBLIC_DATADOG_RUM_SITE = "datadoghq.com";
@@ -66,8 +66,8 @@ describe("getDatadogRumConfig", () => {
 
   it("propagates W3C trace context to the API origin once enabled", async () => {
     clearRumEnv();
-    process.env.NEXT_PUBLIC_APP_URL = "https://app.closedloop-stage.ai";
-    process.env.NEXT_PUBLIC_API_URL = "https://api.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.stage.example";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.stage.example";
     process.env.NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID = "rum-app-id";
     process.env.NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN = "rum-client-token";
     process.env.NEXT_PUBLIC_DATADOG_RUM_SITE = "datadoghq.com";
@@ -79,7 +79,7 @@ describe("getDatadogRumConfig", () => {
 
     expect(config?.allowedTracingUrls).toEqual([
       {
-        match: "https://api.closedloop-stage.ai",
+        match: "https://api.stage.example",
         propagatorTypes: ["tracecontext"],
       },
     ]);
@@ -122,7 +122,8 @@ describe("getDatadogRumConfig", () => {
 
     expect(getDatadogRumConfig()).toMatchObject({
       sessionReplaySampleRate: 0,
-      sessionSampleRate: 100,
+      // ISS-12356(f): the derived default (see DEFAULT_SESSION_SAMPLE_RATE).
+      sessionSampleRate: 42,
     });
   });
 
@@ -133,16 +134,16 @@ describe("getDatadogRumConfig", () => {
       view: {
         id: "view-id",
         name: "/rum-validation/sensitive-route-param",
-        referrer: "https://app.closedloop-stage.ai/from?sensitiveQuery=value",
-        url: "https://app.closedloop-stage.ai/rum-validation/sensitive-route-param?sensitiveQuery=sensitive-query-value#hash",
+        referrer: "https://app.stage.example/from?sensitiveQuery=value",
+        url: "https://app.stage.example/rum-validation/sensitive-route-param?sensitiveQuery=sensitive-query-value#hash",
       },
     };
 
     expect(scrubDatadogRumEvent(event as never)).toBe(true);
     expect(event.view).toMatchObject({
       name: "/rum-validation/sensitive-route-param",
-      referrer: "https://app.closedloop-stage.ai/from?sensitiveQuery=value",
-      url: "https://app.closedloop-stage.ai/rum-validation/sensitive-route-param?sensitiveQuery=sensitive-query-value#hash",
+      referrer: "https://app.stage.example/from?sensitiveQuery=value",
+      url: "https://app.stage.example/rum-validation/sensitive-route-param?sensitiveQuery=sensitive-query-value#hash",
     });
   });
 
@@ -151,13 +152,13 @@ describe("getDatadogRumConfig", () => {
     const event = {
       type: "resource",
       resource: {
-        url: "https://app.closedloop-stage.ai/api/resource?sensitiveQuery=value#hash",
+        url: "https://app.stage.example/api/resource?sensitiveQuery=value#hash",
       },
     };
 
     expect(scrubDatadogRumEvent(event as never)).toBe(true);
     expect(event.resource.url).toBe(
-      "https://app.closedloop-stage.ai/api/resource?sensitiveQuery=value#hash"
+      "https://app.stage.example/api/resource?sensitiveQuery=value#hash"
     );
   });
 
@@ -183,15 +184,18 @@ describe("getDatadogRumConfig", () => {
       "React #418 hydration mismatch",
       "Minified React error #418; visit https://react.dev/errors/418 for the full message",
     ],
-  ])("drops benign client error class: %s (FEA-2404)", async (_label, message) => {
-    const { scrubDatadogRumEvent } = await loadConfig();
-    const event = {
-      type: "error",
-      error: { message },
-    };
+  ])(
+    "drops benign client error class: %s (FEA-2404)",
+    async (_label, message) => {
+      const { scrubDatadogRumEvent } = await loadConfig();
+      const event = {
+        type: "error",
+        error: { message },
+      };
 
-    expect(scrubDatadogRumEvent(event as never)).toBe(false);
-  });
+      expect(scrubDatadogRumEvent(event as never)).toBe(false);
+    }
+  );
 
   it("matches a benign signature found only in the error stack", async () => {
     const { scrubDatadogRumEvent } = await loadConfig();

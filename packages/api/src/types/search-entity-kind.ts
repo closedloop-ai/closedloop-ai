@@ -14,7 +14,8 @@
  * indexed into the Postgres full-text projection.
  *
  * Phase-1 corpus (backed by a real projection row today): `Document`,
- * `Project`, `Loop`. The remaining members are **forward-declared** for the
+ * `Project`. `Loop` is retired (ISS-12435) and kept so a version-skewed
+ * request or response carrying it still parses. The remaining members are **forward-declared** for the
  * Phase-2 corpus expansion so the discriminator — and any exhaustive `Record`
  * maps that switch on it — is stable before their write-hooks/backfill land;
  * nothing emits them yet.
@@ -66,8 +67,10 @@ export const SEARCH_ENTITY_TYPE_VALUES = Object.values(SearchEntityType) as [
  * exactly these types; an unlisted value is rejected rather than silently
  * dropped.
  *
- * Document/Project/Loop are the Phase-1 corpus (backfill enumerates their source
- * tables directly). `AgentSession` (FEA-3930) is queryable too — its rows are
+ * Document/Project are the Phase-1 corpus (backfill enumerates their source
+ * tables directly). `Loop` stays accepted so an older client's `types=loop` or
+ * `type:loop` is not 400'd, but it is not offered and returns no hits
+ * (ISS-12435, PRD-795 3.2 and 3.4; see {@link OFFERED_SEARCH_ENTITY_TYPES}). `AgentSession` (FEA-3930) is queryable too — its rows are
  * emitted only for orgs that opted into transcript search, and the query path
  * re-checks that gate — so a `types=agent_session` filter is honored, not 400'd.
  * `Comment`/`PullRequest`/`Branch` (FEA-3930 corpus slice) are DB-resident text
@@ -98,4 +101,89 @@ export function isSupportedSearchType(
   value: string
 ): value is SearchEntityType {
   return (PHASE_1_SEARCH_ENTITY_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * The entity kinds whose projection rows carry a real priority (ISS-9665).
+ *
+ * The `search_document.priority` column is NULL for two different reasons and
+ * only one of them is "this artifact has no priority": a document, project,
+ * branch or session that nobody prioritized, versus a loop / comment / pull
+ * request / component, for which the field does not APPLY and the projection
+ * hardcodes `null`. A bare `"priority" IS NULL` cannot tell those apart, so
+ * `:priority=NONE` would return every comment and loop in the org.
+ *
+ * MUST stay in step with `search-index-service.ts`: exactly the projections
+ * that map a source `priority` through (`documentProjection`,
+ * `projectProjection`, `branchProjection`, `agentSessionProjection` — the last
+ * two since ISS-10332 / PLN-2086 Milestone 2) belong here; every other
+ * projection writes a literal `priority: null` and must not.
+ */
+export const PRIORITY_BEARING_ENTITY_TYPES = [
+  SearchEntityType.Document,
+  SearchEntityType.Project,
+  SearchEntityType.Branch,
+  SearchEntityType.AgentSession,
+] as const;
+
+/**
+ * Whether a projection row's `status` is kept in step with its source by the
+ * ISS-9938 database triggers (migration
+ * `20260921132329_iss9938_search_document_status_sync_triggers`; the loop
+ * trigger was dropped by `20261013180200_iss12435_empty_loops_data`). The app's
+ * indexer and the backfill each read the source row's status through a
+ * `Record` keyed on {@link StatusTriggerOwnedEntityType}, and the migration
+ * test pins the triggers to {@link STATUS_TRIGGER_OWNED_ENTITY_TYPES}, so all
+ * three change together. Exhaustive, so a new entity kind is a decision rather
+ * than a silent `false`.
+ */
+export const STATUS_TRIGGER_OWNED = {
+  [SearchEntityType.Document]: true,
+  [SearchEntityType.Project]: false,
+  [SearchEntityType.Loop]: false,
+  [SearchEntityType.Comment]: false,
+  [SearchEntityType.PullRequest]: false,
+  [SearchEntityType.Branch]: false,
+  [SearchEntityType.AgentSession]: false,
+  [SearchEntityType.AgentComponent]: false,
+} as const satisfies Record<SearchEntityType, boolean>;
+
+export type StatusTriggerOwnedEntityType = {
+  [K in SearchEntityType]: (typeof STATUS_TRIGGER_OWNED)[K] extends true
+    ? K
+    : never;
+}[SearchEntityType];
+
+export function isStatusTriggerOwned(
+  value: SearchEntityType
+): value is StatusTriggerOwnedEntityType {
+  return STATUS_TRIGGER_OWNED[value];
+}
+
+/** The `true` members of {@link STATUS_TRIGGER_OWNED}, in declaration order. */
+export const STATUS_TRIGGER_OWNED_ENTITY_TYPES: readonly StatusTriggerOwnedEntityType[] =
+  SEARCH_ENTITY_TYPE_VALUES.filter(isStatusTriggerOwned);
+
+/**
+ * The accepted corpus members a client may offer and the query path returns
+ * hits for: {@link PHASE_1_SEARCH_ENTITY_TYPES} without the retired `Loop`
+ * (ISS-12435, PRD-795 3.1 and 3.2). The FTS query restricts candidates to this
+ * set, so a retired kind's leftover projection rows never surface.
+ */
+export const OFFERED_SEARCH_ENTITY_TYPES = [
+  SearchEntityType.Document,
+  SearchEntityType.Project,
+  SearchEntityType.AgentSession,
+  SearchEntityType.Comment,
+  SearchEntityType.PullRequest,
+  SearchEntityType.Branch,
+  SearchEntityType.AgentComponent,
+] as const satisfies readonly (typeof PHASE_1_SEARCH_ENTITY_TYPES)[number][];
+export type OfferedSearchEntityType =
+  (typeof OFFERED_SEARCH_ENTITY_TYPES)[number];
+
+export function isOfferedSearchType(
+  value: string
+): value is OfferedSearchEntityType {
+  return (OFFERED_SEARCH_ENTITY_TYPES as readonly string[]).includes(value);
 }

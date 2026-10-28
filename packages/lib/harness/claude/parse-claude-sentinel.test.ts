@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 
 describe("parseClaudeTranscript — autonomous-loop-dynamic sentinel (FEA-3595)", () => {
   it("excludes a single sentinel expansion from human messages", async () => {

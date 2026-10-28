@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { staleRebuildFromStoredRows } from "./helpers/stored-rebuild.js";
 import { makeSession } from "./normalized-session-test-utils.js";
@@ -42,7 +42,7 @@ async function rebuildFromStoredRows(
   );
   // Production only ever hands this bridge sessions the stale sweep selected,
   // i.e. rows whose `data_revision` differs from the current one — and the
-  // bridge re-checks that in its own transaction (wongk, #4255). Import stamps
+  // bridge re-checks that in its own transaction (whitlockk, #4255). Import stamps
   // the CURRENT revision, so the shared helper stales the row explicitly instead
   // of relying on the guard being absent.
   const rebuild = await staleRebuildFromStoredRows(db, sessionId);
@@ -226,7 +226,7 @@ describe("ISS-4811 stored-row rebuild skill/command shadow suppression", () => {
     }
   });
 
-  // wongk (#4255): the boot-time stale list is advisory. If an ordinary import
+  // whitlockk (#4255): the boot-time stale list is advisory. If an ordinary import
   // seals the session at the CURRENT revision between listing and this
   // transaction, rebuilding anyway would delete a fully-derived invocation set
   // and reconstruct it from stored rows (which cannot emit Hooks), then stamp
@@ -249,7 +249,7 @@ describe("ISS-4811 stored-row rebuild skill/command shadow suppression", () => {
       // Import stamps the CURRENT revision, so the session is already fresh.
       const rebuild = await db.rebuildComponentInvocationsFromStoredRows(
         sessionId,
-        DATA_REVISION
+        effectiveDataRevision()
       );
       assert.equal(rebuild.rebuilt, false);
       assert.equal(rebuild.activeRace, false);

@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Delivery events for DesktopCommand, read only by the command store and its event paging."
+}

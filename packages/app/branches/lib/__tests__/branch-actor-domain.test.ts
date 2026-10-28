@@ -1,4 +1,5 @@
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
 import {
   CHART_COLOR_PAIR_TOKEN_INDEXES,
   CHART_COLOR_TOKENS,
@@ -15,7 +16,6 @@ import {
 } from "../../__tests__/branch-fixtures";
 import {
   ACTOR_SWIMLANE_PALETTE_OFFSET,
-  BranchActorTurnSide,
   buildActorColorDomain,
   deriveActorsFromSessions,
   deriveActorsFromUsage,
@@ -29,6 +29,29 @@ describe("buildActorColorDomain", () => {
   it("orders actors alphabetically with unattributed last", () => {
     const domain = buildActorColorDomain([null, "alice", "bob"]);
     expect(domain.ordered).toEqual(["alice", "bob", UNATTRIBUTED_ACTOR_KEY]);
+  });
+
+  /**
+   * ISS-9585 (marisolashgrove, PR #7954): this sort assigns the palette index, so
+   * a bare `localeCompare()` made an actor's COLOR a function of the reader's
+   * host — and disagreed with `compareOwner`, which ranks these same keys by
+   * code unit in the desktop main process.
+   *
+   * The fixture separates the two: an actor key is a machine identifier, so
+   * every uppercase letter precedes every lowercase one, which is the reverse
+   * of the collated order a locale compare gives on an `en` runner.
+   */
+  it("ranks actor keys by code unit, as the main process ranks them", () => {
+    const domain = buildActorColorDomain(["alpha", "Zeta", "Beta", null]);
+
+    expect(domain.ordered).toEqual([
+      "Beta",
+      "Zeta",
+      "alpha",
+      UNATTRIBUTED_ACTOR_KEY,
+    ]);
+    expect(domain.colorFor("Beta")).toBe(chartColorPair(0).base);
+    expect(domain.colorFor("alpha")).toBe(chartColorPair(2).base);
   });
 
   it("yields identical colors for the same actor set regardless of order", () => {
@@ -45,12 +68,8 @@ describe("buildActorColorDomain", () => {
     expect(domain.ordered).toHaveLength(1);
     expect(pair.strong).not.toBe(pair.base);
     expect(domain.colorFor("alice")).toBe(pair.base);
-    expect(domain.colorForTurn("alice", BranchActorTurnSide.Human)).toBe(
-      pair.soft
-    );
-    expect(domain.colorForTurn("alice", BranchActorTurnSide.Agent)).toBe(
-      pair.strong
-    );
+    expect(domain.colorForTurn("alice", ActorTurnSide.Human)).toBe(pair.soft);
+    expect(domain.colorForTurn("alice", ActorTurnSide.Agent)).toBe(pair.strong);
   });
 
   it("promotes an explicit primary actor to the first blue pair", () => {
@@ -78,18 +97,39 @@ describe("buildActorColorDomain", () => {
     );
   });
 
-  it("pins the unattributed sentinel to the LAST palette slot (a stable shared color)", () => {
+  // ISS-8772 changed this expectation: the sentinel used to take the last
+  // CATEGORICAL slot (`--chart-10`), a hue that reads as one more actor. It now
+  // takes the explicit neutral, so "we could not attribute this" stops claiming
+  // an identity. Pinned to the literal rather than the authority's own constant
+  // so retiring that constant fails here instead of agreeing with itself.
+  it("degrades the unattributed sentinel to the explicit neutral token", () => {
     const domain = buildActorColorDomain([null, "alice"]);
     expect(domain.colorFor(null)).toBe(
+      "color-mix(in oklch, var(--muted-foreground) 70%, var(--card))"
+    );
+    expect(domain.colorFor(null)).not.toBe(
       chartColorPairForTokenIndex(CHART_COLOR_TOKENS.length - 1).base
     );
+  });
+
+  it("never seats an attributed actor on the unknown-actor neutral", () => {
+    const actors = Array.from(
+      { length: CHART_COLOR_TOKENS.length * 2 },
+      (_unused, index) => `actor-${index.toString().padStart(2, "0")}`
+    );
+    const domain = buildActorColorDomain(actors);
+    for (const actor of actors) {
+      expect(domain.colorFor(actor)).not.toBe(
+        "color-mix(in oklch, var(--muted-foreground) 70%, var(--card))"
+      );
+    }
   });
 
   it("falls back safely when asked for an owner outside the domain", () => {
     const domain = buildActorColorDomain(["alice"]);
     expect(domain.colorFor("unseen")).toBe(domain.colorFor(null));
-    expect(domain.colorForTurn("unseen", BranchActorTurnSide.Agent)).toBe(
-      domain.colorForTurn(null, BranchActorTurnSide.Agent)
+    expect(domain.colorForTurn("unseen", ActorTurnSide.Agent)).toBe(
+      domain.colorForTurn(null, ActorTurnSide.Agent)
     );
   });
 
@@ -265,15 +305,15 @@ describe("derivePrimaryUserFromSessions", () => {
         makeBranchSession({
           sessionId: "s1",
           isPrimary: false,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
           isPrimary: true,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
     });
-    expect(derivePrimaryUserFromSessions(detail)).toBe("Thadeus");
+    expect(derivePrimaryUserFromSessions(detail)).toBe("Tamsin");
   });
 });

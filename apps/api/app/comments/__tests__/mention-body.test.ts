@@ -4,17 +4,26 @@
  *     comment, optionally persisting an org-scoped mentions list as a sibling
  *     doc key.
  *   - extractBodyMentions: reads that mentions list back off a stored body doc.
+ *   - extractLiveblocksBodyMentions / extractCommentMentions: read the user
+ *     mentions of a stored `LIVEBLOCKS_V1` body, and pick the reader by
+ *     `bodyFormat` (PLN-2187 T-2.1).
  *
  * These are pure functions with no DB access. They live in the lightweight
- * `../mention-body` module (not `../service`) so this test and
- * trace-comments/service.ts can import them without pulling in service.ts's
+ * `../mention-body` module (not `../service`) so this test and the comment
+ * commands can import them without pulling in service.ts's
  * `@repo/database`/`@repo/collaboration` runtime dependencies — hence no mocks.
- * Together the two helpers form the write/read round-trip that
- * trace-comments/service.ts depends on to persist and surface mentions on
- * native comments.
+ * Together the two helpers form the write/read round-trip that the comment
+ * commands (`../service/comment-commands.ts`) depend on to persist and surface
+ * mentions on native comments.
  */
+import { CommentBodyFormat } from "@repo/api/src/types/comment-thread-dto";
 import { describe, expect, it } from "vitest";
-import { extractBodyMentions, textBody } from "../mention-body";
+import {
+  extractBodyMentions,
+  extractCommentMentions,
+  extractLiveblocksBodyMentions,
+  textBody,
+} from "../mention-body";
 
 describe("textBody", () => {
   it("wraps text in a single paragraph doc with a text node", () => {
@@ -95,5 +104,86 @@ describe("extractBodyMentions", () => {
 
   it("returns an empty array for an empty mentions array", () => {
     expect(extractBodyMentions({ mentions: [] })).toEqual([]);
+  });
+});
+
+describe("extractLiveblocksBodyMentions (PLN-2187 T-2.1)", () => {
+  it("collects each mentioned user once, in order, across paragraphs", () => {
+    const body = {
+      version: 1,
+      content: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "mention", kind: "user", id: "bob" },
+            { text: " and " },
+            { type: "mention", kind: "user", id: "alice" },
+          ],
+        },
+        {
+          type: "paragraph",
+          children: [
+            { type: "mention", kind: "user", id: "bob" },
+            { type: "mention", kind: "user", id: "erin" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractLiveblocksBodyMentions(body)).toEqual([
+      "bob",
+      "alice",
+      "erin",
+    ]);
+  });
+
+  it("reads a mention without a kind as a user's and skips a group mention", () => {
+    const body = {
+      version: 1,
+      content: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "mention", id: "carol" },
+            { type: "mention", kind: "group", id: "engineering" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractLiveblocksBodyMentions(body)).toEqual(["carol"]);
+  });
+
+  it.each([
+    ["a missing body", null],
+    ["a native body", { type: "doc", content: [], mentions: ["dave"] }],
+    ["a block without children", { version: 1, content: [{ type: "x" }] }],
+  ])("returns no mentions for %s", (_label, body) => {
+    expect(extractLiveblocksBodyMentions(body)).toEqual([]);
+  });
+});
+
+describe("extractCommentMentions", () => {
+  const liveblocksBody = {
+    version: 1,
+    content: [
+      { type: "paragraph", children: [{ type: "mention", id: "frank" }] },
+    ],
+  };
+  const nativeBody = textBody("hi", ["grace"]);
+
+  it("reads a LIVEBLOCKS_V1 body as Liveblocks and any other format as native", () => {
+    expect(
+      extractCommentMentions(liveblocksBody, CommentBodyFormat.LiveblocksV1)
+    ).toEqual(["frank"]);
+    expect(
+      extractCommentMentions(nativeBody, CommentBodyFormat.LiveblocksV1)
+    ).toEqual([]);
+    expect(
+      extractCommentMentions(nativeBody, CommentBodyFormat.RichV1)
+    ).toEqual(["grace"]);
+    expect(
+      extractCommentMentions(liveblocksBody, CommentBodyFormat.RichV1)
+    ).toEqual([]);
   });
 });

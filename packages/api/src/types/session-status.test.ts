@@ -10,7 +10,6 @@ import {
   SESSION_STATUS,
   SessionDurationLifecycle,
   type SessionStatus,
-  STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
   TERMINAL_SESSION_STATUSES,
 } from "./session-status.ts";
 import { SESSION_STATUS_LABELS } from "./session-status-display.ts";
@@ -44,35 +43,30 @@ describe("SESSION_STATUS", () => {
     });
   });
 
-  it("is a strict subset of the displayed vocabulary, sharing its values", () => {
+  it("equals the displayed vocabulary (ISS-10364 retired every read-time derivation)", () => {
     for (const [name, value] of Object.entries(SESSION_STATUS)) {
       expect(DISPLAYED_SESSION_STATUS).toHaveProperty(name, value);
     }
-    expect(Object.keys(DISPLAYED_SESSION_STATUS).length).toBeGreaterThan(
+    expect(Object.keys(DISPLAYED_SESSION_STATUS).length).toBe(
       Object.keys(SESSION_STATUS).length
     );
   });
 });
 
 describe("DISPLAYED_SESSION_STATUS", () => {
-  it("adds the three read-time derivations and nothing else", () => {
+  /*
+   * ISS-10364 (operator ruling, Cosimo Corrigan, 2026-09-23/24): "Unparsable
+   * status are already converted to Active on import. Don't distinguish
+   * between active and stale", then "let's drop waiting as well". This used
+   * to assert DISPLAYED_SESSION_STATUS added WAITING/UNKNOWN/STALE to the
+   * lifecycle set; all three are retired, so it is now exactly SESSION_STATUS
+   * under a second name.
+   */
+  it("is exactly the lifecycle set, with no read-time derivation left", () => {
     expect(DISPLAYED_SESSION_STATUS).toEqual({
       ACTIVE: "active",
       INACTIVE: "inactive",
       ERROR: "error",
-      // ISS-4654: `completed`/`abandoned` are RETIRED from both vocabularies.
-      // They survive only as inbound aliases in the fold (asserted below).
-      // `waiting` is a DISPLAY value backed by `awaitingInputSince`, never
-      // stored.
-      WAITING: "waiting",
-      // ISS-4997: nothing persists it — it is where the display fold lands a
-      // status it cannot classify, instead of ACTIVE.
-      UNKNOWN: "unknown",
-      // ISS-4998 (#4324 review): the OTHER display-only value — a liveness claim
-      // that has expired. Deliberately NOT the same value as UNKNOWN: "we cannot
-      // read this status" and "this run has been silent over a day" are
-      // different facts, and only one of them is actionable.
-      STALE: "stale",
     });
   });
 
@@ -99,15 +93,6 @@ describe("DISPLAYED_SESSION_STATUS", () => {
     expect(TERMINAL_SESSION_STATUSES.has("completed")).toBe(false);
     expect(TERMINAL_SESSION_STATUSES.has("abandoned")).toBe(false);
     expect(TERMINAL_SESSION_STATUSES.has(SESSION_STATUS.ACTIVE)).toBe(false);
-    // ISS-4997: "we cannot say" is NOT an outcome. Treating it as terminal would
-    // let the awaiting-input overlay and the terminal-state classifiers invent a
-    // finish that never happened.
-    expect(
-      TERMINAL_SESSION_STATUSES.has(DISPLAYED_SESSION_STATUS.UNKNOWN)
-    ).toBe(false);
-    expect(
-      TERMINAL_SESSION_STATUSES.has(DISPLAYED_SESSION_STATUS.WAITING)
-    ).toBe(false);
   });
 });
 
@@ -139,7 +124,7 @@ describe("normalizeSessionStatus (ISS-4586)", () => {
   });
 
   it("treats an unknown / version-skewed value as ACTIVE (never invents a terminal outcome)", () => {
-    // shafty023 P2: an unrecognized value must not fabricate a terminal-success
+    // davetho P2: an unrecognized value must not fabricate a terminal-success
     // (INACTIVE) state; it surfaces as in-flight until a known value syncs.
     expect(normalizeSessionStatus("bogus")).toBe(SESSION_STATUS.ACTIVE);
     expect(normalizeSessionStatus("some_future_state")).toBe(
@@ -149,11 +134,17 @@ describe("normalizeSessionStatus (ISS-4586)", () => {
 });
 
 describe("normalizeDisplayedSessionStatus (ISS-4586)", () => {
-  it("preserves waiting (the awaiting-input display sub-state), unlike the stored fold", () => {
-    // The stored fold collapses waiting → active; the DISPLAY fold keeps it so
-    // the Sessions list still renders a distinct "Waiting" badge.
+  /*
+   * ISS-10364 (operator ruling, 2026-09-23/24): "let's drop waiting as well".
+   * This used to assert the DISPLAY fold preserved `waiting`, distinct from
+   * the stored fold collapsing it — the Sessions list rendered a distinct
+   * "Waiting" badge. Kept as a counterfactual rather than deleted: the two
+   * folds must still agree, just on ACTIVE now that neither produces a
+   * display-only word.
+   */
+  it("ISS-10364: no longer preserves waiting — both folds agree on ACTIVE", () => {
     expect(normalizeDisplayedSessionStatus("waiting")).toBe(
-      DISPLAYED_SESSION_STATUS.WAITING
+      SESSION_STATUS.ACTIVE
     );
     expect(normalizeSessionStatus("waiting")).toBe(SESSION_STATUS.ACTIVE);
   });
@@ -175,56 +166,59 @@ describe("normalizeDisplayedSessionStatus (ISS-4586)", () => {
  * ISS-4997 + ISS-4998 are one defect — a displayed status that fails OPEN to
  * "running" — so they are pinned against the one derivation that resolves both.
  */
-describe("resolveDisplayedSessionStatus (ISS-4997 / ISS-4998)", () => {
+describe("resolveDisplayedSessionStatus (ISS-10364)", () => {
   const NOW = new Date("2026-08-03T12:00:00.000Z");
   const FRESH = new Date("2026-08-03T11:00:00.000Z");
-  // SES-78262's observed gap: 63.1 hours since last activity, still rendering
-  // "Active" against a 24-hour reaper cutoff.
+  // SES-78262's observed gap: 63.1 hours since last activity. It used to fold to
+  // the display-only `stale`; the operator ruled on 2026-09-23 that active and
+  // stale are not to be distinguished, so it must now change nothing.
   const STALE_63H = new Date("2026-08-01T00:54:00.000Z");
 
-  it("ISS-4997: an unrecognized status is UNKNOWN, never the live ACTIVE", () => {
-    expect(
-      resolveDisplayedSessionStatus({
-        status: "some_future_state",
-        lastActivityAt: FRESH,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
-    expect(
-      resolveDisplayedSessionStatus({
-        status: "bogus",
-        lastActivityAt: FRESH,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
+  /*
+   * ISS-10364, Cosimo Corrigan 2026-09-23: "Unparsable status are already
+   * converted to Active on import. Don't distinguish between active and stale",
+   * then "let's drop waiting as well".
+   *
+   * The ISS-4997 and ISS-4998 assertions this block used to hold — an
+   * unrecognized status resolving to `unknown`, a long-silent `active` resolving
+   * to `stale`, a `waiting` passthrough — are obsoleted BY THAT RULING, not by a
+   * regression. They are kept HERE as counterfactuals rather than deleted,
+   * because the inputs still exercise something real: the resolver must now
+   * answer ACTIVE for every one of them, and a future change that quietly
+   * restores a silence cutoff or a version-skew word has to edit these.
+   */
+  it("ISS-10364: an unrecognized status resolves to ACTIVE, not a version-skew word", () => {
+    for (const status of ["some_future_state", "bogus", "completed"]) {
+      expect(
+        resolveDisplayedSessionStatus({
+          status,
+          lastActivityAt: FRESH,
+          now: NOW,
+        })
+      ).toBe(SESSION_STATUS.ACTIVE);
+    }
   });
 
-  it("ISS-4998: an `active` session silent for 63 hours is STALE, not ACTIVE", () => {
-    // The observed SES-78262 gap. #4324 review: it resolves to STALE rather than
-    // UNKNOWN — the session said nothing for 63 hours, which is a fact about the
-    // run the reader can act on, not a gap in our vocabulary.
+  it("ISS-10364: an `active` session silent for 63 hours still resolves to ACTIVE", () => {
     expect(
       resolveDisplayedSessionStatus({
         status: SESSION_STATUS.ACTIVE,
         lastActivityAt: STALE_63H,
         now: NOW,
       })
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
-  it("ISS-4998: a `waiting` session past the cutoff STAYS Waiting — it is a stored fact, not an inference", () => {
-    // `waiting` is projected from `awaitingInputSince` (a durable column), and
-    // the WAITING facet predicate keys on that same column with no staleness
-    // cutoff. Expiring it would both destroy the surface's most actionable
-    // signal and make `Status = Waiting` return a page of "Unknown" badges —
-    // manufacturing the exact list-vs-filter contradiction this batch removes.
+  it("ISS-10364: an incoming `waiting` resolves to ACTIVE, the lifecycle state it denotes", () => {
+    // The awaiting-input FACT is not retired with the word — it lives on
+    // `session_detail.awaitingInputSince`, which this resolver never read.
     expect(
       resolveDisplayedSessionStatus({
-        status: DISPLAYED_SESSION_STATUS.WAITING,
+        status: "waiting",
         lastActivityAt: STALE_63H,
         now: NOW,
       })
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("leaves a genuinely-live session alone", () => {
@@ -235,178 +229,55 @@ describe("resolveDisplayedSessionStatus (ISS-4997 / ISS-4998)", () => {
         now: NOW,
       })
     ).toBe(SESSION_STATUS.ACTIVE);
-    expect(
-      resolveDisplayedSessionStatus({
-        status: DISPLAYED_SESSION_STATUS.WAITING,
-        lastActivityAt: FRESH,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
   });
 
-  it("does not expire a TERMINAL status — age does not make a reached conclusion less true", () => {
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ERROR,
-        lastActivityAt: STALE_63H,
-        now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ERROR);
-    // ISS-5592: `completed` is unrecognized now, so it displays Unknown rather
-    // than Inactive. It still does not expire — the staleness fold only applies
-    // to a value that resolved to ACTIVE, and Unknown asserts nothing either way.
-    expect(
-      resolveDisplayedSessionStatus({
-        status: "completed",
-        lastActivityAt: STALE_63H,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
-  });
-
-  it("treats a missing timestamp as absence of evidence, not evidence of staleness", () => {
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: null,
-        now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ACTIVE);
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: "not-a-date",
-        now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ACTIVE);
-  });
-
-  it("accepts the ISO string the API actually serializes", () => {
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: "2026-08-01T01:51:03.898Z",
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
-  });
-
-  it("does not fire one minute inside the cutoff, and does one minute outside it", () => {
-    const insideCutoff = new Date(
-      NOW.getTime() - (STALE_SESSION_DISPLAY_THRESHOLD_HOURS * 60 - 1) * 60_000
-    );
-    const outsideCutoff = new Date(
-      NOW.getTime() - (STALE_SESSION_DISPLAY_THRESHOLD_HOURS * 60 + 1) * 60_000
-    );
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: insideCutoff,
-        now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ACTIVE);
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: outsideCutoff,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
+  it("returns a TERMINAL status unchanged, whatever its age", () => {
+    for (const status of [SESSION_STATUS.INACTIVE, SESSION_STATUS.ERROR]) {
+      expect(
+        resolveDisplayedSessionStatus({
+          status,
+          lastActivityAt: STALE_63H,
+          now: NOW,
+        })
+      ).toBe(status);
+    }
   });
 
   it("resolves an inherited Object key as unrecognized rather than a prototype member", () => {
-    // The fold is a lookup on an object literal and `status` is external input.
-    for (const key of ["constructor", "toString", "__proto__"]) {
+    // `status` is external input, so a bare index read on the fold map would
+    // otherwise resolve `constructor`/`__proto__` to a non-status value.
+    for (const status of ["constructor", "__proto__", "toString"]) {
       expect(
         resolveDisplayedSessionStatus({
-          status: key,
+          status,
           lastActivityAt: FRESH,
           now: NOW,
         })
-      ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
+      ).toBe(SESSION_STATUS.ACTIVE);
     }
   });
 
-  it("keeps the legacy fail-open contract on the flag-off normalizers", () => {
-    // The flag-off path must be byte-for-byte what it was: an unrecognized value
-    // still folds to ACTIVE there. That is the behavior this batch dark-launches
-    // a replacement for, not one it changes in place.
-    expect(normalizeSessionStatus("some_future_state")).toBe(
-      SESSION_STATUS.ACTIVE
-    );
-    expect(normalizeDisplayedSessionStatus("some_future_state")).toBe(
-      SESSION_STATUS.ACTIVE
-    );
-    // wongk (#4324): the DISPLAY-ONLY members must ALSO take the fail-open
-    // branch here, so the dark launch is inert for every consumer of these
-    // normalizers — `status` is a free-form external column, so a producer
-    // really can send either literal. The Documents table row registry is the
-    // consumer that proved it matters: `sessionStatusToIcon` has no branch for
-    // either value, so recognizing them here paired the label "Unknown"/"Stale"
-    // with the in-progress icon, flag OFF.
-    for (const displayOnly of [
-      DISPLAYED_SESSION_STATUS.UNKNOWN,
-      DISPLAYED_SESSION_STATUS.STALE,
-    ]) {
-      expect(normalizeSessionStatus(displayOnly)).toBe(SESSION_STATUS.ACTIVE);
-      expect(normalizeDisplayedSessionStatus(displayOnly)).toBe(
-        SESSION_STATUS.ACTIVE
-      );
-    }
-  });
-
-  it("distinguishes an unreadable status from a silent one (#4324)", () => {
-    // The two conditions this batch exists to stop conflating. Both refuse to
-    // claim liveness; they are NOT the same answer.
-    expect(
-      resolveDisplayedSessionStatus({
-        status: "some_future_state",
-        lastActivityAt: FRESH,
-        now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
-    expect(
+  it("ISS-10364: reads NO timestamp, so the same status answers the same way with any of them", () => {
+    // The counterfactual for the whole staleness apparatus: these three inputs
+    // differ only in evidence the resolver used to consult, and they must now be
+    // indistinguishable. `isSessionDisplayStale` still exists for the desktop
+    // collector, and the describe below still pins it.
+    const answers = [
+      resolveDisplayedSessionStatus({ status: SESSION_STATUS.ACTIVE }),
       resolveDisplayedSessionStatus({
         status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: new Date(NOW.getTime() - 63 * 60 * 60 * 1000),
+        lastActivityAt: STALE_63H,
+        startedAt: STALE_63H,
         now: NOW,
-      })
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
-  });
-
-  it("falls back to startedAt when the activity timestamp is absent or malformed (wongk, #4324)", () => {
-    const longAgo = new Date(NOW.getTime() - 63 * 60 * 60 * 1000);
-    // The reaper anchors on `lastActivityAt ?? sessionStartedAt`; the display
-    // path must agree, or the LEAST-evidenced rows are the ones exempted from
-    // the fold and read "Active" forever.
-    for (const lastActivityAt of [null, undefined, "not-a-date"]) {
-      expect(
-        resolveDisplayedSessionStatus({
-          status: SESSION_STATUS.ACTIVE,
-          lastActivityAt,
-          startedAt: longAgo,
-          now: NOW,
-        })
-      ).toBe(DISPLAYED_SESSION_STATUS.STALE);
-    }
-    // A fresh start time is still evidence of life, so no fold.
-    expect(
+      }),
       resolveDisplayedSessionStatus({
         status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: null,
-        startedAt: FRESH,
-        now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ACTIVE);
-    // NEITHER timestamp is an absence of evidence, not evidence of staleness.
-    expect(
-      resolveDisplayedSessionStatus({
-        status: SESSION_STATUS.ACTIVE,
-        lastActivityAt: null,
+        lastActivityAt: "not-a-date",
         startedAt: null,
         now: NOW,
-      })
-    ).toBe(SESSION_STATUS.ACTIVE);
+      }),
+    ];
+    expect(new Set(answers)).toEqual(new Set([SESSION_STATUS.ACTIVE]));
   });
 });
 
@@ -425,12 +296,24 @@ describe("isSessionDisplayStale (ISS-4998)", () => {
 });
 
 describe("resolveSessionDurationLifecycle", () => {
-  it("classifies absent and future statuses as indeterminate", () => {
+  it("classifies an absent status as indeterminate", () => {
     expect(resolveSessionDurationLifecycle(undefined)).toBe(
       SessionDurationLifecycle.Indeterminate
     );
+  });
+
+  /*
+   * ISS-10364 (operator ruling, 2026-09-23/24): "Unparsable status are already
+   * converted to Active on import. Don't distinguish between active and
+   * stale." This used to classify an unrecognized PRESENT status (a future
+   * producer's spelling) as Indeterminate, on the stated invariant that
+   * Duration must agree with the badge — and the badge for an unrecognized
+   * value is now Active, not a disclaiming "Unknown". Measuring it as Running
+   * is what keeps that invariant, not a regression of it.
+   */
+  it("ISS-10364: classifies an unrecognized PRESENT status as Running, agreeing with its ACTIVE badge", () => {
     expect(resolveSessionDurationLifecycle("future_status")).toBe(
-      SessionDurationLifecycle.Indeterminate
+      SessionDurationLifecycle.Running
     );
   });
 
@@ -448,22 +331,20 @@ describe("resolveSessionDurationLifecycle", () => {
     }
   });
 
-  it("classifies every retired spelling as Indeterminate for Duration", () => {
-    // The claim a comment above used to make and nothing asserted (#5120 review).
-    // A spelling this build cannot read is not evidence the run ended, so the
-    // Duration cell must blank rather than measure.
+  it("ISS-10364: classifies every retired spelling as Running, agreeing with its ACTIVE badge", () => {
+    // Pre-ISS-10364 these were Indeterminate — the same reasoning as the
+    // unrecognized-status case above applies identically to a RETIRED one:
+    // `normalizeSessionStatus` cannot tell "never modelled" from "modelled and
+    // then retired" apart, so both fail open to ACTIVE and Duration must match.
     for (const status of ["running", "failed", "completed", "abandoned"]) {
       expect(resolveSessionDurationLifecycle(status)).toBe(
-        SessionDurationLifecycle.Indeterminate
+        SessionDurationLifecycle.Running
       );
     }
   });
 
   it("folds active and the waiting sub-state to running", () => {
-    for (const status of [
-      SESSION_STATUS.ACTIVE,
-      DISPLAYED_SESSION_STATUS.WAITING,
-    ]) {
+    for (const status of [SESSION_STATUS.ACTIVE, "waiting"]) {
       expect(resolveSessionDurationLifecycle(status)).toBe(
         SessionDurationLifecycle.Running
       );
@@ -476,7 +357,7 @@ describe("resolveSessionDurationLifecycle", () => {
  *
  * ISS-4654 kept `completed`/`abandoned` as inbound aliases folding to
  * `inactive`, on the argument that an unrecognized status resolves to ACTIVE and
- * would render a finished run as still running. Chris removed that tolerance on
+ * would render a finished run as still running. Cosimo removed that tolerance on
  * 2026-08-14 and accepted exactly that consequence: the pair now takes the
  * fail-open branch like any other unmodelled spelling.
  *
@@ -507,10 +388,10 @@ describe("ISS-5592: retired statuses are ordinary unrecognized values", () => {
     }
   });
 
-  it("classifies them Indeterminate for Duration, not Ended", () => {
+  it("ISS-10364: classifies them Running for Duration, not Ended — they fail open to ACTIVE", () => {
     for (const value of retired) {
       expect(resolveSessionDurationLifecycle(value)).toBe(
-        SessionDurationLifecycle.Indeterminate
+        SessionDurationLifecycle.Running
       );
     }
   });
@@ -547,9 +428,7 @@ describe("normalizeSessionStatus as the cloud persist fold (ISS-5981)", () => {
 
   it("folds each recognized spelling to what it MEANS", () => {
     // Non-terminal: the run is going.
-    expect(normalizeSessionStatus(DISPLAYED_SESSION_STATUS.WAITING)).toBe(
-      SESSION_STATUS.ACTIVE
-    );
+    expect(normalizeSessionStatus("waiting")).toBe(SESSION_STATUS.ACTIVE);
     // ISS-5592: `running`/`failed` are no longer recognized spellings; the
     // canonical members and the display-only `waiting` are the whole set.
     expect(normalizeSessionStatus(SESSION_STATUS.ERROR)).toBe(
@@ -558,7 +437,7 @@ describe("normalizeSessionStatus as the cloud persist fold (ISS-5981)", () => {
   });
 
   it("fails an UNRECOGNIZED value open to ACTIVE rather than storing it", () => {
-    // Chris's call on ISS-5592: an unmodelled spelling is not a terminal claim,
+    // Cosimo's call on ISS-5592: an unmodelled spelling is not a terminal claim,
     // so the row stays live and the reaper plus the display staleness cutoff
     // decide whether it is really still running. Coercing to `inactive` would
     // invent an outcome the producer never reported.

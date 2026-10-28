@@ -3,7 +3,10 @@ import {
   BranchLinkedArtifactCollectionState,
 } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
-import type { Meta, StoryObj } from "@storybook/react";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import { makeBranchDetail } from "../../__tests__/branch-fixtures";
 import { BranchDeliveredPanel } from "./branch-delivered-panel";
 
@@ -11,9 +14,9 @@ const HEAD_SHA = "b".repeat(40);
 
 /** Linked-artifact completeness and selected-PR attribution matrix. */
 const meta = {
-  title: "App Core/Branches/Branch Delivered Panel",
+  title: "Composites v1.0/Branches/Branch Delivered Panel",
   component: BranchDeliveredPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   decorators: [
     (Story) => (
       <div className="w-full max-w-2xl p-4">
@@ -58,6 +61,54 @@ export const SelectedPullRequestOverridesBranchCompatibilityFields: Story = {
       state: BranchLinkedArtifactCollectionState.Complete,
       provenance: BranchLinkedArtifactCollectionProvenance.CloudPersisted,
     }),
+  },
+};
+
+/**
+ * ISS-8241: the base-ref and author line is closed by default, so without this
+ * decorator every story below renders the shipped box and the two states this
+ * work exists to produce are unviewable.
+ */
+const withBaseAndAuthor: Decorator = (Story) => (
+  <FeatureFlagAdapterProvider
+    adapter={createStaticFeatureFlagAdapter({
+      enabledFlags: [BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY],
+    })}
+  >
+    <Story />
+  </FeatureFlagAdapterProvider>
+);
+
+export const MeasuredBaseAndAuthor: Story = {
+  decorators: [withBaseAndAuthor],
+  args: {
+    detail: selectedPullRequestDetail([{ slug: "ISS-8241" }], {
+      state: BranchLinkedArtifactCollectionState.Complete,
+      provenance: BranchLinkedArtifactCollectionProvenance.CloudPersisted,
+    }),
+  },
+};
+
+/** What every signed-out Desktop branch shows: the local lane measures neither. */
+export const UnmeasuredBaseAndAuthor: Story = {
+  decorators: [withBaseAndAuthor],
+  args: {
+    detail: (() => {
+      const detail = selectedPullRequestDetail([{ slug: "ISS-8241" }], {
+        state: BranchLinkedArtifactCollectionState.Complete,
+        provenance: BranchLinkedArtifactCollectionProvenance.CloudPersisted,
+      });
+      return {
+        ...detail,
+        selectedPullRequest: detail.selectedPullRequest
+          ? {
+              ...detail.selectedPullRequest,
+              authorLogin: null,
+              baseRefName: null,
+            }
+          : null,
+      };
+    })(),
   },
 };
 
@@ -110,6 +161,8 @@ The selected pull request includes **formatted delivery evidence**.
 <!-- goal-orchestrator-workflow
 work_item: ISS-4783
 -->`,
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: HEAD_SHA,
       mergeCommitSha: "c".repeat(40),
       changedFiles: 3,

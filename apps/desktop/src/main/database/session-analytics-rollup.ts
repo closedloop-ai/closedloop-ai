@@ -1,11 +1,11 @@
 /**
  * @file session-analytics-rollup.ts
  * @description The session-analytics rollup WRITE primitives, extracted from
- * write-core.ts (ISS-4937) to shrink that grandfathered file. This is the
- * Layer-A rollup core: it (re)computes `session_analytics` +
- * `session_tool_analytics` for one session or a set of sessions
- * (`upsertSessionAnalyticsRollup` / `upsertSessionAnalyticsRollupBatch`) —
- * doing every human/agent-turn, is_human, and error-event classification ONCE
+ * write-core.ts (ISS-4937) to shrink that file rather than grow it. This is the
+ * Layer-A rollup core: it (re)computes `session_analytics` for one session or a
+ * set of sessions (`upsertSessionAnalyticsRollup` /
+ * `upsertSessionAnalyticsRollupBatch`) — doing every human/agent-turn,
+ * is_human, and error-event classification ONCE
  * at ingest instead of on every dashboard read — and owns the memory-budget
  * chunking (`SESSION_ANALYTICS_BACKFILL_CHUNK`,
  * `SESSION_ANALYTICS_ROLLUP_METADATA_BUDGET_BYTES`,
@@ -14,7 +14,8 @@
  *
  * Pure LEAF: imports only leaf modules (the SQL fragments from
  * ./session-analytics-sql.js, the packer from ./session-analytics-chunking.js,
- * `webSearchCostSql` from ./token-cost-writes.js, and the component-usage /
+ * `webSearchCostSql` + `updateSessionCostRollupBatch` from
+ * ./token-cost-writes.js, and the component-usage /
  * turn-bucket materializers), never write-core.js / live-hook.js. Its consumers
  * import FROM here one-directionally — write-core's import phase
  * (`importPhaseDerivedRollups`), ./sqlite.js (the boot orchestrator's
@@ -22,10 +23,8 @@
  * ./token-cost-maintenance.js, and ./billing-mode-heal.js — so there is no
  * cycle.
  */
-import {
-  ensureStoredAgentComponentInvocations,
-  rebuildAgentComponentSessionUsageFromInvocations,
-} from "./component-invocations.js";
+import { ensureStoredAgentComponentInvocations } from "./component-invocations.js";
+import { rebuildAgentComponentSessionUsageFromInvocations } from "./component-session-usage-rollup.js";
 import { toolInvocationPredicate } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
 import type { DesktopPrisma } from "./prisma-client.js";
@@ -33,24 +32,31 @@ import { packIdsByMetadataBudget } from "./session-analytics-chunking.js";
 import {
   headlessMetadataSql,
   transcriptAssistantTurnsSql,
+  transcriptHumanTurnsSql,
 } from "./session-analytics-sql.js";
-import { webSearchCostSql } from "./token-cost-writes.js";
+import { storedUtcDaySql } from "./session-timestamp-form.js";
+import {
+  sessionEstimatedCostSql,
+  updateSessionCostRollupBatch,
+  webSearchCostSql,
+} from "./token-cost-writes.js";
 import { rebuildSessionTurnBuckets } from "./turn-buckets.js";
 
 /** Human-turn threshold for the session human/agent classification (mirrors
  * local-insights `HUMAN_TURN_THRESHOLD`). A session is "human" when it has >= this
- * many genuine human turns — counted transcript-first from `role:"human"`
- * messages in metadata `$.messages`, falling back to hook-captured user/prompt
- * events only when no parsed transcript exists (FEA-2641). Kept in sync with
+ * many genuine human turns — counted transcript-first from the parser's own
+ * `$.userMessages` count (ISS-8659; `role:"human"` rows in `$.messages` are the
+ * fallback for older blobs), falling back to hook-captured user/prompt events
+ * only when no parsed transcript exists (FEA-2641). Kept in sync with
  * local-insights by a guard test. */
 const SESSION_ANALYTICS_HUMAN_TURN_THRESHOLD = 2;
 
 /**
  * FEA-2038: (re)compute the per-session analytics rollup for one session from its
- * events / token_usage rows and upsert it into `session_analytics` +
- * `session_tool_analytics`. All classification (human/agent turns, is_human,
- * error events) happens HERE, once, at ingest — mirroring the predicates the
- * dashboard insights used to run on every read. SQLite dialect.
+ * events / token_usage rows and upsert it into `session_analytics`. All
+ * classification (human/agent turns, is_human, error events) happens HERE,
+ * once, at ingest — mirroring the predicates the dashboard insights used to run
+ * on every read. SQLite dialect.
  */
 export async function upsertSessionAnalyticsRollup(
   tx: Prisma.TransactionClient,
@@ -141,7 +147,7 @@ export async function upsertSessionAnalyticsRollupBatch(
      reports an agent reference the row writer had to drop. REQUIRED, not an
      optional field defaulted to a no-op: this is the ONLY caller of the legacy
      bootstrap, so an omittable `log` here re-opens one level up exactly the
-     silent path wongk (#4355) asked us to close at the writer. Every call site
+     silent path whitlockk (#4355) asked us to close at the writer. Every call site
      already has a `log` in scope, so requiring it costs a threaded argument and
      buys a compile-time guarantee that no rollup commits a drop in silence. */
   options: SessionAnalyticsRollupOptions
@@ -149,14 +155,6 @@ export async function upsertSessionAnalyticsRollupBatch(
   if (sessionIds.length === 0) {
     return;
   }
-  // FEA-2430: `started_day` (session_analytics + session_tool_analytics) is a
-  // stored UTC-day derivation — storage-only, zero readers. It must stay UTC:
-  // a stored LOCAL day would go stale when the user changes timezone or DST
-  // shifts, forcing full-table rebuilds. Any future DISPLAY read must re-bucket
-  // from the raw timestamp with strftime(..., 'localtime') (see
-  // local-insights.ts's timezone contract), never read this column.
-  const dayExpr = (col: string) =>
-    `CASE WHEN ${col} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN substr(${col}, 1, 10) ELSE NULL END`;
   const t = SESSION_ANALYTICS_HUMAN_TURN_THRESHOLD;
   // session_analytics upsert: $1 = now; the session ids occupy $2..$(N+1). The
   // IN list is repeated for the outer scan and each inner aggregate sub-select
@@ -166,9 +164,16 @@ export async function upsertSessionAnalyticsRollupBatch(
     .map((_, i) => `$${i + 2}`)
     .join(", ");
   const analyticsParams: unknown[] = [now, ...sessionIds];
-  // The tool-analytics DELETE + INSERT bind `sessionIds` alone, so their IN list
-  // starts at $1 (no `now` param).
-  const toolIdPlaceholders = sessionIds.map((_, i) => `$${i + 1}`).join(", ");
+  // FEA-2430: `session_analytics.started_day` is a stored UTC-day derivation —
+  // storage-only, zero DISPLAY readers. It must stay UTC: a stored LOCAL day
+  // would go stale when the user changes timezone or DST shifts, forcing
+  // full-table rebuilds. Any future DISPLAY read must re-bucket
+  // from the raw timestamp with strftime(..., 'localtime') (see
+  // local-insights.ts's timezone contract), never read this column.
+  //
+  // The ISS-6760 ledger enumerating every copy of this UTC day lives on
+  // `storedUtcDaySql` (session-timestamp-form.ts), with the expression it
+  // governs. What stays here is the DISPLAY half, beside this column.
   await tx.$executeRawUnsafe(
     `INSERT OR REPLACE INTO session_analytics (
        session_id, started_at, started_day, status, harness,
@@ -179,10 +184,30 @@ export async function upsertSessionAnalyticsRollupBatch(
      SELECT
        s.id,
        s.started_at,
-       ${dayExpr("s.started_at")},
+       ${storedUtcDaySql("s.started_at")},
        s.status,
        s.harness,
        COALESCE(s.transcript_human_turns, ht.human_turns, 0),
+       -- ISS-7737: this row stores agent_turns and the four token counters side
+       -- by side, and they DO NOT share a population. agent_turns is the parent
+       -- transcript's own assistant-turn count (see the ISS-5395 note on
+       -- transcript_assistant_turns below); the tok.* columns sum token_usage,
+       -- which the collector folded across every subagent transcript. Session
+       -- 795c67ae stores 1,016 here against a rollup spanning 38,844 billable
+       -- round-trips (38,871 dedup keys less 27 synthetic turns, which
+       -- claude-usage.ts never bills), so cache_read / agent_turns reads 7.87M
+       -- against a true 205,805 per round-trip, and the row looks
+       -- like corrupt data. It is not: re-deriving that session from its raw
+       -- transcripts reproduced all four counters exactly (8,260,678,836
+       -- tokens). Only the denominator was wrong, and the folded round-trip
+       -- count this row would need for a per-turn figure is not stored here.
+       -- Contract test for THIS row:
+       -- apps/desktop/test/session-analytics-population-split.test.ts, which
+       -- imports a delegating transcript and reads the stored agent_turns and
+       -- token columns back off session_analytics. The parser boundary the two
+       -- populations originate at is pinned separately by
+       -- apps/desktop/test/claude-turn-rollup-coherence.test.ts, which stops at
+       -- parseSessionFile() and reaches neither this SQL nor token_usage.
        COALESCE(s.transcript_assistant_turns, ev.agent_turns, 0),
        CASE
          WHEN ${headlessMetadataSql("s.metadata")} THEN 0
@@ -209,7 +234,20 @@ export async function upsertSessionAnalyticsRollupBatch(
        -- premium is now baked into per-event and per-model costs by
        -- estimateTokenCost (cacheWrite1hTokens), so tok.est_cost already
        -- carries it; a rollup-level term would double-count.
-       COALESCE(tok.est_cost, 0) + ${webSearchCostSql("s.metadata")},
+       --
+       -- ISS-7820: the column is NULLABLE, and this CASE is the reason. It used
+       -- to be NOT NULL DEFAULT 0, so an unpriced or partly-priced window had
+       -- nowhere to put "unknown" and reported a confident number instead — the
+       -- web-search line item ALONE, or a SUM that silently skipped its NULLs.
+       -- The shared sessionEstimatedCostSql is the SAME expression
+       -- sessions.cost_usd_estimated is computed from, so the two stored totals
+       -- now agree on what unknown means as well as on what web search costs.
+       ${sessionEstimatedCostSql({
+         tokenCostUsdExpr: "COALESCE(tok.est_cost, 0)",
+         pricedRowsExpr: "COALESCE(tok.priced_rows, 0)",
+         tokenUsageRowsExpr: "COALESCE(tok.token_usage_rows, 0)",
+         webSearchCostUsdExpr: webSearchCostSql("s.metadata"),
+       })},
        CASE
          WHEN s.started_at IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at > s.started_at
            THEN CAST((unixepoch(s.ended_at, 'subsec') - unixepoch(s.started_at, 'subsec')) * 1000 AS INTEGER)
@@ -217,24 +255,15 @@ export async function upsertSessionAnalyticsRollupBatch(
        END,
        $1
      FROM (
-       -- FEA-2641: genuine human turns are counted transcript-first — a
-       -- role:"human" message count over metadata $.messages (NULL when no
-       -- parsed transcript exists, e.g. hook-only live sessions). Computed
+       -- FEA-2641: genuine human turns are counted transcript-first (NULL when
+       -- no parsed transcript exists, e.g. hook-only live sessions). Computed
        -- once here so the human_turns column and the is_human CASE share it.
-       -- Nested CASE so json_type never runs on invalid JSON; the inner CASE
-       -- gates json_extract on m.type = 'object' (json_each's own type
-       -- column) so a primitive array element (string/number/null) can never
-       -- raise "malformed JSON" and abort the whole rollup chunk.
+       -- ISS-8659 moved the expression into transcriptHumanTurnsSql, which
+       -- reads the parser's own $.userMessages before falling back to the
+       -- role:"human" count over $.messages -- see that helper for why the
+       -- array is the wrong first choice.
        SELECT s.*,
-         CASE WHEN json_valid(s.metadata)
-              THEN CASE WHEN json_type(s.metadata, '$.messages') = 'array'
-                        THEN (SELECT COUNT(*)
-                              FROM json_each(s.metadata, '$.messages') AS m
-                              WHERE CASE WHEN m.type = 'object'
-                                         THEN json_extract(m.value, '$.role') = 'human'
-                                         ELSE 0 END)
-                        ELSE NULL END
-              ELSE NULL END AS transcript_human_turns,
+         ${transcriptHumanTurnsSql("s.metadata")} AS transcript_human_turns,
          -- FEA-3226: assistant turns are counted transcript-first from the
          -- importer's top-level $.assistantMessages count (the parser's
          -- billable round-trip count, FEA-3125) — NEVER from the visible
@@ -286,24 +315,46 @@ export async function upsertSessionAnalyticsRollupBatch(
          SUM(COALESCE(output_tokens, 0) + COALESCE(baseline_output, 0)) AS output_tokens,
          SUM(COALESCE(cache_read_tokens, 0) + COALESCE(baseline_cache_read, 0)) AS cache_read_tokens,
          SUM(COALESCE(cache_write_tokens, 0) + COALESCE(baseline_cache_write, 0)) AS cache_write_tokens,
-         SUM(COALESCE(cost_usd_estimated, 0)) AS est_cost
+         SUM(COALESCE(cost_usd_estimated, 0)) AS est_cost,
+         -- ISS-7820: the two counts sessionEstimatedCostSql needs to tell a
+         -- fully-priced window from a partial one. Spelled exactly as
+         -- updateSessionCostRollupBatch's aggregate spells them — non-NULL
+         -- prices against all rows — so the two writers count the same thing.
+         COUNT(cost_usd_estimated) AS priced_rows,
+         COUNT(*) AS token_usage_rows
        FROM token_usage WHERE session_id IN (${analyticsIdPlaceholders}) GROUP BY session_id
      ) tok ON tok.session_id = s.id`,
     ...analyticsParams
   );
-  await tx.$executeRawUnsafe(
-    `DELETE FROM session_tool_analytics WHERE session_id IN (${toolIdPlaceholders})`,
-    ...sessionIds
-  );
-  await tx.$executeRawUnsafe(
-    `INSERT INTO session_tool_analytics (session_id, tool_name, invocations, started_day)
-     SELECT e.session_id, e.tool_name, COUNT(*),
-       (SELECT ${dayExpr("s.started_at")} FROM sessions s WHERE s.id = e.session_id)
-     FROM events e
-     WHERE e.session_id IN (${toolIdPlaceholders}) AND ${toolInvocationPredicate("e.tool_name")}
-     GROUP BY e.session_id, e.tool_name`,
-    ...sessionIds
-  );
+  // ISS-7776: `session_analytics.est_cost` above and the authoritative
+  // `sessions.cost_usd_estimated` are two derivations of ONE number, and sharing
+  // `webSearchCostSql` only made them PRICE web search alike — it never made
+  // them AGREE. On the import path the authoritative total is written two
+  // record groups earlier (group 4), so anything that changes a session's
+  // sources between then and here (a re-parse that drops the web-search count)
+  // left the two columns $0.03 apart with nothing erroring. Refreshing both from
+  // the same rows in the same transaction closes that, and it is why EVERY
+  // est_cost writer — the import phase, the boot backfills, the recompute
+  // passes — gets it here rather than at one call site.
+  //
+  // Two things this does NOT make true, stated because the comments it replaced
+  // claimed an invariant the code never had:
+  //   - A partially- or un-priced `token_usage` window still splits them, but
+  //     no longer between a real number and a wrong one. ISS-7820 gave est_cost
+  //     the distinction it lacked: it is now nullable and writes NULL there,
+  //     while the guard below DECLINES the authoritative write and leaves that
+  //     column on its stale but real total (the contract
+  //     `importPhaseDerivedRollups` already ships and reports). So the pair now
+  //     reads "unknown" beside "last known", which a consumer can act on —
+  //     rather than "the web-search line item alone" beside "the real total".
+  //   - `backfillSessionAnalytics` and `recomputeAnalyticsRollupsFor` do not
+  //     bump `sessions.updated_at` (FEA-3485 explains why the first must not),
+  //     so a correction they make here does not re-sync to the cloud until some
+  //     other mutation advances that session's watermark. That was already true
+  //     of the est_cost they write; it now covers the authoritative column too.
+  await updateSessionCostRollupBatch(tx, sessionIds, {
+    requireFullyPricedTokenUsage: true,
+  });
   // FEA-3294: invocation materialization is the durable source of truth. A
   // legacy stored-only session is conservatively bootstrapped from its existing
   // event/agent/metadata rows (never the current filesystem), then the aggregate
@@ -316,11 +367,7 @@ export async function upsertSessionAnalyticsRollupBatch(
       now,
       options.log
     );
-    await rebuildAgentComponentSessionUsageFromInvocations(
-      tx,
-      sessionIds,
-      dayExpr
-    );
+    await rebuildAgentComponentSessionUsageFromInvocations(tx, sessionIds);
   }
   // FEA-3132: materialize per-turn buckets so the Insights autonomy trend +
   // activity heatmap never json_each-expand `$.messages` on the read path.
@@ -328,7 +375,7 @@ export async function upsertSessionAnalyticsRollupBatch(
 }
 
 /**
- * ISS-5098 (wongk, #4355): the rollup's options bag, now REQUIRED because `log`
+ * ISS-5098 (whitlockk, #4355): the rollup's options bag, now REQUIRED because `log`
  * is. The rollup is the only caller of `ensureStoredAgentComponentInvocations`,
  * which builds invocation candidates from `events.agent_id` — a column with no
  * foreign key — so it is one of the two paths that can hand the row writer an

@@ -1,5 +1,5 @@
 /**
- * JSON-compatible types for loop contract payloads.
+ * JSON-compatible types for contract payloads.
  * Defined locally to avoid dependency on @repo/api.
  */
 export type JsonValue =

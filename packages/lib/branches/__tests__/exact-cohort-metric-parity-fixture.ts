@@ -16,5 +16,5 @@ export const exactCohortMetricParityExpectation = {
     value: 100,
   },
   activeComparisonState: BranchMetricAvailability.Unavailable,
-  locPerDollarState: BranchMetricAvailability.Unavailable,
+  locPerDollarState: BranchMetricAvailability.Complete,
 } as const;

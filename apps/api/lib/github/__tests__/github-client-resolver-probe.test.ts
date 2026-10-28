@@ -14,37 +14,38 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
-}));
-
 vi.mock("@repo/github/installation-auth", () => ({
   getInstallationOctokit: vi.fn(),
+}));
+
+// PLN-1742 M5: Clerk is consulted for every org, so these stored-credential
+// cases wire it to a stated "no linked account" denial (see beforeEach).
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { clerkClient } from "@repo/auth/server";
 import { withDb } from "@repo/database";
-import {
-  GitHubCapabilityTtlMs,
-  GitHubSyncHealthState,
-} from "@/lib/github/github-access";
+import { GitHubCapabilityTtlMs } from "@/lib/github/github-access";
 import { getGitHubClient } from "@/lib/github/github-client-resolver";
 import {
   APP_USER_CONNECTION,
   jsonResponse,
   makeResolverDb,
-  mockDecrypt,
   NOW,
   okFetch,
   USER_TARGET_INPUT,
   type WithDbMock,
+  wireClerkServedToken,
   wireDb,
 } from "./github-access-test-fixtures";
 
 const mockWithDb = withDb as unknown as WithDbMock;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
 
 // Probe outcomes on a cache miss: classification of each probe result,
 // verdict persistence (granularity, TTLs, best-effort), and probe
@@ -53,11 +54,11 @@ const mockWithDb = withDb as unknown as WithDbMock;
 describe("getGitHubClient (probe outcomes)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecrypt.mockResolvedValue("decrypted-token");
+    wireClerkServedToken(mockClerkClient);
   });
 
   it("probes the repo on a cache miss and caches a positive verdict", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = okFetch();
 
@@ -79,12 +80,14 @@ describe("getGitHubClient (probe outcomes)", () => {
         targetRepo: "widgets",
         organizationId: "org-1",
         targetOwner: "Acme",
-        credentialKind: GitHubCredentialKind.GithubAppUser,
+        credentialKind: GitHubCredentialKind.OauthUser,
         denialReason: null,
         installationId: null,
         checkedAt: NOW,
         expiresAt: new Date(NOW.getTime() + GitHubCapabilityTtlMs.Positive),
       },
+      // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+      select: { id: true },
     });
     // And the folded cache read filters at the same granularity.
     const readArg = db.gitHubUserConnection.findUnique.mock.calls[0]?.[0];
@@ -99,7 +102,7 @@ describe("getGitHubClient (probe outcomes)", () => {
   });
 
   it("probes an owner-only target with the liveness probe and caches at owner level", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = okFetch();
 
@@ -116,11 +119,13 @@ describe("getGitHubClient (probe outcomes)", () => {
         normalizedTargetOwner: "acme",
         targetRepo: null,
       }),
+      // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+      select: { id: true },
     });
   });
 
   it("caches a short-TTL no_installation verdict on a 404 probe", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
       Promise.resolve(jsonResponse(404, { message: "Not Found" }))
@@ -141,11 +146,17 @@ describe("getGitHubClient (probe outcomes)", () => {
         targetRepo: "widgets",
         expiresAt: new Date(NOW.getTime() + GitHubCapabilityTtlMs.Negative),
       }),
+      // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+      select: { id: true },
     });
   });
 
-  it("marks the connection revoked in one transaction on a 401 probe", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+  it("returns revoked on a 401 probe and caches nothing", async () => {
+    // The revocation write this used to assert was a compare-and-set on the
+    // stored cipher, and PLN-1742's M5 tail removed the stored credential —
+    // Clerk owns the token, so a 401 is not ours to record against the row.
+    // The DENIAL the caller sees is unchanged.
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
       Promise.resolve(jsonResponse(401, { message: "Bad credentials" }))
@@ -160,31 +171,13 @@ describe("getGitHubClient (probe outcomes)", () => {
       ok: false,
       error: { reason: GitHubAccessDenialReason.Revoked },
     });
-    expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: "connection-1",
-        organizationId: "org-1",
-        revokedAt: null,
-        accessTokenEncrypted: "encrypted-token",
-      },
-      data: {
-        revokedAt: expect.any(Date),
-        healthState: GitHubSyncHealthState.Unhealthy,
-      },
-    });
-    expect(db.gitHubAccessCapability.deleteMany).toHaveBeenCalledWith({
-      where: {
-        githubUserConnectionId: "connection-1",
-        organizationId: "org-1",
-      },
-    });
+    expect(db.gitHubUserConnection.updateMany).not.toHaveBeenCalled();
     // Transient credential death is never cached as a capability verdict.
     expect(db.gitHubAccessCapability.create).not.toHaveBeenCalled();
   });
 
   it("returns rate_limited with the provider ETA and caches nothing", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -213,7 +206,7 @@ describe("getGitHubClient (probe outcomes)", () => {
   });
 
   it("returns unavailable on a 5xx probe and caches nothing", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = vi.fn(() =>
       Promise.resolve(jsonResponse(502, { message: "Bad gateway" }))
@@ -232,7 +225,7 @@ describe("getGitHubClient (probe outcomes)", () => {
   });
 
   it("single-flights concurrent probes for the same connection and owner", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     let resolveProbe: (() => void) | undefined;
     const fetchMock = vi.fn(
@@ -262,7 +255,7 @@ describe("getGitHubClient (probe outcomes)", () => {
   });
 
   it("does not share a single-flight probe across different repos", async () => {
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     wireDb(mockWithDb, db);
     const fetchMock = okFetch();
 
@@ -282,7 +275,7 @@ describe("getGitHubClient (probe outcomes)", () => {
   it("returns the usable client even when verdict persistence fails", async () => {
     // Verdict caching is best-effort: a cache-write hiccup must not turn a
     // successful probe into a failure.
-    const db = makeResolverDb({ ...APP_USER_CONNECTION });
+    const db = makeResolverDb({ ...APP_USER_CONNECTION, lastUsedAt: NOW });
     db.gitHubAccessCapability.updateMany.mockRejectedValue(
       new Error("db unavailable")
     );

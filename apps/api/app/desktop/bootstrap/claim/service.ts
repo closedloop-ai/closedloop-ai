@@ -13,6 +13,10 @@ import {
   desktopContractSuccess,
 } from "@/app/desktop/contract";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
 import { usersService } from "@/app/users/service";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
@@ -41,12 +45,10 @@ function invalidClaimRequestResponse() {
 async function readBootstrapClaimRequest(
   request: Request
 ): Promise<BootstrapClaimRequest | Response> {
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return invalidClaimRequestResponse();
-  }
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
 
   const parsedBody = bootstrapClaimRequestValidator.safeParse(rawBody);
   return parsedBody.success ? parsedBody.data : invalidClaimRequestResponse();

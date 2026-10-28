@@ -5,9 +5,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Displays a form input field or a component that looks like an input field.
  */
 const meta = {
-  title: "Design System/Primitives/Input",
+  title: "Primitives v1.0/Inputs/Input",
   component: Input,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     className: "w-96",

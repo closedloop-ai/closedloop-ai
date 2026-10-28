@@ -13,7 +13,7 @@
  * `normalized-session-test-utils` fixture rather than being duplicated here.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
 import type { DataRevisionRebuildProgress } from "../src/main/collectors/engine/data-revision-rebuild-progress.js";
 import {
@@ -52,7 +52,7 @@ async function collectProgress(stale: StaleRow[]): Promise<{
       listStaleRevisionSessions: async () => stale,
       rebuildSessionFromParse: () =>
         Promise.resolve({ rebuilt: true, activeRace: false }),
-      deleteSessionRow: () => Promise.resolve(),
+      deleteSessionRow: () => Promise.resolve(true),
     },
     parseSource: (_collector: unknown, source: unknown) =>
       Promise.resolve([
@@ -102,7 +102,9 @@ describe("ISS-6241 data-revision rebuild progress", () => {
   });
 
   test("counts only sessions the pass will WORK, excluding the active ones it skips", async () => {
-    // `groupTerminalStaleByHarness` drops non-terminal rows into `skippedActive`
+    // `groupTerminalStaleByHarness` drops LIVE-capture rows into `skippedActive`
+    // (ISS-8601: a non-terminal row silent past the staleness bound is admitted
+    // instead; this double supplies no `lastActivityAt`, so it fails closed here)
     // and never works them. Counting them would park the number short of its own
     // total for the whole pass — the bar would say 3 of 5 and stop, forever.
     const { reports } = await collectProgress([
@@ -143,7 +145,7 @@ describe("ISS-6241 data-revision rebuild progress", () => {
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // The repair tail. Whatever the count says WHILE this runs is what the
         // user is looking at during the slow part.
         recomputeAnalyticsRollups: (ids: string[]) => {
@@ -206,7 +208,7 @@ describe("ISS-6241 data-revision rebuild progress", () => {
         listStaleRevisionSessions: async () => stale,
         rebuildSessionFromParse: () =>
           Promise.resolve({ rebuilt: true, activeRace: false }),
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
       },
       parseSource: (_collector: unknown, source: unknown) =>
         Promise.resolve([

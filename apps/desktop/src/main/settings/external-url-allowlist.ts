@@ -77,7 +77,7 @@ export function isAllowedDesktopVerificationUrl(
 }
 
 /**
- * ISS-4898 (wongk + codex review): whether a renderer-opened URL may be handed
+ * ISS-4898 (whitlockk + codex review): whether a renderer-opened URL may be handed
  * to the OS, given the web-app origin this desktop is CONFIGURED against.
  *
  * {@link isAllowedExternalUrl} alone is a fixed PRODUCTION host set. That is
@@ -88,7 +88,7 @@ export function isAllowedDesktopVerificationUrl(
  * looks actionable and does nothing is the failure mode this row exists to fix.
  *
  * The fix is NOT to widen the fixed host set (that would let a compromised
- * renderer open any `*.closedloop-stage.ai` URL on a production install).
+ * renderer open any `*.stage.example` URL on a production install).
  * Instead the configured origin is admitted by the SAME fail-closed rule
  * {@link isAllowedDesktopVerificationUrl} already applies to the sign-in
  * verification URL: an EXACT scheme+host+port match against the origin this

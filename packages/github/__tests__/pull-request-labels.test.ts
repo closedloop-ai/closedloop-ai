@@ -13,6 +13,7 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import type { Octokit } from "@octokit/rest";
+import { log } from "@repo/observability/log";
 import {
   ensureRepositoryLabelsExist,
   reconcilePullRequestLabels,
@@ -111,6 +112,67 @@ describe("ensureRepositoryLabelsExist", () => {
     );
 
     expect(ensured).toEqual({ created: [], failed: ["infra"] });
+  });
+
+  it("returns an empty result without reading the repository when no labels are requested", async () => {
+    const ensured = await ensureRepositoryLabelsExist(
+      makeOctokit(),
+      REPOSITORY,
+      []
+    );
+
+    expect(ensured).toEqual({ created: [], failed: [] });
+    expect(listLabelsForRepo).not.toHaveBeenCalled();
+    expect(createLabel).not.toHaveBeenCalled();
+  });
+
+  it("pages the repository label read past a full first page", async () => {
+    const firstPage = Array.from({ length: 100 }, (_u, i) => `existing-${i}`);
+    listLabelsForRepo
+      .mockResolvedValueOnce(labelPage(firstPage))
+      .mockResolvedValueOnce(labelPage(["infra"]));
+
+    const ensured = await ensureRepositoryLabelsExist(
+      makeOctokit(),
+      REPOSITORY,
+      labelsFor([INFRA_TAG, DOCS_TAG])
+    );
+
+    expect(listLabelsForRepo).toHaveBeenCalledTimes(2);
+    expect(listLabelsForRepo.mock.calls[1]?.[0].page).toBe(2);
+    expect(ensured).toEqual({ created: ["docs"], failed: [] });
+  });
+
+  it("treats a create error without a numeric status as a failure and logs its message", async () => {
+    createLabel.mockRejectedValue(new Error("socket hang up"));
+
+    const ensured = await ensureRepositoryLabelsExist(
+      makeOctokit(),
+      REPOSITORY,
+      labelsFor([INFRA_TAG])
+    );
+
+    expect(ensured).toEqual({ created: [], failed: ["infra"] });
+    expect(log.warn).toHaveBeenCalledWith(
+      "[pull-request-labels] Failed to create repository label",
+      expect.objectContaining({ label: "infra", error: "socket hang up" })
+    );
+  });
+
+  it("logs a stringified non-Error rejection from the repository label read", async () => {
+    listLabelsForRepo.mockRejectedValue("plain string failure");
+
+    const ensured = await ensureRepositoryLabelsExist(
+      makeOctokit(),
+      REPOSITORY,
+      labelsFor([INFRA_TAG])
+    );
+
+    expect(ensured).toBeNull();
+    expect(log.warn).toHaveBeenCalledWith(
+      "[pull-request-labels] Failed to read repository labels",
+      expect.objectContaining({ error: "plain string failure" })
+    );
   });
 
   it("reports unknown when the repository label read fails", async () => {
@@ -257,16 +319,36 @@ describe("reconcilePullRequestLabels", () => {
   });
 
   it("reports failure without throwing when the label write is rejected", async () => {
+    listLabelsOnIssue.mockResolvedValue(labelPage(["infra"]));
     addLabels.mockRejectedValue(new Error("forbidden"));
 
     const result = await reconcilePullRequestLabels(
       makeOctokit(),
       TARGET,
-      labelsFor([INFRA_TAG])
+      labelsFor([INFRA_TAG, DOCS_TAG])
     );
 
     expect(result.status).toBe(PullRequestLabelSyncStatus.Failed);
     expect(result.addedLabels).toEqual([]);
+    expect(result.knownAppliedLabels).toEqual(["infra"]);
+  });
+
+  it("fails without creating or adding when the repository label read fails", async () => {
+    listLabelsOnIssue.mockResolvedValue(labelPage(["infra"]));
+    listLabelsForRepo.mockRejectedValue(new Error("boom"));
+
+    const result = await reconcilePullRequestLabels(
+      makeOctokit(),
+      TARGET,
+      labelsFor([INFRA_TAG, DOCS_TAG])
+    );
+
+    expect(result.status).toBe(PullRequestLabelSyncStatus.Failed);
+    expect(result.knownAppliedLabels).toEqual(["infra"]);
+    expect(result.createdLabels).toEqual([]);
+    expect(result.addedLabels).toEqual([]);
+    expect(createLabel).not.toHaveBeenCalled();
+    expect(addLabels).not.toHaveBeenCalled();
   });
 
   it("excludes a label whose create failed transiently from the add batch", async () => {

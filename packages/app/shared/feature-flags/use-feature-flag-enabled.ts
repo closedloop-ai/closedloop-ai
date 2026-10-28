@@ -67,10 +67,16 @@ export function useFeatureFlagResolved(key: string): boolean {
  * query's `enabled` on it and an enabled user issues ONE request, with the right
  * params, instead of an unbounded read followed by a refetch.
  */
+export type FeatureFlagGate = {
+  enabled: boolean;
+  isReady: boolean;
+  isResolved: boolean;
+};
+
 export function useFeatureFlagGate(
   key: string,
   deadlineMs: number = FEATURE_FLAG_RESOLUTION_DEADLINE_MS
-): { enabled: boolean; isReady: boolean } {
+): FeatureFlagGate {
   const enabled = useFeatureFlagEnabled(key);
   const resolved = useFeatureFlagResolved(key);
   // ISS-4655 extracted the resolve-or-deadline latch so the persisted-view gate
@@ -78,5 +84,39 @@ export function useFeatureFlagGate(
   // unchanged, except that the latch now resets if a resolved flag goes
   // unresolved again — which `isReady` already masked, since `resolved` alone
   // satisfies it.
-  return { enabled, isReady: useResolvedOrDeadline(resolved, deadlineMs) };
+  return {
+    enabled,
+    isReady: useResolvedOrDeadline(resolved, deadlineMs),
+    isResolved: resolved,
+  };
+}
+
+/**
+ * Like {@link useFeatureFlagGate}, but resolves to a CLOSED, READY gate when no
+ * `FeatureFlagAdapterProvider` is mounted — the {@link useFeatureFlagEnabledOptional}
+ * posture, for a SHARED component that keys a data read off a flag and also
+ * renders under mount sites without the provider (Storybook, mini-table tests).
+ *
+ * Both halves matter and they are not interchangeable. Without the optional
+ * adapter this throws where the plain `useFeatureFlagEnabledOptional` would have
+ * degraded; without the readiness half a consumer keys its request off a flag
+ * that reads `false` until PostHog answers, issues the flag-off request anyway,
+ * and the later flip only disables a request already in flight — the FEA-1626
+ * cost the flag exists to avoid.
+ */
+export function useFeatureFlagGateOptional(
+  key: string,
+  deadlineMs: number = FEATURE_FLAG_RESOLUTION_DEADLINE_MS
+): FeatureFlagGate {
+  const adapter = useFeatureFlagAdapterOptional();
+  // Same fixed-hook-order reasoning as `useFeatureFlagResolved` above: the
+  // adapter identity is stable for the life of a mounted tree, so the selected
+  // implementation cannot change between renders.
+  const useResolved = adapter.useFeatureFlagResolved ?? alwaysResolved;
+  const resolved = useResolved(key);
+  return {
+    enabled: adapter.useFeatureFlagEnabled(key),
+    isReady: useResolvedOrDeadline(resolved, deadlineMs),
+    isResolved: resolved,
+  };
 }

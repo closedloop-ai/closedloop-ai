@@ -37,7 +37,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncProgress } from "../src/main/agent-sync/agent-session-sync-service-options.js";
@@ -153,7 +153,7 @@ test("ISS-4712: a rebuild bumping updated_at on backfill-queued sessions does NO
     await pumpOneTurn();
   };
 
-  // wongk (PR #4185): the body runs in try/finally so a rejected wait/assertion
+  // whitlockk (PR #4185): the body runs in try/finally so a rejected wait/assertion
   // still stops the service. Otherwise the 5-second interval installed by start()
   // stays live and can hang the node:test process after the real failure. stop()
   // is idempotent, so the finally is safe even on the all-green path.

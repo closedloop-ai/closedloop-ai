@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { ArtifactRefRecord } from "../src/main/collectors/parsing/artifact-ref-record.js";
 import { persistArtifactLinks } from "../src/main/database/artifact-link-persistence.js";
 import { openTestDb } from "./agent-db-test-utils.js";
@@ -11,7 +11,7 @@ import { openTestDb } from "./agent-db-test-utils.js";
 // canonical artifacts row (never the reparse-wiped link row) for push-method
 // branch links. These tests exercise the real SQLite MIN()/COALESCE marker.
 
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 const NOW = "2026-06-07T12:00:00.000Z";
 const DROPPED_REF_WARNING = /dropped artifact ref for session missing-session/;
 const BATCH_FALLBACK_WARNING =
@@ -228,6 +228,7 @@ const PR_URL = `https://github.com/${REPO}/pull/2302`;
 function createdPrRef(input: {
   branchName?: string;
   relation?: ArtifactRefRecord["relation"];
+  baseRef?: string;
 }): ArtifactRefRecord {
   return {
     targetKind: "pull_request",
@@ -246,8 +247,76 @@ function createdPrRef(input: {
     prNumber: 2302,
     prUrl: PR_URL,
     branchName: input.branchName,
+    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
   };
 }
+
+async function readArtifactBaseRef(db: TestDb): Promise<string | null> {
+  const rows = await db.prisma.client.$queryRawUnsafe<
+    { base_ref: string | null }[]
+  >(
+    "SELECT base_ref FROM artifacts WHERE kind = 'pull_request' AND pr_number = 2302"
+  );
+  if (rows.length !== 1) {
+    throw new Error("expected one pull_request artifact");
+  }
+  return rows[0].base_ref;
+}
+
+// ISS-8175. `artifacts.base_ref` had NO writer before this ticket, and this
+// side effect is still its only one — so without this case the whole chain
+// (parser → wire → cloud) can be deleted and every other suite stays green.
+test("ISS-8175: a created PR ref fills artifacts.base_ref, fill-only, and only for a create", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "write-core-pr-base-"));
+  const db = await openTestDb(dir);
+  try {
+    await insertSession(db, "creator");
+    await insertSession(db, "referencer");
+
+    // No base named → the column stays null rather than taking a placeholder.
+    await persist(db, "creator", [createdPrRef({ branchName: "feat/x" })]);
+    assert.equal(await readArtifactBaseRef(db), null);
+
+    await persist(db, "creator", [
+      createdPrRef({ branchName: "feat/x", baseRef: "release/2026-08" }),
+    ]);
+    assert.equal(await readArtifactBaseRef(db), "release/2026-08");
+
+    // Fill-only: a later re-derivation carrying a different base does not churn
+    // the stored value (matches the pull_requests.branch_name fill above).
+    await persist(db, "creator", [
+      createdPrRef({ branchName: "feat/x", baseRef: "main" }),
+    ]);
+    assert.equal(await readArtifactBaseRef(db), "release/2026-08");
+
+    // Reparse wipes the link rows but never the artifacts row: the base survives.
+    await db.run(
+      "DELETE FROM session_artifact_links WHERE session_id = $1",
+      "creator"
+    );
+    await persist(db, "creator", [createdPrRef({ branchName: "feat/x" })]);
+    assert.equal(await readArtifactBaseRef(db), "release/2026-08");
+  } finally {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A `referenced` ref carrying a base must not ORIGINATE one — only a create may.
+test("ISS-8175: a referenced PR ref never writes artifacts.base_ref", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "write-core-pr-base-ref-only-"));
+  const db = await openTestDb(dir);
+  try {
+    await insertSession(db, "referencer");
+    await persist(db, "referencer", [
+      createdPrRef({ relation: "referenced", baseRef: "main" }),
+    ]);
+    assert.equal(await readArtifactBaseRef(db), null);
+  } finally {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 async function insertPullRequestRow(
   db: TestDb,

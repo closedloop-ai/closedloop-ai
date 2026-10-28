@@ -95,8 +95,9 @@ const MAX_CAUSE_DEPTH = 3;
  *  - it does not carry a `name`-based fallback for a prototype dropped across
  *    the utilityProcess boundary, the way `isDbHostShutdownError` does. That
  *    fallback exists there because the CHILD serializes a shutdown error;
- *    nothing ever serializes this one. It is minted in exactly one place
- *    (`DbHostClient.handleExit`, main-side), never posted to the child, and
+ *    nothing ever serializes this one. Every site that mints it is main-side —
+ *    `DbHostClient.handleExit` in production, plus ISS-8982's test-only
+ *    `createE2eBootImportAbandonFault` — none posts it to the child, and
  *    `rebuildError` — the only thing that reconstructs an error coming back
  *    from the child — mints a plain `Error` or a `DesktopMigrationError` and
  *    can never produce this name. A rebuild branch here would be untestable
@@ -134,4 +135,28 @@ export function findDbHostExitError(error: unknown): DbHostExitError | null {
  */
 export function isRecoverableDbHostExitError(error: unknown): boolean {
   return findDbHostExitError(error)?.restartScheduled === true;
+}
+
+/**
+ * True when `error` is a db-host exit that NOTHING is bringing back — the
+ * supervisor's restart ladder is finished for this process.
+ *
+ * ISS-8776 adds this beside {@link isRecoverableDbHostExitError} under the rule
+ * the module header states: a bare predicate is added WITH the consumer that
+ * needs it, never before. The consumer is the sync lane's tick-failure
+ * classifier. Until the restart ceiling existed, a `DbHostExitError` reaching
+ * that classifier was always transient — the child had just died and a
+ * replacement was in flight — so reporting it as a failure was correct and it
+ * stopped recurring once the restart landed. The terminal state is a genuinely
+ * NEW condition: every later read rejects the same way, on every lane tick, for
+ * the rest of the session. Reported as a fresh failure each time it would bury
+ * the one report that matters under a per-tick warning storm.
+ *
+ * This is NOT the same question as `isRecoverableDbHostExitError`'s negation:
+ * that answers `false` for anything which is not a db-host exit at all (a SQL
+ * error, a clone failure). This answers `true` only for an exit the supervisor
+ * has actually given up on, so a caller can quieten THAT and nothing else.
+ */
+export function isUnrecoverableDbHostExitError(error: unknown): boolean {
+  return findDbHostExitError(error)?.restartScheduled === false;
 }

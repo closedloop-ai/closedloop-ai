@@ -85,7 +85,7 @@ function fallbackLabel(phase: string): string {
 export function getActivityPhaseDisplay(phase: string): ActivityPhaseDisplay {
   // `phase` is a bounded free string (the classifier key, not a closed union),
   // so guard with Object.hasOwn before indexing — same guard the two sibling
-  // resolvers use (`getPhaseDisplay`, `getCanonicalPhaseLabel`). A key like
+  // resolvers use (`getCanonicalPhaseLabel`). A key like
   // "constructor" would otherwise resolve to an inherited Object.prototype
   // member, which is truthy, so `??` would never fire and the row would render
   // an undefined label and color instead of the titleized fallback.

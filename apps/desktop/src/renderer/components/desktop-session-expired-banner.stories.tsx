@@ -16,7 +16,8 @@ import { DesktopSessionExpiredBanner } from "./desktop-session-expired-banner";
  * the packaged app does rather than a hand-faked context.
  */
 const meta = {
-  title: "Desktop/App Shell/Desktop Session Expired Banner",
+  title: "Composites v1.0/Desktop Shell/Desktop Session Expired Banner",
+  tags: ["deprecated"],
   component: DesktopSessionExpiredBanner,
   parameters: {
     layout: "fullscreen",
@@ -88,7 +89,7 @@ type SessionExpiredScenario = {
   caption: string;
   /**
    * The main-process auth snapshot the bridge resolves — the REAL contract, not
-   * a widened local copy (wongk review). A local `{ status: string }` let a typo
+   * a widened local copy (whitlockk review). A local `{ status: string }` let a typo
    * or a renamed status compile and silently exercise the hidden no-banner
    * branch; `DesktopAuthState` closes `status` to `DesktopAuthStatus`, so an
    * invalid state fails typecheck at the story instead.

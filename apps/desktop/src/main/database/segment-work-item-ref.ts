@@ -47,7 +47,7 @@
  * mentioned 97 times, purely because `FEA-11…` sorts before `FEA-12…`. That
  * winner was then stamped on every segment, idle included; the audit found it
  * wrong on 8 of 21 sessions. Occurrence-scoped resolution reproduces the ground
- * truth on the exemplar (`3d624f34`: a FEA-2215 stretch, then FEA-2402), which no
+ * truth on the exemplar (`3927c8aa`: a FEA-2215 stretch, then FEA-2402), which no
  * single-value-per-session rule can express.
  *
  * Occurrences never INVENT a reference. They are intersected with the persisted
@@ -59,11 +59,12 @@
  * (code-point comparison, never `localeCompare`), so the same links + segments
  * yield a byte-identical map regardless of input order or host OS.
  */
+
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import {
   type ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { ACTIVITY_PHASE } from "../collectors/parsing/activity-taxonomy.js";
 import type { WorkItemOccurrence } from "../collectors/parsing/work-item-occurrences.js";
 
 /**

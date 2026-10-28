@@ -8,7 +8,8 @@ import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PacksWorkspace } from "./packs-workspace";
 
 const meta = {
-  title: "App Core/Packs/Packs Workspace",
+  title: "Surfaces v1.0/Packs/Packs Workspace",
+  tags: ["deprecated"],
   component: PacksWorkspace,
   args: {
     packs: mockPackViews,

@@ -5,14 +5,13 @@ import {
   ListEmptyReason,
   type ListEmptyStateSignals,
 } from "@repo/api/src/list-empty-state";
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@repo/design-system/components/ui/alert";
+// ISS-11913: My Tasks owns the recency window's "Show all time" wording, which
+// Branches already offers from the same constant.
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
+import { ListReadErrorAlert } from "@repo/app/shared/components/list-read-error-alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
-import { Clock3Icon, MonitorIcon, TriangleAlertIcon } from "lucide-react";
+import { Clock3Icon, MonitorIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 /**
@@ -29,7 +28,8 @@ import type { ReactNode } from "react";
  *   message; never a false "no sessions" all-clear.
  * - {@link ListEmptyReason.Filtered} — sessions exist but the active filters
  *   (date window / facet / search) exclude all of them. Names the situation and
- *   offers the always-safe "Clear filters" fix.
+ *   offers the always-safe "Clear filters" fix — or "Show all time" when the
+ *   window alone hides them (ISS-11913).
  * - {@link ListEmptyReason.Empty} — the scope genuinely has no sessions. The
  *   onboarding zero-state (connect a compute target when the org has never
  *   connected an agent; otherwise the neutral "nothing yet").
@@ -39,6 +39,12 @@ export type SessionsEmptyStateProps = {
   signals: ListEmptyStateSignals;
   /** Clear/expand the active filters (offered for a filtered empty). */
   onClearFilters?: () => void;
+  /**
+   * ISS-11913: widen the window to all time. Provided by the host only when the
+   * date window is the one thing hiding sessions that exist; the filtered empty
+   * then names the window and offers this instead of "Clear filters".
+   */
+  onShowAllTime?: () => void;
   /**
    * Retry the failed read. A fallback for the errored unavailable state when no
    * `errorRecoveryAction` is wired — the recovery Link (a superset) is preferred
@@ -79,24 +85,44 @@ export type SessionsEmptyStateProps = {
 };
 
 /** FEA-4181: the filtered-empty (date window / facet / search narrowing). */
-function GenericFilteredEmpty({
+function FilteredEmpty({
   onClearFilters,
+  onShowAllTime,
 }: {
   onClearFilters?: () => void;
+  onShowAllTime?: () => void;
 }): ReactNode {
+  // ISS-11913: Branches' date-range empty (`BranchesEmptyState`) with
+  // "sessions" for "branches", the only difference the two pages may have
+  // (Kaito, ISS-11913, 2026-10-02).
+  if (onShowAllTime) {
+    return (
+      <EmptyState
+        action={
+          <Button onClick={onShowAllTime} type="button" variant="outline">
+            {MY_TASKS_RECENCY_SHOW_ALL_LABEL}
+          </Button>
+        }
+        description={SESSIONS_DATE_RANGE_EMPTY_DESCRIPTION}
+        icon={Clock3Icon}
+        size="compact"
+        title={SESSIONS_FILTERED_EMPTY_TITLE}
+      />
+    );
+  }
   return (
     <EmptyState
       action={
         onClearFilters ? (
           <Button onClick={onClearFilters} type="button" variant="outline">
-            Clear filters
+            {SESSIONS_CLEAR_FILTERS_LABEL}
           </Button>
         ) : undefined
       }
       description="No sessions match the current filters. Try clearing or widening a filter."
       icon={Clock3Icon}
       size="compact"
-      title="No matching sessions"
+      title={SESSIONS_FILTERED_EMPTY_TITLE}
     />
   );
 }
@@ -123,27 +149,25 @@ function ErroredEmpty({
   onRetry?: () => void;
   errorRecoveryAction?: ReactNode;
 }): ReactNode {
-  // review cid 3653690781: the Alert sits flush (default full width) so the host
-  // container — a `CardContent` on web, the desktop panel — owns the inset, the
-  // same as the sibling EmptyState surfaces; no self-inset `mx-4 my-6` that
-  // lands it 40px off a `px-6` card edge while its siblings sit at 24px.
+  // ISS-7521: the alert chrome (variant, icon, flush full-width layout) is the
+  // shared `ListReadErrorAlert`, so Branches cannot drift from it again. Only
+  // the copy and the action are this surface's own.
   return (
-    <Alert variant="error">
-      <TriangleAlertIcon className="size-4" />
-      <AlertTitle>Couldn't load sessions</AlertTitle>
-      <AlertDescription className="flex flex-col items-start gap-3">
-        Something went wrong loading your sessions.
-        {/* Prefer the host's "Clear filters and reload" recovery Link (the honest
-            superset action). Only when no recovery Link is wired do we fall back
-            to a lone Retry, so the errored card always has exactly one action. */}
-        {errorRecoveryAction ??
-          (onRetry ? (
-            <Button onClick={onRetry} size="sm" type="button" variant="outline">
-              Retry
-            </Button>
-          ) : null)}
-      </AlertDescription>
-    </Alert>
+    <ListReadErrorAlert
+      // Prefer the host's "Clear filters and reload" recovery Link (the honest
+      // superset action). Only when no recovery Link is wired do we fall back to
+      // a lone Retry, so the errored card always has exactly one action.
+      action={
+        errorRecoveryAction ??
+        (onRetry ? (
+          <Button onClick={onRetry} size="sm" type="button" variant="outline">
+            {SESSIONS_RETRY_LABEL}
+          </Button>
+        ) : null)
+      }
+      description="Something went wrong loading your sessions."
+      title="Couldn't load sessions"
+    />
   );
 }
 
@@ -206,7 +230,7 @@ function GenuinelyEmpty({
       description="Sessions appear here once your connected compute targets sync their agent history."
       icon={Clock3Icon}
       size="compact"
-      title="No sessions yet"
+      title={SESSIONS_GENUINELY_EMPTY_TITLE}
     />
   );
 }
@@ -214,6 +238,7 @@ function GenuinelyEmpty({
 export function SessionsEmptyState({
   signals,
   onClearFilters,
+  onShowAllTime,
   onRetry,
   errorRecoveryAction,
   hasConnectedAgent,
@@ -234,7 +259,12 @@ export function SessionsEmptyState({
   }
 
   if (reason === ListEmptyReason.Filtered) {
-    return <GenericFilteredEmpty onClearFilters={onClearFilters} />;
+    return (
+      <FilteredEmpty
+        onClearFilters={onClearFilters}
+        onShowAllTime={onShowAllTime}
+      />
+    );
   }
 
   return (
@@ -244,3 +274,14 @@ export function SessionsEmptyState({
     />
   );
 }
+
+export const SESSIONS_RETRY_LABEL = "Retry";
+
+export const SESSIONS_FILTERED_EMPTY_TITLE = "No matching sessions";
+
+export const SESSIONS_GENUINELY_EMPTY_TITLE = "No sessions yet";
+
+export const SESSIONS_CLEAR_FILTERS_LABEL = "Clear filters";
+
+export const SESSIONS_DATE_RANGE_EMPTY_DESCRIPTION =
+  "No sessions were active in the selected date range.";

@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "First-receive anchors for monitored activity rejected as future-dated; read only by the ingest quarantine check."
+}

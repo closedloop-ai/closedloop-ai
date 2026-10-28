@@ -7,12 +7,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // --- Mocks (must come before imports) ---
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => (request: any, context: any) =>
-    handler(
-      { user: { id: "user-1", organizationId: "org-1" } },
-      request,
-      context.params
-    ),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(
+        { user: { id: "user-1", organizationId: "org-1" } },
+        request,
+        context.params
+      ),
 }));
 
 vi.mock("@/lib/identifier-utils", () => ({

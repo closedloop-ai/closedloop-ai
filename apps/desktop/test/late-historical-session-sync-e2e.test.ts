@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import type { AgentSessionSyncTransportPayload } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -64,7 +64,7 @@ function uploadedIds(batches: AgentSessionSyncTransportPayload[]): string[] {
  * the durable write queue so every acked outbox delete has actually committed.
  *
  * Both waits are REAL completion signals, never an event-loop-turn budget
- * (FEA-2399 determinism / ISS-4807 / PR #4392 review, wongk):
+ * (FEA-2399 determinism / ISS-4807 / PR #4392 review, whitlockk):
  *
  * - `settleSelfContinuedDrain` pumps the TIMERS phase the self-continue
  *   reschedule actually lives in (`SyncPollTimers.scheduleDrain` →

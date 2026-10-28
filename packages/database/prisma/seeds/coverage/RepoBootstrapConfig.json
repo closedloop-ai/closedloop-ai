@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Critic-gate config for loop context packs, retired with Loops (ISS-12435); the data step deletes its rows and the table stays only until the follow-up drop migration."
+}

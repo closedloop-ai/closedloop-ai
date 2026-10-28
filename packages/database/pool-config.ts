@@ -7,11 +7,21 @@
  * top level.
  *
  * These exist so the pool's size and the limits derived from it cannot drift
- * apart. `withDb` does not hold a connection — every query inside it borrows its
- * own — so any code that fans out concurrent queries is spending this budget,
- * and on 2026-07-15 a fan-out that had never been sized against it took the API
- * down. `apps/api/lib/db-fanout.ts` derives its concurrency bound from these and
- * pins the relationship with a test.
+ * apart. Any code that fans out concurrent work is spending this budget, and on
+ * 2026-07-15 a fan-out that had never been sized against it took the API down.
+ *
+ * **Size against ACQUISITIONS, not against ORM calls (ISS-8431).** This file
+ * used to say that `withDb` does not hold a connection and every query inside it
+ * borrows its own — true, but it invited the reader to assume the two units are
+ * interchangeable, one connection per call. They stopped being interchangeable
+ * at the Prisma 7 driver-adapter / query-compiler migration: on a
+ * non-transactional read Prisma runs every included relation as a parallel child
+ * query and each child takes its own connection in the same tick, so ONE
+ * `findMany` with ten `include`s measures 11 concurrent acquisitions. A bound
+ * counted in calls therefore admits `calls x relationEdges` connections and does
+ * not describe this resource. `DB_ACQUISITION_BUDGET_MAX` below is the bound in
+ * the right unit; `apps/api/lib/db-fanout.ts` bounds concurrent calls, which is
+ * a different and weaker thing.
  */
 
 /**
@@ -56,7 +66,7 @@ export const DB_POOL_MAX_DATABASE_URL_DEFAULT = 10;
  * 30s is the value the IAM branch has run in production since PRD-528, and it
  * is shared rather than re-picked per branch on purpose. It is long enough that
  * a genuinely slow first handshake to RDS is not mistaken for saturation, and
- * it is the bound the `cl-api — pg pool-acquire timeouts` monitor runbook
+ * it is the bound the `cl-api / cl-mcp — pg pool-acquire timeouts` monitor runbook
  * already documents. A second, smaller, unproven number for the other branch
  * would buy a faster failure at the cost of a new false-failure mode and a
  * constant nobody could justify.
@@ -67,3 +77,38 @@ export const DB_POOL_MAX_DATABASE_URL_DEFAULT = 10;
  * `db_pool_acquire_timeout`.
  */
 export const DB_POOL_ACQUIRE_TIMEOUT_MS = 30_000;
+
+/**
+ * The exact message pg rejects an expired acquisition with
+ * (`pg-pool@3.13.0/index.js:45`) — the QUEUE-WAIT timeout, raised once
+ * `connectionTimeoutMillis` elapses while a caller is queued. Matched on the
+ * exact literal so it is never confused with pg-pool's *handshake* timeout
+ * ("Connection terminated due to connection timeout"), which is a different
+ * failure with a different remedy.
+ *
+ * Shared rather than re-typed per consumer: `pool-telemetry.ts` classifies on
+ * this exact string to emit `db_pool_acquire_timeout`, and
+ * `acquisition-budget.ts` fails a permit wait with it so a caller blocked by the
+ * budget lands in the same monitor as a caller blocked by the pool. Two copies
+ * would let one drift and silently split that signal in half.
+ */
+export const DB_POOL_ACQUIRE_TIMEOUT_MESSAGE =
+  "timeout exceeded when trying to connect";
+
+/**
+ * Max pooled connections one logical unit of work may hold at once (ISS-8431).
+ *
+ * The invariant `DB_FANOUT_MAX_CONCURRENCY` was written to express — one unit of
+ * work spends at most **half of the smallest pool**, leaving the rest for the
+ * concurrent requests the pool exists to serve — but stated in the unit that
+ * actually bounds the resource. Derived from the smaller pool for the same
+ * reason that one is: it is the binding constraint, so shrinking it moves this
+ * automatically rather than silently re-opening the outage.
+ *
+ * Enforced by `gateDbAcquisitions` in `acquisition-budget.ts`, which counts
+ * `pool.connect` rather than ORM calls, so an include tree of any width is
+ * bounded by it.
+ */
+export const DB_ACQUISITION_BUDGET_MAX = Math.floor(
+  DB_POOL_MAX_DATABASE_URL_DEFAULT / 2
+);

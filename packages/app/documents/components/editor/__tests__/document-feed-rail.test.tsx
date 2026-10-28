@@ -1,3 +1,4 @@
+import { DocumentType } from "@repo/api/src/types/document";
 import { ACTIVITY_SOURCE_ID } from "@repo/app/documents/components/feed-sidebar/sources/activity-types";
 import { LIVEBLOCKS_COMMENT_SOURCE_ID } from "@repo/app/documents/components/feed-sidebar/sources/liveblocks-comment-source";
 import { render, screen } from "@testing-library/react";
@@ -8,20 +9,12 @@ const mockFeedSidebar = vi.fn();
 const mockProviderValue = vi.fn();
 const mockActivityProviderValue = vi.fn();
 
-vi.mock("@repo/app/documents/components/feed-sidebar/feed-sidebar", () => {
-  const FeedTab = {
-    Feed: "feed",
-    Chat: "chat",
-  } as const;
-
-  return {
-    FeedTab,
-    FeedSidebar: (props: Record<string, unknown>) => {
-      mockFeedSidebar(props);
-      return <div data-testid="feed-sidebar" />;
-    },
-  };
-});
+vi.mock("@repo/app/documents/components/feed-sidebar/feed-sidebar", () => ({
+  FeedSidebar: (props: Record<string, unknown>) => {
+    mockFeedSidebar(props);
+    return <div data-testid="feed-sidebar" />;
+  },
+}));
 
 vi.mock(
   "@repo/app/documents/components/feed-sidebar/sources/liveblocks-source-provider",
@@ -93,6 +86,7 @@ describe("DocumentFeedRail", () => {
         artifactType="PRD"
         currentVersion={1}
         documentId="doc-1"
+        documentType={DocumentType.Prd}
         enabled={false}
         isViewingHistorical={false}
         latestVersion={1}
@@ -111,9 +105,9 @@ describe("DocumentFeedRail", () => {
     render(
       <DocumentFeedRail
         artifactType="PRD"
-        chatPanel={<div>Chat</div>}
         currentVersion={2}
         documentId="doc-42"
+        documentType={DocumentType.Prd}
         enabled
         isViewingHistorical
         latestVersion={5}
@@ -131,12 +125,11 @@ describe("DocumentFeedRail", () => {
     });
     expect(mockActivityProviderValue).toHaveBeenCalledWith({
       documentId: "doc-42",
+      documentType: DocumentType.Prd,
     });
     expect(mockFeedSidebar).toHaveBeenCalledWith(
       expect.objectContaining({
-        activeTab: "feed",
         artifactType: "PRD",
-        chatPanel: expect.any(Object),
         initialSourceState: {
           [LIVEBLOCKS_COMMENT_SOURCE_ID]: {
             commentType: "all",
@@ -160,6 +153,7 @@ describe("DocumentFeedRail", () => {
         artifactType="PRD"
         currentVersion={5}
         documentId="doc-7"
+        documentType={DocumentType.Prd}
         enabled
         isViewingHistorical={false}
         latestVersion={5}

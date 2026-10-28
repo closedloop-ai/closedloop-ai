@@ -7,7 +7,7 @@ import type { Machine, MachineRollup } from "../mock";
 // something is behind, the count that needs action. No Progress bar and no by-kind
 // breakdown: the pack ships one component per kind, so both just spelled the same
 // ratio a second and third time. Plain text, read left to right, say it once
-// (Parker). The needs-action count is the only emphatic figure; it is the thing
+// (Pascoe). The needs-action count is the only emphatic figure; it is the thing
 // to act on. This mirrors the admin matrix's single-row matrix-summary.
 
 type MachineSummaryProps = {

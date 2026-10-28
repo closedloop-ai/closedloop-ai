@@ -224,7 +224,7 @@ describe("GitHub comment list payload mapping", () => {
         id: 222,
         node_id: "PRRC_kwDONode",
         path: "src/index.ts",
-        line: 30,
+        line: null,
         side: "RIGHT",
         start_line: 24,
         start_side: "RIGHT",

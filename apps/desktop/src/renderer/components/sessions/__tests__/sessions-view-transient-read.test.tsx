@@ -1,11 +1,15 @@
+import { queryRetryDelay } from "@repo/app/shared/query/query-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopAuthStatus } from "../../../../shared/contracts";
 import { SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE } from "../../../../shared/shared-agent-sessions-contract";
 import { TransientSourceError } from "../../../shared/transient-source-error";
-import { signedOutCutover } from "../../../shared-agent-sessions/__tests__/fixtures/cloud-read-cutover-fixtures";
-import { DesktopAppCoreMode } from "../../../shared-agent-sessions/desktop-app-core-mode";
+import {
+  DesktopAppCoreMode,
+  DesktopLocalReadReason,
+} from "../../../shared-agent-sessions/desktop-app-core-mode";
 import { SessionsView } from "../SessionsView";
+import { SessionsViewTestProviders } from "./fixtures/sessions-view-render-fixture";
 
 /**
  * ISS-4483: a settled TRANSIENT list read error (the local db-host child restarting
@@ -33,32 +37,28 @@ const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
 
 let desktopApiDescriptor: PropertyDescriptor | undefined;
 
-// The real sessions-list content routes `isSyncing` to the quiet reconnecting
-// empty state and an errored (non-syncing) read to the hard "Couldn't load
-// sessions" card; render a stand-in that echoes the two signals so the test asserts
-// which surface SessionsView selected without depending on the shared component's
-// internal copy.
-vi.mock("@repo/app/agents/components/sessions/agent-sessions-list", () => ({
-  AgentSessionsListContent: (props: {
-    isSyncing?: boolean;
-    emptySignals?: { isUnavailable?: boolean };
-  }) => (
-    <div
-      data-is-syncing={props.isSyncing ? "true" : "false"}
-      data-is-unavailable={props.emptySignals?.isUnavailable ? "true" : "false"}
-      data-testid="sessions-table-body"
-    />
-  ),
-}));
-
-vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
-  SessionsToolbar: () => <div data-testid="sessions-toolbar" />,
-}));
+/**
+ * The two zero-row surfaces this suite tells apart, asserted as the RENDERED
+ * copy of `sessions-empty-state.tsx` rather than through a stand-in echoing
+ * props.
+ *
+ * ISS-8909 retired the v1 list content this suite used to mock, so the real
+ * shared surface mounts and the derived `isSyncing` / unavailable signals are
+ * observable where the reader meets them: a transient failure routes to the
+ * quiet syncing surface, a fatal one to the hard error card. Spelled as
+ * literals, deliberately not imported from the component under test — reading
+ * the copy off it would keep these green after the surface stopped rendering
+ * either state.
+ */
+const SYNCING_TITLE = "Getting your sessions ready";
+const OUTAGE_TITLE = "Couldn't load sessions";
 
 vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
   useAgentSessionAnalytics: hooks.useAgentSessionAnalytics,
   useAgentSessionsPageData: hooks.useAgentSessionsPageData,
   useAgentSessionUsage: hooks.useAgentSessionUsage,
+  // ISS-7249: Retry cancels the exact list read before refetching it.
+  useCancelAgentSessionsPageData: () => () => undefined,
 }));
 
 vi.mock("../use-local-agent-session-usage", () => ({
@@ -67,6 +67,9 @@ vi.mock("../use-local-agent-session-usage", () => ({
 
 vi.mock("../../../hooks/use-ingest-progress", () => ({
   useIngestProgress: hooks.useIngestProgress,
+}));
+
+vi.mock("../../../hooks/use-file-access-blocks", () => ({
   useFileAccessBlocks: () => [],
 }));
 
@@ -85,6 +88,22 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   // whole subtree throws on the missing export. Both resolve OFF here, which
   // is the flag default and the behavior these tests assert.
   useFeatureFlagEnabledOptional: () => false,
+  // FEA-4201: the readiness-carrying read. `isReady` is settled-ness, not
+  // enabled-ness, and the real desktop port settles ASYNCHRONOUSLY — the
+  // signed-in account's PostHog assignment arrives over the IPC bridge. This
+  // mock pins it settled so the suites exercise the resolved state; `enabled`
+  // mirrors this suite's own set.
+  useFeatureFlagGate: () => ({
+    enabled: false,
+    isReady: true,
+  }),
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port, so this exhaustive module mock owes it an entry
+  // too. Same answer as the required gate above.
+  useFeatureFlagGateOptional: () => ({
+    enabled: false,
+    isReady: true,
+  }),
 }));
 
 vi.mock("@repo/app/shared/hooks/use-shared-date-range", () => ({
@@ -114,7 +133,7 @@ vi.mock("../../../shared-agent-sessions/desktop-app-core-provider", () => ({
   useDesktopAppCoreMode: () => DesktopAppCoreMode.Local,
   // ISS-5477: SessionsView derives the read-source badge detail from the
   // same provider, so this factory has to answer for it too.
-  useDesktopCloudReadCutover: () => signedOutCutover(),
+  useDesktopLocalReadReason: () => DesktopLocalReadReason.SignedOut,
 }));
 
 vi.mock("../../../shared-agent-sessions/desktop-auth-provider", () => ({
@@ -127,7 +146,9 @@ vi.mock("../../../shared-agent-sessions/desktop-auth-provider", () => ({
 }));
 
 async function renderSettled(): Promise<void> {
-  render(<SessionsView />);
+  render(<SessionsView />, {
+    wrapper: SessionsViewTestProviders,
+  });
   // Flush the local-source status probe so displayState settles to "ready".
   await act(async () => {
     await Promise.resolve();
@@ -147,6 +168,7 @@ describe("SessionsView transient db-host read (ISS-4483)", () => {
     });
     hooks.useSearchParamsValue.mockReturnValue(new URLSearchParams());
     hooks.useSessionsViewState.mockReturnValue({
+      isViewReady: true,
       sortKey: null,
       sortDir: "desc",
       visibleColumns: new Set<string>(["name"]),
@@ -193,6 +215,12 @@ describe("SessionsView transient db-host read (ISS-4483)", () => {
       data: undefined,
       isLoading: false,
       isError: true,
+      // ISS-7528: an INITIAL rejection sets BOTH flags on the real observer, so
+      // this fixture states both. The transient term's own contribution to
+      // `isUnavailable` (a transient failure over a read that ALREADY
+      // SUCCEEDED, where `isLoadingError` is false) is covered by
+      // `sessions-summary-cards-state.test.tsx`.
+      isLoadingError: true,
       error: new TransientSourceError(
         "Agent sessions source failed.",
         SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE
@@ -206,11 +234,11 @@ describe("SessionsView transient db-host read (ISS-4483)", () => {
 
     await renderSettled();
 
-    const body = screen.getByTestId("sessions-table-body");
     // The table routes to the quiet syncing/reconnecting surface, never the hard
-    // "something went wrong" card.
-    expect(body.getAttribute("data-is-syncing")).toBe("true");
-    expect(body.getAttribute("data-is-unavailable")).toBe("true");
+    // "something went wrong" card. Both halves are asserted: the presence alone
+    // would pass on a surface that rendered every unavailable state at once.
+    expect(screen.getByText(SYNCING_TITLE)).not.toBeNull();
+    expect(screen.queryByText(OUTAGE_TITLE)).toBeNull();
     // ISS-4483 (review cid 3679535439): HOLD the labels, skeleton only the values.
     // The always-available cards keep their labels (the row keeps its shape and the
     // user can read what is coming) while the value slot shimmers — so the labels
@@ -229,6 +257,13 @@ describe("SessionsView transient db-host read (ISS-4483)", () => {
       data: undefined,
       isLoading: false,
       isError: true,
+      // ISS-7528: an INITIAL rejection sets BOTH flags on the real observer
+      // (`isLoadingError = isError && no data was ever loaded`), so this
+      // hand-set fixture states both. They diverge only on a refetch failure
+      // over held data — the case a hand-set fixture cannot represent at all,
+      // and which `sessions-view-read-failure-states.test.tsx` drives through a
+      // real query instead.
+      isLoadingError: true,
       error: new Error("SQLITE_CORRUPT: database disk image is malformed"),
       isFetching: false,
       isPlaceholderData: false,
@@ -237,9 +272,77 @@ describe("SessionsView transient db-host read (ISS-4483)", () => {
 
     await renderSettled();
 
-    const body = screen.getByTestId("sessions-table-body");
-    // A fatal error is unavailable but NOT syncing → the hard error + Retry surface.
-    expect(body.getAttribute("data-is-syncing")).toBe("false");
-    expect(body.getAttribute("data-is-unavailable")).toBe("true");
+    // A fatal error is unavailable but NOT syncing → the hard error surface, and
+    // the quiet syncing copy must not stand in for it.
+    expect(screen.getByText(OUTAGE_TITLE)).not.toBeNull();
+    expect(screen.queryByText(SYNCING_TITLE)).toBeNull();
+  });
+
+  /**
+   * ISS-6382 (whitlockk review): the bounded usage recovery drives a MANUAL
+   * `refetch()`, which ignores `enabled`, off a signal read from the query's
+   * `data` — the CACHED payload on a revisit. So a cached `usageErrorTransient`
+   * armed the recovery while the restore gate held the read closed, and one
+   * backoff later fetched the default view anyway. This asserts the wiring: that
+   * the view hands the recovery its EFFECTIVE gate, not a constant.
+   */
+  it("does not let a CACHED transient usage error refetch through the closed restore gate", async () => {
+    vi.useFakeTimers();
+    try {
+      const refetch = vi.fn().mockResolvedValue(undefined);
+      hooks.useAgentSessionsPageData.mockReturnValue({
+        // The warm cache: a resolved payload the observer still serves while
+        // `enabled` is false. `usageErrorTransient` is what arms the recovery.
+        data: {
+          sessions: [],
+          total: 0,
+          usage: undefined,
+          usageError: true,
+          usageErrorTransient: true,
+        },
+        isLoading: false,
+        isError: false,
+        isFetching: false,
+        isPlaceholderData: false,
+        refetch,
+      });
+      setViewReady(false);
+
+      const { rerender } = render(<SessionsView />, {
+        wrapper: SessionsViewTestProviders,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          queryRetryDelay(0) + queryRetryDelay(1)
+        );
+      });
+
+      // Slow auth hydration keeps `isViewReady` false well past the first
+      // backoff. Nothing may be dispatched in that window.
+      expect(refetch).not.toHaveBeenCalled();
+
+      // POSITIVE CONTROL. Without it, a recovery that never fires at all passes
+      // the assertion above, and `enabled false forever` would read as a fix.
+      setViewReady(true);
+      rerender(<SessionsView />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(queryRetryDelay(0));
+      });
+
+      expect(refetch).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
+
+function setViewReady(isViewReady: boolean) {
+  hooks.useSessionsViewState.mockReturnValue({
+    isViewReady,
+    sortKey: null,
+    sortDir: "desc",
+    visibleColumns: new Set<string>(["name"]),
+    setSort: vi.fn(),
+    toggleColumn: vi.fn(),
+  });
+}

@@ -38,9 +38,7 @@ import type http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
-import { vi } from "vitest";
-import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
+import { afterEach, test, vi } from "vitest";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 
@@ -215,7 +213,7 @@ test("non-EADDRINUSE listen error is rethrown, not wrapped in the exhausted-cand
     getAllowedDirectories: () => [],
     discoveryFilePath: "",
   });
-  // Still push so afterEach disposes the LoopSchedulerContext cleanly.
+  // Still push so afterEach stops it cleanly.
   serversToClose.push(srv);
 
   await assert.rejects(
@@ -352,50 +350,4 @@ test("start() succeeds without writing a discovery file when discoveryFilePath i
     srv.getActivePort() > 0,
     "server must have bound to a real port even without writing a discovery file"
   );
-});
-
-// ---------------------------------------------------------------------------
-// Bonus — ownsSchedulers: false does not dispose externally-supplied schedulers
-// ---------------------------------------------------------------------------
-
-test("stop() does not dispose schedulers when an external LoopSchedulerContext is injected", async () => {
-  const schedulers = new LoopSchedulerContext();
-  let disposeCallCount = 0;
-
-  // Mock the prototype method rather than the instance: [Symbol.dispose] is
-  // defined on the prototype, not as an own property of each instance. Mocking
-  // the instance's own property would fail the mock-restore mechanism because
-  // node:test's mock.method saves the original as `instance[key]` and then
-  // restores it — which is undefined for prototype-only methods.
-  vi.spyOn(LoopSchedulerContext.prototype, Symbol.dispose).mockImplementation(
-    () => {
-      disposeCallCount++;
-    }
-  );
-
-  const srv = new DesktopGatewayServer({
-    host: "127.0.0.1",
-    preferredPort: 0,
-    fallbackPorts: [0],
-    webAppOrigin: "http://localhost:3000",
-    machineName: "test",
-    version: "0.0.1",
-    capabilities: EMPTY_CAPABILITIES,
-    getAllowedDirectories: () => [],
-    discoveryFilePath: "",
-    schedulers,
-  });
-  serversToClose.push(srv);
-
-  await srv.start();
-  await srv.stop();
-
-  assert.equal(
-    disposeCallCount,
-    0,
-    "stop() must not call [Symbol.dispose] on an externally-supplied LoopSchedulerContext"
-  );
-  // afterEach calls mock.restoreAll() which restores LoopSchedulerContext.prototype
-  // [Symbol.dispose]. No registered timers exist (no loops were started), so
-  // explicit disposal is not required for test isolation.
 });

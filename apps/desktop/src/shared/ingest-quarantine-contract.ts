@@ -1,6 +1,6 @@
 /**
  * @file ingest-quarantine-contract.ts
- * @description ISS-6115 (wongk review): the ingest-quarantine vocabulary shared
+ * @description ISS-6115 (whitlockk review): the ingest-quarantine vocabulary shared
  * by the main-process store and the renderer copy that reports it.
  *
  * It lives here rather than beside the store because the store's module reaches

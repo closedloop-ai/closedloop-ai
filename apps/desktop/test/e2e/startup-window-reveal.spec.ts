@@ -67,14 +67,14 @@ type WindowState = {
   visible: boolean;
   /**
    * ISS-6112. Read back off the LIVE `webContents`, not off the config object
-   * we passed in (wongk, PR #4920): the unit tests prove `window.ts` spreads
+   * we passed in (whitlockk, PR #4920): the unit tests prove `window.ts` spreads
    * `backgroundThrottling: false` into `webPreferences`, and stay green if
    * Electron ignores the key or resolves it differently. Only the running
    * window can say whether the setting took.
    */
   backgroundThrottling: boolean | null;
   /**
-   * ISS-6112 (wongk, PR #4920). The RENDERER's own view of whether it is
+   * ISS-6112 (whitlockk, PR #4920). The RENDERER's own view of whether it is
    * visible, read through `executeJavaScript` because `document` does not
    * exist in the main process. `null` when there is no live window to ask, or
    * when the renderer is not far enough along to answer — distinguished from a
@@ -268,7 +268,7 @@ test("a suppressed launch runs the same reveal sequence with the window off scre
     ).toBe(false);
 
     // ISS-6112, and the reason this assertion is HERE rather than in a unit
-    // test (wongk, PR #4920): a never-shown window is exactly the state
+    // test (whitlockk, PR #4920): a never-shown window is exactly the state
     // Chromium throttles, and the suppressed launch is the only place in the
     // suite that reaches it. Asserting the live value closes the gap the unit
     // tests cannot — they pin what `window.ts` passes, and would stay green if
@@ -278,7 +278,7 @@ test("a suppressed launch runs the same reveal sequence with the window off scre
       "the suppressed window's renderer must stay unthrottled while hidden"
     ).toBe(false);
 
-    // ISS-6112 (wongk, PR #4920). MEASURED on desktop-e2e run 31699649713
+    // ISS-6112 (whitlockk, PR #4920). MEASURED on desktop-e2e run 31699649713
     // (ubuntu-latest), not assumed — and the measurement overturned the obvious
     // reading, which is why it is asserted rather than argued.
     //

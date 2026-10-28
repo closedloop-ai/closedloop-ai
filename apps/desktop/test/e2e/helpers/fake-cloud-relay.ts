@@ -20,6 +20,74 @@ export type FakeCloudRelay = {
   origin: string;
 };
 
+export type FakeAuthenticatedCloudRelay = FakeCloudRelay & {
+  activeConnectionCount: () => number;
+  ackCount: () => number;
+  commandCount: () => number;
+  connectionCount: () => number;
+  disconnectCount: () => number;
+  presenceCount: () => number;
+  offerCommand: (payload: Record<string, unknown>) => void;
+};
+
+/** Successful port-zero relay with observable command and acknowledgement counters. */
+export async function startAuthenticatedCloudRelay(
+  options: { agentSessionSync?: boolean } = {}
+): Promise<FakeAuthenticatedCloudRelay> {
+  let helloCount = 0;
+  let ackCount = 0;
+  let commandCount = 0;
+  let connectionCount = 0;
+  let activeConnectionCount = 0;
+  let disconnectCount = 0;
+  let presenceCount = 0;
+  const server = createServer((_request, response) => {
+    response.statusCode = 404;
+    response.end();
+  });
+  const socketServer = new SocketIoServer(server, { serveClient: false });
+  const namespace = socketServer.of("/desktop-gateway");
+  namespace.on("connection", (socket) => {
+    connectionCount += 1;
+    activeConnectionCount += 1;
+    socket.on("disconnect", () => {
+      activeConnectionCount -= 1;
+      disconnectCount += 1;
+    });
+    socket.on("desktop.hello", () => {
+      helloCount += 1;
+      socket.emit("desktop.hello.ack", {
+        computeTargetId: "iss-10574-synthetic-target",
+        serverCapabilities: options.agentSessionSync
+          ? { agentSessionSync: true }
+          : {},
+      });
+    });
+    socket.on("desktop.command.ack", () => {
+      ackCount += 1;
+    });
+    socket.on("desktop.command.event", () => {
+      commandCount += 1;
+    });
+    socket.on("desktop.presence", () => {
+      presenceCount += 1;
+    });
+  });
+  const origin = await listen(server);
+  return {
+    origin,
+    activeConnectionCount: () => activeConnectionCount,
+    helloCount: () => helloCount,
+    ackCount: () => ackCount,
+    commandCount: () => commandCount,
+    connectionCount: () => connectionCount,
+    disconnectCount: () => disconnectCount,
+    presenceCount: () => presenceCount,
+    offerCommand: (payload) => namespace.emit("desktop.command", payload),
+    close: () => closeSocketServer(socketServer),
+  };
+}
+
 /**
  * Starts a relay that refuses every hello with `reason`, mirroring the API's
  * own ordering: emit the nack, then close the connection.
@@ -46,6 +114,39 @@ export async function startHelloNackRelay(
     helloCount: () => helloCount,
     // `SocketIoServer.close` also closes the http server it was attached to, so
     // closing that separately would call back with ERR_SERVER_NOT_RUNNING.
+    close: () => closeSocketServer(socketServer),
+  };
+}
+
+/**
+ * ISS-11843: a relay that closes every hello WITHOUT a `desktop.hello.nack` —
+ * the refused-handshake loop the desktop must stop after three in a row.
+ */
+export async function startHelloMuteCloseRelay(): Promise<
+  FakeCloudRelay & { activeConnectionCount: () => number }
+> {
+  let helloCount = 0;
+  let activeConnectionCount = 0;
+  const server = createServer((_request, response) => {
+    response.statusCode = 404;
+    response.end();
+  });
+  const socketServer = new SocketIoServer(server, { serveClient: false });
+  socketServer.of("/desktop-gateway").on("connection", (socket) => {
+    activeConnectionCount += 1;
+    socket.on("disconnect", () => {
+      activeConnectionCount -= 1;
+    });
+    socket.on("desktop.hello", () => {
+      helloCount += 1;
+      socket.disconnect(true);
+    });
+  });
+  const origin = await listen(server);
+  return {
+    origin,
+    activeConnectionCount: () => activeConnectionCount,
+    helloCount: () => helloCount,
     close: () => closeSocketServer(socketServer),
   };
 }
@@ -103,7 +204,5 @@ async function listen(server: Server): Promise<string> {
 }
 
 async function closeSocketServer(socketServer: SocketIoServer): Promise<void> {
-  await new Promise<void>((resolve) => {
-    socketServer.close(() => resolve());
-  });
+  await socketServer.close();
 }

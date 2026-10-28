@@ -28,6 +28,45 @@ export type AgentSessionAgentTypeBreakdown = {
   avgDurationMs: number | null;
 };
 
+/**
+ * ISS-6890 (#5209 review): how much of the population behind
+ * {@link AgentSessionAgentTypeBreakdown} could not be read.
+ *
+ * The rows above are counts over a cohort, and a session whose persisted roster
+ * is partly unreadable contributes only its READABLE members — so the rows are a
+ * lower bound, not the exact population, and a consumer that sums them would
+ * otherwise present the short total as the whole one. ISS-10733 deleted the
+ * table that did that summing, so nothing reads this field today; it is kept
+ * because it is additive and optional and its producer still emits it. This is
+ * the org-wide analogue of
+ * `AgentSessionDetail.rosterIncomplete`, which says the same thing about ONE
+ * session's roster, and it exists because the analytics fold walks a population
+ * the detail read never visits.
+ *
+ * It is deliberately NOT a per-row field: an unreadable member has no readable
+ * agent type, so there is no bucket to attribute it to. The incompleteness is a
+ * property of the whole fold, so it rides the analytics response beside the
+ * rows.
+ *
+ * ADDITIVE AND OPTIONAL, and ABSENCE is the only encoding of "the population is
+ * complete" (root `AGENTS.md` → Cross-Repo Compatibility). A producer that
+ * predates this field — the desktop's local SQL/hydrate folds, which read their
+ * own typed rows and have no such blob — omits it and degrades to the complete
+ * reading, exactly as today. It is never serialized as `null`.
+ */
+export type AgentSessionAgentRosterIncompleteness = {
+  /**
+   * How many roster members the fold could not read across the whole
+   * population, or `null` when at least one session's stored roster was not a
+   * readable array at all and the number lost is genuinely unknown. Never `0` —
+   * a whole population omits the field instead of reporting zero loss, so a
+   * consumer never has to decide whether a present zero means "complete".
+   */
+  unreadableAgents: number | null;
+  /** How many sessions in the population served an incomplete roster. Always positive. */
+  affectedSessions: number;
+};
+
 export type AgentSessionRepositoryBreakdown = {
   repositoryFullName: string;
   sessionCount: number;

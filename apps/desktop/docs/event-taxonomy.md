@@ -1,8 +1,8 @@
 # Desktop Product Analytics Event Taxonomy
 
 Living reference of product analytics events captured by the desktop app and
-relayed to `symphony-alpha` over the authenticated gateway socket. Electron
-does not package, read, or send a PostHog token; `symphony-alpha` validates,
+sent to `closedloop-ai`'s `POST /desktop/analytics` route over HTTP. Electron
+does not package, read, or send a PostHog token; `closedloop-ai` validates,
 enriches, feature-gates, and forwards accepted events server-side.
 
 > **See also:** for **harness session telemetry** (which session metrics come
@@ -50,7 +50,7 @@ enriches, feature-gates, and forwards accepted events server-side.
 
 ## Telemetry Events (Datadog-bound)
 
-Structured events emitted via `TelemetryService` (`src/main/telemetry-service.ts`), transported through the cloud relay socket to Datadog. These are distinct from the product analytics events above because they carry operational diagnostics, not user-behavior analytics. Categories are defined in the `TelemetryCategory` string-literal union type in `src/main/telemetry-protocol.ts`.
+Structured events emitted via `TelemetryService` (`src/main/telemetry-service.ts`), sent to the API's `POST /desktop/telemetry` route and logged to Datadog. These are distinct from the product analytics events above because they carry operational diagnostics, not user-behavior analytics. Categories are defined in the `TelemetryCategory` string-literal union type in `src/main/telemetry-protocol.ts`.
 
 ### Connection Lifecycle
 
@@ -71,27 +71,6 @@ Structured events emitted via `TelemetryService` (`src/main/telemetry-service.ts
 | `command.timeout` | error | `"Command timed out"` | `commandId`, `operationId` | `Observability.commandTimedOut()` |
 | `command.cancelled` | warn | `"Command cancelled"` | `commandId`, `operationId` | `Observability.commandCancelled()` |
 | `command.gateway_error` | error | _(message string passed by caller)_ | `commandId`, `operationId` | `Observability.commandFailed()` |
-
-### Job Lifecycle
-
-> **WARNING:** `diagnostics.logTail` contains raw subprocess output truncated to 4 KiB by `truncateToBytes()` — NOT sanitized for secrets or PII.
-
-| Category | Severity | Trigger / Message | Trace Fields | Emitting Method |
-|----------|----------|-------------------|--------------|-----------------|
-| `job.started` | info | `"Job started with pid=<pid>"` | `commandId`, `operationId`, `loopId`, `jobId` | `Observability.jobStarted()` |
-| `job.completed` | info | `"Job completed successfully"` | `commandId`, `operationId`, `loopId`, `jobId`, `loopSessionId` | `Observability.jobCompleted()` |
-| `job.failed` | error | `"Process exited with code <exitCode>"` | `commandId`, `operationId`, `loopId`, `jobId`, `loopSessionId` — `exitCode` in diagnostics | `Observability.jobFailed()` |
-| `job.cancelled` | info | `"Process cancelled (exit code <exitCode>)"` | `commandId`, `operationId`, `loopId`, `jobId`, `loopSessionId` — `exitCode` in diagnostics | `Observability.jobCancelled()` |
-| `job.auth_challenge` | error | `"Auth challenge detected (exit code <exitCode>)"` | `commandId`, `operationId`, `loopId`, `jobId`, `loopSessionId` — `exitCode` in diagnostics | `Observability.jobAuthChallenge()` |
-| `job.recovery.finalize_replayed` | TBD | _(emitted externally)_ | _(varies)_ | via `Observability.getTelemetryEmitter()` |
-
-### Preflight Checks
-
-| Category | Severity | Trigger / Message | Trace Fields | Emitting Method |
-|----------|----------|-------------------|--------------|-----------------|
-| `preflight.binary_not_found` | error | `"claude CLI not found in PATH"` | `commandId`, `operationId`, `loopId` | `Observability.preflightBinaryNotFound()` |
-| `preflight.script_not_found` | error | `"run-loop.sh not found in plugin cache"` | `commandId`, `operationId`, `loopId` | `Observability.preflightScriptNotFound()` |
-| `preflight.spawn_failed` | error | _(message string passed by caller)_ | `commandId`, `operationId`, `loopId` | `Observability.preflightSpawnFailed()` |
 
 ### Queue Stats
 
@@ -114,26 +93,16 @@ Every Datadog-bound event emitted by `TelemetryService.enrichEvent()` contains t
 | `commandId` | `string` | Caller-provided, or `""` | Defaulted to `""` by `enrichEvent()` before applying caller-provided trace; always present on the wire |
 | `operationId` | `string` | Caller-provided, or `""` | Same default behaviour as `commandId`; always present on the wire |
 
-#### Caller-populated only (not auto-injected)
-
-These fields from `TelemetryTraceContext` are **not** added by `enrichEvent()`. They appear only when the calling `Observability` method explicitly sets them — currently limited to job lifecycle events (`job.*`) and preflight events.
-
-| Field | Type | Populated by |
-|-------|------|-------------|
-| `loopId` | `string` | `Observability.jobStarted()`, `jobCompleted()`, `jobFailed()`, `jobCancelled()`, `jobAuthChallenge()`, preflight methods |
-| `jobId` | `string` | `Observability.jobStarted()`, `jobCompleted()`, `jobFailed()`, `jobCancelled()`, `jobAuthChallenge()` |
-| `loopSessionId` | `string` | `Observability.jobCompleted()`, `jobFailed()`, `jobCancelled()`, `jobAuthChallenge()` |
-
 > **Privacy warning:** `diagnostics.logTail` contains raw subprocess output truncated to 4 KiB by `truncateToBytes()` for size only — it is **NOT sanitized for secrets or PII** before transmission to Datadog.
 
 ## Common Properties
 
-Desktop sends only bounded non-sensitive event properties. `symphony-alpha`
+Desktop sends only bounded non-sensitive event properties. `closedloop-ai`
 adds the server-owned common properties before forwarding:
 
-- `distinct_id` — gateway-owner Clerk user id from authenticated socket context
-- `compute_target_id` — authenticated compute target id from socket/session context
-- `organization_id` — gateway-owner organization id from authenticated socket context
+- `distinct_id` — gateway-owner Clerk user id from the authenticated request
+- `compute_target_id` — compute target id, ownership-checked against the authenticated request
+- `organization_id` — gateway-owner organization id from the authenticated request
 - `origin` — always `desktop`
 - `desktop_attribution_model` — always `gateway_owner`
 - `desktop_client_version` — Electron app version when Desktop supplied it
@@ -145,20 +114,27 @@ Desktop product analytics event names remain underscore-separated and non-namesp
 
 Web analytics identify users with Clerk user ids. To join Desktop and web behavior for a gateway owner, filter PostHog events where `distinct_id = <gateway-owner-clerk-user-id>` and compare Desktop events such as `command_completed` or `desktop_connection_established` with web events for the same user. Add `compute_target_id = <target-id>` when target-level slicing is needed.
 
-### Shared Gateway Attribution
+### Gateway Owner Attribution
 
-Desktop-originated product analytics are gateway-owner/device analytics. When a compute target is shared with the organization and another user dispatches a command, events emitted by the owner's Electron gateway still use the owner's Clerk id as server-enriched `distinct_id` and include `desktop_attribution_model = "gateway_owner"`. Per-requester Desktop attribution is not available in this feature because the current `desktop.command` payload does not carry requester Clerk identity; use server-side or web events for requester analytics until a separate per-command attribution feature exists.
+Desktop-originated product analytics are gateway-owner/device analytics: events emitted by the owner's Electron gateway use the owner's Clerk id as server-enriched `distinct_id` and include `desktop_attribution_model = "gateway_owner"`. Compute targets are no longer shared with the organization (ISS-12617), so the requester of a command is the gateway owner. The `desktop.command` payload does not carry requester Clerk identity; use server-side or web events for requester analytics.
 
 ### Rollout Control
 
-Server forwarding is controlled by the `desktop-server-analytics-relay` feature
-flag in `symphony-alpha`. When disabled, the server returns a feature-disabled
-ack and Desktop drops analytics without affecting command/control traffic.
+Server forwarding is always on: PRD-736 P1 retired the
+`desktop-server-analytics-relay` feature flag (100% rollout since 2026-05-18).
+Two Vercel Firewall rules match the `/desktop/analytics` path as a prefix,
+managed by OpenTofu in example-org/infrastructure (`stage/vercel/api` and
+`prod/vercel/api`; platform-portable to AWS WAF if the API moves to ECS): an
+active rate limit of 600 requests per minute per IP that answers 429, and the
+kill switch for Desktop's transport, an edge-WAF deny rule that is present but
+off by default.
+Desktop's only analytics transport is that HTTP lane,
+and it treats the deny rule's uncoded 403 as a silent drop without affecting
+command/control traffic.
 
 ### Manual Validation
 
-1. Ensure the server environment has PostHog configured and the server relay
-   flag enabled for the gateway owner.
+1. Ensure the server environment has PostHog configured.
 2. Run Desktop and connect to cloud with a gateway-owner account that has Clerk
    identity.
 3. Trigger a command, then quit immediately after the command event.
@@ -191,10 +167,10 @@ ack and Desktop drops analytics without affecting command/control traffic.
 
 2. **Add a static method to `Observability` in `src/main/observability.ts`** that delegates to the private `emitTelemetry(severity, category, message, trace, diagnostics?)` helper. Follow the signature conventions used by existing methods:
 
-   - Job-lifecycle and preflight methods take `commandId: string | undefined, operationId: string | undefined` (because the values may not be available at the call site).
+   - Command-scoped methods that may not have the values at the call site take `commandId: string | undefined, operationId: string | undefined`.
    - Connection-lifecycle methods take concrete string parameters and pass them directly in the `trace` object or in `diagnostics.extra`.
 
-   Example skeleton for a job-scoped event:
+   Example skeleton for a command-scoped event:
 
    ```ts
    static domainNewAction(commandId: string | undefined, operationId: string | undefined): void {
@@ -231,7 +207,7 @@ ack and Desktop drops analytics without affecting command/control traffic.
 
 ## End-to-End Telemetry Verification
 
-Manual runbook to confirm that a Datadog-bound telemetry event travels the full path from the desktop process through the cloud relay to Datadog. Uses only connection-lifecycle events to avoid triggering job lifecycle events, which populate `diagnostics.logTail` with raw subprocess output that may contain secrets.
+Manual runbook to confirm that a Datadog-bound telemetry event travels the full path from the desktop process through the API's `POST /desktop/telemetry` route to Datadog. Uses only connection-lifecycle events, so no event carries `diagnostics.logTail` raw subprocess output that may contain secrets.
 
 1. **Start the desktop app.**
 
@@ -264,8 +240,55 @@ The event appears in Datadog within 60 seconds and satisfies all of the followin
 **(a) Event is missing from Datadog.**
 Check the desktop process logs for errors in the `sendTelemetry` callback. A stack trace or `"failed to send telemetry"` message here indicates the event was built but not transmitted.
 
-**(b) Event not received by the relay.**
-Check cloud relay logs for received telemetry frames. If the relay never sees the frame, the problem is between the desktop socket client and the relay — inspect the WebSocket connection and any reconnection errors.
+**(b) Event not received by the API.**
+Check the API logs for `POST /desktop/telemetry` requests. If none arrive, the problem is between the desktop HTTP telemetry lane and the API — the lane sends only while a first-party session is signed in and the cloud socket has resolved the compute-target identity, so confirm both before inspecting the HTTP request itself.
 
 **(c) `Observability.init()` called with a no-op sender.**
 Running `just desktop-no-auth` calls `initNoOp()`, which discards all telemetry events without transmitting them. Verify that `Observability.init()` was called with a real `telemetrySend` callback (i.e. the app is authenticated and connected to the cloud relay) before concluding that events are lost.
+
+
+## Failed account-step attempts (ISS-11127)
+
+`onboarding_step_failed` is the generic failed-step event. Browser sign-in emits
+it at most once per unsuccessful run, with `step: account`, the standard funnel
+properties, and the closed `failure_reason`. It always uses that run's pre-auth
+`flow_id` identity. It does not imply account creation or completion.
+
+| Evidence | `account_mode` |
+| --- | --- |
+| Creation received in the matching callback, login failed | `["created", "logged_out"]` |
+| Browser opened, no creation observed | `["creation_unconfirmed"]` |
+| Browser never opened | `["creation_unattempted"]` |
+| Older or unrecognized outcome | `["unknown"]` |
+
+An authenticated run emits no failure. A browser closed without a callback is
+reported by the existing timeout or cancellation; there is no browser-closed
+reason. A received creation fact survives cancellation during exchange.
+
+The optional case 2 join registers the existing PKCE challenge directly with
+`/desktop/analytics/sign-in/register`; the web server reports the validated run
+cookie's challenge to `/desktop/analytics/sign-in/report`. No flow ID goes on a
+URL, and no challenge (raw or hashed) goes to PostHog. The store expires after
+20 minutes; conditional consumption and Clerk creation-time verification happen
+server-side. Neither HTTP operation is awaited by sign-in.
+
+### Release verification
+
+Deploy the reader-contract PR before the emitter PR. The September 30 privacy
+ruling permits case 2 (ISS-11606); the ISS-10682 edge deny and 600 requests/min/IP
+rules must still be verified for the entire `/desktop/analytics` prefix before
+registration ships. Apply the generated migration and verify Prisma dev drift
+and seed on a throwaway PostgreSQL database. Never use a shared database for
+that verification.
+
+The case 2 monitoring insight is the person-joined funnel `User Created` →
+`onboarding_step_failed` filtered to `step = account` and
+`account_mode contains creation_unconfirmed`, excluding flows with
+`onboarding_step_completed[account]`. Use the event's `flow_id` to distinguish
+attempts and weekly buckets at the current low traffic volume. Compare its
+count against new desktop-initiated sign-ups; a sustained zero after nonzero
+sign-ups needs investigation of registration validation, the 1,000-row live
+cap (API warn `registration_cap_reached`), lookup expiry and Clerk report
+delivery, including after PKCE-format changes. Configure and verify
+this insight in PostHog before rollout; a local test cannot establish delivery
+to the production analytics sink.

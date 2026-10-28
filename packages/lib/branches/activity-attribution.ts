@@ -86,6 +86,12 @@ type SegmentAccumulator = {
   costEvents: NonNullable<BranchActivitySegment["costEvents"]>[number][];
 };
 
+type SpanIndexLookup = (tMs: number) => number;
+
+type OrderedSpanLookupState = {
+  cursor: number;
+};
+
 /** A span is renderable only with finite bounds and positive duration. */
 function isValidSpan(span: ActivitySegmentSpan): boolean {
   return (
@@ -112,6 +118,87 @@ function spanIndexAt(
     const { span } = spans[i];
     if (tMs >= span.startMs && tMs < span.endMs) {
       return i;
+    }
+  }
+  return -1;
+}
+
+function createSpanIndexLookup(
+  spans: readonly SegmentAccumulator[]
+): SpanIndexLookup {
+  if (spans.length < 2 || !spansAreOrderedNonOverlapping(spans)) {
+    return (tMs) => spanIndexAt(spans, tMs);
+  }
+  const state: OrderedSpanLookupState = { cursor: 0 };
+  return (tMs) => orderedSpanIndexAt(spans, tMs, state);
+}
+
+function spansAreOrderedNonOverlapping(
+  spans: readonly SegmentAccumulator[]
+): boolean {
+  let previousEndMs = Number.NEGATIVE_INFINITY;
+  for (const { span } of spans) {
+    if (span.startMs < previousEndMs) {
+      return false;
+    }
+    previousEndMs = span.endMs;
+  }
+  return true;
+}
+
+function orderedSpanIndexAt(
+  spans: readonly SegmentAccumulator[],
+  tMs: number,
+  state: OrderedSpanLookupState
+): number {
+  if (!Number.isFinite(tMs)) {
+    return -1;
+  }
+  if (state.cursor >= spans.length) {
+    const lastSpan = spans.at(-1);
+    if (!lastSpan || tMs >= lastSpan.span.endMs) {
+      return -1;
+    }
+    return binarySearchSpanIndexAt(spans, tMs, state);
+  }
+
+  const current = spans[state.cursor].span;
+  if (tMs >= current.startMs && tMs < current.endMs) {
+    return state.cursor;
+  }
+  if (tMs < current.startMs) {
+    return binarySearchSpanIndexAt(spans, tMs, state);
+  }
+
+  let nextCursor = state.cursor + 1;
+  while (nextCursor < spans.length && tMs >= spans[nextCursor].span.endMs) {
+    nextCursor += 1;
+  }
+  state.cursor = nextCursor;
+  if (nextCursor >= spans.length) {
+    return -1;
+  }
+  const next = spans[nextCursor].span;
+  return tMs >= next.startMs ? nextCursor : -1;
+}
+
+function binarySearchSpanIndexAt(
+  spans: readonly SegmentAccumulator[],
+  tMs: number,
+  state: OrderedSpanLookupState
+): number {
+  let low = 0;
+  let high = spans.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const { span } = spans[middle];
+    if (tMs < span.startMs) {
+      high = middle - 1;
+    } else if (tMs >= span.endMs) {
+      low = middle + 1;
+    } else {
+      state.cursor = middle;
+      return middle;
     }
   }
   return -1;
@@ -148,8 +235,9 @@ export function attributeBranchSessionActivity(
     }
   }
 
+  const spanIndexFor = createSpanIndexLookup(accumulators);
   for (const event of events) {
-    const index = spanIndexAt(accumulators, event.tMs);
+    const index = spanIndexFor(event.tMs);
     if (index < 0) {
       continue;
     }

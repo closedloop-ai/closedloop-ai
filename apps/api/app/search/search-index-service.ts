@@ -1,8 +1,7 @@
 /**
  * FEA-3863 (parent FEA-3800, PLN-1456 Slice 2) — write-time indexing hooks that
  * keep the `search_document` full-text projection (FEA-3857) eventually
- * consistent with the Phase-1 corpus: Document/Feature Artifacts, Projects, and
- * Loops.
+ * consistent with the Phase-1 corpus: Document/Feature Artifacts and Projects.
  *
  * FAIL-OPEN, POST-COMMIT, BEST-EFFORT (spec + AGENTS serverless-route rule): a
  * projection write must NEVER block or fail the authoritative primary write. The
@@ -13,6 +12,18 @@
  * projection failure can therefore never roll back or 500 the user's write; the
  * one-shot backfill (`packages/database` `backfill:search-documents`) is the
  * reconcile safety net for any hook that silently lost.
+ *
+ * ONE COLUMN IS TRIGGER-OWNED (ISS-9938): `status` on document rows. Once such
+ * a row exists, only the `artifacts_search_document_status_sync` trigger
+ * changes its status, inside the status write's own transaction.
+ * {@link searchIndexService.upsertMany} leaves it alone on conflict, because a re-index carries the status captured at its own
+ * write and can land after a newer one. On insert it reads the status from the
+ * source row in the same statement instead of trusting the captured value: a
+ * status write that commits before the row exists finds nothing for its trigger
+ * to update. The gap that remains is a status write whose transaction is still
+ * open when that insert reads the source; closing it would mean locking the
+ * source row from here, the reverse of the trigger's lock order. Everything else
+ * on the row, and `status` on every other row type, stays best-effort.
  *
  * ORG-SCOPED: `organizationId` is part of every write and part of the
  * projection's unique key `(organization_id, entity_type, entity_id)`, so a
@@ -30,14 +41,17 @@ import {
 } from "@repo/api/src/types/agent-component-analytics";
 import {
   boundSearchText,
-  MAX_SEARCH_BODY_CHARS,
   MAX_SEARCH_TITLE_CHARS,
 } from "@repo/api/src/types/search";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
+import {
+  SearchEntityType,
+  STATUS_TRIGGER_OWNED_ENTITY_TYPES,
+} from "@repo/api/src/types/search-entity-kind";
 import { Prisma, withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
+import { projectionValuesRow } from "./search-document-values";
 
 /**
  * A projection row to upsert. Mirrors the writable columns of `search_document`;
@@ -54,19 +68,22 @@ export type SearchProjectionInput = {
   /**
    * The source entity's lifecycle status as its raw string (FEA-3930) — powers
    * the `:status` query-language filter. Null where the source has no status
-   * (comment/PR/branch/session in the projection).
+   * (comment/PR/branch/session in the projection). On document rows it
+   * is only a fallback: the insert reads the source row's status in the same
+   * statement, and database triggers own it after that (ISS-9938).
    */
   status: string | null;
   /**
    * The source entity's priority as its raw string (LOW/MEDIUM/HIGH/URGENT) —
    * powers the ordinal-compared `:priority` filter (FEA-3930). Null where the
-   * source has none (a loop, comment, PR, branch, or session has no priority).
+   * source has none (a comment, PR, or component has no priority) and
+   * where a priority-bearing source (document, project, branch, session) holds
+   * none; `PRIORITY_BEARING_ENTITY_TYPES` is what tells the two apart.
    */
   priority: string | null;
   updatedAt: Date;
   // Phase-2 route fields. Nullable — the type that does not carry a given field
-  // leaves it null (documents: slug + entitySubtype; projects: slug + teamId;
-  // loops: none).
+  // leaves it null (documents: slug + entitySubtype; projects: slug + teamId).
   slug: string | null;
   entitySubtype: string | null;
   teamId: string | null;
@@ -126,7 +143,11 @@ export const searchIndexService = {
           "body" = EXCLUDED."body",
           "project_id" = EXCLUDED."project_id",
           "assignee_id" = EXCLUDED."assignee_id",
-          "status" = EXCLUDED."status",
+          "status" = CASE
+            WHEN "search_document"."entity_type" IN (${Prisma.join(STATUS_TRIGGER_OWNED_ENTITY_TYPES)})
+              THEN "search_document"."status"
+            ELSE EXCLUDED."status"
+          END,
           "priority" = EXCLUDED."priority",
           "updated_at" = EXCLUDED."updated_at",
           "slug" = EXCLUDED."slug",
@@ -246,6 +267,191 @@ export const searchIndexService = {
       { count: String(keys.length) }
     );
   },
+
+  /**
+   * Retitle an ALREADY-PROJECTED row in place, leaving every other column —
+   * `body` above all — untouched (ISS-8717, review: whitlockk + codex).
+   *
+   * UPDATE, never upsert, and that is the point rather than an optimization.
+   * The two callers that could want this both rename an entity whose searchable
+   * BODY they do not hold: an agent session's body is transcript text that only
+   * `transcriptSearchIndexService` can read (a bounded S3 GET), so an upsert
+   * from a rename would either have to re-read S3 on the request path or write
+   * an empty body over a good one. It must also not CREATE a row: a session is
+   * projected only for an org that opted into transcript search
+   * (`Organization.searchIncludeTranscripts`), so inserting here would index a
+   * session for an org that never opted in. No row therefore means "nothing to
+   * keep consistent", and the next index/backfill picks the new title up from
+   * the source, which already prefers the override.
+   *
+   * Org-scoped like every other write here: `organization_id` is in the `WHERE`,
+   * so one org's rename can never retitle another's row. Throws on failure —
+   * hot-path callers use {@link searchIndexService.updateTitleAfterCommit}.
+   */
+  async updateTitle(key: SearchProjectionKey, title: string): Promise<void> {
+    // Bounded by the same cap the upsert path applies, so a pathological name
+    // cannot bloat the generated `tsv` on this route either. An all-whitespace
+    // title bounds to null; the projection's column is NOT NULL, so coalesce to
+    // the empty string exactly as `projectionValuesRow` does.
+    const bounded = boundSearchText(title, MAX_SEARCH_TITLE_CHARS) ?? "";
+    await withDb(
+      (db) =>
+        db.$executeRaw`
+        UPDATE "search_document"
+        SET "title" = ${bounded}
+        WHERE "organization_id" = ${key.organizationId}::uuid
+          AND "entity_type" = ${key.entityType}
+          AND "entity_id" = ${key.entityId}::uuid
+      `
+    );
+  },
+
+  /**
+   * Fail-open, non-blocking retitle for the write hot path. Schedules
+   * {@link searchIndexService.updateTitle} through `waitUntil` and swallows any
+   * error (logged), so a projection failure can never roll back or 500 the
+   * rename that is already committed.
+   */
+  updateTitleAfterCommit(key: SearchProjectionKey, title: string): void {
+    runBestEffort(
+      () => searchIndexService.updateTitle(key, title),
+      "search_index_update_title_failed",
+      {
+        organizationId: key.organizationId,
+        entityType: key.entityType,
+        entityId: key.entityId,
+      }
+    );
+  },
+
+  /**
+   * Re-project an ALREADY-PROJECTED row's priority in place (ISS-10332 /
+   * PLN-2086 Milestone 2), the sibling of {@link searchIndexService.updateTitle}
+   * and UPDATE-only for the same reasons: the single session and branch
+   * priority writers hold neither the row's body (a session's is transcript
+   * text only the transcript indexer can read) nor the right to CREATE a row
+   * (a session is projected only for an org that opted into transcript search).
+   * No row means nothing to keep consistent; the next index or backfill reads
+   * the value from the source.
+   *
+   * Org-scoped in the `WHERE` like every other write here. Throws on failure —
+   * hot-path callers use {@link searchIndexService.updatePriorityAfterCommit}.
+   */
+  async updatePriority(
+    key: SearchProjectionKey,
+    priority: string | null
+  ): Promise<void> {
+    await withDb(
+      (db) =>
+        db.$executeRaw`
+        UPDATE "search_document"
+        SET "priority" = ${priority}
+        WHERE "organization_id" = ${key.organizationId}::uuid
+          AND "entity_type" = ${key.entityType}
+          AND "entity_id" = ${key.entityId}::uuid
+      `
+    );
+  },
+
+  /**
+   * Fail-open, non-blocking priority re-projection for the write hot path.
+   * Schedules {@link searchIndexService.updatePriority} through `waitUntil` and
+   * swallows any error (logged), so a projection failure can never roll back
+   * or 500 the priority write that is already committed.
+   */
+  updatePriorityAfterCommit(
+    key: SearchProjectionKey,
+    priority: string | null
+  ): void {
+    runBestEffort(
+      () => searchIndexService.updatePriority(key, priority),
+      "search_index_update_priority_failed",
+      {
+        organizationId: key.organizationId,
+        entityType: key.entityType,
+        entityId: key.entityId,
+      }
+    );
+  },
+
+  /**
+   * Re-project an ALREADY-PROJECTED row's assignee in place (ISS-12251), the
+   * `assignee_id` sibling of {@link searchIndexService.updatePriority} and
+   * UPDATE-only for the same reasons. Throws on failure — hot-path callers use
+   * {@link searchIndexService.updateAssigneeAfterCommit}.
+   */
+  async updateAssignee(
+    key: SearchProjectionKey,
+    assigneeId: string | null
+  ): Promise<void> {
+    await searchIndexService.updateAssigneeMany(
+      { organizationId: key.organizationId, entityType: key.entityType },
+      [key.entityId],
+      assigneeId
+    );
+  },
+
+  /**
+   * {@link searchIndexService.updateAssignee} for a set of one org's rows of one
+   * type, in ONE statement, so a bulk assign pays one pooled connection rather
+   * than one per row (FEA-3299). A no-op for an empty set.
+   */
+  async updateAssigneeMany(
+    scope: SearchProjectionScope,
+    entityIds: readonly string[],
+    assigneeId: string | null
+  ): Promise<void> {
+    if (entityIds.length === 0) {
+      return;
+    }
+    const ids = Prisma.join(entityIds.map((id) => Prisma.sql`${id}::uuid`));
+    await withDb(
+      (db) =>
+        db.$executeRaw`
+        UPDATE "search_document"
+        SET "assignee_id" = ${assigneeId}::uuid
+        WHERE "organization_id" = ${scope.organizationId}::uuid
+          AND "entity_type" = ${scope.entityType}
+          AND "entity_id" IN (${ids})
+      `
+    );
+  },
+
+  /** Fail-open, post-commit {@link searchIndexService.updateAssignee}. */
+  updateAssigneeAfterCommit(
+    key: SearchProjectionKey,
+    assigneeId: string | null
+  ): void {
+    runBestEffort(
+      () => searchIndexService.updateAssignee(key, assigneeId),
+      "search_index_update_assignee_failed",
+      {
+        organizationId: key.organizationId,
+        entityType: key.entityType,
+        entityId: key.entityId,
+      }
+    );
+  },
+
+  /** Fail-open, post-commit {@link searchIndexService.updateAssigneeMany}. */
+  updateAssigneeManyAfterCommit(
+    scope: SearchProjectionScope,
+    entityIds: readonly string[],
+    assigneeId: string | null
+  ): void {
+    if (entityIds.length === 0) {
+      return;
+    }
+    runBestEffort(
+      () => searchIndexService.updateAssigneeMany(scope, entityIds, assigneeId),
+      "search_index_update_assignee_many_failed",
+      {
+        organizationId: scope.organizationId,
+        entityType: scope.entityType,
+        count: String(entityIds.length),
+      }
+    );
+  },
 };
 
 /**
@@ -263,34 +469,6 @@ function runBestEffort(
     log.error(errorEvent, { ...context, error: parseError(error) });
   });
   waitUntil(work);
-}
-
-/**
- * Build one bound `VALUES` tuple for a projection row, shared by the single and
- * batch upsert paths so the column order and per-column casts cannot drift. The
- * generated `id`/`tsv` columns are Postgres-owned; `title`/`body` are bounded to
- * the same caps everywhere (a pathological name/prompt cannot bloat the `tsv`).
- */
-function projectionValuesRow(input: SearchProjectionInput): Prisma.Sql {
-  const title = boundSearchText(input.title, MAX_SEARCH_TITLE_CHARS) ?? "";
-  const body = boundSearchText(input.body, MAX_SEARCH_BODY_CHARS);
-  return Prisma.sql`(
-    gen_random_uuid(),
-    ${input.organizationId}::uuid,
-    ${input.entityType},
-    ${input.entityId}::uuid,
-    ${title},
-    ${body},
-    ${input.projectId ? Prisma.sql`${input.projectId}::uuid` : Prisma.sql`NULL`},
-    ${input.assigneeId ? Prisma.sql`${input.assigneeId}::uuid` : Prisma.sql`NULL`},
-    ${input.status},
-    ${input.priority},
-    ${input.updatedAt},
-    ${input.slug},
-    ${input.entitySubtype},
-    ${input.teamId ? Prisma.sql`${input.teamId}::uuid` : Prisma.sql`NULL`},
-    ${input.anchorEntityId ? Prisma.sql`${input.anchorEntityId}::uuid` : Prisma.sql`NULL`}
-  )`;
 }
 
 type RemovalGroup = {
@@ -416,46 +594,6 @@ export function projectProjection(
   };
 }
 
-/** The minimal Loop shape the projection needs. */
-export type LoopProjectionSource = {
-  id: string;
-  organizationId: string;
-  command: string;
-  prompt: string | null;
-  userId: string;
-  /** The loop's execution status (LoopStatus) as a string. */
-  status: string | null;
-  updatedAt: Date;
-};
-
-/**
- * Map a created/updated Loop to its projection row. Title is the command, body
- * is the prompt; a loop's visibility follows its initiating user (projectId is
- * null — a loop is not directly project-scoped in the projection, matching the
- * Slice-1 backfill). A loop carries a status (LoopStatus) but no priority.
- */
-export function loopProjection(
-  loop: LoopProjectionSource
-): SearchProjectionInput {
-  return {
-    organizationId: loop.organizationId,
-    entityType: SearchEntityType.Loop,
-    entityId: loop.id,
-    title: loop.command,
-    body: loop.prompt,
-    projectId: null,
-    assigneeId: loop.userId,
-    status: loop.status,
-    priority: null,
-    updatedAt: loop.updatedAt,
-    // Loops route by id (`/loops/<id>`) and carry no slug/subtype/team.
-    slug: null,
-    entitySubtype: null,
-    teamId: null,
-    anchorEntityId: null,
-  };
-}
-
 /**
  * The minimal AgentSession shape the projection needs (FEA-3930). `entityId` is
  * the session's `artifactId` (the id the `/sessions/<id>` route is keyed on and
@@ -470,6 +608,8 @@ export type AgentSessionProjectionSource = {
   title: string;
   body: string | null;
   userId: string | null;
+  /** The session artifact's `Priority` member (ISS-10332); null when unset. */
+  priority: string | null;
   updatedAt: Date;
 };
 
@@ -490,9 +630,10 @@ export function agentSessionProjection(
     body: session.body,
     projectId: null,
     assigneeId: session.userId,
-    // A session carries no status/priority in the projection.
+    // A session carries no status in the projection; its priority is the
+    // artifact's (ISS-10332), so `:priority=NONE` can find an unprioritized one.
     status: null,
-    priority: null,
+    priority: session.priority,
     updatedAt: session.updatedAt,
     slug: null,
     entitySubtype: null,
@@ -507,8 +648,8 @@ export function agentSessionProjection(
  * plain text. `anchorEntityId` is the id of the artifact the comment's thread is
  * anchored on, and `anchorEntityType` is that artifact's TYPE (an
  * {@link ArtifactType} value) — together they let the route helper deep-link to
- * the session/branch the comment lives on. Visibility follows the comment's
- * author via `assigneeId`.
+ * the session, branch or document the comment lives on. Visibility follows the
+ * comment's author via `assigneeId`.
  */
 export type CommentProjectionSource = {
   id: string;
@@ -544,7 +685,7 @@ export function commentProjection(
     priority: null,
     updatedAt: comment.updatedAt,
     slug: null,
-    // The anchor artifact's TYPE drives session-vs-branch route selection.
+    // The anchor artifact's TYPE picks the session, branch or document route.
     entitySubtype: comment.anchorEntityType,
     teamId: null,
     anchorEntityId: comment.anchorEntityId,
@@ -609,6 +750,8 @@ export type BranchProjectionSource = {
   organizationId: string;
   title: string;
   body: string | null;
+  /** The branch artifact's `Priority` member (ISS-10332); null when unset. */
+  priority: string | null;
   updatedAt: Date;
 };
 
@@ -627,9 +770,10 @@ export function branchProjection(
     body: branch.body,
     projectId: null,
     assigneeId: null,
-    // A branch carries no status/priority in the projection.
+    // A branch carries no status in the projection; its priority is the
+    // artifact's (ISS-10332), so `:priority=NONE` can find an unprioritized one.
     status: null,
-    priority: null,
+    priority: branch.priority,
     updatedAt: branch.updatedAt,
     slug: null,
     entitySubtype: null,
@@ -736,3 +880,6 @@ function agentComponentSearchSlug(
     component.name
   );
 }
+
+/** One org's rows of one type — the scope a batched in-place update keeps. */
+export type SearchProjectionScope = Omit<SearchProjectionKey, "entityId">;

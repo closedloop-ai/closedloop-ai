@@ -12,10 +12,16 @@
  * `parseClaudeTranscript` → `importSession` → the analytics rollup and asserts
  * the stored `human_turns` / `is_human`.
  *
- * The rollup derives human turns transcript-first from `$.messages` (FEA-2641),
- * so a sentinel firing the parser failed to exclude would surface here as
- * `human_turns >= 1`. Against the pre-FEA-3595 parser these assertions fail:
- * the resolved sentinel text was counted as a genuine human turn.
+ * The rollup derives human turns transcript-first (FEA-2641), so a sentinel
+ * firing the parser failed to exclude would surface here as `human_turns >= 1`.
+ * Against the pre-FEA-3595 parser these assertions fail: the resolved sentinel
+ * text was counted as a genuine human turn.
+ *
+ * ISS-8659 changed WHICH field that derivation reads first — the parser's own
+ * `$.userMessages` scalar, with the `role:"human"` count over `$.messages` kept
+ * as the fallback for blobs predating it. The sentinel exclusion suppresses
+ * both (no count, no message), so this suite proves the same thing through
+ * either arm; `transcriptHumanTurnsSql` is where the precedence lives.
  *
  * Runs against an ephemeral on-disk SQLite store created by the production
  * migration runner (via openTestDb). Run: `node --import tsx --test <file>`.
@@ -25,8 +31,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
+import { test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 

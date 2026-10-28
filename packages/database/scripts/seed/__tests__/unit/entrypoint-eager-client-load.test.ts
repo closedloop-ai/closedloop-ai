@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // invocation must still be rejected by the guard with its reason. If any
 // guard-path module (seed.ts, cli.ts, profiles.ts, …) re-adds a static
 // value-import of the client, importing seed.ts throws here and this test fails
-// — catching exactly the silent regression thadeusb flagged in review.
+// — catching exactly the silent regression tamsinb flagged in review.
 //
 // This file deliberately does NOT statically import cli.ts/profiles.ts, so they
 // load fresh under the throwing client mock (vitest caches a module's mocked

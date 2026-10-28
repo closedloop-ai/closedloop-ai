@@ -19,6 +19,14 @@ import {
 } from "@/lib/compute-target-signing-eligibility";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  recordNoOpUnlessRecorded,
+  recordOrganizationWrite,
+} from "@/lib/organization-write-receipt";
+import {
   errorResponse,
   notFoundResponse,
   scheduleLogFlush,
@@ -41,7 +49,7 @@ import { computeTargetsService } from "./service";
  * (`desktopCommandStore` + `dispatchRelayCommandToRelay`) to push a pack-install
  * gateway operation through the relay to that node.
  *
- * Fail-closed and honest about state (FEA-4164 hardening of wongk's review):
+ * Fail-closed and honest about state (FEA-4164 hardening of whitlockk's review):
  *
  *  1. Delivered != acked. A relay `delivered:true` only proves the socket emit
  *     reached a connected node; it does NOT prove the node accepted or ran the
@@ -83,11 +91,11 @@ import { computeTargetsService } from "./service";
  *     `resumeFromSequence` replay is the intended durable path — and the
  *     AMBIGUOUS case (`isAmbiguousDispatchFailure`), where the transport did not
  *     prove the command never reached the node (a cloud→relay timeout, or the
- *     relay's `target_not_connected`, which it also returns when a cross-instance
- *     peer proxy times out AFTER the peer may already have emitted). There we
- *     keep the row `queued` and `Pending` so a node that took the install can
- *     still reconcile on reconnect rather than being reported as a terminal
- *     failure the member retries into a duplicate run.
+ *     relay's coarse `target_not_connected`; newer relays attach optional
+ *     operator diagnostics to explain which collapsed condition happened).
+ *     There we keep the row `queued` and `Pending` so a node that took the
+ *     install can still reconcile on reconnect rather than being reported as a
+ *     terminal failure the member retries into a duplicate run.
  */
 
 /**
@@ -95,13 +103,17 @@ import { computeTargetsService } from "./service";
  * in-process relay bus (`relayEventBus.publishOperation`, used when no external
  * `RELAY_API_URL` is configured) returns `target_offline` only when it has no
  * subscriber for the target — a real, terminalizable offline. The relay's
- * `target_not_connected` is deliberately NOT here: the relay collapses
- * cross-instance peer timeouts and malformed peer responses into that same wire
- * reason, so from the cloud's vantage it is ambiguous, not proof of no delivery.
+ * `target_not_connected` is deliberately NOT here: newer relays now attach a
+ * fine-grained `diagnosticReason`, but the coarse reason remains ambiguous from
+ * the member-install contract's vantage and is not proof of no delivery.
  */
-const DEFINITIVE_OFFLINE_REASONS = new Set<string>([
-  MemberPackInstallDispatchReason.TargetOffline,
-]);
+const DEFINITIVE_OFFLINE_REASONS = {
+  [MemberPackInstallDispatchReason.OperationNotSupported]: false,
+  [MemberPackInstallDispatchReason.SigningRequired]: false,
+  [MemberPackInstallDispatchReason.RelayDispatchFailed]: false,
+  [MemberPackInstallDispatchReason.TargetNotConnected]: false,
+  [MemberPackInstallDispatchReason.TargetOffline]: true,
+} satisfies Record<MemberPackInstallDispatchReason, boolean>;
 
 /**
  * Relay reasons whose failure is AMBIGUOUS: the transport did not return a clean
@@ -113,20 +125,22 @@ const DEFINITIVE_OFFLINE_REASONS = new Set<string>([
  * NON-terminal (`queued`, so `resumeFromSequence` replay can still resolve it)
  * and we surface non-terminal `Pending` — honest "we couldn't confirm; it may be
  * running". Members: `relay_dispatch_failed` (cloud→relay fetch throw/timeout)
- * and `target_not_connected` (the relay's collapsed cross-instance
- * timeout/malformed-peer outcome). A missing reason is treated as PROVEN-failed
- * (terminalizable), not ambiguous, so unknown transports do not leak queued
- * rows.
+ * and `target_not_connected` (the relay's backward-compatible collapsed
+ * non-delivery reason, with optional operator diagnostics on newer relays). A
+ * missing reason is treated as PROVEN-failed (terminalizable), not ambiguous, so
+ * unknown transports do not leak queued rows.
  */
-const AMBIGUOUS_DISPATCH_REASONS = new Set<string>([
-  MemberPackInstallDispatchReason.RelayDispatchFailed,
-  MemberPackInstallDispatchReason.TargetNotConnected,
-]);
+const AMBIGUOUS_DISPATCH_REASONS = {
+  [MemberPackInstallDispatchReason.OperationNotSupported]: false,
+  [MemberPackInstallDispatchReason.SigningRequired]: false,
+  [MemberPackInstallDispatchReason.RelayDispatchFailed]: true,
+  [MemberPackInstallDispatchReason.TargetNotConnected]: true,
+  [MemberPackInstallDispatchReason.TargetOffline]: false,
+} satisfies Record<MemberPackInstallDispatchReason, boolean>;
 
 function isAmbiguousDispatchFailure(result: RelayDispatchResult): boolean {
-  return (
-    result.reason !== undefined && AMBIGUOUS_DISPATCH_REASONS.has(result.reason)
-  );
+  const reason = toDispatchReason(result.reason);
+  return reason ? AMBIGUOUS_DISPATCH_REASONS[reason] : false;
 }
 
 /**
@@ -152,10 +166,11 @@ function mapDeliveredDispatchResultToState(
     // the install. Honest: Pending, not Dispatched.
     return MemberPackInstallDispatchState.Pending;
   }
-  if (result.reason && DEFINITIVE_OFFLINE_REASONS.has(result.reason)) {
+  const reason = toDispatchReason(result.reason);
+  if (reason && DEFINITIVE_OFFLINE_REASONS[reason]) {
     return MemberPackInstallDispatchState.TargetOffline;
   }
-  // Ambiguous (cloud→relay timeout, or the relay's collapsed
+  // Ambiguous (cloud→relay timeout, or the relay's coarse
   // `target_not_connected`, after the node may already have taken the install):
   // do NOT assert a terminal Failed. Stay Pending — the created command remains
   // non-terminal for reconnect replay.
@@ -236,8 +251,10 @@ export async function dispatchMemberPackInstall(input: {
   packId: string;
   harness: string;
   user: { id: string; organizationId: string; clerkId?: string | null };
+  /** ISS-12552: the request's receipt recorder, for an API-key install. */
+  receipts?: OperationReceiptRecorder;
 }): Promise<NextResponse<ApiResult<MemberPackInstallResponse>>> {
-  const { targetId, packId, harness, user } = input;
+  const { targetId, packId, harness, user, receipts } = input;
 
   // Member ownership gate: owner-only, org-scoped. Returns null for a node the
   // member does not own, a node in another org, or a merely org-shared node.
@@ -261,12 +278,13 @@ export async function dispatchMemberPackInstall(input: {
       reason: MemberPackInstallDispatchReason.OperationNotSupported,
     });
     scheduleLogFlush();
-    return successResponse(
+    return await preflightFailureResponse(
       buildTerminalFailureResponse({
         packId,
         harness,
         reason: MemberPackInstallDispatchReason.OperationNotSupported,
-      })
+      }),
+      receipts
     );
   }
 
@@ -282,12 +300,13 @@ export async function dispatchMemberPackInstall(input: {
       reason: MemberPackInstallDispatchReason.SigningRequired,
     });
     scheduleLogFlush();
-    return successResponse(
+    return await preflightFailureResponse(
       buildTerminalFailureResponse({
         packId,
         harness,
         reason: MemberPackInstallDispatchReason.SigningRequired,
-      })
+      }),
+      receipts
     );
   }
 
@@ -302,7 +321,8 @@ export async function dispatchMemberPackInstall(input: {
         computeTargetId: target.id,
         operationId: commandInput.operationId,
         requestId,
-      })
+      }),
+      receipts ? recordOrganizationWrite(receipts) : undefined
     );
     const { commandId } = createResult.command;
 
@@ -349,6 +369,9 @@ export async function dispatchMemberPackInstall(input: {
       harness,
       state,
       reason: dispatchResult.reason,
+      diagnosticReason: dispatchResult.diagnosticReason,
+      peerStatusCode: dispatchResult.peerStatusCode,
+      peerErrorCode: dispatchResult.peerErrorCode,
     });
     scheduleLogFlush();
 
@@ -364,8 +387,25 @@ export async function dispatchMemberPackInstall(input: {
       // unconfirmed state instead of a bare spinner.
       ...(reason ? { reason } : {}),
     };
-    return successResponse(response);
+    return successResponse(
+      receipts ? withOperationReceipt(response, receipts) : response
+    );
   } catch (error) {
     return errorResponse("Failed to dispatch member pack install", error);
   }
+}
+
+/**
+ * ISS-12552: a preflight refusal answered 200 wrote no command, so an API-key
+ * caller gets a no-op receipt for it.
+ */
+async function preflightFailureResponse(
+  response: MemberPackInstallResponse,
+  receipts: OperationReceiptRecorder | undefined
+): Promise<NextResponse<ApiResult<MemberPackInstallResponse>>> {
+  if (!receipts) {
+    return successResponse(response);
+  }
+  await recordNoOpUnlessRecorded(receipts);
+  return successResponse(withOperationReceipt(response, receipts));
 }

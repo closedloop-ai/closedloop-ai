@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { DesktopClientAttributionHeader } from "@repo/api/src/types/desktop-client-attribution";
+import { test } from "vitest";
 import { z } from "zod";
 import { unwrapApiEnvelope } from "../src/main/util/api-response-utils.js";
+import {
+  resetDesktopClientAttribution,
+  setDesktopClientAttributionResolver,
+} from "../src/main/util/desktop-client-attribution-provider.js";
 import { fetchJsonAndParse } from "../src/main/util/fetch-json-and-parse.js";
 
 const API_ORIGIN = "https://api.closedloop.test";
@@ -133,4 +138,77 @@ test("fetchJsonAndParse returns the sentinel on a schema-invalid body", async ()
   );
 
   assert.equal(result, null);
+});
+
+/**
+ * ISS-8749: attribution is stamped by THIS scaffold, not only by the
+ * `fetchSessionJson` façade over it. Several authenticated first-party reads —
+ * `/me`, `/users`, the pack-analytics read, the assigned-distributions read —
+ * call this helper directly, and stamping only the façade left every one of
+ * them looking like traffic from a Desktop build that predates the header.
+ */
+test("fetchJsonAndParse stamps the published attribution on a direct call", async () => {
+  resetDesktopClientAttribution();
+  setDesktopClientAttributionResolver(() => ({
+    installationId: "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311",
+    clientVersion: "1.24.3",
+  }));
+  const { fetchImpl, calls } = fetchStub(
+    new Response(JSON.stringify({ success: true, data: { value: "ok" } }), {
+      status: 200,
+    })
+  );
+
+  await fetchJsonAndParse("/me", schema, baseOptions(fetchImpl));
+
+  const headers = calls[0]?.init.headers as Record<string, string>;
+  assert.equal(
+    headers[DesktopClientAttributionHeader.InstallationId],
+    "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311"
+  );
+  assert.equal(headers[DesktopClientAttributionHeader.ClientVersion], "1.24.3");
+  resetDesktopClientAttribution();
+});
+
+/**
+ * Negative control: without it the assertion above would still pass against a
+ * helper that stamped a hardcoded placeholder on every request.
+ */
+test("fetchJsonAndParse sends no attribution before one is published", async () => {
+  resetDesktopClientAttribution();
+  const { fetchImpl, calls } = fetchStub(
+    new Response(JSON.stringify({ success: true, data: { value: "ok" } }), {
+      status: 200,
+    })
+  );
+
+  await fetchJsonAndParse("/me", schema, baseOptions(fetchImpl));
+
+  const headers = calls[0]?.init.headers as Record<string, string>;
+  assert.ok(
+    !Object.hasOwn(headers, DesktopClientAttributionHeader.InstallationId)
+  );
+  assert.ok(
+    !Object.hasOwn(headers, DesktopClientAttributionHeader.ClientVersion)
+  );
+});
+
+/** A caller header must still win over the attribution merged beneath it. */
+test("fetchJsonAndParse lets a caller header outrank the attribution", async () => {
+  resetDesktopClientAttribution();
+  setDesktopClientAttributionResolver(() => ({ clientVersion: "1.24.3" }));
+  const { fetchImpl, calls } = fetchStub(
+    new Response(JSON.stringify({ success: true, data: { value: "ok" } }), {
+      status: 200,
+    })
+  );
+
+  await fetchJsonAndParse("/me", schema, {
+    ...baseOptions(fetchImpl),
+    headers: { [DesktopClientAttributionHeader.ClientVersion]: "9.9.9" },
+  });
+
+  const headers = calls[0]?.init.headers as Record<string, string>;
+  assert.equal(headers[DesktopClientAttributionHeader.ClientVersion], "9.9.9");
+  resetDesktopClientAttribution();
 });

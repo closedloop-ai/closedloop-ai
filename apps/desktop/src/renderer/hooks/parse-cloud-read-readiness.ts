@@ -1,6 +1,5 @@
 /**
- * @file parse-cloud-read-readiness.ts
- * @description ISS-5768 (wongk review on #4809): validate the readiness
+ * @description ISS-5768 (whitlockk review on #4809): validate the readiness
  * snapshot at the IPC boundary before the whole-app backlog is derived from it.
  *
  * WHY THIS EXISTS. `getRuntimeStatus()` is typed `Promise<unknown>`
@@ -21,14 +20,21 @@
  * the `unknown` backlog, which renders as "Checking…" and can never render as
  * "Up to date".
  *
- * ON THE CLOSED `lane` / `state` UNIONS. Both are pinned to the burn-down's own
- * vocabulary, so a snapshot naming a lane this build has never heard of is
- * rejected as a whole and answers `unknown`. That under-claims rather than
- * over-claims — it can never turn owed work into "Up to date" — and main and
- * renderer ship in one Electron build, so the case is a dev/partial install, not
- * a shipped skew. The aggregate's "a lane added later is counted by default"
- * property is unaffected in-process: `cloudReadLaneOwesWork` still enumerates
- * nothing, and once both ends ship together the new lane validates and counts.
+ * THE `lane` ID IS OPEN; THE `state` UNION IS CLOSED (ISS-10375). A renderer is
+ * not guaranteed to be the build that produced the payload — a dev renderer URL
+ * or the browser-bridge mirror, both UNPACKAGED-only, since a packaged build
+ * loads its own bundled renderer — and the operator ruled
+ * (2026-09-16) that the renderer must tolerate a lane a newer main process adds
+ * BEFORE any main process adds one. So a lane id this build does not know is
+ * admitted rather than failing the whole snapshot, and it is COUNTED, never
+ * dropped: every aggregate over the lane list is lane-agnostic
+ * (`cloudReadLaneOwesWork` enumerates nothing), so such a lane holds the verdict
+ * open while it owes, cannot size, or gave up on work, and stops holding it open
+ * only on a `drained` that `laneCountsMatchState` re-derives from its own counts.
+ * What the renderer cannot do is NAME it, so a per-lane count for it reads in the
+ * generic unit. An unknown drain STATE is still rejected as a whole: that
+ * vocabulary is what the verdict is computed from, and a state this build cannot
+ * classify has no honest reading.
  */
 
 import { z } from "zod";
@@ -43,16 +49,17 @@ import { resolveCloudSyncBacklog } from "../../shared/cloud-read-readiness-contr
 import {
   classifyLaneDrainState,
   SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
-  SyncLaneId,
 } from "../../shared/sync-burndown-contract";
 
 /** A count the payload may carry: finite, whole, and never negative. */
 const countSchema = z.number().int().nonnegative();
 
 /**
- * Derived from the const objects themselves, so a lane or drain state added to
- * the burn-down vocabulary is accepted here without a second edit.
+ * The drain state is derived from the const object itself, so a state added to
+ * the burn-down vocabulary is accepted here without a second edit. The lane id is
+ * any non-blank string — see the module docblock.
  *
  * `satisfies Record<keyof CloudReadLaneReadiness, …>` is a COMPILE-TIME
  * keys-covered guard, and it is load-bearing at a boundary like this one: a
@@ -63,7 +70,18 @@ const countSchema = z.number().int().nonnegative();
  * here instead.
  */
 const laneShape = {
-  lane: z.enum(SyncLaneId),
+  // ISS-10375: not `z.enum(SyncLaneId)`. That rejected the WHOLE snapshot the
+  // moment a newer main process reported one more lane. `lanesSchema` still
+  // requires every lane this build knows.
+  //
+  // davetho review on #7402: the blank check must not TRANSFORM the id.
+  // `z.string().trim()` rewrote the wire identity before `lanesSchema` saw it,
+  // so `" session_metadata "` was normalized into the canonical id and
+  // satisfied the exact-known-lane requirement for a payload that never
+  // carried that lane — a truncated snapshot reaching a `drained` verdict. A
+  // padded id is not the lane it resembles; it is an id this build does not
+  // know, and it fails the known-set check like any other.
+  lane: z.string().refine((lane) => lane.trim().length > 0, "lane id is blank"),
   state: z.enum(SyncLaneDrainState),
   // `null` is "could not measure", which the aggregate treats as owed work. A
   // negative or fractional count is neither, so it fails the whole snapshot
@@ -71,6 +89,25 @@ const laneShape = {
   itemsRemaining: countSchema.nullable(),
   itemsRemainingIsLowerBound: z.boolean(),
   deadLetteredCount: countSchema,
+  // ISS-9744: which population the count came from. Additive and optional at
+  // this boundary for the same version-skew reason `parkedCount` is, and the
+  // degrade is `unmeasured` — the under-claiming direction, which makes the
+  // cross-lane total a FLOOR instead of letting an unlabelled number be read as
+  // exact. ISS-9807 made it an input to the lane's own drain verdict, so the
+  // degrade is applied AFTER `laneCountsMatchState` (see `laneSchema`): the
+  // re-derivation must see the field as absent and skip the rule exactly as
+  // the build that sent the payload did, or every unlabelled `drained` lane
+  // would be refused and an older main process could never report caught up.
+  deadLetteredBasis: z.enum(SyncLaneDeadLetteredBasis).nullish(),
+  // ISS-9823: additive and optional, the `parkedCount` precedent — an older main
+  // process that predates the field degrades to `false`, which re-derives the
+  // drain state exactly as this boundary did before the field existed. It is NOT
+  // a claim that the lane is healthy: a main process that CAN report the fault
+  // sends `true`, and one that cannot never had the state to report.
+  resumeBlocked: z
+    .boolean()
+    .nullish()
+    .transform((blocked) => blocked ?? false),
   unmeasuredRows: countSchema,
   // Additive and optional: a main process that does not populate it degrades to
   // `null`, which reads as "no configuration answer" and keeps a surface
@@ -79,10 +116,14 @@ const laneShape = {
     .enum(CloudReadLaneNotApplicableReason)
     .nullish()
     .transform((reason) => reason ?? null),
+  // ISS-7096: additive and optional — parked rows are another environment's
+  // work, reported for legibility and never counted toward the drain. Absent
+  // from an older main process's payload, which degrades to `null` (unknown).
+  parkedCount: countSchema.nullish().transform((count) => count ?? null),
 } satisfies Record<keyof CloudReadLaneReadiness, z.ZodTypeAny>;
 
 /**
- * ISS-6206 (wongk review on #5050): a lane's state and its counts must be a
+ * ISS-6206 (whitlockk review on #5050): a lane's state and its counts must be a
  * combination {@link classifyLaneDrainState} can actually EMIT.
  *
  * Per-field validation alone still admitted pairs the canonical classifier can
@@ -99,7 +140,7 @@ const laneShape = {
  * is genuinely reachable under them (a lane behind a shut gate can hold any
  * queue at all), so constraining them here would reject real payloads.
  */
-function laneCountsMatchState(lane: CloudReadLaneReadiness): boolean {
+function laneCountsMatchState(lane: z.infer<typeof rawLaneSchema>): boolean {
   if (
     lane.state === SyncLaneDrainState.NeverStarted ||
     lane.state === SyncLaneDrainState.IdleNotRunning
@@ -110,45 +151,64 @@ function laneCountsMatchState(lane: CloudReadLaneReadiness): boolean {
     classifyLaneDrainState({
       started: true,
       gateOpen: true,
+      // ISS-9823: fed from the payload, not assumed. The classifier reads this
+      // ahead of every branch that claims the queue emptied, so leaving it out
+      // re-derives `drained` for a lane the main process correctly reported as
+      // `remaining_unknown` and rejects the whole snapshot.
+      resumeBlocked: lane.resumeBlocked,
       itemsRemaining: lane.itemsRemaining,
       deadLetteredCount: lane.deadLetteredCount,
+      // ISS-9807: `null` when the payload predates the field — the classifier
+      // then skips the basis rule, which IS the pre-field derivation.
+      deadLetteredBasis: lane.deadLetteredBasis ?? null,
       unmeasuredRows: lane.unmeasuredRows,
     }) === lane.state
   );
 }
 
-const laneSchema = z
-  .object(laneShape)
+const rawLaneSchema = z.object(laneShape);
+
+const laneSchema = rawLaneSchema
   .refine(
     laneCountsMatchState,
     "lane state and counts must be a combination classifyLaneDrainState can emit"
+  )
+  .transform(
+    (lane): CloudReadLaneReadiness => ({
+      ...lane,
+      deadLetteredBasis:
+        lane.deadLetteredBasis ?? SyncLaneDeadLetteredBasis.Unmeasured,
+    })
   );
 
 /**
- * ISS-6206 (wongk review on #5050): a NON-EMPTY lane list must be the EXACT
- * {@link SYNC_LANE_IDS} set — every lane once, no lane twice, nothing else.
+ * ISS-6206 (whitlockk review on #5050): a NON-EMPTY lane list must carry every
+ * {@link SYNC_LANE_IDS} lane once, and no lane twice.
+ *
+ * ISS-10375 dropped "and nothing else": a lane id this build does not know is
+ * admitted alongside them (see the module docblock), but only ALONGSIDE — it can
+ * never stand in for a known lane that is missing, and it is duplicate-checked
+ * like any other.
  *
  * `z.array(laneSchema)` alone only proved that whatever lanes ARE present are
  * well-formed, and every all-lanes predicate downstream is an `every`/`some`
  * over that array. A payload carrying one drained lane therefore satisfied
  * `isCloudReadBacklogDrained` and rendered "Up to date" for a machine whose
- * other four lanes were never measured, and a duplicated lane was summed twice
+ * other lanes were never measured, and a duplicated lane was summed twice
  * into the cross-lane total. Neither is a shape the types can prevent: this
  * crosses an IPC boundary from a `Promise<unknown>`, so a truncated, partial, or
  * version-skewed payload is reachable at runtime.
  *
  * Failing the whole snapshot sends it to the `unknown` backlog, which renders as
  * unverified and can never render as complete — the same under-claim direction
- * as the closed `lane`/`state` unions above.
+ * as the closed `state` union above.
  *
  * THE EMPTY LIST IS NOT THAT SHAPE. It is the contract's own
  * {@link unknownCloudReadReadiness} — "we have not sampled yet" — which the
  * burn-down legitimately answers for the first minute of EVERY launch, before
  * its first sample lands. Rejecting it collapsed the very distinction this
  * ticket exists to preserve ("not looked yet" vs. "unusable payload") into one
- * `null`, and routed a normal launch into the cutover poll's failure ladder,
- * backing 5s off to 60s and holding the app on Local long after the cloud was
- * demonstrably drained. It is admitted here, and BOTH aggregates over the lane
+ * `null`. It is admitted here, and BOTH aggregates over the lane
  * list under-claim on it: `isCloudReadBacklogDrained` answers `false` (nothing
  * can read it as complete) and `totalCloudReadItemsRemaining` answers `null`
  * (nothing can render it as a measured "0 to go"). Admitting a payload is only
@@ -165,7 +225,7 @@ const lanesSchema = z.array(laneSchema).refine((lanes) => {
     seen.size === lanes.length &&
     SYNC_LANE_IDS.every((laneId) => seen.has(laneId))
   );
-}, "lanes must be empty or carry each known sync lane exactly once");
+}, "lanes must be empty or carry each known sync lane exactly once, and no lane twice");
 
 /** Keys-covered for the same reason {@link laneShape} is — see its docblock. */
 const snapshotShape = {
@@ -178,8 +238,9 @@ const readinessSnapshotSchema = z.object(snapshotShape);
 
 /**
  * The whole-app backlog carried by a runtime-status payload, or the `unknown`
- * backlog when the field is absent, malformed, or from a build whose vocabulary
- * this one does not recognize.
+ * backlog when the field is absent, malformed, or carries a drain state this
+ * build does not recognize. A lane id it does not recognize is not one of those
+ * (ISS-10375).
  *
  * Never throws: the shared runtime-status poll fans one payload out to every
  * status hook in a single loop, so a throw here silently starves every listener
@@ -196,26 +257,16 @@ export function parseCloudReadReadinessBacklog(
 }
 
 /**
- * ISS-6206 (wongk review on #5050): the SAME validator, on the readiness channel
- * that does not go through the runtime-status poll.
+ * The snapshot validator behind {@link parseCloudReadReadinessBacklog}.
  *
- * The identical payload also arrives via `getCloudReadReadiness()`, whose
- * `desktop-api.d.ts` return type is a claim about the preload, not a runtime
- * check — the value crosses IPC. `use-cloud-read-cutover` forwarded it straight
- * to `resolveCloudReadCutover`, and `resolveBacklogBlocker` only iterates the
- * lanes it is given, so a truncated one-lane drained payload cut the app over to
- * reading the CLOUD — the user's local history disappearing is the exact
- * ISS-5477 symptom — while the runtime-status surface, correctly, still said
- * "Checking…". Two channels carrying one payload must not disagree about
- * whether it is a payload at all.
- *
- * Exported rather than re-declared for the same reason: a second copy of these
- * rules is a second thing to keep in step, and the copy that drifts is the one
- * guarding the cutover.
+ * The payload crosses IPC, so its `desktop-api.d.ts` type is a claim about the
+ * preload rather than a runtime check: a truncated, partial, or version-skewed
+ * one is reachable here, and a one-lane drained payload read as a measurement
+ * renders "Up to date" for lanes nobody counted.
  *
  * Returns `null` for anything that does not validate. Never throws.
  */
-export function parseCloudReadReadinessSnapshot(
+function parseCloudReadReadinessSnapshot(
   value: unknown
 ): CloudReadReadinessSnapshot | null {
   if (value === undefined || value === null) {

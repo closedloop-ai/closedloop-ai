@@ -1,4 +1,5 @@
 import { BranchHeadShaSource } from "@repo/api/src/types/artifact";
+import { branchCandidatePullRequests } from "./branch-canonical-pull-request";
 
 export const RemoteBranchHeadShaSource = {
   MigrationPrHead: BranchHeadShaSource.MigrationPrHead,
@@ -25,9 +26,6 @@ function isRemoteBranchHeadShaSource(value: string | null): boolean {
   );
 }
 
-/** Maximum current PR detail candidates loaded before ownership filtering. */
-export const BRANCH_CURRENT_PULL_REQUEST_DETAIL_CANDIDATE_LIMIT = 10;
-
 type OwnedCurrentPullRequestDetail = {
   branchArtifactId: string;
   isCurrent: boolean;
@@ -50,21 +48,26 @@ type BranchWithCurrentPullRequest<
   pullRequestDetails: readonly Detail[];
 };
 
-/** Returns the current pull request detail owned by the branch artifact row. */
+/**
+ * Returns the current pull request detail owned by the branch artifact row.
+ *
+ * The candidate set comes from {@link branchCandidatePullRequests} — the
+ * seventh and last site that spelled the pointer/owned-set union by hand
+ * (ISS-8521). Pointer-first order is preserved, which is load-bearing here and
+ * pinned by a case below: two rows can carry `isCurrent` at once, and the
+ * pointer's is the one that wins. Retiring the `isCurrent` term itself belongs
+ * to the promotion lane (ISS-8522), not to this read.
+ */
 export function getOwnedCurrentPullRequestDetail<
   Detail extends OwnedCurrentPullRequestDetail,
 >(row: BranchWithCurrentPullRequest<Detail>): Detail | null {
   if (!row.branch) {
     return null;
   }
-  const candidates = [
-    row.branch.currentPullRequestDetail,
-    ...row.pullRequestDetails,
-  ];
   return (
-    candidates.find(
+    branchCandidatePullRequests(row.branch, row.pullRequestDetails).find(
       (detail) =>
-        detail?.isCurrent &&
+        detail.isCurrent &&
         detail.branchArtifactId === row.id &&
         detail.repositoryId === row.branch?.repositoryId
     ) ?? null

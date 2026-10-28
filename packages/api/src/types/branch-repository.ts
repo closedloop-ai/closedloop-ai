@@ -24,3 +24,33 @@ export function normalizeRepoFullName(fullName: string): string {
   }
   return next.replace(TRAILING_SLASHES_RE, "").toLowerCase();
 }
+
+/**
+ * Canonical structural parser for a repository full name (ISS-7548): exactly
+ * `owner/repo`, and ONLY that.
+ *
+ * A full name is normalized but never structurally validated on the way in
+ * ({@link normalizeRepoFullName} trims, strips `.git`, and lowercases; the ref
+ * schemas only bound the length), so `owner/repo/extra` reaches a read site as
+ * its own identity key. Taking the FIRST TWO segments of it silently rebinds
+ * that key to a different repository — reading `owner/repo` from GitHub and
+ * writing its provider id, url, default-branch authority, PR projection, or
+ * access verdict onto a row keyed for something else. Over-segmentation is
+ * therefore rejected, not truncated.
+ *
+ * Returns `null` for anything that is not two non-empty segments. Callers own
+ * the failure mapping — a `matched: false`, a `CorruptState` terminal, an
+ * `Unsyncable` reclassification, a thrown error, an empty verdict target — only
+ * the parse is shared.
+ */
+export type RepositoryIdentity = { owner: string; repo: string };
+
+export function parseRepositoryFullName(
+  fullName: string
+): RepositoryIdentity | null {
+  const [owner, repo, ...extra] = fullName.split("/");
+  if (!(owner && repo) || extra.length > 0) {
+    return null;
+  }
+  return { owner, repo };
+}

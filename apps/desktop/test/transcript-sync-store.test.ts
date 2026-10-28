@@ -6,7 +6,8 @@
  * revival-on-change, listRecent/listReady ordering, and the terminal
  * markIdle/markDead/recordFailure transitions.
  *
- * ISS-4815: the RECOVERY cluster (requeueStale / requeueStrandedMissingBlobs /
+ * ISS-4815: the RECOVERY cluster (requeueExpiredUploadLeases /
+ * requeueStrandedMissingBlobs /
  * requeueRevoked / reviveForForcedSync / redriveDeadLettered — every mutation
  * that re-arms or revives a settled row) lives in the sibling
  * `transcript-sync-store-recovery.test.ts`, so neither suite grows past the
@@ -14,7 +15,8 @@
  * `./helpers/transcript-sync-store-fixtures.js`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import { createTranscriptSyncStore } from "../src/main/database/transcript-sync-store.js";
 import { redactedArchiveCursorTargetId } from "../src/main/transcript-sync/transcript-sync-types.js";
 import {
@@ -43,7 +45,7 @@ test("ISS-4710: listReady drains on the reader pool while a writer transaction i
     const writeHeld = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
-    // @wongk: signal from INSIDE the transaction, AFTER it has opened and is
+    // @whitlockk: signal from INSIDE the transaction, AFTER it has opened and is
     // parked on `writeHeld` — so the test proves `listReady` resolves while the
     // writer is DEMONSTRABLY held, not merely before the write's own microtask
     // chain happened to start (which would pass trivially).
@@ -73,7 +75,7 @@ test("ISS-4710: listReady drains on the reader pool while a writer transaction i
       await writerHeld;
 
       // The reader-pool `listReady` must resolve WITHOUT the held write settling.
-      const ready = await store.listReady(T0, 10);
+      const ready = await store.listReady(T0, 10, null);
       assert.equal(
         writeSettled,
         false,
@@ -247,6 +249,9 @@ test("ISS-4647: listMainBlobStates returns the page's main rows only, narrowed a
         // the same fact. A plain `recordUploaded` clears it, hence null here.
         cloudUploadedAt: null,
         cloudUploadedComputeTargetId: null,
+        // ISS-9884: likewise for the terminal reason — a successful upload is
+        // not a terminal, so the settle clears it.
+        terminalSkipReason: null,
       },
     ]);
     assert.deepEqual(await store.listMainBlobStates([]), []);
@@ -256,7 +261,7 @@ test("ISS-4647: listMainBlobStates returns the page's main rows only, narrowed a
 test("growth observed while uploading is not lost after the upload settles", async () => {
   await withStore(async (store) => {
     await store.observe(observeInput({ size: 500 }));
-    await store.markUploading("sess-1", "main", T0);
+    await store.markUploading("sess-1", "main", T0, "ct-1");
     // File grows to 900 mid-upload. This observation must NOT advance the
     // recorded size while `uploading`, or the growth signal is erased.
     await store.observe(observeInput({ mtimeMs: 2000, size: 900 }));
@@ -354,8 +359,11 @@ test("recordFailure schedules a retry; dead marks the row dead", async () => {
       retryCount: 1,
       missingSourceCount: 2,
       dead: false,
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
       nextAttemptAt: "2026-07-09T00:05:00.000Z",
       lastError: "boom",
+      laneStalledSince: null,
       now: T0,
     });
     let fp = await store.get("sess-1", "main");
@@ -371,8 +379,11 @@ test("recordFailure schedules a retry; dead marks the row dead", async () => {
       retryCount: 5,
       missingSourceCount: 0,
       dead: true,
+      terminalSkipReason: TranscriptSkipReason.RetriesExhausted,
+      terminalSkipComputeTargetId: null,
       nextAttemptAt: null,
       lastError: "still boom",
+      laneStalledSince: null,
       now: T0,
     });
     fp = await store.get("sess-1", "main");
@@ -389,8 +400,11 @@ test("a dead file stays dead until it changes, then revives", async () => {
       retryCount: 5,
       missingSourceCount: 3,
       dead: true,
+      terminalSkipReason: TranscriptSkipReason.RetriesExhausted,
+      terminalSkipComputeTargetId: null,
       nextAttemptAt: null,
       lastError: "dead",
+      laneStalledSince: null,
       now: T0,
     });
     // Same fingerprint -> stays dead (no retry storm).
@@ -435,12 +449,15 @@ test("listReady drains live before backfill and skips future retries", async () 
       retryCount: 1,
       missingSourceCount: 0,
       dead: false,
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
       nextAttemptAt: "2026-07-09T01:00:00.000Z",
       lastError: "later",
+      laneStalledSince: null,
       now: T0,
     });
 
-    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10);
+    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10, null);
     const ids = ready.map((r) => r.externalSessionId);
     assert.deepEqual(ids, ["a", "b"]); // live first, future-retry 'c' excluded
   });
@@ -461,7 +478,7 @@ test("listReady pincer-interleaves oldest backfill so the tail never starves", a
       );
     }
 
-    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10);
+    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10, null);
     const ids = ready.map((r) => r.externalSessionId);
     // Pincer: newest (f4) in slot 0, oldest (f0) in slot 1, converging inward.
     assert.deepEqual(ids, ["f4", "f0", "f3", "f1", "f2"]);
@@ -491,7 +508,7 @@ test("listReady keeps live ahead of the backfill pincer", async () => {
       observeInput({ externalSessionId: "live", syncClass: "live", mtimeMs: 5 })
     );
 
-    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10);
+    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10, null);
     // Live always drains first; backfill pincer (newest, oldest) follows.
     assert.deepEqual(
       ready.map((r) => r.externalSessionId),
@@ -533,8 +550,14 @@ test("listRecent caps the read and returns newest files first (FEA-3385)", async
 test("ISS-5348: statusCounts censuses the WHOLE table, not a recent window", async () => {
   await withStore(async (store) => {
     // The status snapshot used to read the newest 100 rows. That was a sample:
-    // a device whose dead-lettered rows were older than the window reported a
-    // clean lane, so the footer missed the failure it exists to report.
+    // a device whose oldest rows were the ones in a reportable state reported a
+    // clean lane, so the footer missed the condition it exists to report.
+    //
+    // `dead` is the vehicle here because it is the easiest terminal to drive in
+    // one step, NOT because the footer still reports it — ISS-7094 retired that
+    // (`sync-footnote-state.ts`). What this pins is the census contract, which
+    // is unchanged: `statusCounts` counts EVERY status over the whole table,
+    // whatever any one consumer chooses to read.
     for (let i = 0; i < 3; i++) {
       await store.observe(
         observeInput({
@@ -552,7 +575,14 @@ test("ISS-5348: statusCounts censuses the WHOLE table, not a recent window", asy
         mtimeMs: 1,
       })
     );
-    await store.markDead("ancient", "main", "too big", T0);
+    await store.markDead({
+      externalSessionId: "ancient",
+      fileKey: "main",
+      reason: "too big",
+      terminalSkipReason: TranscriptSkipReason.TooLarge,
+      terminalSkipComputeTargetId: null,
+      now: T0,
+    });
 
     const counts = await store.statusCounts();
 
@@ -628,13 +658,20 @@ test("ISS-5348: statusCounts drops an unknown status rather than throwing", asyn
 test("markDead terminally skips a file with a retained reason", async () => {
   await withStore(async (store) => {
     await store.observe(observeInput());
-    await store.markDead("sess-1", "main", "skipped: too large", T0);
+    await store.markDead({
+      externalSessionId: "sess-1",
+      fileKey: "main",
+      reason: "skipped: too large",
+      terminalSkipReason: TranscriptSkipReason.TooLarge,
+      terminalSkipComputeTargetId: null,
+      now: T0,
+    });
     const fp = await store.get("sess-1", "main");
     assert.equal(fp?.status, "dead");
     assert.equal(fp?.lastError, "skipped: too large");
     assert.equal(fp?.nextAttemptAt, null);
     // A dead row is excluded from the ready set (never re-picked without change).
-    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10);
+    const ready = await store.listReady("2026-07-09T00:10:00.000Z", 10, null);
     assert.equal(ready.length, 0);
   });
 });
@@ -704,4 +741,234 @@ test("ISS-4716: listRecent reads on the reader pool while a writer transaction i
   } finally {
     await close();
   }
+});
+
+test("ISS-7096: observe never queues a foreign-owned session's transcript, and NULL-owner still queues", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    const store = createTranscriptSyncStore(prisma);
+    const mine = {
+      userId: "019c2a66-37e4-7221-9c3b-e159549f4c93",
+      organizationId: "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+    };
+    const other = {
+      userId: "019e227c-52fb-75e5-bcad-b62cf2685dc6",
+      organizationId: "019bec6e-27c2-7320-8be0-40e514918765",
+    };
+    await prisma.write((client) =>
+      client.session.create({
+        data: {
+          id: "sess-foreign",
+          name: "sess-foreign",
+          status: "inactive",
+          startedAt: T0,
+          updatedAt: T0,
+          userId: other.userId,
+          organizationId: other.organizationId,
+        },
+      })
+    );
+
+    // Foreign-owned: recorded, never queued.
+    const foreignFp = await store.observe(
+      observeInput({
+        externalSessionId: "sess-foreign",
+        signedInIdentity: mine,
+      })
+    );
+    assert.equal(foreignFp.status, "idle");
+    // A re-observation with growth STILL never queues it.
+    const regrown = await store.observe(
+      observeInput({
+        externalSessionId: "sess-foreign",
+        signedInIdentity: mine,
+        size: 4096,
+        mtimeMs: Date.parse(T0) + 60_000,
+      })
+    );
+    assert.equal(regrown.status, "idle");
+
+    // NULL-owner (no session row at all here): queues exactly as before.
+    const unclaimedFp = await store.observe(
+      observeInput({ signedInIdentity: mine })
+    );
+    assert.equal(unclaimedFp.status, "queued");
+
+    // Its own identity: queues.
+    const ownedFp = await store.observe(
+      observeInput({
+        externalSessionId: "sess-foreign",
+        signedInIdentity: other,
+        size: 8192,
+        mtimeMs: Date.parse(T0) + 120_000,
+      })
+    );
+    assert.equal(ownedFp.status, "queued");
+  } finally {
+    await close();
+  }
+});
+
+test("cr-81036: observe withdraws an already-queued foreign-owned row instead of leaving it to drain", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    const store = createTranscriptSyncStore(prisma);
+    const mine = {
+      userId: "019c2a66-37e4-7221-9c3b-e159549f4c93",
+      organizationId: "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+    };
+    const other = {
+      userId: "019e227c-52fb-75e5-bcad-b62cf2685dc6",
+      organizationId: "019bec6e-27c2-7320-8be0-40e514918765",
+    };
+    await prisma.write((client) =>
+      client.session.create({
+        data: {
+          id: "sess-switched",
+          name: "sess-switched",
+          status: "inactive",
+          startedAt: T0,
+          updatedAt: T0,
+          userId: other.userId,
+          organizationId: other.organizationId,
+        },
+      })
+    );
+
+    // Queued before the observe path knew an identity (pre-gate pollution).
+    const queued = await store.observe(
+      observeInput({ externalSessionId: "sess-switched" })
+    );
+    assert.equal(queued.status, "queued");
+
+    // The identity-aware observation withdraws the stale verdict: `listReady`
+    // selects by status alone, so leaving it queued would upload the other
+    // environment's transcript to this environment's cloud.
+    const withdrawn = await store.observe(
+      observeInput({
+        externalSessionId: "sess-switched",
+        signedInIdentity: mine,
+      })
+    );
+    assert.equal(withdrawn.status, "idle");
+    // ISS-7097: the withdrawal is a settle like any other, so it releases the
+    // stall run too. A withdrawn row that kept an origin instant would be judged
+    // past the 24h ceiling on its first failure after a later re-queue.
+    assert.equal(withdrawn.laneStalledSince, null);
+    const ready = await store.listReady(T0, 10, null);
+    assert.equal(
+      ready.some((row) => row.externalSessionId === "sess-switched"),
+      false
+    );
+
+    // An uploading row's in-flight state is not yanked out from under the
+    // drain; the sweep's lease reclaim re-queues it and the NEXT observation
+    // withdraws.
+    await prisma.write((client) =>
+      client.transcriptSyncState.updateMany({
+        where: { externalSessionId: "sess-switched" },
+        data: { status: "uploading" },
+      })
+    );
+    const midFlight = await store.observe(
+      observeInput({
+        externalSessionId: "sess-switched",
+        signedInIdentity: mine,
+      })
+    );
+    assert.equal(midFlight.status, "uploading");
+  } finally {
+    await close();
+  }
+});
+
+// ISS-9884 (migration 0090) — the column has to be WRITTEN, not just typed.
+// Everything downstream (the desktop-local verdict, and with it the whole
+// desktop half of this ticket) reads `terminal_skip_reason` off a `dead` row,
+// and the settle path that nulls `laneStalledSince` at death is exactly why
+// there was nothing else left to read. Driven through the real store against a
+// real libSQL database.
+test("ISS-9884: a dead-lettering failure persists its terminal skip reason", async () => {
+  await withStore(async (store) => {
+    await store.observe(observeInput());
+    await store.recordFailure({
+      externalSessionId: "sess-1",
+      fileKey: "main",
+      retryCount: 0,
+      missingSourceCount: 0,
+      dead: true,
+      terminalSkipReason: TranscriptSkipReason.EnvironmentUnavailable,
+      terminalSkipComputeTargetId: null,
+      nextAttemptAt: null,
+      lastError: "bucket unavailable",
+      laneStalledSince: null,
+      now: T0,
+    });
+
+    const [state] = await store.listMainBlobStates(["sess-1"]);
+    assert.equal(state?.status, "dead");
+    assert.equal(
+      state?.terminalSkipReason,
+      TranscriptSkipReason.EnvironmentUnavailable
+    );
+  });
+});
+
+test("ISS-9884: a RETRYABLE failure persists no terminal reason", async () => {
+  // The control that matters most: a row still on the ladder must not read as
+  // a give-up, or the local verdict would call a live retry paused.
+  await withStore(async (store) => {
+    await store.observe(observeInput());
+    await store.recordFailure({
+      externalSessionId: "sess-1",
+      fileKey: "main",
+      retryCount: 1,
+      missingSourceCount: 0,
+      dead: false,
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
+      nextAttemptAt: "2026-07-09T00:05:00.000Z",
+      lastError: "boom",
+      laneStalledSince: null,
+      now: T0,
+    });
+
+    const [state] = await store.listMainBlobStates(["sess-1"]);
+    assert.equal(state?.status, "failed");
+    assert.equal(state?.terminalSkipReason, null);
+  });
+});
+
+test("ISS-9884: markDead persists the reason, and a later upload clears it", async () => {
+  await withStore(async (store) => {
+    await store.observe(observeInput());
+    await store.markDead({
+      externalSessionId: "sess-1",
+      fileKey: "main",
+      reason: "oversized: 999 bytes",
+      terminalSkipReason: TranscriptSkipReason.TooLarge,
+      terminalSkipComputeTargetId: null,
+      now: T0,
+    });
+
+    let [state] = await store.listMainBlobStates(["sess-1"]);
+    assert.equal(state?.terminalSkipReason, TranscriptSkipReason.TooLarge);
+
+    // A successful settle supersedes the terminal, so the reason it died of
+    // must not survive into the state it no longer describes.
+    await store.recordUploaded({
+      externalSessionId: "sess-1",
+      fileKey: "main",
+      syncedByteOffset: 500,
+      syncedSha256: "sha",
+      storedEtag: "etag",
+      syncedComputeTargetId: "ct-1",
+      caughtUp: true,
+      now: T0,
+    });
+
+    [state] = await store.listMainBlobStates(["sess-1"]);
+    assert.equal(state?.status, "idle");
+    assert.equal(state?.terminalSkipReason, null);
+  });
 });

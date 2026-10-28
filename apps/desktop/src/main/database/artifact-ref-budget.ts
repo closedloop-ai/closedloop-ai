@@ -27,6 +27,7 @@
 import {
   ArtifactRefMethod,
   ArtifactRefTargetKind,
+  BRANCH_PUSH_METHODS,
   MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
   MIN_SYNCED_DOCUMENT_REFS_PRODUCER,
   PROSE_MENTION_REF_METHODS,
@@ -95,6 +96,20 @@ export function boundNonCommitArtifactRefs(
       ref.kind !== ArtifactRefTargetKind.ClosedloopArtifact &&
       !WEAKEST_EVIDENCE_REF_METHODS.has(ref.method)
   );
+  // ISS-8148 (review): push-METHOD refs are the STRONGEST evidence this budget
+  // carries — the cloud's branch write gate and its durable materialization
+  // retry both heal on one arriving. Oldest-first shedding drops the NEWEST
+  // refs, which is exactly where a late push lands on a ref-heavy session, so
+  // an evicted push ref could leave a deferred branch permanently unhealable
+  // (the retry would reschedule to dead-letter waiting on evidence that never
+  // re-arrives). Fill push refs first within the non-document budget so a push
+  // ref is only ever shed by other push refs.
+  const pushEvidenceRefs = otherRefs.filter((ref) =>
+    BRANCH_PUSH_METHODS.has(ref.method)
+  );
+  const nonPushOtherRefs = otherRefs.filter(
+    (ref) => !BRANCH_PUSH_METHODS.has(ref.method)
+  );
 
   // Reserve the document floor, then let non-document refs fill whatever the
   // documents did not actually need. Clamp the floor to the total budget and to
@@ -109,7 +124,14 @@ export function boundNonCommitArtifactRefs(
     0,
     MAX_SYNCED_ARTIFACT_REFS_PRODUCER - reservedForDocuments
   );
-  const keptOther = otherRefs.slice(0, otherBudget);
+  const keptPushEvidence = pushEvidenceRefs.slice(0, otherBudget);
+  const keptOther = [
+    ...keptPushEvidence,
+    ...nonPushOtherRefs.slice(
+      0,
+      Math.max(0, otherBudget - keptPushEvidence.length)
+    ),
+  ];
   // Documents may exceed their reserved floor when other refs left the budget
   // under-filled — grant them the leftover slots too.
   const documentBudget = Math.max(
@@ -158,10 +180,8 @@ export function boundNonCommitArtifactRefs(
  *
  * Shedding these is a real loss of monitored-session-activity evidence, not a
  * free win — every one of them is an ISS-6060 activity carrier. It is the
- * ordering ISS-6479 asks for because commit refs carry the
- * `linesAdded`/`linesRemoved`/`filesChanged` that branch and PR LOC attribution
- * reads, and a mention that outranks them inverts the priority this whole
- * function exists to enforce.
+ * ordering ISS-6479 asks for: a mention that outranks a commit ref inverts the
+ * priority this whole function exists to enforce.
  *
  * Deliberately local rather than folded into `PROSE_MENTION_REF_METHODS`: that
  * set has three other consumers whose semantics this shedding order does not

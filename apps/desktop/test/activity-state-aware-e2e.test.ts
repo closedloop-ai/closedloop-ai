@@ -7,9 +7,9 @@
  * inherit `implement` instead of spawning a fresh `explore` bucket.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
 import { classifyActivitySegments } from "../src/main/collectors/parsing/activity-segment-classifier.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import {
   Harness,
   type NormalizedTokenRecord,

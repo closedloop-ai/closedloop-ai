@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
-import {
-  appendFileSync,
-  mkdtempSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
-import os from "node:os";
+import { appendFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
 import { TokenSourceIdentityAvailability } from "@repo/api/src/types/token-cost-provenance";
 import { claudeTranscriptEntryUuidScheme } from "@repo/lib/harness/usage-dedup";
+import { test } from "vitest";
 import { createTranscriptCache } from "../src/main/database/transcript.js";
+import { createTempDirManager } from "./helpers/temp-dir.js";
+
+const { makeTempDir } = createTempDirManager("tc-");
+
+/**
+ * The two mtimes the rewrite test pins, rather than sleeping and hoping the
+ * filesystem's granularity is fine enough to notice. The rewrite is exactly two
+ * bytes longer than the original, so a same-mtime stat sends transcript.ts down
+ * its incremental branch, which reads only those two bytes and re-counts
+ * nothing — the assertion below would then see the ORIGINAL token totals.
+ */
+const FIRST_MTIME = new Date("2025-01-15T10:00:00Z");
+const SECOND_MTIME = new Date("2025-01-15T10:01:00Z");
 
 const VALID_USAGE_LINE = {
   uuid: "00000000-0000-4000-8000-000000000001",
@@ -41,7 +47,7 @@ test("createTranscriptCache returns null for non-existent path", () => {
 });
 
 test("createTranscriptCache extracts tokens from a valid JSONL file", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "tc-"));
+  const dir = makeTempDir();
   const fp = path.join(dir, "session.jsonl");
   writeFileSync(fp, `${JSON.stringify(VALID_USAGE_LINE)}\n`, "utf8");
   const cache = createTranscriptCache();
@@ -68,7 +74,7 @@ test("createTranscriptCache extracts tokens from a valid JSONL file", () => {
 });
 
 test("createTranscriptCache returns same-shape result on repeated call with unchanged stats", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "tc-"));
+  const dir = makeTempDir();
   const fp = path.join(dir, "session.jsonl");
   writeFileSync(fp, `${JSON.stringify(VALID_USAGE_LINE)}\n`, "utf8");
   const cache = createTranscriptCache();
@@ -81,10 +87,12 @@ test("createTranscriptCache returns same-shape result on repeated call with unch
 });
 
 test("createTranscriptCache preserves and extends UUID evidence on incremental reads", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "tc-"));
+  const dir = makeTempDir();
   const fp = path.join(dir, "session.jsonl");
   writeFileSync(fp, `${JSON.stringify(VALID_USAGE_LINE)}\n`, "utf8");
-  const originalStat = statSync(fp);
+  // A whole-ms mtime, so the reset below equals the cached one and the
+  // incremental branch runs.
+  utimesSync(fp, FIRST_MTIME, FIRST_MTIME);
   const cache = createTranscriptCache();
   const first = cache(fp);
   assert.notEqual(first, null);
@@ -95,7 +103,7 @@ test("createTranscriptCache preserves and extends UUID evidence on incremental r
     timestamp: "2025-01-15T10:00:01Z",
   };
   appendFileSync(fp, `${JSON.stringify(appended)}\n`, "utf8");
-  utimesSync(fp, originalStat.atime, originalStat.mtime);
+  utimesSync(fp, FIRST_MTIME, FIRST_MTIME);
 
   const second = cache(fp);
   assert.deepEqual(second?.records[0]?.sourceIdentity, {
@@ -105,15 +113,15 @@ test("createTranscriptCache preserves and extends UUID evidence on incremental r
   });
 });
 
-test("createTranscriptCache re-reads when mtime changes", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "tc-"));
+test("createTranscriptCache re-reads when mtime changes", () => {
+  const dir = makeTempDir();
   const fp = path.join(dir, "session.jsonl");
   writeFileSync(fp, `${JSON.stringify(VALID_USAGE_LINE)}\n`, "utf8");
+  utimesSync(fp, FIRST_MTIME, FIRST_MTIME);
   const cache = createTranscriptCache();
   const result = cache(fp);
   assert.notEqual(result, null);
 
-  await new Promise((r) => setTimeout(r, 1200));
   const updated = {
     ...VALID_USAGE_LINE,
     message: {
@@ -130,6 +138,7 @@ test("createTranscriptCache re-reads when mtime changes", async () => {
     timestamp: "2025-01-15T10:01:00Z",
   };
   writeFileSync(fp, `${JSON.stringify(updated)}\n`, "utf8");
+  utimesSync(fp, SECOND_MTIME, SECOND_MTIME);
   const result2 = cache(fp);
   assert.notEqual(result2, null);
   const refreshedEntry = result2!.tokensByModel.entries().next().value;

@@ -1,10 +1,11 @@
 import { CostAvailability } from "@repo/app/agents/lib/cost-availability";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SESSION_COST_CELL_TEST_ID } from "../session-cost-cell";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -125,7 +126,7 @@ describe("Sessions Cost column renders plain numbers (ISS-5840)", () => {
   });
 
   it("never ellipsizes a figure too wide for the Cost track", () => {
-    // wongk review: the first cut carried `truncate` (inherited from the chip's
+    // whitlockk review: the first cut carried `truncate` (inherited from the chip's
     // inner span) onto the plain path. `Available` rows have NO tooltip by
     // contract, so an ellipsized API-billed cost is unrecoverable — and a
     // clipped currency string reads as a smaller number rather than as a

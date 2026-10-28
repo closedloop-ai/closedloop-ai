@@ -23,10 +23,6 @@ import {
   type TokenCostSummary,
 } from "@repo/api/src/types/token-cost-provenance";
 import { estimateTokenCost } from "../../shared/token-cost.js";
-import {
-  ModelPricingCurrency,
-  ModelPricingSource,
-} from "../model-pricing/model-pricing-fixture.js";
 import { tokenCountValue } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
 import type { DesktopPrisma } from "./prisma-client.js";
@@ -53,6 +49,7 @@ import {
   type TokenEventConservationSums,
   tokenCostsConserved,
   updateSessionCostRollup,
+  updateSessionCostRollupBatch,
   updateTokenEventCost,
   updateTokenUsageCost,
   webSearchCostSql,
@@ -1131,100 +1128,6 @@ async function selectTokenEventConservationSumsBySession(
       conservationSumKey(row.session_id ?? "", row.model),
       conservationSumsFromRow(row),
     ])
-  );
-}
-
-/**
- * FEA-3488: batched form of {@link updateSessionCostRollup} — recomputes the
- * per-session `sessions.cost_usd_estimated` / `cost_currency` / `cost_source`
- * snapshot for a whole set of sessions in ONE `GROUP BY session_id` aggregate
- * over `token_usage` plus a single batched `UPDATE`, replacing the boot-reprice
- * N+1 (2 serial queries per session on the transaction client). Behavior is
- * identical to running `updateSessionCostRollup` per id — same computed cost,
- * currency, and source, same rows updated — just folded into set-based SQL.
- * Mirrors the batching idiom of `upsertSessionAnalyticsRollupBatch` (single
- * IN-list scan, LEFT JOIN over a per-session GROUP BY aggregate). A single
- * transaction client serializes queries anyway, so no Promise.all.
- */
-async function updateSessionCostRollupBatch(
-  tx: Prisma.TransactionClient,
-  sessionIds: string[]
-): Promise<void> {
-  if (sessionIds.length === 0) {
-    return;
-  }
-  // $1 = GenaiPricesV1, $2 = PricingTableV1, $3 = Usd; the session ids occupy
-  // $4..$(N+3). The IN list is repeated for the token_usage aggregate and the
-  // outer sessions scan; reusing the same numbered params keeps one bound array
-  // (SQLite binds `?N` by index, not textual order — see prisma-client.ts).
-  const idPlaceholders = sessionIds.map((_, i) => `$${i + 4}`).join(", ");
-  const params: unknown[] = [
-    ModelPricingSource.GenaiPricesV1,
-    ModelPricingSource.PricingTableV1,
-    ModelPricingCurrency.Usd,
-    ...sessionIds,
-  ];
-  // Faithful set-based translation of updateSessionCostRollup:
-  //  - token_cost_usd / priced_rows / token_cost_source come from the SAME
-  //    per-session aggregate over token_usage (Genai source wins over Table);
-  //  - web_search_cost_usd is the per-request session-level line item read from
-  //    the persisted metadata via the SHARED `webSearchCostSql` fragment — the
-  //    identical single source the analytics est_cost rollup prices — already
-  //    MAX(0,…)-guarded and non-null, so it is added exactly once and never
-  //    double-counted (web-search cost never lives in a token_usage row);
-  //  - FEA-3419: the FEA-3636 ttl_premium_usd term is GONE — the 1h premium is
-  //    baked into per-event / per-model costs by estimateTokenCost, so the
-  //    token_usage sum already carries it;
-  //  - hasCost = pricedRows > 0 OR webSearch > 0; when false, all three columns
-  //    NULL out — matching the per-session UPDATE exactly. A LEFT JOIN keeps
-  //    sessions with no token_usage rows (tok.* NULL → coalesced) so every id
-  //    in the batch is updated, just as the per-session loop did.
-  await tx.$executeRawUnsafe(
-    `UPDATE sessions
-     SET
-       cost_usd_estimated = CASE
-         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0
-           THEN agg.token_cost_usd + agg.web_search_cost_usd
-         ELSE NULL
-       END,
-       cost_currency = CASE
-         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0 THEN $3
-         ELSE NULL
-       END,
-       cost_source = CASE
-         WHEN agg.priced_rows > 0 OR agg.web_search_cost_usd > 0
-           THEN COALESCE(
-                  agg.token_cost_source,
-                  CASE WHEN agg.web_search_cost_usd > 0 THEN $1 ELSE NULL END
-                )
-         ELSE NULL
-       END
-     FROM (
-       SELECT
-         src.id AS session_id,
-         COALESCE(tok.cost_usd, 0) AS token_cost_usd,
-         COALESCE(tok.priced_rows, 0) AS priced_rows,
-         tok.cost_source AS token_cost_source,
-         ${webSearchCostSql("src.metadata")} AS web_search_cost_usd
-       FROM sessions src
-       LEFT JOIN (
-         SELECT
-           session_id,
-           COALESCE(SUM(cost_usd_estimated), 0) AS cost_usd,
-           COUNT(cost_usd_estimated) AS priced_rows,
-           CASE
-             WHEN SUM(CASE WHEN cost_source = $1 THEN 1 ELSE 0 END) > 0 THEN $1
-             WHEN SUM(CASE WHEN cost_source = $2 THEN 1 ELSE 0 END) > 0 THEN $2
-             ELSE NULL
-           END AS cost_source
-         FROM token_usage
-         WHERE session_id IN (${idPlaceholders})
-         GROUP BY session_id
-       ) tok ON tok.session_id = src.id
-       WHERE src.id IN (${idPlaceholders})
-     ) AS agg
-     WHERE sessions.id = agg.session_id`,
-    ...params
   );
 }
 

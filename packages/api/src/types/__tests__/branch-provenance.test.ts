@@ -28,7 +28,7 @@ describe("classifyBranchProvenance (FEA-3285)", () => {
 
   it("treats real human branches as human — including ones that merely contain 'agent'", () => {
     expect(classifyBranchProvenance("main")).toBe(BranchProvenance.Human);
-    expect(classifyBranchProvenance("mikeangstadt/fea-3285")).toBe(
+    expect(classifyBranchProvenance("marisolashgrove/fea-3285")).toBe(
       BranchProvenance.Human
     );
     // The word "agent" appears but not as the dedicated worktree prefix — human.

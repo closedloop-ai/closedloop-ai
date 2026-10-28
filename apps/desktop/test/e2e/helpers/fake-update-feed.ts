@@ -13,6 +13,14 @@
  * file from here, so `update-available` fires for real; the download→ready
  * transition is then driven deterministically in main (autoDownload is off in
  * fake-feed mode) so the test stays hermetic across OSes.
+ *
+ * That hermeticity is also this fixture's ceiling: with `autoDownload` off and a
+ * dummy artifact, no blockmap is ever fetched and no Range request is ever
+ * issued, so nothing here exercises electron-updater's differential download
+ * (ISS-10424). Extending it to would mean serving real N-1/N ZIPs plus their
+ * blockmaps and letting the native downloader run in the displayless harness.
+ * Until then the differential path is verified on the release lane, not in CI —
+ * see `apps/desktop/AGENTS.md`.
  */
 
 import crypto from "node:crypto";
@@ -30,6 +38,21 @@ export type FakeUpdateFeed = {
   url: string;
   /** Number of channel-file (`*.yml`) requests served — proves the feed was hit. */
   channelRequestCount: () => number;
+  /**
+   * Headers of the channel-file requests served, in arrival order.
+   *
+   * A count proves a request happened; it says nothing about what the request
+   * CARRIED, so a provider that dropped or renamed the ISS-9164 attribution
+   * headers would satisfy `channelRequestCount` unchanged (davetho, #6867).
+   * Node lower-cases inbound header names, which is what the assertions compare
+   * against.
+   */
+  channelRequestHeaders: () => http.IncomingHttpHeaders[];
+  /**
+   * Answer every later channel-file request with a 500, so electron-updater's
+   * next check fails (ISS-11447). Those requests still count and record headers.
+   */
+  failChannelRequests: () => void;
   /** Stop the server and release the port. */
   close: () => Promise<void>;
 };
@@ -78,12 +101,18 @@ export async function startFakeUpdateFeed(): Promise<FakeUpdateFeed> {
     size
   );
 
-  let channelRequests = 0;
+  const channelHeaders: http.IncomingHttpHeaders[] = [];
+  let failChannel = false;
 
   const server = http.createServer((req, res) => {
     const pathname = (req.url ?? "/").split("?")[0];
     if (pathname.endsWith(".yml")) {
-      channelRequests += 1;
+      channelHeaders.push(req.headers);
+      if (failChannel) {
+        res.writeHead(500, { "content-type": "text/plain" });
+        res.end("feed unavailable");
+        return;
+      }
       res.writeHead(200, { "content-type": "application/x-yaml" });
       res.end(ymlBody);
       return;
@@ -110,7 +139,11 @@ export async function startFakeUpdateFeed(): Promise<FakeUpdateFeed> {
 
   return {
     url,
-    channelRequestCount: () => channelRequests,
+    channelRequestCount: () => channelHeaders.length,
+    channelRequestHeaders: () => [...channelHeaders],
+    failChannelRequests: () => {
+      failChannel = true;
+    },
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));

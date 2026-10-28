@@ -97,7 +97,7 @@ describe("agent-component read tool registration", () => {
   });
 
   it("advertises exactly the live AgentComponentSortKey values in the sortBy description", async () => {
-    // ISS-4944 (wongk): the registered description is the contract callers read,
+    // ISS-4944 (whitlockk): the registered description is the contract callers read,
     // so assert it through the real registration path rather than against the
     // module constant. It drifted once already — the hand-written list still
     // advertised the `owner` key FEA-4098 removed from the SSOT, which the

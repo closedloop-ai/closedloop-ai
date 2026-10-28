@@ -1,12 +1,22 @@
-import { LinkType } from "@repo/api/src/types/artifact";
-import { isDocumentMimeType } from "@repo/api/src/types/attachment";
+import {
+  AttachmentPurpose,
+  isDocumentMimeType,
+} from "@repo/api/src/types/attachment";
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { CreateContextAttachmentResponse } from "@repo/api/src/types/context-attachment";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { artifactLinksService } from "@/app/artifact-links/service";
 import { attachmentsService } from "@/app/documents/attachments-service";
+import { recordContextDocumentReceipts } from "@/app/documents/context-document-receipts";
+import { contextDocumentFailureResponse } from "@/app/documents/context-document-route-responses";
+import { contextDocumentService } from "@/app/documents/context-document-service";
+import { documentAttachReceiptWrite } from "@/app/documents/document-attach-receipt";
 import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   badRequestResponse,
   errorResponse,
@@ -19,39 +29,44 @@ import { createContextAttachmentValidator } from "./validators";
 export const POST = withAnyAuth<
   CreateContextAttachmentResponse,
   "/documents/[id]/context-attachments"
->(async ({ user }, request, params) => {
-  try {
-    const { id } = await params;
-    const documentId = await resolveDocumentId(id, user.organizationId);
-    if (!documentId) {
-      return notFoundResponse("Document");
-    }
+>(
+  withOperationReceipts(
+    OperationKind.Attach,
+    async ({ user }, request, params, receipts) => {
+      try {
+        const { id } = await params;
+        const documentId = await resolveDocumentId(id, user.organizationId);
+        if (!documentId) {
+          return notFoundResponse("Document");
+        }
 
-    const { body, errorResponse: parseError } = await parseBody(
-      request,
-      createContextAttachmentValidator
-    );
-    if (parseError) {
-      return parseError;
-    }
+        const { body, errorResponse: parseError } = await parseBody(
+          request,
+          createContextAttachmentValidator
+        );
+        if (parseError) {
+          return parseError;
+        }
 
-    const document = await documentService.findById(
-      documentId,
-      user.organizationId
-    );
-    if (!document) {
-      return notFoundResponse("Document");
-    }
+        const document = await documentService.findById(
+          documentId,
+          user.organizationId
+        );
+        if (!document) {
+          return notFoundResponse("Document");
+        }
 
-    if (isDocumentMimeType(body.mimeType)) {
-      return await handleDocumentUpload(user, document, body);
-    }
+        if (isDocumentMimeType(body.mimeType)) {
+          return await handleDocumentUpload(user, document, body, receipts);
+        }
 
-    return await handleDirectAttachment(user, documentId, body);
-  } catch (error) {
-    return errorResponse("Failed to create context attachment", error);
-  }
-});
+        return await handleDirectAttachment(user, documentId, body, receipts);
+      } catch (error) {
+        return errorResponse("Failed to create context attachment", error);
+      }
+    }
+  )
+);
 
 async function handleDocumentUpload(
   user: { organizationId: string; id: string },
@@ -64,67 +79,40 @@ async function handleDocumentUpload(
     mimeType: string;
     sizeBytes: number;
     projectId?: string;
-  }
+  },
+  receipts: OperationReceiptRecorder
 ) {
   const projectId = body.projectId ?? document.projectId;
   if (!projectId) {
     return badRequestResponse("projectId is required to create context PRD");
   }
 
-  const artifact = await documentService.create(user.organizationId, user.id, {
-    title: body.filename,
-    type: DocumentType.Prd,
-    status: DocumentStatus.Draft,
-    projectId,
-    content: "",
-  });
-
-  if (!artifact) {
-    return errorResponse(
-      "Failed to create artifact for context attachment",
-      null
-    );
+  const result = await contextDocumentService.createWithUpload(
+    {
+      organizationId: user.organizationId,
+      userId: user.id,
+      sourceDocumentId: document.id,
+      projectId,
+      filename: body.filename,
+      mimeType: body.mimeType,
+      sizeBytes: body.sizeBytes,
+    },
+    receipts.whenRecording((tx, written) =>
+      recordContextDocumentReceipts(receipts, tx, written)
+    )
+  );
+  if (!result.ok) {
+    return contextDocumentFailureResponse(result.error);
   }
 
-  let uploadResult: Awaited<
-    ReturnType<typeof attachmentsService.requestUpload>
-  >;
-  try {
-    uploadResult = await attachmentsService.requestUpload(
-      artifact.id,
-      user.organizationId,
-      user.id,
-      body.filename,
-      body.mimeType,
-      body.sizeBytes
-    );
-  } catch (uploadError) {
-    await documentService.delete(artifact.id, user.organizationId);
-    return errorResponse("Failed to request upload", uploadError);
-  }
-
-  try {
-    await artifactLinksService.createLink(user.organizationId, {
-      sourceId: artifact.id,
-      targetId: document.id,
-      linkType: LinkType.Produces,
-    });
-  } catch (linkError) {
-    await documentService.delete(artifact.id, user.organizationId);
-    return errorResponse("Failed to link artifact to document", linkError);
-  }
-
-  return successResponse({
-    uploadUrl: uploadResult.uploadUrl,
-    artifactId: artifact.id,
-    attachmentId: uploadResult.attachmentId,
-  });
+  return successResponse(withOperationReceipt(result.value, receipts));
 }
 
 async function handleDirectAttachment(
   user: { organizationId: string; id: string },
   documentId: string,
-  body: { filename: string; mimeType: string; sizeBytes: number }
+  body: { filename: string; mimeType: string; sizeBytes: number },
+  receipts: OperationReceiptRecorder
 ) {
   const uploadResult = await attachmentsService.requestUpload(
     documentId,
@@ -132,12 +120,21 @@ async function handleDirectAttachment(
     user.id,
     body.filename,
     body.mimeType,
-    body.sizeBytes
+    body.sizeBytes,
+    AttachmentPurpose.Context,
+    receipts.whenRecording((tx) =>
+      receipts.record(tx, documentAttachReceiptWrite(documentId))
+    )
   );
 
-  return successResponse({
-    uploadUrl: uploadResult.uploadUrl,
-    artifactId: "",
-    attachmentId: uploadResult.attachmentId,
-  });
+  return successResponse(
+    withOperationReceipt(
+      {
+        uploadUrl: uploadResult.uploadUrl,
+        artifactId: "",
+        attachmentId: uploadResult.attachmentId,
+      },
+      receipts
+    )
+  );
 }

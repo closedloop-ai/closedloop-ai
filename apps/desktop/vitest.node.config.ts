@@ -1,8 +1,10 @@
 import path from "node:path";
+import { pinnedReporters } from "@repo/vitest-config";
 import { defineConfig } from "vitest/config";
 import { censusTestFiles } from "./scripts/node-test-census.mjs";
 import {
   resolveLaneConcurrency,
+  resolveNodeCoverageEnabled,
   resolveTestTimeoutMs,
 } from "./scripts/node-test-lane-settings.mjs";
 import {
@@ -18,9 +20,9 @@ import {
  * every main-process suite in a browser-shaped environment. Two configs, two
  * environments (PLN-1558 SCOPE-6).
  *
- * `node:test` is aliased onto the Vitest shim so the existing test bodies run
- * unchanged; `scripts/node-test-census.mjs` explains why the migration moved
- * the runner rather than 800 import lines, and which files it cannot take.
+ * Suites import `vitest` directly (ISS-11262 retired the `node:test` alias
+ * shim). `scripts/node-test-census.mjs` names the few files that still need
+ * `tsx --test`'s runtime and why.
  */
 
 /**
@@ -56,15 +58,8 @@ export function nodeLaneInclude(shardSpec = process.env.NODE_TEST_SHARD) {
 const perTestTimeoutMs = resolveTestTimeoutMs();
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "node:test": path.resolve(
-        import.meta.dirname,
-        "test/support/node-test-vitest-shim.ts"
-      ),
-    },
-  },
   test: {
+    reporters: pinnedReporters(),
     environment: "node",
     include: nodeLaneInclude(),
     // Forks, not threads. These suites load native addons (better-sqlite3, the
@@ -88,6 +83,30 @@ export default defineConfig({
     // ~20s — passed for years and would start failing here on a difference in
     // default, not a difference in the code. Caught exactly that way.
     hookTimeout: perTestTimeoutMs,
+    // ISS-7085 — this pool's OWN coverage, because the enclosing c8 lane cannot
+    // see it. c8 collects process-tree V8 coverage, which credits the
+    // `tsx --test` pool, this config's own module graph, and any child process a
+    // test spawns — but a module Vitest imports into its worker is
+    // Vite-transformed and never reported against a real source URL, so all
+    // 1079 files on this pool contributed nothing. `report-coverage.mjs` merges
+    // this map as a third lane.
+    //
+    // NO `include`, and that is the load-bearing difference from
+    // `vitest.renderer.config.ts`. The renderer sets an all-files `include`
+    // because its partition is `DenominatorKind.Source`; every partition this
+    // lane feeds is `DenominatorKind.Execution` (report-coverage-lib.mjs), so
+    // the universe must stay "what actually loaded". Adding an `include` here
+    // would silently re-base four partitions' denominators onto the source tree
+    // and make every historical comparison a different question.
+    coverage: {
+      enabled: resolveNodeCoverageEnabled(),
+      provider: "v8",
+      reporter: ["json"],
+      reportsDirectory: "coverage/node-vitest",
+      // Measurement lane, not a gate — same reason the renderer lane sets it:
+      // a run with a failing test must still report what executed.
+      reportOnFailure: true,
+    },
     // ISS-5836's hermetic git environment is applied by the runner, which is
     // this config's only production entrypoint; a bare `vitest --config` run
     // inherits the operator's git config exactly as a bare `tsx --test` did.

@@ -12,7 +12,6 @@ import {
 } from "@/app/documents/[id]/attachments/[attachmentId]/route";
 import { POST as ResolveInlineImages } from "@/app/documents/[id]/attachments/resolve/route";
 import { GET as GetAttachments } from "@/app/documents/[id]/attachments/route";
-import { attachmentsService } from "@/app/documents/attachments-service";
 import { generateSlug } from "@/app/documents/document-utils";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
@@ -182,18 +181,6 @@ async function getInlineSkipped(
   return json.data.skipped;
 }
 
-async function listContextPackAttachmentIds(
-  documentId: string,
-  organizationId: string
-): Promise<string[]> {
-  const attachments = await attachmentsService.listWithSignedUrlsByDocument(
-    documentId,
-    organizationId
-  );
-
-  return attachments.map((item) => item.id);
-}
-
 describe.skipIf(!hasDatabase)(
   "DELETE /documents/:id/attachments/:attachmentId integration",
   () => {
@@ -201,7 +188,7 @@ describe.skipIf(!hasDatabase)(
       vi.clearAllMocks();
       mockDeleteArtifact.mockResolvedValue(undefined);
       mockGetSignedDownloadUrl.mockResolvedValue(
-        "https://s3.example.com/context-pack-download"
+        "https://s3.example.com/preview-download"
       );
       mockGetSignedDownloadUrlWithDisposition.mockResolvedValue(
         "https://s3.example.com/direct-download"
@@ -277,9 +264,6 @@ describe.skipIf(!hasDatabase)(
             reason: InlineImageResolveSkipReason.NotInline,
           },
         ]);
-        await expect(
-          listContextPackAttachmentIds(document.id, organizationId)
-        ).resolves.toContain(otherUserAttachment.id);
 
         const deleteResponse = await DELETE(
           createMockRequest({
@@ -324,18 +308,6 @@ describe.skipIf(!hasDatabase)(
             reason: InlineImageResolveSkipReason.NotFound,
           },
         ]);
-
-        const contextPackAttachmentIds = await listContextPackAttachmentIds(
-          document.id,
-          organizationId
-        );
-        expect(contextPackAttachmentIds).not.toContain(deletedAttachment.id);
-        expect(contextPackAttachmentIds).toEqual(
-          expect.arrayContaining([
-            survivingAttachment.id,
-            otherUserAttachment.id,
-          ])
-        );
       });
     });
 
@@ -461,12 +433,6 @@ describe.skipIf(!hasDatabase)(
             reason: InlineImageResolveSkipReason.NotFound,
           },
         ]);
-        const contextPackAttachmentIds = await listContextPackAttachmentIds(
-          document.id,
-          organizationId
-        );
-        expect(contextPackAttachmentIds).not.toContain(deletedAttachment.id);
-        expect(contextPackAttachmentIds).toContain(survivingAttachment.id);
         expect(mockLogError).toHaveBeenCalledWith(
           "[attachments-service] Failed to delete S3 object",
           {

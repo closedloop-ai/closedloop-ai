@@ -68,3 +68,35 @@ export function attachPostBootMaintenanceSettle(
       handlers.onFinally();
     });
 }
+
+/**
+ * ISS-8601: build the settle notifier for one maintenance run.
+ *
+ * Post-boot maintenance settling makes TWO announcements, and they are not the
+ * same claim. Releasing the deferred startup work says "background work may
+ * start"; `onImportComplete` says "the first-launch import FINISHED", and that
+ * one flips the readiness bit the cloud-read cutover reads
+ * (`RendererReadinessGates.notifyInitialCollectorImportComplete`).
+ *
+ * A maintenance pass re-armed after the boot-import watchdog gave up must make
+ * the first announcement and NOT the second: the rebuild is owed and safe, but
+ * the import demonstrably did not finish, and claiming otherwise would let a
+ * cloud read report completeness over sources this machine never parsed. That is
+ * the distinction `claimImportComplete` carries.
+ *
+ * Extracted from the runtime so both arms can be asserted directly — the runtime
+ * closure cannot be instantiated in a unit test, and a structural check that the
+ * flag is PASSED would not prove the call is actually suppressed.
+ */
+export function createMaintenanceSettleNotifier(deps: {
+  claimImportComplete: boolean;
+  onImportComplete?: () => void;
+  onSettled: () => void;
+}): () => void {
+  return () => {
+    if (deps.claimImportComplete) {
+      deps.onImportComplete?.();
+    }
+    deps.onSettled();
+  };
+}

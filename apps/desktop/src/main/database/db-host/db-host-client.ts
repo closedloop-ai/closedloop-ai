@@ -1,39 +1,48 @@
 import { fileURLToPath } from "node:url";
 import electron from "electron";
+import { isBackgroundDbRead } from "../../../shared/db-host-call-priority.js";
 import { DbHostExitError } from "../../../shared/db-host-exit-error.js";
+import { currentReadCancellationToken } from "../../../shared/db-host-read-cancellation.js";
 import {
   DbHostShutdownError,
   DbHostShutdownReason,
   isGracefulDbHostExitCode,
 } from "../../../shared/db-host-shutdown-error.js";
-import { exponentialBackoffMs } from "../../../shared/exponential-backoff.js";
-import type {
-  ScheduledReviewRequest,
-  ScheduledReviewResult,
-} from "../../../shared/scheduled-review-contract.js";
-import {
-  DesktopMigrationError,
-  toMigrationRefusalKind,
-} from "../../lifecycle/migration-refusal.js";
+import { DesktopReadCancelledError } from "../../../shared/read-cancellation-contract.js";
+import { writeRelayedDurableLog } from "../../logging/durable-log-sink.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
+import { reportRefusedChildTelemetry } from "../../telemetry/db-host-telemetry-refusal.js";
+import { emitRelayedChildTelemetry } from "../../telemetry/relayed-child-telemetry.js";
 import type { DbHostExitDiagnostics } from "../../telemetry/telemetry-protocol.js";
 import { sameUserIdentity } from "../../util/user-identity.js";
-import { isBackgroundDbRead } from "./db-host-call-priority.js";
+import { createDetachedCancelRing } from "./db-host-detached-cancels.js";
+import { rebuildError } from "./db-host-error-rebuild.js";
 import { describeUnexpectedDbHostExit } from "./db-host-exit-log.js";
 import { MemoryPressureLevel } from "./db-host-memory-watchdog.js";
+import { handleDbHostPostFailure, rejectAll } from "./db-host-post-failure.js";
 import {
-  type DbHostCloseRequest,
   DbHostDataCloneError,
   type DbHostInitOptions,
-  type DbHostInitRequest,
-  type DbHostInvokeRequest,
   type DbHostRequest,
   DbHostRequestKind,
-  type DbHostResponse,
   DbHostResponseKind,
   type DbHostUserIdentity,
   isDbHostResponse,
-  serializeDbHostError,
 } from "./db-host-protocol.js";
+import {
+  CRASH_WINDOW_MS,
+  describeRestartExhausted,
+  evaluateRestartBudget,
+  RESTART_BACKOFF_MS,
+  registerCrashAndComputeBackoff,
+  restartAttemptBackoffMs,
+  restartExhaustedError,
+} from "./db-host-restart-budget.js";
+import {
+  type DbHostPending,
+  settleDbHostResult,
+} from "./db-host-result-assembly.js";
+import { isAdmittedDuringShutdown } from "./db-host-shutdown-admission.js";
 
 const { utilityProcess } = electron;
 
@@ -52,19 +61,7 @@ type WorkerStdio = ["ignore", "ignore", "pipe"];
 // regardless of the flag), so it was removed rather than left to mislead the
 // next OOM investigation.
 //
-// Backoff before re-forking a crashed child, so a crash-on-start can't tight-loop.
-const RESTART_BACKOFF_MS = 1000;
-// FEA-3072 — crash-storm guard. When the child crashes (e.g. the exit-code-5
-// native failure above) on a request the renderer polls (dashboard
-// get-insights), a fixed 1 s backoff re-forks into the SAME slamming load and
-// the process crashes again ~1×/s indefinitely. Escalate the backoff with the
-// number of crashes seen inside a rolling window so a persistent crash degrades
-// to widely-spaced retries (giving backfill/sync room to drain between reads)
-// instead of a hot loop. Self-resets: once crashes age out of the window a lone
-// crash restarts at the base backoff again.
-const CRASH_WINDOW_MS = 60_000;
-const MAX_RESTART_BACKOFF_MS = 30_000;
-// Below this many crashes in the window, stay quiet (a one-off restart is normal).
+// The restart ladder's delays and its ceiling live in `db-host-restart-budget.ts`.
 // ISS-4823 — how long a published db-host memory-pressure level stays actionable.
 // The child republishes "high" on EVERY heap-watchdog sample (default 2s), so
 // three sample intervals tolerates a couple of missed/late ticks under load while
@@ -88,7 +85,12 @@ const CLOSE_DRAIN_TIMEOUT_MS = 2000;
 // whole app. Racing the reply against this budget guarantees we always fall
 // through to kill the child. Sized to sit (together with the drain budget) under
 // that 8s hard-exit fallback so a clean close still finishes first.
-const CLOSE_ACK_TIMEOUT_MS = 2000;
+/**
+ * Exported so the inner store-close budget can be checked against the real
+ * value: `STORE_CLOSE_DEADLINE_MS` must fit inside this, or the dispatcher is
+ * still waiting on the store when main gives up and kills it mid-ack.
+ */
+export const CLOSE_ACK_TIMEOUT_MS = 2000;
 
 /** Structural view of the forked utility process (also lets tests inject a fake). */
 type DbHostProcess = {
@@ -120,24 +122,15 @@ export type DbHostForkFn = (
 type DbHostClientOptions = {
   /** Forwarded to the renderer as desktop:db:changed (child saw a mutation). */
   onEmit: (sessionId: string) => void;
-  /**
-   * ISS-5715 — an unexpected child exit, for the TELEMETRY path. `onLog` alone
-   * never leaves the machine, and every consumer that dies with the child
-   * (collectors, transcript sync, the Sessions read path) fails invisibly to the
-   * user. Optional so existing call sites and tests stay unaffected.
-   *
-   * Wiring this makes the exit queryable in Datadog; it does not by itself make
-   * it page. The companion `datadog_monitor` lives in `cl-tofu-aws-live` — see
-   * the scope note in `telemetry/db-host-exit-telemetry.ts`.
-   *
-   * "Unexpected" is exactly the branch `handleExit` restarts from: the client
-   * was neither `closing` nor `closed`, so nobody asked the child to stop. The
-   * payload is the WIRE type, imported rather than re-declared (matching
-   * `store-integrity-probe.ts`) so the producer and the telemetry contract
-   * cannot drift — an extra field here would otherwise compile and then be
-   * silently stripped on the wire.
-   */
+
   onUnexpectedExit?: (event: DbHostExitDiagnostics) => void;
+  /**
+   * ISS-8776 — the restart ladder gave up: terminal, at most once per process.
+   * {@link onUnexpectedExit} means "a replacement is coming"; this means the
+   * opposite. It reuses that event's payload shape because the wire schema
+   * already validates it, so a fresh key would have been stripped on arrival.
+   */
+  onRestartExhausted?: (event: DbHostExitDiagnostics) => void;
   /**
    * A live SessionEnd hook drove a session terminal; the main process fires the
    * desktop completion Notification (gated on the flag). Optional so existing
@@ -146,22 +139,6 @@ type DbHostClientOptions = {
   onSessionTerminal?: (notice: { sessionId: string; status: string }) => void;
   /** Forwarded to the main-process logger. */
   onLog: (message: string) => void;
-  /**
-   * FEA-3814 (PRD-553 M2): the crewd scheduler in the child changed its tasks or
-   * runs; main forwards desktop:scheduled-tasks:changed to the renderer. Optional
-   * so existing call sites/tests that don't wire it stay unaffected.
-   */
-  onSchedulerChanged?: () => void;
-  /**
-   * FEA-4143: run a scheduled review the child's daemon dispatch proxied to main.
-   * Composed through the on-demand AuditService (throwaway workspace + main-side
-   * credentials). Optional so existing call sites/tests that don't wire it stay
-   * unaffected — an unwired handler replies with a typed failure so the child's
-   * dispatch records a clean run status instead of hanging.
-   */
-  onRunScheduledReview?: (
-    request: ScheduledReviewRequest
-  ) => Promise<ScheduledReviewResult>;
   /** Override the fork (tests). Defaults to electron utilityProcess.fork. */
   fork?: DbHostForkFn;
   /**
@@ -179,58 +156,6 @@ type DbHostClientOptions = {
   now?: () => number;
 };
 
-type Pending = {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
-
-/**
- * True when `request`'s `id` was allocated from `DbHostClient.nextId` into the
- * `pending` map — i.e. Init, Invoke, or Close. Those are the only kinds a
- * main-side correlated lookup (`this.pending.get(id)`) may consult. A
- * ScheduledReviewResult also has an `id`, but it is the CHILD's reverse-RPC id
- * (a separate counter), so it must NOT be correlated through this map;
- * SetUserIdentity has no `id`.
- */
-function isPendingCorrelatedRequest(
-  request: DbHostRequest
-): request is DbHostInitRequest | DbHostInvokeRequest | DbHostCloseRequest {
-  return (
-    request.kind === DbHostRequestKind.Init ||
-    request.kind === DbHostRequestKind.Invoke ||
-    request.kind === DbHostRequestKind.Close
-  );
-}
-
-function rebuildError(response: DbHostResponse): Error {
-  if (
-    response.kind === DbHostResponseKind.Result ||
-    response.kind === DbHostResponseKind.Ready
-  ) {
-    const message = response.error?.message ?? "db-host error";
-    // ISS-4714: a migration refusal thrown in the DB-host child loses its
-    // prototype (and so its `kind`) crossing the structured-clone boundary. When
-    // the serialized error carried a validated refusal kind, rebuild the typed
-    // `DesktopMigrationError` so main-side classification (`isDbAheadOfAppError`)
-    // still fires in production — not just in the in-process test.
-    const refusalKind = toMigrationRefusalKind(response.error?.refusalKind);
-    const error =
-      refusalKind === null
-        ? new Error(message)
-        : new DesktopMigrationError(refusalKind, message);
-    if (response.error?.stack) {
-      error.stack = response.error.stack;
-    }
-    // A rebuilt DesktopMigrationError already carries name "DesktopMigrationError";
-    // only override for the plain-Error path so a serialized custom name survives.
-    if (refusalKind === null && response.error?.name) {
-      error.name = response.error.name;
-    }
-    return error;
-  }
-  return new Error("db-host error");
-}
-
 /**
  * Main-process transport to the DB host utilityProcess. Owns the child lifecycle,
  * correlates `invoke` requests to `result` responses by id, and surfaces the
@@ -240,7 +165,7 @@ function rebuildError(response: DbHostResponse): Error {
 export class DbHostClient {
   private child: DbHostProcess | null = null;
   private nextId = 1;
-  private readonly pending = new Map<number, Pending>();
+  private readonly pending = new Map<number, DbHostPending>();
   // ISS-4713 — settle signals for every invoke ACCEPTED (passed the closed
   // check) but not yet finished, tracked from call entry BEFORE the async
   // `ready.then(...)` continuation registers it in `pending`. The shutdown drain
@@ -286,6 +211,16 @@ export class DbHostClient {
   // reinstating the hot loop it exists to prevent. handleExit refreshes this on
   // every unexpected exit, so the re-arm always waits the escalated delay.
   private latestRestartBackoffMs = RESTART_BACKOFF_MS;
+  // ISS-8776 — consecutive attempts armed since the last child that actually
+  // came up, so the ceiling is per-run of failures and a healthy app that
+  // bounces occasionally never approaches it. `evaluateRestartBudget` owns the
+  // ceiling; `restartExhausted` is the terminal state past it, after which every
+  // call rejects non-recoverably instead of promising a replacement forever.
+  private restartAttempts = 0;
+  private restartExhausted = false;
+  // ISS-9802 — cancels that arrived with no child; see the ring's own module.
+  private readonly cancelledWhileDetached = createDetachedCancelRing();
+  private lastExitCode: number | null = null;
   // ISS-5715 — correlation id of the current child's Init handshake, so an exit
   // can tell the restart's own bookkeeping apart from real caller work when it
   // reports how many ops it dropped. Null whenever no Init is outstanding.
@@ -405,6 +340,11 @@ export class DbHostClient {
         )
       );
     }
+    // ISS-8776: reject BEFORE joining the in-flight set — nothing will re-arm
+    // `ready`, so a caller queued behind it would wait forever.
+    if (this.restartExhausted) {
+      return Promise.reject(restartExhaustedError(this.lastExitCode, op));
+    }
     // ISS-4713 — expose a settle signal for the shutdown drain, created and
     // TRACKED SYNCHRONOUSLY here (before the async `ready.then(...)` below), so
     // an invoke accepted just before close() is drained even while it is still
@@ -431,7 +371,10 @@ export class DbHostClient {
       // has already accounted for and close() is about to Close/kill — the
       // race the shutdown drain exists to prevent. Settling here releases the
       // tracked entry so drainInFlight() doesn't wait on an op we never sent.
-      if (this.closed || this.closing) {
+      //
+      // ISS-9839 / ISS-9914: `closing` alone does not refuse a TERMINAL flush —
+      // see {@link isAdmittedDuringShutdown}. `closed` still does.
+      if (this.closed || (this.closing && !isAdmittedDuringShutdown(op))) {
         finishSettled();
         // ISS-5262: classifiable, message unchanged (see the `closed` branch).
         throw new DbHostShutdownError(
@@ -439,9 +382,26 @@ export class DbHostClient {
           `db-host is closing (op: ${op})`
         );
       }
+      // ISS-8776: exhaustion settles `ready`, so a queued call lands here with
+      // no child. The bare `db-host is not running` branch below is untyped and
+      // unclassifiable; the terminal state has its own typed answer.
+      if (this.restartExhausted) {
+        finishSettled();
+        throw restartExhaustedError(this.lastExitCode, op);
+      }
       if (!this.child) {
         finishSettled();
         throw new Error(`db-host is not running (op: ${op})`);
+      }
+      // ISS-9802 (whitlockk review): cancelled while there was no child to forward
+      // it to, so honour it HERE rather than re-running the abandoned scan.
+      const cancellationToken = currentReadCancellationToken();
+      if (
+        cancellationToken !== undefined &&
+        this.cancelledWhileDetached.has(cancellationToken)
+      ) {
+        finishSettled();
+        throw new DesktopReadCancelledError();
       }
       const id = this.nextId++;
       return new Promise<unknown>((resolve, reject) => {
@@ -461,13 +421,46 @@ export class DbHostClient {
         // repo's optional-field convention and what makes a version-skewed
         // child — one that has never heard of the field — behave exactly as it
         // does today.
-        this.post(
-          isBackgroundDbRead()
-            ? { kind: DbHostRequestKind.Invoke, id, op, args, background: true }
-            : { kind: DbHostRequestKind.Invoke, id, op, args }
-        );
+        // ISS-9802: same omission rule as `background` — the token is attached
+        // only when this call runs inside a `runWithReadCancellationToken`
+        // scope, so every other call posts the request it always posted.
+        this.post({
+          kind: DbHostRequestKind.Invoke,
+          id,
+          op,
+          args,
+          ...(isBackgroundDbRead() ? { background: true } : {}),
+          ...(cancellationToken === undefined ? {} : { cancellationToken }),
+        });
       });
     });
+  }
+
+  /**
+   * ISS-9802 — ask the child to abandon the in-flight read carrying `token`.
+   *
+   * Fire-and-forget, and deliberately unconditional on `pending`: main does not
+   * track which correlation id a token belongs to (the token is scoped, not
+   * correlated), and the store thread is the only side that knows whether the
+   * read is still running. A token naming nothing in flight is a no-op there.
+   *
+   * Silent while closed or child-less: there is no work left to cancel in
+   * either state, and a caller aborting a read it already lost must not be
+   * handed an error for it. A cancel DURING `closing` is still forwarded — the
+   * child is alive until the drain completes, so a read in flight then is
+   * exactly one worth abandoning.
+   */
+  cancelRead(token: string): void {
+    if (this.closed) {
+      return;
+    }
+    if (!this.child) {
+      // ISS-9802 (whitlockk review): there IS work left to cancel here — a read
+      // parked on `ready` still holds its token — so the verdict is retained.
+      this.cancelledWhileDetached.remember(token);
+      return;
+    }
+    this.post({ kind: DbHostRequestKind.CancelRead, token });
   }
 
   /**
@@ -477,6 +470,18 @@ export class DbHostClient {
    */
   get pendingRequestCount(): number {
     return this.pending.size;
+  }
+
+  /**
+   * ISS-12552: keep main's parse policy in the RETAINED init options, so a
+   * restarted child opens under the current policy rather than the one this
+   * client started with. The running child is told through its
+   * `parsePolicy.set` store op.
+   */
+  retainParsePolicy(parsePolicy: ParsePolicy): void {
+    if (this.initOptions) {
+      this.initOptions = { ...this.initOptions, parsePolicy };
+    }
   }
 
   /** Push the current user identity so the child's sync getUserIdentity sees it. */
@@ -598,7 +603,7 @@ export class DbHostClient {
    * `inFlightInvokes`, so Init/Close never appear here — only real DB writes are
    * drained. The set is tracked from invoke() call entry (not from `pending`
    * registration), so an invoke still queued on `ready` when close() runs is
-   * awaited too — that late continuation then observes `closing` and settles
+   * awaited too — that late continuation then observes `closed` and settles
    * without ever posting into the closing child.
    */
   private async drainInFlight(): Promise<void> {
@@ -649,39 +654,18 @@ export class DbHostClient {
     try {
       this.child?.postMessage(request);
     } catch (error) {
-      this.handlePostFailure(request, error);
+      handleDbHostPostFailure({
+        request,
+        error,
+        pending: this.pending,
+        onLog: this.options.onLog,
+      });
     }
-  }
-
-  private handlePostFailure(request: DbHostRequest, error: unknown): void {
-    const op =
-      request.kind === DbHostRequestKind.Invoke ? request.op : request.kind;
-    const cloneError = new DbHostDataCloneError(op, error);
-    // Only requests whose `id` was allocated from `this.nextId` INTO `this.pending`
-    // (Init, Invoke, Close) may be correlated through the pending map. A
-    // ScheduledReviewResult carries the CHILD's reverse-RPC id (minted by the
-    // worker's independent `nextScheduledReviewId` counter, not `this.nextId`), so
-    // looking it up here would collide with — and wrongly delete/reject — an
-    // unrelated in-flight Init/Invoke/Close entry. SetUserIdentity has no `id` at
-    // all. Both non-correlated kinds take the log/degrade path below.
-    const id = isPendingCorrelatedRequest(request) ? request.id : undefined;
-    const pending = id === undefined ? undefined : this.pending.get(id);
-    if (pending && id !== undefined) {
-      this.pending.delete(id);
-      pending.reject(cloneError);
-      return;
-    }
-    // No correlated pending promise to carry the rejection (a SetUserIdentity
-    // push, or a ScheduledReviewResult reply whose id belongs to the child): log
-    // and degrade rather than throw so an un-cloneable identity/notification/reply
-    // can never crash the app. A dropped ScheduledReviewResult leaves the child's
-    // pendingScheduledReviews entry parked until its own timeout/generation guard
-    // clears it — never mis-resolving a main-side request.
-    this.options.onLog(cloneError.message);
   }
 
   private handleMessage(message: unknown): void {
     if (!isDbHostResponse(message)) {
+      this.reportUnroutableChildTelemetry(message);
       return;
     }
     switch (message.kind) {
@@ -697,21 +681,27 @@ export class DbHostClient {
       case DbHostResponseKind.Log:
         this.options.onLog(message.message);
         return;
-      case DbHostResponseKind.SchedulerChanged:
-        this.options.onSchedulerChanged?.();
-        return;
       case DbHostResponseKind.MemoryPressure:
         this.lastMemoryPressure = {
           level: message.level,
           atMs: this.now(),
         };
         return;
-      case DbHostResponseKind.ScheduledReviewRun:
-        this.handleScheduledReviewRun(
-          message.id,
-          message.generation,
-          message.request
-        );
+      // ISS-7109: emit the child's event on its behalf. This is deliberately NOT
+      // a `DbHostClientOptions` callback: an optional handler that a composition
+      // root forgets to wire is a silent no-op, which is precisely the shape of
+      // the defect this relay exists to end — the child's emit call returned
+      // successfully and sent nothing for the whole life of ISS-6417. Hard-wiring
+      // the sink means there is no way to compose a DB host whose telemetry is
+      // dropped. Tests substitute the transport through `Observability.init`,
+      // which is the same seam main uses.
+      case DbHostResponseKind.Telemetry:
+        emitRelayedChildTelemetry(message.event);
+        return;
+      // ISS-7882: append the child's durable line to `main.log` on its behalf,
+      // hard-wired for the same reason the telemetry case above is.
+      case DbHostResponseKind.DurableLog:
+        writeRelayedDurableLog(message.level, message.line);
         return;
       case DbHostResponseKind.Ready: {
         const pending = this.pending.get(message.id);
@@ -726,62 +716,26 @@ export class DbHostClient {
         pending.resolve(undefined);
         return;
       }
-      case DbHostResponseKind.Result: {
-        const pending = this.pending.get(message.id);
-        if (!pending) {
-          return;
-        }
-        this.pending.delete(message.id);
-        if (message.ok) {
-          pending.resolve(message.value);
-          return;
-        }
-        pending.reject(rebuildError(message));
+      case DbHostResponseKind.Result:
+      case DbHostResponseKind.ResultPage:
+        settleDbHostResult(message, this.pending, (id, offset) =>
+          this.post({ kind: DbHostRequestKind.ResultPagePull, id, offset })
+        );
         return;
-      }
       default:
         return;
     }
   }
 
   /**
-   * FEA-4143 — run a scheduled review the child proxied to main, then post the
-   * correlated reply back to the child. An unwired handler (or a throw) is
-   * reported as a structured failure so the child's dispatch records a clean
-   * `failed` run instead of hanging on a reply that never comes.
+   * ISS-7109/ISS-7201 — a telemetry relay message the boundary rejected.
    *
-   * Tzqf1 — `generation` is the originating worker's token; main is stateless
-   * w.r.t. it and echoes it back verbatim on the reply. The audit can outlive a
-   * DB-host crash, so this reply may reach a re-forked replacement child; the
-   * echoed generation lets that child drop a result that isn't its own instead
-   * of mis-resolving an unrelated same-`id` review.
+   * Delegated whole: ISS-7201 made this drop a MONITORED signal rather than a
+   * local log line, and the reason classification plus the version-skew silence
+   * for unknown kinds now live with the other telemetry reporters.
    */
-  private handleScheduledReviewRun(
-    id: number,
-    generation: string,
-    request: ScheduledReviewRequest
-  ): void {
-    const run =
-      this.options.onRunScheduledReview ??
-      (() => Promise.reject(new Error("scheduled review runner not wired")));
-    run(request).then(
-      (value) =>
-        this.post({
-          kind: DbHostRequestKind.ScheduledReviewResult,
-          id,
-          generation,
-          ok: true,
-          value,
-        }),
-      (error: unknown) =>
-        this.post({
-          kind: DbHostRequestKind.ScheduledReviewResult,
-          id,
-          generation,
-          ok: false,
-          error: serializeDbHostError(error),
-        })
-    );
+  private reportUnroutableChildTelemetry(message: unknown): void {
+    reportRefusedChildTelemetry({ message, onLog: this.options.onLog });
   }
 
   private handleExit(code: number | null): void {
@@ -793,6 +747,9 @@ export class DbHostClient {
     // top of this file), so it keeps the plain Error and stays loud.
     const isExpectedShutdownExit =
       (this.closed || this.closing) && isGracefulDbHostExitCode(code);
+    // ISS-8776: every exit, including expected ones, so the terminal report
+    // names the code the host actually last died with.
+    this.lastExitCode = code;
     const message = `db-host exited (code: ${code ?? "null"})`;
     // ISS-5715: counted BEFORE the map is drained — how many correlated ops died
     // with the child, reported on the monitored path below. The Init handshake is
@@ -840,7 +797,10 @@ export class DbHostClient {
       );
       return;
     }
-    const backoffMs = this.registerCrashAndComputeBackoff();
+    const backoffMs = registerCrashAndComputeBackoff(
+      this.recentCrashes,
+      Date.now()
+    );
     this.latestRestartBackoffMs = backoffMs;
     const crashesInWindow = this.recentCrashes.length;
     // ISS-5715: scheduleRestart() is a NO-OP while an earlier attempt is still
@@ -884,35 +844,6 @@ export class DbHostClient {
   }
 
   /**
-   * Record this crash, prune crashes older than the rolling window, and return
-   * the backoff to use before the next restart: base backoff doubled per crash
-   * still inside the window, capped at MAX_RESTART_BACKOFF_MS. Self-resets to the
-   * base once the window empties (a lone crash → base backoff).
-   */
-  private registerCrashAndComputeBackoff(): number {
-    const now = Date.now();
-    this.recentCrashes.push(now);
-    while (
-      this.recentCrashes.length > 0 &&
-      now - this.recentCrashes[0] > CRASH_WINDOW_MS
-    ) {
-      this.recentCrashes.shift();
-    }
-    // ISS-5808: on the SHARED ladder (`exponentialBackoffMs`), not a hand-rolled
-    // `BASE * 2 ** n`. The sync-lane contract (`main/sync/AGENTS.md`, invariant
-    // 5) requires every bounded retry path in the desktop to back off on that
-    // one helper precisely so copies cannot drift; this supervisor was the last
-    // hand-rolled ladder left. Behaviour is unchanged — the helper is 1-indexed
-    // and `recentCrashes.length` is the 1-indexed crash number, and its own
-    // exponent clamp sits far above the point `MAX_RESTART_BACKOFF_MS` binds.
-    return exponentialBackoffMs(
-      this.recentCrashes.length,
-      RESTART_BACKOFF_MS,
-      MAX_RESTART_BACKOFF_MS
-    );
-  }
-
-  /**
    * ISS-5715 — arm (or re-arm) the restart ladder's backoff timer.
    *
    * The one owner of "schedule the next attempt". Three call sites previously
@@ -929,8 +860,52 @@ export class DbHostClient {
    * already hold — so the sentinel can never be left false with a timer armed.
    */
   private armRestartTimer(attempt: () => void): void {
+    // ISS-8776: enforced HERE, the one owner of "schedule the next attempt" —
+    // a bound honored by only one of the three arming paths would have left the
+    // spawn-failure retry (the one the incident looped on) unbounded.
+    const verdict = evaluateRestartBudget(this.restartAttempts);
+    if (!verdict.arm) {
+      this.enterRestartExhausted();
+      return;
+    }
+    this.restartAttempts = verdict.attempt;
     this.restarting = true;
     this.restartTimer = this.setTimeoutFn(attempt, this.latestRestartBackoffMs);
+  }
+
+  /**
+   * ISS-8776 — the ladder is finished; give up for the rest of this process.
+   *
+   * Idempotent, and it settles `ready`: exhaustion removes the only callback
+   * that would have resolved it, so a queued `invoke()` would otherwise hang —
+   * the wedge `clearRestartTimer` prevents on the close path. `rejectedOps`
+   * counts the IN-FLIGHT set, not `pending`, which `handleExit` already
+   * drained; reading `pending` would report zero for a real blast radius.
+   */
+  private enterRestartExhausted(): void {
+    if (this.restartExhausted) {
+      return;
+    }
+    this.restartExhausted = true;
+    this.restarting = false;
+    this.restartTimer = null;
+    this.options.onLog(
+      describeRestartExhausted(this.restartAttempts, this.lastExitCode)
+    );
+    this.options.onRestartExhausted?.({
+      exitCode: this.lastExitCode,
+      // Windowed, so NOT the severity signal here — `restartAttempts` is.
+      crashesInWindow: this.recentCrashes.length,
+      backoffMs: this.latestRestartBackoffMs,
+      rejectedOps: this.inFlightInvokes.size,
+      restartAlreadyInFlight: false,
+      restartAttempts: this.restartAttempts,
+    });
+    if (this.resolveReady) {
+      const resolve = this.resolveReady;
+      this.resolveReady = null;
+      resolve();
+    }
   }
 
   /**
@@ -951,6 +926,8 @@ export class DbHostClient {
       this.closing ||
       this.child ||
       this.restarting ||
+      // ISS-8776: a finished ladder must not be restarted by a later exit.
+      this.restartExhausted ||
       !this.initOptions
     ) {
       return;
@@ -983,8 +960,48 @@ export class DbHostClient {
           settleReady();
           return;
         }
-        this.spawn(this.initOptions ?? initAtSchedule).then(
-          () => {
+        const onSpawnFailed = (spawnError: unknown): void => {
+          this.child = null;
+          // ISS-4474/ISS-4713: honor a close() OR an in-progress beginClosing()
+          // that landed while spawn() was in flight — don't re-arm a retry timer
+          // against a client that is shutting down.
+          if (this.closed || this.closing) {
+            this.restarting = false;
+            settleReady();
+            return;
+          }
+          this.options.onLog(
+            `db-host restart failed, retrying: ${
+              spawnError instanceof Error
+                ? spawnError.message
+                : String(spawnError)
+            }`
+          );
+          // ISS-8776: escalate on THIS path too. `latestRestartBackoffMs` is
+          // refreshed only by `handleExit`, so a spawn that failed without the
+          // child ever exiting re-armed at a FIXED delay, not a ladder.
+          //
+          // NEVER DOWNWARD. `handleExit` can run while this attempt is in
+          // flight: its `scheduleRestart()` no-ops on the `restarting`
+          // sentinel and relies on THIS continuation to re-arm, having
+          // already stored the FEA-3072 crash-storm delay. A plain assignment
+          // would discard that and re-arm a storm at the shorter delay — the
+          // hot loop FEA-3072 exists to prevent. Larger wins.
+          this.latestRestartBackoffMs = Math.max(
+            this.latestRestartBackoffMs,
+            restartAttemptBackoffMs(this.restartAttempts)
+          );
+          this.armRestartTimer(attempt);
+        };
+        // ISS-9013: `spawn()` forks SYNCHRONOUSLY, and `attempt` is a bare
+        // setTimeout callback, so an `utilityProcess.fork` that throws rather
+        // than rejects (EMFILE under a crash storm) escapes as an
+        // uncaughtException — the process-wide handler exits the app, and
+        // `restarting` is left true with no timer armed, wedging the ladder even
+        // if the app survived. A sync throw is the same event as a rejection:
+        // no child came up. Route it to the one continuation that knows that.
+        try {
+          this.spawn(this.initOptions ?? initAtSchedule).then(() => {
             this.restarting = false;
             // ISS-4713: a spawn that RESOLVED after beginClosing()/close() must
             // not leave a freshly-forked child running into shutdown. spawn() has
@@ -1014,28 +1031,16 @@ export class DbHostClient {
               this.armRestartTimer(attempt);
               return;
             }
+            // ISS-8776: a child that is actually up ends this run of failures.
+            // Reset HERE, not in `spawn()`: spawn also resolves on the
+            // Ready-then-exit window above, and crediting that would clear the
+            // tally on the exact sequence the ceiling exists to bound.
+            this.restartAttempts = 0;
             settleReady();
-          },
-          (spawnError: unknown) => {
-            this.child = null;
-            // ISS-4474/ISS-4713: honor a close() OR an in-progress beginClosing()
-            // that landed while spawn() was in flight — don't re-arm a retry timer
-            // against a client that is shutting down.
-            if (this.closed || this.closing) {
-              this.restarting = false;
-              settleReady();
-              return;
-            }
-            this.options.onLog(
-              `db-host restart failed, retrying: ${
-                spawnError instanceof Error
-                  ? spawnError.message
-                  : String(spawnError)
-              }`
-            );
-            this.armRestartTimer(attempt);
-          }
-        );
+          }, onSpawnFailed);
+        } catch (spawnError) {
+          onSpawnFailed(spawnError);
+        }
       };
       this.armRestartTimer(attempt);
     });
@@ -1080,19 +1085,5 @@ export class DbHostClient {
         }`
       );
     }
-  }
-}
-
-/**
- * ISS-5808 — reject a detached batch of abandoned ops with one error.
- *
- * Takes an ARRAY, not the live `pending` map, because `handleExit` must detach
- * before it schedules the restart and reject only afterwards: the rejection has
- * to carry whether a replacement child is actually coming, and a consumer's
- * re-drive has to find the new `ready` promise already installed.
- */
-function rejectAll(abandoned: Pending[], error: Error): void {
-  for (const pending of abandoned) {
-    pending.reject(error);
   }
 }

@@ -4,6 +4,7 @@ import {
   costFilterIncludesUnknown,
   DEFAULT_SESSION_QUALITY,
   getSessionCostBucket,
+  hasPositiveCost,
   isExhaustiveCostFilter,
   isSessionVisibleForQuality,
   isSubstantiveSession,
@@ -25,13 +26,10 @@ import {
   sessionCostIsNumeric,
   sessionHasChanges,
 } from "./agent-session-filters";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "./types/session-status.ts";
+import { SESSION_STATUS } from "./types/session-status.ts";
 
 describe("matchesCostBucket", () => {
-  // FEA-4293 (Mike's decision): the upper bound is INCLUSIVE and the lower bound
+  // FEA-4293 (Marisol's decision): the upper bound is INCLUSIVE and the lower bound
   // is EXCLUSIVE (except the first bucket's inclusive 0), so a displayed $N.00
   // boundary value falls into the bucket whose maxCost is N — a row shown as
   // exactly $1.00 is "≤ $1", not "$1 to $10".
@@ -97,7 +95,7 @@ describe("matchesCostBucket", () => {
   // Cost cell renders, not the raw sub-cent value.
   it("keeps a sub-dollar cost that DISPLAYS $1.00 inside the ≤ $1 cohort", () => {
     // 0.996 renders as "$1.00" in the cell; with the inclusive upper bound it
-    // stays in "≤ $1" (Mike's decision) and is OUT of "$1 to $10".
+    // stays in "≤ $1" (Marisol's decision) and is OUT of "$1 to $10".
     expect(matchesCostBucket(0.996, "under_1")).toBe(true);
     expect(matchesCostBucket(0.996, "from_1_to_10")).toBe(false);
     // Exactly on the display-rounding boundary (0.995 rounds to $1.00).
@@ -291,6 +289,26 @@ describe("sessionCostIsNumeric (FEA-4294 / ISS-4481)", () => {
         toolUseCount: 0,
       })
     ).toBe(false);
+  });
+
+  it("ISS-12260: answers a never-priced null cost as it answers 0", () => {
+    const shapes = [
+      {},
+      { billingMode: "api", inputTokens: 1000 },
+      { billingMode: "max_20x", turns: 3 },
+      { billingMode: "pro" },
+    ];
+    for (const shape of shapes) {
+      expect(sessionCostIsNumeric({ ...shape, estimatedCost: null })).toBe(
+        sessionCostIsNumeric({ ...shape, estimatedCost: 0 })
+      );
+      expect(matchesUnknownCost({ ...shape, estimatedCost: null })).toBe(
+        matchesUnknownCost({ ...shape, estimatedCost: 0 })
+      );
+    }
+    expect(hasPositiveCost(null)).toBe(false);
+    expect(hasPositiveCost(0)).toBe(false);
+    expect(hasPositiveCost(0.01)).toBe(true);
   });
 });
 
@@ -508,7 +526,7 @@ describe("matchesPrAssociation", () => {
 });
 
 describe("isSubstantiveSession (FEA-3284)", () => {
-  it("classifies a 0-turn / 0-token / 0-tool session as idle", () => {
+  it("classifies a 0-turn / 0-token / 0-tool / 0-invocation session as idle", () => {
     expect(
       isSubstantiveSession({
         turns: 0,
@@ -517,6 +535,7 @@ describe("isSubstantiveSession (FEA-3284)", () => {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         toolUseCount: 0,
+        componentInvocationCount: 0,
       })
     ).toBe(false);
   });
@@ -550,9 +569,32 @@ describe("isSubstantiveSession (FEA-3284)", () => {
     expect(isSubstantiveSession({ toolUseCount: 1 })).toBe(true);
   });
 
+  it("is substantive on component invocations only (ISS-5801)", () => {
+    // The slash-command/skill/subagent/hook-only shape: no turn, no token, no
+    // toolName-bearing event — but derived invocation records exist, so the
+    // session did real work and must not be withheld from sync.
+    expect(isSubstantiveSession({ componentInvocationCount: 1 })).toBe(true);
+    expect(
+      isSubstantiveSession({
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        toolUseCount: 0,
+        componentInvocationCount: 3,
+      })
+    ).toBe(true);
+  });
+
   it("does not count negative sentinel values as substantive", () => {
     expect(
-      isSubstantiveSession({ turns: -1, inputTokens: -5, toolUseCount: -1 })
+      isSubstantiveSession({
+        turns: -1,
+        inputTokens: -5,
+        toolUseCount: -1,
+        componentInvocationCount: -1,
+      })
     ).toBe(false);
   });
 
@@ -594,23 +636,27 @@ describe("isSessionVisibleForQuality (FEA-4145)", () => {
 });
 
 describe("SESSION_STATUS_FILTER_VALUES (ISS-4586 / ISS-4858)", () => {
-  it("offers the canonical Active/Waiting/Inactive/Error/Stale/Unknown vocabulary in facet order", () => {
-    // ISS-5366 appended `stale` and `unknown`. They are here for the same
-    // reason `waiting` is: the SERVER projects them
-    // (`projectDisplayedSessionStatus` applies the display staleness cutoff and
-    // the unrecognized-status fold), so the Status column badges them for every
-    // user and both have real predicates in `buildStatusFacetPredicate`. A
-    // vocabulary without them left a value on screen that no filter could
-    // gather. Appended rather than inserted so the pre-existing lifecycle order
-    // is untouched.
+  // ISS-9939 / ISS-10629 (2026-09-17): the operator ruling retired Waiting,
+  // Stale, and Unknown from this contract — they were derived DISPLAY
+  // projections, not stored statuses, and the ruling collapsed the Sessions
+  // status FILTER (and SORT, ISS-10262) to the three PERSISTED SESSION_STATUS
+  // values. ISS-10364 later retired all three from DISPLAY too, so there is no
+  // longer a wider display vocabulary this filter-input contract is narrower
+  // than — both now offer exactly the three lifecycle values.
+  it("offers exactly the canonical Active/Inactive/Error vocabulary, in lifecycle order", () => {
     expect(SESSION_STATUS_FILTER_VALUES).toEqual([
       SESSION_STATUS.ACTIVE,
-      DISPLAYED_SESSION_STATUS.WAITING,
       SESSION_STATUS.INACTIVE,
       SESSION_STATUS.ERROR,
-      DISPLAYED_SESSION_STATUS.STALE,
-      DISPLAYED_SESSION_STATUS.UNKNOWN,
     ]);
+  });
+
+  it("no longer offers the retired display-only Waiting/Stale/Unknown facet values", () => {
+    // Plain literals: ISS-10364 retired all three `DISPLAYED_SESSION_STATUS`
+    // members this test used to read them from.
+    expect(SESSION_STATUS_FILTER_VALUES).not.toContain("waiting");
+    expect(SESSION_STATUS_FILTER_VALUES).not.toContain("stale");
+    expect(SESSION_STATUS_FILTER_VALUES).not.toContain("unknown");
   });
 
   it("never offers the retired completed/abandoned values", () => {

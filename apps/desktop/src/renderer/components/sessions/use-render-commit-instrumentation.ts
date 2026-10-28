@@ -95,6 +95,11 @@ export function resolveSessionsDetailCause(): RendererRenderCause | null {
   return null;
 }
 
+/** Branches currently records mount/update cost without attributing interactions. */
+export function resolveBranchesListCause(): RendererRenderCause | null {
+  return null;
+}
+
 function normalizeProfilerPhase(
   phase: "mount" | "update" | "nested-update"
 ): RendererRenderPhase {

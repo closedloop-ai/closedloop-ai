@@ -10,7 +10,7 @@
  * {@link openTestPrisma} harness so it runs locally and in CI.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   linkBranchSessionsToPr,
   propagateBranchPrLinks,
@@ -49,7 +49,7 @@ async function seedSession(
 // invariant that gitBranch is not attribution data. Only a relation='created'
 // branch-link (git_push / git_commit / gh_pr_create) may drive the join.
 
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 const BRANCH = "fix/desktop-sessions-loading-stall";
 const PR_NUMBER = 3837;
 const BRANCH_ARTIFACT_ID = "art-branch-1";
@@ -61,7 +61,7 @@ async function seedBranchPrFixture(
   sessionId: string,
   linkRelation: string,
   linkMethod: string,
-  // FEA-4377 (wongk review): the branch-link's extractor_version. Defaults to the
+  // FEA-4377 (whitlockk review): the branch-link's extractor_version. Defaults to the
   // post-v7 world (7) where authored links carry relation='created'. A pre-v7
   // value (<7) exercises the source-gone compat fallback: those authored links
   // were stored as relation='workspace' and can no longer be re-derived once the
@@ -106,8 +106,6 @@ async function seedBranchPrFixture(
       branchName,
     ]
   );
-  // PR artifact, unenriched (pr_state NULL ⇒ treated as open) — the exact window
-  // in which the maintenance pass would mint the link before enrichment lands.
   await store.query(
     `INSERT INTO artifacts
        (id, identity_key, kind, repo_full_name, pr_number, branch_name,
@@ -221,7 +219,7 @@ test("removeUnauthoredBranchPrLinks preserves a pre-gate link backed by an autho
   }
 });
 
-// --- FEA-4377 (wongk review): the PER-IMPORT propagator gates identically ---
+// --- FEA-4377 (whitlockk review): the PER-IMPORT propagator gates identically ---
 // The three propagators share one gate (branchAuthoringEvidenceSql). The boot
 // maintenance copy (propagateAllBranchPrLinks) is covered above; drive the
 // per-import copy (propagateBranchPrLinks, called inside the import tx from
@@ -293,7 +291,7 @@ test("both propagators preserve links for default-looking observed branch eviden
   }
 });
 
-// --- FEA-4377 (wongk review): pre-v7 source-gone compat fallback ------------
+// --- FEA-4377 (whitlockk review): pre-v7 source-gone compat fallback ------------
 // Before EXTRACTOR_VERSION 7 (FEA-2531) authored branch links (git_push /
 // git_commit / gh_pr_create) were stored as relation='workspace' — there was no
 // 'created' relation. The artifact-link backfill rewrites those to 'created'

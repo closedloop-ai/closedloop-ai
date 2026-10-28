@@ -2,7 +2,7 @@
  * ISS-6041, through a LAUNCHED Electron app — the desktop Sessions strip asks the
  * cloud producer for the prior-window comparison and chips what comes back.
  *
- * wongk review on #5023. The renderer suite
+ * whitlockk review on #5023. The renderer suite
  * (`components/sessions/__tests__/sessions-view-summary-deltas.test.tsx`) mocks
  * the mode, the Labs gate and the page-data hook, so it pins the DECISION but
  * cannot fail for the two ways the wiring can actually break: a Labs toggle that
@@ -43,21 +43,24 @@ import {
   AgentSessionComparisonMode,
 } from "@repo/api/src/types/agent-session-usage-comparison.ts";
 import { DesktopAuthStatus } from "../../src/shared/contracts.js";
+import { launchAuthenticatedDesktopApp } from "./helpers/authenticated-desktop-app";
 import {
   AUTHENTICATED_ACCESS_TOKEN,
   AUTHENTICATED_GATEWAY_ID,
   AUTHENTICATED_ORGANIZATION_ID,
   AUTHENTICATED_USER_ID,
-  launchAuthenticatedDesktopApp,
+  createAuthenticatedDesktopSessionRecord,
   routeDesktopSessionRefresh,
-  seedAuthenticatedDesktopSession,
 } from "./helpers/branch-details-authenticated-cloud";
 import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   drainedCloudReadReadiness,
   gotoNav,
   seedDesktopFeatureFlags,
   seedDesktopSettings,
 } from "./helpers/desktop-app";
+import { initializeDesktopProfileSchema } from "./helpers/initialize-desktop-profile-schema";
 import { waitForBranchesSchema } from "./helpers/seed-branches-db";
 import {
   CARD_SELECTOR,
@@ -68,19 +71,16 @@ import {
 /**
  * Spelled as literals rather than imported. An extension-less `@repo/*` subpath
  * does not resolve under Playwright's ESM loader and a spec-level import failure
- * aborts the WHOLE desktop-e2e suite at load time (the constraint
- * `sessions-header-reorder-drag.spec.ts` documents), which rules out
+ * aborts the WHOLE desktop-e2e suite at load time, which rules out
  * `@repo/app/agents/...` and `@closedloop-ai/design-system/...`. Drift is caught first by
  * `apps/desktop/test/feature-flags.test.ts` and by the renderer delta suite.
  *
- * `GRID_TABLE_V2_FLAG_KEY` — `DESKTOP_GRID_TABLE_V2_FEATURE_FLAG_KEY`.
  * `SESSIONS_CARD_LABEL` — `SESSIONS_METRIC_CARD_LABEL`.
  * `DELTA_CHIP_TEST_ID` / `LABEL_TEXT_SLOT` — `MetricCard`'s two handles.
  * `NO_PRIOR_PERIOD` — `SUMMARY_NO_PRIOR_PERIOD`.
  * `MOM_CAPTION` — `GROWTH_LABEL["30d"]`, the cadence the flag turns the caption
  * over to.
  */
-const GRID_TABLE_V2_FLAG_KEY = "grid-table-v2";
 const SESSIONS_CARD_LABEL = "Sessions";
 const DELTA_CHIP_TEST_ID = "metric-delta-chip";
 const LABEL_TEXT_SLOT = '[data-slot="metric-card-label-text"]';
@@ -99,8 +99,6 @@ const SESSIONS_DELTA_TEXT = "+25%";
 
 const PROFILE_ID = "iss-6041-cloud-comparison-profile";
 const SESSION_COUNT = 50;
-/** Only this window's cadence caption is asserted; see the file docstring. */
-const THIRTY_DAY_RANGE_LABEL = "Last 30 days";
 const REQUEST_ORIGIN = "http://127.0.0.1";
 
 type RecordedRequest = {
@@ -129,28 +127,12 @@ test.describe("Sessions cloud period comparison (ISS-6041)", () => {
     const server = await startSessionsCloudServer();
 
     try {
-      // Launch 1 — migrate the SQLite schema and encrypt a first-party session
-      // the next launch restores through the production refresh lane. The schema
-      // matters even though nothing is seeded into it: the summary cards' local
-      // fallback read has to SETTLE (at zero) before they leave their loading
-      // state, and a loading card renders no chip.
-      const seedLaunch = await launchAuthenticatedDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-        userDataDir,
-      });
-      try {
-        await seedAuthenticatedDesktopSession(seedLaunch.app, userDataDir);
-        await waitForBranchesSchema(userDataDir);
-      } finally {
-        await seedLaunch.cleanup();
-      }
+      // Close the production-migrated DB before the unchanged schema barrier.
+      await initializeDesktopProfileSchema(userDataDir);
+      await waitForBranchesSchema(userDataDir);
 
       const { page, pageErrors, cleanup } = await launchAuthenticatedDesktopApp(
         {
-          // Signed in, online, and the upload backlog demonstrably drained — the
-          // state `resolveCloudReadCutover` needs before Sessions reads the cloud.
-          // Without it this surface stays on the local SQLite producer and the
-          // comparison is correctly never requested.
           cloudReadReadiness: drainedCloudReadReadiness(),
           beforeLaunch: (launchUserDataDir) => {
             seedDesktopSettings(launchUserDataDir, {
@@ -169,15 +151,14 @@ test.describe("Sessions cloud period comparison (ISS-6041)", () => {
               ],
             });
             // The chips ride the shared Grid Parity gate, closed by default.
-            seedDesktopFeatureFlags(launchUserDataDir, {
-              [GRID_TABLE_V2_FLAG_KEY]: true,
-            });
+            seedDesktopFeatureFlags(launchUserDataDir, {});
           },
           env: {
             CLAUDE_HOME: claudeHome,
             CL_AUTH_API_ORIGIN: server.origin,
             CODEX_HOME: codexHome,
           },
+          sameProcessSessionSeed: createAuthenticatedDesktopSessionRecord(),
           userDataDir,
         }
       );
@@ -194,11 +175,14 @@ test.describe("Sessions cloud period comparison (ISS-6041)", () => {
           });
 
         await gotoNav(page, "sessions");
-        // `:visible` scopes to the Sessions toolbar — keep-alive views stay
-        // mounted-but-hidden and render the same control.
-        await page
-          .locator(`[aria-label="${THIRTY_DAY_RANGE_LABEL}"]:visible`)
-          .click();
+        // The shared helper, not a hand-rolled locator: it chooses and clicks
+        // inside ONE browser task, which is the only shape that survives the
+        // deferred route commit. Its docstring carries the full reasoning and
+        // the ISS-7995 history — every bare
+        // `page.locator('[aria-label="…"]:visible').click()` in this suite has
+        // failed this way, including in the Date range group Dashboard now
+        // always renders alongside this one.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.Last30Days);
 
         const chip = sessionsCardDeltaChip(page);
         await expect(chip).toHaveText(SESSIONS_DELTA_TEXT, {

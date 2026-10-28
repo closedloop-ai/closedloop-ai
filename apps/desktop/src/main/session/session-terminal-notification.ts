@@ -28,13 +28,10 @@ export function notifySessionTerminal(
         : "Your agent session finished.",
     });
     notification.on("click", () => {
-      desktopWindow.show();
       // Org-relative session-detail href; mirrors the renderer route
       // table's sessionDetailHref (/sessions/:id), which the main process
-      // can't import. sendToRenderer is best-effort: the click can fire long
-      // after notifySessionTerminal returns, against a torn-down renderer.
-      desktopWindow.sendToRenderer(
-        "desktop:navigate-tab",
+      // can't import.
+      desktopWindow.showRoute(
         `/sessions/${encodeURIComponent(notice.sessionId)}`
       );
     });

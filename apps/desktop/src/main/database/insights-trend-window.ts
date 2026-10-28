@@ -5,7 +5,7 @@
  * home, but that module reaches `db-helpers.ts` and from there
  * `@repo/api/src/types/agent-component` — a main-process graph the Playwright
  * loader cannot resolve, which aborts the whole `desktop-e2e` run before any
- * spec executes (wongk, PR #4974). The e2e seed helper needs this value and
+ * spec executes (whitlockk, PR #4974). The e2e seed helper needs this value and
  * nothing else from that graph, so the value lives where a test can reach it
  * without dragging the graph along.
  *

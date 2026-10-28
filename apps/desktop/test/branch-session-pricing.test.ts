@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { priceSyncedBranchSession } from "../src/main/branch/branch-session-pricing.js";
 import { estimateTokenCost } from "../src/shared/token-cost.js";
 import { syncedSession } from "./shared-branches-test-helpers.js";

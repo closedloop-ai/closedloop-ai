@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   planSyncedSessionHydration,
@@ -312,7 +312,7 @@ test("ISS-6105: two sessions that each fit alone but not together are split by t
 });
 
 test("ISS-6105: equal event-row counts with different payload sizes chunk differently", async () => {
-  // wongk (#4910): the full-data shape used to price every `events.data` blob at
+  // whitlockk (#4910): the full-data shape used to price every `events.data` blob at
   // a fixed per-row average, so these two sessions — identical row counts, 4500x
   // the stored payload — were scored identically and packed together. The branch
   // trace lanes call `loadSyncedSessions` WITHOUT `omitEventData`, so that is a

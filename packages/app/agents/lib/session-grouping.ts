@@ -18,13 +18,20 @@
  * the toolbar's copy, and the pager stays visible so the reader can see there is
  * more.
  */
-import {
-  isDisplayOnlySessionStatus,
-  normalizeDisplayedSessionStatus,
-} from "@repo/api/src/types/session-status";
+
+import { foldToDisplayedSessionStatus } from "@repo/api/src/types/session-status";
 import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
-import type { SessionTableRow } from "../components/sessions/sessions-table";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
+import { groupRowEntries } from "@repo/app/shared/lib/table-grouping";
+import { TableGroupOrder } from "@repo/design-system/components/ui/table-toolbar-model";
+import {
+  comparePriorityByRank,
+  priorityLabel,
+} from "@repo/design-system/lib/priority-order";
+import { PRIORITY_COLUMN_LABEL } from "../../shared/lib/priority-constants";
 import { resolveHarnessLabel } from "./harness-labels";
+import { sessionRowOwner } from "./session-owner";
+import { SESSIONS_PRIORITY_COLUMN_ID } from "./sessions-table-columns";
 
 /** The dimensions the Sessions list can band on. */
 export const SessionGroupBy = {
@@ -32,6 +39,8 @@ export const SessionGroupBy = {
   Status: "status",
   Harness: "harness",
   Owner: "owner",
+  /** ISS-10332: the Session artifact's priority, banded by its rendered label. */
+  Priority: "priority",
 } as const;
 export type SessionGroupBy =
   (typeof SessionGroupBy)[keyof typeof SessionGroupBy];
@@ -57,6 +66,7 @@ export const SESSION_GROUP_COLUMN_ID: Record<
   [SessionGroupBy.Status]: "status",
   [SessionGroupBy.Harness]: "harness",
   [SessionGroupBy.Owner]: "owner",
+  [SessionGroupBy.Priority]: SESSIONS_PRIORITY_COLUMN_ID,
 };
 
 /** Human label for each dimension, for the View menu's segmented control. */
@@ -65,6 +75,7 @@ export const SESSION_GROUP_BY_LABELS: Record<SessionGroupBy, string> = {
   [SessionGroupBy.Status]: "Status",
   [SessionGroupBy.Harness]: "Harness",
   [SessionGroupBy.Owner]: "Owner",
+  [SessionGroupBy.Priority]: PRIORITY_COLUMN_LABEL,
 };
 
 /** Coerce an unknown persisted/URL value to a known dimension. */
@@ -96,21 +107,44 @@ export function buildSessionGroups(
   if (groupBy === SessionGroupBy.None) {
     return undefined;
   }
-  const bands = new Map<string, { label: string; items: SessionTableRow[] }>();
-  for (const row of rows) {
-    const { key, label } = sessionGroupBand(row, groupBy);
-    const band = bands.get(key);
-    if (band) {
-      band.items.push(row);
-    } else {
-      bands.set(key, { items: [row], label });
+  // ISS-10332: the one ordinal dimension. Bands appear where the ranking puts
+  // them (most urgent first, unset after LOW, omitted last), not where their
+  // first member happened to land in the server order, which for a list
+  // sorted by anything else is no order at all (visual QA, 2026-09-22). Every
+  // other dimension keeps first-seen order.
+  const order =
+    groupBy === SessionGroupBy.Priority
+      ? TableGroupOrder.Ascending
+      : TableGroupOrder.Custom;
+  return groupRowEntries(
+    rows,
+    (row) => sessionGroupBand(row, groupBy),
+    ({ key, label }, row) => ({ items: [row], key, label }),
+    {
+      order,
+      compare: ([, left], [, right]) =>
+        compareSessionPriorityBands(left.items[0], right.items[0]),
     }
+  ).map(([, band]) => band);
+}
+
+/**
+ * ISS-10332: how two priority bands order, from a representative row of each.
+ * Most urgent first and unset after LOW (`comparePriorityByRank`); a producer
+ * that OMITTED the field ranks after unset, because "unknown to this peer" is
+ * not a priority and must not sit among them. Shared by both tables so the
+ * v1 and v2 band orders cannot diverge.
+ */
+export function compareSessionPriorityBands(
+  left: SessionTableRow | undefined,
+  right: SessionTableRow | undefined
+): number {
+  const leftOmitted = left?.priority === undefined;
+  const rightOmitted = right?.priority === undefined;
+  if (leftOmitted || rightOmitted) {
+    return Number(leftOmitted) - Number(rightOmitted);
   }
-  return [...bands.entries()].map(([key, { items, label }]) => ({
-    items,
-    key,
-    label,
-  }));
+  return comparePriorityByRank(left.priority, right.priority);
 }
 
 /**
@@ -124,7 +158,7 @@ export function buildSessionGroups(
  * This is also what `isSyncStateFoldActive` must be judged against: with Status
  * banded there is no Status cell to fold the sync signal into, so the fold has
  * to stand down and hand the signal back to the Name cell rather than drop it
- * from the grid entirely (wongk, #4480).
+ * from the grid entirely (whitlockk, #4480).
  */
 export function hideSessionGroupedColumn(
   visibleColumns: Set<string> | undefined,
@@ -157,7 +191,8 @@ function sessionGroupBand(
   groupBy: SessionGroupBy
 ): { key: string; label: string } {
   if (groupBy === SessionGroupBy.Owner) {
-    const name = row.user?.name?.trim();
+    const owner = sessionRowOwner(row);
+    const name = owner?.name?.trim();
     if (!name) {
       return {
         key: SESSION_GROUP_UNATTRIBUTED_OWNER,
@@ -166,7 +201,21 @@ function sessionGroupBand(
     }
     // Key on the user id when the projection carried one: two different people
     // named "Alex" are two owners, and a display name is not an identity.
-    return { key: row.user?.id ?? name, label: name };
+    return { key: owner?.id ?? name, label: name };
+  }
+  if (groupBy === SessionGroupBy.Priority) {
+    // ISS-10332: a producer that OMITTED the field bands under the unspecified
+    // word rather than under "No priority", which would state a value nobody
+    // read; an unset one bands under the design system's own "No priority",
+    // the word the editor's menu offers for it.
+    if (row.priority === undefined) {
+      return {
+        key: SESSION_GROUP_UNSPECIFIED,
+        label: SESSION_GROUP_UNSPECIFIED,
+      };
+    }
+    const label = priorityLabel(row.priority);
+    return { key: row.priority ?? label, label };
   }
   if (groupBy === SessionGroupBy.Harness) {
     const harness = row.harness.trim();
@@ -183,15 +232,11 @@ function sessionGroupBand(
   if (!status) {
     return { key: SESSION_GROUP_UNSPECIFIED, label: SESSION_GROUP_UNSPECIFIED };
   }
-  // ISS-5366: match the DISPLAY-ONLY members (`stale`, `unknown`) BEFORE the
-  // fold, never through it — the same order `session-status-badges.tsx` uses to
-  // pick a pill. `normalizeSessionStatus` deliberately fail-opens both to
-  // `active` for its other consumers, so folding them here banded a row whose
-  // pill reads "Stale" under the "Active" header: the band contradicted the cell
-  // inside it, and the Active band silently absorbed rows nobody claimed were
-  // running. Now the band names what the pill names.
-  const normalized = isDisplayOnlySessionStatus(status)
-    ? status
-    : normalizeDisplayedSessionStatus(status);
+  // ISS-5366: the DISPLAY-ONLY members (`stale`, `unknown`) must be matched
+  // BEFORE the fold, never through it, or a row whose pill reads "Stale" bands
+  // under "Active" — the band contradicting the cell inside it. That ordering is
+  // now `foldToDisplayedSessionStatus`, the one derivation the badge reads too,
+  // rather than a ternary written out here and there (ISS-7902).
+  const normalized = foldToDisplayedSessionStatus(status);
   return { key: normalized, label: SESSION_STATUS_LABELS[normalized] };
 }

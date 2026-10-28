@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   getAgentComponentDetailLocal,
   listAgentComponentsLocal,
@@ -131,7 +131,7 @@ test("listAgentComponentsLocal renders a tombstoned child's invocations exactly 
 });
 
 test("a stale FK to a tombstoned child does not join a live sibling of the same identity", async () => {
-  // ISS-6180 (wongk review): the (kind, key) join is the FALLBACK, not the
+  // ISS-6180 (whitlockk review): the (kind, key) join is the FALLBACK, not the
   // authority. The dead row and a live row share `mcp::gstack-mcp`, so a
   // natural-key-only join let the dead row's usage reach the plugin through its
   // live twin and the `uninstalled_at IS NULL` scope bought nothing for it.

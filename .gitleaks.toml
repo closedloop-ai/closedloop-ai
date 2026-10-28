@@ -33,4 +33,9 @@ paths = [
 regexTarget = "line"
 regexes = [
   '''keys, approving/rejecting organization keys''',
+  # Deterministic table digests, not credentials.
+  '''"token_(usage|events)": "[a-f0-9]{64}"''',
+  # Electron test-global name and explicitly synthetic manual-test fixtures.
+  '''GATE_KEY = "__clE2eInsightsSectionHoldGate"''',
+  '''SYNTHETIC_(FRESH_)?KEY = "sk_live_iss_10574_(disposable|fresh)_fixture"''',
 ]

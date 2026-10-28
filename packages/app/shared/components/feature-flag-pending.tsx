@@ -20,35 +20,43 @@ import { type ReactNode, useEffect, useState } from "react";
 export const FEATURE_FLAG_SETTLE_TIMEOUT_MS = 10_000;
 
 /**
- * True once {@link FEATURE_FLAG_SETTLE_TIMEOUT_MS} has elapsed since the wait
- * started, so an unresolved flag commits a terminal state instead of pending
- * forever.
+ * True once {@link FEATURE_FLAG_SETTLE_TIMEOUT_MS} has elapsed since the current
+ * wait started, so an unresolved flag commits a terminal state instead of
+ * pending forever.
  *
- * The epoch is this hook's own mount, so the caller must be the component that
- * renders the wait — mount it with the pending surface and unmount it with the
- * pending surface. Called from a long-lived ancestor instead it latches true
- * once and never re-arms, so a pending window that opens later — a mid-session
- * `identify()` flag reload — skips the wait entirely and commits the failed-read
- * surface on its first unresolved render (ISS-4566).
+ * The epoch is one WAIT, not one mount. A caller that mounts and unmounts with
+ * its pending surface gets that for free and may omit `waiting`. A caller that
+ * outlives the wait — a shell adapter, any long-lived ancestor — must pass its
+ * own pending predicate, because a deadline whose epoch is such a caller's mount
+ * latches true once and never re-arms: a pending window that opens later, a
+ * mid-session `identify()` flag reload among them, would skip the wait entirely
+ * and commit on its first unresolved render (ISS-4566). Passing `waiting` arms a
+ * fresh deadline for each unsettled window and reports false between them.
  *
  * Only a surface whose terminal state stays inside itself may consume this at
  * all. A deadline is a timeout, not a decision, so nothing irreversible — a
  * `notFound()`, a rewritten deep link — may be committed on it while the flag
  * may still be ON for this user.
  */
-export function useFeatureFlagSettleDeadline(): boolean {
+export function useFeatureFlagSettleDeadline(waiting = true): boolean {
   const [elapsed, setElapsed] = useState(false);
 
   useEffect(() => {
+    if (!waiting) {
+      // Disarms AND resets, so the next unsettled window starts a deadline
+      // rather than inheriting an already-expired one.
+      setElapsed(false);
+      return;
+    }
     const timer = globalThis.setTimeout(() => {
       setElapsed(true);
     }, FEATURE_FLAG_SETTLE_TIMEOUT_MS);
     return () => {
       globalThis.clearTimeout(timer);
     };
-  }, []);
+  }, [waiting]);
 
-  return elapsed;
+  return waiting && elapsed;
 }
 
 type FeatureFlagPendingProps = {

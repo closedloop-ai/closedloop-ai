@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTokenCost, TokenCostNotPricedReason } from "../src/genai-cost";
 
 /**
- * Coverage for the two DEFENSIVE branches in `computeTokenCost` that a
+ * Coverage for the three DEFENSIVE branches in `computeTokenCost` that a
  * well-formed input can never reach, so the real-library suite
  * (`genai-cost.test.ts`) cannot exercise them:
  *
@@ -18,9 +18,12 @@ import { computeTokenCost, TokenCostNotPricedReason } from "../src/genai-cost";
  *      the main price succeeded. Contract: still return the priced total, fall
  *      the whole input cost back to the library's `input_price`, and null out the
  *      per-cache split so the caller shows a total without a bogus breakdown.
+ *   3. The `result.provider?.id ?? providerId` fallback — a priced result that
+ *      carries no `provider`. Contract: the result still names the provider
+ *      resolved from the model id.
  *
- * Both are reachable only by making the library throw, so this file mocks
- * `@pydantic/genai-prices`. `vi.mock` + `vi.hoisted` are lifted above the imports
+ * The real library never throws on well-formed input and always sets
+ * `provider`, so this file mocks `@pydantic/genai-prices`. `vi.mock` + `vi.hoisted` are lifted above the imports
  * at transform time, so the module under test binds these mocks. Kept in a
  * separate file so the real-library suite stays mock-free.
  */
@@ -101,5 +104,25 @@ describe("computeTokenCost — defensive error branches", () => {
     expect(result.cacheReadCostUsd).toBeNull();
     expect(result.cacheWriteCostUsd).toBeNull();
     expect(result.reason).toBeNull();
+  });
+
+  it("falls back to the resolved provider id when the library result carries none", () => {
+    calcPriceMock.mockReturnValue({ ...PRICED_RESULT, provider: undefined });
+    findProviderMock.mockReturnValue({ id: "resolved-provider" });
+
+    const result = computeTokenCost({
+      model: "claude-opus-4-5",
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+
+    expect(findProviderMock).toHaveBeenCalledWith({
+      modelId: "claude-opus-4-5",
+    });
+    expect(result.priced).toBe(true);
+    expect(result.provider).toBe("resolved-provider");
+    expect(result.costUsd).toBe(PRICED_RESULT.total_price);
   });
 });

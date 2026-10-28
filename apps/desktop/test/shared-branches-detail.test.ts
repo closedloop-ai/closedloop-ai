@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
-  BranchCloudHydrationStatus,
   BranchLifecycleBoundaryKind,
   BranchLifecyclePhase,
   BranchLinkedArtifactEvidenceKind,
@@ -17,13 +15,16 @@ import {
   BranchAssociatedPullRequestProvenance,
   BranchAssociatedPullRequestSelectionReason,
 } from "@repo/api/src/types/branch-associated-pull-request.js";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
 import {
   BranchPhaseAttributionCompleteness,
   BranchPhaseAttributionCompletenessReason,
   BranchVisibleLifecyclePhase,
 } from "@repo/api/src/types/branch-phase-attribution.js";
 import { GitHubPRState } from "@repo/api/src/types/github.js";
+
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link.js";
+import { describe, test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildDesktopPhaseAttribution } from "../src/main/branch/branch-detail-phase-attribution.js";
 import { getSharedBranchDetail } from "../src/main/branch/shared-branches-api.js";
@@ -35,11 +36,9 @@ import {
   commit,
   link,
   makeSource,
-  openPullRequestRow,
   phaseProjectionRows,
   SQL_SECRET,
   sumStackCost,
-  sumStackInputTokens,
   syncedSession,
   throwingSource,
 } from "./shared-branches-test-helpers.js";
@@ -81,36 +80,6 @@ describe("getSharedBranchDetail (Epic C detail projection)", () => {
     assert.deepEqual(reads, ["links"]);
   });
 
-  // FEA-3056 follow-up: only the list/analytics page-data read opts into the
-  // non-blocking `peekOrWarm`. The single-branch detail view keeps hydrating
-  // via the blocking `hydrate`, so opening a branch still reflects live cloud
-  // state rather than a possibly-empty background snapshot.
-  test("hydrates via hydrate, not peekOrWarm, for the detail scope", async () => {
-    const calls: string[] = [];
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      prs: [openPullRequestRow("https://github.com/acme/web/pull/42")],
-    });
-    const cloudHydration = {
-      hydrate: () => {
-        calls.push("hydrate");
-        return Promise.resolve({ status: BranchCloudHydrationStatus.Fresh });
-      },
-      peekOrWarm: () => {
-        calls.push("peekOrWarm");
-        return Promise.resolve({ status: BranchCloudHydrationStatus.Stale });
-      },
-    };
-    const id = encodeBranchId({
-      repoFullName: "acme/web",
-      branchName: "feature/x",
-    });
-
-    await getSharedBranchDetail(source, id, cloudHydration);
-
-    assert.deepEqual(calls, ["hydrate"]);
-  });
-
   test("no session loader → graceful spine fallback (null/0 usage, empty trace)", async () => {
     const source = makeSource({
       links: [
@@ -129,8 +98,6 @@ describe("getSharedBranchDetail (Epic C detail projection)", () => {
           pr_number: 42,
           pr_url: "https://gh/acme/web/pull/42",
           title: "Add X",
-          state: "closed",
-          merged_at: "2026-06-12T10:00:00.000Z",
           closed_at: "2026-06-12T10:00:00.000Z",
           observed_at: "2026-06-11T10:00:00.000Z",
         },
@@ -144,12 +111,12 @@ describe("getSharedBranchDetail (Epic C detail projection)", () => {
     assert.ok(detail, "expected a non-null detail");
     assert.equal(detail.id, id);
     assert.equal(detail.branchName, "feature/x");
+    // The local store persists no GitHub state: the PR stays visible by
+    // identity, unobserved, and the branch reads as Open.
     assert.equal(detail.prNumber, 42);
-    assert.equal(detail.status, BranchStatus.Merged);
-    // Real PR-derived detail fields.
+    assert.equal(detail.status, BranchStatus.Open);
     assert.deepEqual(detail.linkedPrNumbers, [42]);
-    assert.equal(detail.mergedAt, "2026-06-12T10:00:00.000Z");
-    assert.equal(detail.closedAt, "2026-06-12T10:00:00.000Z");
+    assert.equal(detail.mergedAt, null);
     // Sessions spine: every linked session, primary flag preserved.
     assert.deepEqual(
       detail.sessions.map((session) => session.sessionId).sort(),
@@ -191,8 +158,6 @@ describe("getSharedBranchDetail (Epic C detail projection)", () => {
           pr_number: 42,
           pr_url: null,
           title: null,
-          state: "open",
-          merged_at: null,
           closed_at: null,
           opened_at: "2026-06-10T07:00:00.000Z",
           observed_at: "2026-06-11T10:00:00.000Z",
@@ -297,7 +262,7 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
     assert.equal(detail.multiPrWarning, false);
   });
 
-  test("detail emits lifecycle phase segments and cost stacks from local evidence", async () => {
+  test("detail emits lifecycle phase segments from local evidence and a partial attribution while the PR is unobserved", async () => {
     const source = makeSource(phaseProjectionRows());
 
     const detail = await getSharedBranchDetail(source, idFeatureX);
@@ -313,21 +278,31 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
     );
     assert.equal(session?.evenSplitCostUsd, 0.9);
     assert.equal(session?.activitySegments?.length, 3);
-    assert.equal(detail.phaseAttribution?.segments.length, 3);
+    assert.equal(detail.phaseAttribution?.segments.length, 2);
+    for (const segment of session?.activitySegments ?? []) {
+      assert.equal(Object.hasOwn(segment, "sourceEventIds"), false);
+      assert.equal(Object.hasOwn(segment, "costEvents"), false);
+    }
+    for (const segment of detail.phaseAttribution?.segments ?? []) {
+      assert.equal(Object.hasOwn(segment, "costEvents"), false);
+    }
+    // The PR lifecycle is unobserved on Desktop, so attribution is honestly
+    // partial: only Build is attributable, not the Review/Rework split.
+    assert.equal(
+      detail.canonicalMetrics?.phaseCostUsd.build.state,
+      BranchMetricAvailability.Partial
+    );
+    assert.equal(detail.canonicalMetrics?.phaseCostUsd.build.value, 0.6);
     const stacks = detail.lifecyclePhaseStacks ?? [];
     assert.deepEqual(
       stacks.map((stack) => stack.phase),
-      [
-        BranchVisibleLifecyclePhase.Build,
-        BranchVisibleLifecyclePhase.Review,
-        BranchVisibleLifecyclePhase.Rework,
-      ]
+      [BranchVisibleLifecyclePhase.Build]
     );
-    assert.ok(almostEqual(sumStackCost(stacks), 0.9));
-    assert.ok(almostEqual(sumStackInputTokens(stacks), 600));
+    assert.ok(almostEqual(sumStackCost(stacks), 0.6));
     assert.deepEqual(detail.phaseAttribution?.coverage, {
-      completeness: BranchPhaseAttributionCompleteness.Complete,
-      subtotalUsd: 0.9,
+      completeness: BranchPhaseAttributionCompleteness.Partial,
+      reason: BranchPhaseAttributionCompletenessReason.LifecycleIncomplete,
+      subtotalUsd: 0.6,
     });
   });
 
@@ -432,8 +407,6 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
           pr_number: 42,
           pr_url: null,
           title: null,
-          state: "open",
-          merged_at: null,
           closed_at: null,
           observed_at: "2026-06-10T12:00:00.000Z",
         },
@@ -443,8 +416,6 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
           pr_number: 43,
           pr_url: null,
           title: null,
-          state: "open",
-          merged_at: null,
           closed_at: null,
           observed_at: "2026-06-10T11:00:00.000Z",
         },
@@ -549,26 +520,6 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
       reason: BranchPhaseAttributionCompletenessReason.MissingActivitySegments,
     });
     assert.equal(detail?.lifecyclePhaseStacks, undefined);
-  });
-
-  test("enriched branch LOC flows through to the detail (FEA-1899)", async () => {
-    const source = makeSource({
-      links: [
-        link({
-          branch_name: "feature/x",
-          session_id: "s1",
-          lines_added: 321,
-          lines_removed: 12,
-          files_changed: 7,
-        }),
-      ],
-      sessions: [syncedSession({ externalSessionId: "s1" })],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail, "expected a non-null detail");
-    assert.equal(detail.additions, 321);
-    assert.equal(detail.deletions, 12);
-    assert.equal(detail.filesChanged, 7);
   });
 });
 

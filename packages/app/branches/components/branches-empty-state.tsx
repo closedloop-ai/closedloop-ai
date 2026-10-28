@@ -1,13 +1,11 @@
 "use client";
 
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@repo/design-system/components/ui/alert";
+// ISS-10249: My Tasks owns the recency window's "Show all time" wording.
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
+import { ListReadErrorAlert } from "@repo/app/shared/components/list-read-error-alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
-import { GitBranchIcon, TriangleAlertIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
 
 /**
  * Shared zero-state for the Branches list, rendered by both the web `/branches`
@@ -28,11 +26,15 @@ import { GitBranchIcon, TriangleAlertIcon } from "lucide-react";
  *   hands the user a "Show all time" action instead of telling them to go widen
  *   the range themselves, mirroring the judges-analytics date-range empty state.
  * - `unavailable` — the read errored. An honest error surface with an inline
- *   Retry (`onRetry`), never a false "no branches" all-clear. Both surfaces
- *   route this variant only on `isError && !hasRows`, so the copy names the
- *   failure plainly (review cid 3653690778 — it no longer hedges "…or they're
- *   still syncing", which was never a reachable state here). Consolidates the
- *   error `Alert` both surfaces previously hand-rolled and duplicated verbatim.
+ *   Retry (`onRetry`), never a false "no branches" all-clear. ISS-9429 moved the
+ *   routing into `resolveBranchesListState`, which reaches this variant whenever
+ *   an errored read has zero visible rows — including when stale rows are still
+ *   held, the case the old per-body `isError && !hasRows` gate skipped straight
+ *   into `no-matches`. The copy names the failure plainly (review cid 3653690778
+ *   — it no longer hedges "…or they're still syncing", which was never a
+ *   reachable state here). Consolidates the error `Alert` both surfaces
+ *   previously hand-rolled and duplicated verbatim — since ISS-7521 that `Alert`
+ *   treatment is the shared `ListReadErrorAlert`, not a third copy.
  *
  * Loading is still NOT an empty state — the host renders a spinner separately so
  * it never masquerades as "no branches".
@@ -66,23 +68,26 @@ export function BranchesEmptyState({
   onRetry,
 }: Readonly<BranchesEmptyStateProps>) {
   if (variant === BranchesEmptyVariant.Unavailable) {
-    // review cid 3653690778 / 3653690781 parity: the Alert sits flush at full
-    // width so the host container owns the inset (no self `mx-4 my-6`), the
-    // copy names the failure plainly, and Retry stays default size — matching
-    // the Sessions errored surface this variant was extracted to share.
+    // ISS-7521: the alert chrome is the shared `ListReadErrorAlert`, which this
+    // surface and the Sessions errored surface now both render. The comment that
+    // stood here claimed parity with Sessions — including that "Retry stays
+    // default size — matching the Sessions errored surface" — while Sessions had
+    // already moved to `size="sm"`. The copy was the only thing holding the two
+    // equal, so it silently stopped being true; the shared component is now what
+    // holds them equal. The Retry SIZE difference is real and deliberately
+    // preserved here pending an operator call (see the shared component).
     return (
-      <Alert variant="error">
-        <TriangleAlertIcon className="size-4" />
-        <AlertTitle>Couldn't load branches</AlertTitle>
-        <AlertDescription className="flex flex-col items-start gap-3">
-          Something went wrong loading your branches.
-          {onRetry ? (
+      <ListReadErrorAlert
+        action={
+          onRetry ? (
             <Button onClick={onRetry} type="button" variant="outline">
-              Retry
+              {BRANCHES_RETRY_LABEL}
             </Button>
-          ) : null}
-        </AlertDescription>
-      </Alert>
+          ) : null
+        }
+        description="Something went wrong loading your branches."
+        title="Couldn't load branches"
+      />
     );
   }
 
@@ -92,7 +97,7 @@ export function BranchesEmptyState({
         action={
           onShowAllTime ? (
             <Button onClick={onShowAllTime} type="button" variant="outline">
-              Show all time
+              {MY_TASKS_RECENCY_SHOW_ALL_LABEL}
             </Button>
           ) : undefined
         }
@@ -120,3 +125,5 @@ export function BranchesEmptyState({
     />
   );
 }
+
+export const BRANCHES_RETRY_LABEL = "Retry";

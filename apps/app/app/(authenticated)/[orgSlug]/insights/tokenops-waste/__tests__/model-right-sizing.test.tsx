@@ -28,9 +28,22 @@ const FEWER_THAN_12 = /fewer than 12 sessions/i;
 const TOO_FEW_UNQUANTIFIED = /too few sessions to grade/i;
 const ANY_NEEDS_12 = /needs 12 sessions/i;
 const UNGRADED_DASH = new RegExp(`${NO_VALUE_DASH} needs 12 sessions`);
-const REAL_ZERO_CONFIDENCE = /0% of spend ended in error/i;
+const REAL_ZERO_CONFIDENCE = /0% of cost ended in error/i;
 const MODELS_UNAVAILABLE = /no model can be graded/i;
-const MODELS_EMPTY = /no model spend in this range/i;
+const MODELS_EMPTY = /no model cost in this range/i;
+const JOB_SIZE_HEADER = /median job size \(tokens\)/i;
+const FIRST_PASS_BASIS = /job size counts first-pass tokens only/i;
+const BILLED_BASIS = /divides cost by every billed token/i;
+const NOT_A_RATE = /do not divide into a rate/i;
+const OLD_API_ROW = /old-api/;
+const NEW_API_ROW = /new-api/;
+
+/** Model, Spend, Ended with error, Sessions, Median job size, Verdict. */
+const JOB_SIZE_CELL_INDEX = 4;
+/** A billed median far from any work median below, so a fallback is visible. */
+const BILLED_MEDIAN = 2_000_000;
+const WORK_MEDIAN = 48_000;
+const WORK_MEDIAN_RENDERED = "48k";
 
 /** Variant → the text-color class `ToneLabel` renders for it. */
 const TONE_CLASS_BY_VARIANT: Record<string, string> = {
@@ -46,7 +59,8 @@ function modelRow(
   return {
     confidencePct: 20,
     errorOutcomeUsd: 5,
-    medianTokens: 120_000,
+    medianTokens: 240_000,
+    medianWorkTokens: 120_000,
     model: "claude-sonnet-4.6",
     sessions: 40,
     usd: 100,
@@ -54,6 +68,18 @@ function modelRow(
     verdict: ModelVerdict.RightSized,
     ...overrides,
   };
+}
+
+/**
+ * The shape an `apps/api` build that predates `medianWorkTokens` sends: the key
+ * is genuinely ABSENT, not present-and-undefined, which is what the wire
+ * actually produces once the field is omitted from the JSON.
+ */
+function rowWithoutWorkMedian(
+  overrides: Partial<ModelRightSizingRow> = {}
+): ModelRightSizingRow {
+  const { medianWorkTokens: _absent, ...rest } = modelRow(overrides);
+  return rest;
 }
 
 const ALL_VERDICTS: ModelRightSizingRow[] = [
@@ -91,6 +117,69 @@ describe("the model right-sizing table", () => {
     // grading legible only by reading the label, which is the thing the tone
     // is there to save the reader from.
     expect(seenTones.size).toBe(Object.values(ModelVerdict).length);
+  });
+
+  it("names the token basis of each half of the verdict, and that they differ", () => {
+    // ISS-5189: the two halves are graded on DIFFERENT token columns — job size
+    // drops replayed cache reads, the price side keeps every billed token — and
+    // only the first is rendered. Without this copy the reader has no way to
+    // know which tokens either number counted, and dividing the two columns
+    // into a rate is off by the whole cached-read volume. Pinned here because
+    // it is the only thing on screen that says so.
+    render(
+      <ModelRightSizing
+        minGradedSessions={12}
+        models={ALL_VERDICTS}
+        state={WidgetState.Ready}
+      />
+    );
+
+    // The unit lives in the header: the cell is a bare compact number.
+    expect(screen.getByText(JOB_SIZE_HEADER)).toBeInTheDocument();
+    expect(screen.getByText(FIRST_PASS_BASIS)).toBeInTheDocument();
+    expect(screen.getByText(BILLED_BASIS)).toBeInTheDocument();
+    expect(screen.getByText(NOT_A_RATE)).toBeInTheDocument();
+  });
+
+  it("dashes the job-size cell when the work median is absent, never the billed one", () => {
+    // ISS-5189 deploy skew: `apps/api` and `apps/app` are separate Vercel
+    // deploy units on one push, so this build can be reading a response that
+    // predates `medianWorkTokens`. The wire still carries the BILLED
+    // `medianTokens` for the old client, and falling back to it would put
+    // cached reads under a header and a description that both state the number
+    // is first-pass — a confident false statement, which is worse than the
+    // vague one this change replaced. The dash is the honest answer.
+    render(
+      <ModelRightSizing
+        minGradedSessions={12}
+        models={[
+          rowWithoutWorkMedian({
+            medianTokens: BILLED_MEDIAN,
+            model: "old-api",
+          }),
+          modelRow({
+            medianTokens: BILLED_MEDIAN,
+            medianWorkTokens: WORK_MEDIAN,
+            model: "new-api",
+          }),
+        ]}
+        state={WidgetState.Ready}
+      />
+    );
+
+    const jobSizeCell = (row: RegExp) =>
+      within(screen.getByRole("row", { name: row })).getAllByRole("cell")[
+        JOB_SIZE_CELL_INDEX
+      ];
+
+    // EXACT text, not `toContainText`: a fallback to the billed median would
+    // put digits in this cell, and only an empty-of-value dash proves it did
+    // not. Both models carry the same billed number, so a column reading the
+    // retired field would render it identically on both rows.
+    expect(jobSizeCell(OLD_API_ROW).textContent).toBe(NO_VALUE_DASH);
+    // Anti-vacuity: the same column DOES render a work median when it is sent,
+    // so the dash above is the absent case and not a column that never renders.
+    expect(jobSizeCell(NEW_API_ROW).textContent).toBe(WORK_MEDIAN_RENDERED);
   });
 
   it("names the grading threshold it is waiting on instead of saying 'too few'", () => {

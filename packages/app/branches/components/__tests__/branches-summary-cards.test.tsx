@@ -1,3 +1,20 @@
+/**
+ * @file branches-summary-cards.test.tsx
+ * @description The Branches summary strip, as both shells mount it.
+ *
+ * ISS-9961 deleted this component's SECOND definition of the same five cards —
+ * a local `CARDS` array rendered by a local `BranchKpiCard`, reached only when
+ * the `approved` prop was false, which neither live host ever did. The cases
+ * that exercised that row are gone with it, and deliberately NOT re-pointed at
+ * the canonical row: they asserted contracts that row does not have. The legacy
+ * card had a GATED state (its `BranchKpi` carried one and the canonical
+ * `BranchListMetricBundle` does not), so its connect-GitHub CTA cases described
+ * a state the strip can no longer reach; and its `unavailableDetail` per-card
+ * captions were its own required prop, where the canonical row answers the same
+ * question through `availabilityDetail`, already covered by
+ * `approved-branches-summary-cards.test.tsx`. Re-homing either onto this row
+ * would have manufactured coverage of a contract nobody wrote.
+ */
 import type { BranchAnalytics } from "@repo/api/src/types/branch";
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import {
@@ -15,28 +32,43 @@ import {
 } from "@repo/app/test/a11y/contrast";
 import { A11yThemeRoot } from "@repo/app/test/a11y/react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { kpi, makeBranchAnalytics } from "../branch-analytics-fixtures";
+import { describe, expect, it } from "vitest";
+import {
+  kpi,
+  makeBranchAnalytics,
+  makeBranchListMetrics,
+} from "../branch-analytics-fixtures";
 import { BranchesSummaryCards } from "../branches-summary-cards";
 
-const CONNECT_RE = /light up this metric/i;
-const CONNECT_BUTTON_RE = /connect github/i;
 const A11Y_THEMES = [A11yTheme.Light, A11yTheme.Dark] as const;
 
+const complete = (value: number) =>
+  ({
+    current: { state: BranchMetricAvailability.Complete, value },
+  }) as const;
+
+/**
+ * The legacy `BranchKpi` fields AND the canonical bundle the row actually reads.
+ *
+ * Both halves are load-bearing. `makeBranchListMetrics` defaults every metric to
+ * Unavailable, so a fixture carrying only the `BranchKpi` fields renders the
+ * row's UNAVAILABLE state — which made the "available" a11y case below assert
+ * against a row with no figures in it, an inert fixture that could not tell the
+ * available treatment from the absent one (Bug Hunter A, #7020).
+ */
 function makeAnalytics(): BranchAnalytics {
   return makeBranchAnalytics({
     mergeRate: kpi(BranchKpiState.Available, 87),
     totalSpendUsd: kpi(BranchKpiState.Available, 1234.5),
     activeBranchCount: kpi(BranchKpiState.Available, 7),
-  });
-}
-
-// A branch KPI that needs GitHub enrichment → renders the connect affordance.
-function makeGatedAnalytics(): BranchAnalytics {
-  return makeBranchAnalytics({
-    mergeRate: kpi(BranchKpiState.Gated, null),
-    totalSpendUsd: kpi(BranchKpiState.Available, 1234.5),
-    activeBranchCount: kpi(BranchKpiState.Available, 7),
+    canonicalMetrics: makeBranchListMetrics({
+      cohortSize: 9,
+      activeBranches: complete(7),
+      locPerDollar: complete(20),
+      medianPrSize: complete(120),
+      aiSpendUsd: complete(1234.5),
+      mergeRatePct: complete(87),
+    }),
   });
 }
 
@@ -52,11 +84,7 @@ function analyticsProps(data: BranchAnalytics | undefined, isError = false) {
 describe("BranchesSummaryCards (B6 reconciliation)", () => {
   it("fills wrap-mode tracks unless the caller explicitly overrides card sizing", () => {
     const { container, rerender } = render(
-      <BranchesSummaryCards
-        {...analyticsProps(makeAnalytics())}
-        approved
-        wrapBelow
-      />
+      <BranchesSummaryCards {...analyticsProps(makeAnalytics())} wrapBelow />
     );
     const cards = [...container.querySelectorAll('[data-slot="card"]')];
 
@@ -69,7 +97,6 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
     rerender(
       <BranchesSummaryCards
         {...analyticsProps(makeAnalytics())}
-        approved
         cardClassName="w-fit"
         wrapBelow
       />
@@ -80,16 +107,18 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
     }
   });
 
-  it("renders the five approved canonical cards in their fixed order", () => {
+  it("renders the five canonical cards in their fixed order", () => {
     const { container } = render(
-      <BranchesSummaryCards {...analyticsProps(makeAnalytics())} approved />
+      <BranchesSummaryCards {...analyticsProps(makeAnalytics())} />
     );
+    // ISS-9957's order, made unconditional by ISS-10636: AI spend gave its slot
+    // to Total LOC pushed and LOC per $ moved last.
     const labels = [
       "Active branches",
-      "LOC per $",
       "Median PR size",
-      "AI spend",
+      "Total LOC pushed",
       "Merge rate",
+      "LOC per $",
     ];
     const positions = labels.map((label) =>
       (container.textContent ?? "").indexOf(label)
@@ -101,7 +130,7 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
     );
   });
 
-  it("shows each partial canonical metric's exact approved disclosure", () => {
+  it("shows each partial canonical metric's exact disclosure in its info popover", async () => {
     const partial = (value: number, disclosure: BranchMetricDisclosure) => ({
       current: {
         state: BranchMetricAvailability.Partial,
@@ -124,8 +153,12 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
       activeBranches: {
         current: { state: BranchMetricAvailability.Complete, value: 2 },
       },
-      locPerDollar: partial(20, BranchMetricDisclosure.LocIncomplete),
-      medianPrSize: partial(120, BranchMetricDisclosure.DefaultIncomplete),
+      canonicalLocPerDollar: partial(20, BranchMetricDisclosure.LocIncomplete),
+      // A DIFFERENT disclosure on the superseded field, so a card that read it
+      // instead of the canonical one would surface the wrong sentence rather
+      // than pass by rendering the same words.
+      locPerDollar: partial(20, BranchMetricDisclosure.CostIncomplete),
+      medianPrSize: partial(120, BranchMetricDisclosure.PrIncomplete),
       aiSpendUsd: partial(40, BranchMetricDisclosure.CostIncomplete),
       mergeRatePct: partial(75, BranchMetricDisclosure.DefaultIncomplete),
     };
@@ -133,187 +166,41 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
     render(
       <BranchesSummaryCards
         {...analyticsProps(makeBranchAnalytics({ canonicalMetrics }))}
-        approved
       />
     );
 
-    expect(
-      screen.getAllByText(BranchMetricDisclosure.DefaultIncomplete)
-    ).toHaveLength(2);
-    expect(
-      screen.getByText(BranchMetricDisclosure.CostIncomplete)
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(BranchMetricDisclosure.LocIncomplete)
-    ).toBeInTheDocument();
-  });
-
-  it("renders only locally-computed cards and no connect-GitHub affordance", () => {
-    render(<BranchesSummaryCards {...analyticsProps(makeAnalytics())} />);
-
-    // Merge rate is available → real value, no Sample badge, no hardcoded 86.
-    expect(screen.getByText("87%")).toBeInTheDocument();
-    expect(screen.queryByText("86")).not.toBeInTheDocument();
-    expect(screen.queryByText("Sample")).not.toBeInTheDocument();
-
-    // FEA-2942: the merge-rate denominator is DECIDED PRs (merged + closed), not
-    // opened, so the card detail must say "of decided PRs" — the old
-    // "of opened PRs" copy misdescribed the metric once open PRs are excluded.
-    expect(screen.getByText("of decided PRs")).toBeInTheDocument();
-    expect(screen.queryByText("of opened PRs")).not.toBeInTheDocument();
-
-    // The GitHub-free cards (FEA-2051) render real local values.
-    // AI spend is a big aggregate → whole dollars, no cents (1234.5 → $1,235).
-    expect(screen.getByText("$1,235")).toBeInTheDocument(); // AI spend
-    expect(screen.getByText("7")).toBeInTheDocument(); // Active branches
-
-    // FEA-2051: the GitHub-gated cards (Active PRs, Merged, Median time to merge)
-    // are removed entirely — the row never shows the connect-GitHub affordance.
-    expect(screen.queryByText(CONNECT_RE)).not.toBeInTheDocument();
-    expect(screen.queryByText("Active PRs")).not.toBeInTheDocument();
-    expect(screen.queryByText("Merged")).not.toBeInTheDocument();
-    expect(screen.queryByText("Median time to merge")).not.toBeInTheDocument();
-  });
-
-  it("renders a real sub-cent AI spend total as a nonzero figure, never $0.00", () => {
-    // ISS-4919 / review of #4244: the $0 this PR closes was still reachable one
-    // decimal lower. A filtered subset totalling $0.004 rendered "$0.00" under
-    // the card's own "estimated cost" caption — the same fabricated zero the
-    // null-on-zero rule exists to stop. The card must show the money that was
-    // actually spent.
-    render(
-      <BranchesSummaryCards
-        {...analyticsProps(
-          makeBranchAnalytics({
-            mergeRate: kpi(BranchKpiState.Available, 87),
-            totalSpendUsd: kpi(BranchKpiState.Available, 0.004),
-            activeBranchCount: kpi(BranchKpiState.Available, 7),
-          })
-        )}
-      />
+    // ISS-10540 (product ruling 2026-09-22): no disclosure sits on a card face;
+    // each Partial card's sentence is in its info popover, beside the metric's
+    // definition, and the card face shows the `*`.
+    for (const disclosure of Object.values(BranchMetricDisclosure)) {
+      expect(screen.queryByText(disclosure)).not.toBeInTheDocument();
+    }
+    expect(screen.getByText("120 LOC*")).toBeInTheDocument();
+    expect(await disclosureInInfoPopover("Median PR size")).toContain(
+      BranchMetricDisclosure.PrIncomplete
     );
-
-    expect(screen.getByText("$0.004")).toBeInTheDocument();
-    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
-    expect(screen.queryByText("$0")).not.toBeInTheDocument();
-  });
-
-  it("renders a live Connect GitHub CTA on a gated card and fires onConnectGitHub on click", () => {
-    const onConnectGitHub = vi.fn();
-    render(
-      <BranchesSummaryCards
-        {...analyticsProps(makeGatedAnalytics())}
-        onConnectGitHub={onConnectGitHub}
-      />
+    expect(await disclosureInInfoPopover("Merge rate")).toContain(
+      BranchMetricDisclosure.DefaultIncomplete
     );
-
-    // The gated card still explains what the connect unlocks…
-    expect(screen.getByText(CONNECT_RE)).toBeInTheDocument();
-    // …and now surfaces a working CTA that fires the surface-owned handler.
-    const connectButton = screen.getByRole("button", {
-      name: CONNECT_BUTTON_RE,
-    });
-    fireEvent.click(connectButton);
-    expect(onConnectGitHub).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the gated affordance informational (no CTA) when onConnectGitHub is omitted", () => {
-    render(<BranchesSummaryCards {...analyticsProps(makeGatedAnalytics())} />);
-
-    // Web shell / handler-less callers keep the informational-only affordance:
-    // the explanation shows but no connect button is rendered.
-    expect(screen.getByText(CONNECT_RE)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: CONNECT_BUTTON_RE })
-    ).not.toBeInTheDocument();
+    // `aiSpendUsd` and `locPerDollar` stay in the bundle literal because both
+    // are required fields on `BranchListMetricBundle`, but no card reads either
+    // one: ISS-9970 retired the spend card and ISS-10636 left the ratio card on
+    // `canonicalLocPerDollar`. They share `CostIncomplete`, so its absence from
+    // the ratio card's popover is what proves neither reached a surface — and
+    // what would fail if the ratio card regressed to the superseded field.
+    const ratioInfo = await disclosureInInfoPopover("LOC per $");
+    expect(ratioInfo).toContain(BranchMetricDisclosure.LocIncomplete);
+    expect(ratioInfo).not.toContain(BranchMetricDisclosure.CostIncomplete);
   });
 
   it("shows neutral placeholders while analytics is in flight", () => {
     render(<BranchesSummaryCards {...analyticsProps(undefined)} />);
 
     expect(screen.queryByText("87%")).not.toBeInTheDocument();
-    expect(screen.queryByText(CONNECT_RE)).not.toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(5);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4);
   });
 
-  // ISS-4737: an unavailable AI-spend card must caption WHY the value is absent.
-  // Its `detail` ("estimated cost in range") was written to sit under a number,
-  // so leaving it under the "No data" glyph describes a value that isn't there —
-  // and this card now goes to no-data as the user filters (a zero-sum priced
-  // subset), so the caption is the only thing distinguishing "your filter
-  // matched branches with no cost" from a broken read.
-  it("captions an unavailable AI-spend card with why the value is absent", () => {
-    render(
-      <BranchesSummaryCards
-        {...analyticsProps({
-          ...makeAnalytics(),
-          totalSpendUsd: kpi(BranchKpiState.Unavailable, null),
-        })}
-      />
-    );
-
-    expect(
-      screen.getByText("no cost to report for these branches")
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("estimated cost in range")
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("$0")).not.toBeInTheDocument();
-  });
-
-  it("keeps the metric caption on an AVAILABLE AI-spend card", () => {
-    render(<BranchesSummaryCards {...analyticsProps(makeAnalytics())} />);
-
-    expect(screen.getByText("estimated cost in range")).toBeInTheDocument();
-    expect(
-      screen.queryByText("no cost to report for these branches")
-    ).not.toBeInTheDocument();
-  });
-
-  // Review of #4244: `unavailableDetail` is REQUIRED, so EVERY card in the row
-  // captions its own absent state. One "No data" glyph explaining itself while
-  // its four neighbours restate their metric would read as one card failing
-  // differently from the rest, not as five cards with nothing to report.
-  it.each([
-    [
-      "loc-per-dollar",
-      "locPerDollar",
-      "no line counts or cost for these branches",
-      "lines changed per lifetime dollar",
-    ],
-    [
-      "active branches",
-      "activeBranchCount",
-      "no branches match these filters",
-      "in progress",
-    ],
-    [
-      "merge rate",
-      "mergeRate",
-      "no decided PRs for these branches",
-      "of decided PRs",
-    ],
-    [
-      "median PR size",
-      "medianPrSize",
-      "no merged PR sizes for these branches",
-      "per merged PR",
-    ],
-  ])("captions the unavailable %s card with why the value is absent", (_label, field, whyCaption, metricCaption) => {
-    render(
-      <BranchesSummaryCards
-        {...analyticsProps({
-          ...makeAnalytics(),
-          [field]: kpi(BranchKpiState.Unavailable, null),
-        })}
-      />
-    );
-
-    expect(screen.getByText(whyCaption)).toBeInTheDocument();
-    expect(screen.queryByText(metricCaption)).not.toBeInTheDocument();
-  });
-
-  // FEA-4177 (wongk review): a pending or failed analytics read is NOT demo
+  // FEA-4177 (whitlockk review): a pending or failed analytics read is NOT demo
   // data. The dimmed cards must use `muted` (no badge), never `placeholder`,
   // whose "Sample" badge means "value is sample data pending real wiring" — a
   // lie about a card that is merely loading or whose read failed.
@@ -324,62 +211,60 @@ describe("BranchesSummaryCards (B6 reconciliation)", () => {
     render(<BranchesSummaryCards {...buildProps()} />);
 
     expect(screen.queryByText("Sample")).not.toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(5);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4);
   });
 
-  it.each([
-    A11yTheme.Light,
-    A11yTheme.Dark,
-  ])("keeps branch summary cards critical a11y and contrast clean in %s theme", async (theme) => {
-    const { container } = render(
-      <A11yThemeRoot theme={theme}>
-        <BranchesSummaryCards {...analyticsProps(makeAnalytics())} />
-      </A11yThemeRoot>
-    );
+  it.each([A11yTheme.Light, A11yTheme.Dark])(
+    "keeps branch summary cards critical a11y and contrast clean in %s theme",
+    async (theme) => {
+      const { container } = render(
+        <A11yThemeRoot theme={theme}>
+          <BranchesSummaryCards {...analyticsProps(makeAnalytics())} />
+        </A11yThemeRoot>
+      );
 
-    await expectCriticalAxeClean(container);
-    expectElementContrast(screen.getByText("Active branches"), {
-      background: themeBackground(theme),
-      label: `branch summary label ${theme}`,
-    });
-  });
+      await expectCriticalAxeClean(container);
+      expectElementContrast(screen.getByText("Active branches"), {
+        background: themeBackground(theme),
+        label: `branch summary label ${theme}`,
+      });
+    }
+  );
 
   it.each([
     ["loading", () => analyticsProps(undefined), "—"],
     ["error", () => analyticsProps(undefined, true), "Unavailable"],
     ["available", () => analyticsProps(makeAnalytics()), "Active branches"],
-    [
-      "unavailable",
-      () =>
-        analyticsProps({
-          ...makeAnalytics(),
-          activeBranchCount: kpi(BranchKpiState.Unavailable, null),
-        }),
-      "Active branches",
-    ],
-    [
-      "gated",
-      () =>
-        analyticsProps({
-          ...makeAnalytics(),
-          activeBranchCount: kpi(BranchKpiState.Gated, null),
-        }),
-      "Active branches",
-    ],
-  ])("keeps branch KPI %s state a11y and contrast clean", async (_state, setup, expectedText) => {
-    for (const theme of A11Y_THEMES) {
-      const { container, unmount } = render(
-        <A11yThemeRoot theme={theme}>
-          <BranchesSummaryCards {...setup()} />
-        </A11yThemeRoot>
-      );
+  ])(
+    "keeps branch KPI %s state a11y and contrast clean",
+    async (_state, setup, expectedText) => {
+      for (const theme of A11Y_THEMES) {
+        const { container, unmount } = render(
+          <A11yThemeRoot theme={theme}>
+            <BranchesSummaryCards {...setup()} />
+          </A11yThemeRoot>
+        );
 
-      await expectCriticalAxeClean(container);
-      expectElementContrast(screen.getAllByText(expectedText)[0], {
-        background: themeBackground(theme),
-        label: `branch summary ${_state} ${theme}`,
-      });
-      unmount();
+        await expectCriticalAxeClean(container);
+        expectElementContrast(screen.getAllByText(expectedText)[0], {
+          background: themeBackground(theme),
+          label: `branch summary ${_state} ${theme}`,
+        });
+        unmount();
+      }
     }
-  });
+  );
 });
+
+/**
+ * Opens a card's `(i)` popover, reads its text, and closes it again so the
+ * next card's popover is the only dialog on screen.
+ */
+async function disclosureInInfoPopover(label: string): Promise<string> {
+  const name = `About ${label}`;
+  fireEvent.click(screen.getByRole("button", { name }));
+  const dialog = await screen.findByRole("dialog", { name });
+  const text = dialog.textContent ?? "";
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  return text;
+}

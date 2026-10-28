@@ -7,6 +7,7 @@ import {
   AGENT_SESSION_VIEWER_SCOPE_OPTIONS,
   type AgentSessionListResponse,
 } from "@repo/api/src/types/agent-session.js";
+import { SESSION_LIST_MAX_OFFSET } from "@repo/api/src/types/agent-session-list-limits.js";
 import {
   TRANSCRIPT_DOWNLOAD_URL_TTL_SECONDS,
   type TranscriptAccessResponse,
@@ -30,11 +31,13 @@ import {
  * values are not advertised as filter inputs — ISS-4586 collapsed them into
  * `inactive`.
  *
- * ISS-4985: sending one anyway is now SAFE rather than silently empty. The
- * server predicate (`buildStatusFacetPredicate`) resolves a retired spelling to
- * the same population `inactive` returns, so a version-skewed agent gets its
- * finished sessions instead of a confident empty page. Not advertising them is
- * therefore about keeping ONE vocabulary on screen, not about the value failing.
+ * ISS-4985 had the server predicate resolve a retired spelling to the same
+ * population `inactive` returns, so sending one was safe rather than silently
+ * empty. THAT IS NO LONGER TRUE: ISS-5592 removed the widening and ISS-10629
+ * collapsed the filter to a plain equality on the persisted column, so a
+ * retired spelling now matches nothing. Not advertising them keeps ONE
+ * vocabulary on screen AND is what stops an agent sending a value that returns
+ * a confident empty page.
  *
  * NOTE the asymmetry that remains: the server derives a returned session's
  * `status` at read time (`projectDisplayedSessionStatus` in `apps/api`) — a
@@ -46,7 +49,7 @@ import {
  * the advertised values — the deliberate RETURN-side decision recorded on
  * ISS-4983. ISS-5592 retired `completed`/`abandoned`, so they are no longer a
  * worked example of that passthrough, and no surface folds them to `Inactive`
- * any more (wongk, #5075).
+ * any more (whitlockk, #5075).
  *
  * ISS-5974 narrowed that asymmetry on the REOPEN path and ISS-5981 closed the
  * INGEST half: both writes now fold through `normalizeSessionStatus`, so no NEW
@@ -111,7 +114,9 @@ export const agentSessionListInputSchema = {
     .string()
     .uuid()
     .optional()
-    .describe("Filter to a single user's sessions by user id (UUID)."),
+    .describe(
+      "Filter to sessions whose Owner (assignee) is this user id (UUID)."
+    ),
   viewerScope: z
     .enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS)
     .optional()
@@ -142,8 +147,11 @@ export const agentSessionListInputSchema = {
     .number()
     .int()
     .min(0)
+    .max(SESSION_LIST_MAX_OFFSET)
     .optional()
-    .describe("Starting offset for pagination (default 0)."),
+    .describe(
+      `Starting offset for pagination (0-${SESSION_LIST_MAX_OFFSET}, default 0).`
+    ),
 } as const;
 
 type AgentSessionListInput = {
@@ -193,7 +201,6 @@ export function buildAgentSessionListQuery(
  */
 export function shapeAgentSessionListItem(value: unknown) {
   const row = asRecord(value);
-  const user = asRecord(row.user);
   return {
     // Artifact id — pass this to get-agent-session-transcript.
     id: readString(row.id),
@@ -219,14 +226,13 @@ export function shapeAgentSessionListItem(value: unknown) {
     errorCount: readNumber(row.errorCount),
     sourceArtifactId: readString(row.sourceArtifactId),
     sourceLoopId: readString(row.sourceLoopId),
-    user: row.user
-      ? {
-          id: readString(user.id),
-          email: readString(user.email),
-          firstName: readString(user.firstName),
-          lastName: readString(user.lastName),
-        }
-      : null,
+    // ISS-12585: kept for MCP clients that read it as the Owner; the API now
+    // fills it from the assignee, so it repeats `assignee`.
+    user: shapeSessionPerson(row.user),
+    // The Owner, omitted when an older API row omits it.
+    ...(row.assignee === undefined
+      ? {}
+      : { assignee: shapeSessionPerson(row.assignee) }),
   };
 }
 
@@ -296,4 +302,17 @@ export function registerGetAgentSessionTranscript(
         };
       })
   );
+}
+
+function shapeSessionPerson(value: unknown) {
+  if (!value) {
+    return null;
+  }
+  const person = asRecord(value);
+  return {
+    id: readString(person.id),
+    email: readString(person.email),
+    firstName: readString(person.firstName),
+    lastName: readString(person.lastName),
+  };
 }

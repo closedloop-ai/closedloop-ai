@@ -33,8 +33,45 @@ export class TestResponse extends EventEmitter {
   destroyed = false;
   writable = true;
 
+  /**
+   * ISS-8566 (review, marisolashgrove): the real `ServerResponse` sets both of
+   * these, and `writeUnhandledRequestFailure` reads them to tell an answer that
+   * was DELIVERED from one that was only half-written — `headersSent` alone
+   * cannot, because it is true for either.
+   *
+   * `writableEnded` follows `end()` as the real one does. `headersSent` is
+   * deliberately NOT flipped there: `respondFallbackUnreachable`
+   * (`gateway-fallback-proxy.ts`) branches on it, and suites that drive a
+   * handler which writes before failing would silently re-point onto its other
+   * arm. A case that needs it set assigns it.
+   */
+  writableEnded = false;
+  headersSent = false;
+
   setHeader(name: string, value: string | number | readonly string[]): void {
     this.headers.set(name.toLowerCase(), value);
+  }
+
+  /**
+   * ISS-8234: the fallback proxy's error path clears staged headers before
+   * writing its 502, so the double needs the same two accessors the real
+   * `ServerResponse` exposes — otherwise that branch is untestable here.
+   */
+  getHeaderNames(): string[] {
+    return [...this.headers.keys()];
+  }
+
+  /**
+   * ISS-8234: that same error path snapshots the router-staged (CORS) headers
+   * on entry so it can restore them after the clear, so the double needs the
+   * real `ServerResponse` accessor for reading them back as a group.
+   */
+  getHeaders(): Record<string, string | number | readonly string[]> {
+    return Object.fromEntries(this.headers);
+  }
+
+  removeHeader(name: string): void {
+    this.headers.delete(name.toLowerCase());
   }
 
   flushHeaders(): void {}
@@ -49,6 +86,20 @@ export class TestResponse extends EventEmitter {
     this.destroyed = true;
     this.writable = false;
     this.emit("close");
+  }
+
+  /**
+   * ISS-8566: the router's top-level failure path tears the response down
+   * rather than answering, whenever the client is already gone or the handler
+   * had begun writing. Without the real `ServerResponse.destroy` the double
+   * throws a TypeError from inside the catch, which reads as the router still
+   * rethrowing and hides whether the branch works at all.
+   */
+  destroy(): this {
+    this.destroyed = true;
+    this.writable = false;
+    this.emit("close");
+    return this;
   }
 
   write(
@@ -69,13 +120,12 @@ export class TestResponse extends EventEmitter {
     }
     this.finished = true;
     this.writable = false;
+    this.writableEnded = true;
     this.emit("finish");
     // ISS-5299: `end(callback)`, `end(payload, callback)` and
     // `end(payload, encoding, callback)` are ALL real `ServerResponse`
-    // signatures, and `update-and-restart.ts` does its actual work (and clears
-    // a 30s safety timer) only inside that callback. Dropping it covered
-    // nothing and leaked the timer. All three forms are honoured so the double
-    // cannot silently swallow the callback for the one overload it missed.
+    // signatures. All three forms are honoured so the double cannot silently
+    // swallow the callback for the one overload it missed.
     endCallbackOf(chunk, encodingOrCallback, callback)?.();
     return this;
   }

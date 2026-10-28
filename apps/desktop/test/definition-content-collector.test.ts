@@ -20,7 +20,6 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
 // The DISPLAY harness contract ({claude,codex,both}) — the same union the
 // collector persists and the read path coerces to (FEA-4028). NOT the wider
@@ -33,6 +32,7 @@ import {
   createNormalizedSession,
   HarnessImportMode,
 } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
   captureInvocationDefinitionEvidence,
@@ -260,7 +260,7 @@ test("focused live capture reads through a SYMLINKED ancestor of the scan root",
 });
 
 test("focused live capture rejects a definition whose real path escapes the root", () => {
-  // The invariant the containment check exists for (wongk review, FEA-3294): a
+  // The invariant the containment check exists for (whitlockk review, FEA-3294): a
   // repo-committed link under `.claude/` must never exfiltrate a file from
   // outside the scan root as definition evidence — whether the link is the
   // definition file itself or one of its parent directories.
@@ -539,7 +539,7 @@ test("collectDefinitionContent attributes Codex skills to Codex, not Claude (FEA
 test("collectDefinitionContent folds a dual-installed skill to Both (FEA-4028)", async () => {
   // The SAME skill name installed under BOTH the Claude and Codex homes must
   // NOT read back as Claude just because the Claude root is scanned first
-  // (wongk review). Per-name dedup used to drop the Codex copy; now the two
+  // (whitlockk review). Per-name dedup used to drop the Codex copy; now the two
   // discoveries fold to `both`.
   const home = mkdtempSync(path.join(os.tmpdir(), "deffold-home-"));
   const claudeRoot = path.join(home, ".claude", "skills");
@@ -640,7 +640,7 @@ test("collectDefinitionContent reads OpenCode's singular agent/+command/ backwar
   // OpenCode keeps SINGULAR `agent/`/`command/` as a backwards-compat alias for
   // the plural default dirs; a definition under EITHER alias must still be
   // discovered. Seed both so dropping `command` from OPENCODE_COMMAND_SUBDIRS
-  // would fail this test (shafty023).
+  // would fail this test (davetho).
   const home = mkdtempSync(path.join(os.tmpdir(), "defopencode-alias-"));
   const openCodeRoot = path.join(home, ".config", "opencode");
   mkdirSync(path.join(openCodeRoot, "agent"), { recursive: true });

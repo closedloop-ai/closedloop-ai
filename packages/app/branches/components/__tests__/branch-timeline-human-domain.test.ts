@@ -92,12 +92,18 @@ describe("buildTimelineHumanActorDomain", () => {
         ),
       })
     );
-    const firstTen = sessions
-      .slice(0, 10)
+    const attributed = sessions
+      .slice(0, 9)
       .map((session) => domain.colorFor(session.ownerUserName));
 
-    expect(new Set(firstTen).size).toBe(10);
-    expect(domain.colorFor("Actor 10")).toBe(domain.colorFor("Actor 1"));
+    // ISS-8772 changed this expectation from ten to nine. This domain used to
+    // run its own ten-slot cycle, which spent the tenth chart token on a real
+    // human — the same token the shared authority reserves, so an attributed
+    // person could render in the colour that now means "unattributed". Seating
+    // through the one authority costs a slot and buys back that distinction.
+    expect(new Set(attributed).size).toBe(9);
+    expect(attributed).not.toContain("var(--muted-foreground)");
+    expect(domain.colorFor("Actor 9")).toBe(domain.colorFor("Actor 1"));
   });
 
   it("keeps distinct canonical users separate when their display names match", () => {

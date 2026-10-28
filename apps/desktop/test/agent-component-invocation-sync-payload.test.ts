@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { describe, it } from "node:test";
+import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
 import {
   AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES,
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_GENERATION_PARTS,
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_PART_BYTES,
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_PART_ITEMS,
+  AGENT_COMPONENT_INVOCATION_SYNC_MEASUREMENT_PROTOCOL_VERSION,
   AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
-  AGENT_COMPONENT_INVOCATION_SYNC_TELEMETRY_PROTOCOL_VERSION,
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
   type AgentComponentInvocationCompleteGeneration,
@@ -15,8 +15,18 @@ import {
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
   type AgentComponentInvocationSyncItem,
+  type AgentComponentInvocationSyncPart,
+  AgentComponentInvocationUsageMeasurement,
+  agentComponentInvocationGenerationHashPreimage,
   agentComponentInvocationSyncPartHashPreimage,
 } from "@repo/api/src/types/agent-component-invocation";
+import { agentComponentInvocationSyncBatchSchema } from "@repo/api/src/types/agent-component-invocation-schema";
+import { NUL_CHARACTER } from "@repo/api/src/types/postgres-text";
+import {
+  SYNTHETIC_GITHUB_TOKEN,
+  SYNTHETIC_GOOGLE_TOKEN,
+} from "@repo/lib/security/synthetic-secrets.test-helpers";
+import { describe, it } from "vitest";
 import {
   AgentComponentInvocationSyncPayloadContractError,
   AgentComponentInvocationSyncPayloadLimitError,
@@ -227,6 +237,69 @@ describe("agent component invocation sync payload", () => {
   });
 });
 
+describe("ISS-4965: definition content is secret-redacted at egress", () => {
+  it("ships redacted content fingerprinted as the redacted bytes", () => {
+    const raw = `# Deploy\nexport TOKEN=${SYNTHETIC_GITHUB_TOKEN}\n`;
+    const redacted = "# Deploy\nexport TOKEN=[REDACTED:ghp]\n";
+    const parts = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([definitionInvocation(raw)])
+    );
+
+    const [shipped] = parts[0].items;
+    assert.equal(shipped.definitionContent, redacted);
+    assert.equal(
+      shipped.definitionHash,
+      computeDefinitionHash({
+        body: redacted,
+        kind: AgentComponentInvocationKind.Skill,
+      }).definitionHash
+    );
+    assert.ok(!JSON.stringify(parts).includes(SYNTHETIC_GITHUB_TOKEN));
+  });
+
+  it("leaves clean content and its fingerprint untouched, with no marker", () => {
+    const clean = "# Deploy\nRun the release script.\n";
+    const item = definitionInvocation(clean);
+    const parts = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([item])
+    );
+
+    const [shipped] = parts[0].items;
+    assert.equal(shipped.definitionContent, clean);
+    assert.equal(shipped.definitionHash, item.definitionHash);
+    assert.ok(!JSON.stringify(parts).includes("[REDACTED:"));
+  });
+
+  it("applies the content cap to the redacted bytes, not the raw ones", () => {
+    const tail = ` ${SYNTHETIC_GOOGLE_TOKEN}`;
+    const raw = `${"x".repeat(
+      AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES - tail.length
+    )}${tail}`;
+    // Inside the cap raw; the marker outgrows the token and pushes it past.
+    assert.equal(
+      new TextEncoder().encode(raw).byteLength,
+      AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES
+    );
+
+    const parts = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([definitionInvocation(raw)])
+    );
+
+    const [shipped] = parts[0].items;
+    assert.ok(!("definitionContent" in shipped));
+    assert.equal(
+      shipped.definitionHash,
+      computeDefinitionHash({
+        body: raw.replace(
+          SYNTHETIC_GOOGLE_TOKEN,
+          "[REDACTED:google_oauth_token]"
+        ),
+        kind: AgentComponentInvocationKind.Skill,
+      }).definitionHash
+    );
+  });
+});
+
 function invocation(
   externalInvocationId: string,
   sequence: number
@@ -332,7 +405,7 @@ function referencePartBytes(
 }
 
 /**
- * ISS-4976 (@wongk T5 / @closedloop-ai-stage T1): a Desktop build shipping
+ * ISS-4976 (@whitlockk T5 / @closedloop-ai-stage T1): a Desktop build shipping
  * ahead of the API must not have its telemetry-carrying generations
  * dead-lettered. The producer declares the version per part, so an older API
  * answers the retryable `protocol_unsupported` for a telemetry part while a
@@ -351,17 +424,24 @@ describe("invocation sync part protocol version", () => {
     );
   });
 
-  it("declares the telemetry version once any item carries telemetry", () => {
+  it("declares the measurement version once any item carries a label", () => {
     const parts = prepareAgentComponentInvocationSyncParts(
       completeGeneration([
         invocation("invocation-1", 0),
-        { ...invocation("invocation-2", 1), footprintTokens: 512 },
+        {
+          ...invocation("invocation-2", 1),
+          footprintTokens: 512,
+          usageMeasurement: AgentComponentInvocationUsageMeasurement.Measured,
+        },
       ])
     );
 
+    // ISS-7795: telemetry now always carries its measurement label, and the
+    // label is a field an API predating it rejects as an unknown key — so the
+    // part must clear a version gate that API already has, not v2's.
     assert.equal(
       parts[0]?.protocolVersion,
-      AGENT_COMPONENT_INVOCATION_SYNC_TELEMETRY_PROTOCOL_VERSION
+      AGENT_COMPONENT_INVOCATION_SYNC_MEASUREMENT_PROTOCOL_VERSION
     );
   });
 
@@ -374,7 +454,7 @@ describe("invocation sync part protocol version", () => {
   });
 
   /**
-   * ISS-4976 (@wongk T4): the producer runs the SAME shared ingest boundary the
+   * ISS-4976 (@whitlockk T4): the producer runs the SAME shared ingest boundary the
    * cloud runs, so a part the cloud would 400 is rejected here instead of being
    * queued for five identical round trips ending in a dead-letter.
    */
@@ -384,11 +464,240 @@ describe("invocation sync part protocol version", () => {
         prepareAgentComponentInvocationSyncParts(
           completeGeneration([
             // Subagent-only usage on a tool invocation: forbidden by both Prisma
-            // schemas and by the shared boundary.
-            { ...invocation("invocation-1", 0), inputTokens: 10 },
+            // schemas and by the shared boundary. ISS-7795 supplies the
+            // measurement label so the kind gate stays the only rule tripped.
+            {
+              ...invocation("invocation-1", 0),
+              inputTokens: 10,
+              usageMeasurement:
+                AgentComponentInvocationUsageMeasurement.Measured,
+            },
           ])
         ),
       AgentComponentInvocationSyncPayloadContractError
     );
   });
 });
+
+/**
+ * ISS-6889. The shared wire schema TRIMS every contract string, so a padded
+ * field is hashed by the producer BEFORE the trim and by the API AFTER it. The
+ * two hashes are then over different bytes, `hasValidPartHash` can never agree,
+ * and the whole generation dead-letters as a permanent `validation_failed`.
+ * These drive the real producer and the real ingest schema the route parses
+ * with, so nothing here can pass by hashing both sides with one helper.
+ */
+describe("invocation sync hash canonicalization", () => {
+  it("hashes the bytes the API verifies when an item field carries padding", () => {
+    const [part] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([paddedInvocation("padded-item", 0)])
+    );
+
+    const verified = hashesTheApiVerifies(part);
+
+    assert.equal(verified.partHash, part.partHash);
+    assert.equal(verified.generationId, part.externalGenerationId);
+  });
+
+  it("hashes the bytes the API verifies when the session id carries padding", () => {
+    const [part] = prepareAgentComponentInvocationSyncParts(
+      paddedSessionGeneration()
+    );
+
+    const verified = hashesTheApiVerifies(part);
+
+    assert.equal(verified.partHash, part.partHash);
+    assert.equal(verified.generationId, part.externalGenerationId);
+  });
+
+  it("canonicalizes padding away instead of hashing it", () => {
+    const [padded] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([paddedInvocation("padded-item", 0)])
+    );
+    const [trimmed] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([
+        {
+          ...paddedInvocation("padded-item", 0),
+          componentKey: "copilot_tool",
+          rawName: "copilot_tool",
+        },
+      ])
+    );
+
+    assert.equal(padded.partHash, trimmed.partHash);
+    assert.equal(padded.externalGenerationId, trimmed.externalGenerationId);
+  });
+
+  it("still hashes genuinely different content differently", () => {
+    const [padded] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([paddedInvocation("padded-item", 0)])
+    );
+    const [other] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([
+        { ...paddedInvocation("padded-item", 0), componentKey: "  Write  " },
+      ])
+    );
+
+    assert.notEqual(padded.partHash, other.partHash);
+    assert.notEqual(padded.externalGenerationId, other.externalGenerationId);
+  });
+
+  /**
+   * The one rejection the producer CURES. The item schema refuses oversized
+   * `definitionContent`, so canonicalizing before `omitOversizedDefinitionContent`
+   * left exactly these items untrimmed while the very next step made them valid
+   * — a part that ships and can never verify.
+   */
+  it("hashes the bytes the API verifies when oversized content is omitted", () => {
+    const [part] = prepareAgentComponentInvocationSyncParts(
+      completeGeneration([omittedContentInvocation()])
+    );
+
+    const verified = hashesTheApiVerifies(part);
+
+    assert.ok(!("definitionContent" in part.items[0]));
+    assert.equal(verified.partHash, part.partHash);
+    assert.equal(verified.generationId, part.externalGenerationId);
+  });
+
+  /**
+   * A string the boundary rejects outright is returned uncanonicalized on
+   * purpose, so the producer's own contract check still names the real field
+   * instead of a canonicalization error that names nothing.
+   */
+  it("reports the failing field for a value canonicalization cannot rescue", () => {
+    assert.throws(
+      () =>
+        prepareAgentComponentInvocationSyncParts(
+          completeGeneration([
+            { ...invocation("blank-key", 0), componentKey: "   " },
+          ])
+        ),
+      (error: unknown) =>
+        error instanceof AgentComponentInvocationSyncPayloadContractError &&
+        error.message.includes("componentKey")
+    );
+  });
+
+  it("ISS-9174: rejects a NUL the cloud write would refuse, naming the field", () => {
+    // Before the shared boundary carried this refine, the part shipped, failed
+    // inside the cloud transaction, and came back as a transient retry forever.
+    assert.throws(
+      () =>
+        prepareAgentComponentInvocationSyncParts(
+          completeGeneration([
+            { ...invocation("nul-name", 0), rawName: `Re${NUL_CHARACTER}ad` },
+          ])
+        ),
+      (error: unknown) =>
+        error instanceof AgentComponentInvocationSyncPayloadContractError &&
+        error.message.includes("rawName")
+    );
+  });
+});
+
+/**
+ * Re-derive both hashes from the object the API actually verifies: the batch the
+ * Desktop client POSTs, parsed by the shared ingest schema exactly as
+ * `/desktop/agent-sessions/invocations/sync` parses it, then hashed with the
+ * same shared preimages `hasValidPartHash` and the generation reconciliation use.
+ */
+function hashesTheApiVerifies(part: AgentComponentInvocationSyncPart): {
+  partHash: string;
+  generationId: string;
+} {
+  const parsed = agentComponentInvocationSyncBatchSchema.parse(
+    JSON.parse(
+      JSON.stringify({ protocolVersion: part.protocolVersion, parts: [part] })
+    )
+  );
+  const serverPart = parsed.parts[0];
+  const { partHash: _partHash, ...withoutHash } = serverPart;
+
+  return {
+    partHash: createHash("sha256")
+      .update(agentComponentInvocationSyncPartHashPreimage(withoutHash))
+      .digest("hex"),
+    generationId: createHash("sha256")
+      .update(
+        agentComponentInvocationGenerationHashPreimage({
+          externalSessionId: serverPart.externalSessionId,
+          items: serverPart.items,
+        })
+      )
+      .digest("hex"),
+  };
+}
+
+/**
+ * A Copilot-shaped tool name that reaches the producer with surrounding
+ * whitespace. Padding is spread across a required field, an optional one, and a
+ * nested anchor field, because every one of them is the same trimming
+ * `nonEmptyStringSchema` and any single one of them re-breaks the hash.
+ */
+function paddedInvocation(
+  externalInvocationId: string,
+  sequence: number
+): AgentComponentInvocationSyncItem {
+  return {
+    ...invocation(externalInvocationId, sequence),
+    componentKey: "  copilot_tool  ",
+    rawName: "  copilot_tool  ",
+    normalizedName: "  copilot_tool  ",
+    anchor: {
+      kind: AgentComponentInvocationAnchorKind.Event,
+      eventId: `  event-${externalInvocationId}  `,
+    },
+  };
+}
+
+/** Padded strings on an item whose oversized definition content is stripped before the wire. */
+function omittedContentInvocation(): AgentComponentInvocationSyncItem {
+  return {
+    ...paddedInvocation("omitted-content", 0),
+    kind: AgentComponentInvocationKind.Skill,
+    status: AgentComponentInvocationAttributionStatus.Matched,
+    evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+    definitionHash: "a".repeat(64),
+    normalizerContractVersion: 1,
+    sourcePath: "  .claude/skills/copilot.md  ",
+    definitionContent: "x".repeat(
+      AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES + 1
+    ),
+  };
+}
+
+function paddedSessionGeneration(): AgentComponentInvocationCompleteGeneration {
+  const externalSessionId = "  session-1  ";
+  const items = [
+    { ...invocation("padded-session", 0), sourceSessionId: externalSessionId },
+  ];
+  return {
+    externalSessionId,
+    externalGenerationId: computeAgentComponentInvocationGenerationId(
+      externalSessionId,
+      items
+    ),
+    sourceUpdatedAt: "2026-07-22T16:00:00.000Z",
+    dataRevision: 35,
+    sourceSequence: 1,
+    items,
+  };
+}
+
+function definitionInvocation(
+  content: string
+): AgentComponentInvocationSyncItem {
+  return {
+    ...invocation("definition", 0),
+    kind: AgentComponentInvocationKind.Skill,
+    componentKey: "deploy",
+    status: AgentComponentInvocationAttributionStatus.Matched,
+    evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+    definitionContent: content,
+    ...computeDefinitionHash({
+      body: content,
+      kind: AgentComponentInvocationKind.Skill,
+    }),
+  };
+}

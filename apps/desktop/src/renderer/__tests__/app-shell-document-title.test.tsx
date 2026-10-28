@@ -1,23 +1,16 @@
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY,
-  DESKTOP_LABS_NAV_FEATURE_FLAG_KEY,
-  DESKTOP_SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
-} from "../../shared/feature-flags";
-import { LOCAL_SESSION_SOURCE_STATUSES } from "../../shared/local-session-source-status";
-import { DesktopNavigationApp } from "../App";
-import {
-  createDesktopNavigation,
-  type DesktopNavigation,
-} from "../navigation/desktop-adapter";
+import { DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY } from "../../shared/feature-flags";
+import { DESKTOP_LABS_NAV_FEATURE_FLAG_KEY } from "../../shared/feature-flags-labs-detail";
+import { DESKTOP_SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY } from "../../shared/feature-flags-labs-surfaces";
 import {
   detailTitleKey,
   usePublishDetailTitle,
 } from "../navigation/detail-title-context";
+import { renderDesktopApp, setupAppShellSuite } from "./app-shell-harness";
 
 /**
- * ISS-5574 (wongk review on #4661): the desktop tab title END TO END, through
+ * ISS-5574 (whitlockk review on #4661): the desktop tab title END TO END, through
  * the real `AppShell` wiring.
  *
  * `use-desktop-document-title.test.ts` covers `resolveDesktopDocumentTitle` in
@@ -62,9 +55,6 @@ vi.mock("../components/desktop-session-expired-banner", () => ({
 }));
 vi.mock("../components/desktop-sync-prompt", () => ({
   DesktopSyncPrompt: () => null,
-}));
-vi.mock("../components/first-launch-import-banner", () => ({
-  FirstLaunchImportBanner: () => null,
 }));
 vi.mock("../components/opt-in-distributions-banner", () => ({
   OptInDistributionsBanner: () => null,
@@ -115,12 +105,12 @@ vi.mock("../components/agents/agent-detail-view", () => ({
   AgentDetailView: () => <div data-testid="agent-detail-marker" />,
 }));
 
-const activeNavigations = new Set<DesktopNavigation>();
-let desktopApiDescriptor: PropertyDescriptor | undefined;
-let matchMediaDescriptor: PropertyDescriptor | undefined;
-let resizeObserverDescriptor: PropertyDescriptor | undefined;
-
 describe("ISS-5574: the desktop shell's window title", () => {
+  // ISS-8118: adopt the shared harness for timeout budgets and lifecycle —
+  // asyncUtilTimeout (15 s) < testTimeout (30 s), matchMedia, ResizeObserver,
+  // localStorage, desktopApi, and afterEach cleanup.
+  setupAppShellSuite();
+
   beforeEach(() => {
     document.title = ENTRY_HTML_TITLE;
     detailControls.title = null;
@@ -131,18 +121,17 @@ describe("ISS-5574: the desktop shell's window title", () => {
     // routes reachable. The title flag stays OFF until a case opts in.
     flagControls.enabled.add(DESKTOP_LABS_NAV_FEATURE_FLAG_KEY);
     flagControls.enabled.add(DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY);
-    installStubs();
   });
 
   afterEach(() => {
-    for (const navigation of activeNavigations) {
-      navigation.dispose();
-    }
-    activeNavigations.clear();
+    // Unmount BEFORE resetting. Vitest runs `afterEach` in reverse
+    // registration order, so this hook precedes the harness teardown, and
+    // `useDocumentTitle` restores each shell's captured previous title as it
+    // unmounts — a reset that ran first would be undone by that restore and
+    // leave a detail title behind. `cleanup()` is idempotent, so the harness
+    // teardown's own call stays a no-op.
     cleanup();
-    window.location.hash = "";
     document.title = ENTRY_HTML_TITLE;
-    restoreStubs();
   });
 
   it("leaves the window title alone with the flag off", async () => {
@@ -193,16 +182,39 @@ describe("ISS-5574: the desktop shell's window title", () => {
 
   // The regression this suite exists for. `#/agents/<slug>` matches as
   // `agent-detail`, so it has no nav id of its own and borrows the shell's
-  // sticky one — which on a bookmark or relaunch straight into it is
-  // DEFAULT_NAV_ID (Sessions). Resolving the list arm off the sticky id titled
-  // an agent-detail window "Sessions" against an "Agents / <name>" breadcrumb.
-  // Only reachable from the shell: the resolver alone cannot show it.
+  // sticky one. Resolving the list arm off that sticky id titled an agent-detail
+  // window after a section the user had left, against an "Agents / <name>"
+  // breadcrumb. Only reachable from the shell: the resolver alone cannot show it.
   it("does not retitle an agent detail opened directly, with no Sessions in history", async () => {
     enableTabTitles();
 
     await renderShell(`#/agents/${AGENT_SLUG}`);
 
     expect(document.title).toBe(ENTRY_HTML_TITLE);
+  });
+
+  /**
+   * The case above can no longer fail on its own, and this one is why it is
+   * still here.
+   *
+   * A direct `#/agents/<slug>` load borrows `DEFAULT_NAV_ID`, and that is now
+   * Dashboard — a surface ISS-5574 does not title. So the sticky-id bug and the
+   * fix produce the SAME entry-HTML title there, and the assertion above passes
+   * either way. Reaching the agent detail FROM Sessions is what restores the
+   * discrimination: the sticky id is then Sessions, which this feature DOES
+   * title, so reading it would leave the window on "Sessions | Closedloop.ai"
+   * while the breadcrumb read "Agents / <name>" — the original defect, now the
+   * only arrangement that can still catch it.
+   */
+  it("does not retitle an agent detail reached from Sessions", async () => {
+    enableTabTitles();
+
+    await renderShell("#/sessions");
+    expect(document.title).toBe("Sessions | Closedloop.ai");
+
+    await navigateHash(`#/agents/${AGENT_SLUG}`);
+
+    await waitFor(() => expect(document.title).toBe(ENTRY_HTML_TITLE));
   });
 
   it("hands the title back when a named surface is left for one it does not own", async () => {
@@ -235,76 +247,8 @@ async function navigateHash(hash: string): Promise<void> {
 }
 
 async function renderShell(initialHash: string): Promise<void> {
-  window.location.hash = initialHash;
-  const navigation = createDesktopNavigation();
-  activeNavigations.add(navigation);
-  render(<DesktopNavigationApp navigation={navigation} />);
+  renderDesktopApp(initialHash);
   await act(async () => {
     await Promise.resolve();
   });
-}
-
-function installStubs() {
-  matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: vi.fn(() => ({
-      addEventListener: vi.fn(),
-      addListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-      matches: false,
-      media: "",
-      onchange: null,
-      removeEventListener: vi.fn(),
-      removeListener: vi.fn(),
-    })),
-  });
-  resizeObserverDescriptor = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "ResizeObserver"
-  );
-  Object.defineProperty(globalThis, "ResizeObserver", {
-    configurable: true,
-    value: class {
-      disconnect = vi.fn();
-      observe = vi.fn();
-      unobserve = vi.fn();
-    },
-  });
-  desktopApiDescriptor = Object.getOwnPropertyDescriptor(window, "desktopApi");
-  Object.defineProperty(window, "desktopApi", {
-    configurable: true,
-    value: {
-      getAgentMonitorUrl: vi.fn(() =>
-        Promise.resolve({
-          localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.ready,
-          ready: true,
-        })
-      ),
-      getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
-      getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      onDbChanged: vi.fn(() => () => undefined),
-    },
-  });
-}
-
-function restoreStubs() {
-  restoreDescriptor(window, "desktopApi", desktopApiDescriptor);
-  restoreDescriptor(window, "matchMedia", matchMediaDescriptor);
-  restoreDescriptor(globalThis, "ResizeObserver", resizeObserverDescriptor);
-  desktopApiDescriptor = undefined;
-  matchMediaDescriptor = undefined;
-  resizeObserverDescriptor = undefined;
-}
-
-function restoreDescriptor(
-  target: object,
-  key: string,
-  descriptor: PropertyDescriptor | undefined
-) {
-  if (descriptor) {
-    Object.defineProperty(target, key, descriptor);
-  } else {
-    Reflect.deleteProperty(target, key);
-  }
 }

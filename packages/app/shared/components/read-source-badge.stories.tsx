@@ -4,34 +4,25 @@ import type { ReactNode } from "react";
 import { ReadSourceBadge } from "./read-source-badge";
 
 /**
- * `ReadSourceBadge` says which store a surface actually read from, and — since
- * ISS-5477 — WHY that source is in play right now.
+ * `ReadSourceBadge` says which store a surface actually read from, and WHY that
+ * source is in play right now.
  *
- * The second dimension is the one worth eyeballing. The `detail` sentence is
- * state-driven (draining vs. stalled vs. never-arriving), the badge's tone
- * carries whether the read can be trusted as complete, and the tooltip has an
- * ordering contract: the user-facing reason leads, the FEA-3120 QA/support
- * diagnostic sits underneath it, muted. A wrong tone or a garbled detail is
- * exactly what this gallery is here to catch — so each row prints the `detail`
- * it was handed next to the badge rather than hiding it behind a hover.
+ * The second dimension is the one worth eyeballing. Since ISS-6972 the desktop
+ * read source is one condition — authenticated and online, consent having left
+ * it on 2026-09-25 because it governs what this Mac SENDS — so `detail` is one
+ * of exactly two reasons, and the tooltip has an ordering
+ * contract: the user-facing reason leads, the FEA-3120 QA/support diagnostic
+ * sits underneath it, muted. A garbled detail is what this gallery is here to
+ * catch, so each row prints the `detail` it was handed next to the badge rather
+ * than hiding it behind a hover.
  */
-const DRAINING =
-  "Your history is still uploading (3,401 items to go). Nothing is missing.";
-const NOT_STARTED =
-  "Part of your history has not started uploading yet. Nothing is missing.";
-const OFFLINE =
-  "You are offline, so this is your own machine's data. Nothing is missing.";
-const UNMEASURED =
-  "Your history is still uploading (some items to go). Nothing is missing.";
-const GAVE_UP =
-  "Uploading finished except for 12 items that could not be sent. Open Diagnostics to review them.";
-const FAILED_OPEN =
-  "Uploading your history has not progressed for a while, so this workspace view may be missing 12 items still on this device. Open Diagnostics to review them.";
+const SIGNED_OUT = "You're signed out.";
+const OFFLINE = "You're offline.";
 
 const BadgeGallery = () => (
   <div className="space-y-8">
     <Section
-      description="Unchanged by ISS-5477: a caller that passes no detail renders exactly the badge that shipped before."
+      description="A caller that passes no detail renders the badge alone — which is every web surface, and any desktop surface reading the cloud."
       title="No detail (steady state)"
     >
       <Row caption="Local — this machine's SQLite.">
@@ -40,7 +31,7 @@ const BadgeGallery = () => (
           surfaceLabel="sessions"
         />
       </Row>
-      <Row caption="Cloud — synced workspace state, genuinely drained.">
+      <Row caption="Cloud — synced workspace state.">
         <ReadSourceBadge
           readSource={ReadSource.Cloud}
           surfaceLabel="sessions"
@@ -58,19 +49,12 @@ const BadgeGallery = () => (
     </Section>
 
     <Section
-      description="The hold. Local, with a reason and a finish line — not an error and not an empty state. Every one of these reads off a complete local database, which is why each ends in 'Nothing is missing.'"
+      description="Local, with the reason the desktop predicate produced. Each is a state with a cause the reader can act on — not an error, and not an empty workspace."
       title="Local, with a detail"
     >
-      <Row caption={DRAINING}>
+      <Row caption={SIGNED_OUT}>
         <ReadSourceBadge
-          detail={DRAINING}
-          readSource={ReadSource.Local}
-          surfaceLabel="dashboard"
-        />
-      </Row>
-      <Row caption={NOT_STARTED}>
-        <ReadSourceBadge
-          detail={NOT_STARTED}
+          detail={SIGNED_OUT}
           readSource={ReadSource.Local}
           surfaceLabel="dashboard"
         />
@@ -80,34 +64,6 @@ const BadgeGallery = () => (
           detail={OFFLINE}
           readSource={ReadSource.Local}
           surfaceLabel="branches"
-        />
-      </Row>
-      <Row caption={UNMEASURED}>
-        <ReadSourceBadge
-          detail={UNMEASURED}
-          readSource={ReadSource.Local}
-          surfaceLabel="sessions"
-        />
-      </Row>
-    </Section>
-
-    <Section
-      description="The states where something genuinely may not arrive. These never claim nothing is missing, and they owe the reader a next step."
-      title="Stalled / blocked"
-    >
-      <Row caption={GAVE_UP}>
-        <ReadSourceBadge
-          detail={GAVE_UP}
-          readSource={ReadSource.Local}
-          surfaceLabel="dashboard"
-        />
-      </Row>
-      <Row caption="Cloud that the fail-open let through. Must NOT look like the drained Cloud above — same provenance, different confidence.">
-        <ReadSourceBadge
-          detail={FAILED_OPEN}
-          incomplete
-          readSource={ReadSource.Cloud}
-          surfaceLabel="dashboard"
         />
       </Row>
     </Section>
@@ -143,9 +99,11 @@ function Row({
 }
 
 const meta = {
-  title: "App Core/Shared/Read Source Badge",
+  title: "Composites v1.0/App Shell/Read Source Badge",
   component: BadgeGallery,
-  tags: ["autodocs"],
+  // Every source/detail combination side by side, not one concept per story —
+  // kept out of the AI manifest for that reason.
+  tags: ["deprecated", "autodocs", "!manifest"],
 } satisfies Meta<typeof BadgeGallery>;
 
 export default meta;

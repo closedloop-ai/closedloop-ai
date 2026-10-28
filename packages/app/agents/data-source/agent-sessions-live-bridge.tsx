@@ -5,7 +5,12 @@ import {
   LIVE_BRIDGE_INVALIDATION_THROTTLE_MS,
   useLiveQueryBridge,
 } from "../../shared/hooks/use-live-query-bridge";
-import { agentSessionKeys } from "../hooks/use-agent-sessions";
+import {
+  agentSessionAlwaysConvergePrefixes,
+  agentSessionBroadConvergePrefixes,
+} from "../hooks/agent-session-cache-convergence";
+import { agentSessionKeys } from "../hooks/agent-session-keys";
+import { isAgentSessionEventsPagesKey } from "../hooks/use-agent-sessions";
 import type { AgentSessionsChange } from "./agent-sessions-data-source";
 import { useAgentSessionsDataSource } from "./provider";
 
@@ -18,17 +23,16 @@ import { useAgentSessionsDataSource } from "./provider";
  * The throttle / visibility / cleanup machinery lives in the shared
  * {@link useLiveQueryBridge} hook (shared with BranchesLiveBridge); this
  * component supplies only the session-specific change-id extraction and the
- * invalidation policy:
- * - **List + usage + combined page-data always move** — any session change can
- *   shift the visible page and the aggregate summary, and FEA-4157 routes the
- *   Sessions views' list + summary through the combined `pageData` read, so it
- *   must invalidate alongside the standalone list/usage keys.
- * - **Details** — a `{ sessionId }` change refreshes that one `detail` (keyed by
- *   the active source's scope, FEA-1771); a `{}` change (import/rebuild/backfill)
- *   refreshes all open details.
- * - **Analytics is NEVER invalidated** — it is off the Sessions page (its sole
- *   consumer is the web Monitoring view) and stays one-shot-on-load per PLN-941
- *   §5/§11.
+ * per-entity fan-out.
+ *
+ * ISS-9553: the invalidation POLICY is no longer written here. Which families
+ * converge, which sweep only on a broad change, and which are deliberately
+ * excluded is declared once in `agentSessionCacheConvergence` over `keyof
+ * agentSessionKeys`, and this bridge iterates the prefixes that declaration
+ * derives. Restating the list inline is what let each newly added family ship
+ * uninvalidated until someone noticed; a family added to `agentSessionKeys` now
+ * fails `tsc` until it is classified, and one classified as converging is
+ * invalidated here without this file changing.
  *
  * NOTE: Desktop keep-alive leaves visited surfaces mounted-but-hidden, so the
  * active-route gating in PLN-941 §5 (hidden surfaces marked stale *without*
@@ -45,22 +49,21 @@ export function AgentSessionsLiveBridge() {
     subscribe: dataSource.subscribe,
     getChangeId: (change) => change.sessionId,
     flush: ({ broad, ids }) => {
-      // List + usage + the combined page-data read always move; analytics is
-      // intentionally never invalidated (off the Sessions page; one-shot-on-load
-      // per PLN-941 §5/§11). FEA-4157/FEA-4177: the web Sessions page reads its
-      // list + summary through the standalone `list`/`usage` keys while the
-      // desktop view still reads the combined `pageData`, so all three prefixes
-      // must invalidate or a live event would leave a visible table/cards stale.
-      queryClient.invalidateQueries({ queryKey: agentSessionKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: agentSessionKeys.usages() });
-      queryClient.invalidateQueries({
-        queryKey: agentSessionKeys.pageDataRoot(),
-      });
+      for (const queryKey of agentSessionAlwaysConvergePrefixes()) {
+        queryClient.invalidateQueries({ queryKey });
+      }
 
       if (broad) {
         // A `{}` event (import/rebuild/backfill) can touch any session, so
-        // refresh every open detail.
-        queryClient.invalidateQueries({ queryKey: agentSessionKeys.details() });
+        // refresh every open detail — and reset every walk past one, for the
+        // reason the scoped arm below gives.
+        for (const queryKey of agentSessionBroadConvergePrefixes()) {
+          queryClient.invalidateQueries({ queryKey });
+        }
+        queryClient.resetQueries({
+          queryKey: agentSessionKeys.details(),
+          predicate: (query) => isAgentSessionEventsPagesKey(query.queryKey),
+        });
         return;
       }
       // A scoped event only moves its own detail, keyed by the active source's
@@ -68,6 +71,15 @@ export function AgentSessionsLiveBridge() {
       for (const sessionId of ids) {
         queryClient.invalidateQueries({
           queryKey: agentSessionKeys.detail(dataSource.scope, sessionId),
+        });
+        // ISS-9857: the walk past that detail's prefix is `enabled: false`, so
+        // the invalidation above marks it and never refetches it, and a tail
+        // append leaves the first cursor — the walk's key — unchanged. Reset it
+        // to "nothing loaded yet" so an exhausted walk stops reporting "no
+        // more" over rows it never saw; the next click re-walks from the
+        // refetched prefix.
+        queryClient.resetQueries({
+          queryKey: agentSessionKeys.eventsPagesOf(dataSource.scope, sessionId),
         });
       }
     },

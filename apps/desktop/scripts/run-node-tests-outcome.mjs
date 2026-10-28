@@ -49,18 +49,43 @@ export const RunnerOutcomeKind = /** @type {const} */ ({
  *
  * The cap is only useful while the suite stays well under it: the 2026-08-05
  * release died because a margin nobody was watching had shrunk to 1.21x. This
- * is that watch. 75% of the 900s cap is 675s, which clears every run measured
- * on either unsharded lane — 2.15x the `linux_4_core_arm` max (314.2s) and
- * 1.32x the highest `macos-latest` green (510.4s) — so it is silent today and
- * fires while there is still room to act, not at the cliff.
+ * is that watch. 75% of the 900s cap is 675s, and it fires while there is still
+ * room to act rather than at the cliff.
  *
  * IT MEANS DIFFERENT THINGS PER LANE, because their hosts do. Linux runs
  * 276-314s with max/median 1.10x, so an annotation there is suite growth and
- * the signal to re-measure. macOS host speed varies ~2x run to run (ISS-5969 —
- * measured on the release job's test-free steps), which is wider than the whole
- * band between its greens and this threshold, so an annotation there reports
- * the host at least as often as the suite; check the job's test-free steps
- * before touching the suite or this number.
+ * the signal to re-measure.
+ *
+ * macOS host speed varies ~2x run to run (ISS-5969, on the release job's
+ * test-free steps; ISS-9937 measured the same 1.92x band on the nightly's own
+ * `test:node used …` line, 468.5-900.3s across 2026-08-28..09-10). This comment
+ * used to draw the conclusion "so a macOS annotation reports the host at least
+ * as often as the suite" and leave it there. THAT IS HALF AN ANSWER, and the
+ * missing half cost a release on 2026-09-10: against a ~2x host band, a lane
+ * whose MEDIAN sits at 84% of the cap has no p100 margin at all, so a sustained
+ * macOS annotation is a true report about the LANE'S MARGIN even when it is not
+ * a report about suite growth. Ten of those fourteen nights annotated and an
+ * eleventh was past the line, and then the twelfth was the kill. Read it as
+ * "this lane can no longer absorb a slow host"
+ * and shorten or SPLIT the work — which is what ISS-9937 did, sharding the
+ * nightly 3-wide. Still check the job's test-free steps before touching the
+ * suite or this number.
+ *
+ * NOT RE-DERIVED HERE, deliberately. The obvious next move is to recompute this
+ * threshold against the nightly's 08-28..09-10 population, and that population
+ * is exactly the one the sharding changes: those are whole-suite figures and the
+ * lane now runs thirds. Re-deriving from them would pin the number to a lane
+ * shape that no longer exists. Re-derive when post-shard nightlies exist.
+ *
+ * IT WARNS, AND IT MUST NOT GATE. ISS-8326 asked; the answer is measured, not a
+ * preference. A gate here is the 900s cap re-spelled as 675s, and the lane it
+ * would fail first is `release` on macOS, whose highest recent green is 671.3s
+ * (2026-08-28 re-measurement in run-node-tests.mjs) — 74%, one point under this
+ * line, on a host ISS-5969 measured varying ~2x run to run. Gating would convert
+ * host variance into a failed Desktop release while the suite itself still had
+ * 228s of real margin, which is the failure mode this threshold exists to warn
+ * about rather than cause. The response to an annotation is to re-measure and,
+ * if the suite really grew, shorten it; the cap is what fails a run.
  *
  * A WHOLE PERCENT, deliberately: it is the same figure `describeHeadroom` prints,
  * so the decision and the displayed number are one value and cannot contradict
@@ -216,7 +241,7 @@ function describeHeadroom(elapsedMs, runnerTimeoutMs) {
     `[run-node-tests] test:node used ${elapsedSeconds}s of its ${capSeconds}s ` +
     `whole-runner cap (${usedPercent}%).`;
 
-  // DECIDE ON THE NUMBER WE PRINT (wongk review). Comparing the unrounded
+  // DECIDE ON THE NUMBER WE PRINT (whitlockk review). Comparing the unrounded
   // fraction against the threshold let a run warn while still displaying "75%",
   // so the annotation contradicted the figure beside it. Both the display and
   // the decision now run off `usedPercent`, which makes the two impossible to

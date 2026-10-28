@@ -5,11 +5,11 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
-  describeIdOrSlug,
   encodePathSegment,
   MAX_PAGE_LIMIT,
   readNumber,
   readString,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -28,11 +28,11 @@ export function registerListAttachments(
       description:
         "List file attachments for a document (PRD, implementation plan, feature, or template) by UUID or slug. Supports limit/offset pagination and returns a paginated envelope (total, offset, limit, returned, hasMore, nextOffset, items) whose items include id, artifactId, filename, mimeType, sizeBytes, purpose, createdAt, createdById, and an optional previewUrl (present only for image attachments). Pass the user's slug verbatim.",
       inputSchema: {
-        entityId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        entityId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         purpose: z
           .enum([
             AttachmentPurposeSelector.Context,

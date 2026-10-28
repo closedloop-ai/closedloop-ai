@@ -18,6 +18,7 @@ import type {
   MergedTraceItem,
 } from "@repo/api/src/types/branch-trace";
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
+import type { ListQueryExpression } from "@repo/api/src/types/list-query-expression";
 
 export const SHARED_BRANCHES_IPC_CHANNELS = {
   list: "desktop:shared-branches:list",
@@ -33,18 +34,18 @@ export const SHARED_BRANCHES_IPC_CHANNELS = {
   pageData: "desktop:shared-branches:page-data",
 } as const;
 
-export const SHARED_BRANCHES_IPC_CHANNEL_LIST = [
-  SHARED_BRANCHES_IPC_CHANNELS.list,
-  SHARED_BRANCHES_IPC_CHANNELS.detail,
-  SHARED_BRANCHES_IPC_CHANNELS.trace,
-  SHARED_BRANCHES_IPC_CHANNELS.usage,
-  SHARED_BRANCHES_IPC_CHANNELS.analytics,
-  SHARED_BRANCHES_IPC_CHANNELS.cohortAnalytics,
-  SHARED_BRANCHES_IPC_CHANNELS.pageData,
-] as const;
-
+/** ISS-8143: from the channel OBJECT, not a side list — see the twin note on
+ * `SharedAgentSessionsIpcChannel` for why a list-derived union disarms the
+ * exhaustiveness guard it is supposed to feed. */
 export type SharedBranchesIpcChannel =
-  (typeof SHARED_BRANCHES_IPC_CHANNEL_LIST)[number];
+  (typeof SHARED_BRANCHES_IPC_CHANNELS)[keyof typeof SHARED_BRANCHES_IPC_CHANNELS];
+
+/** ISS-8143: DERIVED from the channel object — twin of
+ * `SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST`, and see that note for why a
+ * hand-written registration list can drop a channel with nothing in `tsc` to
+ * say so. */
+export const SHARED_BRANCHES_IPC_CHANNEL_LIST: readonly SharedBranchesIpcChannel[] =
+  Object.values(SHARED_BRANCHES_IPC_CHANNELS);
 
 /**
  * The IPC query is exactly the shared port's `BranchQueryFilters` — aliased (not
@@ -52,10 +53,33 @@ export type SharedBranchesIpcChannel =
  */
 export type SharedBranchesQuery = BranchQueryFilters;
 
+/** Internal Desktop IPC hint: the renderer already chose its local read source. */
+export const LOCAL_BRANCH_READ = { skipCloudHydration: true } as const;
+export type SharedBranchesLocalReadHint = {
+  skipCloudHydration?: boolean;
+};
+export type SharedBranchesLocalReadRequest = SharedBranchesQuery &
+  SharedBranchesLocalReadHint & {
+    /**
+     * PRD-721: the canonical list query expression (ISS-9476), as a structured
+     * value under the `LIST_QUERY_EXPRESSION_PARAM` key. Main lowers it into
+     * the legacy params above before any read runs
+     * (`compileBranchListQueryRequest`), and refuses the request when it cannot
+     * serve the expression or when the request also sends a legacy spelling of
+     * one of its axes. A Desktop main older than that compiler refuses a
+     * server page carrying it (its schema is strict) and reads any other
+     * request without it, unwindowed, so only a renderer shipped in the same
+     * build sends it.
+     */
+    listQuery?: ListQueryExpression;
+  };
+export type SharedBranchCohortLocalReadRequest = BranchAnalyticsCohortRequest &
+  SharedBranchesLocalReadHint;
+
 export type SharedBranchAnalyticsCohortRequest = BranchAnalyticsCohortRequest;
 export type SharedBranchAnalyticsCohortResponse = BranchAnalyticsCohortResponse;
 
-export type SharedBranchesListRequest = SharedBranchesQuery & {
+export type SharedBranchesListRequest = SharedBranchesLocalReadRequest & {
   ids?: readonly string[];
   forceRefresh?: boolean;
 };
@@ -63,7 +87,7 @@ export type SharedBranchesListRequest = SharedBranchesQuery & {
 export type SharedBranchesDetailRequest = BranchSelectedPullRequestQuery & {
   id: string;
   forceRefresh?: boolean;
-};
+} & SharedBranchesLocalReadHint;
 
 /** Current Desktop trace envelope plus the raw-array shape from older mains. */
 export type SharedBranchTraceResponse = BranchTraceResult | MergedTraceItem[];
@@ -79,7 +103,7 @@ export const SHARED_BRANCHES_NOT_FOUND_CODE = "LOCAL_BRANCH_NOT_FOUND" as const;
 export const SHARED_BRANCHES_SOURCE_ERROR_CODE =
   "LOCAL_BRANCHES_SOURCE_ERROR" as const;
 /**
- * ISS-4483 (review cid 3679616167, wongk): the error code stamped on a TRANSIENT
+ * ISS-4483 (review cid 3679616167, whitlockk): the error code stamped on a TRANSIENT
  * local Branches read failure — the db-host child restarting / crash-looping
  * mid-backfill. Distinct from the fatal {@link SHARED_BRANCHES_SOURCE_ERROR_CODE}
  * so the renderer routes it to the quiet reconnecting surface (bounded retry)

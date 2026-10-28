@@ -7,8 +7,8 @@ import type {
   ImportPackZipResponse,
   UpdateCatalogItemRequest,
 } from "@repo/api/src/types/distribution";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "../../shared/api/api-timeout";
 import { useApiClient } from "../../shared/api/use-api-client";
 
 /**
@@ -22,9 +22,7 @@ export const catalogKeys = {
   detail: (id: string) => [...catalogKeys.details(), id] as const,
 };
 
-// ---------------------------------------------------------------------------
 // Upload-intent types (not yet in distribution.ts — unique to catalog upload flow)
-// ---------------------------------------------------------------------------
 
 /**
  * Request body for POST /catalog/upload-intent (admin-only, AC-016).
@@ -60,9 +58,7 @@ export type ConfirmUploadRequest = {
   s3Key: string;
 };
 
-// ---------------------------------------------------------------------------
 // Queries
-// ---------------------------------------------------------------------------
 
 /**
  * Fetches the org-visible catalog (org-custom + curated items).
@@ -91,9 +87,7 @@ export function useCatalogItem(id: string) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // Mutations
-// ---------------------------------------------------------------------------
 
 /**
  * Creates a new org-custom CatalogItem.

@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
 import type { Worker } from "node:worker_threads";
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { PreparedAgentSessionPayload } from "../src/main/agent-sync/agent-session-sync-payload.js";
 import {
   createAgentSessionPayloadWorkerPreparer,
   PAYLOAD_WORKER_REQUEST_TIMEOUT_MS,
-} from "../src/main/agent-session-sync-payload-worker-runner.js";
-import type { PreparedAgentSessionPayload } from "../src/main/agent-sync/agent-session-sync-payload.js";
+} from "../src/main/agent-sync/agent-session-sync-payload-worker-runner.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 const WORKER_FAILURE_RE = /boom/;
@@ -53,7 +52,10 @@ class FakePayloadWorker {
   }
 }
 
-function createPreparerWithFakeWorkers(requestTimeoutMs?: number) {
+function createPreparerWithFakeWorkers(
+  requestTimeoutMs?: number,
+  idleTeardownMs?: number
+) {
   const workers: FakePayloadWorker[] = [];
   const createWorker = vi.fn((): Worker => {
     const fake = new FakePayloadWorker();
@@ -62,7 +64,8 @@ function createPreparerWithFakeWorkers(requestTimeoutMs?: number) {
   });
   const preparer = createAgentSessionPayloadWorkerPreparer(
     createWorker,
-    requestTimeoutMs
+    requestTimeoutMs,
+    idleTeardownMs
   );
   return { preparer, createWorker, workers };
 }
@@ -461,5 +464,85 @@ describe("createAgentSessionPayloadWorkerPreparer", () => {
     // After dispose the worker is nulled, so the next call spins up a fresh one.
     ignorePending(preparer([], 1000));
     assert.strictEqual(createWorker.mock.calls.length, 2);
+  });
+});
+
+describe("payload worker idle teardown", () => {
+  const IDLE_MS = 1000;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function prepareAndReply(
+    preparer: ReturnType<typeof createPreparerWithFakeWorkers>["preparer"],
+    workers: FakePayloadWorker[]
+  ): Promise<FakePayloadWorker> {
+    const prepared = preparer([], 2048);
+    const worker = workers.at(-1);
+    if (!worker) {
+      throw new Error("expected the prepare to create a worker");
+    }
+    worker.emit("message", {
+      requestId: worker.lastRequestId(),
+      ok: true,
+      payloads: [],
+    });
+    await prepared;
+    await Promise.resolve();
+    return worker;
+  }
+
+  test("terminates the worker once it has been idle for the idle delay, then recreates it on the next prepare", async () => {
+    const { preparer, workers } = createPreparerWithFakeWorkers(
+      undefined,
+      IDLE_MS
+    );
+    const first = await prepareAndReply(preparer, workers);
+
+    vi.advanceTimersByTime(IDLE_MS - 1);
+    assert.equal(first.terminate.mock.calls.length, 0);
+    vi.advanceTimersByTime(1);
+    assert.equal(first.terminate.mock.calls.length, 1);
+
+    const second = await prepareAndReply(preparer, workers);
+    assert.equal(workers.length, 2);
+    assert.notEqual(second, first);
+    await preparer.dispose?.();
+  });
+
+  test("a late exit from the idle-terminated worker does not reject the replacement's request", async () => {
+    const { preparer, workers } = createPreparerWithFakeWorkers(
+      undefined,
+      IDLE_MS
+    );
+    const first = await prepareAndReply(preparer, workers);
+    vi.advanceTimersByTime(IDLE_MS);
+
+    const pending = preparer([], 2048);
+    const replacement = workers[1];
+    assert.ok(replacement);
+    first.emit("exit", 1);
+    replacement.emit("message", {
+      requestId: replacement.lastRequestId(),
+      ok: true,
+      payloads: [],
+    });
+    assert.deepEqual(await pending, []);
+    await preparer.dispose?.();
+  });
+
+  test("dispose cancels the idle countdown", async () => {
+    const { preparer, workers } = createPreparerWithFakeWorkers(
+      undefined,
+      IDLE_MS
+    );
+    await prepareAndReply(preparer, workers);
+    await preparer.dispose?.();
+    assert.equal(vi.getTimerCount(), 0);
   });
 });

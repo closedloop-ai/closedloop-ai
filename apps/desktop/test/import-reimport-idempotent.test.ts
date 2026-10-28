@@ -29,7 +29,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { makeSession as baseSession } from "./normalized-session-test-utils.js";
@@ -200,7 +200,7 @@ test("ISS-4476: a cross-session agents.id collision fails closed and does not re
     const victimSessionId = "sess-victim";
     const attackerSessionId = "sess-attacker";
     // The derived main id for the victim import. We plant a row at this id that
-    // belongs to a DIFFERENT session (the attacker) — the exact wongk scenario
+    // belongs to a DIFFERENT session (the attacker) — the exact whitlockk scenario
     // where two session ids derive the same `${id}-main` string. Recovering it
     // would silently steal the attacker's agent (and orphan its events under the
     // stolen id).
@@ -272,6 +272,52 @@ test("importing the same session twice is idempotent (no throw, single spine row
     assert.equal(await countSessionRows(db, sessionId), 1);
     assert.equal(await countMainAgentRows(db, sessionId), 1);
     assert.equal(await querySessionStatus(db, sessionId), "inactive");
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ISS-12036: the PRODUCTION wiring for `ImportResult.unchanged`.
+ *
+ * `skipped` is set for two unrelated reasons — the FEA-3227 byte-identical
+ * re-import, and a REFUSAL that wrote no row — so `isDurableImportProgress`
+ * reported neither as progress and import-health telemetry classified a window
+ * of pure no-ops as `wedged` (134 of 208 outcomes on the install ISS-12036
+ * measured). `unchanged` is the flag that separates them, and it is only worth
+ * anything if write-core actually sets it: a tracker test stubs the importer, so
+ * deleting the production write would leave that suite green.
+ *
+ * Driven through the REAL SQLite importer for that reason, and both directions
+ * are asserted — the first import WROTE rows, so it must not claim `unchanged`.
+ *
+ * MUTATION: delete the `unchanged` key from write-core's returned result and the
+ * second assertion fails; set it unconditionally and the first does.
+ */
+test("ISS-12036: a byte-identical re-import reports `unchanged`, and the first import does not", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "reimport-unchanged-"));
+  const db = await openDb(dir);
+  try {
+    const sessionId = "sess-reimport-unchanged";
+
+    const first = await db.importer.importSession(fixture(sessionId), "claude");
+    assert.notEqual(
+      first.unchanged,
+      true,
+      "the first import wrote the session's rows, so nothing about it was unchanged"
+    );
+
+    const second = await db.importer.importSession(
+      fixture(sessionId),
+      "claude"
+    );
+    assert.equal(second.skipped, true);
+    assert.equal(
+      second.unchanged,
+      true,
+      "re-importing the identical session wrote nothing and says so"
+    );
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

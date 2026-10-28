@@ -2,6 +2,10 @@
   "extends": ["@repo/typescript-config/nextjs.json"],
   "compilerOptions": {
     "paths": {
+      "@closedloop-ai/design-system": [
+        "../../packages/design-system/index.tsx"
+      ],
+      "@closedloop-ai/design-system/*": ["../../packages/design-system/*"],
       "@/*": ["./*"],
       "@repo/*": ["../../packages/*"]
     }

@@ -6,7 +6,7 @@ import { AGENTS_PAGE_SIZE } from "../../lib/agents-timeframe";
 import { DetailBranchesTab } from "./detail-branches-tab";
 
 /**
- * ISS-5464 (wongk review): canvas for the agent-component detail Branches tab —
+ * ISS-5464 (whitlockk review): canvas for the agent-component detail Branches tab —
  * the one sibling on this page that had no story, while `DetailSessionsTab` got
  * the same treatment in #4291.
  *
@@ -15,9 +15,9 @@ import { DetailBranchesTab } from "./detail-branches-tab";
  * real logic worth pinning visually:
  *
  *   - the notice's total is ALWAYS a floor (`N of M+ branches`). `branches.length`
- *     is a capped array length — the wire `branchesTab` is bounded upstream by the
- *     `MAX_DETAIL_SESSION_IN_IDS` session fan-out plus the `seenBranchIds` dedupe
- *     — and the detail carries no uncapped branch count to state instead. Before
+ *     is a capped array length — the wire `branchesTab` is deduped upstream by
+ *     `seenBranchIds`, and bounded by a session fan-out on any producer older
+ *     than ISS-9855 — and the detail carries no uncapped branch count instead. Before
  *     ISS-5464 this printed as an exact total, so the same page read
  *     "Showing 50 of 1,218 sessions" on one tab and "Showing 50 of 50 branches"
  *     on the next;
@@ -27,7 +27,7 @@ import { DetailBranchesTab } from "./detail-branches-tab";
  *     invisible from the rows alone, which is exactly why it needs a canvas;
  *   - the empty state, which must NOT claim "no branches reference this
  *     component" — desktop's local reader always returns `branchesTab: []`
- *     (wongk, #3688).
+ *     (whitlockk, #3688).
  *
  * The co-located tests pin the string and the arithmetic; these stories pin the
  * geometry.
@@ -38,7 +38,7 @@ function makeBranches(count: number): BranchRow[] {
     id: `owner%2Frepo::story-branch-${index}`,
     branchName: `feat/story-branch-${index}`,
     baseBranch: "main",
-    repoFullName: "closedloop-ai/symphony-alpha",
+    repoFullName: "closedloop-ai/closedloop-ai",
     status: BranchStatus.Open,
     prNumber: null,
     prTitle: null,
@@ -84,7 +84,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail Branches Tab",
+  title: "Composites v1.0/Agents/Workspace/Detail Branches Tab",
+  tags: ["deprecated"],
   component: DetailBranchesTab,
   parameters: { layout: "fullscreen" },
   args: {
@@ -125,7 +126,7 @@ export const TruncatedByTheProducer: Story = {
 
 /**
  * Zero rows. The copy must not deny that branches exist — desktop's local reader
- * always returns `branchesTab: []` while its metrics say otherwise (wongk, #3688).
+ * always returns `branchesTab: []` while its metrics say otherwise (whitlockk, #3688).
  */
 export const Empty: Story = {
   args: { branches: [] },

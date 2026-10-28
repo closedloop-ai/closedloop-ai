@@ -1,6 +1,6 @@
 const TRAILING_SLASH_REGEX = /\/$/;
 const LEADING_DOT_REGEX = /^\./;
-const DEFAULT_PREVIEW_SUFFIX = "preview.closedloop-stage.ai";
+const DEFAULT_PREVIEW_SUFFIX = "preview.stage.example";
 const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
 
 function getAllowedOrigins(): Set<string> {

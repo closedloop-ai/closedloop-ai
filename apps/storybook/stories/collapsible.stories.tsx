@@ -10,9 +10,9 @@ import { Info } from "lucide-react";
  * An interactive component which expands/collapses a panel.
  */
 const meta: Meta<typeof Collapsible> = {
-  title: "Design System/Primitives/Collapsible",
+  title: "Primitives v1.0/Layout/Collapsible",
   component: Collapsible,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     className: "w-96",

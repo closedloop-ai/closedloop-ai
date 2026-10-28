@@ -26,8 +26,8 @@ import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { promisify } from "node:util";
+import { test } from "vitest";
 import { runHistoricalBackfill } from "../src/main/enrichment/historical-backfill.js";
 import {
   captureRepoIdentity,

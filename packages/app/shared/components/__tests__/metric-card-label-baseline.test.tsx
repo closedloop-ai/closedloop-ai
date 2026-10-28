@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 // rank of numbers.
 //
 // The reservation lives on `SummaryCardRow`, NOT on the `MetricCard` primitive
-// (review, wongk): a floor inside the card would charge every consumer — notably
+// (review, whitlockk): a floor inside the card would charge every consumer — notably
 // the Insights KPI tiles, which are pinned to a fixed-height grid host and would
 // push their trend footer into the gutter. jsdom does not lay text out, so these
 // assert the reservation where it now lives (the strip) and, just as importantly,
@@ -110,7 +110,7 @@ describe("MetricCard label baseline (ISS-4787)", () => {
     // The Insights KPI tiles render `MetricCard` directly into a fixed-height
     // grid host (`className="h-full"`, persisted `h:2` ≈ 156px). A label floor
     // inside the primitive raised the card's minimum stack past that host and
-    // dropped the trend footer into the grid gutter (wongk review), so the
+    // dropped the trend footer into the grid gutter (whitlockk review), so the
     // primitive must stay neutral for every non-strip consumer.
     render(
       <MetricCard

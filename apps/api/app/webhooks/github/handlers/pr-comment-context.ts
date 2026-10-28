@@ -1,6 +1,7 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import { ArtifactType, type TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { ApplyExternalOutcome } from "@/app/comments/service/github/apply-external-events";
 import type { GitHubCommentOwnerSuccess } from "../comment-owner-resolver";
 
 export type CommentWebhookPrContext = {
@@ -70,11 +71,13 @@ export async function loadPrContextForCommentWebhook(
     },
   });
 
-  const currentPullRequestDetailId =
-    prDetail?.branchArtifact.branch?.currentPullRequestDetailId ?? null;
-  const isCurrentPullRequest =
-    currentPullRequestDetailId === null ||
-    currentPullRequestDetailId === input.ownerResolution.pullRequestDetailId;
+  const currentPullRequestDetailId = branchCurrentPullRequestDetailId(
+    prDetail?.branchArtifact.branch
+  );
+  const isCurrentPullRequest = isBranchCurrentPullRequest(
+    currentPullRequestDetailId,
+    input.ownerResolution.pullRequestDetailId
+  );
 
   if (!isCurrentPullRequest) {
     log.warn(`${input.logPrefix} Loaded non-current pull request context`, {
@@ -112,3 +115,49 @@ export async function loadPrContextForCommentWebhook(
 
   return context;
 }
+
+/**
+ * Whether a comment webhook's delivery reached the projection, which gates its
+ * branch activity and dirty-scope publication. Parity with the handlers before
+ * `applyExternal`: every delivery the writer accepted recorded activity, and
+ * the ordering guard's drops are deliveries the writer used to accept; a
+ * refused write or a missing row did not, and neither does a bad timestamp.
+ */
+export function webhookDeliveryReachedProjection(
+  outcome: ApplyExternalOutcome
+): boolean {
+  return WEBHOOK_DELIVERY_REACHED_PROJECTION[outcome];
+}
+
+/**
+ * The current-PR rule the comment webhooks and the review-summary write check
+ * before they hand a pull request's comments to `applyExternal`: only the
+ * branch's current pull request is written, and a branch with no current-PR
+ * pointer accepts its pull requests. The reconcile cron's due-PR scan states
+ * the same rule in SQL. `applyExternal` itself does not check it.
+ */
+export function isBranchCurrentPullRequest(
+  currentPullRequestDetailId: string | null,
+  pullRequestDetailId: string
+): boolean {
+  return (
+    currentPullRequestDetailId === null ||
+    currentPullRequestDetailId === pullRequestDetailId
+  );
+}
+
+export function branchCurrentPullRequestDetailId(
+  branch: { currentPullRequestDetailId: string | null } | null | undefined
+): string | null {
+  return branch?.currentPullRequestDetailId ?? null;
+}
+
+const WEBHOOK_DELIVERY_REACHED_PROJECTION = {
+  [ApplyExternalOutcome.Applied]: true,
+  [ApplyExternalOutcome.Unchanged]: true,
+  [ApplyExternalOutcome.RejectedOlder]: true,
+  [ApplyExternalOutcome.RejectedDeleted]: true,
+  [ApplyExternalOutcome.RejectedFuture]: false,
+  [ApplyExternalOutcome.NotFound]: false,
+  [ApplyExternalOutcome.NoWrite]: false,
+} as const satisfies Record<ApplyExternalOutcome, boolean>;

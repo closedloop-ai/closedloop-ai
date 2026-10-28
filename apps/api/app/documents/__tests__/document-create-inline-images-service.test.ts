@@ -4,6 +4,7 @@ import {
   type CreateInlineImageAttachmentResponse,
   INLINE_ATTACHMENT_REF_PREFIX,
 } from "@repo/api/src/types/attachment";
+import { AuditActorType } from "@repo/api/src/types/audit";
 import { Priority } from "@repo/api/src/types/common";
 import {
   CreateDocumentErrorCode,
@@ -43,10 +44,15 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+vi.mock("../attachment-inline-image-create-service", () => ({
+  attachmentInlineImageCreateService: {
+    createInlineImageAttachment: mockCreateInlineImageAttachment,
+  },
+}));
+
 vi.mock("../attachments-service", () => ({
   DeleteAttachmentErrorCode: mockDeleteAttachmentErrorCode,
   attachmentsService: {
-    createInlineImageAttachment: mockCreateInlineImageAttachment,
     deleteAttachment: mockDeleteAttachment,
   },
 }));
@@ -138,7 +144,8 @@ describe("documentService.createWithInlineImages", () => {
       USER_ID,
       makeCreateInput(
         "Before [[first]] between [[second]] repeat [[first]] after"
-      )
+      ),
+      undefined
     );
     expect(mockDocumentDetailFindFirst).toHaveBeenCalledWith({
       select: { artifactId: true },
@@ -244,7 +251,10 @@ describe("documentService.createWithInlineImages", () => {
     expect(createSpy).toHaveBeenCalled();
     expect(mockDeleteAttachment).not.toHaveBeenCalled();
     expect(mockDocumentVersionUpdateMany).not.toHaveBeenCalled();
-    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID);
+    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID, {
+      actorType: AuditActorType.System,
+      actorId: null,
+    });
   });
 
   it("cleans up created attachments before deleting the document when a later upload fails", async () => {
@@ -287,7 +297,10 @@ describe("documentService.createWithInlineImages", () => {
       USER_ID,
       "attachment-1"
     );
-    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID);
+    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID, {
+      actorType: AuditActorType.System,
+      actorId: null,
+    });
     expect(mockDeleteAttachment.mock.invocationCallOrder[0]).toBeLessThan(
       deleteSpy.mock.invocationCallOrder[0]
     );
@@ -427,7 +440,10 @@ describe("documentService.createWithInlineImages", () => {
       USER_ID,
       "attachment-2"
     );
-    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID);
+    expect(deleteSpy).toHaveBeenCalledWith(DOCUMENT_ID, ORGANIZATION_ID, {
+      actorType: AuditActorType.System,
+      actorId: null,
+    });
     expect(mockDeleteAttachment.mock.invocationCallOrder[1]).toBeLessThan(
       deleteSpy.mock.invocationCallOrder[0]
     );

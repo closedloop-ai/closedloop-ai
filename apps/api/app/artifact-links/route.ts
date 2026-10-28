@@ -1,6 +1,21 @@
 import { type ArtifactLink, LinkQueryMode } from "@repo/api/src/types/artifact";
+import {
+  OperationKind,
+  OperationReceiptOutcome,
+} from "@repo/api/src/types/attribution-evidence";
+import type { NextRequest } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import type {
+  AuthContext,
+  AuthenticatedJsonResponse,
+  RouteContext,
+} from "@/lib/auth/with-auth";
 import { resolveArtifactIdentifier } from "@/lib/identifier-utils";
+import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   errorResponse,
   notFoundResponse,
@@ -8,6 +23,8 @@ import {
   parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
+import { createArtifactLinkFailureResponse } from "./link-error-responses";
+import { readLinkWriteAttributionEvidence } from "./link-implementation-evidence";
 import { artifactLinksService } from "./service";
 import {
   createArtifactLinkValidator,
@@ -61,42 +78,64 @@ export const GET = withAnyAuth<ArtifactLink[], "/artifact-links">(
 );
 
 export const POST = withAnyAuth<ArtifactLink, "/artifact-links">(
-  async ({ user }, request) => {
-    try {
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        createArtifactLinkValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
+  withOperationReceipts(OperationKind.LinkCreate, createLinkResponse),
+  { requiredScopes: ["write"] }
+);
 
-      const resolvedSourceId = await resolveArtifactIdentifier(
-        body.sourceId,
-        user.organizationId
-      );
-      if (!resolvedSourceId) {
-        return notFoundResponse("Source artifact");
-      }
-      const resolvedTargetId = await resolveArtifactIdentifier(
-        body.targetId,
-        user.organizationId
-      );
-      if (!resolvedTargetId) {
-        return notFoundResponse("Target artifact");
-      }
+async function createLinkResponse(
+  { user }: AuthContext,
+  request: NextRequest,
+  _params: RouteContext<"/artifact-links">["params"],
+  receipts: OperationReceiptRecorder
+): Promise<AuthenticatedJsonResponse<ArtifactLink>> {
+  try {
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createArtifactLinkValidator
+    );
+    if (parseError) {
+      return parseError;
+    }
 
-      const link = await artifactLinksService.createLink(user.organizationId, {
+    const resolvedSourceId = await resolveArtifactIdentifier(
+      body.sourceId,
+      user.organizationId
+    );
+    if (!resolvedSourceId) {
+      return notFoundResponse("Source artifact");
+    }
+    const resolvedTargetId = await resolveArtifactIdentifier(
+      body.targetId,
+      user.organizationId
+    );
+    if (!resolvedTargetId) {
+      return notFoundResponse("Target artifact");
+    }
+
+    await readLinkWriteAttributionEvidence(user.organizationId, body.linkType);
+    const result = await artifactLinksService.createLink(
+      user.organizationId,
+      {
         linkType: body.linkType,
         metadata: body.metadata,
         sourceId: resolvedSourceId,
         targetId: resolvedTargetId,
-      });
-
-      return successResponse(link);
-    } catch (error) {
-      return errorResponse("Failed to create artifact link", error);
+      },
+      receipts.whenRecording<ArtifactLink>((tx, link) =>
+        receipts.record(tx, {
+          operationKind: OperationKind.LinkCreate,
+          outcome: OperationReceiptOutcome.Committed,
+          targetArtifactId: resolvedSourceId,
+          linkId: link.id,
+        })
+      )
+    );
+    if (!result.ok) {
+      return createArtifactLinkFailureResponse(result.error);
     }
-  },
-  { requiredScopes: ["write"] }
-);
+
+    return successResponse(withOperationReceipt(result.value, receipts));
+  } catch (error) {
+    return errorResponse("Failed to create artifact link", error);
+  }
+}

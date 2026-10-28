@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import type { PackInstallRunEndInput } from "../src/main/packs/catalog-store.js";
 import {
@@ -38,6 +38,10 @@ import {
   StreamRunErrorCode,
 } from "../src/shared/install-run-contract.js";
 import { makeCatalogEntry } from "./support/catalog-entry-fixture.js";
+import {
+  FAKE_RUN_ID,
+  makeStreamRunFakeDb,
+} from "./support/stream-run-db-fixture.js";
 
 const tempDirs: string[] = [];
 
@@ -216,10 +220,9 @@ describe("resolveAutoCommand — ISS-5027 sentinel resolution", () => {
   });
 
   test("resolves on a Cursor-only machine instead of reporting ENOCLI", () => {
-    // The catalog already lists cursor/opencode install commands
-    // (`closedloop-web-command-pack`), so a harness the CLI probe does not know
-    // reads as "not installed" and takes the whole pack down to ENOCLI on a
-    // machine that in fact has the harness.
+    // A catalog entry can list cursor/opencode install commands, so a harness
+    // the CLI probe does not know reads as "not installed" and takes the whole
+    // pack down to ENOCLI on a machine that in fact has the harness.
     const binDir = makeBinDir(["cursor"]);
     const entry = makeFourHarnessEntry();
 
@@ -327,7 +330,7 @@ describe("streamRun — ISS-5027 end-to-end start for a non-single_install pack"
     const entry = makeCatalogEntry({
       installCommands: { claude: `touch ${marker}` },
     });
-    const db = makeFakeDb(entry);
+    const db = makeStreamRunFakeDb(entry);
 
     const result = await withPath(binDir, () =>
       streamRun(db, {
@@ -362,14 +365,14 @@ describe("streamRun — ISS-6164 db-host bounce during the run-end write", () =>
     // app. Only driving the real `streamRun` can catch that.
     const binDir = makeBinDir(["claude"]);
     const entry = makeCatalogEntry({ installCommands: { claude: "true" } });
-    const db = makeFakeDb(entry);
+    const db = makeStreamRunFakeDb(entry);
     // Exactly what the db-host proxy mints when the child dies under an op.
     db.recordPackInstallRunEnd = () =>
       Promise.reject(new DbHostExitError(0, true, "db-host exited (code: 0)"));
 
     const warnings: string[] = [];
     // The patched callback IS the seam the effect lands on, so it settles the
-    // wait directly (@wongk) rather than a poller re-reading `warnings` on a
+    // wait directly (@whitlockk) rather than a poller re-reading `warnings` on a
     // wall-clock interval.
     const dropped = createDeferred();
     const originalWarn = gatewayLog.warn.bind(gatewayLog);
@@ -411,7 +414,7 @@ describe("streamRun — ISS-6164 db-host bounce during the run-end write", () =>
     // `ended_at` null for good, which is what wedged the pack.
     const binDir = makeBinDir(["claude"]);
     const entry = makeCatalogEntry({ installCommands: { claude: "true" } });
-    const db = makeFakeDb(entry);
+    const db = makeStreamRunFakeDb(entry);
     const endCalls: PackInstallRunEndInput[] = [];
     const redriven = createDeferred();
     db.recordPackInstallRunEnd = (
@@ -454,7 +457,7 @@ describe("streamRun — ISS-6164 db-host bounce during the run-end write", () =>
     // in-flight and every later install/uninstall of the pack was rejected.
     const binDir = makeBinDir(["claude"]);
     const entry = makeCatalogEntry({ installCommands: { claude: "true" } });
-    const db = makeFakeDb(entry);
+    const db = makeStreamRunFakeDb(entry);
     db.openRun = {
       command: "true",
       harness: "claude",
@@ -491,7 +494,7 @@ describe("streamRun — ISS-6164 db-host bounce during the run-end write", () =>
         claude: `while [ ! -f ${gate} ]; do sleep 0.05; done`,
       },
     });
-    const db = makeFakeDb(entry);
+    const db = makeStreamRunFakeDb(entry);
     const ended = createDeferred();
     db.recordPackInstallRunEnd = () => {
       ended.resolve();
@@ -531,7 +534,7 @@ const DROPPED_WRITE_LINE = /dropped by a db-host lifecycle event/;
  * A one-shot promise plus the callback that settles it.
  *
  * Each wait below already patches the exact seam its effect lands on — the
- * gateway logger, the run-end write — so the effect RESOLVES the wait (@wongk)
+ * gateway logger, the run-end write — so the effect RESOLVES the wait (@whitlockk)
  * instead of a poller re-reading a variable on a wall-clock interval. Nothing
  * here bounds the wait: the test's own `timeout` option does, so a signal that
  * never arrives fails as a timeout naming the test rather than as a generic
@@ -545,80 +548,8 @@ function createDeferred(): { resolve: () => void; settled: Promise<void> } {
   return { resolve, settled };
 }
 
-const FAKE_RUN_ID = 7;
 /** A run id this process never spawned — the orphan a lost completion leaves. */
 const ORPHAN_RUN_ID = 4242;
-
-/** The newest open `pack_install_runs` row, as `inFlightInstallRun` reads it. */
-type FakeOpenRun = {
-  command: string | null;
-  harness: string | null;
-  id: number;
-  startedAt: string;
-};
-
-type FakeDb = Parameters<typeof streamRun>[0] & {
-  /** What the concurrency guard's lookup returns; `null` means no open run. */
-  openRun: FakeOpenRun | null;
-  startedCommands: string[];
-};
-
-/**
- * Minimal `streamRun` database double. `getCatalog` reads the catalog through
- * `$queryRawUnsafe` and maps a snake_case row, so the double returns that row
- * shape rather than a `CatalogEntry`.
- */
-function makeFakeDb(entry: ReturnType<typeof makeCatalogEntry>): FakeDb {
-  const startedCommands: string[] = [];
-  const row = {
-    category: entry.category,
-    contents: null,
-    contents_cache: null,
-    description: entry.description,
-    description_live: entry.descriptionLive,
-    detection_patterns: null,
-    display_name: entry.displayName,
-    forks: null,
-    github_url: entry.githubUrl,
-    harness_agnostic: 0,
-    harnesses: JSON.stringify(entry.harnesses),
-    install_commands: JSON.stringify(entry.installCommands),
-    install_notes: null,
-    installed_harnesses: null,
-    installed_skill_count: 0,
-    last_release: null,
-    marketplace_url: null,
-    pack_id: entry.packId,
-    pin_order: null,
-    placeholder_reason: null,
-    post_install: null,
-    project_scoped: 0,
-    readme_excerpt: null,
-    seed_version: 1,
-    single_install: entry.singleInstall ? 1 : 0,
-    stars: null,
-    uninstall_commands: JSON.stringify(entry.uninstallCommands),
-    verified: 1,
-  };
-
-  const db = {
-    openRun: null,
-    prisma: {
-      client: {
-        $queryRawUnsafe: () => Promise.resolve([row]),
-        packCatalogHistory: { findMany: () => Promise.resolve([]) },
-        packInstallRun: { findFirst: () => Promise.resolve(db.openRun) },
-      },
-    },
-    recordPackInstallRunEnd: () => Promise.resolve(),
-    recordPackInstallRunStart: (input: { command: string }) => {
-      startedCommands.push(input.command);
-      return Promise.resolve(FAKE_RUN_ID);
-    },
-    startedCommands,
-  } as unknown as FakeDb;
-  return db;
-}
 
 /**
  * Pin the resolved shell PATH to `binDir` for the duration of `fn`. `streamRun`
@@ -681,6 +612,6 @@ function makeFourHarnessEntry(): ReturnType<typeof makeCatalogEntry> {
       cursor: "install for cursor",
       opencode: "install for opencode",
     },
-    packId: "closedloop-web-command-pack",
+    packId: "four-harness-pack",
   });
 }

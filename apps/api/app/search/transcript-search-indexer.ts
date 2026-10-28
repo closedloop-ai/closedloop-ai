@@ -26,12 +26,13 @@ import {
   boundSearchText,
   MAX_SEARCH_BODY_CHARS,
 } from "@repo/api/src/types/search";
-import { getTranscriptObjectBytesRange } from "@repo/aws";
+import { getTranscriptObjectBytesRange } from "@repo/aws/transcript-storage";
 import { withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { MAIN_FILE_KEY } from "@/app/agent-sessions/transcript-availability";
+import { IndexKeyOrigin, resolveByAnyIndexKey } from "@/lib/index-key-lookup";
 import {
   agentSessionProjection,
   searchIndexService,
@@ -53,7 +54,33 @@ export type TranscriptIndexInput = {
   computeTargetId: string;
   externalSessionId: string;
   fileKey: string;
+  /**
+   * ISS-8125: where `externalSessionId` came from, because the two origins need
+   * DIFFERENT candidate sets and neither works for the other.
+   *
+   * `"wire"` (the default, and what `complete/route.ts` sends) is a raw desktop
+   * value that has never been through a column, so it is projected to find the
+   * rows. `"stored"` is a value read back OUT of an indexed column — what
+   * `scripts/backfill-transcript-search.ts` pages over — and projecting THAT
+   * digests the projection rather than the original session id, landing on a key
+   * no table holds. The sweep then indexes nothing for exactly the sessions
+   * whose id had to be bound, silently.
+   *
+   * Explicit rather than sniffed from the value's shape: `indexKeyCandidates`
+   * deliberately withholds the raw form from a projected-shaped WIRE value
+   * (ISS-8254 — that is a replayed capture), so shape alone cannot tell the two
+   * origins apart, and guessing would relax that guard.
+   */
+  identityOrigin?: TranscriptIdentityOrigin;
 };
+
+/** Whether an `externalSessionId` arrived off the wire or out of a column. */
+export const TranscriptIdentityOrigin = {
+  Stored: "stored",
+  Wire: "wire",
+} as const;
+export type TranscriptIdentityOrigin =
+  (typeof TranscriptIdentityOrigin)[keyof typeof TranscriptIdentityOrigin];
 
 /** Injectable S3 read seam so unit tests never hit real S3. */
 export type TranscriptSearchIndexDeps = {
@@ -145,6 +172,7 @@ async function indexTranscript(
       title: session.title,
       body,
       userId: session.userId,
+      priority: session.priority,
       updatedAt: session.updatedAt,
     })
   );
@@ -155,6 +183,7 @@ type IndexableSession = {
   artifactId: string;
   title: string;
   userId: string | null;
+  priority: string | null;
   updatedAt: Date;
   searchIncludeTranscripts: boolean;
   /** Storage key of the verified MAIN transcript, or null when not readable. */
@@ -175,47 +204,100 @@ function loadIndexableSession(
   input: TranscriptIndexInput
 ): Promise<IndexableSession | null> {
   return withDb(async (db) => {
-    const session = await db.sessionDetail.findFirst({
-      where: {
-        computeTargetId: input.computeTargetId,
-        externalSessionId: input.externalSessionId,
-        artifact: { is: { organizationId: input.organizationId } },
-      },
-      select: {
-        artifactId: true,
-        artifact: {
-          select: {
-            name: true,
-            assigneeId: true,
-            updatedAt: true,
-            organization: { select: { searchIncludeTranscripts: true } },
+    // ISS-8125 (review, davetho): `complete/route.ts` hands this the RAW wire
+    // identity, but both tables below store `externalSessionId` PROJECTED — at
+    // the same `INDEX_KEY_MAX_BYTES`, since it is one session identity carried
+    // by two tables. An exact raw match therefore finds neither for a long id,
+    // and the upload returns `Uploaded` while the search document is silently
+    // skipped.
+    //
+    // ISS-8200 (review, davetho): resolved through the SHARED ORDERED probe,
+    // not two independent `in` lists. An `in` list picks between a legacy raw
+    // row and its projected sibling unordered, and these are two separate
+    // statements — so the pair could disagree and pair one row's session
+    // metadata with the other row's transcript. `resolveByAnyIndexKey` walks the
+    // candidates projected-first on BOTH reads, which is the precedence every
+    // write since ISS-8069 lands on, so the two cannot diverge. The second probe
+    // is reached only when the byte budget actually bound, so ordinary traffic
+    // still issues exactly one lookup per table.
+    const origin = indexKeyOriginFor(input);
+    const session = await resolveByAnyIndexKey(
+      input.externalSessionId,
+      (candidate) =>
+        db.sessionDetail.findFirst({
+          where: {
+            computeTargetId: input.computeTargetId,
+            externalSessionId: candidate,
+            artifact: { is: { organizationId: input.organizationId } },
           },
-        },
-      },
-    });
+          select: {
+            artifactId: true,
+            // ISS-8717: the owner's rename. Selected here for the same reason
+            // the Sessions list/detail projection prefers it — `artifact.name`
+            // is the collector's channel and every ingest rewrites it, so
+            // indexing it alone would title a renamed session with the
+            // placeholder and make search contradict the surface the rename was
+            // made on.
+            nameOverride: true,
+            artifact: {
+              select: {
+                name: true,
+                assigneeId: true,
+                priority: true,
+                updatedAt: true,
+                organization: { select: { searchIncludeTranscripts: true } },
+              },
+            },
+          },
+        }),
+      origin
+    );
     if (session === null) {
       return null;
     }
 
-    const transcript = await db.sessionTranscript.findFirst({
-      where: {
-        organizationId: input.organizationId,
-        computeTargetId: input.computeTargetId,
-        externalSessionId: input.externalSessionId,
-        fileKey: MAIN_FILE_KEY,
-        uploadStatus: TranscriptUploadStatus.Uploaded,
-      },
-      select: { objectStorageKey: true },
-    });
+    const transcript = await resolveByAnyIndexKey(
+      input.externalSessionId,
+      (candidate) =>
+        db.sessionTranscript.findFirst({
+          where: {
+            organizationId: input.organizationId,
+            computeTargetId: input.computeTargetId,
+            externalSessionId: candidate,
+            fileKey: MAIN_FILE_KEY,
+            uploadStatus: TranscriptUploadStatus.Uploaded,
+          },
+          select: { objectStorageKey: true },
+        }),
+      origin
+    );
 
+    const detail = session.record;
     return {
-      artifactId: session.artifactId,
-      title: session.artifact.name,
-      userId: session.artifact.assigneeId,
-      updatedAt: session.artifact.updatedAt,
+      artifactId: detail.artifactId,
+      title: detail.nameOverride ?? detail.artifact.name,
+      userId: detail.artifact.assigneeId,
+      priority: detail.artifact.priority,
+      updatedAt: detail.artifact.updatedAt,
       searchIncludeTranscripts:
-        session.artifact.organization.searchIncludeTranscripts,
-      objectStorageKey: transcript?.objectStorageKey ?? null,
+        detail.artifact.organization.searchIncludeTranscripts,
+      objectStorageKey: transcript?.record.objectStorageKey ?? null,
     };
   });
+}
+
+/**
+ * ISS-8125: which candidate rule the ordered probe walks, chosen by where the
+ * caller's `externalSessionId` came from.
+ *
+ * A stored value is offered as itself — re-projecting it would digest the
+ * projection instead of the session id — while a wire value is projected, and
+ * only that branch keeps the ISS-8254 rule that a projected-shaped WIRE value
+ * never gets its raw form back.
+ */
+function indexKeyOriginFor(input: TranscriptIndexInput): IndexKeyOrigin {
+  if (input.identityOrigin === TranscriptIdentityOrigin.Stored) {
+    return IndexKeyOrigin.Stored;
+  }
+  return IndexKeyOrigin.Wire;
 }

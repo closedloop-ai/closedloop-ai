@@ -15,9 +15,9 @@ const SectionCanvas = () => (
 );
 
 const meta = {
-  title: "Design System/Layout/Section",
+  title: "Primitives v1.0/Layout/Section",
   component: SectionCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SectionCanvas>;
 

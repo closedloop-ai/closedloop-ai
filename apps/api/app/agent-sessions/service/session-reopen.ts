@@ -1,5 +1,5 @@
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   normalizeSessionStatus,
   SESSION_STATUS,
   type SessionStatus,
@@ -78,7 +78,7 @@ export type ReopenAction = {
  * stale retry that only advances `startedAt` (no new events) would move the
  * floor past `sessionEndedAt` and falsely reopen.
  *
- * A FAILED run is reopenable (Chris, 2026-08-16). It previously was not, on the
+ * A FAILED run is reopenable (Cosimo, 2026-08-16). It previously was not, on the
  * stated grounds that this "mirrors the desktop `maybeReactivate`, which never
  * revives a failed run" — and that was simply untrue of the code it named.
  * `maybeReactivate` (`apps/desktop/src/main/database/live-hook.ts`) reads:
@@ -102,11 +102,25 @@ export type ReopenAction = {
  * spelling is refused even though the fold would call it live. Folding it would
  * let any unrecognised word resurrect a finished run, clear its
  * `session_ended_at`, and restart its duration. See the call site in
- * `upsert-session-slice.ts` for the full argument; do not "simplify" it.
+ * `session-slice-children.ts` for the full argument; do not "simplify" it.
  */
 export function shouldReopenSession(input: ReopenInput): boolean {
-  // No stored row, nothing to reopen. Also the create arm, where `existing` is
-  // undefined and a reopen is meaningless by definition.
+  // No stored row, nothing to reopen — which is every GENUINE create, where the
+  // caller's `existing` read came back empty.
+  //
+  // ISS-8604: it is NOT "the create arm", and an earlier version of this comment
+  // said so. Which arm the upsert takes is the DATABASE's decision, and a sweep
+  // committing between the caller's read and its write lands on the create arm
+  // while `existing` still holds the swept row — so `persistedStatus` can be a
+  // terminal status belonging to a row that no longer exists, and this predicate
+  // then passes for a row the same apply has just created. What that reopen
+  // writes is a status it folds itself, plus a `session_ended_at` clear and an
+  // awaiting anchor synthesized from `maxEventCreatedAt`; the created row is
+  // already non-terminal (`shouldReopenSession` requires an `active`/`waiting`
+  // incoming status, and ISS-8552 forbids the create arm from asserting an end
+  // its status denies), so the write is redundant rather than corrupting. It is
+  // left alone deliberately: making the predicate arm-aware needs the same
+  // post-upsert phase split as the freshness-suppressed columns (ISS-8619).
   if (input.persistedStatus == null) {
     return false;
   }
@@ -123,9 +137,18 @@ export function shouldReopenSession(input: ReopenInput): boolean {
   // rejecting it would strand that run pinned terminal. This is an INPUT
   // tolerance only; `maybeReopenTerminalSession` folds the value before it is
   // persisted, because `waiting` is never a stored status.
+  //
+  // ISS-10364 deliberately leaves this comparison's SHAPE alone. Re-keying it
+  // onto `normalizeSessionStatus` would WIDEN the gate — every unrecognized
+  // spelling fails open to ACTIVE, so `completed` would start reopening a
+  // terminal run, which no ruling asked for. Re-keying it onto
+  // `awaitingInputSince` would NARROW it instead, because the payload this
+  // tolerance exists for is precisely the one carrying the word and no
+  // timestamp. The enum member it used to compare against is gone — see
+  // `LEGACY_WAITING_WIRE_STATUS`.
   if (
     input.incomingStatus !== SESSION_STATUS.ACTIVE &&
-    input.incomingStatus !== DISPLAYED_SESSION_STATUS.WAITING
+    input.incomingStatus !== LEGACY_WAITING_WIRE_STATUS
   ) {
     return false;
   }
@@ -173,13 +196,14 @@ export async function maybeReopenTerminalSession(
   await tx.artifact.update({
     where: { id: action.artifactId },
     data: { status: normalizeSessionStatus(action.incomingStatus) },
+    select: { id: true },
   });
   await tx.sessionDetail.update({
     where: { artifactId: action.artifactId },
     data: {
       sessionEndedAt: null,
       // Cleared as the row comes back to life, and REQUIRED now that a failed
-      // run is reopenable (Chris, 2026-08-16). The schema states the hazard:
+      // run is reopenable (Cosimo, 2026-08-16). The schema states the hazard:
       // the stale-session reaper reads this flag "to declare an orphaned
       // still-active session ERROR vs INACTIVE without re-deriving from
       // events". Left set, a reopened error session that later goes quiet is
@@ -203,6 +227,7 @@ export async function maybeReopenTerminalSession(
       endsWithError: null,
       awaitingInputSince: resolveReopenAwaitingInputSince(input, action),
     },
+    select: { artifactId: true },
   });
 }
 
@@ -210,7 +235,7 @@ export async function maybeReopenTerminalSession(
  * The `awaitingInputSince` value a reopen writes — the awaiting-input signal in
  * its ONLY persisted form, now that `waiting` is never a stored status.
  *
- * ISS-5974 (wongk, #4810): folding the status without this is a silent data
+ * ISS-5974 (whitlockk, #4810): folding the status without this is a silent data
  * loss. The wire schema declares `awaitingInputSince` as
  * `.nullable().optional()` (`desktop-agent-sessions-schema.ts`), so a
  * version-skewed desktop build can send `waiting` carrying NO timestamp — and
@@ -245,7 +270,7 @@ function resolveReopenAwaitingInputSince(
   if (action.incomingAwaitingInputSince) {
     return action.incomingAwaitingInputSince;
   }
-  if (action.incomingStatus !== DISPLAYED_SESSION_STATUS.WAITING) {
+  if (action.incomingStatus !== LEGACY_WAITING_WIRE_STATUS) {
     return null;
   }
   return input.maxEventCreatedAt;

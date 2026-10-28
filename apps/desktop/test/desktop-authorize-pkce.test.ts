@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   DESKTOP_PKCE_CODE_CHALLENGE_METHOD,
   generateDesktopPkce,

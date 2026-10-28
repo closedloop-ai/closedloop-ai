@@ -33,12 +33,14 @@
  * rejects a parse with any error as a 400.
  */
 
+import { Priority } from "./common.ts";
+import { isPriority } from "./priority-contract.ts";
 import {
   isSupportedSearchType,
-  PHASE_1_SEARCH_ENTITY_TYPES,
+  OFFERED_SEARCH_ENTITY_TYPES,
   type SearchEntityType,
-} from "./search-entity-kind";
-import { SLUG_LOOKUP_PREFIXES } from "./slug-prefix";
+} from "./search-entity-kind.ts";
+import { SLUG_LOOKUP_PREFIXES } from "./slug-prefix.ts";
 
 /**
  * The comparison operators a structured filter can carry. A small const-object
@@ -73,26 +75,64 @@ export type SearchFilterKey =
  * so the SQL builder in the query service maps a projected `priority` TEXT
  * column to the same ordinal (a CASE expression) and the two cannot drift.
  */
-export const PRIORITY_ORDINAL: Record<string, number> = {
-  LOW: 0,
-  MEDIUM: 1,
-  HIGH: 2,
-  URGENT: 3,
+export const PRIORITY_ORDINAL: Readonly<Record<Priority, number>> = {
+  [Priority.Low]: 0,
+  [Priority.Medium]: 1,
+  [Priority.High]: 2,
+  [Priority.Urgent]: 3,
 };
 
-/** The canonical priority members, low→high, for the typeahead value set. */
-export const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
+/**
+ * The ordinal for an unvalidated token, or `undefined` when it names no member.
+ * The only sanctioned way to read {@link PRIORITY_ORDINAL} with a wire string:
+ * the map was keyed by `string`, so a member added to {@link Priority} lost its
+ * ordinal silently — `:priority>=x` would reject a value artifacts legitimately
+ * hold, and the SQL CASE would map that value to NULL.
+ */
+export function priorityOrdinal(value: string): number | undefined {
+  return isPriority(value) ? PRIORITY_ORDINAL[value] : undefined;
+}
 
 /**
- * The full set of status strings a `:status` filter accepts — the union of
- * every status vocabulary the projection stores (Feature, Document, Project,
- * Loop). The projection's `status` TEXT column carries the raw source value, so
- * a `:status=TODO` matches whatever rows persisted that literal regardless of
- * which entity type produced it. Kept as a flat set so the parser can validate
- * a value without importing the four separate enums (and their transitive
- * deps).
+ * The canonical priority members, low→high, for the typeahead value set.
+ *
+ * DERIVED from the exhaustive ordinal map, never hand-listed: a member added to
+ * {@link Priority} is forced into that map by `tsc` and reaches the typeahead
+ * for free. A spelled-out array is a side inventory — it would compile while
+ * short, and the typeahead would quietly stop offering a value the parser
+ * accepts. Sorted by ordinal rather than trusting the map's declaration order.
  */
-export const STATUS_VALUES = [
+export const PRIORITY_VALUES: readonly Priority[] = Object.keys(
+  PRIORITY_ORDINAL
+)
+  .filter(isPriority)
+  .sort((left, right) => PRIORITY_ORDINAL[left] - PRIORITY_ORDINAL[right]);
+
+/**
+ * The token that queries artifacts with NO priority (ISS-9665). Deliberately
+ * NOT a member of {@link PRIORITY_ORDINAL} — it has no ordinal, so it can only
+ * ever be compared for equality, and putting it in that map would let a `>=`
+ * silently order it against real priorities.
+ */
+export const PRIORITY_UNSET_VALUE = "NONE" as const;
+
+/** The two arms {@link PriorityFilter} discriminates on. */
+export const PriorityFilterKind = {
+  Ordinal: "ordinal",
+  Unset: "unset",
+} as const;
+export type PriorityFilterKind =
+  (typeof PriorityFilterKind)[keyof typeof PriorityFilterKind];
+
+/**
+ * The status strings the typeahead offers after `status:`: every status
+ * vocabulary a surviving projection stores (Feature, Document, Project). The
+ * projection's `status` TEXT column carries the raw source value, so a
+ * `:status=TODO` matches whatever rows persisted that literal regardless of
+ * which entity type produced it. Kept as a flat set so the parser can validate
+ * a value without importing the separate enums (and their transitive deps).
+ */
+export const OFFERED_STATUS_VALUES = [
   // IssueStatus
   "TRIAGE",
   "BACKLOG",
@@ -112,13 +152,24 @@ export const STATUS_VALUES = [
   "NOT_STARTED",
   "COMPLETED",
   "ARCHIVED",
-  // LoopStatus
+] as const;
+
+// Loop statuses. No loop row remains after ISS-12435; still accepted so a saved
+// `status:` query that names one parses instead of failing with a 400, but
+// never offered (PRD-795 3.4).
+export const RETIRED_LOOP_STATUS_VALUES = [
   "PENDING",
   "CLAIMED",
   "RUNNING",
   "FAILED",
   "CANCELLED",
   "TIMED_OUT",
+] as const;
+
+/** The full set of status strings a `:status` filter accepts. */
+export const STATUS_VALUES = [
+  ...OFFERED_STATUS_VALUES,
+  ...RETIRED_LOOP_STATUS_VALUES,
 ] as const;
 
 /** A single owner mention token (the raw `@handle` text, sans `@`). */
@@ -141,12 +192,36 @@ export type StatusFilter = {
   value: string;
 };
 
-/** A `:priority` filter: any comparison operator, compared by ordinal. */
-export type PriorityFilter = {
-  operator: SearchFilterOperator;
-  /** Normalized upper-case priority member (a key of {@link PRIORITY_ORDINAL}). */
-  value: string;
-};
+/**
+ * A `:priority` filter.
+ *
+ * ISS-9665 split this into two arms because "unset" is not a point on the
+ * LOW<MEDIUM<HIGH<URGENT line and cannot be expressed as one. The ordinal arm is
+ * the original comparison; the `unset` arm resolves to a NULL test, so
+ * `priority:none` finds the artifacts that have no priority — previously
+ * unqueryable, because the projection's NULL is excluded by every ordinal
+ * comparison including `!=`. Making it a discriminated union rather than a
+ * reserved `value` string is deliberate: a consumer that has not been taught the
+ * new arm fails `tsc` instead of silently ordinal-comparing the sentinel.
+ */
+export type PriorityFilter =
+  | {
+      kind: typeof PriorityFilterKind.Ordinal;
+      operator: SearchFilterOperator;
+      /**
+       * A priority member, normalized to upper case. Typed as {@link Priority}
+       * rather than `string` so the claim is the compiler's, not a comment's —
+       * the arm cannot be constructed from an unvalidated token.
+       */
+      value: Priority;
+    }
+  | {
+      kind: typeof PriorityFilterKind.Unset;
+      /** Equality only — `none` and `!=none` are the whole vocabulary. */
+      operator:
+        | typeof SearchFilterOperator.Eq
+        | typeof SearchFilterOperator.Neq;
+    };
 
 /** A `:project` filter: equality-only; the value is a project slug OR name. */
 export type ProjectFilter = {
@@ -184,7 +259,7 @@ export type SearchFilterError = {
 };
 
 /**
- * An exact-record lookup lifted out of the raw query (FEA-3930, Mike's explicit
+ * An exact-record lookup lifted out of the raw query (FEA-3930, Marisol's explicit
  * requirement): pasting a record's ID or slug must return that exact record. A
  * token is detected as a UUID (the projection's `entity_id` format) or a known
  * slug (`FEA-####`/`PRD-####`/`PLN-####`/`PRO-####`, case-insensitive; session
@@ -411,11 +486,24 @@ function parsePriority(
   errors: SearchFilterError[]
 ): PriorityFilter | undefined {
   const normalized = value.trim().toUpperCase();
-  if (PRIORITY_ORDINAL[normalized] === undefined) {
+  if (normalized === PRIORITY_UNSET_VALUE) {
+    if (
+      operator !== SearchFilterOperator.Eq &&
+      operator !== SearchFilterOperator.Neq
+    ) {
+      errors.push({
+        token,
+        message: `:priority=${PRIORITY_UNSET_VALUE} supports ${SearchFilterOperator.Eq} and ${SearchFilterOperator.Neq} only`,
+      });
+      return;
+    }
+    return { kind: PriorityFilterKind.Unset, operator };
+  }
+  if (!isPriority(normalized)) {
     errors.push({ token, message: `Unknown priority value: ${value}` });
     return;
   }
-  return { operator, value: normalized };
+  return { kind: PriorityFilterKind.Ordinal, operator, value: normalized };
 }
 
 function parseProject(
@@ -706,9 +794,10 @@ export const SEARCH_FILTER_KEYS: SearchFilterKeyMeta[] = [
     label: "Type",
     operators: TYPE_OPERATORS,
     valueSource: SearchSuggestionSource.Static,
-    // The queryable entity-kind wire values (the machine value typed after
-    // `type:`), in corpus order. Repeatable to match more than one kind.
-    staticValues: PHASE_1_SEARCH_ENTITY_TYPES,
+    // The offered entity-kind wire values (the machine value typed after
+    // `type:`), in corpus order. Repeatable to match more than one kind. The
+    // parser still accepts the retired `loop` (`isSupportedSearchType`).
+    staticValues: OFFERED_SEARCH_ENTITY_TYPES,
   },
   {
     prefix: OWNER_PREFIX,
@@ -724,7 +813,7 @@ export const SEARCH_FILTER_KEYS: SearchFilterKeyMeta[] = [
     label: "Status",
     operators: STATUS_OPERATORS,
     valueSource: SearchSuggestionSource.Static,
-    staticValues: STATUS_VALUES,
+    staticValues: OFFERED_STATUS_VALUES,
   },
   {
     prefix: `${SearchFilterKey.Priority}:`,

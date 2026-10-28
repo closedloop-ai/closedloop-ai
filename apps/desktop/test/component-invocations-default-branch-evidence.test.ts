@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import test from "node:test";
+import { test } from "vitest";
 import {
   makeInvocationSyncDir,
   NOW,
@@ -14,7 +14,7 @@ import {
 import { staleRebuildFromStoredRows } from "./helpers/stored-rebuild.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 
-const REPOSITORY_FULL_NAME = "closedloop-ai/symphony-alpha";
+const REPOSITORY_FULL_NAME = "closedloop-ai/closedloop-ai";
 
 test("materialization retains a default-looking created-branch observation", async () => {
   const dir = await makeInvocationSyncDir("aci-default-branch-evidence-");

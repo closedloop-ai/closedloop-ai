@@ -55,6 +55,7 @@ export function DashboardCard({
   fixedHeightClassName,
   expandLabel,
   contentHasOwnTitle = false,
+  notice,
 }: {
   title?: string;
   description?: string;
@@ -86,6 +87,20 @@ export function DashboardCard({
    * Ignored when `title` is set (that path already implies the header is owned).
    */
   contentHasOwnTitle?: boolean;
+  /**
+   * ISS-10414: a disclosure about the content below — today, that the widget is
+   * still drawing the PREVIOUS range/scope's payload. Rendered INSIDE the
+   * `Card`, above `CardContent`, deliberately: the whole card is what
+   * `ExpandableWidget` relocates into the fullscreen dialog, so a disclosure
+   * placed outside it was simply absent from the modal while the stale numbers
+   * were not (review thread). It sits outside the `flex-1` body so a fill-mode
+   * chart's height math is unchanged, and renders nothing when omitted.
+   *
+   * It is rendered bare rather than in a padded wrapper: the notice carries its
+   * own gutter, so an always-mounted disclosure whose only resting half is
+   * `sr-only` (out of flow) costs a settled card no row of the card's `gap-6`.
+   */
+  notice?: ReactNode;
 }) {
   const widgetLabel = expandLabel ?? title;
   // The modal heading is kept sr-only whenever a VISIBLE title already renders in
@@ -109,6 +124,7 @@ export function DashboardCard({
         className
       )}
     >
+      {notice}
       {title ? (
         <CardHeader className="px-4 sm:px-6">
           <CardTitle className="min-w-0 font-semibold text-xl tracking-tight">

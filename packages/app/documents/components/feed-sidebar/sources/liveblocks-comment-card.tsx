@@ -2,6 +2,8 @@
 
 import type { ThreadData } from "@liveblocks/client";
 import { Comment, Thread } from "@liveblocks/react-ui";
+import { FOCUS_WITHIN_RING_CLASS } from "@repo/app/shared/lib/focus-within-ring";
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
 import {
   CommentThreadAnchorPreview,
   CommentThreadBanner,
@@ -10,7 +12,14 @@ import {
 import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
 import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
 import { LinkIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FocusEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useCommentPermalink } from "../comment-permalink-context";
 import { LiveblocksDsComment } from "./liveblocks-ds-comment";
 
@@ -61,6 +70,7 @@ export function LiveblocksCommentCard({
   versionLabel,
 }: Readonly<LiveblocksCommentCardProps>) {
   const [composerOpen, setComposerOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
   const [, copy] = useCopyToClipboard();
   const cardRef = useRef<HTMLDivElement | null>(null);
 
@@ -157,12 +167,24 @@ export function LiveblocksCommentCard({
     };
   }, [composerOpen]);
 
+  const onFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    setComposerFocused(isInsideComposer(event.currentTarget, event.target));
+  }, []);
+
+  const onBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    setComposerFocused(
+      isInsideComposer(event.currentTarget, event.relatedTarget)
+    );
+  }, []);
+
   return (
     <CommentThreadCard
-      className="group bg-card focus-within:ring-1 focus-within:ring-primary/40"
+      className={`group bg-card ${CHIP_FOCUS_RING_CLASS} ${composerFocused ? FOCUS_WITHIN_RING_CLASS : ""}`}
       data-thread-id={thread.id}
       interactive={false}
+      onBlur={onBlur}
       onClick={onCardClick}
+      onFocus={onFocus}
       onKeyDown={onKeyDown}
       tabIndex={composerOpen ? -1 : 0}
     >
@@ -203,3 +225,21 @@ const LIVEBLOCKS_PORTAL_SELECTOR = [
   ".lb-tooltip",
   "[data-radix-popper-content-wrapper]",
 ].join(", ");
+
+/**
+ * A Liveblocks composer (the reply, or a comment in edit mode). Liveblocks'
+ * stylesheet sets `outline: none` on the composer and its editor, so the card
+ * rings while focus is inside one. Not on any focus within the card: the card's
+ * own focus has `CHIP_FOCUS_RING_CLASS`, and the comment action buttons draw
+ * their own ring.
+ */
+const LIVEBLOCKS_COMPOSER_SELECTOR = ".lb-composer";
+
+/** Whether `node` is inside a composer in this card, not in another card's. */
+function isInsideComposer(card: HTMLElement, node: EventTarget | null) {
+  return (
+    node instanceof Element &&
+    card.contains(node) &&
+    node.closest(LIVEBLOCKS_COMPOSER_SELECTOR) !== null
+  );
+}

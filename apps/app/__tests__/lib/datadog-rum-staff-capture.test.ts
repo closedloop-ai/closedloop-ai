@@ -26,7 +26,7 @@ async function loadModules() {
 }
 
 describe("Datadog RUM staff capture", () => {
-  it("enables egress, attaches the user id, and force-starts replay", async () => {
+  it("enables egress and attaches the user id without starting replay", async () => {
     const { enableDatadogRumStaffCapture, isDatadogRumStaffCaptureEnabled } =
       await loadModules();
 
@@ -34,10 +34,11 @@ describe("Datadog RUM staff capture", () => {
 
     expect(isDatadogRumStaffCaptureEnabled()).toBe(true);
     expect(mockSetUser).toHaveBeenCalledWith({ id: "user-123" });
-    expect(mockStartReplay).toHaveBeenCalledWith({ force: true });
+    // ISS-12356(f): session replay is off for staff sessions too.
+    expect(mockStartReplay).not.toHaveBeenCalled();
   });
 
-  it("disables egress, stops replay, and clears the user", async () => {
+  it("disables egress and clears the user", async () => {
     const {
       enableDatadogRumStaffCapture,
       disableDatadogRumStaffCapture,
@@ -48,7 +49,7 @@ describe("Datadog RUM staff capture", () => {
     disableDatadogRumStaffCapture();
 
     expect(isDatadogRumStaffCaptureEnabled()).toBe(false);
-    expect(mockStopReplay).toHaveBeenCalledTimes(1);
+    expect(mockStopReplay).not.toHaveBeenCalled();
     expect(mockClearUser).toHaveBeenCalledTimes(1);
   });
 

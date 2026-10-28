@@ -1,6 +1,6 @@
 /**
  * @file optimization-analytics-hash-contract.test.ts
- * @description ISS-4403 (wongk) regression: the DETAIL RESOLVER's content-scope
+ * @description ISS-4403 (whitlockk) regression: the DETAIL RESOLVER's content-scope
  * must key off the SAME hash contract usage rows carry.
  *
  * `agent_components.content_hash` is `sha256Hex(def.content)` (raw content), and
@@ -15,23 +15,33 @@
  * This test seeds the TWO REAL PRODUCERS (raw hash on inventory, definition hash
  * on usage) — deliberately NOT the same fake hash on both fields — so the
  * producer mismatch cannot be masked. It resolves the detail by its real
- * content-hash slug and asserts the version-scoped usage is the correct non-zero
- * count and that `analyticsFingerprint` is the definition-hash (usage) value.
+ * content-hash slug and asserts `analyticsFingerprint` is the definition-hash
+ * (usage) value and never the raw one.
+ *
+ * ISS-10341 moved WHERE that contract is observable, and narrowed this file to
+ * it. The detail's `invocations`/`sessions` no longer content-scope at all —
+ * they sum the component FAMILY, the same population the list row linking to
+ * the route reports — so they can no longer witness a wrong digest, and the
+ * per-version counts this file used to assert are now the same number on both
+ * routes. `analyticsFingerprint` is the surviving content-scoped read (the
+ * optimization panel's, which labels its version in its own heading), which
+ * makes it the SOLE carrier of the ISS-4403 two-producer guard. Those
+ * assertions are unchanged and deliberately still here.
  */
 
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
 import {
   computeDefinitionHash,
   sha256Hex,
 } from "@repo/api/src/definition-fingerprint";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
+import { afterAll, test } from "vitest";
 import { getAgentComponentDetailLocal } from "../src/main/dashboard/shared-agent-components-api.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
 const openStores: Array<() => Promise<void>> = [];
-after(async () => {
+afterAll(async () => {
   for (const close of openStores) {
     await close();
   }
@@ -111,7 +121,7 @@ async function insertSessionAndUsage(
   );
 }
 
-test("getAgentComponentDetailLocal content-scopes usage by the DEFINITION hash usage rows carry, not the raw content_hash slug fingerprint", async () => {
+test("the panel scope getAgentComponentDetailLocal publishes is the DEFINITION hash usage rows carry, not the raw content_hash slug fingerprint", async () => {
   const prisma = await openScopedPrisma();
   await insertComponentWithContent(prisma, "ac-a", CONTENT_A);
   await insertComponentWithContent(prisma, "ac-b", CONTENT_B);
@@ -124,22 +134,30 @@ test("getAgentComponentDetailLocal content-scopes usage by the DEFINITION hash u
   const detailA = await getAgentComponentDetailLocal(prisma, slugA);
 
   assert.ok(detailA, "version A detail resolves by its content-hash slug");
-  // The bug: scoping by the raw slug hash matched no usage row → 0. The fix
-  // scopes by computeDefinitionHash(content) → version A's own 3 invocations.
-  assert.equal(detailA.invocations, 3);
-  assert.equal(detailA.sessions, 1);
   // analyticsFingerprint is the DEFINITION hash (what the panel must scope by),
-  // NOT the raw content_hash slug fingerprint.
+  // NOT the raw content_hash slug fingerprint. This pair IS the ISS-4403
+  // contract, and after ISS-10341 it is the only read that can witness it.
   assert.equal(detailA.analyticsFingerprint, usageHash(CONTENT_A));
   assert.notEqual(detailA.analyticsFingerprint, rawHash(CONTENT_A));
 
   const slugB = `${KIND}::${rawHash(CONTENT_B)}`;
   const detailB = await getAgentComponentDetailLocal(prisma, slugB);
   assert.ok(detailB, "version B detail resolves");
-  assert.equal(detailB.invocations, 5);
   assert.equal(detailB.analyticsFingerprint, usageHash(CONTENT_B));
-  // Distinct versions render distinct scoped counts.
-  assert.notEqual(detailA.invocations, detailB.invocations);
+  assert.notEqual(detailB.analyticsFingerprint, rawHash(CONTENT_B));
+  // Two versions of ONE name, so both routes address the same family: 3 + 5 in
+  // two sessions, on either slug. ISS-10341 — before it, these were 3/1 and
+  // 5/1, a per-version narrowing the list row at the same href contradicted.
+  // Asserted against each other as well as against the totals, so a future
+  // re-narrowing of one lane cannot pass by matching a pinned constant.
+  assert.deepEqual(
+    { invocations: detailA.invocations, sessions: detailA.sessions },
+    { invocations: 8, sessions: 2 }
+  );
+  assert.deepEqual(
+    { invocations: detailB.invocations, sessions: detailB.sessions },
+    { invocations: detailA.invocations, sessions: detailA.sessions }
+  );
 });
 
 test("a legacy name-level slug aggregates both versions and emits no analyticsFingerprint", async () => {

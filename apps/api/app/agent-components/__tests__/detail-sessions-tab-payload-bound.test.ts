@@ -18,14 +18,16 @@
 import { AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS } from "@repo/api/src/types/agent-component";
 import type * as DatabaseModule from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SESSION_DEFAULT_ORDER_BY } from "../../agent-sessions/service/session-sort-order";
+import {
+  SESSION_DEFAULT_ORDER_BY,
+  SESSION_UNIQUE_TIEBREAKER,
+} from "../../agent-sessions/service/session-sort-order";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   findMany: vi.fn(),
   findSourceArtifactsById: vi.fn(),
-  getReconciledCostsBySessionId: vi.fn(),
-  loadListTranscriptDispositions: vi.fn(),
+  loadListTranscriptVerdicts: vi.fn(),
 }));
 
 // Partial mock: only `withDb` is doubled. `agentSessionListSelect` (reached
@@ -40,11 +42,8 @@ vi.mock("@repo/database", async (importOriginal) => ({
 vi.mock("../../agent-sessions/service/query-builder", () => ({
   findSourceArtifactsById: mocks.findSourceArtifactsById,
 }));
-vi.mock("../../agent-sessions/service/cost-reconciled-reader", () => ({
-  getReconciledCostsBySessionId: mocks.getReconciledCostsBySessionId,
-}));
 vi.mock("../../agent-sessions/service/list-transcript-dispositions", () => ({
-  loadListTranscriptDispositions: mocks.loadListTranscriptDispositions,
+  loadListTranscriptVerdicts: mocks.loadListTranscriptVerdicts,
 }));
 vi.mock("../../agent-sessions/service/projections", () => ({
   toSessionListItem: (record: { artifactId: string }) => ({
@@ -57,9 +56,9 @@ import { listSessionsByArtifactIds } from "../../agent-sessions/service/list-by-
 const ORGANIZATION_ID = "00000000-0000-4000-8000-0000000000ff";
 
 /**
- * The `tool::Bash` session count from the profiling dataset. The pre-fix read shipped
- * `MAX_DETAIL_SESSION_IN_IDS` (1000) of these; the fix ships
- * `AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS` (50).
+ * The `tool::Bash` session count from the profiling dataset. The pre-fix read
+ * shipped 1,000 of these — a fan-out bound ISS-9855 has since removed; the fix
+ * ships `AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS` (50).
  */
 const HEAVY_SESSION_COUNT = 1218;
 
@@ -105,8 +104,7 @@ function installDb(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findSourceArtifactsById.mockResolvedValue(new Map());
-  mocks.getReconciledCostsBySessionId.mockResolvedValue(new Map());
-  mocks.loadListTranscriptDispositions.mockResolvedValue(new Map());
+  mocks.loadListTranscriptVerdicts.mockResolvedValue(new Map());
 });
 
 describe("ISS-5464 sessionsTab payload bound", () => {
@@ -131,22 +129,24 @@ describe("ISS-5464 sessionsTab payload bound", () => {
       AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS
     );
 
-    // `take` must ride the canonical TOTAL order, not a bare
-    // `{ lastActivityAt: "desc" }`. `lastActivityAt` is nullable and Postgres
-    // sorts DESC NULLS FIRST, so a bare column would let never-active sessions
-    // consume the whole bound; and without the tiebreakers the cut point between
-    // rows tied on `lastActivityAt` is arbitrary and run-to-run unstable once the
-    // planner takes a top-N path. Slicing the id list in the caller instead would
-    // retain an arbitrary subset entirely.
+    // `take` must ride the canonical TOTAL order, not a bare single column.
+    // ISS-6463 made `lastActivityAt` NOT NULL, which retires the nulls-first
+    // half of that reason (never-active sessions consuming the whole bound), but
+    // not the other half: without the tiebreakers the cut point between rows tied
+    // on `lastActivityAt` is arbitrary and run-to-run unstable once the planner
+    // takes a top-N path. Slicing the id list in the caller instead would retain
+    // an arbitrary subset entirely.
     expect(mocks.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: SESSION_DEFAULT_ORDER_BY,
         take: AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS,
       })
     );
-    expect(SESSION_DEFAULT_ORDER_BY[0]).toEqual({
-      lastActivityAt: { sort: "desc", nulls: "last" },
-    });
+    expect(SESSION_DEFAULT_ORDER_BY[0]).toEqual({ lastActivityAt: "desc" });
+    // The tiebreakers are what the bound actually depends on now, so pin them
+    // rather than the key count — a length check passes with any junk second key.
+    expect(SESSION_DEFAULT_ORDER_BY[1]).toEqual({ sessionStartedAt: "desc" });
+    expect(SESSION_DEFAULT_ORDER_BY.at(-1)).toEqual(SESSION_UNIQUE_TIEBREAKER);
   });
 
   it("scales the per-row enrichment with the bound, not the id list", async () => {
@@ -158,13 +158,14 @@ describe("ISS-5464 sessionsTab payload bound", () => {
       AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS
     );
 
-    // The three enrichment reads each take one entry per retained row. Before
-    // the bound they each took 1218. This is the assertion the pre-fix path
-    // fails.
-    expect(
-      mocks.getReconciledCostsBySessionId.mock.calls[0][0].sessionIds
-    ).toHaveLength(AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS);
-    expect(mocks.loadListTranscriptDispositions.mock.calls[0][1]).toHaveLength(
+    // The enrichment reads each take one entry per retained row. Before the
+    // bound they each took 1218. This is the assertion the pre-fix path fails.
+    //
+    // ISS-7176 removed a THIRD such read: this surface used to reconcile each
+    // row's cost from the per-event stream, and that read was bounded here too.
+    // The row displays `session_detail.estimated_cost`, already on the record,
+    // so there is no third read left to bound.
+    expect(mocks.loadListTranscriptVerdicts.mock.calls[0][1]).toHaveLength(
       AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS
     );
     expect(mocks.findSourceArtifactsById.mock.calls[0][1]).toHaveLength(
@@ -184,9 +185,9 @@ describe("ISS-5464 sessionsTab payload bound", () => {
     // The optimisation for the heavy case must not cost the common case: a
     // component under the bound is byte-identical to the pre-fix response.
     expect(items).toHaveLength(LIGHT_SESSION_COUNT);
-    expect(
-      mocks.getReconciledCostsBySessionId.mock.calls[0][0].sessionIds
-    ).toHaveLength(LIGHT_SESSION_COUNT);
+    expect(mocks.loadListTranscriptVerdicts.mock.calls[0][1]).toHaveLength(
+      LIGHT_SESSION_COUNT
+    );
   });
 
   it("stays unbounded when no limit is supplied", async () => {

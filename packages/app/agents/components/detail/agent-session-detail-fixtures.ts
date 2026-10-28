@@ -2,14 +2,15 @@ import {
   type ActivityBucket,
   type AgentSessionDetail,
   AgentSessionOrigin,
-  AgentSessionState,
   type SessionMarker,
   type TurnActor,
   type TurnItem,
 } from "@repo/api/src/types/agent-session";
 import { TranscriptAvailability } from "@repo/api/src/types/desktop-transcripts";
+import { SessionEvidenceCoverage } from "@repo/api/src/types/session-evidence-coverage-constants";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import type { SessionTraceItem } from "./session-trace";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import type { SessionTraceItem } from "./session-trace-groups";
 
 const BASE_TIME = "2026-06-10T12:00:00.000Z";
 
@@ -36,12 +37,11 @@ export function createAgentSessionDetailFixture(
     name: "Desktop implementation session",
     status: SESSION_STATUS.INACTIVE,
     origin: AgentSessionOrigin.DesktopSync,
-    state: AgentSessionState.Completed,
     harness: "codex",
-    cwd: "repos/symphony-alpha",
-    repositoryFullName: "closedloop-ai/symphony-alpha",
-    repo: "closedloop-ai/symphony-alpha",
-    worktreePath: "worktrees/symphony-alpha-fea-1707",
+    cwd: "repos/closedloop-ai",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
+    repo: "closedloop-ai/closedloop-ai",
+    worktreePath: "worktrees/closedloop-ai-fea-1707",
     model: "gpt-5.5",
     primaryModel: "gpt-5.5",
     models: ["gpt-5.5"],
@@ -54,6 +54,12 @@ export function createAgentSessionDetailFixture(
     waitingUser: null,
     linesAdded: 120,
     linesRemoved: 12,
+    // ISS-9964 / ISS-9980 (RULED 2026-09-11): the "Lines changed" row and the
+    // LOC/$ numerator both read MERGED authored-PR lines now, so a fixture that
+    // seeded only the local churn above rendered the not-available placeholder
+    // on both. Seeded to agree with that churn so the shipped rows read as one
+    // population rather than two numbers arguing.
+    mergedAuthoredPrLinesChanged: 120,
     filesChanged: 4,
     turns: 8,
     toolCallsTotal: 5,
@@ -128,8 +134,8 @@ export function createAgentSessionDetailFixture(
       },
     ],
     attribution: {
-      repositoryFullName: "closedloop-ai/symphony-alpha",
-      worktreePath: "worktrees/symphony-alpha-fea-1707",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
+      worktreePath: "worktrees/closedloop-ai-fea-1707",
       sourceArtifactId: "FEA-1707",
       sourceLoopId: "loop-1",
       baseBranch: "main",
@@ -140,7 +146,6 @@ export function createAgentSessionDetailFixture(
         name: "Implementation worker",
         type: "main",
         status: "completed",
-        task: "Extract the shared detail foundation.",
         currentTool: null,
         startedAt: BASE_TIME,
         updatedAt: "2026-06-10T12:18:00.000Z",
@@ -153,7 +158,6 @@ export function createAgentSessionDetailFixture(
         type: "subagent",
         subagentType: "review",
         status: "failed",
-        task: "Verify import ownership and state coverage.",
         currentTool: null,
         startedAt: "2026-06-10T12:04:00.000Z",
         updatedAt: "2026-06-10T12:12:00.000Z",
@@ -166,7 +170,6 @@ export function createAgentSessionDetailFixture(
         type: "subagent",
         subagentType: "visual",
         status: "completed",
-        task: "Capture Storybook screenshots.",
         currentTool: "playwright",
         startedAt: "2026-06-10T12:08:00.000Z",
         updatedAt: "2026-06-10T12:17:00.000Z",
@@ -207,23 +210,6 @@ export function createAgentSessionDetailFixture(
         toolName: "playwright",
         summary: "Captured desktop and mobile screenshots.",
         createdAt: "2026-06-10T12:17:00.000Z",
-      },
-    ],
-    timeline: [
-      {
-        t: "2026-06-10T12:02:00.000Z",
-        tMs: Date.parse("2026-06-10T12:02:00.000Z"),
-        kind: "tool",
-        title: "rg",
-        tl: 0,
-      },
-      {
-        t: "2026-06-10T12:12:00.000Z",
-        tMs: Date.parse("2026-06-10T12:12:00.000Z"),
-        kind: "tool",
-        title: "vitest",
-        err: true,
-        tl: 1,
       },
     ],
     turnItems: [
@@ -350,7 +336,6 @@ export const emptyAgentsAgentSessionDetailFixture =
     name: "Empty agent session",
     agents: [],
     events: [],
-    timeline: [],
     turnItems: [],
   });
 
@@ -385,7 +370,7 @@ export const longContentAgentSessionDetailFixture =
   createAgentSessionDetailFixture({
     name: "A very long shared agent session detail title that must wrap cleanly without overlapping adjacent controls",
     worktreePath:
-      "worktrees/symphony-alpha-fea-1707/packages/app/agents/components/detail/with/a/very/long/path/that/should/not/clip",
+      "worktrees/closedloop-ai-fea-1707/packages/app/agents/components/detail/with/a/very/long/path/that/should/not/clip",
     events: populatedAgentSessionDetailFixture.events.map((event) => ({
       ...event,
       summary:
@@ -404,6 +389,20 @@ export const truncatedEventsAgentSessionDetailFixture =
   createAgentSessionDetailFixture({
     name: "Truncated event stream session",
     eventsTruncated: true,
+  });
+
+/**
+ * ISS-9858: the detail read hit the stored activity-tiling ceiling, so the
+ * axis is sized from a prefix. The event stream is complete, so the strip's
+ * own "later events truncated" caption stays off and the legend line beneath
+ * the strip carries the one disclosure. Unreachable by any shipped producer
+ * (the desktop omits an over-ceiling tiling rather than sending a prefix), so
+ * this fixture is the only way to look at the state.
+ */
+export const truncatedTilingAgentSessionDetailFixture =
+  createAgentSessionDetailFixture({
+    name: "Truncated activity tiling session",
+    activitySegmentRowsTruncated: true,
   });
 
 /**
@@ -429,29 +428,27 @@ export const truncatedEventsWithTranscriptAgentSessionDetailFixture =
   });
 
 /**
- * ISS-4654: a session carrying a `state` this build has no entry for — what an
- * installed client sees once the server emits an `AgentSessionState` member
- * added after that build shipped. No such member is currently planned: the
- * `Inactive` one this used to cite was resolved as NOT NEEDED (2026-08-08).
- * The hazard is not hypothetical for that reason — it is the general
- * unversioned-wire-value case, and this fixture is what keeps the fallback
- * honest for whatever member is added next.
+ * ISS-4654: a session carrying a `status` this build has no entry for — what an
+ * installed client sees once the server emits a status value added after that
+ * build shipped. No such value is currently planned, so the hazard is the
+ * general unversioned-wire-value case rather than a specific pending member,
+ * and this fixture is what keeps the fallback honest for whatever arrives next.
  *
  * The cast is the point, and it is why this cannot be expressed without one:
  * the TYPE is the closed set this build knows, and the WIRE is not. Per the
  * repo's own carve-out, a type boundary stops at a cross-version payload.
  *
  * Shared rather than re-declared: the render test, the copy-parity test, and
- * the Storybook story all need the same skewed session, and the state string
+ * the Storybook story all need the same skewed session, and the status string
  * has to be one value or they stop describing the same scenario.
  */
-export const UNRECOGNIZED_AGENT_SESSION_STATE =
-  "INACTIVE_FROM_A_NEWER_SERVER" as AgentSessionDetail["state"];
+export const UNRECOGNIZED_AGENT_SESSION_STATUS =
+  "INACTIVE_FROM_A_NEWER_SERVER" as AgentSessionDetail["status"];
 
 export const unknownStateAgentSessionDetailFixture =
   createAgentSessionDetailFixture({
-    name: "Session in a state this build does not recognize",
-    state: UNRECOGNIZED_AGENT_SESSION_STATE,
+    name: "Session in a status this build does not recognize",
+    status: UNRECOGNIZED_AGENT_SESSION_STATUS,
   });
 
 /**
@@ -897,7 +894,7 @@ export function createSessionTraceItemsOfLength(
 }
 
 /**
- * ISS-5819 review (wongk): stamp a hand-built strip with the producer bin bounds
+ * ISS-5819 review (whitlockk): stamp a hand-built strip with the producer bin bounds
  * a real producer emits.
  *
  * The desktop collector and the web synthesizer both state the wall-clock span
@@ -923,3 +920,47 @@ export function withProducerBinBounds(
     binStartMs: window.startMs + index * binMs,
   }));
 }
+
+/**
+ * ISS-7427: the mixed-evidence session — the main transcript is terminally
+ * absent, so the trace panel says "Transcript not archived" and paints nothing,
+ * while the metadata lane still serves a full set of headline numbers. This is
+ * the shape from the reported screenshot, and the reason the trace count needs
+ * to name its own population: without the qualifier the heading reads as a
+ * description of the empty panel under it.
+ */
+export const metadataOnlyEvidenceAgentSessionDetailFixture =
+  createAgentSessionDetailFixture({
+    name: "Metrics without an archived transcript",
+    evidenceCoverage: SessionEvidenceCoverage.MetadataOnly,
+    transcripts: [
+      {
+        fileKey: "main",
+        availability: TranscriptAvailability.PermanentlyUnavailable,
+        uploadedAt: null,
+        permanentFailureReason: TranscriptSkipReason.TooLarge,
+      },
+    ],
+  });
+
+/**
+ * ISS-7427 design review: the caption-STACKING case, the counterpart to
+ * `TimelineSynthesizedCostTruncated`. A metadata-only session can ALSO be a
+ * capped read, and then the count carries both qualifiers at once — the longest
+ * string this caption has ever held. It exists so that pairing is looked at
+ * rather than reasoned about from a green assertion on a concatenation.
+ */
+export const metadataOnlyTruncatedAgentSessionDetailFixture =
+  createAgentSessionDetailFixture({
+    name: "Truncated read without an archived transcript",
+    evidenceCoverage: SessionEvidenceCoverage.MetadataOnly,
+    eventsTruncated: true,
+    transcripts: [
+      {
+        fileKey: "main",
+        availability: TranscriptAvailability.PermanentlyUnavailable,
+        uploadedAt: null,
+        permanentFailureReason: TranscriptSkipReason.TooLarge,
+      },
+    ],
+  });

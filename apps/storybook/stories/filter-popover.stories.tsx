@@ -1,10 +1,15 @@
+import { DISPLAYED_ARTIFACT_STATUS } from "@repo/api/src/types/artifact-status";
+import { ARTIFACT_STATUS_DISPLAY_LABELS } from "@repo/api/src/types/artifact-status-display";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus } from "@repo/api/src/types/document";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import type {
   DocumentTableFiltersController,
   DocumentTableFiltersState,
   DocumentTableFiltersViewModel,
 } from "@repo/app/documents/components/table/document-table-filters";
+import { ArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { documentStatusFacet } from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
 import { FilterPopover } from "@repo/design-system/components/ui/filter-popover";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
@@ -14,6 +19,7 @@ import {
   type TableFilterOption,
 } from "@repo/design-system/components/ui/table-filters";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { UserIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -25,7 +31,8 @@ const FAVORITES_ITEM = "My Favorites";
 const STATUS_SUBMENU = "Status";
 // The status rows render their option count after the label, so these match on
 // the label only rather than pinning a count that is fixture detail.
-const IN_REVIEW_ROW = /^In Review/;
+const IN_REVIEW_LABEL =
+  ARTIFACT_STATUS_DISPLAY_LABELS[DISPLAYED_ARTIFACT_STATUS.InReview];
 const DRAFT_ROW = /^Draft/;
 
 const teamMembers: User[] = [
@@ -64,19 +71,33 @@ const statusOptions: TableFilterOption<DocumentStatus>[] = [
     id: DocumentStatus.Draft,
     label: "Draft",
     count: 5,
-    icon: <StatusIcon size={16} status="draft" />,
+    content: (
+      <span className="flex min-w-0 max-w-48 items-center gap-2">
+        <ArtifactStatus
+          facet={documentStatusFacet(DocumentType.Prd, DocumentStatus.Draft)}
+          variant={ArtifactStatusVariant.FilterOption}
+        />
+        <span className="truncate text-muted-foreground text-xs">
+          with intentionally long supporting context
+        </span>
+      </span>
+    ),
   },
   {
     id: DocumentStatus.InReview,
-    label: "In Review",
+    label: IN_REVIEW_LABEL,
     count: 7,
-    icon: <StatusIcon size={16} status="active" />,
+    content: (
+      <ArtifactStatus
+        facet={documentStatusFacet(DocumentType.Prd, DocumentStatus.InReview)}
+        variant={ArtifactStatusVariant.FilterOption}
+      />
+    ),
   },
   {
     id: DocumentStatus.Approved,
     label: "Approved",
     count: 3,
-    icon: <StatusIcon size={16} status="completed" />,
   },
 ];
 
@@ -85,19 +106,16 @@ const priorityOptions: TableFilterOption<Priority>[] = [
     id: Priority.Low,
     label: "Low",
     count: 2,
-    icon: <PriorityIcon priority={Priority.Low} size={16} />,
   },
   {
     id: Priority.Medium,
     label: "Medium",
     count: 4,
-    icon: <PriorityIcon priority={Priority.Medium} size={16} />,
   },
   {
     id: Priority.High,
     label: "High",
     count: 6,
-    icon: <PriorityIcon priority={Priority.High} size={16} />,
   },
 ];
 
@@ -114,7 +132,6 @@ const defaultViewModel: DocumentTableFiltersViewModel = {
       id: "__unassigned__",
       label: "Unassigned",
       count: 1,
-      icon: <UserIcon className="size-4 text-muted-foreground" />,
       searchText: "unassigned",
     },
     ...teamMembers.map((member, index) => ({
@@ -268,10 +285,16 @@ function FilterPopoverDemo({
   return <FilterPopover controller={controller} viewModel={viewModel} />;
 }
 
+/**
+ * This exercises the shared `filter-popover.tsx` champion through its classic
+ * document-table configuration. Current Grid Table list surfaces use the same
+ * component once the `gridview-adoption` flag is open; until then
+ * they render the `-v2` fork.
+ */
 const meta = {
-  title: "Design System/Primitives/Filter Popover",
+  title: "Composites v1.0/Inputs/Filter Popover",
   component: FilterPopoverDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -279,6 +302,9 @@ const meta = {
     initialState: baseState,
     viewModel: defaultViewModel,
   },
+  render: (args) => (
+    <FilterPopoverDemo key={remountKey(args.initialState)} {...args} />
+  ),
 } satisfies Meta<typeof FilterPopoverDemo>;
 
 export default meta;
@@ -462,7 +488,6 @@ function FacetFilterPopoverDemo() {
           {
             id: "status",
             label: "Status",
-            icon: <StatusIcon size={16} status="decorative" />,
             options: facetStatusOptions,
             selectedValues: statuses,
             onToggle: (value) => toggle(setStatuses, value),
@@ -470,7 +495,6 @@ function FacetFilterPopoverDemo() {
           {
             id: "owner",
             label: "Owner",
-            icon: <UserIcon className="size-4" />,
             options: facetOwnerOptions,
             selectedValues: owners,
             onToggle: (value) => toggle(setOwners, value),
@@ -484,7 +508,7 @@ function FacetFilterPopoverDemo() {
           },
           {
             id: "session",
-            label: "Linked Sessions",
+            label: "Linked sessions",
             options: facetSessionOptions,
             selectedValues: sessionPresence,
             onToggle: (value) => toggle(setSessionPresence, value),
@@ -533,7 +557,7 @@ export const StatusFacetSubmenu: Story = {
     await userEvent.click(trigger);
     await userEvent.click(await screen.findByText(STATUS_SUBMENU));
 
-    await userEvent.click(await screen.findByText(IN_REVIEW_ROW));
+    await userEvent.click(await screen.findByText(IN_REVIEW_LABEL));
     await expect(trigger.textContent).toBe("Filter1");
 
     // A second status in the SAME category is still one applied filter.

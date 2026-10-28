@@ -3,9 +3,9 @@ import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { getResolvedGitPathAsync } from "./binary-path-overrides.js";
 import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
 import { json } from "./response-utils.js";
-import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome } from "./symphony-utils.js";
 
 type WorktreeInfo = {
@@ -225,7 +225,12 @@ async function runGit(
   repoPath: string,
   args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return await processManager.exec(getResolvedGitPath(), args, repoPath, {
-    timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS,
-  });
+  return await processManager.exec(
+    await getResolvedGitPathAsync(),
+    args,
+    repoPath,
+    {
+      timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS,
+    }
+  );
 }

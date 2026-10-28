@@ -1,5 +1,6 @@
 "use client";
 
+import { useLinkedSearchWriter } from "@repo/app/shared/hooks/use-linked-search-writer";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -17,7 +18,12 @@ type UseSortParamsConfig<TColumn extends string> = {
   defaultDirection?: SortDirection;
   paramPrefix?: string;
   validColumns: readonly TColumn[];
-  persistenceKey?: string;
+  /**
+   * Where the sort is persisted. Omit — or pass `null` (ISS-9726: the active
+   * organization has not resolved) — to keep the sort in the URL and memory
+   * only. Both already take the same branch below.
+   */
+  persistenceKey?: string | null;
 };
 
 type UseSortParamsResult<TColumn extends string> = {
@@ -33,7 +39,16 @@ export function useSortParams<TColumn extends string = string>(
 ): UseSortParamsResult<TColumn> {
   const navigation = useNavigation();
   const pathname = usePath();
-  const searchParams = useSearchParamsValue();
+  const {
+    readLatest,
+    replaceSearch,
+    search: currentSearch,
+  } = useLinkedSearchWriter(
+    pathname,
+    useSearchParamsValue(),
+    navigation.replace
+  );
+  const searchParams = new URLSearchParams(currentSearch);
 
   const prefix = config.paramPrefix ?? "";
   const byKey = `${prefix}sortBy`;
@@ -80,28 +95,22 @@ export function useSortParams<TColumn extends string = string>(
 
   const setSort = useCallback(
     (column: TColumn, direction: SortDirection) => {
-      const params = new URLSearchParams(searchParams.toString());
+      const params = readLatest();
       params.set(byKey, column);
       params.set(dirKey, direction);
-      const qs = params.toString();
-      navigation.replace(qs ? `${pathname}?${qs}` : pathname, {
-        scroll: false,
-      });
+      replaceSearch(params);
       setSavedSort({ column, direction });
     },
-    [navigation, pathname, searchParams, byKey, dirKey, setSavedSort]
+    [readLatest, replaceSearch, byKey, dirKey, setSavedSort]
   );
 
   const clearSort = useCallback(() => {
-    const params = new URLSearchParams(searchParams.toString());
+    const params = readLatest();
     params.delete(byKey);
     params.delete(dirKey);
-    const qs = params.toString();
-    navigation.replace(qs ? `${pathname}?${qs}` : pathname, {
-      scroll: false,
-    });
+    replaceSearch(params);
     clearPersistedSort();
-  }, [navigation, pathname, searchParams, byKey, dirKey, clearPersistedSort]);
+  }, [readLatest, replaceSearch, byKey, dirKey, clearPersistedSort]);
 
   return { sortBy, sortDir, setSort, clearSort, clearPersistedSort };
 }

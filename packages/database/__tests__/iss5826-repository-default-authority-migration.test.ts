@@ -87,19 +87,22 @@ describe(`${MIGRATION_NAME} DDL contract`, () => {
     ["github_installation_repositories", REPOSITORY_AUTHORITY_COLUMNS],
     ["public_repositories", REPOSITORY_AUTHORITY_COLUMNS],
     ["pull_request_detail", PULL_REQUEST_AUTHORITY_COLUMNS],
-  ] as const)("adds the exact nullable/no-default authority fields to %s", async (table, expectedColumns) => {
-    const statements = await readStatements();
-    const statement = statements.find((entry) => entry.table === table);
+  ] as const)(
+    "adds the exact nullable/no-default authority fields to %s",
+    async (table, expectedColumns) => {
+      const statements = await readStatements();
+      const statement = statements.find((entry) => entry.table === table);
 
-    expect(statement, `missing ALTER TABLE for ${table}`).toBeDefined();
-    expect(statement?.columns.map(({ name, type }) => [name, type])).toEqual(
-      expectedColumns
-    );
-    for (const column of statement?.columns ?? []) {
-      expect(column.qualifiers.toUpperCase()).not.toContain("NOT NULL");
-      expect(column.qualifiers.toUpperCase()).not.toContain("DEFAULT");
+      expect(statement, `missing ALTER TABLE for ${table}`).toBeDefined();
+      expect(statement?.columns.map(({ name, type }) => [name, type])).toEqual(
+        expectedColumns
+      );
+      for (const column of statement?.columns ?? []) {
+        expect(column.qualifiers.toUpperCase()).not.toContain("NOT NULL");
+        expect(column.qualifiers.toUpperCase()).not.toContain("DEFAULT");
+      }
     }
-  });
+  );
 
   it("contains only the three additive authority ALTER statements", async () => {
     const sql = await readFile(MIGRATION_PATH, "utf8");

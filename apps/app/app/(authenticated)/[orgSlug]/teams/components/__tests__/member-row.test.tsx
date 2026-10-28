@@ -5,6 +5,7 @@ import { MemberRow } from "../member-row";
 import type { TeamMemberDraft } from "../use-team-modal";
 
 const REMOVE_LABEL = "Remove member";
+const SELF_ROW_LABEL = "You";
 
 function makeDraft(overrides: Partial<TeamMemberDraft> = {}): TeamMemberDraft {
   return {
@@ -55,7 +56,7 @@ describe("MemberRow remove control", () => {
       />
     );
 
-    expect(screen.getByText("You")).toBeInTheDocument();
+    expect(screen.getByText(SELF_ROW_LABEL)).toBeInTheDocument();
   });
 
   it('does not label a non-self row with "You"', () => {
@@ -69,7 +70,7 @@ describe("MemberRow remove control", () => {
       />
     );
 
-    expect(screen.queryByText("You")).not.toBeInTheDocument();
+    expect(screen.queryByText(SELF_ROW_LABEL)).not.toBeInTheDocument();
   });
 
   it("does not render a remove control when the viewer cannot manage members", () => {

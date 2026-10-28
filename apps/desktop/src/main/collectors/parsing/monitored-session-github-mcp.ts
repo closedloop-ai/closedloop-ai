@@ -3,8 +3,10 @@ import {
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
+  parsePullRequestNumber,
 } from "@repo/api/src/types/session-artifact-link";
 import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import type { IndexedToolUse } from "@repo/lib/harness/session-tool-uses";
 import { z } from "zod";
 import { isValidBranchName } from "../../enrichment/branch-validation.js";
 import type { NormalizedToolUse } from "../types.js";
@@ -16,7 +18,6 @@ import {
   validMonitoredEventTimestamp,
 } from "./monitored-session-source.js";
 import { GITHUB_PR_URL_RE } from "./parser-utils.js";
-import type { IndexedToolUse } from "./session-tool-uses.js";
 
 const GITHUB_MCP_PREFIX_RE = /^(?:mcp__github__|github__)/;
 const evidenceObjectSchema = z.record(z.string(), z.unknown());
@@ -281,12 +282,8 @@ function createdPullRequestTarget(
         match[1],
         match[2]
       );
-      const prNumber = Number(match[3]);
-      if (
-        repositoryFullName === expectedRepository &&
-        Number.isSafeInteger(prNumber) &&
-        prNumber > 0
-      ) {
+      const prNumber = parsePullRequestNumber(match[3]);
+      if (repositoryFullName === expectedRepository && prNumber !== null) {
         return {
           kind: ArtifactRefTargetKind.PullRequest,
           repositoryFullName,

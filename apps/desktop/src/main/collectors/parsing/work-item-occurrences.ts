@@ -36,18 +36,18 @@
  * linker already persisted. So it takes the recall-oriented recognizer for both
  * surfaces and normalizes to upper case, matching what the extractor stores.
  * Case-sensitivity here bought no precision and cost the branch signal outright:
- * with it, `019effc3` — a session the audit records as entirely FEA-2159, on
- * branch `kaiticarp/fea-2159-…` — resolved to FEA-1899 on 10 of 13 active
+ * with it, `f04610b7` — a session the audit records as entirely FEA-2159, on
+ * branch `kaitoc/fea-2159-…` — resolved to FEA-1899 on 10 of 13 active
  * segments, because the only spelling of the true item was invisible.
  *
  * Tool OUTPUT is excluded for the same reason the extractor excludes it: a slug
  * appearing in a file the agent READ is incidental context, not work on that item.
  */
 import { buildSlugPrefixAlternation } from "@repo/api/src/types/slug-prefix";
+import { collectSessionToolUses } from "@repo/lib/harness/session-tool-uses";
 import type { NormalizedSession } from "../types.js";
 import { stripCodeFences } from "./artifact-ref-extractor.js";
 import { flattenTextValues } from "./parser-utils.js";
-import { collectSessionToolUses } from "./session-tool-uses.js";
 
 /**
  * A Closedloop slug mention, in any case. Built from the same prefix SSOT the

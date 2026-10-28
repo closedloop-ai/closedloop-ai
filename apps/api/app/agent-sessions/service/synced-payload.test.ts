@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgentSessionDbMock,
-  buildAnalyticsScalarRecord,
+  buildRepositoryGroupRow,
   installDb,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
 import { agentSessionsService } from "../service";
@@ -31,21 +31,24 @@ describe("agentSessionsService", () => {
     // bigint. A count above 2,147,483,647 — the old int4 ceiling — must flow
     // through the analytics read path as a plain JS number, not a bigint leak
     // or NaN.
-    const scalarPage = [
-      buildAnalyticsScalarRecord(1, {
+    //
+    // ISS-6823: that path is now a `groupBy` whose `_sum` Postgres returns as
+    // bigint for an int8 column, so the narrowing under test happens on the
+    // aggregate row rather than on a hydrated session — same contract, same
+    // `toNumber` seam, one statement instead of a full-population scan.
+    const groupBy = vi.fn().mockResolvedValue([
+      buildRepositoryGroupRow({
+        repositoryFullName: "closedloop-ai/closedloop-ai",
+        sessionCount: 1,
         inputTokens: 5_000_000_000n,
         outputTokens: 3_000_000_000n,
+        estimatedCost: 0.25,
       }),
-    ];
-
-    const findMany = vi
-      .fn()
-      .mockResolvedValueOnce(scalarPage)
-      .mockResolvedValueOnce([]);
+    ]);
 
     installDb({
       sessionDetail: buildAgentSessionDbMock({
-        findMany,
+        groupBy,
       }),
     });
 
@@ -56,7 +59,7 @@ describe("agentSessionsService", () => {
 
     expect(analytics.byRepository).toEqual([
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sessionCount: 1,
         inputTokens: 5_000_000_000,
         outputTokens: 3_000_000_000,

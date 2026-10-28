@@ -10,11 +10,9 @@ import {
 } from "vitest";
 
 vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
   return {
     GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
-    withDb: mockWithDb,
+    withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   };
 });
 
@@ -22,6 +20,7 @@ vi.mock("@repo/github", async (importOriginal) => {
   const actual = await importOriginal<typeof GitHubModule>();
   return {
     compareBranchFileChangesWithProviderResult: vi.fn(),
+    GITHUB_COMPARE_FILE_LIMIT: actual.GITHUB_COMPARE_FILE_LIMIT,
     GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
     // Real pure classifier: the mint-rejection path folds a thrown error into
     // provider-failure statuses through it (PLN-1525).
@@ -50,6 +49,7 @@ import {
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   compareBranchFileChangesWithProviderResult,
+  GITHUB_COMPARE_FILE_LIMIT,
   GitHubProviderResultStatus,
 } from "@repo/github";
 import { getInstallationOctokit } from "@repo/github/installation-auth";
@@ -64,11 +64,14 @@ const mockGetInstallationOctokit = getInstallationOctokit as unknown as Mock;
 // this exact object as its first argument (PLN-1525).
 const INSTALLATION_OCTOKIT = { marker: "installation-octokit" };
 
-let mockDb: any;
-let mockTx: any;
+let mockDb: ReturnType<typeof createMockDb>;
+let mockTx: ReturnType<typeof createMockTx>;
 
-function providerSuccess<T>(value: T) {
-  return { status: GitHubProviderResultStatus.Success, value };
+function providerSuccess<T>(files: T, capped = false) {
+  return {
+    status: GitHubProviderResultStatus.Success,
+    value: { files, capped },
+  };
 }
 
 function providerUnavailable() {
@@ -87,38 +90,14 @@ describe("refreshBranchFileChangeCache", () => {
     vi.clearAllMocks();
     mockGetInstallationOctokit.mockResolvedValue(INSTALLATION_OCTOKIT);
 
-    mockDb = {
-      branchDetail: {
-        findFirst: vi.fn().mockResolvedValue({
-          artifactId: "branch-artifact-1",
-          baseBranch: "main",
-          headSha: "sha-2",
-          fileCacheHeadSha: null,
-          lastSyncStartedAt: null,
-          repository: {
-            owner: "closedloop-ai",
-            name: "symphony-alpha",
-            installation: {
-              installationId: "123456",
-              status: GitHubInstallationStatus.ACTIVE,
-            },
-          },
-          syncStatus: BranchSyncStatus.Fresh,
-        }),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    mockTx = {
-      branchFileChange: {
-        deleteMany: vi.fn(),
-        createMany: vi.fn(),
-      },
-      branchDetail: {
-        updateMany: vi.fn(),
-      },
-    };
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
-    mockWithDb.tx.mockImplementation((callback: any) => callback(mockTx));
+    mockDb = createMockDb();
+    mockTx = createMockTx();
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback(mockDb)
+    );
+    mockWithDb.tx.mockImplementation((callback: (tx: unknown) => unknown) =>
+      callback(mockTx)
+    );
   });
 
   afterEach(() => {
@@ -170,7 +149,7 @@ describe("refreshBranchFileChangeCache", () => {
     expect(mockCompareBranchFileChanges).toHaveBeenCalledWith(
       INSTALLATION_OCTOKIT,
       "closedloop-ai",
-      "symphony-alpha",
+      "closedloop-ai",
       "main",
       "sha-2"
     );
@@ -336,7 +315,7 @@ describe("refreshBranchFileChangeCache", () => {
       headSha: "sha-2",
       repository: {
         owner: "closedloop-ai",
-        name: "symphony-alpha",
+        name: "closedloop-ai",
         installation: { installationId: "123456" },
       },
     });
@@ -364,7 +343,7 @@ describe("refreshBranchFileChangeCache", () => {
       headSha: "sha-2",
       repository: {
         owner: "closedloop-ai",
-        name: "symphony-alpha",
+        name: "closedloop-ai",
         installation: { installationId: "123456" },
       },
     });
@@ -519,7 +498,7 @@ describe("refreshBranchFileChangeCache", () => {
       lastSyncStartedAt: recentStart,
       repository: {
         owner: "closedloop-ai",
-        name: "symphony-alpha",
+        name: "closedloop-ai",
         installation: { installationId: "123456" },
       },
     });
@@ -543,7 +522,7 @@ describe("refreshBranchFileChangeCache", () => {
       lastSyncStartedAt: new Date(),
       repository: {
         owner: "closedloop-ai",
-        name: "symphony-alpha",
+        name: "closedloop-ai",
         installation: { installationId: "123456" },
       },
     });
@@ -579,7 +558,7 @@ describe("refreshBranchFileChangeCache", () => {
     expect(mockCompareBranchFileChanges).toHaveBeenCalledWith(
       INSTALLATION_OCTOKIT,
       "closedloop-ai",
-      "symphony-alpha",
+      "closedloop-ai",
       "main",
       "sha-2"
     );
@@ -597,7 +576,7 @@ describe("refreshBranchFileChangeCache", () => {
         lastSyncStartedAt: new Date("2026-05-18T11:00:00.000Z"),
         repository: {
           owner: "closedloop-ai",
-          name: "symphony-alpha",
+          name: "closedloop-ai",
           installation: { installationId: "123456" },
         },
       })
@@ -766,17 +745,28 @@ describe("refreshBranchFileChangeCache", () => {
     });
   });
 
-  it("persists changed files 101 through 500 from the compare helper result", async () => {
+  // ISS-6127 replaced the previous case here, which fed 501 files through the
+  // mock and asserted an internal 500-row bound. GitHub caps a compare at 300
+  // files for the entire comparison, so that response cannot occur and the bound
+  // was unreachable. These pin the real contract, and the completeness flag the
+  // whole ticket turns on.
+  // Fed one file OVER the limit deliberately: at exactly the limit
+  // `slice(0, MAX_FILE_CHANGES)` is a no-op and the persist bound goes
+  // unasserted. The replaced 501-file case pinned the wrong NUMBER, but the
+  // bounded-persist contract it covered still stands, so it is kept here rather
+  // than dropped with it.
+  it("persists the provider's completeness verdict beside freshness, and bounds the rows it stores", async () => {
     mockCompareBranchFileChanges.mockResolvedValue(
       providerSuccess(
-        Array.from({ length: 501 }, (_, index) => ({
+        Array.from({ length: GITHUB_COMPARE_FILE_LIMIT + 1 }, (_, index) => ({
           filename: `src/file-${index + 1}.ts`,
           status: "modified",
           additions: 1,
           deletions: 0,
           changes: 1,
           patch: undefined,
-        }))
+        })),
+        true
       )
     );
 
@@ -786,21 +776,76 @@ describe("refreshBranchFileChangeCache", () => {
 
     expect(result).toEqual({
       ok: true,
-      value: { throttled: false, fileCount: 500, patchBytes: 0 },
+      value: {
+        throttled: false,
+        fileCount: GITHUB_COMPARE_FILE_LIMIT,
+        patchBytes: 0,
+      },
     });
-    expect(mockTx.branchFileChange.createMany).toHaveBeenCalledWith({
-      data: expect.arrayContaining([
-        expect.objectContaining({ path: "src/file-101.ts" }),
-        expect.objectContaining({ path: "src/file-500.ts" }),
-      ]),
-    });
-    const persistedRows =
-      mockTx.branchFileChange.createMany.mock.calls[0][0].data;
-    expect(persistedRows).toHaveLength(500);
-    expect(
-      persistedRows.some(
-        (row: { path: string }) => row.path === "src/file-501.ts"
+    const update = mockTx.branchDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(update?.data.fileCacheCapped).toBe(true);
+    // Fresh AND capped at once: the two axes the separate column exists to keep
+    // apart. A sixth status member would have had to overwrite one with the other.
+    expect(update?.data.fileCacheStatus).toBe(BranchFileCacheStatus.Fresh);
+  });
+
+  it("records a short comparison as complete, so ordinary branches keep their totals", async () => {
+    mockCompareBranchFileChanges.mockResolvedValue(
+      providerSuccess(
+        Array.from({ length: 3 }, (_, index) => ({
+          filename: `src/file-${index + 1}.ts`,
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          changes: 1,
+          patch: undefined,
+        })),
+        false
       )
-    ).toBe(false);
+    );
+
+    await refreshBranchFileChangeCache("branch-artifact-1", {
+      organizationId: "org-1",
+    });
+
+    const update = mockTx.branchDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(update?.data.fileCacheCapped).toBe(false);
+    expect(update?.data.fileCacheFileCount).toBe(3);
   });
 });
+
+function createMockDb() {
+  return {
+    branchDetail: {
+      findFirst: vi.fn().mockResolvedValue({
+        artifactId: "branch-artifact-1",
+        baseBranch: "main",
+        headSha: "sha-2",
+        fileCacheHeadSha: null,
+        lastSyncStartedAt: null,
+        repository: {
+          owner: "closedloop-ai",
+          name: "closedloop-ai",
+          installation: {
+            installationId: "123456",
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
+        syncStatus: BranchSyncStatus.Fresh,
+      }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+  };
+}
+
+function createMockTx() {
+  return {
+    branchFileChange: {
+      deleteMany: vi.fn(),
+      createMany: vi.fn(),
+    },
+    branchDetail: {
+      updateMany: vi.fn(),
+    },
+  };
+}

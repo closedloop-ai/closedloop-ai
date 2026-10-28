@@ -13,10 +13,12 @@
  * branching — no database, filesystem, or Electron dependency.
  */
 
+import { AppBootFailureKind } from "@closedloop-ai/telemetry-contract/app-boot-failure-kind";
 import {
   type AgentMonitorRuntimeStatus,
   AgentMonitorRuntimeStatusKind,
 } from "../../shared/agent-monitor-status.js";
+import { isStoreOpenTimeoutError } from "../../shared/transient-db-host-error.js";
 
 export const MigrationRefusalKind = {
   ChecksumDrift: "checksum_drift",
@@ -125,14 +127,63 @@ const GENERIC_BOOT_FAILURE_TELEMETRY_MESSAGE =
  */
 export function buildMigrationFailureTelemetryError(error: unknown): Error {
   if (error instanceof DesktopMigrationError) {
-    const stable = new Error(userFacingMigrationRefusal(error.kind));
+    const stable = new Error(migrationRefusalTelemetryMessage(error.kind));
     stable.name = error.name;
     stable.stack = undefined;
     return stable;
   }
-  const stable = new Error(GENERIC_BOOT_FAILURE_TELEMETRY_MESSAGE);
+  const stable = new Error(
+    NON_REFUSAL_BOOT_FAILURE_TELEMETRY_MESSAGE[
+      classifyNonRefusalBootFailureKind(error)
+    ]
+  );
   stable.stack = undefined;
   return stable;
+}
+
+/**
+ * ISS-6339: the TELEMETRY message per refusal kind — one fixed, low-cardinality
+ * string each, distinct for every member of {@link MigrationRefusalKind}.
+ *
+ * Deliberately NOT {@link userFacingMigrationRefusal}. That catalog answers
+ * checksum drift and a history gap with the SAME sentence, correctly: a user's
+ * remedy is identical either way, and there is nothing to gain from making them
+ * read the difference. But the two failures have opposite causes — drift means
+ * the bytes of an applied migration changed (corruption, or an edited merged
+ * migration), a gap means this build's manifest is missing a migration the store
+ * already applied (version skew) — and routing both through the same telemetry
+ * message left the field unable to tell them apart, which is the gap ISS-6339
+ * names. Splitting here fixes the diagnosis without touching a word the user
+ * sees.
+ *
+ * Fixed strings, never the raw refusal message: the thrown message carries the
+ * migration name and, for drift, checksum fragments (see
+ * {@link buildMigrationFailureTelemetryError}).
+ */
+const MIGRATION_REFUSAL_TELEMETRY_MESSAGE: Record<
+  MigrationRefusalKind,
+  string
+> = {
+  [MigrationRefusalKind.ChecksumDrift]:
+    "Agent Monitor migration refused: applied migration checksum drift",
+  [MigrationRefusalKind.HistoryGap]:
+    "Agent Monitor migration refused: applied migration missing from this build",
+  [MigrationRefusalKind.Downgrade]:
+    "Agent Monitor migration refused: store created by a newer build",
+  [MigrationRefusalKind.BaselineMissing]:
+    "Agent Monitor migration refused: baseline missing from this build",
+};
+
+/**
+ * The stable, low-cardinality telemetry message for a refusal kind. Exhaustive
+ * over {@link MigrationRefusalKind} by construction — a new kind fails typecheck
+ * here until it is given its own message, rather than silently collapsing into
+ * an existing one.
+ */
+export function migrationRefusalTelemetryMessage(
+  kind: MigrationRefusalKind
+): string {
+  return MIGRATION_REFUSAL_TELEMETRY_MESSAGE[kind];
 }
 
 /** The generic Agent Monitor boot-failure reason shown when the cause isn't a refusal. */
@@ -163,4 +214,91 @@ export function buildAgentMonitorFailureStatus(
     dbAhead: isDbAheadOfAppError(error),
     reason,
   };
+}
+
+/**
+ * ISS-8907: the Node error codes that mean "this build cannot resolve its own
+ * modules" — the ISS-8906 shape, where a packaging break dark-fires every
+ * install on a release at once.
+ *
+ * The CODE and never the message: `code` is a fixed Node identifier, while the
+ * message carries the specifier and the resolution paths that ISS-4714 removed
+ * from this record. Both spellings are listed because the desktop main bundle
+ * mixes ESM (`ERR_MODULE_NOT_FOUND`) and CJS (`MODULE_NOT_FOUND`) resolution,
+ * and which one a given build throws is a bundling detail, not a signal.
+ */
+const MODULE_RESOLUTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ERR_MODULE_NOT_FOUND",
+  "MODULE_NOT_FOUND",
+]);
+
+const NON_REFUSAL_BOOT_FAILURE_TELEMETRY_MESSAGE: Record<
+  NonRefusalBootFailureKind,
+  string
+> = {
+  [AppBootFailureKind.ModuleResolution]:
+    "Agent Monitor runtime failed to initialize: module resolution failed",
+  // ISS-9197: the message half matters more for THIS kind than for the others.
+  // ISS-9253 vendors `app.boot_failure.kind`, so once the collector is rolled
+  // (ISS-9677) the attribute tells these apart for every install on ISS-8907 or
+  // later. This string is what tells them apart on the installs older than
+  // that, which is the only half of the fleet it now speaks for — not the whole
+  // of it.
+  [AppBootFailureKind.StoreOpenTimeout]:
+    "Agent Monitor runtime failed to initialize: store open exceeded its deadline",
+  [AppBootFailureKind.Unknown]: GENERIC_BOOT_FAILURE_TELEMETRY_MESSAGE,
+};
+
+/** A boot failure that is not a migration refusal, so has no per-refusal kind. */
+type NonRefusalBootFailureKind = Exclude<
+  AppBootFailureKind,
+  typeof AppBootFailureKind.MigrationRefusal
+>;
+
+/**
+ * Classify a boot failure the refusal branch has already been ruled out of.
+ *
+ * Separate from {@link classifyBootFailureKind} so the narrowed return type is
+ * what indexes {@link NON_REFUSAL_BOOT_FAILURE_TELEMETRY_MESSAGE} — the message
+ * map is deliberately not defined over the refusal kind, because a refusal is
+ * answered by {@link migrationRefusalTelemetryMessage} and an entry here would
+ * be one no call site can reach.
+ */
+function classifyNonRefusalBootFailureKind(
+  error: unknown
+): NonRefusalBootFailureKind {
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    MODULE_RESOLUTION_ERROR_CODES.has(error.code)
+  ) {
+    return AppBootFailureKind.ModuleResolution;
+  }
+  // ISS-9197: the one member here read off the message rather than a Node
+  // `code`, because the deadline is our own timer and has no code to carry. The
+  // predicate answers a BOOLEAN over a fixed token owned by the producer
+  // (`transient-db-host-error.ts`), and the value emitted is the closed literal
+  // below — the message never enters the record, so ISS-4714's no-paths,
+  // no-specifiers, no-checksums contract holds unchanged.
+  if (isStoreOpenTimeoutError(error)) {
+    return AppBootFailureKind.StoreOpenTimeout;
+  }
+  return AppBootFailureKind.Unknown;
+}
+
+/**
+ * ISS-8907: classify an Agent Monitor boot failure into the low-cardinality kind
+ * emitted as `app.boot_failure.kind`.
+ *
+ * Reads the RAW error, so it must be called with the boot error rather than the
+ * stabilized telemetry projection {@link buildMigrationFailureTelemetryError}
+ * returns — that projection is a fresh `Error` by construction and has neither a
+ * `code` nor the `DesktopMigrationError` type.
+ */
+export function classifyBootFailureKind(error: unknown): AppBootFailureKind {
+  if (error instanceof DesktopMigrationError) {
+    return AppBootFailureKind.MigrationRefusal;
+  }
+  return classifyNonRefusalBootFailureKind(error);
 }

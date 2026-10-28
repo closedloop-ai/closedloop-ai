@@ -129,7 +129,7 @@ describe("ISS-4635 — ranking/list population and usage parity", () => {
   });
 
   it("collapses same-slug version buckets into ONE family with summed usage on both surfaces", async () => {
-    // shafty023 review: the fixtures above only carry `contentHash: null`, so they
+    // davetho review: the fixtures above only carry `contentHash: null`, so they
     // never create multiple version buckets for one component and family collapse
     // is not actually exercised. This fixture installs `command::build` at TWO
     // distinct content hashes (5 + 3 invocations across 2 sessions). Both surfaces
@@ -183,7 +183,7 @@ describe("ISS-4635 — ranking/list population and usage parity", () => {
   });
 
   it("does not leak a mismatched-FK cross-kind usage row into a ?kind= response", async () => {
-    // shafty023 review: `foldFkUsageIntoMerged` (ISS-4630) attributes FK-linked
+    // davetho review: `foldFkUsageIntoMerged` (ISS-4630) attributes FK-linked
     // usage by the usage row's OWN (kind, key) and SEEDS a synthetic bucket for an
     // identity absent from the kind-filtered inventory. A usage row FK-linked to a
     // selected `skill` row but carrying its own `command::deploy` identity would
@@ -230,7 +230,7 @@ describe("ISS-4635 — ranking/list population and usage parity", () => {
     //
     // The fixture matches on the display NAME only (its key is `code-audit`),
     // which is what exercises `usageSearchWhere`'s `nameMatchedIdentities` arm
-    // rather than its `componentKey contains` arm — PR #4285 reviewer wongk.
+    // rather than its `componentKey contains` arm — PR #4285 reviewer whitlockk.
     installDb(mismatchedFkSearchFixtures());
     const list = await agentComponentsService.listForOrg(
       ORG_A,

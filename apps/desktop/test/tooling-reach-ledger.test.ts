@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
 import {
   diffToolingReach,
   formatToolingReachGap,

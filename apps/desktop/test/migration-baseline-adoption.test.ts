@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterAll, test } from "vitest";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
@@ -31,7 +31,7 @@ const tempDirs: string[] = [];
 
 const NO_SUCH_COLUMN_RE = /no such column/i;
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );
@@ -105,18 +105,12 @@ test("an untracked PARTIAL store heals: missing tables are created, present ones
       `INSERT INTO sessions (id, status, harness)
        VALUES ('keep-me', 'completed', 'claude')`
     );
-    await db.query(
-      `INSERT INTO repository_default_authorities (
-         identity_key, provider, provider_repository_id, repo_full_name,
-         default_branch, availability, completeness, source, mechanism,
-         trigger, credential_type, observation_key, observed_at, updated_at
-       ) VALUES (
-         'keep-authority', 'github', 'repo-1', 'acme/web', 'trunk',
-         'available', 'complete', 'repository_rest', 'rest', 'surface_open',
-         'github_app', 'observation-1', '2026-08-11T01:00:00.000Z',
-         '2026-08-11T01:00:00.000Z'
-       )`
+    // ISS-12594: the drop migration removes the cloud cache tables.
+    assert.equal(
+      await tableExists(db, "repository_default_authorities"),
+      false
     );
+    assert.equal(await tableExists(db, "cloud_github_branch_overlays"), false);
 
     // Simulate the broken interim store: a table is missing AND tracking is
     // wiped (so the runner sees an untracked, partial store).
@@ -138,11 +132,6 @@ test("an untracked PARTIAL store heals: missing tables are created, present ones
       "SELECT COUNT(*) AS n FROM sessions WHERE id = 'keep-me'"
     );
     assert.equal(Number(kept.rows[0]?.n), 1);
-    const keptAuthority = await db.query<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM repository_default_authorities
-       WHERE identity_key = 'keep-authority'`
-    );
-    assert.equal(Number(keptAuthority.rows[0]?.n), 1);
   } finally {
     await db.close();
   }
@@ -239,7 +228,7 @@ test("an EARLIER migration referencing a LATER-dropped column heals on an untrac
     );
     // The surviving columns on the same table are untouched — the heal skipped
     // only the statements naming the dropped column, not whole migrations.
-    assert.ok(await columnExists(db, "artifacts", "lines_added"));
+    assert.ok(await columnExists(db, "artifacts", "title"));
     assert.ok(await columnExists(db, "artifacts", "branch_name"));
   } finally {
     await db.close();

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { SummaryCardRow, summaryCardClass } from "./summary-card-row";
 
 /**
- * ISS-4966 (#4284 review, wongk): `SummaryCardRow` derives its own column rank
+ * ISS-4966 (#4284 review, whitlockk): `SummaryCardRow` derives its own column rank
  * from the width it measures, and that rank is a LAYOUT contract — the
  * arithmetic behind it is unit-tested in
  * `__tests__/use-summary-card-columns.test.ts`, but the rank the row actually
@@ -78,7 +78,7 @@ function SessionsStripCards() {
       <MetricCard
         className={summaryCardClass(true)}
         detail="across sessions in range"
-        label="LOC / $ (Merged)"
+        label="LOC / $"
         value="18.4"
       />
     </>
@@ -101,8 +101,9 @@ function DerivedStrip() {
 }
 
 const meta = {
-  title: "App Core/Shared/Summary Card Row",
+  title: "Composites v1.0/App Shell/Summary Card Row",
   component: SummaryCardRow,
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { children: null as ReactNode },
 } satisfies Meta<typeof SummaryCardRow>;

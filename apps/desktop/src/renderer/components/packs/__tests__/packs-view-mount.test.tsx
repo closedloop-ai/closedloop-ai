@@ -1,5 +1,4 @@
 /**
- * @file packs-view-mount.test.tsx
  * @description Behavioral regression guard for the desktop Packs page (FEA-4159,
  * updated for the FEA-4166 member slot).
  *
@@ -74,7 +73,6 @@ const SEED_ENTRY: CatalogEntry = {
   installNotes: null,
   placeholderReason: null,
   verified: true,
-  readmeExcerpt: null,
   stars: 10,
   forks: 2,
   lastRelease: null,

@@ -19,6 +19,7 @@ vi.mock("@repo/observability/telemetry/metrics", () => ({
 }));
 
 import {
+  activeOrgRow,
   type GroupByArgs,
   group,
   hoursAgo,
@@ -31,7 +32,6 @@ import {
   ORG_DORMANT,
   ORG_STALLED,
   type PresenceGroup,
-  policyRow,
   routeGroupBy,
 } from "@/__tests__/support/cron/sample-session-ingestion-health/service.test-fixtures";
 import {
@@ -107,9 +107,9 @@ describe("sampleSessionIngestionHealth", () => {
       ]
     );
     mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_ACTIVE, true),
-      policyRow(ORG_STALLED, true),
-      policyRow(ORG_DORMANT, true),
+      activeOrgRow(ORG_ACTIVE),
+      activeOrgRow(ORG_STALLED),
+      activeOrgRow(ORG_DORMANT),
     ]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
@@ -142,7 +142,7 @@ describe("sampleSessionIngestionHealth", () => {
     pinGroups([
       group(ORG_ACTIVE, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS)),
     ]);
-    mocks.organizationFindMany.mockResolvedValue([policyRow(ORG_ACTIVE, true)]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_ACTIVE)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -158,9 +158,7 @@ describe("sampleSessionIngestionHealth", () => {
     pinGroups([
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 2)),
     ]);
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, false),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -169,7 +167,6 @@ describe("sampleSessionIngestionHealth", () => {
       {
         metric: FilterToken.SessionIngestionStaleness,
         orgId: ORG_STALLED,
-        policyEnabled: false,
         value: (SESSION_INGESTION_STALL_THRESHOLD_HOURS + 2) * MS_PER_HOUR,
       },
     ]);
@@ -203,16 +200,14 @@ describe("sampleSessionIngestionHealth", () => {
       group(ORG_ACTIVE, null),
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 3)),
     ]);
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
     expect(summary.orgsWithIngestHistory).toBe(1);
     expect(mocks.organizationFindMany).toHaveBeenCalledWith({
       where: { active: true, id: { in: [ORG_STALLED] } },
-      select: { id: true, sessionSyncPolicyEnabled: true },
+      select: { id: true },
     });
   });
 
@@ -231,7 +226,7 @@ describe("sampleSessionIngestionHealth", () => {
 
   it("clamps a future-dated sync timestamp to zero staleness", async () => {
     pinGroups([group(ORG_ACTIVE, new Date(NOW.getTime() + 5 * 60 * 1000))]);
-    mocks.organizationFindMany.mockResolvedValue([policyRow(ORG_ACTIVE, true)]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_ACTIVE)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -240,7 +235,6 @@ describe("sampleSessionIngestionHealth", () => {
       {
         metric: FilterToken.SessionIngestionStaleness,
         orgId: ORG_ACTIVE,
-        policyEnabled: true,
         value: 0,
       },
     ]);
@@ -249,13 +243,12 @@ describe("sampleSessionIngestionHealth", () => {
   it("caps per-org staleness samples and keeps the most stale orgs", async () => {
     const orgCount = 130;
     const groups: IngestGroup[] = [];
-    const policies: Array<{ id: string; sessionSyncPolicyEnabled: boolean }> =
-      [];
+    const policies: Array<{ id: string }> = [];
     for (let index = 0; index < orgCount; index++) {
       const orgId = `org-${index}`;
       // Older index => more recent sync, so the LAST org is the most stale.
       groups.push(group(orgId, hoursAgo(index / 60)));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
     pinGroups(groups);
     mocks.organizationFindMany.mockResolvedValue(policies);
@@ -275,8 +268,7 @@ describe("sampleSessionIngestionHealth", () => {
     // cap that included them would spend the entire budget on churned orgs and
     // silently drop the orgs the page exists to name.
     const groups: IngestGroup[] = [];
-    const policies: Array<{ id: string; sessionSyncPolicyEnabled: boolean }> =
-      [];
+    const policies: Array<{ id: string }> = [];
     const fleets: PresenceGroup[] = [];
     for (let index = 0; index < 120; index++) {
       const orgId = `dormant-${index}`;
@@ -285,13 +277,13 @@ describe("sampleSessionIngestionHealth", () => {
       // A churned org's fleet stopped checking in and stopped attempting at the
       // same time it stopped ingesting.
       fleets.push(lastSeenGroup(orgId, hoursAgo(ageHours)));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
     groups.push(
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 1))
     );
     fleets.push(lastSeenGroup(ORG_STALLED, NOW));
-    policies.push(policyRow(ORG_STALLED, false));
+    policies.push(activeOrgRow(ORG_STALLED));
     pinGroups(groups, fleets);
     mocks.organizationFindMany.mockResolvedValue(policies);
 
@@ -304,8 +296,8 @@ describe("sampleSessionIngestionHealth", () => {
     expect(summary.stalenessSamplesEmitted).toBe(1);
   });
 
-  it("bounds the policy IN and top-100 across a fleet larger than the bind-chunk width", async () => {
-    // A synthetic fleet whose org count EXCEEDS 5x the policy-lookup bind-chunk
+  it("bounds the active-org IN and top-100 across a fleet larger than the bind-chunk width", async () => {
+    // A synthetic fleet whose org count EXCEEDS 5x the active-org-lookup bind-chunk
     // width (1000), i.e. more chunks than the fan-out concurrency bound (5): the
     // sampler must chunk each id array so no single `IN` crosses the driver
     // bind-parameter ceiling, run the chunks through the BOUNDED fan-out (never a
@@ -323,8 +315,7 @@ describe("sampleSessionIngestionHealth", () => {
 
     const groups: IngestGroup[] = [];
     const lastSeenGroups: PresenceGroup[] = [];
-    const policies: Array<{ id: string; sessionSyncPolicyEnabled: boolean }> =
-      [];
+    const policies: Array<{ id: string }> = [];
 
     // Active: a few seconds ago each — always inside the 6h stall window even at
     // 3000 orgs (max ~50 minutes back), so none spill into the stalled class.
@@ -332,7 +323,7 @@ describe("sampleSessionIngestionHealth", () => {
       const orgId = `active-${index}`;
       groups.push(group(orgId, hoursAgo((index + 1) / 3600)));
       lastSeenGroups.push(lastSeenGroup(orgId, NOW));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
     // Stalled: strictly inside (stall threshold, dormant cutoff), each with a
     // fresh heartbeat so they classify stalled (present-but-not-landing). Spread
@@ -348,7 +339,7 @@ describe("sampleSessionIngestionHealth", () => {
         )
       );
       lastSeenGroups.push(lastSeenGroup(orgId, NOW));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
     // Dormant: past the dormant cutoff — the MOST stale rows, and excluded from
     // the emitted samples entirely.
@@ -360,7 +351,7 @@ describe("sampleSessionIngestionHealth", () => {
       // org that IS still attempting is a returning org, not a dormant one, and
       // is covered separately.
       lastSeenGroups.push(lastSeenGroup(orgId, hoursAgo(ageHours)));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
 
     // Track peak in-flight policy chunk reads and honor `where.id.in` so the
@@ -417,7 +408,7 @@ describe("sampleSessionIngestionHealth", () => {
     expect(summary.stalledOrgCount).toBe(stalledCount);
     expect(summary.dormantOrgCount).toBe(dormantCount);
 
-    // The policy IN was chunked: every call's id array stays within the bind
+    // The active-org IN was chunked: every call's id array stays within the bind
     // width, the chunks together cover the whole fleet exactly once, and the
     // fan-out stayed bounded (peaked at the concurrency bound, not one pooled
     // connection per chunk) despite more chunks than the bound.
@@ -468,15 +459,14 @@ describe("sampleSessionIngestionHealth", () => {
   it("ISS-4830: keeps quiet orgs out of the staleness emission entirely", async () => {
     // A quiet org is past the stall threshold too, so it can be MORE stale than a
     // genuinely-stalled org — and `session.ingestion.staleness` carries only
-    // (orgId, policyEnabled, value), so a quiet row and a stalled row are
+    // (orgId, value), so a quiet row and a stalled row are
     // INDISTINGUISHABLE to an operator drilling into a `stalled_orgs` page. Quiet
     // rows are therefore not emitted at all: every org named by this metric is
     // one the page is about, and the emission can no longer be filled by a
     // weekend's worth of idle orgs.
     const ingestGroups: IngestGroup[] = [];
     const lastSeenGroups: PresenceGroup[] = [];
-    const policies: Array<{ id: string; sessionSyncPolicyEnabled: boolean }> =
-      [];
+    const policies: Array<{ id: string }> = [];
     // 120 quiet orgs, each MORE stale than the stalled org but still short of the
     // dormant cutoff, and each with a stale heartbeat so they classify quiet.
     // Ages span (threshold+2h .. threshold+62h), all below DORMANT_AFTER_HOURS.
@@ -486,7 +476,7 @@ describe("sampleSessionIngestionHealth", () => {
         SESSION_INGESTION_STALL_THRESHOLD_HOURS + 2 + index * 0.5;
       ingestGroups.push(group(orgId, hoursAgo(ageHours)));
       lastSeenGroups.push(lastSeenGroup(orgId, hoursAgo(ageHours)));
-      policies.push(policyRow(orgId, true));
+      policies.push(activeOrgRow(orgId));
     }
     // One stalled org: past the threshold but LESS stale than every quiet org,
     // with a fresh heartbeat so it classifies stalled.
@@ -494,7 +484,7 @@ describe("sampleSessionIngestionHealth", () => {
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 1))
     );
     lastSeenGroups.push(lastSeenGroup(ORG_STALLED, hoursAgo(0.5)));
-    policies.push(policyRow(ORG_STALLED, false));
+    policies.push(activeOrgRow(ORG_STALLED));
     pinGroups(ingestGroups, lastSeenGroups);
     mocks.organizationFindMany.mockResolvedValue(policies);
 
@@ -532,9 +522,7 @@ describe("sampleSessionIngestionHealth", () => {
         ),
       ]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -565,9 +553,7 @@ describe("sampleSessionIngestionHealth", () => {
       ],
       [lastSeenGroup(ORG_STALLED, hoursAgo(0.5))]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, false),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -595,9 +581,7 @@ describe("sampleSessionIngestionHealth", () => {
       ],
       []
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -620,9 +604,7 @@ describe("sampleSessionIngestionHealth", () => {
         ),
       ]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -666,9 +648,7 @@ describe("sampleSessionIngestionHealth", () => {
         ),
       ]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -707,9 +687,7 @@ describe("sampleSessionIngestionHealth", () => {
         ),
       ]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -728,7 +706,6 @@ describe("sampleSessionIngestionHealth", () => {
       {
         metric: FilterToken.SessionIngestionStaleness,
         orgId: ORG_STALLED,
-        policyEnabled: true,
         value: (SESSION_INGESTION_STALL_THRESHOLD_HOURS + 12) * MS_PER_HOUR,
       },
     ]);
@@ -737,7 +714,7 @@ describe("sampleSessionIngestionHealth", () => {
   it("ISS-4827: a pre-acceptance outage (both watermarks equally stale, fleet present) is QUIET, not stalled", async () => {
     // Review, PR #4256 — the KNOWN LIMIT of the attempt signal, pinned so it is
     // a documented trade rather than an accident. When ingest fails BEFORE a
-    // batch is accepted (auth, org policy, a 5xx that never reaches the ingest
+    // batch is accepted (auth, a 5xx that never reaches the ingest
     // service), nothing stamps the attempt watermark, so it ages in lockstep
     // with the landed-data one and both cross the window together. Heartbeats
     // keep flowing, so the fleet still reads as present. The classifier pages
@@ -749,9 +726,7 @@ describe("sampleSessionIngestionHealth", () => {
       [group(ORG_STALLED, equallyStale)],
       [lastSeenGroup(ORG_STALLED, NOW, equallyStale)]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -779,9 +754,7 @@ describe("sampleSessionIngestionHealth", () => {
       ],
       [lastSeenGroup(ORG_DORMANT, hoursAgo(0.05), hoursAgo(0.1))]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_DORMANT, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_DORMANT)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -815,9 +788,7 @@ describe("sampleSessionIngestionHealth", () => {
         ),
       ]
     );
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_DORMANT, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_DORMANT)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 
@@ -828,7 +799,7 @@ describe("sampleSessionIngestionHealth", () => {
 
   it("ISS-4827: reads both fleet signals in ONE grouped scan over non-sentinel targets", async () => {
     pinGroups([group(ORG_ACTIVE, hoursAgo(1))]);
-    mocks.organizationFindMany.mockResolvedValue([policyRow(ORG_ACTIVE, true)]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_ACTIVE)]);
 
     await sampleSessionIngestionHealth(new Date());
 

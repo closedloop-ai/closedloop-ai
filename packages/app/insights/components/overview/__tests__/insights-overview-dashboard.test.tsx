@@ -9,6 +9,7 @@ import {
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { createTestQueryClient } from "@repo/app/shared/test-utils";
 import { expectCriticalAxeClean } from "@repo/app/test/a11y/axe";
 import {
   A11yTheme,
@@ -16,10 +17,45 @@ import {
   themeBackground,
 } from "@repo/app/test/a11y/contrast";
 import { A11yThemeRoot } from "@repo/app/test/a11y/react";
+import type { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DESKTOP_DOWNLOAD_DESCRIPTION } from "../../../../onboarding/lib/desktop-download-copy";
 import { REFRESHING_ONSET_MS } from "../dashboard-refreshing";
-import { InsightsOverviewDashboard } from "../insights-overview-dashboard";
+import { DashboardRowTour } from "../dashboard-tiles";
+import {
+  InsightsOverviewDashboard,
+  RECENT_SESSIONS_DESCRIPTION,
+} from "../insights-overview-dashboard";
+import {
+  DESKTOP_RECENT_SESSIONS_TITLE,
+  DESKTOP_SYNCED_SESSIONS_TITLE,
+  WEB_RECENT_SESSIONS_TITLE,
+} from "../recent-sessions-copy";
+import { withDashboardQueryClient } from "./dashboard-query-client";
+import {
+  ALL_ROW_DATA,
+  expectedRowTours,
+  NO_ROW_DATA,
+  renderedRowTours,
+} from "./dashboard-row-visibility-contract";
+import {
+  AI_IMPACT_RE,
+  DEGRADED_RE,
+  emptySeries,
+  errored,
+  NO_SESSIONS_RE,
+  pending,
+  refetching,
+  refetchingSessions,
+  SESSIONS_ERROR_RE,
+  sessions,
+  succeeded,
+  webAgents,
+  webAgentsWithPipeline,
+  webDelivery,
+  webUtilization,
+} from "./dashboard-suite-fixtures";
 
 // Mock the data hooks so we drive query states directly, and stub the heavy
 // row renderer / sessions table so the test targets the body's orchestration
@@ -31,7 +67,13 @@ const hooks = vi.hoisted(() => ({
   useAgentSessions: vi.fn(),
 }));
 
-vi.mock("@repo/app/insights/hooks/use-insights", () => ({
+// `importOriginal` so `insightsKeys` — the real query-key contract the retry
+// invalidates against — survives the mock. A hand-written copy here would agree
+// with itself if the production key ever changed.
+vi.mock("@repo/app/insights/hooks/use-insights", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@repo/app/insights/hooks/use-insights")
+  >()),
   useDeliveryInsights: hooks.useDeliveryInsights,
   useUtilizationInsights: hooks.useUtilizationInsights,
   useAgentsInsights: hooks.useAgentsInsights,
@@ -66,79 +108,10 @@ vi.mock("@repo/app/agents/components/sessions/synced-sessions-table", () => ({
   SyncedSessionsTable: () => <div data-testid="synced-sessions-table" />,
 }));
 
-const succeeded = (data: unknown) => ({
-  isSuccess: true,
-  isError: false,
-  isLoading: false,
-  isFetching: false,
-  data,
-});
-// FEA-4020: settled-success but re-fetching over the already-present data (the
-// range-change / manual-refresh case). `keepPreviousData` keeps `data` and
-// `isSuccess`, so only `isFetching` flips.
-const refetching = (data: unknown) => ({
-  isSuccess: true,
-  isError: false,
-  isLoading: false,
-  isFetching: true,
-  data,
-});
-const pending = () => ({
-  isSuccess: false,
-  isError: false,
-  isLoading: true,
-  isFetching: true,
-  data: undefined,
-});
-const errored = () => ({
-  isSuccess: false,
-  isError: true,
-  isLoading: false,
-  isFetching: false,
-  data: undefined,
-});
-
-const DEGRADED_RE = /temporarily unavailable/i;
-const NO_SESSIONS_RE = /no agent sessions yet/i;
-
-const emptySeries = { series: [], points: [] };
-// Cloud Insights API today: no activityHeatmap, no autonomyTrend.
-const webUtilization = { kpis: [], charts: { eventActivity: emptySeries } };
-const webAgents = {
-  kpis: [],
-  charts: { modelUsageOverTime: emptySeries, modelBreakdown: [] },
-};
-const webDelivery = { kpis: [], charts: {} };
-// An org that actually runs subagents: the Agents section resolves WITH a
-// populated collaboration graph, which is what keeps the agent-pipeline row on
-// the dashboard now that ISS-5280 retired its flag.
-const webAgentsWithPipeline = {
-  ...webAgents,
-  charts: {
-    ...webAgents.charts,
-    agentPipeline: {
-      nodes: [{ id: "researcher", label: "researcher", value: 4 }],
-      edges: [],
-    },
-  },
-};
-
-function sessions(total: number) {
-  return succeeded({
-    total,
-    items: Array.from({ length: Math.min(total, 1) }, (_, i) => ({
-      id: `s${i}`,
-    })),
-  });
-}
-
-// FEA-4020: a settled sessions query that is re-fetching over its prior data.
-function refetchingSessions(total: number) {
-  return {
-    ...sessions(total),
-    isFetching: true,
-  };
-}
+/** The seven the caption promises, as the span the query must cover. */
+const PINNED_WINDOW_DAYS = 7;
+const SYNCED_WINDOW_RE = /always last 7 days.*synced agent runs/i;
+const MS_PER_DAY = 86_400_000;
 
 function setInsights(state: {
   delivery?: ReturnType<typeof succeeded>;
@@ -158,15 +131,23 @@ function setInsights(state: {
 // requires a feature-flag adapter ancestor; default to no flags enabled. The AI
 // Impact card is no longer gated (FEA-4000 graduated it) — it renders regardless
 // of `enabledFlags`.
-const renderDashboard = (enabledFlags: string[] = [], theme?: A11yTheme) => {
-  const dashboard = (
+const renderDashboard = (
+  enabledFlags: string[] = [],
+  theme?: A11yTheme,
+  queryClient?: QueryClient
+) => {
+  const dashboard = withDashboardQueryClient(
     <InsightsDataSourceProvider value={createInsightsDataSource()}>
       <FeatureFlagAdapterProvider
         adapter={createStaticFeatureFlagAdapter({ enabledFlags })}
       >
-        <InsightsOverviewDashboard getSessionHref={() => "/x"} />
+        <InsightsOverviewDashboard
+          emptyStateDescription={DESKTOP_DOWNLOAD_DESCRIPTION}
+          getSessionHref={() => "/x"}
+        />
       </FeatureFlagAdapterProvider>
-    </InsightsDataSourceProvider>
+    </InsightsDataSourceProvider>,
+    queryClient
   );
 
   if (theme) {
@@ -178,57 +159,50 @@ const renderDashboard = (enabledFlags: string[] = [], theme?: A11yTheme) => {
 
 const renderDashboardForA11y = (theme: A11yTheme) =>
   render(
-    <A11yThemeRoot theme={theme}>
-      <InsightsDataSourceProvider value={createInsightsDataSource()}>
-        <FeatureFlagAdapterProvider
-          adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
-        >
-          <InsightsOverviewDashboard getSessionHref={() => "/x"} />
-        </FeatureFlagAdapterProvider>
-      </InsightsDataSourceProvider>
-    </A11yThemeRoot>
+    withDashboardQueryClient(
+      <A11yThemeRoot theme={theme}>
+        <InsightsDataSourceProvider value={createInsightsDataSource()}>
+          <FeatureFlagAdapterProvider
+            adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
+          >
+            <InsightsOverviewDashboard
+              emptyStateDescription={DESKTOP_DOWNLOAD_DESCRIPTION}
+              getSessionHref={() => "/x"}
+            />
+          </FeatureFlagAdapterProvider>
+        </InsightsDataSourceProvider>
+      </A11yThemeRoot>
+    )
   );
 
-const AI_IMPACT_RE = /ai impact/i;
 // FEA-4020: the single header "Refreshing" indicator's copy.
 const REFRESHING_RE = /refreshing/i;
 
 // Period the insights queries were last driven with (all three share it).
 const lastPeriod = () => hooks.useDeliveryInsights.mock.calls.at(-1)?.[0];
-
 describe("InsightsOverviewDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The picker persists per-surface to localStorage; reset so each test
-    // starts from the 90d default rather than a sibling test's selection.
+    // starts from the shared 7d default rather than a sibling test's selection.
     localStorage.clear();
   });
 
-  it("shows a degraded state (not a perpetual skeleton) when an insights query errors", () => {
-    setInsights({ agents: errored() });
-    hooks.useAgentSessions.mockReturnValue(sessions(5));
+  it.each([A11yTheme.Light, A11yTheme.Dark])(
+    "keeps dashboard critical a11y and contrast clean in %s theme",
+    async (theme) => {
+      setInsights({});
+      hooks.useAgentSessions.mockReturnValue(sessions(3));
 
-    renderDashboard();
+      const { container } = renderDashboardForA11y(theme);
 
-    expect(screen.getByText(DEGRADED_RE)).toBeInTheDocument();
-    expect(screen.queryByTestId("row-stats")).not.toBeInTheDocument();
-  });
-
-  it.each([
-    A11yTheme.Light,
-    A11yTheme.Dark,
-  ])("keeps dashboard critical a11y and contrast clean in %s theme", async (theme) => {
-    setInsights({});
-    hooks.useAgentSessions.mockReturnValue(sessions(3));
-
-    const { container } = renderDashboardForA11y(theme);
-
-    await expectCriticalAxeClean(container);
-    expectElementContrast(screen.getByText("Recent Sessions"), {
-      background: themeBackground(theme),
-      label: `dashboard recent sessions ${theme}`,
-    });
-  });
+      await expectCriticalAxeClean(container);
+      expectElementContrast(screen.getByText(WEB_RECENT_SESSIONS_TITLE), {
+        background: themeBackground(theme),
+        label: `dashboard recent sessions ${theme}`,
+      });
+    }
+  );
 
   it("does not flash the empty state while the sessions query is still loading", () => {
     setInsights({});
@@ -248,16 +222,21 @@ describe("InsightsOverviewDashboard", () => {
 
     renderDashboard();
 
-    expect(hooks.useAgentSessions).toHaveBeenCalledWith({
-      limit: 8,
-      startDate: expect.any(String),
-      sortBy: SessionSortKey.LastActivity,
-      sortDir: "desc",
-      // FEA-3534: the dashboard defaults to the Me scope, which threads
-      // viewerScope=self into the Recent Sessions read so the card stays
-      // scoped to the authenticated user instead of the whole org.
-      viewerScope: AgentSessionViewerScope.Self,
-    });
+    expect(hooks.useAgentSessions).toHaveBeenCalledWith(
+      {
+        limit: 8,
+        startDate: expect.any(String),
+        sortBy: SessionSortKey.LastActivity,
+        sortDir: "desc",
+        // FEA-3534: the dashboard defaults to the Me scope, which threads
+        // viewerScope=self into the Recent Sessions read so the card stays
+        // scoped to the authenticated user instead of the whole org.
+        viewerScope: AgentSessionViewerScope.Self,
+      },
+      // ISS-7514: no feature-flag provider is mounted here, so the deferral
+      // gate resolves closed and the read is issued on mount as before.
+      { enabled: true }
+    );
   });
 
   it("shows the empty state only once analytics and sessions resolve with no sessions", () => {
@@ -278,7 +257,7 @@ describe("InsightsOverviewDashboard", () => {
 
     renderDashboard();
 
-    expect(screen.getByText(DEGRADED_RE)).toBeInTheDocument();
+    expect(screen.getByText(SESSIONS_ERROR_RE)).toBeInTheDocument();
     // The row layout is intact (analytics are fine).
     expect(screen.getByTestId("row-stats")).toBeInTheDocument();
     // SyncedSessionsTable is suppressed — only the error text renders.
@@ -303,7 +282,7 @@ describe("InsightsOverviewDashboard", () => {
     expect(screen.queryByTestId("row-activity")).not.toBeInTheDocument();
     expect(screen.queryByTestId("row-autonomy")).not.toBeInTheDocument();
     // Recent Sessions still renders (re-anchored under the stats row).
-    expect(screen.getByText("Recent Sessions")).toBeInTheDocument();
+    expect(screen.getByText(WEB_RECENT_SESSIONS_TITLE)).toBeInTheDocument();
   });
 
   // ISS-5061 re-gate (reverses ISS-5280 for this one flag): closed-by-default on
@@ -416,6 +395,51 @@ describe("InsightsOverviewDashboard", () => {
     expect(screen.getByTestId("row-autonomy")).toBeInTheDocument();
   });
 
+  // ISS-9993: this host decides which rows exist through the shared
+  // `visibleDashboardRows` and nothing else. One fixture has none of the
+  // data-conditional rows' data and one has all of it, so a row filtered here
+  // by hand, or a row drawn here that the shared rule drops, fails. The desktop
+  // suite runs the same contract against `FirstLaunchDashboard`.
+  it.each([
+    ["none", NO_ROW_DATA],
+    ["all", ALL_ROW_DATA],
+  ])(
+    "renders exactly the rows the shared rule keeps when %s of the row data is present",
+    (_label, payloads) => {
+      setInsights({
+        delivery: succeeded(payloads.delivery),
+        utilization: succeeded(payloads.utilization),
+        agents: succeeded(payloads.agents),
+      });
+      hooks.useAgentSessions.mockReturnValue(sessions(3));
+
+      renderDashboard([AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY]);
+
+      expect(renderedRowTours(document)).toEqual(expectedRowTours(payloads));
+    }
+  );
+
+  // Without this the pair above could pass on two fixtures the rule treats the
+  // same, and prove nothing about the data-conditional rows.
+  it("uses row-data fixtures the shared rule tells apart", () => {
+    expect(expectedRowTours(NO_ROW_DATA)).toEqual([
+      DashboardRowTour.Stats,
+      DashboardRowTour.Models,
+      DashboardRowTour.Prs,
+      DashboardRowTour.Distribution,
+    ]);
+    expect(expectedRowTours(ALL_ROW_DATA)).toEqual([
+      DashboardRowTour.Stats,
+      DashboardRowTour.Activity,
+      DashboardRowTour.Models,
+      DashboardRowTour.AgentPipeline,
+      DashboardRowTour.Autonomy,
+      DashboardRowTour.Frustration,
+      DashboardRowTour.Prs,
+      DashboardRowTour.Distribution,
+    ]);
+  });
+
   it("renders the AI Impact card after the headline row for everyone (FEA-4000 graduated)", () => {
     setInsights({});
     hooks.useAgentSessions.mockReturnValue(sessions(3));
@@ -429,20 +453,20 @@ describe("InsightsOverviewDashboard", () => {
     expect(screen.getByText(AI_IMPACT_RE)).toBeInTheDocument();
   });
 
-  it("defaults to the 90d window and labels KPI deltas QoQ", () => {
+  it("defaults to the 7d window and labels KPI deltas WoW", () => {
     setInsights({});
     hooks.useAgentSessions.mockReturnValue(sessions(3));
 
     renderDashboard();
 
-    // Default range (FEA-2232 Q-003) maps to the "90" InsightsPeriod...
-    expect(lastPeriod()).toBe("90");
-    // ...and the quarter-over-quarter delta caption flows to the tiles.
+    // The shared DEFAULT_DATE_RANGE (7d) maps to the "7" InsightsPeriod...
+    expect(lastPeriod()).toBe("7");
+    // ...and the week-over-week delta caption flows to the tiles.
     expect(screen.getByTestId("row-stats")).toHaveAttribute(
       "data-delta-label",
-      "QoQ"
+      "WoW"
     );
-    expect(screen.getByLabelText("Last 7 days")).toBeInTheDocument();
+    expect(screen.getByLabelText("Last 90 days")).toBeInTheDocument();
   });
 
   it("re-drives the insights period and delta label when the picker changes", () => {
@@ -450,16 +474,93 @@ describe("InsightsOverviewDashboard", () => {
     hooks.useAgentSessions.mockReturnValue(sessions(3));
 
     renderDashboard();
-    expect(lastPeriod()).toBe("90");
-
-    // Switch to the 7-day window via the shared DateRangeFilter.
-    fireEvent.click(screen.getByLabelText("Last 7 days"));
-
     expect(lastPeriod()).toBe("7");
+
+    // Switch to the 90-day window via the shared DateRangeFilter.
+    fireEvent.click(screen.getByLabelText("Last 90 days"));
+
+    expect(lastPeriod()).toBe("90");
     expect(screen.getByTestId("row-stats")).toHaveAttribute(
       "data-delta-label",
-      "WoW"
+      "QoQ"
     );
+  });
+
+  /**
+   * tamsinb (#5505): the clock is pinned in beforeEach/afterEach rather than
+   * inline, matching the refreshing-indicator block below. An inline
+   * `vi.useFakeTimers()` that relies on reaching `vi.useRealTimers()` at the
+   * bottom leaks a frozen clock into the next test whenever an assertion between
+   * the two throws — so a failure here would surface as an unrelated sibling
+   * failing on a date it never set.
+   *
+   * Mid-May deliberately: `getStartIsoForDays` walks back with local-time
+   * `setDate`, so a window straddling a DST transition would not be a whole
+   * number of 24h days and the span identity would be off by an hour.
+   */
+  describe("Recent Sessions pinned window", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("discloses the Recent Sessions window and keeps it pinned when the picker moves", () => {
+      // ISS-7185: every KPI above this card follows the range picker; the card
+      // does not. Both halves are asserted together, because the disclosure is
+      // only worth anything if the pin is real — a card that quietly started
+      // following the picker would still pass an assertion on the caption alone.
+      setInsights({});
+      hooks.useAgentSessions.mockReturnValue(sessions(3));
+
+      renderDashboard();
+      expect(lastPeriod()).toBe("7");
+      expect(screen.getByText(WEB_RECENT_SESSIONS_TITLE)).toBeVisible();
+      // The desktop counterpart positively asserts this same canonical title.
+      expect(screen.queryByText(DESKTOP_RECENT_SESSIONS_TITLE)).toBeNull();
+      expect(screen.queryByText(DESKTOP_SYNCED_SESSIONS_TITLE)).toBeNull();
+      expect(screen.getByText(RECENT_SESSIONS_DESCRIPTION)).toHaveTextContent(
+        SYNCED_WINDOW_RE
+      );
+
+      fireEvent.click(screen.getByLabelText("Last 90 days"));
+
+      // The tiles moved to the 90-day cohort...
+      expect(lastPeriod()).toBe("90");
+      // ...and the card still reads its own 7-day window.
+      //
+      // Note what the set-size below does and does not prove (review, #5505):
+      // `startDate` is `useMemo(..., [])`, so size-1 is guaranteed by the memo,
+      // not by the pin — the card does not re-query at all. It catches the
+      // realistic regression (deriving the bound from `dateRange`, which changes
+      // the deps and the value) but would not catch one that kept empty deps.
+      // The span identity below is the assertion carrying the real weight.
+      expect(screen.getByText(RECENT_SESSIONS_DESCRIPTION)).toBeInTheDocument();
+      // ISS-9727 review: this dashboard now makes TWO session reads, and only
+      // one of them is this card's. The other is the all-time existence read,
+      // which is deliberately UNBOUNDED — so it contributes an `undefined`
+      // `startDate` that has nothing to do with the pin under test. The reads
+      // are told apart by the count-only hint that only the all-time one
+      // carries, never by the field being asserted, so a pin that genuinely
+      // regressed to an unbounded query still fails here.
+      const startDates = new Set(
+        hooks.useAgentSessions.mock.calls
+          .filter((call) => call[0]?.countOnly !== true)
+          .map((call) => call[0]?.startDate)
+      );
+      expect(startDates.size).toBe(1);
+      // whitlockk (#5505): stability alone is not the claim. An arbitrary frozen date
+      // would satisfy the set-size check while the caption promised seven days, so
+      // assert the window the card actually QUERIES is the one it ADVERTISES —
+      // measured against the pinned clock, so this is a fixed arithmetic identity
+      // and not a real-clock timing assertion.
+      const [queriedStart] = [...startDates];
+      expect(Date.now() - Date.parse(queriedStart as string)).toBe(
+        PINNED_WINDOW_DAYS * MS_PER_DAY
+      );
+    });
   });
 
   // Per-section loading treatment (fix for the "dashboard hangs before it loads"
@@ -567,7 +668,7 @@ describe("InsightsOverviewDashboard", () => {
       act(() => {
         // Switch the range → new request key; the hook reads the staged
         // in-flight state on the resulting re-render.
-        fireEvent.click(screen.getByLabelText("Last 7 days"));
+        fireEvent.click(screen.getByLabelText("Last 90 days"));
       });
       act(() => {
         vi.advanceTimersByTime(REFRESHING_ONSET_MS + 50);
@@ -599,7 +700,10 @@ describe("InsightsOverviewDashboard", () => {
       setInsights({});
       hooks.useAgentSessions.mockReturnValue(sessions(3));
 
-      const { rerender } = renderDashboard();
+      // One client across both renders, so the rerender below changes only the
+      // query statuses under test.
+      const queryClient = createTestQueryClient();
+      const { rerender } = renderDashboard([], undefined, queryClient);
 
       // A refetch WITHOUT a range change (e.g. a poll tick or db invalidation):
       // isFetching flips true but the request key is unchanged.
@@ -611,13 +715,19 @@ describe("InsightsOverviewDashboard", () => {
       hooks.useAgentSessions.mockReturnValue(refetchingSessions(3));
       act(() => {
         rerender(
-          <InsightsDataSourceProvider value={createInsightsDataSource()}>
-            <FeatureFlagAdapterProvider
-              adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
-            >
-              <InsightsOverviewDashboard getSessionHref={() => "/x"} />
-            </FeatureFlagAdapterProvider>
-          </InsightsDataSourceProvider>
+          withDashboardQueryClient(
+            <InsightsDataSourceProvider value={createInsightsDataSource()}>
+              <FeatureFlagAdapterProvider
+                adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
+              >
+                <InsightsOverviewDashboard
+                  emptyStateDescription={DESKTOP_DOWNLOAD_DESCRIPTION}
+                  getSessionHref={() => "/x"}
+                />
+              </FeatureFlagAdapterProvider>
+            </InsightsDataSourceProvider>,
+            queryClient
+          )
         );
         vi.advanceTimersByTime(REFRESHING_ONSET_MS + 50);
       });

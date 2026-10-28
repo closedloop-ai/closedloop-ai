@@ -4,7 +4,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import {
   assertPathAllowed,
   DirectoryNotAllowedError,
@@ -21,6 +21,9 @@ import {
   normalizeScopePath,
   validateSandboxBaseDirectory,
 } from "../src/shared/sandbox-policy.js";
+import { createTempDirManager } from "./helpers/temp-dir.js";
+
+const { makeSandboxRootTempDir } = createTempDirManager("sandbox-test-");
 
 const tempDirs: string[] = [];
 
@@ -33,31 +36,26 @@ async function makeTempDir(suffix: string): Promise<string> {
 }
 
 /**
- * ISS-4577: some persist-time assertions need a base dir whose canonical
- * realpath is a legitimate (non-risky) sandbox root. `os.tmpdir()` on macOS
- * realpaths under `/private/var/folders/...`, which `isRiskyAllowedDirectory`
- * (correctly) rejects as a system prefix — so a project under it can never be
- * persisted, masking the canonicalization behavior under test. A dot-dir
- * directly under the user's home realpaths to itself and is deep enough to clear
- * the `/Users/<name>` risky-root check.
- */
-async function makeHomeTempDir(suffix: string): Promise<string> {
-  const dir = await fsp.mkdtemp(
-    path.join(os.homedir(), `.cl-sandbox-test-${suffix}-`)
-  );
-  tempDirs.push(dir);
-  return dir;
-}
-
-/**
  * ISS-6128: a fixture whose LEXICAL path is not itself a risky root. Cases that
  * assert `canonicalizeScopePath`'s realpath work must not be satisfied by the
  * lexical path alone, or they stay green with that canonicalization removed:
  * `os.tmpdir()` on macOS is `/var/folders/...`, which `isRiskyAllowedDirectory`
  * rejects on the `/var` prefix, masking the behavior under test. `/tmp` is
- * outside every prefix that guard checks on both macOS and Linux, and — unlike
- * `makeHomeTempDir` — nothing it strands on an abrupt SIGTERM lands in the
- * operator's real home directory.
+ * LEXICALLY outside every prefix that guard checks on both macOS and Linux,
+ * which is what these cases need, and nothing it strands on an abrupt SIGTERM
+ * lands in the operator's real home directory. ISS-10655 holds
+ * `makeSandboxRootTempDir` to that second rule too — it mints under
+ * `/Users/Shared` on macOS rather than `~` — so the two helpers now differ only
+ * on the lexical-vs-canonical point below.
+ *
+ * ISS-8662: do NOT read that as `/tmp` being an acceptable sandbox root. The
+ * guard canonicalizes before it compares, and on macOS `/tmp` realpaths to
+ * `/private/tmp`, so `isRiskyAllowedDirectory` REJECTS a real project under it
+ * on the `/private` prefix — the same way it rejects one under `os.tmpdir()`.
+ * The distinction holds here only because the scope these cases build does not
+ * exist, so nothing canonicalizes it but the ancestor walk under test. A
+ * fixture that needs a sandbox root the guard ACCEPTS wants
+ * `makeSandboxRootTempDir`.
  */
 async function makeNonSystemTempDir(suffix: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join("/tmp", `sandbox-test-${suffix}-`));
@@ -203,7 +201,7 @@ describe("ISS-4577 validateSandboxBaseDirectory canonicalizes at save", () => {
     // A benign-looking symlink pointing at a safe project. The authoritative
     // save must store the REAL directory so a later retarget of the link cannot
     // silently move the enforced sandbox.
-    const parent = await makeHomeTempDir("iss4577-safe");
+    const parent = makeSandboxRootTempDir("iss4577-safe");
     const realProject = path.join(parent, "my-project");
     await fsp.mkdir(realProject, { recursive: true });
     const link = path.join(parent, "scope-link");
@@ -227,7 +225,7 @@ describe("ISS-4577 validateSandboxBaseDirectory canonicalizes at save", () => {
     // Simulate the retarget attack: save while the link points at a safe
     // project, then repoint the link at the home directory. Because we persisted
     // the canonical real dir, enforcement never sees the widened target.
-    const parent = await makeHomeTempDir("iss4577-retarget");
+    const parent = makeSandboxRootTempDir("iss4577-retarget");
     const realProject = path.join(parent, "my-project");
     await fsp.mkdir(realProject, { recursive: true });
     const link = path.join(parent, "scope-link");

@@ -144,7 +144,7 @@ function labelSubagentCosts(
     }
     // A zero delta is "no attributed spend" (absent), not "$0.00"; only a
     // nonzero fallback delta is rendered — precisely, so a sub-cent figure
-    // survives instead of flooring to "$0.00" (wongk review).
+    // survives instead of flooring to "$0.00" (whitlockk review).
     const delta = span.item.costDelta ?? 0;
     span.item.cost = delta > 0 ? formatTraceCostForDisplay(delta) : null;
   }

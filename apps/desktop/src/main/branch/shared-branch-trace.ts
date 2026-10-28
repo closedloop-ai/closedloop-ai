@@ -1,3 +1,4 @@
+import { DEFAULT_HUMAN_ACTOR_COLOR_TOKEN } from "@repo/api/src/agent-session-user-color";
 import type { TokenEventCostPoint } from "@repo/api/src/types/agent-session";
 import { decodeBranchId } from "@repo/api/src/types/branch";
 import {
@@ -7,16 +8,15 @@ import {
   BranchTraceSessionHydrationState,
   type BranchTraceSessionIdentity,
   BranchTraceUnavailableReason,
-  mergedTraceItemSchema,
+  partitionReadableTraceItems,
+  withUnreadableItemCount,
 } from "@repo/api/src/types/branch-trace";
 import {
   buildMergedTrace,
+  buildMergedTraceWithDiscards,
   type MergedTraceSessionInput,
 } from "@repo/lib/branches/merged-trace";
-import {
-  projectAgentSessionTimelineEvents,
-  projectAgentSessionTurnItems,
-} from "@repo/lib/sessions/agent-session-detail-projection";
+import { projectAgentSessionTurnItemsFromEvents } from "@repo/lib/sessions/agent-session-detail-projection";
 import { z } from "zod";
 import { DESKTOP_LOCAL_SESSION_AUTHOR_LABEL } from "../../shared/shared-agent-sessions-contract.js";
 import type { SessionAttributionResolverCache } from "../agent-sync/agent-session-attribution.js";
@@ -25,10 +25,8 @@ import {
   type BranchLinkRow,
   readLocalBranchLinkRowsForBranch,
 } from "../database/branch-reads.js";
-import type {
-  BranchCloudHydrationSource,
-  BranchSyncSource,
-} from "./shared-branches-api.js";
+import { reportBranchTraceItemsUnreadable } from "../telemetry/branch-trace-unreadable-items-telemetry.js";
+import type { BranchSyncSource } from "./shared-branches-api.js";
 import {
   filterEligibleBranchRows,
   resolveBranchProductEligibilitySnapshot,
@@ -56,8 +54,7 @@ const loadedSessionIdentitySchema = z.object({
  */
 export async function getSharedBranchTrace(
   source: BranchSyncSource | null | undefined,
-  id: unknown,
-  cloudHydration?: BranchCloudHydrationSource
+  id: unknown
 ): Promise<BranchTraceResult> {
   if (!source || typeof id !== "string" || id.length === 0) {
     return unavailableResult([], BranchTraceUnavailableReason.Unknown);
@@ -74,12 +71,10 @@ export async function getSharedBranchTrace(
       source.prisma,
       decodedBranchId
     );
-    const eligibilitySnapshot = await resolveBranchProductEligibilitySnapshot(
+    const linkRows = filterEligibleBranchRows(
       rawLinkRows,
-      cloudHydration,
-      { scope: "detail" }
+      resolveBranchProductEligibilitySnapshot(rawLinkRows)
     );
-    const linkRows = filterEligibleBranchRows(rawLinkRows, eligibilitySnapshot);
     qualifyingSessions = selectQualifyingSessions(linkRows);
   } catch {
     return unavailableResult([], BranchTraceUnavailableReason.Unknown);
@@ -176,17 +171,12 @@ function hydrateBatch(
     }
     try {
       const traceInput = toMergedTraceSessionInput(loaded);
-      const projectedItems = buildMergedTrace([traceInput]);
-      if (
-        !projectedItems.every(
-          (item) => mergedTraceItemSchema.safeParse(item).success
-        )
-      ) {
-        return unavailableHydration(
-          identity,
-          BranchTraceUnavailableReason.Malformed
-        );
-      }
+      // ISS-9723: build only to prove this Session yields items at all. Items
+      // the contract cannot parse are rejected individually over the joint
+      // build in `resultFromHydrations`, so one of them no longer withholds
+      // every readable item this Session holds. A THROW still costs the whole
+      // Session, because it produced nothing to keep.
+      buildMergedTrace([traceInput]);
       return {
         session: { identity, state: BranchTraceSessionHydrationState.Loaded },
         traceInput,
@@ -222,13 +212,30 @@ function resultFromHydrations(
     traceInput ? [traceInput] : []
   );
   const loadedCount = traceInputs.length;
+  // ISS-9723 (#6884 review, davetho): seeded with what the BUILDER discarded.
+  // The sibling cloud producer seeds the same way from the same helper, so a
+  // turn neither can place in time is counted identically on both surfaces.
+  const built = buildMergedTraceWithDiscards(traceInputs);
+  const { items, unreadableCountBySession } = partitionReadableTraceItems(
+    built.items,
+    built.unstampedCountBySession
+  );
+  // ISS-9723 (#6884 review, codex): the drop is correct BEHAVIOR and a silent
+  // one — the read succeeds and the store is healthy — so the local producer
+  // that wrote an unparseable item is invisible off this machine unless the
+  // refusal reaches the monitored channel here, where the built trace is still
+  // in hand. Reported, never repaired: the partition is not modified.
+  reportBranchTraceItemsUnreadable(unreadableCountBySession.size);
   const completeness = completenessForHydration(
     qualifyingSessions.length,
-    loadedCount
+    loadedCount,
+    unreadableCountBySession.size > 0
   );
   return {
-    items: buildMergedTrace(traceInputs),
-    sessions: hydrations.map(({ session }) => session),
+    items,
+    sessions: hydrations.map(({ session }) =>
+      withUnreadableItemCount(session, unreadableCountBySession)
+    ),
     qualifyingSessionCount: qualifyingSessions.length,
     completeness,
     aggregateCompleteness: completeness,
@@ -253,9 +260,12 @@ function unavailableResult(
 
 function completenessForHydration(
   qualifyingCount: number,
-  loadedCount: number
+  loadedCount: number,
+  // ISS-9723: a Session can load in full and still contribute fewer items than
+  // it built, which count-based completeness cannot see on its own.
+  anyItemUnreadable: boolean
 ): BranchTraceResult["completeness"] {
-  if (qualifyingCount === loadedCount) {
+  if (qualifyingCount === loadedCount && !anyItemUnreadable) {
     return { state: BranchTraceCompletenessState.Complete };
   }
   if (loadedCount > 0) {
@@ -291,17 +301,17 @@ function classifyHydrationFailure(
 function toMergedTraceSessionInput(
   session: SyncedAgentSession
 ): MergedTraceSessionInput {
-  const timeline = projectAgentSessionTimelineEvents(session.events, {
-    metadata: session.metadata,
-  });
-  const turnItems = projectAgentSessionTurnItems({
+  const turnItems = projectAgentSessionTurnItemsFromEvents({
     sessionId: session.externalSessionId,
     harness: session.harness ?? "unknown",
     primaryModel: session.model ?? null,
-    humanActor: { name: DESKTOP_LOCAL_SESSION_AUTHOR_LABEL, color: "#64748B" },
+    humanActor: {
+      name: DESKTOP_LOCAL_SESSION_AUTHOR_LABEL,
+      color: DEFAULT_HUMAN_ACTOR_COLOR_TOKEN,
+    },
     agents: session.agents,
     events: session.events,
-    timeline,
+    metadata: session.metadata,
     tokenUsageByModel: session.tokenUsageByModel,
     tokenEvents: toTraceTokenEventCostPoints(session),
   });

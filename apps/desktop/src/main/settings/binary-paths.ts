@@ -1,36 +1,82 @@
 /**
- * The resolved-binary path map persisted under `binaryPaths`, plus the pure
- * merge helper over it. Split out of `settings-store.ts` (FEA-3907) so that file
- * stays comfortably under the 1,000-line ceiling; the merge needs no store
- * instance.
+ * The resolved-binary path maps persisted under `binaryPaths`, plus pure
+ * helpers for preserving or deleting legacy persisted keys while exposing only
+ * current tools to Settings surfaces.
  */
 
-export type BinaryPaths = {
-  claude?: string;
-  gh?: string;
-  codex?: string;
-  cursor?: string;
-  opencode?: string;
-  python3?: string;
-  git?: string;
-};
+import type {
+  CurrentBinaryPaths as FilteredBinaryPaths,
+  BinaryPaths as PersistedBinaryPaths,
+  PersistedCliBinaryTool,
+} from "../../shared/cli-binary-tools.js";
+import {
+  CliBinaryToolKeyStatus,
+  classifyCliBinaryToolKey,
+  isCurrentCliBinaryTool,
+} from "../../shared/cli-binary-tools.js";
+
+export type {
+  BinaryPaths,
+  CurrentBinaryPaths,
+} from "../../shared/cli-binary-tools.js";
 
 /**
- * Applies a `path | null` patch onto the current binary-path map, returning a new
- * map: a `null` value removes the key, any other value sets it. Pure — the caller
- * owns persistence.
+ * Applies a current-tool `path | null` patch onto the persisted binary-path map.
+ * Legacy persisted keys are preserved and may be deleted, but cannot be added or
+ * changed here.
  */
 export function mergeBinaryPaths(
-  current: BinaryPaths,
-  patch: Record<string, string | null>
-): BinaryPaths {
-  const merged: BinaryPaths = { ...current };
+  current: PersistedBinaryPaths,
+  patch: Record<string, string | null | undefined>
+): PersistedBinaryPaths {
+  const merged = filterPersistedBinaryPaths(current);
   for (const [key, value] of Object.entries(patch)) {
+    const status = classifyCliBinaryToolKey(key);
+    if (status === CliBinaryToolKeyStatus.Unknown) {
+      continue;
+    }
+    if (status === CliBinaryToolKeyStatus.Legacy) {
+      if (value === null && isPersistedBinaryPathKey(key)) {
+        delete merged[key];
+      }
+      continue;
+    }
+    if (!isCurrentCliBinaryTool(key)) {
+      continue;
+    }
     if (value === null) {
-      delete (merged as Record<string, string | undefined>)[key];
-    } else {
-      (merged as Record<string, string>)[key] = value;
+      delete merged[key];
+    } else if (value !== undefined) {
+      merged[key] = value;
     }
   }
   return merged;
+}
+
+export function filterPersistedBinaryPaths(
+  paths: PersistedBinaryPaths | undefined
+): PersistedBinaryPaths {
+  const filtered: PersistedBinaryPaths = {};
+  for (const [key, value] of Object.entries(paths ?? {})) {
+    if (isPersistedBinaryPathKey(key) && typeof value === "string") {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+export function filterCurrentBinaryPaths(
+  paths: PersistedBinaryPaths | undefined
+): FilteredBinaryPaths {
+  const filtered: FilteredBinaryPaths = {};
+  for (const [key, value] of Object.entries(paths ?? {})) {
+    if (isCurrentCliBinaryTool(key) && typeof value === "string") {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+function isPersistedBinaryPathKey(key: string): key is PersistedCliBinaryTool {
+  return classifyCliBinaryToolKey(key) !== CliBinaryToolKeyStatus.Unknown;
 }

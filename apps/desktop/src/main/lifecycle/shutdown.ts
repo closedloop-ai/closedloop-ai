@@ -56,7 +56,7 @@ const DEFAULT_PHASE_TIMEOUT_MS = 3000;
  * windows). A required phase timing out means cleanup did NOT complete, so the
  * sequence still PROCEEDS through the remaining phases (never wedges exit) but
  * is classified `timed_out` and reported — it must not masquerade as a clean
- * exit(0) (wongk, ISS-4585).
+ * exit(0) (whitlockk, ISS-4585).
  */
 const PhaseCriticality = {
   Optional: "optional",

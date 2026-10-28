@@ -10,6 +10,7 @@ import {
   RepositoryDefaultSource,
 } from "@repo/api/src/types/repository-default-identity";
 import type { TransactionClient } from "@repo/database";
+import { mapPullRequestAuthor } from "@repo/github/pull-request-author";
 import { log } from "@repo/observability/log";
 import {
   BranchProjectionMode,
@@ -34,6 +35,7 @@ export type WebhookPullRequestProjectionTarget = {
   organizationId: string;
   pullRequestDetailId: string | null;
   repositoryId: string;
+  repositoryFullName: string;
 };
 
 /** Route one existing PR through its branch or legacy detail-only authority path. */
@@ -89,10 +91,12 @@ export async function writeWebhookPullRequestProjection(
           : BranchProjectionMode.Full,
       currentHeadSha: target.currentHeadSha,
       pullRequestDetailId: target.pullRequestDetailId,
+      pullRequestBranchArtifactId: target.branchArtifactId,
     },
     {
       organizationId: target.organizationId,
       repositoryId: target.repositoryId,
+      repositoryFullName: target.repositoryFullName,
       githubId: String(pullRequest.id),
       number: pullRequest.number,
       title: pullRequest.title,
@@ -110,9 +114,13 @@ export async function writeWebhookPullRequestProjection(
       githubCreatedAt: pullRequest.created_at
         ? new Date(pullRequest.created_at)
         : null,
+      githubUpdatedAt: pullRequest.updated_at
+        ? new Date(pullRequest.updated_at)
+        : null,
       closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
       mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
       mergeCommitSha: pullRequest.merge_commit_sha ?? null,
+      ...mapPullRequestAuthor(pullRequest.user),
       headRepositoryObservation: buildWebhookHeadRepositoryObservation(
         pullRequest,
         observationContext

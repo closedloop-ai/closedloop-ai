@@ -1,30 +1,27 @@
 import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { type ReactNode, useEffect, useRef } from "react";
 import { DesktopAuthStatus } from "../../../shared/contracts";
-import { DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
 import { DesktopFeatureFlagProvider } from "../../feature-flags/desktop-feature-flag-provider";
 import { NavId } from "../../navigation/route-table";
 import { DesktopAuthProvider } from "../../shared-agent-sessions/desktop-auth-provider";
-import { GuestSignupProvider } from "../onboarding/guest-signup-provider";
 import { assertTextAbsent, waitForText } from "../story-text-assertions";
 import { Sidebar } from "./Sidebar";
 
 /**
- * ISS-5112 (PLN-1600 Step D, wongk story review on PR #4560): the sidebar
+ * ISS-5112 (PLN-1600 Step D, whitlockk story review on PR #4560): the sidebar
  * footer's identity slot, signed in and as a guest.
  *
- * `guest-pre-auth-chrome.test.tsx` already pins the CORRECTNESS in both
- * directions — a guest never sees an organization name or the "Account"
- * fallback, and a signed-in device never reads "Guest". What it cannot pin is
- * what the swap LOOKS like, and this PR changed exactly that: the guest slot
+ * `guest-pre-auth-chrome.test.tsx` already pins the CORRECTNESS of the guest
+ * side — a guest never sees an organization name or the "Account" fallback —
+ * and {@link SignedIn} below is what holds the other direction, since every case
+ * in that suite is signed out. What neither can pin is what the swap LOOKS like, and this PR changed exactly that: the guest slot
  * went from a dashed-border box to an `Avatar` fallback, because a dashed
  * outline means "nothing here yet" in this product and a guest is a person, not
  * a missing thing. That change was made on review and shipped without anyone
  * seeing it rendered.
  *
- * Worth a permanent fixture rather than a one-off look, because this state is
- * expensive to reach in the running app FOREVER: it needs the guest-onboarding
- * Labs flag on AND a signed-out session, so nobody stumbles into it.
+ * Worth a permanent fixture rather than a one-off look: reaching it in the
+ * running app means signing out, which nobody does on the way to anywhere else.
  *
  * The two stories are meant to be read as a pair — the leak this footer must
  * never spring is an organization name reaching a signed-out guest, and the two
@@ -35,7 +32,8 @@ import { Sidebar } from "./Sidebar";
  * dashboard's wrapping title row does.
  */
 const meta = {
-  title: "Desktop/Shell/Sidebar Account Footer",
+  title: "Composites v1.0/Desktop Shell/Sidebar Account Footer",
+  tags: ["deprecated"],
   component: Sidebar,
   parameters: { layout: "fullscreen" },
 };
@@ -43,18 +41,17 @@ const meta = {
 export default meta;
 
 /**
- * A guest: the `guest-onboarding` flag on, no session. The footer reads "Guest"
- * behind an avatar fallback, and the menu behind it still carries Settings,
- * Diagnostics and Theme — open it on the canvas. An earlier revision replaced
- * the whole dropdown with a bare button, which stranded a signed-out user with
- * no route to Settings and therefore no way to turn this very flag back off.
+ * A guest: no session. The footer reads "Guest" behind an avatar fallback, and
+ * the menu behind it still carries Settings, Diagnostics and Theme — open it on
+ * the canvas. An earlier revision replaced the whole dropdown with a bare
+ * button, which stranded a signed-out user with no route to Settings at all.
  */
 export const Guest = {
-  render: () => stage({ guestOnboarding: true, signedIn: false }),
+  render: () => stage({ signedIn: false }),
   play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
-    // The flag resolves through a real IPC round-trip, so without this the
-    // canvas could settle on the signed-in fallback and the story would be a
-    // lie that still mounted green in the sweep.
+    // Auth resolves through a real IPC round-trip, so without this the canvas
+    // could settle on the signed-in fallback and the story would be a lie that
+    // still mounted green in the sweep.
     await waitForText(canvasElement, GUEST_LABEL);
     assertTextAbsent(canvasElement, ORG_NAME);
     assertTextAbsent(canvasElement, ACCOUNT_FALLBACK);
@@ -67,24 +64,8 @@ export const Guest = {
  * the guest branch exists at all.
  */
 export const SignedIn = {
-  render: () => stage({ guestOnboarding: false, signedIn: true }),
+  render: () => stage({ signedIn: true }),
   play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
-    await waitForText(canvasElement, ORG_NAME);
-    assertTextAbsent(canvasElement, GUEST_LABEL);
-  },
-};
-
-/**
- * The flag ON but signed IN. Guest chrome is gated on BOTH, so this must render
- * identically to {@link SignedIn}: turning the flag on for a real account may
- * never relabel them "Guest".
- */
-export const FlagOnButSignedIn = {
-  render: () => stage({ guestOnboarding: true, signedIn: true }),
-  play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
-    // The assertion that makes this story worth having: the flag is ON here, so
-    // a guest branch gated on the flag ALONE would relabel a real account
-    // "Guest". It is gated on the flag AND signed-out.
     await waitForText(canvasElement, ORG_NAME);
     assertTextAbsent(canvasElement, GUEST_LABEL);
   },
@@ -94,37 +75,22 @@ const GUEST_LABEL = "Guest";
 const ORG_NAME = "Northwind Engineering";
 const ACCOUNT_FALLBACK = "Account";
 
-type Fixture = { guestOnboarding: boolean; signedIn: boolean };
+type Fixture = { signedIn: boolean };
 
 /**
  * The real providers over a stubbed preload bridge, rather than mocked hooks:
- * `useGuestOnboarding` reads the flag through `DesktopFeatureFlagProvider`
- * (which supplies the `@repo/app` adapter itself) and the auth status through
- * `DesktopAppCoreProvider`, so stubbing `window.desktopApi` is what exercises
- * the same resolution path the packaged app takes. A story cannot `vi.mock`,
- * which is the other reason to drive it from the bridge.
+ * `useGuestOnboarding` reads the auth status through `DesktopAppCoreProvider`,
+ * so stubbing `window.desktopApi` is what exercises the same resolution path the
+ * packaged app takes. A story cannot `vi.mock`, which is the other reason to
+ * drive it from the bridge. `DesktopFeatureFlagProvider` stays because the
+ * sidebar's own gated footer reads the flag port through it.
  */
-function installBridge({ guestOnboarding, signedIn }: Fixture): () => void {
+function installBridge({ signedIn }: Fixture): () => void {
   const original = Object.getOwnPropertyDescriptor(window, "desktopApi");
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
     value: {
-      // Unpackaged, which is what lets the flag registry resolve at all.
       getRuntimeStatus: () => Promise.resolve({ isPackaged: false }),
-      // `{ flags: [{ key, value }] }`, NOT a flat record — `extractDesktopFlags`
-      // ignores anything without that array and silently falls back to the
-      // registry defaults, which for this default-off flag is indistinguishable
-      // from the flag being off. The `play` below is what caught that: the
-      // story mounted perfectly green while rendering signed-in chrome.
-      getAllFlags: () =>
-        Promise.resolve({
-          flags: [
-            {
-              key: DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY,
-              value: guestOnboarding,
-            },
-          ],
-        }),
       getDesktopAuthState: () =>
         Promise.resolve(
           signedIn
@@ -207,11 +173,9 @@ function SidebarFooterStage({ fixture }: { fixture: Fixture }) {
   return (
     <DesktopAuthProvider>
       <DesktopFeatureFlagProvider>
-        <GuestSignupProvider>
-          <SidebarProvider>
-            <Sidebar activeNav={NavId.Sessions} />
-          </SidebarProvider>
-        </GuestSignupProvider>
+        <SidebarProvider>
+          <Sidebar activeNav={NavId.Sessions} />
+        </SidebarProvider>
       </DesktopFeatureFlagProvider>
     </DesktopAuthProvider>
   );

@@ -10,15 +10,25 @@
  * These cases assert the SHAPE of the read (a bounded, page-size-independent
  * statement count and peak in-flight concurrency) rather than the response body,
  * because a body-only assertion stays green if the fan-out comes back. The page
- * here is 100 Branches — the route's `BRANCH_LIST_MAX_LIMIT`, and far ABOVE the
- * bound under test, so an unbounded implementation cannot pass by accident.
+ * here is the route's `BRANCH_LIST_MAX_LIMIT` — far ABOVE the bound under test,
+ * so an unbounded implementation cannot pass by accident. Read from the route,
+ * so ISS-9692 raising that cap to 500 widens this case rather than stranding it
+ * on a page size the route no longer calls its largest.
  */
 
 import {
   BranchCollaboratorSource,
   BranchIdentityAvailability,
 } from "@repo/api/src/types/branch-identity";
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -45,17 +55,20 @@ import {
   mockBranchCandidatePage,
   now,
   organizationId,
+  renderSql,
 } from "@/__tests__/support/branches/branch-read-service.test-helpers";
 import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
-import {
-  BRANCH_LIST_MAX_LIMIT,
-  branchReadService,
-} from "./branch-read-service";
+import { BRANCH_LIST_MAX_LIMIT } from "./branch-list-query";
+import { branchReadService } from "./branch-read-service";
 import {
   COMMENT_EVIDENCE_LIMIT,
   SESSION_COMMENT_ID_CHUNK_SIZE,
-} from "./branch-read-service/identity-attribution";
+} from "./branch-read-service/page-comment-evidence";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** The largest page a caller can ask for — read from the route, never re-declared. */
 const PAGE_BRANCHES = BRANCH_LIST_MAX_LIMIT;
@@ -96,6 +109,7 @@ function makeComment(authorId: string, artifactId: string, index: number) {
 function makeUser(id: string, firstName: string) {
   return {
     id,
+    clerkId: `user_${id}`,
     email: `${firstName.toLowerCase()}@example.com`,
     firstName,
     lastName: "Tester",
@@ -270,10 +284,8 @@ describe("branch list identity evidence is read page-wide, not per Branch (ISS-6
     expect(collaboratorUserIds(response, secondBranch)).toEqual([authorA]);
   });
 
-  it("reports every Branch incomplete when the page-wide evidence bound truncates", async () => {
+  it("windows a saturated page so only the Branch with truncated comments is incomplete", async () => {
     const firstBranch = pageBranchId(0);
-    // One row past the page-wide bound: the overflow cannot be attributed to a
-    // Branch, so no Branch may claim a complete corpus.
     const overflowing = Array.from(
       { length: COMMENT_EVIDENCE_LIMIT * PAGE_BRANCHES + 1 },
       (_row, index) => makeComment(authorA, firstBranch, index)
@@ -284,21 +296,38 @@ describe("branch list identity evidence is read page-wide, not per Branch (ISS-6
       )
     );
     mockDb.user.findMany.mockResolvedValue([makeUser(authorA, "Ada")]);
+    const readRaw = mockDb.$queryRaw.getMockImplementation();
+    if (!readRaw) {
+      throw new Error("Branch page raw-query fixture was not installed");
+    }
+    mockDb.$queryRaw.mockImplementation((query) => {
+      if (renderSql(query).includes("PARTITION BY t.artifact_id")) {
+        return Promise.resolve(
+          overflowing
+            .slice(0, COMMENT_EVIDENCE_LIMIT + 1)
+            .map(() => ({ branchId: firstBranch, authorId: authorA }))
+        );
+      }
+      return readRaw(query);
+    });
 
     const response = await listPage();
 
-    for (const branch of [
-      pageBranchId(0),
-      pageBranchId(50),
-      pageBranchId(99),
-    ]) {
+    expect(
+      sourceAvailability(
+        response,
+        firstBranch,
+        BranchCollaboratorSource.BranchComments
+      )
+    ).toBe(BranchIdentityAvailability.Incomplete);
+    for (const branch of [pageBranchId(50), pageBranchId(99)]) {
       expect(
         sourceAvailability(
           response,
           branch,
           BranchCollaboratorSource.BranchComments
         )
-      ).toBe(BranchIdentityAvailability.Incomplete);
+      ).toBe(BranchIdentityAvailability.Complete);
     }
   });
 
@@ -436,6 +465,21 @@ describe("the session-comment read spends one page-wide row budget (ISS-6004)", 
   it("holds no more rows than the page budget however many chunks it reads", async () => {
     // Every chunk matches far more rows than the page has budget for.
     mockSessionChunkRows(pageBudget * chunks);
+    const readRaw = mockDb.$queryRaw.getMockImplementation();
+    if (!readRaw) {
+      throw new Error("Branch page raw-query fixture was not installed");
+    }
+    mockDb.$queryRaw.mockImplementation((query) => {
+      if (renderSql(query).includes("PARTITION BY scoped.branch_id")) {
+        return Promise.resolve(
+          Array.from({ length: COMMENT_EVIDENCE_LIMIT + 1 }, () => ({
+            branchId: branch,
+            authorId: authorA,
+          }))
+        );
+      }
+      return readRaw(query);
+    });
 
     const response = await listOneBranchPage();
 
@@ -446,6 +490,11 @@ describe("the session-comment read spends one page-wide row budget (ISS-6004)", 
     // And the read stops issuing statements once the budget is spent: the one
     // Branch statement plus the single chunk that fit, not one per chunk.
     expect(mockDb.comment.findMany).toHaveBeenCalledTimes(2);
+    expect(
+      mockDb.$queryRaw.mock.calls.filter(([query]) =>
+        renderSql(query).includes("PARTITION BY scoped.branch_id")
+      )
+    ).toHaveLength(1);
     // `truncated` still means what it meant: rows matched that this read did not
     // return, so no Branch may claim a complete corpus. (Also Incomplete before
     // the fix, where the first chunk overflowed the cap on its own — this is the

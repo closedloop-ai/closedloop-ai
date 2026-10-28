@@ -1,13 +1,17 @@
+import {
+  OperationKind,
+  type OperationReceipt,
+  OperationReceiptOutcome,
+} from "@repo/api/src/types/attribution-evidence";
 import { type ApiResult, failure } from "@repo/api/src/types/common";
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import {
   CreateDocumentVersionErrorCode,
   type CreatedDocumentVersionInlineImage,
-  type DocumentVersion,
   MAX_CREATE_DOCUMENT_VERSION_REQUEST_BODY_BYTES,
 } from "@repo/api/src/types/document-version";
 import { log } from "@repo/observability/log";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import type { z } from "zod";
 import {
   forbiddenAttachmentUploadResponse,
@@ -16,7 +20,17 @@ import {
 import { isMcpAttachmentUploadEnabled } from "@/app/documents/attachment-upload-feature";
 import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import type {
+  AuthContext,
+  AuthenticatedJsonResponse,
+  RouteContext,
+} from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   errorResponse,
   formatZodErrors,
@@ -27,7 +41,9 @@ import {
 } from "@/lib/route-utils";
 import {
   type CreateDocumentVersionError,
+  type DocumentVersionListItem,
   documentVersionService,
+  type RecordVersionCreated,
 } from "../../document-version-service";
 import {
   hasInlineImageInputs,
@@ -37,10 +53,7 @@ import { resetDocumentRoom } from "../../room-utils";
 import { newVersionValidator } from "../../validators";
 
 export const GET = withAnyAuth<
-  Pick<
-    DocumentVersion,
-    "id" | "documentId" | "version" | "createdById" | "createdAt"
-  >[],
+  DocumentVersionListItem[],
   "/documents/[id]/versions"
 >(async ({ user }, _, params) => {
   try {
@@ -69,95 +82,149 @@ export const GET = withAnyAuth<
 export const POST = withAnyAuth<
   CreateDocumentVersionResponse,
   "/documents/[id]/versions"
->(
-  async ({ authMethod, clerkUserId, user }, request, params) => {
-    try {
-      const { id } = await params;
-      const resolvedId = await resolveDocumentId(id, user.organizationId);
-      if (!resolvedId) {
-        return notFoundResponse("Artifact");
-      }
+>(withOperationReceipts(OperationKind.CreateVersion, createVersionResponse), {
+  requiredScopes: ["write"],
+});
 
-      const { body, errorResponse: parseError } =
-        await parseCreateDocumentVersionBody(request);
-      if (parseError) {
-        return parseError;
-      }
-
-      const inlineImages = body.inlineImages ?? [];
-      const hasInlineImages = inlineImages.length > 0;
-      if (
-        hasInlineImages &&
-        authMethod === "api_key" &&
-        !(await isMcpAttachmentUploadEnabled({
-          clerkUserId,
-          userId: user.id,
-        }))
-      ) {
-        return forbiddenAttachmentUploadResponse();
-      }
-
-      const versionResult = hasInlineImages
-        ? await documentVersionService.createNewVersionWithInlineImages(
-            resolvedId,
-            user.organizationId,
-            user.id,
-            body.content,
-            inlineImages
-          )
-        : await createContentOnlyVersion(
-            resolvedId,
-            user.organizationId,
-            user.id,
-            body.content
-          );
-      if (versionResult.ok === false) {
-        return mapCreateDocumentVersionFailure(versionResult.error);
-      }
-      const { document: updatedArtifact } = versionResult.value;
-
-      // Reset the Liveblocks room when a new version is created.
-      // This allows the room to be reset with the new content the next time a user opens the
-      // artifact editor.
-      const resetRoom =
-        request.nextUrl.searchParams.get("reset-room") !== "false";
-      if (resetRoom) {
-        log.info("[liveblocks] Resetting room after version create", {
-          documentId: resolvedId,
-          version: updatedArtifact.latestVersion,
-        });
-        await resetDocumentRoom(updatedArtifact, user.id).catch((error) => {
-          log.error("[liveblocks] Failed to reset room after version create", {
-            documentId: resolvedId,
-            version: updatedArtifact.latestVersion,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          scheduleLogFlush();
-        });
-      }
-
-      scheduleLogFlush();
-      return successResponse(
-        shapeCreateDocumentVersionResponse(updatedArtifact, versionResult.value)
-      );
-    } catch (error) {
-      return errorResponse("Failed to create new version", error);
+async function createVersionResponse(
+  { authMethod, clerkUserId, user }: AuthContext,
+  request: NextRequest,
+  params: RouteContext<"/documents/[id]/versions">["params"],
+  receipts: OperationReceiptRecorder
+): Promise<AuthenticatedJsonResponse<CreateDocumentVersionResponse>> {
+  try {
+    const { id } = await params;
+    const resolvedId = await resolveDocumentId(id, user.organizationId);
+    if (!resolvedId) {
+      return notFoundResponse("Artifact");
     }
-  },
-  { requiredScopes: ["write"] }
-);
+
+    const { body, errorResponse: parseError } =
+      await parseCreateDocumentVersionBody(request);
+    if (parseError) {
+      return parseError;
+    }
+
+    const inlineImages = body.inlineImages ?? [];
+    const hasInlineImages = inlineImages.length > 0;
+    if (
+      hasInlineImages &&
+      authMethod === "api_key" &&
+      !(await isMcpAttachmentUploadEnabled({
+        clerkUserId,
+        userId: user.id,
+      }))
+    ) {
+      return forbiddenAttachmentUploadResponse();
+    }
+
+    // Undefined when the request records nothing, so the save skips the
+    // previous-version read it only needs for a receipt (flag-off parity).
+    const recordVersion = receipts.whenRecording(versionReceipt(receipts));
+    const versionResult = hasInlineImages
+      ? await documentVersionService.createNewVersionWithInlineImages(
+          resolvedId,
+          user.organizationId,
+          user.id,
+          body.content,
+          inlineImages,
+          recordVersion
+        )
+      : await createContentOnlyVersion(
+          resolvedId,
+          user.organizationId,
+          user.id,
+          body.content,
+          recordVersion
+        );
+    if (versionResult.ok === false) {
+      return mapCreateDocumentVersionFailure(versionResult.error);
+    }
+    const { document: updatedArtifact, versionContent } = versionResult.value;
+
+    // Put the new version into the live document on both transports and
+    // signal open editors. `reset-room=false` (Save Version) leaves the live
+    // draft as it is.
+    const resetRoom =
+      request.nextUrl.searchParams.get("reset-room") !== "false";
+    if (resetRoom) {
+      log.info("[document-room] Resetting room after version create", {
+        documentId: resolvedId,
+        version: updatedArtifact.latestVersion,
+      });
+      // The stored content: an inline-image publish's `versionContent` is
+      // the body before `createVersion` sanitized it.
+      const storedContent =
+        updatedArtifact.latestVersionContent ?? versionContent;
+      await resetDocumentRoom(updatedArtifact, user.id, storedContent).catch(
+        (error) => {
+          log.error(
+            "[document-room] Failed to reset room after version create",
+            {
+              documentId: resolvedId,
+              version: updatedArtifact.latestVersion,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+          scheduleLogFlush();
+        }
+      );
+    }
+
+    scheduleLogFlush();
+    return successResponse(
+      withOperationReceipt(
+        shapeCreateDocumentVersionResponse(
+          updatedArtifact,
+          versionResult.value
+        ),
+        receipts
+      )
+    );
+  } catch (error) {
+    return errorResponse("Failed to create new version", error);
+  }
+}
+
+/**
+ * ISS-12552: the version save's operation receipt, written inside the save's
+ * transaction. An identical save is a no-op: it still creates the version row,
+ * but changes no content, so it never qualifies as a revision.
+ */
+function versionReceipt(
+  receipts: OperationReceiptRecorder
+): RecordVersionCreated {
+  return (tx, info) =>
+    receipts.record(tx, {
+      operationKind: OperationKind.CreateVersion,
+      outcome: info.contentChanged
+        ? OperationReceiptOutcome.Committed
+        : OperationReceiptOutcome.NoOp,
+      targetArtifactId: info.documentId,
+      versionNumber: info.versionNumber,
+      changedFields: info.contentChanged ? ["content"] : [],
+      ...(info.contentDigestBefore
+        ? { contentDigestBefore: info.contentDigestBefore }
+        : {}),
+      ...(info.contentDigestAfter
+        ? { contentDigestAfter: info.contentDigestAfter }
+        : {}),
+    });
+}
 
 async function createContentOnlyVersion(
   resolvedId: string,
   organizationId: string,
   userId: string,
-  content: string
+  content: string,
+  recordVersion: RecordVersionCreated | undefined
 ): Promise<CreateDocumentVersionRouteResult> {
   const document = await documentVersionService.createNewVersion(
     resolvedId,
     organizationId,
     userId,
-    content
+    content,
+    recordVersion
   );
   if (!document) {
     return {
@@ -312,6 +379,8 @@ type CreateDocumentVersionRouteResult =
 type CreateDocumentVersionResponse = DocumentDetail & {
   versionContent?: string;
   inlineImages?: CreatedDocumentVersionInlineImage[];
+  /** ISS-12552: present on API-key writes only. */
+  operationReceipt?: OperationReceipt;
 };
 
 type CreateDocumentVersionRequestBody = z.infer<typeof newVersionValidator>;

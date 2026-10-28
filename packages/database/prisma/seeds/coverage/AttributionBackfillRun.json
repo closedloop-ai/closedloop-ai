@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Written only by the attribution backfill script (apps/api/scripts/attribution-backfill.ts) to record its own progress; no product surface reads it."
+}

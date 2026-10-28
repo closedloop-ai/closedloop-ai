@@ -2,6 +2,7 @@ import { FEATURE_FLAG_SETTLE_TIMEOUT_MS as FLAG_SETTLE_TIMEOUT_MS } from "@repo/
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { FeatureFlagRouteGate } from "../feature-flag-route-gate";
 
 const PAST_SETTLE_DEADLINE_MS = FLAG_SETTLE_TIMEOUT_MS + 1;
@@ -111,7 +112,8 @@ function renderGate() {
       pending={<div>{PENDING_CHROME_TEXT}</div>}
     >
       <GatedChild />
-    </FeatureFlagRouteGate>
+    </FeatureFlagRouteGate>,
+    { wrapper: WebFeatureFlagProvider }
   );
 }
 
@@ -188,7 +190,7 @@ describe("FeatureFlagRouteGate", () => {
   });
 
   it("does NOT 404 on a false flag while the user is not yet identified in PostHog (anonymous bootstrap)", () => {
-    // wongk (thread 1): PostHog bootstraps against the anonymous cookie distinct
+    // whitlockk (thread 1): PostHog bootstraps against the anonymous cookie distinct
     // id and can resolve the flag OFF before identify() runs. Committing 404 here
     // throws the route away for a user whose flag is actually enabled. Hold the
     // pending chrome until the identified user's flags have landed.
@@ -223,7 +225,7 @@ describe("FeatureFlagRouteGate", () => {
   });
 
   it("renders the body when the flag was false pre-identify but resolves on after identify (false→true)", () => {
-    // The exact regression wongk called out: false before identify, true after.
+    // The exact regression whitlockk called out: false before identify, true after.
     // Once identify() lands and the reloaded flag reads enabled, the real body
     // renders — the route is never thrown away.
     settledIdentifiedState();
@@ -390,7 +392,8 @@ describe("FeatureFlagRouteGate", () => {
     render(
       <FeatureFlagRouteGate flag={TEST_FLAG}>
         <GatedChild />
-      </FeatureFlagRouteGate>
+      </FeatureFlagRouteGate>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(

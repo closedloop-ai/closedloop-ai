@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type AmbientTransactionOptionsDiscard,
+  observeAmbientTransactionOptionDiscards,
+} from "../ambient-transaction-observer";
 import { withDb } from "../index";
 
 /**
@@ -127,6 +131,78 @@ describe("withDb / withDb.tx — joining an ambient transaction", () => {
     expect(transactionCalls[0]).toBeUndefined();
   });
 
+  /**
+   * ISS-11104 — the discard above is correct in production and catastrophic in a
+   * test, where the ambient transaction is the harness's own and the boundary
+   * the nested call asked for therefore never existed. Reporting it is what lets
+   * `autoRollbackTransaction` fail such a case instead of passing it.
+   */
+  describe("reporting the discarded budget", () => {
+    let seen: AmbientTransactionOptionsDiscard[];
+    let stopObserving: () => void;
+
+    beforeEach(() => {
+      seen = [];
+      stopObserving = observeAmbientTransactionOptionDiscards((discard) => {
+        seen.push(discard);
+      });
+    });
+
+    afterEach(() => {
+      stopObserving();
+    });
+
+    it("reports the options the ambient join could not honor", async () => {
+      await withDb.tx(() =>
+        withDb.tx(() => Promise.resolve(null), { maxWait: 111, timeout: 222 })
+      );
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.discarded).toEqual({ maxWait: 111, timeout: 222 });
+    });
+
+    it("carries a stack so the nested call site can be named", async () => {
+      await withDb.tx(() =>
+        withDb.tx(() => Promise.resolve(null), { timeout: 222 })
+      );
+
+      expect(seen[0]?.stack).toContain("withDb.tx ambient join");
+    });
+
+    it("reports once per nested call, so a fan-out is counted", async () => {
+      await withDb.tx(async () => {
+        await withDb.tx(() => Promise.resolve(null), { timeout: 1 });
+        await withDb.tx(() => Promise.resolve(null), { timeout: 2 });
+      });
+
+      expect(seen.map((discard) => discard.discarded.timeout)).toEqual([1, 2]);
+    });
+
+    it("stays silent for a nested call that asked for no budget", async () => {
+      // Joining is the normal, correct case — only a DISCARDED request is news.
+      await withDb.tx(() => withDb.tx(() => Promise.resolve(null)));
+
+      expect(seen).toEqual([]);
+    });
+
+    it("stays silent for the OUTERMOST transaction's own options", async () => {
+      // Nothing was discarded there: Prisma received them.
+      await withDb.tx(() => Promise.resolve(null), { timeout: 999 });
+
+      expect(seen).toEqual([]);
+    });
+
+    it("stops reporting once the observer is removed", async () => {
+      stopObserving();
+
+      await withDb.tx(() =>
+        withDb.tx(() => Promise.resolve(null), { timeout: 222 })
+      );
+
+      expect(seen).toEqual([]);
+    });
+  });
+
   it("THROWS when an isolationLevel is requested inside an ambient transaction", async () => {
     // ISS-4669 fail-closed: the outer level is fixed at BEGIN and may be weaker
     // than requested, so returning a silently-wrong snapshot is not an option.
@@ -169,5 +245,23 @@ describe("withDb / withDb.tx — joining an ambient transaction", () => {
     });
 
     expect(seen.inner).toBe(seen.outer);
+  });
+});
+
+describe("withDb.inTransaction", () => {
+  it("is false outside a transaction and inside a plain withDb", async () => {
+    expect(withDb.inTransaction()).toBe(false);
+    expect(await withDb(() => withDb.inTransaction())).toBe(false);
+  });
+
+  it("is true inside withDb.tx, including a joined nested call", async () => {
+    const seen = await withDb.tx(async () => [
+      withDb.inTransaction(),
+      await withDb(() => withDb.inTransaction()),
+      await withDb.tx(() => Promise.resolve(withDb.inTransaction())),
+    ]);
+
+    expect(seen).toEqual([true, true, true]);
+    expect(withDb.inTransaction()).toBe(false);
   });
 });

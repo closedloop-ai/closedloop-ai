@@ -169,7 +169,7 @@ describe("probePreviewSchemaAtHead", () => {
   });
 
   it("is NOT at head when an unresolved (in-flight/failed) row exists even if every local migration is applied", async () => {
-    // Kris Wong review: a started-but-unfinished row means Prisma still has work
+    // Kerensa Whitlock review: a started-but-unfinished row means Prisma still has work
     // (or a P3009 preview reset) to do; skipping migrate would leave partial DDL.
     const { deps } = baseDeps({
       dirs: ["0001_a"],

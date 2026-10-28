@@ -8,6 +8,7 @@
  *    HTTP 200 (the route does not reject events after cancellation).
  */
 
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports that transitively pull in the mocked modules) ---
@@ -17,7 +18,12 @@ vi.mock("@/lib/internal-auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    flush: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock("@/app/compute-targets/service", () => ({
@@ -32,7 +38,6 @@ vi.mock("@/app/compute-targets/service", () => ({
 vi.mock("@/lib/relay-event-bus", () => ({
   relayEventBus: {
     clearOperationBacklog: vi.fn(),
-    publishResult: vi.fn(),
   },
 }));
 
@@ -54,10 +59,6 @@ vi.mock("@/lib/desktop-command-store", () => ({
     }),
     listNonTerminalDispatchCommands: vi.fn().mockResolvedValue([]),
   },
-}));
-
-vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
-  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
 }));
 
 // --- Imports (after mocks) ---
@@ -96,10 +97,10 @@ describe("tier-2: cancellation flow", () => {
       commandId: "cmd-1",
       computeTargetId: TARGET_ID,
       operationId: "op-1",
-      status: "cancelled",
+      status: DesktopCommandStatus.Cancelled,
       createdAt: new Date().toISOString(),
       lastSequenceAcked: 0,
-    } as any);
+    });
   });
 
   describe("desktop.command.ack with accepted: false", () => {

@@ -6,7 +6,7 @@
  * The kind LIST is a cross-surface contract and is pinned in `@repo/api`
  * (`src/types/__tests__/plugin-child-kinds.test.ts`). Rendering it into SQLite
  * statement text is desktop persistence, so both the helper and its coverage
- * live here (PR #4916 review — wongk).
+ * live here (PR #4916 review — whitlockk).
  *
  * The three rollup queries in `dashboard/shared-agent-components-api.ts` and the
  * `pack_id` backfill in `packs/component-scanner.ts` interpolate this string
@@ -14,11 +14,11 @@
  * order — is load-bearing rather than cosmetic.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentKind,
   PLUGIN_CHILD_KINDS,
 } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { PLUGIN_CHILD_KINDS_SQL_LIST } from "../src/main/database/db-helpers.js";
 
 test("renders every plugin child kind as a quoted SQL literal, in the constant's order", () => {

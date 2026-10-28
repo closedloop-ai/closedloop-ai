@@ -14,9 +14,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Displays a list of options for the user to pick from—triggered by a button.
  */
 const meta: Meta<typeof Select> = {
-  title: "Design System/Primitives/Select",
+  title: "Primitives v1.0/Inputs/Select",
   component: Select,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   render: (args) => (
     <Select {...args}>

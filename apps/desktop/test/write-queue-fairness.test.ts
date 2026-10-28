@@ -19,7 +19,7 @@
  * they still hold across the two-class scheduler).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createWriteQueue,
   WriteQueueCancelledError,
@@ -274,7 +274,7 @@ test("ISS-4710 (invariant preserved): only ONE task runs at a time across classe
   );
 });
 
-test("ISS-4710 (@wongk, production loop shape): an interactive sync write completes before the serial rebuild loop finishes", async () => {
+test("ISS-4710 (@whitlockk, production loop shape): an interactive sync write completes before the serial rebuild loop finishes", async () => {
   // The scheduler tests above pre-enqueue 12 bulk tasks at once. That is NOT the
   // production shape: `runDataRevisionRebuild` (data-revision-rebuild.ts) AWAITS
   // each `rebuildSessionFromParse` bulk write, then yields through

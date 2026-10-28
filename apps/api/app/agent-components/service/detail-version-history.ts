@@ -16,10 +16,10 @@ import {
  * @description The agent-components detail read's version-history lane: its own
  * row bound, the bounded read, and the ISS-5029 "this history is partial" fold.
  *
- * Extracted from `detail-read.ts` (ISS-5029) — that module is a grandfathered
- * over-size composition root, and this is one cohesive concern ("what revisions
- * does the detail show, and does it show all of them"), so it moves out rather
- * than pushing the root further past the ceiling.
+ * Extracted from `detail-read.ts` (ISS-5029) — that module is the detail
+ * composition root, and this is one cohesive concern ("what revisions does the
+ * detail show, and does it show all of them"), so it moves out rather than
+ * growing the root.
  */
 
 /**
@@ -105,7 +105,7 @@ export function loadComponentVersionHistory(
  *    caught up across syncs and nothing is provable, so the marker stays silent.
  *
  *    That ceiling argument only holds for the cap it is derived FROM, and the
- *    device has two (wongk, #4391). A per-family cap — the packer's SQL rank cap
+ *    device has two (whitlockk, #4391). A per-family cap — the packer's SQL rank cap
  *    or its entry cap — cannot bind unless the family holds more revisions than
  *    one sync can carry, which is precisely the lower bound the ceiling
  *    compares against. The per-component BYTE BUDGET has no such property: a
@@ -192,7 +192,7 @@ const MAX_REVISIONS_PER_FAMILY_PER_SYNC = SYNCED_COMPONENT_VARIANTS_MAX + 1;
 type DeviceTruncationRow = {
   variantsTruncated: boolean;
   /**
-   * ISS-5029 (wongk, #4391): which cap bound. Reconciled, not just read — see
+   * ISS-5029 (whitlockk, #4391): which cap bound. Reconciled, not just read — see
    * {@link provesDeviceHeldMore}.
    */
   variantsTruncatedReason: string | null;
@@ -230,7 +230,7 @@ function isCountedFamily(
 }
 
 /**
- * ISS-5029 (wongk, #4391): does this device row put a LOWER BOUND on how many
+ * ISS-5029 (whitlockk, #4391): does this device row put a LOWER BOUND on how many
  * revisions the device holds — the thing the one-sync ceiling is compared
  * against?
  *

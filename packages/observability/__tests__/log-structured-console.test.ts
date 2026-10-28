@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TelemetryCategory } from "../telemetry/schema";
+import { TelemetryCategory } from "../telemetry/telemetry-category";
 import { deleteEnvForTest } from "./test-helpers";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,58 @@ describe("readable console — default (no VERCEL, no DD_LOGS_JSON)", () => {
     expect(callArgs).toHaveLength(2);
     expect(callArgs[0]).toBe("Desktop telemetry event received");
     expect(callArgs[1]).toBe(meta);
+  });
+});
+
+// ISS-7920. `origin` reaches Datadog only through `buildEntry()`, which
+// `makeLogFn()` calls behind `if (DD.target)` — the agentless HTTP intake.
+// Nothing stamps it onto the console line, so a platform-drain deployment
+// (the relay's Fargate container sets neither DD_LOGS_JSON nor VERCEL) cannot
+// query `@origin:"relay"` at all. That asymmetry is what every relay row in
+// apps/api/docs/telemetry-verification.md is now qualified against, and it is
+// load-bearing enough that moving origin into `stampSeverity()` should fail
+// here rather than silently make that document wrong again.
+describe("console sinks never stamp origin — @origin: is agentless-intake only", () => {
+  it("omits origin from the structured JSON line when the caller supplied none", async () => {
+    vi.stubEnv("DD_LOGS_JSON", "1");
+    vi.stubEnv("DD_SERVICE", "relay");
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    const log = await importLogStructured();
+    infoSpy.mockClear();
+
+    // The call shape of apps/relay/src/index.ts:437 — a human sentence plus
+    // metadata, no origin key.
+    log.info("Connection socket accepted", {
+      category: TelemetryCategory.ConnectionSocketAccepted,
+      socketId: "AbCdEf0123456789",
+    });
+
+    const parsed = JSON.parse(infoSpy.mock.calls[0]?.[0] as string);
+    // `category` IS a first-class attribute on this sink — that half of the
+    // document's claim holds...
+    expect(parsed.category).toBe(TelemetryCategory.ConnectionSocketAccepted);
+    // ...and `origin` is absent even though DD_SERVICE resolves it for the
+    // intake payload, which is the half #5905 and this document got wrong.
+    expect(parsed).not.toHaveProperty("origin");
+  });
+
+  it("passes a caller-supplied origin through, the only way it reaches a console line", async () => {
+    vi.stubEnv("DD_LOGS_JSON", "1");
+    vi.stubEnv("DD_SERVICE", "relay");
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    const log = await importLogStructured();
+    infoSpy.mockClear();
+
+    log.info("Desktop telemetry event received", {
+      category: TelemetryCategory.ConnectionSocketAccepted,
+      origin: "desktop",
+    });
+
+    expect(JSON.parse(infoSpy.mock.calls[0]?.[0] as string).origin).toBe(
+      "desktop"
+    );
   });
 });
 

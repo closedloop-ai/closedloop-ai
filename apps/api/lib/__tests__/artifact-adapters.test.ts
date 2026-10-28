@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { branchArtifactToInfo } from "@/lib/artifact-adapters";
 
+type BranchArtifactInput = Parameters<typeof branchArtifactToInfo>[0];
+
 /**
  * Build the shared Artifact scalar fields that every fixture needs.
  * `branchArtifactToInfo` only reads the fields included here;
@@ -64,7 +66,10 @@ function makeBranchDetail(repository: { fullName: string } | null) {
 
 describe("branchArtifactToInfo", () => {
   it("returns null when pullRequest detail is absent", () => {
-    const artifact = { ...makeBaseArtifact(), branch: null } as any;
+    const artifact: BranchArtifactInput = {
+      ...makeBaseArtifact(),
+      branch: null,
+    };
 
     const result = branchArtifactToInfo(artifact);
 
@@ -72,10 +77,10 @@ describe("branchArtifactToInfo", () => {
   });
 
   it("returns repoFullName from detail.repository.fullName when present", () => {
-    const artifact = {
+    const artifact: BranchArtifactInput = {
       ...makeBaseArtifact(),
       branch: makeBranchDetail({ fullName: "owner/repo" }),
-    } as any;
+    };
 
     const result = branchArtifactToInfo(artifact);
 
@@ -84,10 +89,10 @@ describe("branchArtifactToInfo", () => {
   });
 
   it("returns repoFullName from options.repoFullName when detail.repository is null", () => {
-    const artifact = {
+    const artifact: BranchArtifactInput = {
       ...makeBaseArtifact(),
       branch: makeBranchDetail(null),
-    } as any;
+    };
 
     const result = branchArtifactToInfo(artifact, {
       repoFullName: "owner/fallback-repo",
@@ -98,10 +103,10 @@ describe("branchArtifactToInfo", () => {
   });
 
   it("returns repoFullName as null when options.repoFullName is undefined and detail.repository is null", () => {
-    const artifact = {
+    const artifact: BranchArtifactInput = {
       ...makeBaseArtifact(),
       branch: makeBranchDetail(null),
-    } as any;
+    };
 
     const result = branchArtifactToInfo(artifact);
 
@@ -110,10 +115,10 @@ describe("branchArtifactToInfo", () => {
   });
 
   it("prefers detail.repository.fullName over options.repoFullName", () => {
-    const artifact = {
+    const artifact: BranchArtifactInput = {
       ...makeBaseArtifact(),
       branch: makeBranchDetail({ fullName: "owner/repo-from-detail" }),
-    } as any;
+    };
 
     const result = branchArtifactToInfo(artifact, {
       repoFullName: "owner/repo-from-options",
@@ -123,10 +128,10 @@ describe("branchArtifactToInfo", () => {
   });
 
   it("maps artifact scalar fields onto the returned PullRequestInfo", () => {
-    const artifact = {
+    const artifact: BranchArtifactInput = {
       ...makeBaseArtifact(),
       branch: makeBranchDetail({ fullName: "owner/repo" }),
-    } as any;
+    };
 
     const result = branchArtifactToInfo(artifact, {
       externalLinkId: "link-99",

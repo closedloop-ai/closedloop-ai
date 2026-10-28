@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
 
 const tempDirs: string[] = [];
@@ -381,6 +381,71 @@ test("constructor deletes the retired collapsible-import-splash Labs key from th
   assert.equal(
     all.sandboxBaseDirectory,
     "/Users/test/Source",
+    "other settings should be preserved"
+  );
+});
+
+test("constructor deletes the retired Branches server-pagination Labs key from the persisted store (ISS-7870)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-migration-"));
+  tempDirs.push(tmpDir);
+
+  // ISS-7870 graduated server-page Branches reads after production Desktop 30d
+  // metrics cards regressed through the old complete-list waterfall. Persisted
+  // `false` is the dangerous value: if it survives, an upgraded install keeps the
+  // slow path even though the Labs toggle no longer exists.
+  const storeName = "test-settings-iss-7870-branches-server-page";
+  fs.writeFileSync(
+    path.join(tmpDir, `${storeName}.json`),
+    JSON.stringify({
+      "branches-server-pagination": false,
+      sandboxBaseDirectory: "/tmp/symphony-source",
+    })
+  );
+
+  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
+  const all = store.getAll();
+
+  assert.equal(
+    "branches-server-pagination" in all,
+    false,
+    "branches-server-pagination should be removed from getAll()"
+  );
+  assert.equal(
+    all.sandboxBaseDirectory,
+    "/tmp/symphony-source",
+    "other settings should be preserved"
+  );
+});
+
+test("constructor deletes the retired sessions-merged-loc-rung Labs key from the persisted store (ISS-9964)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-migration-"));
+  tempDirs.push(tmpDir);
+
+  // ISS-9964 / ISS-9980 (RULED 2026-09-11) made merged authored PRs the single
+  // unflagged population behind the session "Lines changed" row and the LOC/$
+  // beside it, so this toggle retires ENABLED. Persisted `false` is the
+  // dangerous value: surviving, it reads as an opt-OUT of a behavior that no
+  // longer has an off state.
+  const storeName = "test-settings-iss-9964-merged-loc-rung";
+  fs.writeFileSync(
+    path.join(tmpDir, `${storeName}.json`),
+    JSON.stringify({
+      "sessions-merged-loc-rung": false,
+      sandboxBaseDirectory: "/tmp/symphony-source",
+    })
+  );
+
+  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
+  const all = store.getAll();
+
+  assert.equal(
+    "sessions-merged-loc-rung" in all,
+    false,
+    "sessions-merged-loc-rung should be removed from getAll()"
+  );
+  assert.equal(
+    all.sandboxBaseDirectory,
+    "/tmp/symphony-source",
     "other settings should be preserved"
   );
 });

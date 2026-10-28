@@ -1,16 +1,20 @@
 import type { ConnectGitHubResponse } from "@repo/api/src/types/github";
+import { GitHubConnectErrorCode } from "@repo/api/src/types/github-clerk-link";
+import {
+  GITHUB_ERROR_CODES,
+  type GitHubErrorCode,
+} from "@repo/api/src/types/github-status";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
-  GITHUB_ERROR_CODES,
   GITHUB_OAUTH_RETURN_TO_COOKIE,
   GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,
   GITHUB_OAUTH_STATE_COOKIE,
-  type GitHubErrorCode,
   getErrorRedirectUrl,
+  getGitHubLinkRedirectUrl,
   getRequiresConfirmationRedirectUrl,
   getSuccessRedirectUrl,
   timingSafeCompare,
@@ -18,18 +22,19 @@ import {
 } from "../github-utils";
 
 type ConnectGitHubResponseBody = { data?: ConnectGitHubResponse };
+type ConnectGitHubFailureBody = { code?: string };
 
 /**
  * GET /api/integrations/github/callback
  *
- * Handles the OAuth callback from GitHub.
- * Validates state, then sends code + installation ID to API for token exchange.
- * Token exchange happens in the API to keep client_secret there.
+ * Handles the return from the GitHub App INSTALL flow (`/installations/new`).
+ * Validates CSRF state, then sends the installation ID to the API to claim
+ * it for the org (PLN-1742 M5 — there is no OAuth code exchange anymore; the
+ * API verifies the installation through the App's own JWT, and user
+ * credentials come exclusively from Clerk linking).
  *
- * GitHub passes three params when "OAuth during installation" is enabled:
- * - code: OAuth authorization code
- * - state: CSRF token
- * - installation_id: GitHub App installation ID
+ * GitHub may still append an OAuth `code` while "Request user authorization
+ * during installation" stays enabled on the App — it is ignored here.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
@@ -63,24 +68,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       return makeErrorRedirect(GITHUB_ERROR_CODES.OAUTH_FAILED);
     }
 
-    // Get code, state, and optional installation_id from URL
-    // installation_id is present in the /installations/new flow but absent
-    // in the standard OAuth authorize flow (when app is already installed)
-    const code = searchParams.get("code");
     const state = searchParams.get("state");
     const installationId = searchParams.get("installation_id");
 
-    // Log params for debugging (redact sensitive values)
     log.info("[github/callback] Received callback params", {
-      hasCode: !!code,
       hasState: !!state,
       hasInstallationId: !!installationId,
       installationId,
     });
 
-    if (!(code && state)) {
+    if (!(installationId && state)) {
       log.warn("[github/callback] Missing required params", {
-        hasCode: !!code,
         hasState: !!state,
         hasInstallationId: !!installationId,
       });
@@ -110,8 +108,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         state,
       }) ?? undefined;
 
-    // Send code + installationId to API for token exchange
-    // Token exchange happens in API to keep client_secret there
+    // Send the installation to the API to claim it for the org.
     const clerkToken = await getToken();
     const apiResponse = await fetch(
       `${resolveApiOrigin(request)}/integrations/github/connect`,
@@ -121,10 +118,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           "Content-Type": "application/json",
           Authorization: `Bearer ${clerkToken}`,
         },
-        body: JSON.stringify({
-          code,
-          ...(installationId && { installationId }),
-        }),
+        body: JSON.stringify({ installationId }),
       }
     );
 
@@ -138,9 +132,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             ? "Internal server error"
             : errorBody.slice(0, 200),
       });
-      const errorResponse = NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.CONNECTION_FAILED, returnTo)
-      );
+      // PLN-1742 M5: the App is installed by the time we get here, so a
+      // refusal the caller can actually fix must route to the fix. Linking
+      // is that fix, and the linking page finishes this same claim, so an
+      // install-before-connect user lands connected instead of on a generic
+      // "try again" they cannot act on.
+      const failureCode = readConnectFailureCode(errorBody);
+      const redirectUrl =
+        failureCode === GitHubConnectErrorCode.LinkRequired
+          ? getGitHubLinkRedirectUrl(installationId, returnTo)
+          : getErrorRedirectUrl(GITHUB_ERROR_CODES.CONNECTION_FAILED, returnTo);
+      const errorResponse = NextResponse.redirect(redirectUrl);
       clearGithubOAuthCookies(errorResponse);
       return errorResponse;
     }
@@ -185,6 +187,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
     clearGithubOAuthCookies(response);
     return response;
+  }
+}
+
+/**
+ * The failure body is the API's `ApiResult` shape, but a proxy or a 5xx can
+ * put anything on the wire — an unreadable body simply carries no code.
+ */
+function readConnectFailureCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as ConnectGitHubFailureBody;
+    return typeof parsed.code === "string" ? parsed.code : null;
+  } catch {
+    return null;
   }
 }
 

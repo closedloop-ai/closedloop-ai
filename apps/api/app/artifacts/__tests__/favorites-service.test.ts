@@ -21,7 +21,7 @@ describe("artifactFavoritesService.addFavorite", () => {
   it("returns null when artifact does not exist in the organization", async () => {
     const mockFindUnique = vi.fn().mockResolvedValue(null);
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { upsert: vi.fn() },
@@ -45,7 +45,7 @@ describe("artifactFavoritesService.addFavorite", () => {
     const mockFindUnique = vi.fn().mockResolvedValue({ id: TEST_ARTIFACT_ID });
     const mockUpsert = vi.fn().mockResolvedValue({});
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { upsert: mockUpsert },
@@ -68,6 +68,10 @@ describe("artifactFavoritesService.addFavorite", () => {
       },
       create: { userId: TEST_USER_ID, artifactId: TEST_ARTIFACT_ID },
       update: {},
+      // ISS-6274: the caller returns a literal `{ favorited: true }` and reads
+      // nothing off the row, so the upsert asks for the primary key alone —
+      // the narrowest `select` Prisma accepts — instead of `RETURNING *`.
+      select: { id: true },
     });
   });
 
@@ -75,7 +79,7 @@ describe("artifactFavoritesService.addFavorite", () => {
     const mockFindUnique = vi.fn().mockResolvedValue(null);
     const mockUpsert = vi.fn();
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { upsert: mockUpsert },
@@ -100,7 +104,7 @@ describe("artifactFavoritesService.removeFavorite", () => {
   it("returns null when artifact does not exist in the organization", async () => {
     const mockFindUnique = vi.fn().mockResolvedValue(null);
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { deleteMany: vi.fn() },
@@ -120,7 +124,7 @@ describe("artifactFavoritesService.removeFavorite", () => {
     const mockFindUnique = vi.fn().mockResolvedValue({ id: TEST_ARTIFACT_ID });
     const mockDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { deleteMany: mockDeleteMany },
@@ -143,7 +147,7 @@ describe("artifactFavoritesService.removeFavorite", () => {
     const mockFindUnique = vi.fn().mockResolvedValue(null);
     const mockDeleteMany = vi.fn();
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifact: { findUnique: mockFindUnique },
         favoriteArtifact: { deleteMany: mockDeleteMany },
@@ -168,7 +172,7 @@ describe("artifactFavoritesService.findFavoritesByUser", () => {
   it("queries favorites by userId and artifact organizationId", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([]);
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         favoriteArtifact: { findMany: mockFindMany },
       })
@@ -203,7 +207,7 @@ describe("artifactFavoritesService.findFavoritesByUser", () => {
       .fn()
       .mockResolvedValue([{ artifact: mockArtifact }]);
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         favoriteArtifact: { findMany: mockFindMany },
       })

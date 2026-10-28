@@ -32,11 +32,10 @@ describe("GET /desktop/identity", () => {
     mocks.get.mockResolvedValue({
       userId: "user-1",
       organizationId: "org-1",
-      email: "kris@closedloop.ai",
-      firstName: "Kris",
-      lastName: "Wong",
+      email: "kerensa@closedloop.ai",
+      firstName: "Kerensa",
+      lastName: "Whitlock",
       organizationName: "Acme Inc",
-      sessionSyncPolicyEnabled: true,
     });
 
     const response = await GET(request(), { params: Promise.resolve({}) });
@@ -47,11 +46,10 @@ describe("GET /desktop/identity", () => {
     expect(body.data).toEqual({
       userId: "user-1",
       organizationId: "org-1",
-      email: "kris@closedloop.ai",
-      firstName: "Kris",
-      lastName: "Wong",
+      email: "kerensa@closedloop.ai",
+      firstName: "Kerensa",
+      lastName: "Whitlock",
       organizationName: "Acme Inc",
-      sessionSyncPolicyEnabled: true,
     });
   });
 

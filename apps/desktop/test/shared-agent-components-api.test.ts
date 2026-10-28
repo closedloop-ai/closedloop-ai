@@ -14,7 +14,6 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
@@ -22,6 +21,7 @@ import {
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
+import { test } from "vitest";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { rawKeyInClause } from "../src/main/dashboard/hash-scope-predicates.js";
 import {
@@ -130,7 +130,7 @@ test("listAgentComponentsLocal collapses same-named components with distinct con
   }
 });
 
-test("listAgentComponentsLocal attributes versioned usage to the MATCHING version bucket BEFORE collapse, so the family total is not doubled (FEA-3982 wongk / FEA-4267)", async () => {
+test("listAgentComponentsLocal attributes versioned usage to the MATCHING version bucket BEFORE collapse, so the family total is not doubled (FEA-3982 whitlockk / FEA-4267)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     // A name owns two fingerprinted inventory rows (HASH_A, HASH_B). Usage that
@@ -171,7 +171,7 @@ test("listAgentComponentsLocal attributes versioned usage to the MATCHING versio
   }
 });
 
-test("listAgentComponentsLocal surfaces usage whose carried hash predates the current inventory hash (FEA-3982 wongk — hash-at-invocation != current)", async () => {
+test("listAgentComponentsLocal surfaces usage whose carried hash predates the current inventory hash (FEA-3982 whitlockk — hash-at-invocation != current)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     // The SINGLE inventory row is now on HASH_B (the component was updated), but a
@@ -568,7 +568,7 @@ test("listAgentComponentsLocal rolls up plugin usage from child components", asy
   }
 });
 
-test("listAgentComponentsLocal does not double-count a plugin's pack total across its version buckets (FEA-3982 wongk)", async () => {
+test("listAgentComponentsLocal does not double-count a plugin's pack total across its version buckets (FEA-3982 whitlockk)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     // The SAME plugin observed at two content versions (plugin.json updated A->B)
@@ -1111,7 +1111,7 @@ test("getAgentComponentDetailLocal returns a bounded deterministic exact invocat
         localComponentId: "c-read-page",
         localComponentVersionId: "v-exact",
         gitBranch: "feat/read-page",
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       },
       {
         id: "inv-agent",
@@ -1252,8 +1252,7 @@ test("getAgentComponentDetailLocal returns a bounded deterministic exact invocat
       sourcePath: "/repo/.claude/skills/deep-research.md",
       sourceModifiedAt: "2026-07-22T11:59:00.000Z",
       capturedAt: "2026-07-22T12:00:01.000Z",
-      repositoryFullName: "closedloop-ai/symphony-alpha",
-      branchName: "feat/read-page",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
     });
     assert.deepEqual(page.items[1].anchor, {
       kind: AgentComponentInvocationAnchorKind.Agent,
@@ -2332,7 +2331,7 @@ test("listAgentComponentsLocal hides a plugin's LOC/$ (non-verifiable kind, FEA-
   }
 });
 
-test("listAgentComponentsLocal hides a command's LOC/$ (non-verifiable kind, wongk PR #3720)", async () => {
+test("listAgentComponentsLocal hides a command's LOC/$ (non-verifiable kind, whitlockk PR #3720)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
@@ -2355,7 +2354,7 @@ test("listAgentComponentsLocal hides a command's LOC/$ (non-verifiable kind, won
     const result = await listAgentComponentsLocal(prisma, {}, null, source);
     const command = result.items.find((i) => i.id === "command::ship-it");
     assert.ok(command, "command row should be present");
-    // FEA-4052 (wongk, PR #3720): a command is NOT a verifiable LOC/$ kind. A
+    // FEA-4052 (whitlockk, PR #3720): a command is NOT a verifiable LOC/$ kind. A
     // session gives every co-invoked component (a command AND a skill can both
     // fire in one session) the session's FULL LOC/cost, so a per-command number
     // would be session-level, not component-level. It stays HIDDEN (null) even

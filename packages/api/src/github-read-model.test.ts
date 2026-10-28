@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBundledPullRequestsVariables,
+  bundledPullRequestsReachedWatermark,
+  GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE,
+  GITHUB_BUNDLED_PULL_REQUESTS_MAX_PAGE_SIZE,
   GITHUB_BUNDLED_PULL_REQUESTS_QUERY,
   isPullRequestMerged,
   mapBundledPullRequestsResponse,
@@ -10,9 +13,11 @@ import {
   normalizeGitHubFetchMechanism,
   normalizeGitHubFetchTrigger,
   normalizeGitHubSyncResultReason,
+  resolveMergedPullRequestState,
 } from "./github-read-model";
 import { ChecksStatus, ReviewDecision } from "./types/branch-checks";
 import { GitHubPRState } from "./types/github";
+import type { GitHubReadModelPullRequest } from "./types/github-read-model";
 import {
   GitHubBundledPullRequestsStopReason,
   GitHubFetchCredentialType,
@@ -231,7 +236,9 @@ describe("github read model", () => {
     expect(buildBundledPullRequestsVariables("acme", "repo", [])).toEqual({
       owner: "acme",
       repo: "repo",
-      pageSize: 100,
+      // ISS-7891: asserted through the constant, because the default moved off
+      // GitHub's 100-node ceiling to stay inside its ~10s execution budget.
+      pageSize: GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE,
     });
     expect(
       buildBundledPullRequestsVariables("acme", "repo", [], {
@@ -241,7 +248,9 @@ describe("github read model", () => {
     ).toEqual({
       owner: "acme",
       repo: "repo",
-      pageSize: 100,
+      // An over-large explicit request still clamps to GitHub's own ceiling,
+      // which the smaller default did not change.
+      pageSize: GITHUB_BUNDLED_PULL_REQUESTS_MAX_PAGE_SIZE,
       after: "cursor-1",
     });
     expect(
@@ -532,6 +541,314 @@ describe("github read model", () => {
   });
 });
 
+describe("mapPullRequestNode filtering", () => {
+  it("drops provider nodes missing an id, a numeric number, or a URL", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: null,
+              number: 60,
+              url: "https://github.com/acme/repo/pull/60",
+            },
+            {
+              id: "PR_no_number",
+              number: null,
+              url: "https://github.com/acme/repo/pull/61",
+            },
+            { id: "PR_no_url", number: 62, url: null },
+            {
+              id: "PR_valid",
+              number: 63,
+              url: "https://github.com/acme/repo/pull/63",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests).toHaveLength(1);
+    expect(result.pullRequests[0]?.number).toBe(63);
+  });
+});
+
+describe("resolveMergedPullRequestState", () => {
+  it("falls back to localState when connected but githubState is absent", () => {
+    expect(
+      resolveMergedPullRequestState({
+        connected: true,
+        githubState: undefined,
+        localState: GitHubPRState.Merged,
+      })
+    ).toBe(GitHubPRState.Merged);
+  });
+
+  it("falls back to githubState when disconnected and localState is absent", () => {
+    expect(
+      resolveMergedPullRequestState({
+        connected: false,
+        githubState: GitHubPRState.Closed,
+        localState: undefined,
+      })
+    ).toBe(GitHubPRState.Closed);
+  });
+
+  it("returns null when neither localState nor githubState is available", () => {
+    expect(
+      resolveMergedPullRequestState({
+        connected: false,
+        githubState: null,
+        localState: null,
+      })
+    ).toBeNull();
+  });
+});
+
+describe("mapProviderPullRequestState via the raw GraphQL state field", () => {
+  it("maps an OPEN state without a mergedAt timestamp to Open", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_state_open",
+              number: 200,
+              url: "https://github.com/acme/repo/pull/200",
+              state: GitHubPRState.Open,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.state).toBe(GitHubPRState.Open);
+  });
+
+  it("maps a MERGED state without a mergedAt timestamp to Merged", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_state_merged",
+              number: 201,
+              url: "https://github.com/acme/repo/pull/201",
+              state: GitHubPRState.Merged,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.state).toBe(GitHubPRState.Merged);
+  });
+
+  it("maps a CLOSED state without a mergedAt timestamp to Closed", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_state_closed",
+              number: 202,
+              url: "https://github.com/acme/repo/pull/202",
+              state: GitHubPRState.Closed,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.state).toBe(GitHubPRState.Closed);
+  });
+});
+
+describe("mapProviderReviewDecision via the raw GraphQL reviewDecision field", () => {
+  it("maps CHANGES_REQUESTED to ChangesRequested", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_review_changes",
+              number: 210,
+              url: "https://github.com/acme/repo/pull/210",
+              reviewDecision: ReviewDecision.ChangesRequested,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.reviewDecision).toBe(
+      ReviewDecision.ChangesRequested
+    );
+  });
+
+  it("maps COMMENTED to Commented", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_review_commented",
+              number: 211,
+              url: "https://github.com/acme/repo/pull/211",
+              reviewDecision: ReviewDecision.Commented,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.reviewDecision).toBe(
+      ReviewDecision.Commented
+    );
+  });
+
+  it("maps DISMISSED to Dismissed", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_review_dismissed",
+              number: 212,
+              url: "https://github.com/acme/repo/pull/212",
+              reviewDecision: ReviewDecision.Dismissed,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]?.reviewDecision).toBe(
+      ReviewDecision.Dismissed
+    );
+  });
+});
+
+describe("mapProviderChecksStatus via the raw statusCheckRollup state", () => {
+  function checksStatusForRollupState(state: string) {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: `PR_checks_${state}`,
+              number: 220,
+              url: "https://github.com/acme/repo/pull/220",
+              commits: {
+                nodes: [{ commit: { statusCheckRollup: { state } } }],
+              },
+            },
+          ],
+        },
+      },
+    });
+    return result.pullRequests[0]?.checksStatus;
+  }
+
+  it("maps FAILURE to Failing", () => {
+    expect(checksStatusForRollupState("FAILURE")).toBe(ChecksStatus.Failing);
+  });
+
+  it("maps ERROR to Failing", () => {
+    expect(checksStatusForRollupState("ERROR")).toBe(ChecksStatus.Failing);
+  });
+
+  it("maps PENDING to Pending", () => {
+    expect(checksStatusForRollupState("PENDING")).toBe(ChecksStatus.Pending);
+  });
+
+  it("maps EXPECTED to Pending", () => {
+    expect(checksStatusForRollupState("EXPECTED")).toBe(ChecksStatus.Pending);
+  });
+});
+
+describe("resolveBudgetState boundary", () => {
+  it("classifies remaining budget just above the low-budget ceiling as available", () => {
+    expect(
+      mapRateLimitBudget({ remaining: 251, cost: 1, resetAt: null }).state
+    ).toBe(GitHubProviderBudgetState.Available);
+  });
+
+  it("classifies remaining budget at exactly the low-budget ceiling as low", () => {
+    expect(
+      mapRateLimitBudget({ remaining: 250, cost: 1, resetAt: null }).state
+    ).toBe(GitHubProviderBudgetState.Low);
+  });
+});
+
+describe("mapGraphqlHeadRepository zod validation edge cases", () => {
+  it("classifies a slash-less head repository full name as malformed", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_bad_fullname",
+                number: 80,
+                url: "https://github.com/base/repo/pull/80",
+                headRepository: {
+                  databaseId: 222,
+                  nameWithOwner: "noslash",
+                  defaultBranchRef: { name: "main" },
+                },
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      observationContext()
+    );
+
+    expect(result.pullRequests[0]?.headRepositoryUnavailable).toEqual(
+      expect.objectContaining({ reason: RepositoryDefaultReason.Malformed })
+    );
+    expect(result.pullRequests[0]).not.toHaveProperty("headRepository");
+  });
+
+  it("omits both head snapshot fields when the caller-supplied context itself fails validation", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_invalid_context",
+                number: 81,
+                url: "https://github.com/base/repo/pull/81",
+                headRepository: null,
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      {
+        mechanism: GitHubFetchMechanism.Unknown,
+        trigger: GitHubFetchTrigger.Backfill,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "graphql-attempt:2",
+        observedAt: "2026-08-10T20:00:00.000Z",
+      }
+    );
+
+    // pins current behavior; looks odd because an unknown fetch mechanism in
+    // the caller-supplied context makes the unavailable observation fail its
+    // own zod validation, so the PR silently loses both headRepository and
+    // headRepositoryUnavailable instead of surfacing the acquisition error.
+    expect(result.pullRequests[0]).not.toHaveProperty("headRepository");
+    expect(result.pullRequests[0]).not.toHaveProperty(
+      "headRepositoryUnavailable"
+    );
+  });
+});
+
 function observationContext() {
   return {
     mechanism: GitHubFetchMechanism.Graphql,
@@ -541,3 +858,71 @@ function observationContext() {
     observedAt: "2026-08-10T20:00:00.000Z",
   };
 }
+
+describe("bundledPullRequestsReachedWatermark", () => {
+  const pr = (updatedAt: string | null): GitHubReadModelPullRequest => ({
+    githubId: "1",
+    number: 1,
+    title: "PR",
+    htmlUrl: "https://github.com/acme/widgets/pull/1",
+    headBranch: "feature",
+    baseBranch: "main",
+    headSha: null,
+    state: GitHubPRState.Merged,
+    isDraft: false,
+    additions: null,
+    deletions: null,
+    changedFiles: null,
+    reviewDecision: null,
+    checksStatus: null,
+    statusCheckRollup: null,
+    openedAt: null,
+    closedAt: null,
+    mergedAt: null,
+    mergeCommitSha: null,
+    updatedAt,
+    author: null,
+    source: GitHubReadModelSource.Provider,
+  });
+
+  it("is false while every row is newer than the watermark", () => {
+    expect(
+      bundledPullRequestsReachedWatermark(
+        [pr("2026-08-25T00:00:00Z"), pr("2026-08-24T00:00:00Z")],
+        "2026-08-20T00:00:00Z"
+      )
+    ).toBe(false);
+  });
+
+  it("is true as soon as one row is at or older than the watermark", () => {
+    expect(
+      bundledPullRequestsReachedWatermark(
+        [pr("2026-08-25T00:00:00Z"), pr("2026-08-20T00:00:00Z")],
+        "2026-08-20T00:00:00Z"
+      )
+    ).toBe(true);
+  });
+
+  it("never stops on a row whose position it cannot establish", () => {
+    // Truncating a gap-repair read on an unplaceable row would silently drop
+    // every PR behind it.
+    expect(
+      bundledPullRequestsReachedWatermark(
+        [pr(null), pr("not-a-date")],
+        "2026-08-20T00:00:00Z"
+      )
+    ).toBe(false);
+  });
+
+  it("never stops when there is no watermark to compare against", () => {
+    expect(
+      bundledPullRequestsReachedWatermark([pr("2019-01-01T00:00:00Z")], null)
+    ).toBe(false);
+    expect(
+      bundledPullRequestsReachedWatermark(
+        [pr("2019-01-01T00:00:00Z")],
+        "not-a-date"
+      )
+    ).toBe(false);
+  });
+});

@@ -9,8 +9,10 @@ import {
   type BuildMigrateEventInput,
   buildMigrateEvent,
   createMigrateRunRecorder,
+  DD_LOG_INTAKE_TIMEOUT_MS,
   flushMigrateTelemetry,
   type MigrateDeployEvent,
+  MigrateExecutor,
   MigrateGateOutcome,
   MigrateOutcome,
   MigrateResetKind,
@@ -58,6 +60,7 @@ function makeBuildInput(
     gateOutcome: MigrateGateOutcome.Acquired,
     gateWaitMs: 5,
     migrateStartedAt: "2026-07-28T00:00:00.100Z",
+    migrateExecutor: MigrateExecutor.PrismaCli,
     migrateMs: 900,
     resetKind: MigrateResetKind.None,
     outcome: MigrateOutcome.Ok,
@@ -138,6 +141,8 @@ describe("recordMigrateEvent (ISS-4392) — Vercel-gated stdout", () => {
     });
     expect(logImpl).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(logImpl.mock.calls[0][0]);
+    expect(parsed.status).toBe("info");
+    expect(parsed.level).toBe("info");
     expect(parsed.message).toBe("migrate_deploy");
     expect(parsed.event).toBe("migrate_deploy");
     expect(parsed.ddsource).toBe("migrate");
@@ -235,6 +240,15 @@ describe("flushMigrateTelemetry (ISS-4392) — batched, bounded, fail-safe", () 
     const body = JSON.parse(init.body as string);
     expect(body).toHaveLength(2);
     expect(body[0].message).toBe("migrate_deploy");
+    expect(
+      body.map(({ level, status }: { level: string; status: string }) => ({
+        level,
+        status,
+      }))
+    ).toEqual([
+      { level: "info", status: "info" },
+      { level: "info", status: "info" },
+    ]);
 
     // Buffer cleared: a second flush sends nothing.
     fetchImpl.mockClear();
@@ -366,7 +380,11 @@ describe("flushMigrateTelemetry (ISS-4392) — batched, bounded, fail-safe", () 
       (_url: string, _init: RequestInit) =>
         new Promise<Response>(() => undefined)
     );
-    const scheduleDeadline = (_ms: number, onFire: () => void) => onFire();
+    const scheduled: number[] = [];
+    const scheduleDeadline = (ms: number, onFire: () => void) => {
+      scheduled.push(ms);
+      onFire();
+    };
 
     await expect(
       flushMigrateTelemetry({
@@ -375,6 +393,7 @@ describe("flushMigrateTelemetry (ISS-4392) — batched, bounded, fail-safe", () 
         scheduleDeadline,
       })
     ).resolves.toBeUndefined();
+    expect(scheduled).toEqual([DD_LOG_INTAKE_TIMEOUT_MS]);
   });
 
   it("warns once when the intake returns a non-2xx (a dead sink is not silent success)", async () => {
@@ -385,7 +404,10 @@ describe("flushMigrateTelemetry (ISS-4392) — batched, bounded, fail-safe", () 
     );
     await flushMigrateTelemetry({ env: VERCEL_KEYED_ENV, fetchImpl });
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain("503");
+    const warning = JSON.parse(warn.mock.calls[0][0]);
+    expect(warning.status).toBe("warn");
+    expect(warning.level).toBe("warn");
+    expect(warning.message).toContain("503");
   });
 
   it("warns once when the intake POST rejects", async () => {
@@ -423,7 +445,6 @@ function makeApplyDeps(overrides: {
   atHead?: boolean;
   gate?: MigrationPipelineDeps["withMigrationSerializeLock"];
   runMigrate?: MigrationPipelineDeps["runMigrate"];
-  cloneOk?: boolean;
 }): Partial<MigrationPipelineDeps> {
   const gate: MigrationPipelineDeps["withMigrationSerializeLock"] =
     overrides.gate ?? ((_opts, fn) => fn());
@@ -434,16 +455,17 @@ function makeApplyDeps(overrides: {
       Promise.resolve(overrides.atHead ?? false)
     ),
     prestampSkippableMigrationsViaSql: vi.fn(() => Promise.resolve()),
+    replayPendingMigrationsViaSql: vi.fn(() => Promise.resolve(true)),
     plainBuildPreviewConcurrentIndexes: vi.fn(() => Promise.resolve()),
     withMigrationSerializeLock: vi.fn(gate),
     runMigrate: vi.fn(runMigrate),
-    cloneDataFromPublic: vi.fn(() =>
-      Promise.resolve(overrides.cloneOk ?? true)
-    ),
+    cloneDataFromPublic: vi.fn(() => Promise.resolve()),
     // Stubbed like every other collaborator: the real sweep would open a live
     // connection to the fake URL these cases use.
     sweepInvalidIndexes: vi.fn(() => Promise.resolve([])),
     runPreviewSeed: vi.fn(),
+    readVibeEnvironmentMarker: vi.fn(() => Promise.resolve(null)),
+    writeVibeEnvironmentMarker: vi.fn(() => Promise.resolve()),
   };
 }
 
@@ -504,7 +526,6 @@ describe("applyMigrationsToSchema telemetry wiring (ISS-4392)", () => {
         hooks?.onResetKind?.("p3009");
         return Promise.resolve(true);
       },
-      cloneOk: true,
     });
 
     await applyMigrationsToSchema(

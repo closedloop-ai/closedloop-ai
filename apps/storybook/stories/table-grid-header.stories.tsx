@@ -4,6 +4,7 @@ import {
   TableGridHeaderAlign,
   type TableGridHeaderColumn,
 } from "@repo/design-system/components/ui/table-grid-header";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { expect, screen, userEvent, within } from "storybook/test";
@@ -116,10 +117,74 @@ function TableGridHeaderDemo({
   );
 }
 
+/**
+ * `TableGridHeader` (v1) — the CSS-grid column header GridTable v1 renders.
+ * ISS-9314's catalog audit.
+ *
+ * ## Taxonomy
+ * Design System / Data Display **primitive**. This is the v1 twin of
+ * `TableGridHeaderV2` (`Composites/Data Display/Tables/Table Grid Header V2`),
+ * not a deprecated predecessor to fold away: it has real production
+ * consumers today — `packages/app/documents/components/table/table-header.tsx`
+ * (the Documents table), `packages/app/agents/components/workspace/agents-table.tsx`,
+ * `packages/app/branches/components/branches-table.tsx` and
+ * `approved-branches-table.tsx`, and
+ * `packages/app/packs/components/{admin,member}-view.tsx` — verified by
+ * grepping `from ".../table-grid-header"` across the repo (the first two
+ * import it directly; the rest render it transitively through `GridTable`,
+ * which itself imports `TableGridHeader`), not asserted from this ticket's
+ * text. ISS-9095's reconciliation disposition lists "Table Grid
+ * Header" as RECONCILE, but its own cited evidence (story id
+ * `design-system-primitives-table-grid-header--default`, sourced from
+ * `table-grid-header-v2.tsx`) does not match reality on two counts. It named
+ * THIS file (v1), not `table-grid-header-v2.tsx`, which has its own
+ * separately titled story; and that id no longer resolves at all, because
+ * this pass retitles this file out of "Primitives" into "Data Display" (see
+ * `meta.title` below) — the live id is now
+ * `design-system-data-display-table-grid-header--default`. Cite that one;
+ * the `…-primitives-…` id is gone. Flagged here rather than corrected in the ticket —
+ * whether v1's real consumers above are meant to migrate onto v2, stay on v1
+ * indefinitely, or something else is a product/ownership call this Storybook
+ * pass should not make unilaterally.
+ *
+ * What v1 and v2 already share: the sort primitives (`getNextSortDirection`,
+ * `SortIndicator`, `getAriaSort`, `AriaSort`/`SortDirection`) from
+ * `sortable-column-header.tsx`, and (structurally) the same column-menu
+ * concept via two independently-maintained implementations — see
+ * `Composites/Data Display/Tables/Table Grid Header V2 Label`'s doc block for the
+ * concrete divergences found between them.
+ *
+ * ## State matrix — which of the 16 apply
+ * - **default, hover, focus-visible, keyboard/pointer interaction** — every
+ *   story below drives real sort clicks; `EndAlignedColumns` and
+ *   `WithColumnTooltips` cover the two column-level display options.
+ * - **selected** — `showSelectAll`/`allSelected`/`someSelected` cover the
+ *   tri-state select-all this header renders (see `Default`'s args).
+ * - **dragging, drag-over** — owned by the sibling `table-grid-header-handles`
+ *   module (its own story, `ColumnDragHandle`/`ColumnResizeHandle`), not
+ *   demonstrated redundantly here.
+ * - **editing, loading, empty, partial, error** — not applicable; this header
+ *   renders identically regardless of the body's data/fetch/edit state, which
+ *   it does not own.
+ * - **disabled, read-only, permission** — not applicable. No such prop exists
+ *   on `TableGridHeader` or its column type; a column that should offer no
+ *   sort/menu capability is simply declared without `sortable`/`filterable`/
+ *   `groupable`/`movable`, the same by-omission pattern as v2.
+ * - **narrow, overflow** — not demonstrated in THIS file. `MinimalColumns`
+ *   narrows the column set but does not force a column below its content
+ *   width; overflow/truncation for this family is exercised at the CELL layer
+ *   (`Primitives/Data Display/Tables/Grid Table V2 Cell`'s `Overflow` story) and
+ *   at the v2 header layer (`Table Grid Header V2`'s `Overflow` story) —
+ *   flagged as a real, minor coverage gap for v1 specifically rather than
+ *   claimed as covered.
+ *
+ * `@storybook/addon-a11y` is not wired into this Storybook — the assertions
+ * below are real `aria-sort`/role/attribute checks, not an automated axe scan.
+ */
 const meta = {
-  title: "Design System/Primitives/Table Grid Header",
+  title: "Composites v1.0/Data Display/Tables/Table Grid Header",
   component: TableGridHeaderDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },
@@ -132,6 +197,18 @@ const meta = {
     someSelected: true,
     withNameSortOptions: true,
   },
+  argTypes: {
+    initialSortDir: {
+      control: { type: "inline-radio" },
+      options: ["asc", "desc"],
+    },
+  },
+  render: (args) => (
+    <TableGridHeaderDemo
+      key={remountKey(args.initialSortBy, args.initialSortDir)}
+      {...args}
+    />
+  ),
 } satisfies Meta<typeof TableGridHeaderDemo>;
 
 export default meta;
@@ -142,7 +219,9 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
 
-    // Seeded sort: exactly the active column advertises a direction.
+    // Seeded sort: exactly the active column advertises a direction, while a
+    // sortable-but-unsorted one still publishes "none" rather than nothing —
+    // the ISS-10425 ruling, argued in `getAriaSort`'s docstring.
     await expect(dataColumnHeader(canvas, "updatedAt")).toHaveAttribute(
       "aria-sort",
       "descending"

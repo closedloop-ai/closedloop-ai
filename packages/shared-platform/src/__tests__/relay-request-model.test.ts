@@ -23,14 +23,12 @@ describe("normalizeMethod", () => {
     expect(normalizeMethod(input)).toBe(expected);
   });
 
-  it.each([
-    "HEAD",
-    "OPTIONS",
-    "TRACE",
-    "",
-  ])("throws on unsupported method %s", (method) => {
-    expect(() => normalizeMethod(method)).toThrow(UNSUPPORTED_METHOD_RE);
-  });
+  it.each(["HEAD", "OPTIONS", "TRACE", ""])(
+    "throws on unsupported method %s",
+    (method) => {
+      expect(() => normalizeMethod(method)).toThrow(UNSUPPORTED_METHOD_RE);
+    }
+  );
 });
 
 describe("splitPathAndQuery", () => {

@@ -92,6 +92,7 @@ function honestyFixture(): AgentComponentDetail {
 function detailSource(detail: AgentComponentDetail): AgentComponentsDataSource {
   return {
     scope: "test-honesty-wiring",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in detail tests")),
     detail: () => Promise.resolve(detail),
   };
@@ -171,7 +172,7 @@ describe("AgentDetail honesty flag wiring", () => {
 
   describe("flag OFF", () => {
     /**
-     * ISS-6462 (wongk, #5096 review): the Merged PRs DISCLOSURE left this flag's
+     * ISS-6462 (whitlockk, #5096 review): the Merged PRs DISCLOSURE left this flag's
      * scope, so the count reads `996+` here too. The Packs Performance tile
      * discloses the same cap off the same field with no gate, and a flag that
      * leaves one of two screens claiming coverage it does not have is not a

@@ -10,7 +10,7 @@
  * (`claude/diff-stats-tool-handlers.ts`); before FEA-3943 the Codex path instead
  * summed `countDiffFiles` per patch and inflated the total (ISS-4398 sibling gap).
  *
- * Splitting this out of the grandfathered `parse-codex.ts` keeps that file
+ * Splitting this out of `parse-codex.ts` keeps that file
  * shrinking (root AGENTS.md file-size rule), exactly as the Claude diff-stats
  * handlers were extracted from `parse-claude.ts`.
  */
@@ -40,7 +40,7 @@ const DEV_NULL = "/dev/null";
 // git diff `a/`/`b/` path prefix, stripped so a unified header's `a/src/a.ts`
 // resolves to the same identity as the Codex envelope's `src/a.ts`.
 const UNIFIED_DIFF_PREFIX_RE = /^[ab]\//;
-// shafty023 CR: split on CRLF as well as LF. A Windows-captured rollout carries
+// davetho CR: split on CRLF as well as LF. A Windows-captured rollout carries
 // `\r\n`; splitting on `\n` alone leaves a trailing `\r` that the `$`-anchored
 // header regex won't match (`.` and `$` both stop before `\r`), so every
 // `*** … File:` directive would be missed and the session rebuilt with
@@ -48,7 +48,7 @@ const UNIFIED_DIFF_PREFIX_RE = /^[ab]\//;
 const LINE_SPLIT_RE = /\r?\n/;
 
 /**
- * wongk (FEA-3943 CR): normalize one side of a unified-diff file header to a
+ * whitlockk (FEA-3943 CR): normalize one side of a unified-diff file header to a
  * stable identity. Drops the trailing `\t<timestamp>` that `diff -u` appends,
  * strips the `a/`/`b/` diff prefix so it matches the Codex envelope's bare path,
  * and returns null for the `/dev/null` sentinel (a new/deleted file's absent
@@ -68,7 +68,7 @@ function normalizeUnifiedHeaderPath(raw: string): string | null {
  * PATHS named by a patch's headers (duplicates possible within one patch) so the
  * caller can fold them into a cross-patch dedup set.
  *
- * wongk CR: a header string is not a stable file identity. Codex envelopes name
+ * whitlockk CR: a header string is not a stable file identity. Codex envelopes name
  * `src/a.ts` while unified diffs name `a/src/a.ts`, so a mixed-format session
  * would count one file twice; and every unified ADD has a `--- /dev/null` old
  * header, so distinct added files would collapse to one entry. We therefore

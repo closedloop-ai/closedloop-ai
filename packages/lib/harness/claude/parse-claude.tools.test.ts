@@ -9,16 +9,13 @@
  * Every test asserts an observable behavioral outcome — no source-text scans.
  */
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript, scanTranscriptLines } from "./parse-claude";
 import {
   assistantLine,
   BASE_USAGE,
   userLine,
 } from "./parse-claude.test-fixtures";
 import { createSessionAccumulator } from "./parse-claude-accumulator";
-import {
-  parseClaudeTranscript,
-  scanTranscriptLines,
-} from "./parse-claude-core";
 
 // ---------------------------------------------------------------------------
 // Read tool result caching for Write diff (and partial Read skip)
@@ -193,7 +190,7 @@ describe("parseClaudeTranscript — delegation kickoffs", () => {
       toolUseResult: { status: "completed", agentId: "child-abc123" },
     });
 
-    const accumulator = createSessionAccumulator();
+    const accumulator = createSessionAccumulator({ collectDiagnostics: false });
     await scanTranscriptLines(
       [userLine(), delegationLine, resultLine],
       accumulator
@@ -405,7 +402,7 @@ describe("parseClaudeTranscript — ScheduleWakeup false arms", () => {
 
 describe("parseClaudeTranscript — tool result with no timestamp", () => {
   it("skips resultTimestamp when the tool_result entry has no timestamp", async () => {
-    // isoTs(entry.timestamp) → null → if (resultTs) is false → skip
+    // toIso(entry.timestamp) → null → if (resultTs) is false → skip
     const toolUseLine = assistantLine({}, [
       {
         type: "tool_use",
@@ -416,7 +413,7 @@ describe("parseClaudeTranscript — tool result with no timestamp", () => {
     ]);
     const resultNoTs = JSON.stringify({
       type: "user",
-      // No timestamp field → isoTs(undefined) = null
+      // No timestamp field → toIso(undefined) = null
       message: {
         role: "user",
         content: [

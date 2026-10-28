@@ -1,9 +1,6 @@
 "use client";
 
-import type {
-  CreateContextAttachmentResponse,
-  ImportGDriveContextResponse,
-} from "@repo/api/src/types/context-attachment";
+import type { CreateContextAttachmentResponse } from "@repo/api/src/types/context-attachment";
 import { artifactLinkKeys } from "@repo/app/documents/hooks/use-artifact-links";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
 import {
@@ -17,11 +14,6 @@ export type CreateContextAttachmentInput = {
   mimeType: string;
   sizeBytes: number;
   projectId?: string;
-};
-
-export type ImportGDriveContextInput = {
-  docIds: string[];
-  projectId: string;
 };
 
 export function useCreateContextAttachment(
@@ -40,31 +32,6 @@ export function useCreateContextAttachment(
     mutationFn: (input: CreateContextAttachmentInput) =>
       apiClient.post<CreateContextAttachmentResponse>(
         `/documents/${featureId}/context-attachments`,
-        input
-      ),
-    onSuccess: (data, variables, onMutateResult, mutationContext) => {
-      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
-      options?.onSuccess?.(data, variables, onMutateResult, mutationContext);
-    },
-  });
-}
-
-export function useImportGDriveContext(
-  featureId: string,
-  options?: UseMutationOptions<
-    ImportGDriveContextResponse,
-    Error,
-    ImportGDriveContextInput
-  >
-) {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    ...options,
-    mutationFn: (input: ImportGDriveContextInput) =>
-      apiClient.post<ImportGDriveContextResponse>(
-        `/documents/${featureId}/context-attachments/gdrive`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {

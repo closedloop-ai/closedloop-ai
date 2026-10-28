@@ -1,3 +1,4 @@
+import { AGENTS_NAV_FLAG_KEY } from "@repo/api/src/types/agents-nav-flag";
 import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
@@ -7,8 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FeatureFlagAdapterProvider } from "../../feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "../../feature-flags/static-feature-flag-adapter";
 import { ArtifactFlag } from "../../lib/artifact-flags";
-import { SESSIONS_FEATURE_FLAG_KEY } from "../../lib/feature-flags";
 import {
+  ISSUES_NAV_TITLE,
   MOBILE_NAV_MAX_DESTINATIONS,
   MOBILE_NAV_PHONE_DESTINATION_PATHS,
 } from "../../lib/primary-nav-destinations";
@@ -16,9 +17,29 @@ import { MobileBottomNav } from "../mobile-bottom-nav";
 
 const ORG = "org-test";
 
-// The explicit phone destinations FEA-4155 pins the bar to (bot review #3789):
-// a fixed set regardless of flag state, with both unblanked surfaces on it.
-const PHONE_LINK_NAMES = ["Dashboard", "Sessions", "Branches", "Agents"];
+// The explicit phone destinations FEA-4155 pins the bar to (bot review #3789).
+// ISS-5041 gated Agents, so the MEMBERSHIP of this list is still fixed but its
+// fourth entry now resolves through the flag port like any other gated
+// destination — `withAgents()` is what fills the bar.
+const AGENTS_LINK_NAME = "Agents";
+const PHONE_LINK_NAMES = [
+  "Dashboard",
+  "Sessions",
+  "Branches",
+  AGENTS_LINK_NAME,
+];
+
+// The always-on remainder: what the bar renders once Agents is gated off. Pinned
+// as a literal rather than derived from the registry the component reads, so
+// dropping a destination from that registry fails here instead of quietly
+// agreeing with itself.
+const ALWAYS_ON_PHONE_LINK_NAMES = ["Dashboard", "Sessions", "Branches"];
+
+/** Flags that open the full four-slot bar (ISS-5041 gated the fourth). */
+const withAgents = (...flags: readonly string[]) => [
+  AGENTS_NAV_FLAG_KEY,
+  ...flags,
+];
 
 // jsdom does not implement matchMedia; SidebarProvider's useIsMobile() reads it.
 // Stub a desktop (non-matching) media query so the provider mounts.
@@ -53,7 +74,7 @@ function renderNav({
 
 describe("MobileBottomNav", () => {
   it("renders exactly the named phone destination set plus a menu affordance", () => {
-    renderNav();
+    renderNav({ enabledFlags: withAgents() });
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
     // FEA-4155: the bar renders the explicit phone set (Dashboard, Sessions,
@@ -74,7 +95,7 @@ describe("MobileBottomNav", () => {
     // The earlier prefix slice flipped slot four between Issues (flag on) and
     // Sessions (flag off). The explicit set must be identical either way, and
     // Issues (not a phone destination) never appears on the bar.
-    const off = renderNav();
+    const off = renderNav({ enabledFlags: withAgents() });
     const offNav = within(off.getByRole("navigation", { name: "Primary" }));
     const offLinks = offNav
       .getAllByRole("link")
@@ -82,18 +103,14 @@ describe("MobileBottomNav", () => {
     off.unmount();
 
     const on = renderNav({
-      enabledFlags: [
-        ArtifactFlag.Issues,
-        ArtifactFlag.Branches,
-        SESSIONS_FEATURE_FLAG_KEY,
-      ],
+      enabledFlags: withAgents(ArtifactFlag.Issues, ArtifactFlag.Branches),
     });
     const onNav = within(on.getByRole("navigation", { name: "Primary" }));
     const onLinks = onNav.getAllByRole("link").map((link) => link.textContent);
 
     expect(onLinks).toEqual(offLinks);
     expect(
-      onNav.queryByRole("link", { name: "Issues" })
+      onNav.queryByRole("link", { name: ISSUES_NAV_TITLE })
     ).not.toBeInTheDocument();
     for (const name of PHONE_LINK_NAMES) {
       expect(onNav.getByRole("link", { name })).toBeInTheDocument();
@@ -115,28 +132,26 @@ describe("MobileBottomNav", () => {
   });
 
   it("org-scopes the destination hrefs through the navigation port", () => {
-    renderNav();
+    renderNav({ enabledFlags: withAgents() });
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(
       within(nav).getByRole("link", { name: "Dashboard" })
     ).toHaveAttribute("href", `/${ORG}/dashboard`);
-    expect(within(nav).getByRole("link", { name: "Agents" })).toHaveAttribute(
-      "href",
-      `/${ORG}/agents`
-    );
+    expect(
+      within(nav).getByRole("link", { name: AGENTS_LINK_NAME })
+    ).toHaveAttribute("href", `/${ORG}/agents`);
   });
 
   it("never surfaces a non-phone destination inline, even with every artifact flag on", () => {
     // Documents / Issues / My Tasks / Inbox are not phone destinations, so no
     // flag combination can push them onto the capped inline row.
     renderNav({
-      enabledFlags: [
+      enabledFlags: withAgents(
         ArtifactFlag.Documents,
         ArtifactFlag.Issues,
-        ArtifactFlag.Branches,
-        SESSIONS_FEATURE_FLAG_KEY,
-      ],
+        ArtifactFlag.Branches
+      ),
     });
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
@@ -149,13 +164,13 @@ describe("MobileBottomNav", () => {
   });
 
   it("caps inline destinations at the phone-set size", () => {
-    // The phone set is exactly MOBILE_NAV_MAX_DESTINATIONS long, so the inline
-    // row is always full and the menu affordance is the final slot.
+    // The phone set is exactly MOBILE_NAV_MAX_DESTINATIONS long, so with every
+    // member enabled the inline row is full and the menu is the final slot.
     expect(MOBILE_NAV_PHONE_DESTINATION_PATHS).toHaveLength(
       MOBILE_NAV_MAX_DESTINATIONS
     );
 
-    renderNav();
+    renderNav({ enabledFlags: withAgents() });
 
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).getAllByRole("link")).toHaveLength(
@@ -164,6 +179,28 @@ describe("MobileBottomNav", () => {
     expect(
       within(nav).getByRole("button", { name: "Menu" })
     ).toBeInTheDocument();
+  });
+
+  it("drops to three slots with the Agents gate off, promoting nothing (ISS-5041)", () => {
+    // The deliberate answer to "what fills slot four". Nothing does: which
+    // destination earns a phone-bar slot is a product call nobody has made, and
+    // inventing one would change the bar for every user, including those who
+    // never had Agents. Everything off the bar stays in the menu.
+    renderNav();
+
+    const nav = within(screen.getByRole("navigation", { name: "Primary" }));
+    expect(
+      nav.queryByRole("link", { name: AGENTS_LINK_NAME })
+    ).not.toBeInTheDocument();
+    for (const name of ALWAYS_ON_PHONE_LINK_NAMES) {
+      expect(nav.getByRole("link", { name })).toBeInTheDocument();
+    }
+    // Exactly three — not four with a substitute quietly promoted in.
+    expect(nav.getAllByRole("link")).toHaveLength(
+      ALWAYS_ON_PHONE_LINK_NAMES.length
+    );
+    // The bar still works: the menu keeps everything else reachable.
+    expect(nav.getByRole("button", { name: "Menu" })).toBeInTheDocument();
   });
 
   it("marks the destination that matches the current route as current", () => {

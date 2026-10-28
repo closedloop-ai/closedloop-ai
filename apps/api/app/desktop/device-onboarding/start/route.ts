@@ -3,11 +3,17 @@ import "server-only";
 import { z } from "zod";
 import { uuidValidator } from "@/app/compute-targets/validators";
 import {
-  desktopContractError,
+  DesktopConnectStage,
+  desktopConnectRejected,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { normalizeEd25519SpkiPublicKeyPem } from "@/lib/auth/ed25519-spki-pem";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopDeviceOnboardingService } from "../service";
 
 const startRequestValidator = z
@@ -34,11 +40,14 @@ function getRequestIp(request: Request): string | null {
   );
 }
 
-export async function POST(request: Request) {
-  const rawBody = await request.json().catch(() => null);
+async function handlePost(request: Request) {
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = startRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
-    return desktopContractError(400, "INVALID_DEVICE_SESSION_REQUEST", false);
+    return invalidStartRequestResponse();
   }
 
   const webAppOrigin = canonicalizeTrustedOrigin(parsedBody.data.webAppOrigin);
@@ -46,7 +55,7 @@ export async function POST(request: Request) {
     parsedBody.data.gatewayPublicKeyPem
   );
   if (!(webAppOrigin && gatewayPublicKeyPem)) {
-    return desktopContractError(400, "INVALID_DEVICE_SESSION_REQUEST", false);
+    return invalidStartRequestResponse();
   }
 
   try {
@@ -57,7 +66,9 @@ export async function POST(request: Request) {
       requestIp: getRequestIp(request),
     });
     if (result.status === "rate_limited") {
-      return desktopContractError(429, "DEVICE_SESSION_RATE_LIMITED", true);
+      return desktopConnectRejected(429, "DEVICE_SESSION_RATE_LIMITED", true, {
+        stage: DesktopConnectStage.DeviceOnboardingStart,
+      });
     }
     return desktopContractSuccess({
       deviceSessionId: result.deviceSessionId,
@@ -68,6 +79,16 @@ export async function POST(request: Request) {
       pollIntervalSeconds: result.pollIntervalSeconds,
     });
   } catch {
-    return desktopContractError(503, "DEVICE_SESSION_PERSIST_FAILED", true);
+    return desktopConnectRejected(503, "DEVICE_SESSION_PERSIST_FAILED", true, {
+      stage: DesktopConnectStage.DeviceOnboardingStart,
+    });
   }
 }
+
+function invalidStartRequestResponse() {
+  return desktopConnectRejected(400, "INVALID_DEVICE_SESSION_REQUEST", false, {
+    stage: DesktopConnectStage.DeviceOnboardingStart,
+  });
+}
+
+export const POST = withRequestCompleted(handlePost);

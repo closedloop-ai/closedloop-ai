@@ -5,8 +5,11 @@ import {
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import {
+  invocationsDerivation,
+  type SummaryAggregate,
+} from "@repo/api/src/utils/agent-component-summary-aggregate";
 import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
-import { invocationsDerivation } from "@repo/app/agents/lib/agents-summary-aggregate";
 import { AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -15,15 +18,16 @@ import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import type { AgentComponentsDataSource } from "../../../data-source/agent-components-data-source";
 import { AgentComponentsDataSourceProvider } from "../../../data-source/provider";
 import { AgentsGroupedList } from "../agents-grouped-list";
+import { AgentsSummaryCards } from "../agents-summary-cards";
 
 /**
  * FEA-3985: the Agents summary stat-card strip must keep all four KPI cards
  * reachable at any width. The strip previously was a fixed non-wrapping flex
  * row (4 × w-[260px] shrink-0 = 1088px intrinsic) that clipped the 4th card
  * (Collaborators) past the right edge with no scroll affordance below ~1088px. It now
- * reuses the shared `SummaryCardRow wrapBelow` — the same strip the Sessions
- * list page ships — so the cards wrap into a two-column grid below `md` and
- * pin to the fixed-min-width row at `md+`.
+ * spreads the shared metric-band treatment the Sessions and Branches bands use
+ * (ISS-9282, `SUMMARY_CARD_SURFACE_BAND_PROPS`): one rank whose own band scrolls
+ * sideways when the cards do not fit.
  *
  * Layout wrapping/clipping bounds are a browser concern (JSDOM never lays this
  * out), so they belong in browser-level responsive coverage, not here; this
@@ -87,6 +91,7 @@ const SUMMARY_CARD_LABELS = [
 function testDataSource(items: AgentComponent[]): AgentComponentsDataSource {
   return {
     scope: "test",
+    honorsDateWindow: false,
     list: () =>
       Promise.resolve({
         items,
@@ -136,7 +141,7 @@ describe("AgentsGroupedList summary cards (FEA-3985)", () => {
 
   // FEA-4052: the LOC/$ card is shown only when the population has at least one
   // verifiable-kind component (only `subagent` today — skill/command are
-  // session-level, excluded per wongk PR #3720). A population built solely of
+  // session-level, excluded per whitlockk PR #3720). A population built solely of
   // non-verifiable kinds (skill/command/mcp/tool/…) HIDES the card rather than
   // render a misleading `0.0`.
   it("shows the LOC/$ card when the population has a verifiable kind (subagent)", async () => {
@@ -162,7 +167,7 @@ describe("AgentsGroupedList summary cards (FEA-3985)", () => {
     ).toBeInTheDocument();
   });
 
-  // FEA-4052 (wongk review): a verifiable-kind component can still legitimately
+  // FEA-4052 (whitlockk review): a verifiable-kind component can still legitimately
   // arrive with locPerDollar = null. Kind eligibility is not proof a measurement
   // exists, so the averaged value must stay `—` (unavailable), never collapse an
   // empty sample to a fabricated `0.0`.
@@ -240,7 +245,7 @@ describe("AgentsGroupedList summary cards (FEA-3985)", () => {
  * on 1.1% of the rows is a metric that does not reconcile with its own view.
  *
  * This is the reconciliation guard for that disclosure: the LOC/$ card names its
- * real averaged sample, and that sample is asserted to actually DIFFER from the
+ * real contributing sample, and that sample is asserted to actually DIFFER from the
  * Components count in the same strip — so the case cannot pass by the two
  * happening to agree.
  */
@@ -279,7 +284,13 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
     }),
   ];
 
-  it("names the averaged sample on the LOC/$ card when it is smaller than the Components count", async () => {
+  // ISS-6409: this path is the browser's LEGACY client-side reduction, which
+  // supplies no producer fold, so the card is honestly unavailable here rather
+  // than showing a differently-weighted number. The disclosure contract this
+  // case was written for — the card naming its own, smaller population — is
+  // pinned at render in "LOC/$ caption (ISS-5005 disclosure)" below, against a
+  // producer-supplied aggregate.
+  it("shows LOC/$ as unavailable when no producer fold supplied it", async () => {
     render(
       <Wrapper dataSource={testDataSource(MIXED_POPULATION)}>
         <AgentsGroupedList />
@@ -299,11 +310,7 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
 
     // The table's population — every row the filters matched.
     expect(componentsCard).toHaveTextContent(String(MIXED_POPULATION.length));
-    // The card's OWN population, stated on the card. Only the two components
-    // carrying a measured ratio contribute to the average.
-    expect(locPerDollarCard).toHaveTextContent(
-      `avg across ${MEASURED_SUBAGENTS} components`
-    );
+    expect(locPerDollarCard).toHaveTextContent("across 0 components");
     // The guard that makes this a reconciliation case and not a tautology: the
     // two populations genuinely differ, so the disclosure is load-bearing.
     expect(MEASURED_SUBAGENTS).not.toBe(MIXED_POPULATION.length);
@@ -336,8 +343,9 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
     const locPerDollarCard = screen
       .getByRole("button", { name: "About LOC / $" })
       .closest("[data-slot='card']");
-    expect(locPerDollarCard).toHaveTextContent("avg across 1 component");
-    expect(locPerDollarCard).not.toHaveTextContent("avg across 1 components");
+    // ISS-6409: legacy path, so no fold and no measured sample. See the
+    // render-level caption cases below for the disclosure itself.
+    expect(locPerDollarCard).toHaveTextContent("across 0 components");
   });
 
   // ISS-5534: the PRODUCTION wiring for the Invocations de-duplication — the
@@ -440,9 +448,9 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
   // ISS-6182: the card must EXPLAIN the derivation it actually ran. Under the
   // dedupe gate the total deliberately drops every represented plugin rollup, so
   // the pre-fix literal — a plain per-component sum — contradicted the 500 beside
-  // it. Asserting against `invocationsDerivation(...).how` rather than a copied
-  // sentence is the point: it fails if the card stops reading the gate, and it
-  // cannot be satisfied by restating the copy at the call site.
+  // it. Asserting against `invocationsDerivation(...).explain(...)` rather than a
+  // copied sentence is the point: it fails if the card stops reading the gate,
+  // and it cannot be satisfied by restating the copy at the call site.
   async function invocationsInfoText(): Promise<string> {
     const trigger = screen.getByRole("button", { name: "About Invocations" });
     fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
@@ -465,7 +473,7 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
     await screen.findByText("PR Review Toolkit");
     expect(invocationsCardText()).toHaveTextContent("500");
     expect(await invocationsInfoText()).toContain(
-      invocationsDerivation(true).how
+      invocationsDerivation(true).explain(true).how
     );
   });
 
@@ -478,7 +486,146 @@ describe("AgentsGroupedList summary card population disclosure (ISS-5005)", () =
 
     await screen.findByText("PR Review Toolkit");
     const infoText = await invocationsInfoText();
-    expect(infoText).toContain(invocationsDerivation(false).how);
-    expect(infoText).not.toContain(invocationsDerivation(true).how);
+    expect(infoText).toContain(invocationsDerivation(false).explain(true).how);
+    expect(infoText).not.toContain(
+      invocationsDerivation(true).explain(true).how
+    );
+  });
+
+  // ISS-6205: the PRODUCTION wiring for legacy (packIds-less) parentage. A
+  // version-skewed producer omits `packIds` everywhere, so this plugin's
+  // parentage is unknowable — and the unrelated skill beside it used to be read
+  // as proof the plugin was already represented, dropping all 500 of its
+  // invocations and rendering a confident "300". The aggregate test alone would
+  // stay green if this component ignored the new exactness state.
+  const LEGACY_PLUGIN_AND_UNRELATED_CHILD: AgentComponent[] = [
+    makeComponent({
+      id: "uuid-plugin-legacy",
+      name: "Legacy Toolkit",
+      kind: AgentComponentKind.Plugin,
+      invocations: 500,
+    }),
+    makeComponent({
+      id: "uuid-skill-unrelated",
+      name: "Unrelated Skill",
+      kind: AgentComponentKind.Skill,
+      invocations: 300,
+    }),
+  ];
+
+  it("says the total may be missing calls when a legacy plugin's rollup is dropped", async () => {
+    render(
+      <Wrapper
+        dataSource={testDataSource(LEGACY_PLUGIN_AND_UNRELATED_CHILD)}
+        enabledFlags={[AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY]}
+      >
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    await screen.findByText("Legacy Toolkit");
+    const card = invocationsCardText();
+    // The canonical `AgentComponent.packIds` contract fixes the direction: an
+    // unreportable parentage degrades to the population-wide heuristic, which
+    // may under-count, never to an over-count. So the plugin's 500 is dropped
+    // and 300 is what the card shows. What ISS-6205 changes is that the drop is
+    // no longer SILENT — the caveat is carried in WORDS in the card's own
+    // caption, not a `~` glyph, which reads as "rounded" and which a screen
+    // reader does not speak (ISS-6205 design review).
+    expect(card).toHaveTextContent("300");
+    expect(card).not.toHaveTextContent("800");
+    expect(card).toHaveTextContent("some calls may be missing");
+    // …and the explainer switches with it, from the same table the number came
+    // from. Pinning the inexact sentence here is what stops the card rendering
+    // 300 beside copy that claims the excluded rollups were represented by rows
+    // in view — the exact-path sentence must be absent, not merely joined.
+    const infoText = await invocationsInfoText();
+    expect(infoText).toContain(invocationsDerivation(true).explain(false).how);
+    expect(infoText).not.toContain(
+      invocationsDerivation(true).explain(true).how
+    );
+  });
+
+  it("leaves the legacy case untouched with the dedupe flag off", async () => {
+    render(
+      <Wrapper dataSource={testDataSource(LEGACY_PLUGIN_AND_UNRELATED_CHILD)}>
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    await screen.findByText("Legacy Toolkit");
+    const card = invocationsCardText();
+    // Closed-by-default: the flat sum, and no caveat at all.
+    expect(card).toHaveTextContent("800");
+    expect(card).toHaveTextContent("across components in view");
+    expect(card).not.toHaveTextContent("some calls may be counted twice");
+  });
+});
+
+/**
+ * ISS-5005 / ISS-6409: the LOC/$ caption names the population the figure was
+ * folded over.
+ *
+ * Moved here from the grouped-list cases above when the figure became
+ * producer-supplied: those drive the legacy client-side reduction, which no
+ * longer computes LOC/$ at all, so they could no longer exercise the caption.
+ * The contract did not retire with them — it moved to wherever the aggregate
+ * comes from — so it is pinned directly against the card's own props.
+ */
+describe("LOC/$ caption (ISS-5005 disclosure)", () => {
+  function aggregateWith(
+    locPerDollar: number | null,
+    locPerDollarSampleSize: number
+  ): SummaryAggregate {
+    return {
+      components: 2133,
+      invocations: 0,
+      locPerDollar,
+      locPerDollarSampleSize,
+      collaborators: 0,
+      hasVerifiableLocPerDollar: true,
+      invocationsExact: true,
+      invocationsPluginCoverage: new Map(),
+    };
+  }
+
+  function locPerDollarCardOf(current: SummaryAggregate) {
+    render(
+      <AgentsSummaryCards
+        current={current}
+        dedupePluginRollups={false}
+        isError={false}
+        isLoading={false}
+      />
+    );
+    return screen
+      .getByRole("button", { name: "About LOC / $" })
+      .closest("[data-slot='card']");
+  }
+
+  it("names the folded sample, not the whole population", () => {
+    // The production sweep that filed ISS-5005 found a headline efficiency
+    // figure computed over 1.1% of the rows with nothing on the card saying so.
+    const card = locPerDollarCardOf(aggregateWith(30.26, 23));
+
+    expect(card).toHaveTextContent("across 23 components");
+    // Load-bearing: the folded sample and the component count genuinely differ,
+    // so the disclosure is not a tautology.
+    expect(card).not.toHaveTextContent("across 2133 components");
+  });
+
+  it("states a single-component sample in the singular", () => {
+    const card = locPerDollarCardOf(aggregateWith(12, 1));
+
+    expect(card).toHaveTextContent("across 1 component");
+    expect(card).not.toHaveTextContent("across 1 components");
+  });
+
+  it("says 'across', never 'avg across'", () => {
+    // ISS-6409: the card is a ratio of sums folded over the session union, so
+    // naming it an average would misstate the statistic.
+    expect(locPerDollarCardOf(aggregateWith(30, 5))).not.toHaveTextContent(
+      "avg across"
+    );
   });
 });

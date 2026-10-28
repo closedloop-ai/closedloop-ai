@@ -1,27 +1,17 @@
 /**
  * gateway-event-handlers.test.ts
  *
- * Covers the six socket.on(...) handlers registered inside the
+ * Covers the socket.on(...) handlers registered inside the
  * namespace.on("connection") block in index.ts:
  *
  *  • Pre-registration buffering — events pushed to pendingBuffer before desktop.hello
- *  • pushPendingBuffer at MAX_PENDING_BUFFER_SIZE (100) cap — 101st dropped, ack refused
- *  • drainPendingBuffer — buffered acks refused when hello returns disconnect or no targetId
- *  • Ack mappers — toDesktopAnalyticsAck and toDesktopAgentSessionsAck all arms
- *  • Forward rejection paths — .catch arms when fetch rejects for ack-bearing events
+ *  • pushPendingBuffer at MAX_PENDING_BUFFER_SIZE (100) cap — 101st dropped
+ *  • drainPendingBuffer — buffer discarded when hello returns disconnect or no targetId
+ *  • Forward rejection paths — .catch arms when fetch rejects
  *  • Payload ternaries — commandId/computeTargetId from non-object payload
+ *  • Registration surface — the exact handler set, and none for retired events
  */
 
-import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-  DesktopAgentSessionsAckReason,
-} from "@repo/api/src/types/agent-session";
-import {
-  DESKTOP_ANALYTICS_SOCKET_EVENT,
-  type DesktopAnalyticsAck,
-  DesktopAnalyticsAckReason,
-} from "@repo/api/src/types/desktop-analytics";
 import {
   afterAll,
   afterEach,
@@ -31,6 +21,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { socketToTarget, workersByTargetId } from "../worker-registry.js";
 import {
   createGatewayHarness,
   type MockRelaySocket,
@@ -44,6 +35,9 @@ const socketIoMocks = vi.hoisted(() => ({
 
 vi.mock("socket.io", () => ({
   Server: class {
+    // Engine.IO stub: index.ts attaches a `connection_error` listener to
+    // `io.engine` at module load, so a Server double without one crashes on import.
+    engine = { on: vi.fn() };
     of(ns?: string) {
       if (ns === "/desktop-gateway") {
         return socketIoMocks.namespace;
@@ -105,18 +99,17 @@ function makeHelloResponse(targetId: string) {
   });
 }
 
-function makeEventResponse(ack?: unknown) {
-  return makeOkResponse({ emit: [], ...(ack !== undefined && { ack }) });
+function makeEventResponse() {
+  return makeOkResponse({ emit: [] });
 }
 
 /**
- * Sets fetch to handle hello (returns targetId) and all other events (returns ack).
- * Re-stubs after hello so the next event call picks up the event response.
+ * Sets fetch to handle hello (returns targetId) and all other events (returns
+ * an empty emit), then registers the socket.
  */
 async function registerAndStub(
   socket: MockRelaySocket,
-  targetId: string,
-  eventAck?: unknown
+  targetId: string
 ): Promise<void> {
   vi.stubGlobal(
     "fetch",
@@ -127,146 +120,12 @@ async function registerAndStub(
       return Promise.resolve(
         body.event === "desktop.hello"
           ? makeHelloResponse(targetId)
-          : makeEventResponse(eventAck)
+          : makeEventResponse()
       );
     })
   );
   await harness.registerSocketTarget(socket, targetId);
 }
-
-// ─── sample payloads ──────────────────────────────────────────────────────────
-
-const SAMPLE_ANALYTICS_PAYLOAD = {
-  event: "command_started",
-  properties: {},
-  occurredAt: "2026-01-01T00:00:00.000Z",
-};
-
-const SAMPLE_AGENT_SESSIONS_PAYLOAD = {
-  schemaVersion: 3,
-  sessions: [],
-};
-
-// ─── ack mapper: toDesktopAnalyticsAck ───────────────────────────────────────
-
-describe("toDesktopAnalyticsAck mapper (via DESKTOP_ANALYTICS_SOCKET_EVENT handler)", () => {
-  async function triggerAnalyticsAck(
-    ackFromApi: unknown
-  ): Promise<DesktopAnalyticsAck> {
-    const tid = `target-ack-analytics-${String(ackFromApi)}`.slice(0, 50);
-    const socket = harness.createMockRelaySocket(
-      `sock-ack-an-${String(ackFromApi)}`.slice(0, 40)
-    );
-    await registerAndStub(socket, tid, ackFromApi);
-
-    return new Promise<DesktopAnalyticsAck>((resolve) => {
-      socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-        SAMPLE_ANALYTICS_PAYLOAD,
-        resolve
-      );
-    });
-  }
-
-  it("returns {accepted:false, reason:ValidationFailed} for a null (non-object) ack", async () => {
-    const ack = await triggerAnalyticsAck(null);
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
-  });
-
-  it("returns {accepted:false, reason:ValidationFailed} for a string (non-object) ack", async () => {
-    const ack = await triggerAnalyticsAck("accepted");
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
-  });
-
-  it("returns {accepted:true} for {accepted:true} ack", async () => {
-    const ack = await triggerAnalyticsAck({ accepted: true });
-    expect(ack).toEqual({ accepted: true });
-  });
-
-  it("preserves a known DesktopAnalyticsAckReason verbatim", async () => {
-    const ack = await triggerAnalyticsAck({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.CaptureFailed,
-    });
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.CaptureFailed,
-    });
-  });
-
-  it("collapses an unknown/future reason string to ValidationFailed", async () => {
-    const ack = await triggerAnalyticsAck({
-      accepted: false,
-      reason: "future_unknown_reason_v99",
-    });
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
-  });
-});
-
-// ─── ack mapper: toDesktopAgentSessionsAck ───────────────────────────────────
-
-describe("toDesktopAgentSessionsAck mapper (via DESKTOP_AGENT_SESSIONS_SOCKET_EVENT handler)", () => {
-  async function triggerAgentSessionsAck(
-    ackFromApi: unknown
-  ): Promise<DesktopAgentSessionsAck> {
-    const tid = `target-ack-as-${String(ackFromApi)}`.slice(0, 50);
-    const socket = harness.createMockRelaySocket(
-      `sock-ack-as-${String(ackFromApi)}`.slice(0, 40)
-    );
-    await registerAndStub(socket, tid, ackFromApi);
-
-    return new Promise<DesktopAgentSessionsAck>((resolve) => {
-      socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-        SAMPLE_AGENT_SESSIONS_PAYLOAD,
-        resolve
-      );
-    });
-  }
-
-  it("returns {accepted:false, reason:IngestionFailed} for a non-object ack", async () => {
-    const ack = await triggerAgentSessionsAck(42);
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    });
-  });
-
-  it("returns {accepted:true} for {accepted:true} ack", async () => {
-    const ack = await triggerAgentSessionsAck({ accepted: true });
-    expect(ack).toEqual({ accepted: true });
-  });
-
-  it("preserves a known DesktopAgentSessionsAckReason verbatim", async () => {
-    const ack = await triggerAgentSessionsAck({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.RateLimited,
-    });
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.RateLimited,
-    });
-  });
-
-  it("collapses an unknown/future reason string to IngestionFailed", async () => {
-    const ack = await triggerAgentSessionsAck({
-      accepted: false,
-      reason: "future_reason_not_in_enum",
-    });
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    });
-  });
-});
-
 // ─── pre-registration buffering ──────────────────────────────────────────────
 
 describe("pre-registration buffering — events pushed to pendingBuffer before desktop.hello", () => {
@@ -289,46 +148,6 @@ describe("pre-registration buffering — events pushed to pendingBuffer before d
     expect(socket.data.pendingBuffer?.[0]?.event).toBe("desktop.command.ack");
   });
 
-  it("buffers desktop.telemetry before hello", () => {
-    const socket = harness.createMockRelaySocket("sock-pre-telemetry");
-    harness.getConnectionHandler()(socket);
-    socket.handlers.get("desktop.telemetry")?.({
-      category: "loop.perf.iteration",
-    });
-    expect(socket.data.pendingBuffer).toHaveLength(1);
-    expect(socket.data.pendingBuffer?.[0]?.event).toBe("desktop.telemetry");
-  });
-
-  it("buffers DESKTOP_AGENT_SESSIONS_SOCKET_EVENT before hello and does not call ack", () => {
-    const socket = harness.createMockRelaySocket("sock-pre-agent-sessions");
-    harness.getConnectionHandler()(socket);
-    const ackFn = vi.fn();
-    socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-      SAMPLE_AGENT_SESSIONS_PAYLOAD,
-      ackFn
-    );
-    expect(socket.data.pendingBuffer).toHaveLength(1);
-    expect(socket.data.pendingBuffer?.[0]?.event).toBe(
-      DESKTOP_AGENT_SESSIONS_SOCKET_EVENT
-    );
-    expect(ackFn).not.toHaveBeenCalled();
-  });
-
-  it("buffers DESKTOP_ANALYTICS_SOCKET_EVENT before hello and does not call ack", () => {
-    const socket = harness.createMockRelaySocket("sock-pre-analytics");
-    harness.getConnectionHandler()(socket);
-    const ackFn = vi.fn();
-    socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-      SAMPLE_ANALYTICS_PAYLOAD,
-      ackFn
-    );
-    expect(socket.data.pendingBuffer).toHaveLength(1);
-    expect(socket.data.pendingBuffer?.[0]?.event).toBe(
-      DESKTOP_ANALYTICS_SOCKET_EVENT
-    );
-    expect(ackFn).not.toHaveBeenCalled();
-  });
-
   it("buffers desktop.presence before hello", () => {
     const socket = harness.createMockRelaySocket("sock-pre-presence");
     harness.getConnectionHandler()(socket);
@@ -336,58 +155,35 @@ describe("pre-registration buffering — events pushed to pendingBuffer before d
     expect(socket.data.pendingBuffer).toHaveLength(1);
     expect(socket.data.pendingBuffer?.[0]?.event).toBe("desktop.presence");
   });
+
+  // ISS-8453: the buffer is replayed with `...args` on the registration path, so
+  // buffering presence WITHOUT its payload replays `payload === undefined` and
+  // drops the desktop's `activeCommands` — the only source for
+  // `executor_saturation`. `pushPendingBuffer`'s args are variadic and optional,
+  // so omitting them typechecks; only this assertion catches it. Not a narrow
+  // window either: `notifyQueueStats` refuses to re-emit while the counters are
+  // unchanged, so for a desktop whose queue is stable across a reconnect the
+  // buffered presence is that connection's only occupancy report.
+  it("buffers desktop.presence WITH its payload, so the replay still carries activeCommands", () => {
+    const socket = harness.createMockRelaySocket("sock-pre-presence-payload");
+    harness.getConnectionHandler()(socket);
+
+    socket.handlers.get("desktop.presence")?.({
+      state: "online",
+      activeCommands: 2,
+      queueDepth: 104,
+    });
+
+    expect(socket.data.pendingBuffer).toHaveLength(1);
+    expect(socket.data.pendingBuffer?.[0]?.args?.[0]).toEqual(
+      expect.objectContaining({ activeCommands: 2, queueDepth: 104 })
+    );
+  });
 });
 
 // ─── pushPendingBuffer at MAX_PENDING_BUFFER_SIZE cap ────────────────────────
 
 describe("pushPendingBuffer at MAX_PENDING_BUFFER_SIZE (100) cap", () => {
-  it("drops the 101st agent-sessions event and acks it with ValidationFailed", () => {
-    const socket = harness.createMockRelaySocket("sock-cap-agent-sessions");
-    harness.getConnectionHandler()(socket);
-
-    // Fill the buffer to capacity with command events (no ack)
-    for (let i = 0; i < 100; i++) {
-      socket.handlers.get("desktop.command.event")?.({ commandId: `c${i}` });
-    }
-    expect(socket.data.pendingBuffer).toHaveLength(100);
-
-    const ackFn = vi.fn();
-    socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-      SAMPLE_AGENT_SESSIONS_PAYLOAD,
-      ackFn
-    );
-
-    // Buffer must not grow past 100
-    expect(socket.data.pendingBuffer).toHaveLength(100);
-    expect(ackFn).toHaveBeenCalledOnce();
-    expect(ackFn).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
-  });
-
-  it("drops the 101st analytics event and acks it with ValidationFailed", () => {
-    const socket = harness.createMockRelaySocket("sock-cap-analytics");
-    harness.getConnectionHandler()(socket);
-
-    for (let i = 0; i < 100; i++) {
-      socket.handlers.get("desktop.command.event")?.({ commandId: `c${i}` });
-    }
-
-    const ackFn = vi.fn();
-    socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-      SAMPLE_ANALYTICS_PAYLOAD,
-      ackFn
-    );
-
-    expect(socket.data.pendingBuffer).toHaveLength(100);
-    expect(ackFn).toHaveBeenCalledOnce();
-    expect(ackFn).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
-  });
-
   it("drops a generic command event when buffer is full with no ack callback side-effect", () => {
     const socket = harness.createMockRelaySocket("sock-cap-generic");
     harness.getConnectionHandler()(socket);
@@ -404,124 +200,56 @@ describe("pushPendingBuffer at MAX_PENDING_BUFFER_SIZE (100) cap", () => {
 
 // ─── drainPendingBuffer ───────────────────────────────────────────────────────
 
-describe("drainPendingBuffer — buffered acks refused when hello returns disconnect or no targetId", () => {
-  it("calls acks with ValidationFailed when hello API returns disconnect:true", async () => {
+describe("drainPendingBuffer — buffered events discarded when hello returns disconnect or no targetId", () => {
+  function bufferCommandTraffic(socket: MockRelaySocket): void {
+    socket.handlers.get("desktop.command.event")?.({ commandId: "c-buffered" });
+    socket.handlers.get("desktop.command.ack")?.({ commandId: "c-buffered" });
+  }
+
+  it("discards the buffer without forwarding it when hello API returns disconnect:true", async () => {
     const socket = harness.createMockRelaySocket("sock-drain-disconnect");
     harness.getConnectionHandler()(socket);
+    bufferCommandTraffic(socket);
+    expect(socket.data.pendingBuffer).toHaveLength(2);
 
-    const agentSessionsAck = vi.fn();
-    socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-      SAMPLE_AGENT_SESSIONS_PAYLOAD,
-      agentSessionsAck
-    );
-    const analyticsAck = vi.fn();
-    socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-      SAMPLE_ANALYTICS_PAYLOAD,
-      analyticsAck
-    );
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(makeOkResponse({ emit: [], disconnect: true }))
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeOkResponse({ emit: [], disconnect: true }));
+    vi.stubGlobal("fetch", fetchMock);
 
     await socket.handlers.get("desktop.hello")?.({
       targetId: "drain-target-disconnect",
     });
 
-    expect(agentSessionsAck).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
-    expect(analyticsAck).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
+    expect(socket.data.pendingBuffer).toEqual([]);
+    // Only the hello itself was forwarded; the buffered events were not.
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
 
-  it("calls acks with ValidationFailed when hello API returns no targetId", async () => {
+  it("discards the buffer without forwarding it when hello API returns no targetId", async () => {
     const socket = harness.createMockRelaySocket("sock-drain-notarget");
     harness.getConnectionHandler()(socket);
-
-    const agentSessionsAck = vi.fn();
-    socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-      SAMPLE_AGENT_SESSIONS_PAYLOAD,
-      agentSessionsAck
-    );
-    const analyticsAck = vi.fn();
-    socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-      SAMPLE_ANALYTICS_PAYLOAD,
-      analyticsAck
-    );
+    bufferCommandTraffic(socket);
+    expect(socket.data.pendingBuffer).toHaveLength(2);
 
     // No targetId in response → drainPendingBuffer called, no registerWorker
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(makeOkResponse({ emit: [] }))
-    );
+    const fetchMock = vi.fn().mockResolvedValue(makeOkResponse({ emit: [] }));
+    vi.stubGlobal("fetch", fetchMock);
 
     await socket.handlers.get("desktop.hello")?.({
       targetId: "drain-target-notarget",
     });
 
-    expect(agentSessionsAck).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
-    expect(analyticsAck).toHaveBeenCalledWith({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
+    expect(socket.data.pendingBuffer).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(socketToTarget.has(socket.id)).toBe(false);
   });
 });
 
 // ─── forward rejection paths ──────────────────────────────────────────────────
 
-describe("forward rejection paths — .catch arms when fetch rejects for ack-bearing events", () => {
-  it("calls ack with IngestionFailed when DESKTOP_AGENT_SESSIONS_SOCKET_EVENT forward rejects", async () => {
-    const socket = harness.createMockRelaySocket("sock-reject-agent-sessions");
-    await registerAndStub(socket, "target-reject-agent-sessions");
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("Network error"))
-    );
-
-    const ack = await new Promise<DesktopAgentSessionsAck>((resolve) => {
-      socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT)?.(
-        SAMPLE_AGENT_SESSIONS_PAYLOAD,
-        resolve
-      );
-    });
-
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.IngestionFailed,
-    });
-  });
-
-  it("calls ack with ValidationFailed when DESKTOP_ANALYTICS_SOCKET_EVENT forward rejects", async () => {
-    const socket = harness.createMockRelaySocket("sock-reject-analytics");
-    await registerAndStub(socket, "target-reject-analytics");
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("Network error"))
-    );
-
-    const ack = await new Promise<DesktopAnalyticsAck>((resolve) => {
-      socket.handlers.get(DESKTOP_ANALYTICS_SOCKET_EVENT)?.(
-        SAMPLE_ANALYTICS_PAYLOAD,
-        resolve
-      );
-    });
-
-    expect(ack).toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.ValidationFailed,
-    });
-  });
-
+describe("forward rejection paths — .catch arm when the desktop.command.ack forward rejects", () => {
   it("completes without throwing when desktop.command.ack forward rejects (no ack callback)", async () => {
     const socket = harness.createMockRelaySocket("sock-reject-cmd-ack");
     await registerAndStub(socket, "target-reject-cmd-ack");
@@ -590,3 +318,171 @@ describe("payload ternaries — commandId/computeTargetId undefined for non-obje
     expect(body.payload).toBeNull();
   });
 });
+
+// ─── the uncovered forwardSocketEvent rejection arms (ISS-7976 3-7) ──────────
+
+describe("forward rejection paths — the arms with no ack callback to observe", () => {
+  const NETWORK_ERROR = new Error("Network error");
+
+  /**
+   * Lets a fire-and-forget forward's .then/.catch chain settle. `setTimeout 0`
+   * is a MACROtask, which is the point: it runs after the whole microtask
+   * queue, so an awaited promise chain has certainly resolved by then.
+   */
+  function flushTasks(): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("drains the buffer and disconnects when the desktop.hello forward rejects", async () => {
+    // The transport-failure twin of ISS-7976 BUG 1. This arm ALREADY
+    // disconnected; pinning it is what stops a refactor from quietly making
+    // the recoverable 5xx path and this one diverge again.
+    const socket = harness.createMockRelaySocket("sock-reject-hello");
+    harness.getConnectionHandler()(socket);
+
+    socket.handlers.get("desktop.command.event")?.({ commandId: "c-buffered" });
+    expect(socket.data.pendingBuffer).toHaveLength(1);
+
+    const fetchMock = vi.fn().mockRejectedValue(NETWORK_ERROR);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const helloHandler = socket.handlers.get("desktop.hello");
+    expect(helloHandler).toBeDefined();
+    await (helloHandler as (payload: unknown) => Promise<void>)({
+      targetId: "target-reject-hello",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(socket.data.pendingBuffer).toEqual([]);
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
+    expect(socketToTarget.has(socket.id)).toBe(false);
+  });
+
+  it("keeps the per-socket serial queue usable after a desktop.command.event forward rejects", async () => {
+    // desktop.command.event is the one sibling that goes through
+    // enqueueForSocket, so its failure mode differs from the covered .ack:
+    // every later event on this socket is linked onto the same chain.
+    //
+    // What this pins is exactly that the NEXT event is still forwarded, and
+    // the property it kills is the enqueued function's own try/catch --
+    // measured: removing that catch fails this file, while weakening
+    // `prev.then(fn, fn)` to `prev.then(fn)` does NOT, because the handler's
+    // catch already means `prev` never rejects. The second argument is
+    // redundant defence, not the thing keeping the chain alive.
+    const socket = harness.createMockRelaySocket("sock-reject-cmd-event");
+    await registerAndStub(socket, "target-reject-cmd-event");
+
+    const failingFetch = vi.fn().mockRejectedValue(NETWORK_ERROR);
+    vi.stubGlobal("fetch", failingFetch);
+    socket.handlers.get("desktop.command.event")?.({ commandId: "c-fails" });
+    await flushTasks();
+    expect(failingFetch).toHaveBeenCalledOnce();
+
+    // The next event on the SAME socket must still be forwarded.
+    const okFetch = vi.fn().mockResolvedValue(makeEventResponse());
+    vi.stubGlobal("fetch", okFetch);
+    socket.handlers.get("desktop.command.event")?.({ commandId: "c-after" });
+    await flushTasks();
+
+    expect(okFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(
+      String((okFetch.mock.calls[0][1] as RequestInit).body)
+    ) as { payload: { commandId: string } };
+    expect(body.payload.commandId).toBe("c-after");
+  });
+
+  it("settles the desktop.presence handler when its forward rejects", async () => {
+    const socket = harness.createMockRelaySocket("sock-reject-presence");
+    await registerAndStub(socket, "target-reject-presence");
+
+    const fetchMock = vi.fn().mockRejectedValue(NETWORK_ERROR);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const presenceHandler = socket.handlers.get("desktop.presence");
+    expect(presenceHandler).toBeDefined();
+
+    let threw = false;
+    try {
+      await (presenceHandler as () => Promise<void>)();
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(false);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("completes disconnect cleanup when the disconnect forward rejects", async () => {
+    // The forward is fired and NOT awaited, so a rejection here must not stop
+    // the local teardown that already ran ahead of it.
+    const socket = harness.createMockRelaySocket("sock-reject-disconnect");
+    await registerAndStub(socket, "target-reject-disconnect");
+    expect(workersByTargetId.has("target-reject-disconnect")).toBe(true);
+
+    const fetchMock = vi.fn().mockRejectedValue(NETWORK_ERROR);
+    vi.stubGlobal("fetch", fetchMock);
+
+    socket.connected = false;
+    await harness.disconnectSocketTarget(socket);
+    await flushTasks();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(workersByTargetId.has("target-reject-disconnect")).toBe(false);
+    expect(socketToTarget.has(socket.id)).toBe(false);
+  });
+});
+
+// ─── unknown events on the authenticated namespace (ISS-7976 branch 10) ─────
+
+describe("authenticated namespace — event registration surface", () => {
+  /**
+   * Pins the exact set of event names the /desktop-gateway connection handler
+   * registers, and that it registers NO catch-all.
+   *
+   * Socket.IO silently drops an event with no listener, which is the correct
+   * degrade for a version-skewed desktop emitting something this relay build
+   * predates. What this test can pin is the registration surface, not a live
+   * dispatch: these suites mock socket.io, so there is no dispatcher and
+   * "emitting an unknown event" is not representable here. The registration
+   * surface is what IS pinnable, and it covers the risk the ticket names: a
+   * refactor that throws on an unrecognized name has to register something to
+   * do it, which changes the set below or trips the `onAny` assertion.
+   */
+  it("registers exactly the known events and no catch-all", () => {
+    const socket = harness.createMockRelaySocket("sock-event-surface");
+    harness.getConnectionHandler()(socket);
+
+    expect([...socket.handlers.keys()].sort()).toEqual(
+      [
+        "desktop.command.ack",
+        "desktop.command.event",
+        "desktop.hello",
+        "desktop.presence",
+        "disconnect",
+        // attachSocketErrorLogging (error-listeners.ts), not a desktop event.
+        "error",
+      ].sort()
+    );
+    // A catch-all is `socket.onAny(fn)` -- a distinct method, so it would
+    // never appear among the names above. Asserted separately or it is not
+    // asserted at all.
+    expect(socket.onAny).not.toHaveBeenCalled();
+  });
+
+  // ISS-12735: Desktop stopped emitting these in v0.16.724 and the relay no
+  // longer handles them; their wire constants were deleted with the handlers.
+  it("registers no handler for the retired legacy Desktop events", () => {
+    const socket = harness.createMockRelaySocket("sock-retired-events");
+    harness.getConnectionHandler()(socket);
+
+    for (const event of RETIRED_DESKTOP_EVENTS) {
+      expect(socket.handlers.has(event)).toBe(false);
+    }
+  });
+});
+
+const RETIRED_DESKTOP_EVENTS = [
+  "desktop.telemetry",
+  "desktop.analytics",
+  "desktop.agent-sessions",
+] as const;

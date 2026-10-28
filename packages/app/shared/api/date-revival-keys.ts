@@ -45,9 +45,11 @@
  * - `artifact.ts`'s `BranchDetail`/`SessionDetail` declare
  *   `lastSyncStartedAt`, `headShaObservedAt`, `sessionStartedAt` and friends as
  *   `Date`, but nothing serves them — `ArtifactWithDetail` has no route and no
- *   caller. The shapes actually served under those names,
- *   `BranchViewBranch` and `TokenTrendPoint`, declare them `string`. So the
- *   directory scan revived four live Branch View fields and the token-trend
+ *   caller. The shape served under `sessionStartedAt`, `TokenTrendPoint`,
+ *   declares it `string`. The four Branch sync keys were then served as
+ *   `string` by the Branch View route; since ISS-6400 retired that route, no
+ *   served response contract declares them at all. So the directory scan
+ *   revived four Branch View fields and the token-trend
  *   `sessionStartedAt` against their own contracts — the ISS-5771 defect
  *   reproduced in miniature, which is why `bucketDay` had to grow a
  *   `value instanceof Date` branch for a field typed `string`.
@@ -94,7 +96,6 @@ const DATE_REVIVAL_KEY_LIST = [
   "awaitingInputSince",
   "checkedAt",
   "closedAt",
-  "completedAt",
   "createdAt",
   "dateValue",
   "deletedAt",
@@ -103,7 +104,6 @@ const DATE_REVIVAL_KEY_LIST = [
   "editedAt",
   "endedAt",
   "expiresAt",
-  "failedAt",
   "lastActivityAt",
   "lastAgentSessionSyncAt",
   "lastAgentSessionSyncAttemptAt",

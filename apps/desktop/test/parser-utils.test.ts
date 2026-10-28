@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   collectArtifacts,
   collectJsonlFiles,
@@ -197,8 +197,8 @@ test("countDiffFiles returns 0 for patch with no --- headers", () => {
 
 test("extractRepoFromCwd returns last path component", () => {
   assert.equal(
-    extractRepoFromCwd("/home/user/Workspace/symphony-alpha"),
-    "symphony-alpha"
+    extractRepoFromCwd("/home/user/Workspace/closedloop-ai"),
+    "closedloop-ai"
   );
 });
 
@@ -385,17 +385,17 @@ test("collectArtifacts extracts concrete PR URLs from tool output", () => {
       name: "exec_command",
       input: { cmd: "gh pr create --fill" },
       output:
-        "Created https://github.com/closedloop-ai/symphony-alpha/pull/1453",
+        "Created https://github.com/closedloop-ai/closedloop-ai/pull/1453",
     },
   ];
 
-  const result = collectArtifacts(toolUses, "/home/user/symphony-alpha");
+  const result = collectArtifacts(toolUses, "/home/user/closedloop-ai");
 
   assert.deepEqual(result.prs, [
     {
       number: "1453",
-      repo: "closedloop-ai/symphony-alpha",
-      url: "https://github.com/closedloop-ai/symphony-alpha/pull/1453",
+      repo: "closedloop-ai/closedloop-ai",
+      url: "https://github.com/closedloop-ai/closedloop-ai/pull/1453",
     },
   ]);
 });
@@ -404,21 +404,21 @@ test("extractPrReferences does not add pending when output has a PR URL", () => 
   const refs = extractPrReferences(
     "Bash",
     { command: "gh pr create --fill" },
-    "https://github.com/closedloop-ai/symphony-alpha/pull/1453"
+    "https://github.com/closedloop-ai/closedloop-ai/pull/1453"
   );
 
   assert.deepEqual(refs, [
     {
       number: "1453",
-      repo: "closedloop-ai/symphony-alpha",
-      url: "https://github.com/closedloop-ai/symphony-alpha/pull/1453",
+      repo: "closedloop-ai/closedloop-ai",
+      url: "https://github.com/closedloop-ai/closedloop-ai/pull/1453",
     },
   ]);
 });
 
 test("collectArtifacts extracts repo from cwd", () => {
-  const result = collectArtifacts([], "/home/user/Workspace/symphony-alpha");
-  assert.equal(result.repo, "symphony-alpha");
+  const result = collectArtifacts([], "/home/user/Workspace/closedloop-ai");
+  assert.equal(result.repo, "closedloop-ai");
   assert.deepEqual(result.prs, []);
   assert.deepEqual(result.issues, []);
 });

@@ -38,7 +38,7 @@ const usage = createAgentSessionUsageSummaryFixture(
     ],
     byRepository: [
       {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sessionCount: 7,
         inputTokens: 0,
         outputTokens: 0,
@@ -352,10 +352,10 @@ describe("sessionFilterFacetGroups", () => {
     );
     const repo = groups.find((g) => g.id === "repo");
     expect(repo?.options[0]).toMatchObject({
-      id: "closedloop-ai/symphony-alpha",
-      label: "symphony-alpha",
+      id: "closedloop-ai/closedloop-ai",
+      label: "closedloop-ai",
       count: 7,
-      searchText: "closedloop-ai/symphony-alpha",
+      searchText: "closedloop-ai/closedloop-ai",
     });
   });
 
@@ -377,11 +377,11 @@ describe("sessionFilterFacetGroups", () => {
 
     groups
       .find((g) => g.id === "repo")
-      ?.onToggle("closedloop-ai/symphony-alpha");
+      ?.onToggle("closedloop-ai/closedloop-ai");
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_SESSION_FACET_FILTERS,
       statuses: [SESSION_STATUS.ACTIVE],
-      repositories: ["closedloop-ai/symphony-alpha"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     });
   });
 
@@ -412,7 +412,7 @@ describe("session facet filter URL params", () => {
       // retired spelling no longer round-trips, it folds (covered below).
       statuses: [SESSION_STATUS.ACTIVE, SESSION_STATUS.INACTIVE],
       userIds: ["019c2a66-37e4-7221-9c3b-e159549f4c93"],
-      repositories: ["closedloop-ai/symphony-alpha"],
+      repositories: ["closedloop-ai/closedloop-ai"],
       harnesses: ["claude-code"],
       models: ["claude-sonnet-5"],
       autonomyTiers: [SESSION_AUTONOMY_TIER_FILTER_OPTIONS[0].value],
@@ -457,6 +457,34 @@ describe("session facet filter URL params", () => {
       SESSION_STATUS.INACTIVE,
       SESSION_STATUS.ACTIVE,
     ]);
+  });
+
+  it("drops a restored waiting/stale/unknown selection and keeps the rest", () => {
+    // ISS-10629 removed those three chips outright rather than keeping them
+    // read-only over an empty result, so a bookmarked URL must not restore one
+    // as a chip the menu can neither produce nor re-add. Asserted against a
+    // mixed selection, so a filter that dropped EVERYTHING would fail here too.
+    const parsed = parseSessionFacetFilterParams(
+      new URLSearchParams(
+        "status=waiting&status=active&status=stale&status=unknown&status=error"
+      )
+    );
+
+    expect(parsed.statuses).toEqual([
+      SESSION_STATUS.ACTIVE,
+      SESSION_STATUS.ERROR,
+    ]);
+  });
+
+  it("keeps a retired `completed` spelling, which was never a facet option", () => {
+    // The line ISS-10629 drew: it retired values THIS facet used to offer. A
+    // legacy wire spelling is an ordinary unrecognized value and still restores
+    // visibly, so the URL is not silently rewritten (ISS-5592).
+    const parsed = parseSessionFacetFilterParams(
+      new URLSearchParams("status=completed")
+    );
+
+    expect(parsed.statuses).toEqual(["completed"]);
   });
 
   // ISS-4605 (stage review): a selected Owner/Repository whose usage row dropped
@@ -510,7 +538,7 @@ describe("session facet filter URL params", () => {
       expect(
         hasActiveSessionFacet({
           ...DEFAULT_SESSION_FACET_FILTERS,
-          repositories: ["closedloop-ai/symphony-alpha"],
+          repositories: ["closedloop-ai/closedloop-ai"],
         })
       ).toBe(true);
     });
@@ -578,9 +606,9 @@ describe("ISS-5355 Project facet", () => {
     expect(projectGroup(groups)?.options).toEqual([
       {
         id: PROJECT_ID,
-        label: "Symphony Alpha",
+        label: "ClosedLoop AI",
         count: 9,
-        searchText: "Symphony Alpha",
+        searchText: "ClosedLoop AI",
       },
       {
         id: OTHER_PROJECT_ID,
@@ -704,7 +732,7 @@ const OTHER_PROJECT_ID = "019f8008-1969-74f9-b056-99c13cca9a08";
 function usageWithProjects() {
   return createAgentSessionUsageSummaryFixture(AgentSessionViewerScope.Self, {
     byProject: [
-      { projectId: PROJECT_ID, projectName: "Symphony Alpha", sessionCount: 9 },
+      { projectId: PROJECT_ID, projectName: "ClosedLoop AI", sessionCount: 9 },
       {
         projectId: OTHER_PROJECT_ID,
         projectName: "Relay Host",

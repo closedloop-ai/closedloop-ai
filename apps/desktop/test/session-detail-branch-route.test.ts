@@ -24,29 +24,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import {
-  BranchCloudHydrationStatus,
-  encodeBranchId,
-} from "@repo/api/src/types/branch.js";
-import {
-  RepositoryDefaultAvailability,
-  RepositoryDefaultCompleteness,
-} from "@repo/api/src/types/repository-default-identity.js";
-import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind.js";
+import { encodeBranchId } from "@repo/api/src/types/branch.js";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import type {
   AgentSessionSyncSource,
   SessionBranchLinkKey,
 } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { getSharedBranchDetail } from "../src/main/branch/shared-branches-api.js";
-import type { BranchDefaultEligibilitySource } from "../src/main/branch/shared-branches-default-eligibility.js";
 import { resolveSessionBranchRouteId } from "../src/main/session/session-branch-route.js";
 import { getSharedAgentSessionDetail } from "../src/main/session/shared-agent-session-detail-read.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 
 const SESSION_ID = "iss5567-session";
-const REPO_FULL_NAME = "closedloop-ai/symphony-alpha";
+const REPO_FULL_NAME = "closedloop-ai/closedloop-ai";
 const BRANCH_NAME = "fix/iss-5182-end-time-from-events";
 const BRANCH_ARTIFACT_ID = "iss5567-branch-artifact";
 const AT = "2026-07-10T00:00:00.000Z";
@@ -99,31 +90,6 @@ function branchKey(
     branchName: BRANCH_NAME,
     hasLocalPublication: true,
     ...overrides,
-  };
-}
-
-function eligibilitySource(
-  defaultBranch: string
-): BranchDefaultEligibilitySource {
-  return {
-    resolveRepositoryDefaultEligibilityInputs: async () => ({
-      status: BranchCloudHydrationStatus.Fresh,
-      rowHydrationResult: { status: BranchCloudHydrationStatus.Fresh },
-      authorities: [
-        {
-          repository: {
-            provider: VcsProviderKind.GitHub,
-            providerRepositoryId: "repo-iss5567",
-            fullName: REPO_FULL_NAME,
-          },
-          evidence: {
-            availability: RepositoryDefaultAvailability.Available,
-            completeness: RepositoryDefaultCompleteness.Complete,
-            defaultBranch,
-          },
-        },
-      ],
-    }),
   };
 }
 
@@ -276,7 +242,7 @@ test("ISS-5567: the route id is withheld unless the link names the branch on dis
   );
 });
 
-test("ISS-5828: session branch routing uses the exact authoritative default", async () => {
+test("ISS-5828: a published conventionally-named branch routes, since the cloud owns default-branch eligibility", async () => {
   assert.equal(
     await resolveSessionBranchRouteId({
       source: {
@@ -285,23 +251,8 @@ test("ISS-5828: session branch routing uses the exact authoritative default", as
       sessionId: SESSION_ID,
       branch: "main",
       displayedRepositoryFullName: REPO_FULL_NAME,
-      eligibilitySource: eligibilitySource("main"),
     }),
-    undefined,
-    "the authoritative default remains plain text"
-  );
-  assert.equal(
-    await resolveSessionBranchRouteId({
-      source: {
-        loadSessionBranchLinkKeys: () => [branchKey({ branchName: "main" })],
-      },
-      sessionId: SESSION_ID,
-      branch: "main",
-      displayedRepositoryFullName: REPO_FULL_NAME,
-      eligibilitySource: eligibilitySource("trunk"),
-    }),
-    encodeBranchId({ repoFullName: REPO_FULL_NAME, branchName: "main" }),
-    "a conventional name remains eligible when the repository default is trunk"
+    encodeBranchId({ repoFullName: REPO_FULL_NAME, branchName: "main" })
   );
 });
 
@@ -316,35 +267,9 @@ test("ISS-6542: session branch routing withholds a Wrote-only destination", asyn
       sessionId: SESSION_ID,
       branch: BRANCH_NAME,
       displayedRepositoryFullName: REPO_FULL_NAME,
-      eligibilitySource: eligibilitySource("main"),
     }),
     undefined
   );
-});
-
-test("ISS-5828: session branch routing warms authority without blocking detail", async () => {
-  const scopes: string[] = [];
-  const source: BranchDefaultEligibilitySource = {
-    resolveRepositoryDefaultEligibilityInputs: (request) => {
-      scopes.push(request.scope);
-      return eligibilitySource("trunk")
-        .resolveRepositoryDefaultEligibilityInputs!(request);
-    },
-  };
-
-  assert.equal(
-    await resolveSessionBranchRouteId({
-      source: {
-        loadSessionBranchLinkKeys: () => [branchKey({ branchName: "main" })],
-      },
-      sessionId: SESSION_ID,
-      branch: "main",
-      displayedRepositoryFullName: REPO_FULL_NAME,
-      eligibilitySource: source,
-    }),
-    encodeBranchId({ repoFullName: REPO_FULL_NAME, branchName: "main" })
-  );
-  assert.deepEqual(scopes, ["list"]);
 });
 
 test("ISS-5567: an ambiguous branch identity resolves by the pane's own repository, or not at all", async () => {

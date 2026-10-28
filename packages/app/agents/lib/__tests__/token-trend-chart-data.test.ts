@@ -121,7 +121,7 @@ describe("buildTokenTrendSeries", () => {
     // Same "Tokens" toggle must read the same total as the dashboard, which sums
     // input + output + cache_read + cache_write server-side (FEA-3497). A
     // cache-heavy session would otherwise show a smaller total here under the
-    // identical label. Regression for the parity gap wongk flagged on #3756.
+    // identical label. Regression for the parity gap whitlockk flagged on #3756.
     const cacheHeavy: TokenTrendResponse = {
       slug: "skill::rtk",
       models: ["claude-opus-4-5"],
@@ -157,7 +157,7 @@ describe("buildTokenTrendSeries", () => {
   it("does not throw when points carry non-string sessionStartedAt (crash-spiral regression)", () => {
     // The API types sessionStartedAt as an ISO string, but a Date/epoch can reach
     // the renderer (Liveblocks/non-JSON hydration). bucketDay must coerce, never
-    // throw, so the detail page's LiveblocksErrorBoundary never crash-spirals.
+    // throw, so a malformed point cannot take the detail page down.
     const dirty = {
       slug: "skill::rtk",
       models: ["claude-opus-4-5"],
@@ -233,7 +233,7 @@ describe("buildVersionMarkers", () => {
     // sources. The usage join only carries versionHash, so it cannot say which
     // source ran — the first-used day is hash-level. Emitting a marker per raw
     // row would paint the same day twice under identical labels. Regression for
-    // the hash-collision wongk flagged on #3756.
+    // the hash-collision whitlockk flagged on #3756.
     const sameHashTwoSources: ComponentVersion[] = [
       {
         hash: "dupeHash",
@@ -281,6 +281,7 @@ describe("buildVersionMarkers", () => {
  * fallback is skipped, and the renderer is handed a `NaN` that collapses the
  * y-domain — painting nothing at all.
  */
+
 describe("buildTokenTrendSeries dirty-input hardening (ISS-4802)", () => {
   const basePoint = {
     sessionId: "s1",
@@ -317,6 +318,17 @@ describe("buildTokenTrendSeries dirty-input hardening (ISS-4802)", () => {
     const total = points[0]?.values["claude-opus-4-5"];
     expect(Number.isFinite(total)).toBe(true);
     expect(total).toBe(150);
+  });
+
+  // ISS-8884, whitlockk review — the `Array.isArray` guard covers the container
+  // only; a null ELEMENT reaches `point.model` on the very next line.
+  it("drops a null point and still plots the good one beside it", () => {
+    const points = [null, basePoint] as unknown as TokenTrendResponse["points"];
+
+    expect(() => seriesFor(points)).not.toThrow();
+    const plotted = seriesFor(points).points;
+    expect(plotted).toHaveLength(1);
+    expect(plotted[0]?.values["claude-opus-4-5"]).toBe(150);
   });
 
   it.each([
@@ -413,7 +425,7 @@ describe("buildTokenTrendSeries dirty-input hardening (ISS-4802)", () => {
   });
 
   /**
-   * wongk (PR #4322): `point.model` reaches the DOM as a series label and was
+   * whitlockk (PR #4322): `point.model` reaches the DOM as a series label and was
    * the one field the numeric hardening skipped. An absent value minted
    * `{ key: undefined, label: undefined }` — the literal word "undefined" in the
    * legend, and a TypeError from `providerOf` on the By-provider toggle.
@@ -478,7 +490,7 @@ describe("buildTokenTrendSeries dirty-input hardening (ISS-4802)", () => {
   });
 
   /**
-   * wongk (PR #4322): a skewed response that omits `models` but still carries
+   * whitlockk (PR #4322): a skewed response that omits `models` but still carries
    * valid points must not throw from `new Set(undefined)` — the legend is
    * rebuildable from the points themselves.
    */
@@ -547,5 +559,97 @@ describe("buildTokenTrendSeries dirty-input hardening (ISS-4802)", () => {
       series: [],
       points: [],
     });
+  });
+});
+
+/**
+ * ISS-8565. `values[model] = (values[model] ?? 0) + value` over a plain `{}`
+ * bucket: on a model literally named `__proto__` the read returns
+ * `Object.prototype`, so the `?? 0` never fires, `Object.prototype + value`
+ * coerces to a string, and assigning a string to `__proto__` is a silent
+ * no-op — losing the whole day while `modelKeys` still gives that model a
+ * legend series with nothing plotted. Same fix the cloud arm took in ISS-8233.
+ */
+describe("buildTokenTrendSeries: a model named __proto__ (ISS-8565)", () => {
+  const protoResponse: TokenTrendResponse = {
+    slug: "skill::proto",
+    models: ["__proto__"],
+    points: [
+      {
+        sessionId: "p1",
+        sessionStartedAt: "2026-06-01T10:00:00.000Z",
+        model: "__proto__",
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        estimatedCostUsd: 0.5,
+        runtimeMs: 1000,
+        componentInvocations: 1,
+        componentErrorCount: 0,
+      },
+    ],
+  };
+
+  it("plots the bucket instead of dropping the whole day", () => {
+    const { series, points } = buildTokenTrendSeries(
+      protoResponse,
+      UsageMetric.Tokens
+    );
+
+    expect(series.map((entry) => entry.key)).toContain("__proto__");
+    expect(points).toHaveLength(1);
+    expect(Object.keys(points[0].values)).toContain("__proto__");
+    // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+    expect(points[0].values.__proto__).toBe(1500);
+    expect(Object.getPrototypeOf(points[0].values)).toBe(Object.prototype);
+  });
+
+  it("still buckets an ordinary model unchanged", () => {
+    const { points } = buildTokenTrendSeries(response, UsageMetric.Tokens);
+
+    expect(JSON.stringify(points[0].values)).toBe('{"claude-opus-4-5":165}');
+  });
+});
+
+describe("buildVersionMarkers dirty-input hardening (ISS-8884)", () => {
+  it("returns markers instead of throwing when points is a truthy non-array", () => {
+    const skewed = { ...response, points: {} } as unknown as TokenTrendResponse;
+
+    const usage = [{ sessionId: "s1", versionHash: "hashA" }];
+
+    expect(() => buildVersionMarkers(versions, usage, skewed)).not.toThrow();
+    // A non-array is treated as "no points", the same as an absent response.
+    expect(buildVersionMarkers(versions, usage, skewed)).toEqual(
+      buildVersionMarkers(versions, usage, undefined)
+    );
+  });
+
+  it("returns markers instead of throwing when a points element is null", () => {
+    const skewed = {
+      ...response,
+      points: [null],
+    } as unknown as TokenTrendResponse;
+
+    const usage = [{ sessionId: "s1", versionHash: "hashA" }];
+
+    expect(() => buildVersionMarkers(versions, usage, skewed)).not.toThrow();
+    expect(buildVersionMarkers(versions, usage, skewed)).toEqual(
+      buildVersionMarkers(versions, usage, undefined)
+    );
+  });
+
+  it("still derives first-used days from a well-formed points array", () => {
+    const usage = [{ sessionId: "s1", versionHash: "hashA" }];
+
+    const withPoints = buildVersionMarkers(versions, usage, response);
+    const withoutPoints = buildVersionMarkers(versions, usage, undefined);
+
+    expect(
+      withPoints.filter((m) => RE_FIRST_USED.test(m.description))
+    ).toHaveLength(1);
+    expect(
+      withoutPoints.filter((m) => RE_FIRST_USED.test(m.description))
+    ).toHaveLength(0);
   });
 });

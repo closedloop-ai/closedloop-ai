@@ -2,15 +2,17 @@
  * E2E deep flow (FEA-2939): the Sessions view — list → detail → back — proven
  * against a DB-direct seed.
  *
- * `sessions-flow.spec.ts` drives the transcript importer and is entirely
- * quarantined (`test.fixme`) by the FEA-2187 read-your-writes WAL race: the
- * imported rows intermittently do not surface in the list. As a result the
- * Sessions view — the primary desktop surface — had NO passing spec asserting
- * that rows appear at all.
+ * `sessions-flow.spec.ts` covers the same three steps THROUGH the transcript
+ * importer, and since ISS-5717 it runs. The two are not redundant: that one is
+ * the only proof the importer path reaches the list at all, and it pays a
+ * cross-process import to get there; this one isolates the Sessions read from
+ * the importer entirely, so a failure here is the list or the read path and
+ * never the ingest. It is also where the facet coverage below lives, which
+ * needs a seed shaped per-row in ways transcripts cannot express.
  *
- * This spec closes that gap the same way the Branches specs did: it seeds the
- * rows straight into the app's SQLite store while the app is DOWN (no
- * cross-process WAL contention) and reads them on the NEXT boot, so there is no
+ * It seeds the rows the same way the Branches specs did: straight into the app's
+ * SQLite store while the app is DOWN (no cross-process WAL contention), reading
+ * them on the NEXT boot, so there is no
  * importer race to flake on. The Sessions read path projects the `sessions`
  * table directly (no artifact/link join), but a bare seeded row is NOT enough:
  * since FEA-3284 the list read hides low-signal "idle" rows, so `seedSessionsList`
@@ -42,30 +44,35 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import {
-  normalizeDisplayedSessionStatus,
   SESSION_STATUS,
   type SessionStatus,
 } from "@repo/api/src/types/session-status.ts";
-import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display.ts";
 import {
   breadcrumbNav,
   breadcrumbParentLink,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
 } from "./helpers/desktop-app";
+import {
+  mapInactiveLinuxCiWindow,
+  selectInactiveLinuxCiMapping,
+} from "./helpers/inactive-linux-ci-window";
 import {
   type SessionListSeed,
   seedSessionsList,
   waitForBranchesSchema,
 } from "./helpers/seed-branches-db";
 
-// ISS-4401: mirror of `SESSIONS_COST_METRIC_CARD_LABEL` from
-// `@repo/app/agents/components/sessions/cost-metric-card`. That module cannot be
-// imported into a Playwright spec — its self-referencing `@repo/app/…` specifiers
-// only resolve through the renderer's vite alias, not the spec's Node runtime
-// (see the note atop `branches-page.spec.ts`) — so the visible label is asserted
-// as a literal here. Keep this in sync with that SSOT if the label ever changes.
-const SESSIONS_COST_METRIC_CARD_LABEL = "cost";
+// Mirror of `TOTAL_ESTIMATED_COST_COPY.shortLabel`
+// (`@repo/api/src/types/total-estimated-cost-copy`), which the operator ruled
+// onto this card on 2026-09-20. The renderer module cannot be imported into a
+// Playwright spec — its self-referencing `@repo/app/…` specifiers only resolve
+// through the renderer's vite alias, not the spec's Node runtime (see the note
+// atop `branches-page.spec.ts`) — so the visible label is asserted as a literal
+// here. Keep this in sync with that SSOT if the label ever changes.
+const SESSIONS_COST_CARD_LABEL = "Cost";
 
 test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
   test("seeded sessions list, open detail, and navigate back", async () => {
@@ -105,7 +112,7 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
       await seedSessionsList(userDataDir, seededSessions);
 
       // Launch 2 — the real Sessions IPC source reads the seeded corpus at boot.
-      const { page, pageErrors, cleanup } = await launchDesktopApp({
+      const { app, page, pageErrors, cleanup } = await launchDesktopApp({
         env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
         keepUserDataDir: true,
         userDataDir,
@@ -116,30 +123,38 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
 
         // The seed stamps `last_activity_at` to now, so the rows are in-window on
         // every range; widen to "All time" anyway to be independent of the run
-        // clock. `:visible` scopes to the Sessions toolbar (keep-alive views stay
-        // mounted-but-hidden and also render this control).
-        await page.locator('[aria-label="All time"]:visible').click();
+        // clock.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // The Sessions view is a full-width, table-led page: its title shows only
         // in the Topbar breadcrumb, with no in-body <h1>. Assert the seeded rows
-        // themselves render (the coverage the quarantined spec cannot provide).
+        // themselves render, from a seed no importer had to deliver.
         for (const session of seededSessions) {
           await expect(
             page.getByRole("link", { name: session.name })
           ).toBeVisible({ timeout: 30_000 });
         }
 
-        // ISS-4401 regression: the desktop Sessions summary Cost card carries the
-        // per-surface "cost" label (distinguishing its
-        // not-subscription-covered figure from the Dashboard's inclusive total),
-        // not the old bare "Cost". The info affordance's accessible name follows
-        // the label, so scope to it rather than the table's per-session "Cost"
-        // column header.
+        // The desktop Sessions summary Cost card, on ruling 7's alias since
+        // 2026-09-20 — one label now, whichever presentation mode a seeded
+        // cohort resolves. Anchored on the info affordance, whose accessible
+        // name follows the card's label, rather than on the label text: the
+        // table's Cost COLUMN header renders the canonical phrase, which
+        // contains this word, and a bare text probe would bind to it.
         await expect(
           page.getByRole("button", {
-            name: `About ${SESSIONS_COST_METRIC_CARD_LABEL}`,
+            name: `About ${SESSIONS_COST_CARD_LABEL}`,
           })
         ).toBeVisible({ timeout: 30_000 });
+
+        await mapInactiveLinuxCiWindow(
+          app,
+          page,
+          selectInactiveLinuxCiMapping(
+            { platform: process.platform, env: process.env },
+            true
+          )
+        );
 
         await assertSessionsFilterAndViewControls(page, seededSessions);
 
@@ -189,142 +204,7 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
     }
   });
 
-  // ISS-4605: the Sessions active-filter chip row. Seed a mixed-status corpus,
-  // apply Status=Inactive through the REAL Filter popover, then drive the chip
-  // row the desktop renderer mounts under the shared SessionsToolbar: the chip
-  // renders with the human label, removing it clears that facet (the filtered-out
-  // rows return), and clear-all resets everything.
-  //
-  // ISS-4696: Inactive, NOT Completed. ISS-4586 retired `completed` from the
-  // Status FACET, so driving it here would click a menuitem that no longer
-  // exists and assert a chip label the option list can no longer resolve. The
-  // seeds still STORE the legacy `completed` value on purpose — that is what
-  // proves the Inactive facet reaches not-yet-migrated rows.
-  test("active-filter chip row: renders, removes one facet, and clears all", async () => {
-    test.setTimeout(180_000);
-    const seededSessions = createSeededSessions();
-    // The inactive seeds are exactly the rows the Inactive Status facet keeps.
-    const inactiveSessions = seededSessions.filter(
-      (session) => session.status === SESSION_STATUS.INACTIVE
-    );
-    const activeSession = seededSessions.find(
-      (session) => session.status === SESSION_STATUS.ACTIVE
-    );
-    if (!activeSession) {
-      throw new Error("Seed must include an ACTIVE session for the chip test");
-    }
-
-    const claudeHome = fs.mkdtempSync(
-      path.join(os.tmpdir(), "desktop-sessions-chips-claude-")
-    );
-    const codexHome = fs.mkdtempSync(
-      path.join(os.tmpdir(), "desktop-sessions-chips-codex-")
-    );
-    const userDataDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "desktop-sessions-chips-udd-")
-    );
-
-    try {
-      const first = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-        keepUserDataDir: true,
-        userDataDir,
-      });
-      try {
-        await waitForBranchesSchema(userDataDir);
-      } finally {
-        await first.cleanup();
-      }
-
-      await seedSessionsList(userDataDir, seededSessions);
-
-      const { page, pageErrors, cleanup } = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-        keepUserDataDir: true,
-        userDataDir,
-      });
-
-      try {
-        await gotoNav(page, "sessions");
-        await page.locator('[aria-label="All time"]:visible').click();
-
-        for (const session of seededSessions) {
-          await expect(
-            page.getByRole("link", { name: session.name })
-          ).toBeVisible({ timeout: 30_000 });
-        }
-
-        // Apply Status=Inactive via the real Filter popover (ISS-4586 retired the
-        // Completed option; the legacy `completed` seeds fold into Inactive).
-        await page.getByRole("button", { name: "Filter", exact: true }).click();
-        await openFilterFacet(page, "Status");
-        await page
-          .getByRole("menuitem", { name: INACTIVE_STATUS_FACET_MENUITEM_NAME })
-          .click();
-        await page.keyboard.press("Escape");
-
-        // The ACTIVE row is filtered out and a chip names the active facet.
-        await expect(
-          page.getByRole("link", { name: activeSession.name })
-        ).toHaveCount(0);
-        await expect(
-          page.getByText(INACTIVE_STATUS_CHIP, { exact: true })
-        ).toBeVisible({ timeout: 15_000 });
-
-        // Removing the chip clears the facet: the ACTIVE row returns.
-        await page
-          .getByRole("button", { name: REMOVE_INACTIVE_STATUS_CHIP })
-          .click();
-        await expect(
-          page.getByText(INACTIVE_STATUS_CHIP, { exact: true })
-        ).toHaveCount(0);
-        await expect(
-          page.getByRole("link", { name: activeSession.name })
-        ).toBeVisible();
-
-        // Re-apply, then Clear all resets every facet and hides the chip row.
-        await page.getByRole("button", { name: "Filter", exact: true }).click();
-        await openFilterFacet(page, STATUS_FACET_MENUITEM_NAME);
-        await page
-          .getByRole("menuitem", { name: INACTIVE_STATUS_FACET_MENUITEM_NAME })
-          .click();
-        await page.keyboard.press("Escape");
-        await expect(
-          page.getByText(INACTIVE_STATUS_CHIP, { exact: true })
-        ).toBeVisible();
-
-        await page.getByRole("button", { name: "Clear all" }).click();
-        await expect(
-          page.getByText(INACTIVE_STATUS_CHIP, { exact: true })
-        ).toHaveCount(0);
-        await expect(
-          page.getByRole("button", { name: "Clear all" })
-        ).toHaveCount(0);
-        // Clear all also restores the bounded default date range, which excludes
-        // today's still-active row by design. Return to All time, then prove the
-        // status facet itself was cleared and the ACTIVE row can return.
-        await page.locator('[aria-label="All time"]:visible').click();
-        await expect(
-          page.getByRole("link", { name: activeSession.name })
-        ).toBeVisible();
-        for (const session of inactiveSessions) {
-          await expect(
-            page.getByRole("link", { name: session.name })
-          ).toBeVisible();
-        }
-
-        expect(pageErrors).toEqual([]);
-      } finally {
-        await cleanup();
-      }
-    } finally {
-      fs.rmSync(userDataDir, { recursive: true, force: true });
-      fs.rmSync(claudeHome, { recursive: true, force: true });
-      fs.rmSync(codexHome, { recursive: true, force: true });
-    }
-  });
-
-  // FEA-4299 (shafty023): the unit suite stops at the main-process helpers, but
+  // FEA-4299 (davetho): the unit suite stops at the main-process helpers, but
   // the Electron SessionsView sources the Repository facet from the usage/
   // analytics IPC reads — so the row → option → click → filtered-row contract can
   // regress while the unit suite stays green. This drives the REAL Repository
@@ -393,7 +273,7 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
 
       // Launch 2 — the real Sessions IPC + usage/analytics reads resolve each
       // seeded row's repo identity (live git first, stored fallback).
-      const { page, pageErrors, cleanup } = await launchDesktopApp({
+      const { app, page, pageErrors, cleanup } = await launchDesktopApp({
         env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
         keepUserDataDir: true,
         userDataDir,
@@ -401,7 +281,7 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
 
       try {
         await gotoNav(page, "sessions");
-        await page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // Every seeded row renders (including the Unknown-identity one).
         for (const session of seededSessions) {
@@ -409,6 +289,15 @@ test.describe("Sessions list (DB-direct seed, FEA-2939)", () => {
             page.getByRole("link", { name: session.name })
           ).toBeVisible({ timeout: 30_000 });
         }
+
+        await mapInactiveLinuxCiWindow(
+          app,
+          page,
+          selectInactiveLinuxCiMapping(
+            { platform: process.platform, env: process.env },
+            true
+          )
+        );
 
         await assertRepositoryFacetOptions(page);
         await assertRepositoryFacetFilters(page, seededSessions);
@@ -454,22 +343,6 @@ const SESSION_SEED_DEFINITIONS = [
 const TARGET_SESSION_INDEX = 2;
 const SEED_TIME_STEP_MS = 60_000;
 const STATUS_FACET_MENUITEM_NAME = /^Status/;
-// ISS-4696: the menuitem's accessible name IS the facet option's label, so read
-// it from the same `SESSION_STATUS_LABELS` map the option list is built from
-// rather than repeating the word. (The spec cannot import
-// `SESSION_STATUS_FILTER_OPTIONS` itself — pulling the `@repo/app` graph into a
-// Playwright spec aborts the whole suite at load — but the LABEL map is the
-// shared leaf both sides derive from.)
-const INACTIVE_STATUS_FACET_MENUITEM_NAME =
-  SESSION_STATUS_LABELS[SESSION_STATUS.INACTIVE];
-// ISS-4605: the active-filter chip is `<facet label>: <value label>`. The value
-// label is the canonical `SESSION_STATUS_LABELS` entry, so the chip reuses that
-// SSOT rather than hardcoding the string. ISS-4586 retired the `Completed` /
-// `Abandoned` Status-facet options (they fold into the neutral INACTIVE value),
-// so the facet the chip test drives is Inactive — the seeded legacy `completed`
-// rows normalize to INACTIVE and survive that filter.
-const INACTIVE_STATUS_CHIP = `Status: ${SESSION_STATUS_LABELS[SESSION_STATUS.INACTIVE]}`;
-const REMOVE_INACTIVE_STATUS_CHIP = `Remove ${INACTIVE_STATUS_CHIP}`;
 
 function createSeededSessions(): NamedSessionListSeed[] {
   // Keep terminal fixtures inside the latest completed UTC day. The ACTIVE row
@@ -492,6 +365,12 @@ function createSeededSessions(): NamedSessionListSeed[] {
     return {
       ...session,
       at: timestamp,
+      // `endedAt` defaults to `at`, and `at` is this row's `lastActivityAt` —
+      // so an ACTIVE seed left on the default would carry a stored end it
+      // never meant to have. Clear it so an active row means what it says;
+      // terminal rows keep the default, where `ended_at == last_activity_at`
+      // is the shape they are supposed to have.
+      endedAt: session.status === SESSION_STATUS.ACTIVE ? null : undefined,
       lastActivityAt: timestamp,
     };
   });
@@ -515,6 +394,9 @@ async function assertSessionsFilterAndViewControls(
   sessions: NamedSessionListSeed[]
 ): Promise<void> {
   await page.getByRole("button", { name: "Filter", exact: true }).click();
+  // The FILTER facet, not the column header: its label is owned by
+  // `session-filter-adapter.tsx` and is still the bare word, which ISS-10636 did
+  // not touch — only the grid header moved to the dollar phrase.
   for (const group of [
     "Status",
     "Autonomy",
@@ -573,24 +455,6 @@ async function assertSessionsFilterAndViewControls(
   for (const session of sessions) {
     await expect(page.getByRole("link", { name: session.name })).toBeVisible();
   }
-
-  await page.getByRole("button", { name: "View", exact: true }).click();
-  await expect(page.getByText("Show / Hide Columns")).toBeVisible();
-  await expect(page.getByRole("switch", { name: "Status" })).toBeChecked();
-  await expect(sessionStatusCell(page, sessions[0])).toBeVisible();
-  await page.getByRole("switch", { name: "Status" }).click();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Status" })).toHaveCount(0);
-  await expect(sessionStatusCell(page, sessions[0])).toHaveCount(0);
-
-  await page.getByRole("button", { name: "View", exact: true }).click();
-  await expect(page.getByRole("switch", { name: "Status" })).not.toBeChecked();
-  await page.getByRole("switch", { name: "Status" }).click();
-  await page.keyboard.press("Escape");
-  await expect(
-    page.getByRole("button", { name: "Status", exact: true })
-  ).toBeVisible();
-  await expect(sessionStatusCell(page, sessions[0])).toBeVisible();
 }
 
 async function openFilterFacet(
@@ -598,26 +462,6 @@ async function openFilterFacet(
   label: string | RegExp
 ): Promise<void> {
   await page.getByRole("menuitem", { name: label }).click();
-}
-
-function sessionStatusCell(page: Page, session: NamedSessionListSeed) {
-  // ISS-4586: the badge renders the DISPLAYED label, so a legacy `completed`/
-  // `abandoned` seed shows as "Inactive". Locate the cell by the normalized
-  // label so it matches what the app actually renders.
-  return sessionRow(page, session).getByText(
-    SESSION_STATUS_LABELS[normalizeDisplayedSessionStatus(session.status)],
-    {
-      exact: true,
-    }
-  );
-}
-
-function sessionRow(page: Page, session: NamedSessionListSeed) {
-  return page
-    .getByRole("link", { name: session.name })
-    .locator(
-      "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group ') and contains(concat(' ', normalize-space(@class), ' '), ' grid ')][1]"
-    );
 }
 
 // FEA-4299: Repository-facet fixtures. The facet option label is the LAST path
@@ -692,6 +536,10 @@ function createRepoFacetSessions(
       cwd: paths.deletedWorktreeCwd,
       repoFullName: REPO_FACET_STORED_FULL_NAME,
       at: at(2),
+      // `endedAt` defaults to `at`, which equals this row's `lastActivityAt`;
+      // cleared so this row stays a plain stored-active with no end, matching
+      // its name.
+      endedAt: null,
       lastActivityAt: at(2),
     },
     {

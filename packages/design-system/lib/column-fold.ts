@@ -127,8 +127,18 @@ export function measureWholeColumnFold(
 }
 
 /**
- * Widen the leading track of `template` so the container's right edge lands on a
- * column boundary — no track is rendered partially visible at rest (ISS-4889).
+ * Widen one track of `template` so the container's right edge lands on a column
+ * boundary — no track is rendered partially visible at rest (ISS-4889).
+ *
+ * `growTrackIndex` names the track that absorbs the leftover, and defaults to
+ * the LEADING one, which is the identity column on every `GridTable` (v1)
+ * caller: there the lead is `minmax(300px, 1fr)`, it carries the row's name, and
+ * it is the one track that can never hold a persisted user resize. A grid that
+ * declares a leading UTILITY track — a favourite star or a checkbox ahead of the
+ * name, which `GridTableV2` supports and v1's Sessions table never had — must
+ * name index 1 instead. Absorbing into index 0 there would grow the STAR from
+ * 36px to whatever the leftover happens to be, which is both absurd to look at
+ * and not what "the fold lands on a column boundary" is for.
  *
  * Returns the template UNCHANGED (byte-identical) whenever fitting would be
  * wrong or unnecessary, so a caller can apply it unconditionally:
@@ -137,22 +147,26 @@ export function measureWholeColumnFold(
  *  - the grid already fits — there is no fold, and the `fr` maximums are
  *    entitled to the free space;
  *  - the fold already sits exactly on a boundary (leftover 0);
- *  - not even the leading track fits, so there is no whole column to snap to and
- *    widening the lead would only push MORE content off-screen;
+ *  - not even the first track fits, so there is no whole column to snap to and
+ *    widening anything would only push MORE content off-screen;
+ *  - the absorbing track is not itself inside the fitted prefix, so widening it
+ *    would move a track that is already past the fold and leave the fold
+ *    exactly where it was;
  *  - a track carries no px length, so {@link parseGridTrackMinWidthsPx} cannot
  *    measure the row (see its note).
  *
- * The widened lead is floored to a whole pixel, so the emitted template is
+ * The widened track is floored to a whole pixel, so the emitted template is
  * stable AND the sub-pixel it gives up is one-sided: the fitted prefix lands at
- * or before the container's right edge, never past it. Rounding would take the
- * widened lead UP whenever the leftover's fraction is 0.5 or more — and
- * `containerWidthPx` is fractional in a real browser, since it comes from
- * `ResizeObserver`'s `contentRect` — which would clip the last "whole" column by
- * up to half a pixel instead of ending it exactly on the fold.
+ * or before the container's right edge, never past it. Rounding would take it
+ * UP whenever the leftover's fraction is 0.5 or more — and `containerWidthPx` is
+ * fractional in a real browser, since it comes from `ResizeObserver`'s
+ * `contentRect` — which would clip the last "whole" column by up to half a pixel
+ * instead of ending it exactly on the fold.
  */
 export function fitGridTemplateToWholeColumns(
   template: string,
-  containerWidthPx: number
+  containerWidthPx: number,
+  growTrackIndex = 0
 ): string {
   if (!Number.isFinite(containerWidthPx) || containerWidthPx <= 0) {
     return template;
@@ -172,23 +186,41 @@ export function fitGridTemplateToWholeColumns(
   if (fittedCount === 0 || leftoverPx <= 0) {
     return template;
   }
-  return growLeadingTrack(template, trackWidthsPx[0] + leftoverPx);
+  // Inside the fitted prefix, and a real index. A track at or past the fold
+  // cannot absorb the leftover — growing it moves content that is already
+  // off-screen and leaves the fold cutting exactly the track it was cutting
+  // before, so the caller would get a silently unfitted layout reported as a fit.
+  if (
+    !Number.isInteger(growTrackIndex) ||
+    growTrackIndex < 0 ||
+    growTrackIndex >= fittedCount
+  ) {
+    return template;
+  }
+  return growTrack(
+    template,
+    growTrackIndex,
+    trackWidthsPx[growTrackIndex] + leftoverPx
+  );
 }
 
 /**
- * Rewrite the leading track's px length to `widthPx`, preserving the rest of the
- * track verbatim — `minmax(300px, 1fr)` becomes `minmax(336px, 1fr)`, a bare
- * `300px` becomes `336px` — and leaving every other track untouched.
+ * Rewrite the px length of the track at `index` to `widthPx`, preserving the
+ * rest of that track verbatim — `minmax(300px, 1fr)` becomes `minmax(336px, 1fr)`,
+ * a bare `300px` becomes `336px` — and leaving every other track untouched.
  *
  * Floored, not rounded: see {@link fitGridTemplateToWholeColumns}. Flooring is
  * what keeps the emitted prefix at or before the container edge for a fractional
  * container width, so the last fitted column is never clipped by a sub-pixel.
  */
-function growLeadingTrack(template: string, widthPx: number): string {
-  const tracks = splitGridTracks(template);
-  const [lead, ...rest] = tracks;
-  const grown = lead.replace(TRACK_MIN_PX_PATTERN, `${Math.floor(widthPx)}px`);
-  return [grown, ...rest].join(" ");
+function growTrack(template: string, index: number, widthPx: number): string {
+  return splitGridTracks(template)
+    .map((track, position) =>
+      position === index
+        ? track.replace(TRACK_MIN_PX_PATTERN, `${Math.floor(widthPx)}px`)
+        : track
+    )
+    .join(" ");
 }
 
 /**

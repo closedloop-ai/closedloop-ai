@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
  * ISS-5592 moved Symphony's canonical vocabulary to
  * `@repo/api/src/types/session-status`, which this package is gated from
  * importing (FEA-4115 — `@closedloop-ai/design-system` is a generic, project-agnostic
- * product). Chris decided on 2026-08-14 that the two need not agree: the design
+ * product). Cosimo decided on 2026-08-14 that the two need not agree: the design
  * system is a separate product, so this copy is free to diverge and nothing
  * enforces parity between them. Do NOT "fix" the duplication by importing the
  * Symphony set — that import is what the boundary exists to stop.
@@ -158,20 +158,6 @@ export type RunStatus =
 
 export type RunMode = "conversation" | "headless";
 
-export type RunSummary = {
-  id: string;
-  title: string;
-  promptPreview: string;
-  status: RunStatus;
-  mode: RunMode;
-  cwd: string;
-  model?: string | null;
-  permissionMode: string;
-  startedAt: string;
-  endedAt?: string | null;
-  sessionId?: string | null;
-};
-
 export type RunComposer = {
   mode: RunMode;
   source: "fresh" | "resume";
@@ -186,24 +172,6 @@ export type RunComposer = {
     description: string;
     source: "builtin" | "user" | "project";
   }>;
-};
-
-export type RunSessionRecord = {
-  handle: RunSummary;
-  transcript: ConversationTranscript;
-  followUp?: string;
-  tokenUsage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    contextWindow: number;
-  };
-  result?: {
-    durationLabel: string;
-    turns: number;
-    costUsd: number;
-  };
 };
 
 export type CcScope = "all" | "user" | "project";
@@ -1088,7 +1056,6 @@ export type SessionAgent = {
   type: "main" | "subagent";
   subagentType?: string | null;
   status: AgentStatus;
-  task?: string | null;
   currentTool?: string | null;
   startedAt: string;
   updatedAt?: string | null;

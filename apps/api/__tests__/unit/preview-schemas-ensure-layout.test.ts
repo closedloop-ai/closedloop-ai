@@ -12,10 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  PRISMA_CLI_ENTRY_ENV,
-  runMigrateWithRetry,
-} from "@repo/database/scripts/migration-pipeline";
+import { runMigrateWithRetry } from "@repo/database/scripts/migration-pipeline";
+import { PRISMA_CLI_ENTRY_ENV } from "@repo/database/scripts/prisma-cli";
 import {
   afterAll,
   afterEach,
@@ -340,6 +338,149 @@ describe("prisma runtime layout resolution", () => {
     expect(result.layout.schemaEngineBinary).toBe(ENGINE_BINARY);
   });
 
+  /*
+   * ISS-8804: NODE_PATH order decides which of two installed versions the
+   * SPAWNED CLI resolves, and it only decides anything where the pnpm symlinks
+   * are absent — i.e. in the deployed bundle, which is why collectModulePaths
+   * exists at all. It used to hand Node the raw directory listing, so the
+   * winner differed between a laptop, CI and the Vercel build container.
+   */
+  it.each([["0"], ["false"], ["FALSE"], ["off"], ["No"], [" 0 "]])(
+    "honours %j as an off value, not just the exact string 0",
+    (value) => {
+      // The escape hatch is reached mid-incident by someone who has just
+      // learned the variable exists. An exact-"0" match would let `=false`
+      // leave the reorder ON while looking like it worked — the worst
+      // behaviour available to a switch whose whole purpose is reversing a
+      // change we could not validate (marisolashgrove on #6604).
+      const otherCliDir = "prisma@8.1.0_@types+react@19.2.17";
+      const result = resolveMigrateRuntimeLayout(
+        WORKING_DIRECTORY,
+        probeFor(
+          [CONFIG_FILE, RESOLVER_FILE, SCHEMA_FILE, MIGRATIONS_DIR, CLI_ENTRY],
+          { [PNPM_STORE]: [otherCliDir, PNPM_CLI_DIR] }
+        ),
+        { PRISMA_NODE_PATH_CLI_FIRST: value }
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+      const indexOf = (entry: string): number =>
+        result.layout.modulePaths.findIndex((candidate) =>
+          candidate.includes(entry)
+        );
+      expect(indexOf(otherCliDir)).toBeLessThan(indexOf(PNPM_CLI_DIR));
+    }
+  );
+
+  it("keeps the ordering ON for an unrecognised off value", () => {
+    // Fails LOUD rather than silently: an unrecognised value must not read as
+    // "disabled". The production code warns; here we pin that the ordering is
+    // still applied, so a typo cannot quietly look like a successful flip.
+    const otherCliDir = "prisma@8.1.0_@types+react@19.2.17";
+    const result = resolveMigrateRuntimeLayout(
+      WORKING_DIRECTORY,
+      probeFor(
+        [CONFIG_FILE, RESOLVER_FILE, SCHEMA_FILE, MIGRATIONS_DIR, CLI_ENTRY],
+        { [PNPM_STORE]: [otherCliDir, PNPM_CLI_DIR] }
+      ),
+      { PRISMA_NODE_PATH_CLI_FIRST: "disable-please" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const indexOf = (entry: string): number =>
+      result.layout.modulePaths.findIndex((candidate) =>
+        candidate.includes(entry)
+      );
+    expect(indexOf(PNPM_CLI_DIR)).toBeLessThan(indexOf(otherCliDir));
+  });
+
+  it("restores the raw listDir order when the off switch is set", () => {
+    // ISS-9148: the reorder cannot be validated where it acts — NODE_PATH
+    // decides resolution only where the pnpm symlinks are absent, i.e. the
+    // deployed bundle, and every test of it here is inert by construction. The
+    // switch is what makes a wrong pairing an env change instead of a
+    // revert-and-redeploy of the migration path, so it needs a case that fails
+    // if the switch stops being honoured — otherwise the escape hatch is a
+    // claim rather than a mechanism.
+    const otherCliDir = "prisma@8.1.0_@types+react@19.2.17";
+    const listing = [otherCliDir, PNPM_CLI_DIR];
+    const result = resolveMigrateRuntimeLayout(
+      WORKING_DIRECTORY,
+      probeFor(
+        [CONFIG_FILE, RESOLVER_FILE, SCHEMA_FILE, MIGRATIONS_DIR, CLI_ENTRY],
+        { [PNPM_STORE]: listing }
+      ),
+      { PRISMA_NODE_PATH_CLI_FIRST: "0" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const indexOf = (entry: string): number =>
+      result.layout.modulePaths.findIndex((candidate) =>
+        candidate.includes(entry)
+      );
+
+    // The OTHER version leads, because that is the order listDir gave — which
+    // is exactly the pre-ISS-8804 behavior the switch restores.
+    expect(indexOf(otherCliDir)).toBeLessThan(indexOf(PNPM_CLI_DIR));
+  });
+
+  it("puts the CLI's own Prisma version ahead of the other one on NODE_PATH", () => {
+    const otherCliDir = "prisma@8.1.0_@types+react@19.2.17";
+    const otherEngineDir = "@prisma+engines@8.1.0";
+    const unrelatedAtCliVersion = "some-unrelated-package@7.8.0";
+    const result = resolveMigrateRuntimeLayout(
+      WORKING_DIRECTORY,
+      probeFor(
+        [CONFIG_FILE, RESOLVER_FILE, SCHEMA_FILE, MIGRATIONS_DIR, CLI_ENTRY],
+        {
+          // Deliberately interleaved, newest first, with an unrelated package
+          // sitting at the CLI's exact version.
+          [PNPM_STORE]: [
+            otherEngineDir,
+            unrelatedAtCliVersion,
+            PNPM_CLI_DIR,
+            otherCliDir,
+            PNPM_ENGINE_DIR,
+          ],
+        }
+      ),
+      {}
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const indexOf = (entry: string): number =>
+      result.layout.modulePaths.findIndex((candidate) =>
+        candidate.includes(entry)
+      );
+
+    // Both of the CLI's own version lead both of the other version.
+    expect(indexOf(PNPM_CLI_DIR)).toBeLessThan(indexOf(otherCliDir));
+    expect(indexOf(PNPM_ENGINE_DIR)).toBeLessThan(indexOf(otherEngineDir));
+
+    // ...and a non-Prisma package is NOT promoted just for sharing the version
+    // string. Matching on version alone would hoist it, which is the opposite
+    // of the intent: its own dep symlinks could then win resolution.
+    expect(indexOf(unrelatedAtCliVersion)).toBeGreaterThan(
+      indexOf(PNPM_CLI_DIR)
+    );
+
+    // Nothing is dropped — this is a permutation, not a filter, so a package
+    // present only at a non-CLI version is still reachable.
+    expect(indexOf(otherCliDir)).toBeGreaterThan(-1);
+  });
+
   it("resolves without an engine binary rather than failing the whole layout", () => {
     const result = resolveMigrateRuntimeLayout(
       WORKING_DIRECTORY,
@@ -385,7 +526,7 @@ describe("applying the prisma runtime layout", () => {
   });
 
   it("NEVER publishes the config directory or the resolver to the environment", () => {
-    // review: shafty023. The config directory belongs to ONE ensure run; a
+    // review: davetho. The config directory belongs to ONE ensure run; a
     // `PRISMA_CLI_CWD` env var is process-global reach one indirection past the
     // `chdir` below, and the shared pipeline is read by every build and
     // migrator caller. It travels as a per-invocation `prismaCli.cwd` option on
@@ -523,7 +664,7 @@ describe("applying the prisma runtime layout", () => {
 });
 
 /**
- * The ISS-6403 thread wongk left open: the entrypoint being PRESENT is not the
+ * The ISS-6403 thread whitlockk left open: the entrypoint being PRESENT is not the
  * CLI being RUNNABLE. This starts a real `node` on a real entrypoint laid out
  * the way Next tracing lays one out — physical package directories under
  * `.pnpm/<store entry>/node_modules/<name>`, and NOT ONE of the pnpm symlinks
@@ -593,7 +734,7 @@ describe("running the bundled CLI out of a traced layout", () => {
    * like the CLI: it reports its own cwd, fails the first `migrate deploy` with
    * a P3009, accepts the rolled-back resolve, and succeeds on the retry — so
    * the second test can drive the real exported pipeline end to end (review:
-   * shafty023). State lives in a file because each step is a separate process.
+   * davetho). State lives in a file because each step is a separate process.
    *
    * ISS-6781: it also loads its config the way the real CLI does — a CommonJS
    * `require("@prisma/config")` that `import()`s the ES-module `c12`, which
@@ -760,7 +901,7 @@ describe("running the bundled CLI out of a traced layout", () => {
   });
 
   /*
-   * review: shafty023. The test above spawns the entrypoint DIRECTLY, so it
+   * review: davetho. The test above spawns the entrypoint DIRECTLY, so it
    * proves module resolution and nothing else — a broken real async launch, a
    * config directory that never reaches the child, a lost stream drain or a
    * recovery spawn that cannot run would all keep it green, and the sibling

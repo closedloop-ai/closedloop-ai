@@ -7,6 +7,14 @@ import type {
 } from "@repo/api/src/types/branch";
 import type { BranchAnalyticsCohortResponse } from "@repo/api/src/types/branch-analytics-cohort";
 import {
+  BRANCH_LIST_SERVER_PAGE_SIZE,
+  BranchListCapability,
+  BranchListFacetAvailability,
+  BranchListPageMode,
+  BranchListSortDirection,
+  BranchListSortKey,
+} from "@repo/api/src/types/branch-list-contract";
+import {
   BranchMetricAvailability,
   BranchMetricComparisonLabel,
   BranchMetricPeriod,
@@ -17,10 +25,17 @@ import {
   unavailableBranchTraceResult,
 } from "@repo/api/src/types/branch-trace";
 import { GitHubDirtyScopeKind } from "@repo/api/src/types/github-dirty-scope-constants";
+import {
+  LIST_QUERY_EXPRESSION_PARAM,
+  LIST_QUERY_EXPRESSION_VERSION,
+  ListFilterOperator,
+} from "@repo/api/src/types/list-query-expression";
+import { BranchListField } from "@repo/api/src/types/list-query-fields";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { describe, expect, it, vi } from "vitest";
 import {
+  LOCAL_BRANCH_READ,
   SHARED_BRANCHES_NOT_FOUND_CODE,
   SHARED_BRANCHES_SOURCE_ERROR_CODE,
 } from "../../../shared/shared-branches-contract";
@@ -124,11 +139,15 @@ describe("createLocalBranchesDataSource", () => {
     await expect(source.analytics({})).resolves.toBe(ANALYTICS);
 
     expect(api.branchesApi.list).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
       repo: "x/y",
       owner: "alice",
     });
-    expect(api.branchesApi.usage).toHaveBeenCalledWith({ status: "merged" });
-    expect(api.branchesApi.analytics).toHaveBeenCalledWith({});
+    expect(api.branchesApi.usage).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      status: "merged",
+    });
+    expect(api.branchesApi.analytics).toHaveBeenCalledWith(LOCAL_BRANCH_READ);
   });
 
   it("forwards exact cohorts and degrades an older preload without the method", async () => {
@@ -141,7 +160,10 @@ describe("createLocalBranchesDataSource", () => {
     await expect(
       current.cohortAnalytics?.({ branchIds: ["branch-1"] })
     ).resolves.toEqual(cohortResponse);
-    expect(cohortAnalytics).toHaveBeenCalledWith({ branchIds: ["branch-1"] });
+    expect(cohortAnalytics).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      branchIds: ["branch-1"],
+    });
 
     const legacy = createLocalBranchesDataSource(fakeDesktopApi());
     await expect(
@@ -160,7 +182,10 @@ describe("createLocalBranchesDataSource", () => {
     await expect(source.cohortAnalytics?.({ branchIds })).resolves.toEqual(
       response
     );
-    expect(cohortAnalytics).toHaveBeenCalledWith({ branchIds });
+    expect(cohortAnalytics).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      branchIds,
+    });
   });
 
   it("maps a cohort IPC rejection to the sanitized source error", async () => {
@@ -239,8 +264,129 @@ describe("createLocalBranchesDataSource", () => {
       ...PAGE_DATA,
       list: { ...LIST, readSource: ReadSource.Local },
     });
-    expect(api.branchesApi.pageData).toHaveBeenCalledWith({ repo: "x/y" });
+    expect(api.branchesApi.pageData).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      repo: "x/y",
+    });
   });
+
+  it("refetches the legacy complete corpus when an older main omits capability", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+    const request = {
+      pageMode: BranchListPageMode.Server,
+      limit: BRANCH_LIST_SERVER_PAGE_SIZE,
+      offset: 20,
+      startDate: "2026-08-01T00:00:00.000Z",
+      sortKey: BranchListSortKey.LastActivity,
+      sortDir: BranchListSortDirection.Desc,
+    };
+
+    await source.pageData(request);
+
+    // PRD-721: the window and sort travel as the `listQuery` expression main
+    // compiles back to them; paging stays beside it.
+    expect(api.branchesApi.pageData).toHaveBeenNthCalledWith(1, {
+      ...LOCAL_BRANCH_READ,
+      pageMode: request.pageMode,
+      limit: request.limit,
+      offset: request.offset,
+      [LIST_QUERY_EXPRESSION_PARAM]: {
+        version: LIST_QUERY_EXPRESSION_VERSION,
+        filters: [
+          {
+            field: BranchListField.LastActivity,
+            operator: ListFilterOperator.IsBetween,
+            min: request.startDate,
+          },
+        ],
+        sorts: [{ field: request.sortKey, direction: request.sortDir }],
+      },
+    });
+    expect(api.branchesApi.pageData).toHaveBeenNthCalledWith(2, {
+      ...LOCAL_BRANCH_READ,
+      startDate: request.startDate,
+    });
+  });
+
+  it("keeps one IPC read when the current main returns the complete v1 envelope", async () => {
+    const currentPageData: BranchesPageData = {
+      ...PAGE_DATA,
+      list: currentServerList(),
+    };
+    const pageData = vi.fn(async () => currentPageData);
+    const api = fakeDesktopApi({ pageData });
+    const source = createLocalBranchesDataSource(api);
+
+    await source.pageData(serverPageRequest());
+
+    expect(pageData).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a capability-bearing IPC response whose nested objects carry additive fields (ISS-8884)", async () => {
+    const list = currentServerList();
+    const facets = list.facets;
+    if (!facets) {
+      throw new Error("fixture must carry facets");
+    }
+    // Built loosely on purpose: the point is keys the consumer type does not know.
+    const skewedList: Record<string, unknown> = {
+      ...list,
+      pageInfo: { ...list.pageInfo, generatedBy: "newer-main" },
+      facets: {
+        ...facets,
+        phases: facets.names,
+        names: {
+          ...facets.names,
+          note: "additive",
+          options: [{ id: "a", label: "A", count: 1, description: "x" }],
+        },
+      },
+    };
+    const current = {
+      ...PAGE_DATA,
+      list: skewedList as unknown as BranchListResponse,
+    };
+    const pageData = vi.fn(async () => current);
+    const source = createLocalBranchesDataSource(fakeDesktopApi({ pageData }));
+
+    await expect(source.pageData(serverPageRequest())).resolves.toMatchObject({
+      list: { items: [], total: 3 },
+    });
+    expect(pageData).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { name: "null facets", override: { facets: null } },
+    {
+      name: "partial page info",
+      override: {
+        pageInfo: { capability: BranchListCapability.ServerPaginationV1 },
+      },
+    },
+    {
+      name: "invalid optional map",
+      override: { sessionBranchCount: { broken: 0 } },
+    },
+  ])(
+    "rejects a capability-bearing IPC response with $name",
+    async ({ override }) => {
+      const current = {
+        ...PAGE_DATA,
+        list: { ...currentServerList(), ...override },
+      } as BranchesPageData;
+      const pageData = vi.fn(async () => current);
+      const source = createLocalBranchesDataSource(
+        fakeDesktopApi({ pageData })
+      );
+
+      await expect(source.pageData(serverPageRequest())).rejects.toMatchObject({
+        status: 500,
+        code: SHARED_BRANCHES_SOURCE_ERROR_CODE,
+      });
+      expect(pageData).toHaveBeenCalledOnce();
+    }
+  );
 
   it("forwards forced list refresh requests to the IPC contract", async () => {
     const api = fakeDesktopApi();
@@ -251,6 +397,7 @@ describe("createLocalBranchesDataSource", () => {
     ).resolves.toEqual({ ...LIST, readSource: ReadSource.Local });
 
     expect(api.branchesApi.list).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
       repo: "x/y",
       forceRefresh: true,
     });
@@ -270,8 +417,13 @@ describe("createLocalBranchesDataSource", () => {
   });
 
   it("returns a present detail unchanged", async () => {
-    const source = createLocalBranchesDataSource(fakeDesktopApi());
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
     await expect(source.detail("repo%2Fowner::main")).resolves.toBe(DETAIL);
+    expect(api.branchesApi.detail).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      id: "repo%2Fowner::main",
+    });
   });
 
   it("forwards forced detail refresh requests to the IPC contract", async () => {
@@ -283,6 +435,7 @@ describe("createLocalBranchesDataSource", () => {
     ).resolves.toBe(DETAIL);
 
     expect(api.branchesApi.detail).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
       id: "repo%2Fowner::main",
       forceRefresh: true,
     });
@@ -368,7 +521,7 @@ describe("createLocalBranchesDataSource", () => {
         scopes: [
           {
             kind: GitHubDirtyScopeKind.Comment,
-            repositoryFullName: "closedloop-ai/symphony-alpha",
+            repositoryFullName: "closedloop-ai/closedloop-ai",
             pullRequestNumber: 42,
           },
         ],
@@ -398,14 +551,14 @@ describe("createLocalBranchesDataSource", () => {
         scopes: [
           {
             kind: GitHubDirtyScopeKind.Branch,
-            repositoryFullName: "closedloop-ai/symphony-alpha",
+            repositoryFullName: "closedloop-ai/closedloop-ai",
             branchName: "feat/nudge",
           },
         ],
       },
     });
     expect(onChange).toHaveBeenCalledWith({
-      branchId: "closedloop-ai%2Fsymphony-alpha::feat%2Fnudge",
+      branchId: "closedloop-ai%2Fclosedloop-ai::feat%2Fnudge",
     });
   });
 
@@ -430,6 +583,43 @@ describe("createLocalBranchesDataSource", () => {
     expect(source.subscribe).toBeUndefined();
   });
 });
+
+function currentServerList(): BranchListResponse {
+  const emptyFacet = {
+    availability: BranchListFacetAvailability.Complete,
+    options: [],
+  };
+  return {
+    ...LIST,
+    pageInfo: {
+      capability: BranchListCapability.ServerPaginationV1,
+      limit: BRANCH_LIST_SERVER_PAGE_SIZE,
+      offset: 0,
+      requestedOffset: 0,
+      now: "2026-08-18T18:00:00.000Z",
+    },
+    facets: {
+      names: emptyFacet,
+      owners: emptyFacet,
+      collaborators: emptyFacet,
+      statuses: emptyFacet,
+      pullRequests: emptyFacet,
+      lastActiveRanges: emptyFacet,
+      repositories: emptyFacet,
+      tags: emptyFacet,
+    },
+  };
+}
+
+function serverPageRequest() {
+  return {
+    pageMode: BranchListPageMode.Server,
+    limit: BRANCH_LIST_SERVER_PAGE_SIZE,
+    offset: 0,
+    sortKey: BranchListSortKey.LastActivity,
+    sortDir: BranchListSortDirection.Desc,
+  };
+}
 
 function cohortAnalyticsResponse(
   branchIds: string[] = ["branch-1"]
@@ -463,3 +653,58 @@ function makeBranchIds(count: number): string[] {
 type GitHubResyncNudgeCallback = Parameters<
   NonNullable<DesktopApi["onGitHubResyncNudge"]>
 >[0];
+
+// PRD-721 / ISS-9346: the list read sends its filter and sort as the canonical
+// `listQuery` expression, which main compiles back to the server-page params.
+describe("createLocalBranchesDataSource listQuery", () => {
+  it("sends the list read's facets and sort as one expression", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+    const page = {
+      pageMode: BranchListPageMode.Server,
+      limit: BRANCH_LIST_SERVER_PAGE_SIZE,
+      offset: 0,
+    };
+
+    await source.list({
+      ...page,
+      owners: ["alice"],
+      sortKey: BranchListSortKey.Owner,
+      sortDir: BranchListSortDirection.Asc,
+    });
+
+    expect(api.branchesApi.list).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      ...page,
+      [LIST_QUERY_EXPRESSION_PARAM]: {
+        version: LIST_QUERY_EXPRESSION_VERSION,
+        filters: [
+          {
+            field: BranchListField.Owner,
+            operator: ListFilterOperator.IsAnyOf,
+            values: ["alice"],
+          },
+        ],
+        sorts: [
+          {
+            field: BranchListSortKey.Owner,
+            direction: BranchListSortDirection.Asc,
+          },
+        ],
+      },
+    });
+  });
+
+  // A legacy single-value spelling has no clause of its own.
+  it("keeps the legacy params for a request the expression cannot state", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+
+    await source.list({ repo: "acme/web" });
+
+    expect(api.branchesApi.list).toHaveBeenCalledWith({
+      ...LOCAL_BRANCH_READ,
+      repo: "acme/web",
+    });
+  });
+});

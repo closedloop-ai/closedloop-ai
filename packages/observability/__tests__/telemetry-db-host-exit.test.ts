@@ -13,16 +13,14 @@
  *      come through byte-for-byte, and must not be dropped when a SIBLING
  *      field on the same object is being scrubbed.
  *
- * Added on review (wongk, PR #4708): the desktop-side suite stopped at the
+ * Added on review (whitlockk, PR #4708): the desktop-side suite stopped at the
  * emitter, so nothing pinned either boundary and a schema/producer drift would
  * have surfaced only as missing Datadog data.
  */
 import { describe, expect, it } from "vitest";
 import { sanitizeDesktopTelemetryDiagnostics } from "../telemetry/emitter";
-import {
-  desktopTelemetryEventSchema,
-  TelemetryCategory,
-} from "../telemetry/schema";
+import { desktopTelemetryEventSchema } from "../telemetry/schema";
+import { TelemetryCategory } from "../telemetry/telemetry-category";
 
 /** A well-formed payload as `reportDbHostExitedUnexpectedly` emits it. */
 const VALID_DB_HOST_EXIT = {
@@ -64,6 +62,26 @@ describe("dbHostExit diagnostics wire schema (ISS-5715)", () => {
     expect(event?.category).toBe("desktop.db_host.exited_unexpectedly");
     expect(event?.severity).toBe("error");
     expect(event?.diagnostics?.dbHostExit).toEqual(VALID_DB_HOST_EXIT);
+  });
+
+  it("carries the ISS-8776 restartAttempts counter through validation", () => {
+    // The severity signal for `desktop.db_host.restart_exhausted`. It is its own
+    // field because `crashesInWindow` counts crashes inside a 60s window that is
+    // SHORTER than the ~2-minute ladder it would otherwise be describing, so the
+    // windowed number under-reports the terminal case (0 on a spawn-failure-only
+    // run). If this key were not in the schema, the diagnostics object would
+    // strip it and the alert would silently lose the one number that ranks it.
+    const parsed = parsedDbHostExit({
+      ...VALID_DB_HOST_EXIT,
+      restartAttempts: 8,
+    });
+    expect(parsed).toEqual({ ...VALID_DB_HOST_EXIT, restartAttempts: 8 });
+  });
+
+  it("still validates when restartAttempts is absent (older desktop builds)", () => {
+    // Omission-preserving: the ordinary `exited_unexpectedly` event never sets
+    // it, and an installed build predating ISS-8776 never sends it.
+    expect(parsedDbHostExit(VALID_DB_HOST_EXIT)).toEqual(VALID_DB_HOST_EXIT);
   });
 
   it("accepts a null exitCode", () => {

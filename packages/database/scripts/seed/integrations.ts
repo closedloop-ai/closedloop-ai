@@ -58,8 +58,8 @@ export async function seedIntegrationEntities(
 
   // ---------------------------------------------------------------------------
   // GitHubUserConnection — one per org/user, scoped to the seed user.
-  // githubUserId uses a syntactically valid numeric-string placeholder.
-  // accessTokenEncrypted stores a placeholder ciphertext (not a real secret).
+  // githubUserId uses a syntactically valid numeric-string placeholder. The
+  // row is token-less: the GitHub credential lives in Clerk (PLN-1742).
   // ---------------------------------------------------------------------------
 
   const userConnectionId = deterministicUuid(
@@ -87,7 +87,6 @@ export async function seedIntegrationEntities(
           normalizedLogin: "seed-user",
           avatarUrl: "https://avatars.githubusercontent.com/u/55443322",
           profileUrl: "https://github.com/seed-user",
-          accessTokenEncrypted: "seed-placeholder-encrypted-token",
           scopes: ["repo", "read:org"],
         },
         update: {

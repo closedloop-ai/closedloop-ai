@@ -216,7 +216,7 @@ describe("session trace count truncation (ISS-5075)", () => {
   });
 
   /*
-   * #4949 review (wongk): the caption's test and the shading it captions have to
+   * #4949 review (whitlockk): the caption's test and the shading it captions have to
    * run over the SAME strip. `unreadFromIndex` is derived from the PROJECTED
    * columns, and the bar row and label rail shade on `index >= unreadFromIndex`
    * over those same columns — but the caption compared it against the
@@ -255,7 +255,7 @@ const STRIP_ENDED_AT = "2026-06-10T14:00:00.000Z";
  * every bin priced and counted, so the projection onto 24 columns leaves no
  * empty trailing column for the unread rule to shade.
  *
- * #4949 review (wongk): the bins MUST carry producer bounds. `hasProducerBinBounds`
+ * #4949 review (whitlockk): the bins MUST carry producer bounds. `hasProducerBinBounds`
  * is what admits a strip to the clock projection at all, so an unstamped fixture
  * is projected onto nothing — the hook hands back the caller's own 40 buckets and
  * `columns` IS `buckets`, which makes this case's stated counterfactual (swap

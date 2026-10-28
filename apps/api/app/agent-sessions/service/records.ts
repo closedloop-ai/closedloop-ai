@@ -1,27 +1,38 @@
 import { MAX_STORED_ACTIVITY_SEGMENTS } from "@repo/api/src/types/agent-session";
 import { SESSION_DETAIL_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-detail-limits";
+import { SESSION_TOKEN_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-token-event-limits";
 import { LinkType } from "@repo/api/src/types/artifact";
-import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
+import type { ArtifactTagPermissions } from "@repo/api/src/types/tag";
 import type { BasicUser } from "@repo/api/src/types/user";
 import {
   ArtifactType,
   type Prisma,
   type TransactionClient,
 } from "@repo/database";
+import {
+  artifactTagsSelect,
+  artifactTagsSelectForOrganization,
+} from "@/app/tags/artifact-tag-projection";
 import { basicUserSelect } from "@/lib/db-utils";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
 import type {
   AgentSessionListQuery,
   AgentSessionUsageQuery,
 } from "../validators";
 
-// Defensive ceiling for the keep-all, unretained per-event token stream loaded
-// by agentSessionDetailSelect. Mirrors the getSessionTokenEvents reader's
-// SESSION_TOKEN_EVENT_MAX_ROWS cap so a single pathological session (or the
-// branch merged trace's per-session fan-out) can't materialize an unbounded row
-// set into the detail projection. Not a functional page size — the detail cost
-// badges only need the ordered per-event cost points, and 10k events is far
-// beyond any real session's turn count.
-export const SESSION_DETAIL_TOKEN_EVENT_MAX_ROWS = 10_000;
+// The detail select's alias of the shared per-session token-event ceiling
+// (`@repo/api/src/types/agent-session-token-event-limits`, ISS-9857): one owner,
+// so the nested `tokenEvents` take below and the raw stream read in
+// `session-usage-reads.ts` cannot drift to different bounds. Kept under this
+// name because the source-gate allowlist fingerprint
+// `nested-take:SESSION_DETAIL_TOKEN_EVENT_MAX_ROWS` is keyed on the identifier.
+// Defensive, not a functional page size: it stops a single pathological session
+// (or the branch merged trace's per-session fan-out) from materializing an
+// unbounded row set into the detail projection.
+export const SESSION_DETAIL_TOKEN_EVENT_MAX_ROWS = SESSION_TOKEN_EVENT_MAX_ROWS;
 
 const computeTargetSummarySelect = {
   select: {
@@ -67,12 +78,23 @@ const sessionArtifactSummarySelect = {
     organizationId: true,
     name: true,
     status: true,
+    priority: true,
+    // ISS-12251 D-1: the session's Owner. On the list select, not only the
+    // detail one: the Sessions grid's Owner column is a list cell.
+    assignee: basicUserSelect,
     // ISS-6005: the parent row's `@updatedAt` — the other half of
     // `recordUpdatedAt` (status folds, and future comment/tag writes, mutate
     // THIS row rather than the session_detail row).
     updatedAt: true,
     slug: true,
     project: projectSummarySelect,
+    // ISS-8712: the org tag vocabulary applied to this Session artifact, joined
+    // on the page's own SELECT rather than batched in a second query — the same
+    // shape the Branch read uses, and the reason it can be: `TagArtifact` hangs
+    // off the Artifact row this select already loads, so it costs no extra
+    // round trip and cannot be an N+1. The relation is org-scoped again in the
+    // projection as defense in depth.
+    tagArtifacts: artifactTagsSelect,
     sourceLinks: {
       // Three projection lanes ride this single relation (Prisma has one
       // `sourceLinks` relation, so it can't be selected twice):
@@ -91,12 +113,11 @@ const sessionArtifactSummarySelect = {
       where: {
         linkType: LinkType.RelatesTo,
         OR: [
-          {
-            metadata: {
-              path: ["linkKind"],
-              equals: SessionArtifactLinkKind.SessionPr,
-            },
-          },
+          // ISS-5823 Evidence: the session-detail edge carries the links
+          // themselves, so prose-derived rows are selected here. Every
+          // projection over them gates on its own purpose — see
+          // `toSessionPullRequestProjection`, which excludes them explicitly.
+          sessionPrLinkKindWhere(SessionPrLinkAudience.Evidence),
           { target: { is: { type: ArtifactType.DOCUMENT } } },
           { target: { is: { type: ArtifactType.BRANCH } } },
         ],
@@ -129,7 +150,7 @@ const sessionArtifactSummarySelect = {
                     closedAt: true,
                     mergedAt: true,
                     lastVerifiedAt: true,
-                    // FEA-4317 (wongk review): the PR-opened timestamp, set only
+                    // FEA-4317 (whitlockk review): the PR-opened timestamp, set only
                     // by a producer that actually OBSERVED the PR's lifecycle
                     // (webhook / `gh` fetch / App backfill). A desktop bare-ref
                     // row (`git_push`/`gh_pr_create` with no `gh pr view`) keeps
@@ -168,7 +189,7 @@ const sessionArtifactSummarySelect = {
             // its verified merged status (FEA-4317). This is the Artifact-level
             // `BranchPullRequests` relation (the branch Artifact owns every PR raised
             // from it), scoped to the linked branch (a branch's PR count is small).
-            // `authoredPrLinesChanged` and the PR-status projection each dedup by PR
+            // `mergedAuthoredPrLinesChanged` and the PR-status projection each dedup by PR
             // identity so a PR reachable via both the current pointer and this set
             // counts once. Lifecycle columns (title/prState/closedAt/mergedAt/
             // isCurrent) mirror `currentPullRequestDetail` so a historical PR's
@@ -182,7 +203,7 @@ const sessionArtifactSummarySelect = {
                 mergedAt: true,
                 isCurrent: true,
                 lastVerifiedAt: true,
-                // FEA-4317 (wongk review): lifecycle-observed signal — see the
+                // FEA-4317 (whitlockk review): lifecycle-observed signal — see the
                 // parallel note on `currentPullRequestDetail.githubCreatedAt`.
                 githubCreatedAt: true,
                 additions: true,
@@ -202,17 +223,37 @@ const sessionArtifactSummarySelect = {
   },
 } satisfies Prisma.ArtifactDefaultArgs;
 
+// ISS-12197: the Artifact row's lifecycle fields for the Details tab, read on
+// DETAIL only for the reason `dataSyncLevel` is: no list cell renders them, and
+// `createdBy` is a user join the Sessions list would otherwise pay on every
+// page (the Branch read makes the same call in `branch-read-selects.ts`). The
+// creator is not the session's Owner, which is the assignee (ISS-12251 D-1).
+const sessionArtifactOwnershipSelect = {
+  createdAt: true,
+  createdBy: basicUserSelect,
+  dueDate: true,
+} satisfies Prisma.ArtifactSelect;
+
+const sessionArtifactDetailSummarySelect = {
+  select: {
+    ...sessionArtifactSummarySelect.select,
+    ...sessionArtifactOwnershipSelect,
+  },
+} satisfies Prisma.ArtifactDefaultArgs;
+
 export const agentSessionListSelect = {
   artifactId: true,
+  // ISS-8717: read alongside `artifact.name` so `toSessionListItem` can prefer
+  // the owner's rename over the collector's placeholder. Both the list and the
+  // detail read go through that one projection.
+  nameOverride: true,
   externalSessionId: true,
   harness: true,
   origin: true,
-  state: true,
   cwd: true,
   repositoryFullName: true,
   worktreePath: true,
   model: true,
-  branch: true,
   pullRequests: true,
   wallClock: true,
   activeAgent: true,
@@ -245,6 +286,10 @@ export const agentSessionListSelect = {
   lastActivityAt: true,
   sessionEndedAt: true,
   awaitingInputSince: true,
+  // Selected but no longer read for display (ISS-12430). Same row as every
+  // other column here, so it costs no additional read; dropping it from the
+  // select and the record type is a separate, call-site-touching cleanup.
+  endsWithError: true,
   // FEA-3479 (PRD-536 G1): cloud upsert freshness — written on every sync
   // (service.ts) but previously never selected/served. Feeds "synced Xs ago".
   lastSyncedAt: true,
@@ -256,20 +301,29 @@ export const agentSessionListSelect = {
   billingMode: true,
   agentCount: true,
   toolUseCount: true,
+  componentInvocationCount: true,
   errorCount: true,
   baseBranch: true,
   sourceArtifactId: true,
-  sourceLoopId: true,
-  user: basicUserSelect,
   computeTarget: computeTargetSummarySelect,
   artifact: sessionArtifactSummarySelect,
 } satisfies Prisma.SessionDetailSelect;
 
 const agentSessionDetailSelectBase = {
   ...agentSessionListSelect,
+  artifact: sessionArtifactDetailSummarySelect,
   metadata: true,
+  // ISS-7516: the recording machine's data-sync level, read on DETAIL only. The
+  // transcript panel that needs it is a detail surface, and adding a column to
+  // the list select widens every Sessions-list read for a value no list cell
+  // renders.
+  dataSyncLevel: true,
   sourceArtifactId: true,
-  sourceLoopId: true,
+  // ISS-7229: Claude's own reported cost, read from the COLUMN on detail only.
+  // The desktop's OTel sync writes it and this is the read that makes it
+  // visible (davetho, #6406). Detail-only for the same reason `dataSyncLevel`
+  // is: no list cell renders it.
+  authoritativeCostUsd: true,
   tokenUsageByModel: {
     orderBy: {
       model: "asc",
@@ -314,8 +368,8 @@ const agentSessionDetailSelectBase = {
   // SESSION_DETAIL_TOKEN_EVENT_MAX_ROWS so opening a detail for a long-running,
   // keep-all-token-history session (incl. the branch merged trace, which
   // hydrates many sessions through findSessionDetail) can never materialize an
-  // unbounded row set — matching the defensive cap the getSessionTokenEvents
-  // reader already applies to the raw per-event stream.
+  // unbounded row set — the same owner-defined cap `readSessionTokenEvents`
+  // applies to the raw per-event stream.
   tokenEvents: {
     select: {
       eventCreatedAt: true,
@@ -378,6 +432,22 @@ export const agentSessionDetailSelect = {
     },
     take: MAX_STORED_ACTIVITY_SEGMENTS + 1,
   },
+  // ISS-10721: the 1:1 activity-metrics rollup. Absent (`null`) for every
+  // session whose producer has never sent one — the read maps that to the
+  // contract's unknown rather than to zeroes.
+  activityMetrics: {
+    select: {
+      autonomyBand: true,
+      coverage: true,
+      spendLowConfUsd: true,
+      spendMediumConfUsd: true,
+      spendHighConfUsd: true,
+      segmentCount: true,
+      coveredSegmentCount: true,
+      classifierVersion: true,
+      metricVersion: true,
+    },
+  },
 } satisfies Prisma.SessionDetailSelect;
 
 export const agentSessionExportSelect = {
@@ -385,27 +455,29 @@ export const agentSessionExportSelect = {
   harness: true,
   model: true,
   deviceTimeZone: true,
-  user: {
+  artifact: {
     select: {
-      ...basicUserSelect.select,
-      teamMemberships: {
-        orderBy: {
-          team: {
-            name: "asc",
-          },
-        },
+      // ISS-12251 D-4: the export's per-user rows ("User" column, and that
+      // user's teams) are the session's creator.
+      createdBy: {
         select: {
-          team: {
+          ...basicUserSelect.select,
+          teamMemberships: {
+            orderBy: {
+              team: {
+                name: "asc",
+              },
+            },
             select: {
-              name: true,
+              team: {
+                select: {
+                  name: true,
+                },
+              },
             },
           },
         },
       },
-    },
-  },
-  artifact: {
-    select: {
       project: {
         select: {
           name: true,
@@ -420,26 +492,57 @@ export const agentSessionExportSelect = {
   },
 } satisfies Prisma.SessionDetailSelect;
 
-export const analyticsScalarSelect = {
-  artifactId: true,
-  repositoryFullName: true,
-  inputTokens: true,
-  outputTokens: true,
-  estimatedCost: true,
-  errorCount: true,
-  artifact: {
-    select: {
-      projectId: true,
-      project: projectSummarySelect,
-    },
-  },
-} satisfies Prisma.SessionDetailSelect;
-
-export const analyticsJsonSelect = {
+/**
+ * ISS-9113: the ONE session projection `/agent-sessions/analytics` reads.
+ *
+ * ISS-6823 left two scans over overlapping scope: a project-parented scan
+ * carrying the token columns, and a full-population scan carrying the JSON
+ * columns. Every project-parented session satisfies both predicates, so it was
+ * selected twice. The token columns are scalars on a row the JSON scan already
+ * fetches, so folding them in here costs no extra statement and no extra row —
+ * it deletes the second scan outright.
+ *
+ * `artifact.projectId` deliberately does NOT join here. Under Prisma 7 a nested
+ * relation select is its own child statement per page (see `lib/db-fanout.ts`),
+ * so joining it would trade one bounded scan for `ceil(population / batch)`
+ * extra statements over the WHOLE population — a regression on the unparented
+ * majority the Sessions lane actually writes. The parented rows are keyed
+ * separately by {@link analyticsProjectAssignmentSelect}, in one statement.
+ */
+export const analyticsSessionSelect = {
   artifactId: true,
   agents: true,
   events: true,
+  inputTokens: true,
+  outputTokens: true,
+  estimatedCost: true,
 } satisfies Prisma.SessionDetailSelect;
+
+/**
+ * ISS-9113: which of the scanned sessions belong to a project, keyed by artifact
+ * id. Two uuids per parented session and nothing else — the Project breakdown's
+ * group key, read from the side that owns it.
+ *
+ * `project` is NOT nested. Prisma resolves a nested relation with an `IN` list
+ * carrying one bind parameter PER PARENT ROW, so nesting it here would put the
+ * parented population itself against the Postgres bind-parameter ceiling
+ * (`lib/postgres-bind-parameters.ts`) once this read stopped being paged. The
+ * distinct project ids are resolved separately, where the list is bounded by
+ * the project count rather than by the session count.
+ */
+export const analyticsProjectAssignmentSelect = {
+  id: true,
+  projectId: true,
+} satisfies Prisma.ArtifactSelect;
+
+/**
+ * The project columns the analytics Project breakdown renders — the SAME field
+ * list `projectSummarySelect` already owns, unwrapped for a top-level
+ * `project.findMany` rather than nested under a relation. Derived from it, not
+ * restated: a column added there must reach this read too.
+ */
+export const analyticsProjectSummarySelect =
+  projectSummarySelect.select satisfies Prisma.ProjectSelect;
 
 export type AgentSessionListRecord = Prisma.SessionDetailGetPayload<{
   select: typeof agentSessionListSelect;
@@ -457,75 +560,91 @@ export type SourceArtifactSummaryRecord = Prisma.ArtifactGetPayload<{
   select: typeof sourceArtifactSummarySelect;
 }>;
 
-export type AnalyticsScalarSessionRecord = Prisma.SessionDetailGetPayload<{
-  select: typeof analyticsScalarSelect;
+/** The ownership columns only the detail selects project. */
+export type SessionArtifactOwnershipRecord = Prisma.ArtifactGetPayload<{
+  select: typeof sessionArtifactOwnershipSelect;
 }>;
 
-export type AnalyticsJsonSessionRecord = Prisma.SessionDetailGetPayload<{
-  select: typeof analyticsJsonSelect;
+export type AnalyticsSessionRecord = Prisma.SessionDetailGetPayload<{
+  select: typeof analyticsSessionSelect;
+}>;
+
+export type AnalyticsProjectAssignmentRecord = Prisma.ArtifactGetPayload<{
+  select: typeof analyticsProjectAssignmentSelect;
+}>;
+
+export type AnalyticsProjectSummaryRecord = Prisma.ProjectGetPayload<{
+  select: typeof analyticsProjectSummarySelect;
 }>;
 
 export type AgentSessionUpsertTx = TransactionClient;
 
 /**
  * Lineage-only project attribution for a synced session. A session parents to a
- * project ONLY through real lineage — the source artifact it was launched from,
- * or the loop that ran it. There is deliberately no repository-derived map here:
+ * project ONLY through real lineage — the source artifact it was launched from.
+ * There is deliberately no repository-derived map here:
  * a project nominating default repos for agentic execution does not make a repo
  * belong to a project (FEA-1749).
  */
 export type SessionProjectResolution = {
   artifactProjectById: Map<string, string>;
-  loopProjectById: Map<string, string>;
-  /**
-   * FEA-1718: the subset of the payload's `attribution.sourceLoopId` values that
-   * resolved to a REAL loop in THIS organization. `loopProjectById` cannot serve
-   * this — it holds only the loops that additionally carry a project, so a
-   * genuine loop with an unparented artifact is absent from it.
-   *
-   * Distinct from "a session names a loop": only a validated membership may
-   * promote a row to `SessionOrigin.LOOP`, because that origin exempts the row
-   * from the desktop-sync retention sweeps. Populated from the same `loop`
-   * query that builds `loopProjectById`, so it costs no extra round trip.
-   */
-  sameOrgLoopIds: Set<string>;
 };
 
 export type AgentSessionScope = {
   organizationId: string;
   // FEA-3534: the authenticated viewer's user id, threaded from the route so
   // `viewerScope=self` (the dashboard "Me" scope) is enforced server-side —
-  // `buildWhere` pins `userId` to this value rather than trusting a client-sent
+  // `buildWhere` pins `createdById` to this value rather than trusting a client-sent
   // `userId`/`userIds` filter. Optional so internal callers that never request
   // self scope (and the org/team paths) can omit it.
   viewerId?: string;
-  // ISS-4556 / ISS-4559: the resolved `sessions-displayed-status-parity` flag for
-  // this viewer, threaded from the route so `buildStatusFacetPredicate` can stay
-  // synchronous. ON, the ACTIVE facet excludes a row exactly when it projects to
-  // Waiting (`projectDisplayedSessionStatus`) instead of dropping every
-  // awaiting-input row regardless of `sessionEndedAt` — the drift that hid an
-  // ended + awaiting-input row from BOTH the Active and Waiting facets. Optional,
-  // and absent means OFF, so every internal caller keeps today's behavior.
-  displayedStatusParity?: boolean;
 };
 
 export type SessionListInput = AgentSessionScope & {
   filters: AgentSessionListQuery;
+  /** Authenticated browser identity for the existing status-root-order rollout. */
+  clerkUserId?: string | null;
+  /**
+   * ISS-8712: the caller's artifact-tag capabilities, resolved from its auth
+   * scopes by the route. OMITTED by internal callers that hold no auth context;
+   * the rows then carry no tag keys at all, which is the honest answer for a
+   * read that never established who is asking.
+   */
+  tagPermissions?: ArtifactTagPermissions;
 };
 
 export type SessionUsageInput = AgentSessionScope & {
   filters: AgentSessionUsageQuery;
 };
 
+/**
+ * ISS-8554 Phase 3: the structural shape `usage-summary-sql.ts`'s window/facet
+ * resolvers (`toWindow`, `toFacets`) actually read — every field they touch is
+ * on `baseAgentSessionQueryShape` (`validators.ts`), which BOTH
+ * `AgentSessionUsageQuery` and `AgentSessionListQuery` extend. Widened from
+ * {@link SessionUsageInput} so the Phase 3 list-sort reader can build the SAME
+ * 24-slot facet tuple the summary statements take, from the list's OWN query
+ * type, without a second copy of that resolution.
+ */
+export type SessionFacetFilterInput = AgentSessionScope & {
+  filters: AgentSessionUsageQuery | AgentSessionListQuery;
+};
+
 export type SessionDetailInput = AgentSessionScope & {
   id: string;
+  /**
+   * ISS-10995: same contract as {@link SessionListInput.tagPermissions} — the
+   * caller's artifact-tag capabilities, resolved from its auth scopes by the
+   * route. OMITTED by an internal caller that holds no auth context; the detail
+   * then carries no tag keys at all.
+   */
+  tagPermissions?: ArtifactTagPermissions;
 };
 
 export type UpsertSessionsContext = {
   organizationId: string;
   userId: string;
   computeTargetId: string;
-  gatewaySessionId?: string;
 };
 
 export type SessionTotals = {
@@ -545,3 +664,72 @@ export type LastSyncTargetRecord = {
   lastAgentSessionSyncAttemptAt: Date | null;
   user: BasicUser;
 };
+
+/**
+ * The Sessions artifact sub-select with the tag join SCOPED IN SQL to the
+ * reading organization.
+ *
+ * ISS-8712 (whitlockk / codex review): `TagArtifact` carries no same-org constraint
+ * of its own, so a row joining ANOTHER tenant's `Tag` to this org's Artifact is
+ * representable. `projectArtifactTags` drops such a row before serialization, so
+ * nothing leaks to a client either way — but "loaded, then dropped in the
+ * mapper" and "never left the database" are different claims, and the Branch
+ * read (`branch-read-selects.ts`) has always made the stronger one. These
+ * factories make the Sessions reads match it. The mapper's check stays exactly
+ * where it is, as defense in depth.
+ */
+function sessionArtifactSummarySelectForOrganization(organizationId: string) {
+  return {
+    select: {
+      ...sessionArtifactSummarySelect.select,
+      tagArtifacts: artifactTagsSelectForOrganization(organizationId),
+    },
+  };
+}
+
+/** {@link agentSessionListSelect} with the org-scoped tag join. */
+export function agentSessionListSelectForOrganization(organizationId: string) {
+  return {
+    ...agentSessionListSelect,
+    artifact: sessionArtifactSummarySelectForOrganization(organizationId),
+  } satisfies Prisma.SessionDetailSelect;
+}
+
+/**
+ * {@link sessionArtifactDetailSummarySelect} with the org-scoped tag join —
+ * the detail builders below replace `artifact` wholesale, so the ownership
+ * fields have to ride this variant or the production detail read drops them.
+ */
+function sessionArtifactDetailSummarySelectForOrganization(
+  organizationId: string
+) {
+  return {
+    select: {
+      ...sessionArtifactSummarySelectForOrganization(organizationId).select,
+      ...sessionArtifactOwnershipSelect,
+    },
+  };
+}
+
+/** {@link agentSessionDetailSelect} with the org-scoped tag join. */
+export function agentSessionDetailSelectForOrganization(
+  organizationId: string
+) {
+  return {
+    ...agentSessionDetailSelect,
+    artifact: sessionArtifactDetailSummarySelectForOrganization(organizationId),
+  } satisfies Prisma.SessionDetailSelect;
+}
+
+/**
+ * {@link agentSessionDetailSelectWithoutActivitySegments} with the org-scoped
+ * tag join.
+ */
+export function agentSessionDetailSelectWithoutActivitySegmentsForOrganization(
+  organizationId: string
+) {
+  return {
+    ...agentSessionDetailSelectWithoutActivitySegments,
+    artifact: sessionArtifactDetailSummarySelectForOrganization(organizationId),
+  } satisfies Prisma.SessionDetailSelect;
+}

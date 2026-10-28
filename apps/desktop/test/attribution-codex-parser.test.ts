@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
 import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { openTestDb } from "./agent-db-test-utils.js";

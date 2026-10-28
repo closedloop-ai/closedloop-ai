@@ -9,6 +9,7 @@ import {
   isUpdateInstallBlocked,
   reduceUpdateAvailableEvent,
   reduceUpdateStatusEvent,
+  UPDATE_BANNER_READY_TEST_ID,
   type UpdateBannerState,
   updateBannerMessage,
 } from "./update-banner-state";
@@ -99,26 +100,26 @@ export function UpdateBanner() {
   }
 
   if (isUpdateApplyEnabled(state)) {
+    // ISS-5367: the same 10-12% tint + hairline `border-b` every other state
+    // in this file uses (the read-only block above, the error/info strip
+    // below) and every sibling banner in the desktop stack. This was the one
+    // variant painted at full `bg-[var(--primary)]`, so on a build with an
+    // update pending it landed a full-bleed saturated slab across the top of
+    // the window — a rule loud enough to out-shout the content, and, stacked
+    // above the collapsed import splash, one of two heavy bands with a pale
+    // row trapped between them. The foreground moves with the background:
+    // `--primary-foreground` is chosen to sit on solid primary and would be
+    // near-invisible on a 10% wash, so this takes `--foreground`, exactly as
+    // the informational state below already does.
+    //
+    // ISS-5367 review: dropping the saturation also dropped the only thing
+    // saying the bar was clickable, and a whole-strip button washed at 10%
+    // over a hairline is pixel-for-pixel the passive `role="status"` strip
+    // twenty lines down. So the action is a real Button on a centered line
+    // rather than the strip itself — the shape the read-only block above and
+    // `opt-in-distributions-banner` already use for a tinted strip that DOES
+    // something, and the shape that lets the sentence and the verb separate.
     return (
-      // ISS-5367: the same 10-12% tint + hairline `border-b` every other state
-      // in this file uses (the read-only block above, the error/info strip
-      // below) and every sibling banner in the desktop stack. This was the one
-      // variant painted at full `bg-[var(--primary)]`, so on a build with an
-      // update pending it landed a full-bleed saturated slab across the top of
-      // the window — a rule loud enough to out-shout the content, and, stacked
-      // above the collapsed import splash, one of two heavy bands with a pale
-      // row trapped between them. The foreground moves with the background:
-      // `--primary-foreground` is chosen to sit on solid primary and would be
-      // near-invisible on a 10% wash, so this takes `--foreground`, exactly as
-      // the informational state below already does.
-      //
-      // ISS-5367 review: dropping the saturation also dropped the only thing
-      // saying the bar was clickable, and a whole-strip button washed at 10%
-      // over a hairline is pixel-for-pixel the passive `role="status"` strip
-      // twenty lines down. So the action is a real Button on a centered line
-      // rather than the strip itself — the shape the read-only block above and
-      // `opt-in-distributions-banner` already use for a tinted strip that DOES
-      // something, and the shape that lets the sentence and the verb separate.
       <div
         className="flex shrink-0 items-center justify-center gap-3 border-b bg-[var(--primary)]/10 px-4 py-2 text-[var(--foreground)] text-sm"
         data-testid={UPDATE_BANNER_READY_TEST_ID}
@@ -155,10 +156,3 @@ export function UpdateBanner() {
     </div>
   );
 }
-
-/**
- * Handle for the ready-to-install strip. The strip is a `role="status"` line and
- * so are its siblings, so a role query alone cannot pick it out — the renderer
- * suite and the Electron regression both need to address this exact state.
- */
-export const UPDATE_BANNER_READY_TEST_ID = "update-banner-ready";

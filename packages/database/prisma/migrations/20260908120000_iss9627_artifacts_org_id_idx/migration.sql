@@ -1,0 +1,62 @@
+-- ISS-9627: give the org-scoped, ID-ORDERED artifact join an index it can seek,
+-- instead of walking every tenant's artifacts and discarding the ones that do
+-- not match.
+--
+-- WHAT ASKS FOR IT. Every `SessionDetail` read scoped with
+-- `artifact: { is: { organizationId } }` renders as a join to `artifacts` with
+-- the org predicate on the joined side (query-builder.ts, `buildWhere`). When
+-- the read is ALSO ordered by `session_detail.artifact_id` — which is the whole
+-- shape of the ISS-6892 keyset walk in `session-candidate-stream.ts`, the one
+-- read path that ticket deliberately left uncapped — the planner needs the
+-- org's artifact ids IN ID ORDER. No shipped index provides that.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. Eleven indexes already lead with
+-- `organization_id`, but every one of them puts another column before `id`
+-- (`project_id`, `type`, `assignee_id`, `updated_at`, `slug`), so none can emit
+-- a tenant's ids in id order. The planner's only ordered option was
+-- `artifacts_pkey` — every artifact in the DATABASE, in id order, with
+-- `organization_id` demoted to a post-index Filter. The org predicate stopped
+-- narrowing the scan and started only discarding its output, so the walk's cost
+-- became a function of total platform tenancy rather than of the org.
+--
+-- MEASURED on PostgreSQL 16, 200,000 artifacts + session_detail rows across 10
+-- organizations with ids interleaved (so PK order is not org-clustered), target
+-- org holding 20,000 sessions, statements captured verbatim from Prisma via the
+-- pg driver. One 5,000-row keyset chunk, `EXPLAIN (ANALYZE, BUFFERS)`:
+--
+--   BEFORE  Merge Join <- Index Scan using artifacts_pkey
+--             Filter: (organization_id = $1)
+--             Rows Removed by Filter: 54,000   (6,000 kept of 60,000 scanned)
+--             buffers: 1,080 on that node, 1,275 for the statement
+--   AFTER   Merge Join <- Index Only Scan using artifacts_org_id_idx
+--             Index Cond: (organization_id = $1 AND id IS NOT NULL)
+--             Rows Removed by Filter: 0        Heap Fetches: 0
+--             buffers: 40 on that node, 235 for the statement
+--
+-- The first chunk (no keyset cursor) moves the same way: 45,000 rows removed by
+-- filter and 1,094 buffers, to 0 and 229. The discarded rows are the OTHER
+-- TENANTS' — the amplification factor is the tenant count, so it grows with the
+-- platform, not with the org being read.
+--
+-- WHAT IT DELIBERATELY DOES NOT CHANGE, so nobody files the residue as a
+-- regression. The `session_detail` side of that merge still reads 50,000 index
+-- entries to emit 5,000: the interleave is a property of where the org's rows
+-- sit in the shared PK space, and `session_detail` carries no org column for an
+-- index to narrow on. It is also the cheap half (195 buffers of the 1,275).
+-- And the uncapped `count(where)` behind the same reads is already served as an
+-- Index Only Scan by `artifacts_org_updated_id_idx`; this index shifts it from a
+-- Hash Join to a Merge Join for 1,031 -> 896 buffers, which is incidental.
+--
+-- NO CEILING IS REINTRODUCED. This is an index, not a bound: the same rows are
+-- returned, in the same order, and every session stays reachable by paging to
+-- it. ISS-6892 and ISS-6895 retired the 10,000- and 5,000-row terminal caps
+-- precisely because they withheld records, and nothing here restores one.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX takes a lock on `artifacts` for the
+-- whole build, and `artifacts` is on the desktop sync write path. `IF NOT
+-- EXISTS` is deliberately absent: with CONCURRENTLY a failed build leaves a
+-- same-named INVALID index behind, and `scripts/lint/destructive-migrations/
+-- index-ddl.ts` requires the retry to fail closed on it rather than silently
+-- mark the migration applied.
+CREATE INDEX CONCURRENTLY "artifacts_org_id_idx"
+  ON "artifacts" ("organization_id", "id");

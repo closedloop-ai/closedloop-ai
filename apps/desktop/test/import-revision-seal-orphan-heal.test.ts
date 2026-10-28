@@ -35,11 +35,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import {
-  DATA_REVISION,
-  DATA_REVISION_IMPORT_PENDING,
-} from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { DATA_REVISION_IMPORT_PENDING } from "../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { SLOW_IMPORT_GROUP_LOG_PREFIX } from "../src/main/database/import-group-telemetry.js";
 import type { WriteSerializer } from "../src/main/database/prisma-client.js";
@@ -128,7 +126,7 @@ function importerFor(
   });
 }
 
-test("ISS-4572 (R2): a clean import ends SEALED at the current DATA_REVISION", async () => {
+test("ISS-4572 (R2): a clean import ends SEALED at the current effectiveDataRevision()", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "iss4572-seal-clean-"));
   const queue = createWriteQueue();
   const h = await openTestPrisma(queue);
@@ -138,7 +136,7 @@ test("ISS-4572 (R2): a clean import ends SEALED at the current DATA_REVISION", a
     assert.equal(result.skipped, false);
     assert.equal(
       await readDataRevision(h, "clean-1"),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "a clean import seals the real revision"
     );
     // ISS-4572 regression: the invocation-sync outbox must record the DERIVATION
@@ -156,8 +154,8 @@ test("ISS-4572 (R2): a clean import ends SEALED at the current DATA_REVISION", a
     for (const revision of outboxRevisions) {
       assert.equal(
         revision,
-        DATA_REVISION,
-        "the outbox row is stamped at the sealed DATA_REVISION, never the pending sentinel"
+        effectiveDataRevision(),
+        "the outbox row is stamped at the sealed effectiveDataRevision(), never the pending sentinel"
       );
     }
   } finally {
@@ -230,7 +228,7 @@ test("ISS-4572 (R2): an import whose later group is EVICTED is left at the PENDI
     );
     assert.notEqual(
       await readDataRevision(h, sessionId),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "the orphaned-at-current-revision hazard cannot occur"
     );
   } finally {
@@ -265,7 +263,7 @@ test("ISS-4572 (R2): re-importing a sentinel-stamped session heals it back to th
     await importer.importSession(fixture(sessionId), "claude");
     assert.equal(
       await readDataRevision(h, sessionId),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "a re-import heals a sentinel-stamped row to the current revision"
     );
   } finally {

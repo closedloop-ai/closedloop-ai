@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { mapUtilizationResponse } from "../src/main/session-limits/utilization.js";
 
 test("mapUtilizationResponse: maps snake_case windows + extra_usage credits", () => {

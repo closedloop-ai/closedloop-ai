@@ -33,9 +33,14 @@
  * targeted user is prompted to opt into an org-distributed install on startup
  * regardless of which tab is open.
  *
+ * Gated (operator instruction, 2026-09-30) behind
+ * `DISTRIBUTION_OPT_IN_BANNER_FEATURE_FLAG_KEY`, default OFF: the flag is read in
+ * this component, below the push subscription, so OFF renders nothing at all
+ * while the listener stays installed.
+ *
  * At app level each pending distribution renders as its own sibling-shaped
  * banner row, matching UpdateBanner / DesktopSessionExpiredBanner /
- * DesktopSyncPrompt / FirstLaunchImportBanner: a single centered line of copy
+ * DesktopSyncPrompt: a single centered line of copy
  * plus its Accept/Dismiss buttons, `role="status"`, no inner card. To keep an
  * org that pushes many packs from stacking an unbounded wall of bars at boot,
  * only the first `MAX_VISIBLE_ROWS` render individually; the rest collapse into
@@ -44,6 +49,8 @@
 
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { DISTRIBUTION_OPT_IN_BANNER_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HARNESS_AUTO } from "../../shared/install-run-contract";
 import { normalizePackId } from "../../shared/normalize-pack-id";
@@ -152,6 +159,7 @@ export function OptInDistributionsBanner() {
           // lands in the catch below and the install is refused — fail closed.
           await api.ensureDistributionAssigned(dist.id);
           await api.catalogInstall(packId, HARNESS_AUTO);
+          await api.acknowledgeDistributionHandled(dist.id);
         }
         dismiss(dist.id);
       } catch {
@@ -170,7 +178,19 @@ export function OptInDistributionsBanner() {
     [dismiss]
   );
 
-  if (pending.length === 0) {
+  // Operator instruction, 2026-09-30 — see
+  // {@link DISTRIBUTION_OPT_IN_BANNER_FEATURE_FLAG_KEY}. Read HERE rather than at
+  // the mount site: the flag reads `false` while the PostHog assignment is
+  // PENDING, and a mount gate that unmounted this component for that window
+  // would take the subscription above with it. Main owns a bounded replayable
+  // snapshot, while this subscription must still stay mounted through a flag
+  // assignment transition so the current renderer does not discard the latest
+  // value. The flag decides only whether the captured snapshot renders.
+  const flagEnabled = useFeatureFlagEnabled(
+    DISTRIBUTION_OPT_IN_BANNER_FEATURE_FLAG_KEY
+  );
+
+  if (!flagEnabled || pending.length === 0) {
     return null;
   }
 
@@ -315,6 +335,10 @@ function installFailureMessage(name: string): string {
   return `Couldn't install ${name}. Try again, or ask your admin to re-share it.`;
 }
 
+// `targetKind` is `string`, not a closed union, so this set has no
+// compile-time exhaustiveness guard against it — an unlisted value falls
+// through to `kindNoun`'s "item" fallback on purpose (version-skew safe);
+// widening `targetKind` into a closed union is out of scope here.
 const KNOWN_KIND_NOUNS = new Set([
   "plugin",
   "skill",

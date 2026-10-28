@@ -40,11 +40,10 @@ const SEEDED: SeedApproval[] = [
 const POLL_WITNESS_ATTR = "data-e2e-poll-witness";
 
 /**
- * The one IPC this spec reaches for directly, as a local shape (the pattern
- * `trace-comments-ipc.spec.ts` uses). The e2e project's ambient
- * `Window.desktopApi` is a narrow global declared by an unrelated spec and
- * carries only the auth reader, and widening a global another spec owns to serve
- * this one is the wrong seam.
+ * The one IPC this spec reaches for directly, as a local shape. The e2e
+ * project's ambient `Window.desktopApi` is a narrow global declared by an
+ * unrelated spec and carries only the auth reader, and widening a global another
+ * spec owns to serve this one is the wrong seam.
  */
 type ApprovalsDesktopWindow = {
   desktopApi?: { denyApproval?: (approvalId: string) => Promise<unknown> };

@@ -11,13 +11,21 @@ import {
 } from "@repo/google";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { documentService } from "@/app/documents/document-service";
+import {
+  documentService,
+  type RecordCreatedArtifact,
+} from "@/app/documents/document-service";
 import { projectsService } from "@/app/projects/service";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import {
-  encryptTokenPair,
-  resolveIntegrationToken,
+  buildIntegrationTokenColumns,
+  resolveEncryptedIntegrationToken,
 } from "@/lib/integration-encryption";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 import { truncateToUtf8Bytes } from "@/lib/truncate-utf8";
 
 /**
@@ -61,32 +69,32 @@ export type ImportDocsResult =
  * requires database access for token updates.
  */
 export async function ensureValidAccessToken(
-  integration: GoogleIntegration,
+  integration: GoogleTokenFields,
   organizationId: string,
   logPrefix = "[google]"
 ): Promise<TokenRefreshResult> {
+  // An expired row with no refresh-token ciphertext still takes the refresh
+  // branch, which fails it with the reconnect error rather than serving its
+  // expired access token.
   const needsRefresh =
-    integration.tokenExpiresAt &&
-    integration.tokenExpiresAt < new Date() &&
-    (integration.refreshTokenEncrypted ?? integration.refreshToken);
+    integration.tokenExpiresAt && integration.tokenExpiresAt < new Date();
 
   if (!needsRefresh) {
-    // Prefer encrypted token on read, fall back to plaintext
     let accessToken: string | null;
     try {
-      accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
+      accessToken = await resolveEncryptedIntegrationToken(
+        integration.accessTokenEncrypted
       );
     } catch (error) {
-      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
+      // The row HAS a ciphertext and KMS could not open it: a failed read, not
+      // a missing credential.
+      log.warn(`${logPrefix} Access token decryption failed`, {
         organizationId,
         error: parseError(error),
       });
-      accessToken = integration.accessToken;
+      accessToken = null;
     }
     if (!accessToken) {
-      log.warn(`${logPrefix} Missing access token`, { organizationId });
       return {
         success: false,
         error:
@@ -97,9 +105,8 @@ export async function ensureValidAccessToken(
   }
 
   try {
-    const rawRefreshToken = await resolveIntegrationToken(
-      integration.refreshTokenEncrypted,
-      integration.refreshToken
+    const rawRefreshToken = await resolveEncryptedIntegrationToken(
+      integration.refreshTokenEncrypted
     );
     if (!rawRefreshToken) {
       log.warn(`${logPrefix} Missing refresh token`, { organizationId });
@@ -125,33 +132,18 @@ export async function ensureValidAccessToken(
       );
     }
 
-    let encryptedAccessToken: string | null = null;
-    let encryptedRefreshToken: string | null = null;
-    try {
-      const encrypted = await encryptTokenPair(
-        tokens.accessToken,
-        tokens.refreshToken
-      );
-      encryptedAccessToken = encrypted.encryptedAccessToken;
-      encryptedRefreshToken = encrypted.encryptedRefreshToken;
-    } catch (error) {
-      log.warn(
-        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
-        {
-          organizationId,
-          error: parseError(error),
-        }
-      );
-    }
+    // Google ordinarily returns NO new refresh token on a refresh; the builder
+    // then omits the refresh column and the stored ciphertext stays.
+    const tokenColumns = await buildIntegrationTokenColumns(
+      tokens.accessToken,
+      tokens.refreshToken
+    );
 
     await withDb((db) =>
       db.googleIntegration.update({
         where: { organizationId },
         data: {
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-          accessTokenEncrypted: encryptedAccessToken ?? undefined,
-          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+          ...tokenColumns,
           tokenExpiresAt,
           lastUsedAt: new Date(),
         },
@@ -227,6 +219,7 @@ export const googleService = {
     return withDb((db) =>
       db.googleIntegration.findUnique({
         where: { organizationId },
+        select: GOOGLE_TOKEN_SELECT,
       })
     );
   },
@@ -264,34 +257,22 @@ export const googleService = {
       let googleEmail: string | null = null;
       let googleUserId = "unknown"; // Fallback if userinfo fails
 
-      const [userInfoResult, { encryptedAccessToken, encryptedRefreshToken }] =
-        await Promise.all([
-          getUserInfo(tokens.accessToken).catch((error) => {
-            log.warn(
-              "[google/oauth] Failed to get user info, continuing without email",
-              {
-                organizationId,
-                error: parseError(error),
-              }
-            );
-            return null;
-          }),
-          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
-            (error) => {
-              log.warn(
-                "[google/oauth] Failed to encrypt tokens, storing plaintext only",
-                {
-                  organizationId,
-                  error: parseError(error),
-                }
-              );
-              return {
-                encryptedAccessToken: null,
-                encryptedRefreshToken: null,
-              };
+      // Google omits `refresh_token` when the user has already granted consent,
+      // the ordinary case on a RECONNECT; the builder then leaves the stored
+      // refresh ciphertext untouched.
+      const [userInfoResult, tokenColumns] = await Promise.all([
+        getUserInfo(tokens.accessToken).catch((error) => {
+          log.warn(
+            "[google/oauth] Failed to get user info, continuing without email",
+            {
+              organizationId,
+              error: parseError(error),
             }
-          ),
-        ]);
+          );
+          return null;
+        }),
+        buildIntegrationTokenColumns(tokens.accessToken, tokens.refreshToken),
+      ]);
 
       if (userInfoResult) {
         googleEmail = userInfoResult.email;
@@ -306,19 +287,13 @@ export const googleService = {
             organizationId,
             googleUserId,
             googleEmail,
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+            ...tokenColumns,
             tokenExpiresAt,
           },
           update: {
             googleUserId,
             googleEmail,
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+            ...tokenColumns,
             tokenExpiresAt,
             lastUsedAt: new Date(),
           },
@@ -358,6 +333,7 @@ export const googleService = {
     const integration = await withDb((db) =>
       db.googleIntegration.findUnique({
         where: { organizationId },
+        select: { googleEmail: true },
       })
     );
 
@@ -376,10 +352,18 @@ export const googleService = {
    * Disconnect the Google integration for an organization.
    * Revokes the access token and deletes the integration record.
    */
-  async disconnect(organizationId: string): Promise<{ success: true }> {
+  async disconnect(
+    organizationId: string,
+    /**
+     * Runs on the integration delete's transaction (ISS-12552); the token
+     * revoke before it is best effort and outside it.
+     */
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
+  ): Promise<{ success: true }> {
     const integration = await withDb((db) =>
       db.googleIntegration.findUnique({
         where: { organizationId },
+        select: { ...GOOGLE_TOKEN_SELECT, googleEmail: true },
       })
     );
 
@@ -389,13 +373,19 @@ export const googleService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      // Prefer decrypted token; fall back to plaintext for backward compatibility
-      // accessToken is non-null: integration.accessToken is always a non-null DB field
-      const accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
+      // A row with no ciphertext resolves to null. `revokeToken(null)` would
+      // no-op and leave a live OAuth grant standing after the local row is
+      // gone, so say so rather than casting.
+      const accessToken = await resolveEncryptedIntegrationToken(
+        integration.accessTokenEncrypted
       );
-      await revokeToken(accessToken as string);
+      if (accessToken) {
+        await revokeToken(accessToken);
+      } else {
+        log.warn("[google] No token to revoke during disconnect", {
+          organizationId,
+        });
+      }
     } catch (error) {
       log.warn("[google] Failed to revoke token during disconnect", {
         organizationId,
@@ -404,10 +394,15 @@ export const googleService = {
     }
 
     // Delete the integration record
-    await withDb((db) =>
-      db.googleIntegration.delete({
-        where: { organizationId },
-      })
+    await writeRecorded(
+      recordWrite,
+      () =>
+        withDb((db) =>
+          db.googleIntegration.delete({
+            where: { organizationId },
+          })
+        ),
+      () => ({ changed: true })
     );
 
     log.info("[google] Disconnected Google integration", {
@@ -426,12 +421,18 @@ export const googleService = {
     folderId: string,
     projectId: string,
     organizationId: string,
-    userId: string
+    userId: string,
+    /**
+     * Runs on each imported document's create transaction (ISS-12552), so a
+     * document whose record cannot be stored is not created.
+     */
+    recordCreated?: RecordCreatedArtifact
   ): Promise<ImportDocsResult> {
     // Get integration
     const integration = await withDb((db) =>
       db.googleIntegration.findUnique({
         where: { organizationId },
+        select: GOOGLE_TOKEN_SELECT,
       })
     );
 
@@ -567,14 +568,19 @@ export const googleService = {
         }
 
         // Create artifact
-        const artifact = await documentService.create(organizationId, userId, {
-          projectId,
-          type: "PRD",
-          status: DocumentStatus.Draft,
-          title: doc.name,
-          content,
-          fileName: `${doc.name}.md`,
-        });
+        const artifact = await documentService.create(
+          organizationId,
+          userId,
+          {
+            projectId,
+            type: "PRD",
+            status: DocumentStatus.Draft,
+            title: doc.name,
+            content,
+            fileName: `${doc.name}.md`,
+          },
+          recordCreated
+        );
 
         if (!artifact) {
           throw new Error("Failed to create artifact (returned null)");
@@ -621,3 +627,27 @@ export const googleService = {
     };
   },
 };
+
+/**
+ * The only `GoogleIntegration` columns `ensureValidAccessToken` reads. Fetching
+ * more is not just wasted RETURNING bandwidth: every extra column of this row
+ * that reaches the Node process is a credential (the two token ciphertexts are
+ * the bulk of the table) sitting in a heap object that any future
+ * `log`/`JSON.stringify` of the row would forward wholesale. Callers that need a
+ * non-token column spread this and add exactly that column.
+ */
+const GOOGLE_TOKEN_SELECT = {
+  accessTokenEncrypted: true,
+  refreshTokenEncrypted: true,
+  tokenExpiresAt: true,
+} as const;
+
+/**
+ * Derived from the select rather than hand-listed, so a field read inside
+ * `ensureValidAccessToken` that is missing from `GOOGLE_TOKEN_SELECT` fails
+ * `tsc` here instead of arriving as `undefined` at runtime.
+ */
+type GoogleTokenFields = Pick<
+  GoogleIntegration,
+  keyof typeof GOOGLE_TOKEN_SELECT
+>;

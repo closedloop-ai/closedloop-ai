@@ -12,7 +12,10 @@
  *
  * THIS MODULE IS THE CONTRACT FEA-2273 (in-product metrics) IMPORTS UNCHANGED —
  * the taxonomy/confidence/cohort const-objects AND the band cut-points.
- * Downstream features import these; they never re-define them.
+ * Downstream features import these; they never re-define them. ISS-10721 moved
+ * the autonomy band, its cut-points and its mapping to `@repo/api` so the cloud
+ * twin classifies identically; they are re-exported here, so that contract is
+ * unchanged for every importer.
  *
  * Coverage = Σ(spend in a confident, non-`other`, non-`idle` segment)
  *            / Σ(total session spend). Coverage runs on the classifier's OWN
@@ -21,6 +24,10 @@
  * numerator/denominator are EXACT integer aggregates, not float accumulations.
  */
 
+import {
+  type AutonomyBand,
+  SpendConfidenceTier,
+} from "@repo/api/src/types/session-activity-metrics";
 import type { Harness } from "../collectors/types.js";
 import { microCentsToUsd, usdToMicroCents } from "../cost/cost-math.js";
 
@@ -72,14 +79,19 @@ export const COVERAGE_EXCLUDED_STATES: ReadonlySet<ActivityState> = new Set([
 
 // ── Confidence buckets (Q-003: thresholds finalized against the corpus) ───────
 
-/** The discrete confidence buckets a classifier's segment confidence is binned into. */
-export const ConfidenceBucket = {
-  Low: "low",
-  Medium: "medium",
-  High: "high",
-} as const;
-export type ConfidenceBucket =
-  (typeof ConfidenceBucket)[keyof typeof ConfidenceBucket];
+/**
+ * The discrete confidence buckets a classifier's segment confidence is binned
+ * into.
+ *
+ * ISS-10721 made `SpendConfidenceTier`
+ * (`@repo/api/src/types/session-activity-metrics`) the owner of these members,
+ * because the cloud twin of the spend split names the same three tiers and two
+ * copies would let a renamed or added bucket mean different things on the two
+ * sides of the sync. Aliased back to `ConfidenceBucket` here so every desktop
+ * call site, the cut-points and the confident threshold below are unchanged.
+ */
+export const ConfidenceBucket = SpendConfidenceTier;
+export type ConfidenceBucket = SpendConfidenceTier;
 
 /** Ordered low → high; the index is the bucket rank used by the confident threshold. */
 export const CONFIDENCE_BUCKET_VALUES = [
@@ -127,13 +139,16 @@ export function isConfident(bucket: ConfidenceBucket): boolean {
 
 // ── Cohort axes + band cut-points (the shared home; tied to Q-003) ────────────
 
-/** Autonomy bands, derived from the rollup's autonomy index (0 manual → 100 agentic). */
-export const AutonomyBand = {
-  HumanSteered: "human_steered",
-  Mixed: "mixed",
-  Agentic: "agentic",
-} as const;
-export type AutonomyBand = (typeof AutonomyBand)[keyof typeof AutonomyBand];
+/*
+ * The autonomy bands, their cut-points, and the index -> band mapping used to
+ * live here. ISS-10721 moved all three to
+ * `@repo/api/src/types/session-activity-metrics`, because the cloud twin of
+ * `session_activity_metrics` must bucket the same index into the same band — a
+ * second copy here would let the local rollup and its cloud reader disagree
+ * about what "agentic" means. Consumers import them from that module directly;
+ * re-exporting them through this one is a barrel file (`noBarrelFile`), and the
+ * repo's rule for a moved symbol is a direct subpath import at each call site.
+ */
 
 /** Session-length bands, derived from the rollup's `runtime_ms`. */
 export const LengthBand = {
@@ -142,24 +157,6 @@ export const LengthBand = {
   Long: "long",
 } as const;
 export type LengthBand = (typeof LengthBand)[keyof typeof LengthBand];
-
-/**
- * PROVISIONAL autonomy-index band boundaries (Q-003) — the ONLY place they may
- * be edited; the sampler and FEA-2273 import them. They bucket an autonomy index
- * in [0, 100] (0 manual → 100 agentic); the band code is agnostic to HOW that
- * index is produced. The sampler supplies a session-level proxy from the
- * `session_analytics` rollup's human/agent TURN counts — NOT the event-level
- * `AGENT_EVENT_PREDICATE` (which additionally folds in the subagent join). The
- * proxy reuses the rollup's canonical classification and is sufficient for
- * stratification; a caller wanting the event-level index may pass it instead.
- *  human_steered = [0, humanSteeredMaxExclusive)
- *  mixed         = [humanSteeredMaxExclusive, agenticMinInclusive)
- *  agentic       = [agenticMinInclusive, 100]
- */
-export const AUTONOMY_BAND_CUTPOINTS = {
-  humanSteeredMaxExclusive: 34,
-  agenticMinInclusive: 67,
-} as const;
 
 /**
  * PROVISIONAL session-length band boundaries in milliseconds (Q-003) — the only
@@ -172,17 +169,6 @@ export const SESSION_LENGTH_BAND_CUTPOINTS = {
   shortMaxMsExclusive: 5 * 60_000,
   longMinMsInclusive: 30 * 60_000,
 } as const;
-
-/** Map an autonomy index (0..100) to its band using the shared cut-points. */
-export function autonomyBandFor(autonomyIndex: number): AutonomyBand {
-  if (autonomyIndex < AUTONOMY_BAND_CUTPOINTS.humanSteeredMaxExclusive) {
-    return AutonomyBand.HumanSteered;
-  }
-  if (autonomyIndex < AUTONOMY_BAND_CUTPOINTS.agenticMinInclusive) {
-    return AutonomyBand.Mixed;
-  }
-  return AutonomyBand.Agentic;
-}
 
 /** Map a session runtime (ms) to its length band using the shared cut-points. */
 export function sessionLengthBandFor(runtimeMs: number): LengthBand {
@@ -269,7 +255,29 @@ export type CoverageResult = {
   byCohort: Record<CohortAxis, Record<string, CoverageCell>>;
 };
 
-/** Bumped when the Coverage output shape/semantics change (FEA-2273 version-gates on it). */
+/**
+ * Bumped when the Coverage output shape/semantics change.
+ *
+ * FEA-2273's persisted rollup stamps this into
+ * `session_activity_metrics.metric_version`, and its boot backfill re-selects
+ * every row stamped BELOW it — so bumping this constant is the MECHANISM that
+ * forces persisted rows to be recomputed under the new math. Before ISS-6759 the
+ * stamp did not exist and this docstring claimed a gate nothing implemented, so a
+ * bump changed the formula for new rows only and left old ones untouched.
+ *
+ * Bumping it is an OBLIGATION, not just this module's privilege. The persisted
+ * Coverage numbers are produced by this module's math AND by the adapter's own
+ * derivations in `database/activity-metrics.ts` — the gap-spend split, the
+ * micro-cent confidence tiers, `coveredSegmentCount`, and the `created_at` filter
+ * that decides which spend reaches the denominator. Any of those changing what a
+ * row would compute to is a formula change for stamping purposes and must bump
+ * this constant, or the same silent-mixed-formula gap reopens on the other side
+ * of the boundary.
+ *
+ * It is deliberately SEPARATE from the segment classifier version: that one
+ * tracks the INPUTS (a re-tile), this one tracks the MATH over them, and a change
+ * to either alone must re-derive.
+ */
 export const ATTRIBUTION_METRIC_VERSION = 1;
 
 // ── Internal ─────────────────────────────────────────────────────────────────
@@ -280,8 +288,17 @@ type CoverageAccum = {
   sessions: number;
 };
 
-/** The cohort bucket key a session falls into on a given axis. */
-function cohortValue(axis: CohortAxis, cohort: SessionCohort): string {
+/**
+ * The cohort bucket key a session falls into on a given axis.
+ *
+ * ISS-6758: exported because the FR-12 cohort READ
+ * (`database/activity-coverage-read.ts`) re-aggregates the PERSISTED per-session
+ * rows rather than raw segments, so it must land each row in the same bucket
+ * this function would. Deriving those keys in SQL (a `COALESCE(harness,
+ * 'unknown')`, a `CASE closedloop_user`) would be a second copy of the mapping,
+ * free to drift from this one silently — the read imports it instead.
+ */
+export function cohortValue(axis: CohortAxis, cohort: SessionCohort): string {
   switch (axis) {
     case CohortAxis.Harness:
       return cohort.harness ?? UNKNOWN_HARNESS_KEY;
@@ -368,15 +385,37 @@ function addCoverage(accum: CoverageAccum, session: CoverageSession): void {
   accum.totalMicro += usdToMicroCents(session.gapSpendUsd ?? 0);
 }
 
-function finalizeCoverage(accum: CoverageAccum): CoverageCell {
+/**
+ * Close one cell's integer micro-cent totals into a {@link CoverageCell}: the
+ * exact ratio, its NaN-free zero guard, and the {@link MIN_COHORT_CELL_SESSIONS}
+ * low-sample rule.
+ *
+ * ISS-6758: exported so the FR-12 cohort READ, which re-aggregates the PERSISTED
+ * per-session rows instead of raw segments, closes its cells through the same
+ * three rules. Only the ACCUMULATION differs between the two callers (segments
+ * here, stored per-session sums there); a cell that divided or flagged
+ * low-sample differently would be a second Coverage definition.
+ */
+export function coverageCellFromMicro(
+  coveredMicro: number,
+  totalMicro: number,
+  sessionCount: number
+): CoverageCell {
   return {
-    coveredSpendUsd: microCentsToUsd(accum.coveredMicro),
-    totalSpendUsd: microCentsToUsd(accum.totalMicro),
-    coverage:
-      accum.totalMicro === 0 ? 0 : accum.coveredMicro / accum.totalMicro,
-    sessionCount: accum.sessions,
-    lowSample: accum.sessions < MIN_COHORT_CELL_SESSIONS,
+    coveredSpendUsd: microCentsToUsd(coveredMicro),
+    totalSpendUsd: microCentsToUsd(totalMicro),
+    coverage: totalMicro === 0 ? 0 : coveredMicro / totalMicro,
+    sessionCount,
+    lowSample: sessionCount < MIN_COHORT_CELL_SESSIONS,
   };
+}
+
+function finalizeCoverage(accum: CoverageAccum): CoverageCell {
+  return coverageCellFromMicro(
+    accum.coveredMicro,
+    accum.totalMicro,
+    accum.sessions
+  );
 }
 
 /**

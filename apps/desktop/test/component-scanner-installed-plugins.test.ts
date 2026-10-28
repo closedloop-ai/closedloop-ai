@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { discoverInstalledPlugins } from "../src/main/packs/component-scanner.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
@@ -395,10 +395,16 @@ test("discoverInstalledPlugins: a tombstone advances last_seen_at so the sync cu
           codeReviewAfter.lastSeenAt >= (codeReviewBefore?.lastSeenAt ?? ""),
         "tombstone must advance last_seen_at"
       );
-      assert.equal(
-        codeReviewAfter?.lastSeenAt,
-        codeReviewAfter?.uninstalledAt,
-        "tombstone stamps last_seen_at and uninstalled_at with the same now"
+      // ISS-6881: the ordering key is deliberately NOT the scan instant any more.
+      // The cursor is a composite (timestamp, id), so a key equal to `now` ties
+      // with every sibling row this same scan wrote and loses on the id whenever
+      // the concurrent sync lane already acknowledged one of them. The key must
+      // therefore sort STRICTLY after the recorded uninstall instant.
+      assert.ok(
+        codeReviewAfter?.lastSeenAt &&
+          codeReviewAfter?.uninstalledAt &&
+          codeReviewAfter.lastSeenAt > codeReviewAfter.uninstalledAt,
+        `tombstone ordering key must sort strictly after the uninstall instant, got ${codeReviewAfter?.lastSeenAt} vs ${codeReviewAfter?.uninstalledAt}`
       );
     } finally {
       await close();

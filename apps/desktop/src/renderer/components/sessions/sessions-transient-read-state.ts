@@ -55,7 +55,7 @@ type ListReadErrorInput = {
    */
   hasSummaryUsage: boolean;
   /**
-   * ISS-4483 (review cid 3679616168, wongk): the usage half failed TRANSIENTLY
+   * ISS-4483 (review cid 3679616168, whitlockk): the usage half failed TRANSIENTLY
    * (a db-host lifecycle blip while the list won the race). The combined read
    * still RESOLVED, so there is no query rejection to auto-retry — the caller
    * drives a bounded refetch. While that recovery is in flight this keeps the
@@ -65,7 +65,7 @@ type ListReadErrorInput = {
    */
   usageErrorTransient?: boolean;
   /**
-   * ISS-4483 (review cid 3679616168, wongk): the usage half's OWN bounded recovery
+   * ISS-4483 (review cid 3679616168, whitlockk): the usage half's OWN bounded recovery
    * refetches have run out (the caller drives these, since the resolved combined
    * read never advances react-query's `failureCount`). True only once every
    * attempt has RETURNED and the usage half is still failing (ISS-4561) — an
@@ -90,6 +90,17 @@ type ListReadErrorInput = {
 
 type ListReadErrorState = {
   isListErrorTransient: boolean;
+  /**
+   * ISS-7528: the list error is a db-host TRANSIENT failure, before exhaustion is
+   * folded in. `isListErrorTransient` closes once the bounded retries run out, so
+   * it cannot answer "was this failure a db-host blip at all" — and that is the
+   * question the availability fold needs. A wedged transient error must keep
+   * routing to the hard error card + its recovery action (ISS-4483 review cid
+   * 3679535437: the user needs a move to make), which it can only do while it is
+   * still classified unavailable. Without this the exhausted case fell through to
+   * the genuinely-empty state and lost its only affordance.
+   */
+  isListErrorTransientSource: boolean;
   isUsageErrorTransient: boolean;
   metricReadErrored: boolean;
   /**
@@ -110,7 +121,7 @@ type ListReadErrorState = {
  * ISS-4476 / ISS-4474 / ISS-4410), which is not a genuine breakage: the read
  * auto-retries and the table shows the quiet reconnecting surface instead of the
  * hard error card. `isUsageErrorTransient` is the same for the best-effort usage
- * half (review cid 3679616168, wongk). `metricReadErrored` (FEA-4177) folds a
+ * half (review cid 3679616168, whitlockk). `metricReadErrored` (FEA-4177) folds a
  * whole-query list failure with the usage half's `usageError`, but EXCLUDES a
  * transient failure of either half so the always-available summary cards don't
  * dash to a destructive 0/0/$0 during the recover window — only a persistent
@@ -125,10 +136,10 @@ export function classifyListReadErrorState({
   usageRecoveryExhausted,
   transientRetriesExhausted,
 }: ListReadErrorInput): ListReadErrorState {
+  const isListErrorTransientSource =
+    isListError && isTransientSourceError(listError);
   const isListErrorTransient =
-    isListError &&
-    isTransientSourceError(listError) &&
-    transientRetriesExhausted !== true;
+    isListErrorTransientSource && transientRetriesExhausted !== true;
   const isUsageErrorTransient =
     usageError &&
     usageErrorTransient === true &&
@@ -140,6 +151,7 @@ export function classifyListReadErrorState({
     (isListErrorTransient || isUsageErrorTransient) && !hasSummaryUsage;
   return {
     isListErrorTransient,
+    isListErrorTransientSource,
     isUsageErrorTransient,
     metricReadErrored,
     transientReadWithoutUsage,
@@ -174,7 +186,7 @@ export function areTransientRetriesExhausted({
 }
 
 /**
- * ISS-4483 (review cid 3679616168, wongk): drive + bound the recovery for a
+ * ISS-4483 (review cid 3679616168, whitlockk): drive + bound the recovery for a
  * TRANSIENT usage-half failure, which runs OUTSIDE react-query's own retry. When
  * the list wins the race and the usage aggregate rejects transiently, the combined
  * read RESOLVES (list rendered, `usage` omitted, `usageErrorTransient: true`), so
@@ -199,17 +211,27 @@ export function areTransientRetriesExhausted({
  * in (`usageError && usageErrorTransient`) so it owns the exhaustion edge without
  * a cyclic dependency on the classified flag — and so the caller's component body
  * stays free of the extra branches.
+ *
+ * ISS-6382 (whitlockk review): `readGateOpen` is the caller's EFFECTIVE read gate,
+ * and it lives here rather than at the call site because this hook is the thing
+ * that calls `refetch()` — which in TanStack v5 ignores `enabled` and fetches
+ * regardless. A cached payload still carrying `usageErrorTransient` therefore
+ * armed this recovery while the caller's read was held closed, and ~1s later
+ * drove exactly the read the gate exists to prevent. Required, not defaulted: a
+ * permissive default is the same defect with a quieter failure mode.
  */
 export function useUsageTransientRecovery({
+  readGateOpen,
   usageError,
   usageErrorTransient,
   refetch,
 }: {
+  readGateOpen: boolean;
   usageError: boolean;
   usageErrorTransient: boolean;
   refetch: () => Promise<unknown>;
 }): { usageRecoveryExhausted: boolean } {
-  const candidate = usageError && usageErrorTransient;
+  const candidate = readGateOpen && usageError && usageErrorTransient;
   const [attempts, setAttempts] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {

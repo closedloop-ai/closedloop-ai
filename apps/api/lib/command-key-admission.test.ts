@@ -2,7 +2,7 @@
  * ISS-4795 / ISS-4796 — the cloud trust boundary must enforce the same command
  * key rules the desktop producers do.
  *
- * wongk (PR #4322): "Every producer is the contract here, but this helper only
+ * whitlockk (PR #4322): "Every producer is the contract here, but this helper only
  * reaches the new Desktop paths. Older supported Desktop builds still send
  * //clear and /... through the API component and usage schemas, where those keys
  * are accepted and persisted verbatim, so cloud inventory can be repolluted
@@ -71,15 +71,12 @@ describe("admitComponentKey", () => {
     );
   });
 
-  it.each([
-    ["/..."],
-    ["/…"],
-    ["/"],
-    ["//"],
-    ["   "],
-  ])("rejects the placeholder %j", (key) => {
-    expect(admitComponentKey(AgentComponentKind.Command, key)).toBeNull();
-  });
+  it.each([["/..."], ["/…"], ["/"], ["//"], ["   "]])(
+    "rejects the placeholder %j",
+    (key) => {
+      expect(admitComponentKey(AgentComponentKind.Command, key)).toBeNull();
+    }
+  );
 
   it("does not touch a non-command kind, even a slash-leading key", () => {
     // A skill keyed on `/name` is a legitimate identity and none of this

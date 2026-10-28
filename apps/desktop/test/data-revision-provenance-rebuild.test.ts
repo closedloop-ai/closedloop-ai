@@ -6,13 +6,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   fakeCollector,
@@ -88,7 +88,7 @@ describe("token provenance data-revision rebuilds", () => {
       );
 
       assert.equal(result.rebuilt, 1);
-      assert.equal(row?.data_revision, DATA_REVISION);
+      assert.equal(row?.data_revision, effectiveDataRevision());
       assert.deepEqual(JSON.parse(row?.source_identity ?? "null"), {
         availability: TokenSourceIdentityAvailability.Unavailable,
         reason: TokenSourceIdentityUnavailableReason.Malformed,

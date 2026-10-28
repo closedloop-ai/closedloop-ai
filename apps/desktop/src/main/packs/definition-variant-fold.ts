@@ -2,7 +2,7 @@
  * @file definition-variant-fold.ts
  * @description ISS-4662 item 2 — the per-identity VARIANT FOLD and version
  * persistence concern, extracted out of `definition-content-collector.ts`
- * (reviewer shafty023 on PR #4116: that file carries the whole definition
+ * (reviewer davetho on PR #4116: that file carries the whole definition
  * pipeline and had grown past the 500-line smell).
  *
  * One cohesive job lives here: given definitions discovered under several scan
@@ -50,7 +50,7 @@ export type DiscoveredDefinition = {
  * The fold result for one `externalId`: the precedence-winning `primary`
  * variant (first-scanned root — it drives the `agent_components` "active"/display
  * row) plus every OTHER distinct-content variant discovered under a later root
- * (ISS-4564, shafty023).
+ * (ISS-4564, davetho).
  *
  * Precedence and persistence are DECOUPLED here: precedence decides which
  * variant is `primary`, but a same-name definition with DIFFERENT bytes under a
@@ -71,8 +71,8 @@ export type DefinitionVariants = {
   variants: DiscoveredDefinition[];
   /**
    * The `sha256(content)` of the primary plus every recorded variant, kept on
-   * the accumulator so `foldDiscovered` hashes each body EXACTLY ONCE (shafty023
-   * / wongk). Rebuilding this set per discovery would re-hash every retained body
+   * the accumulator so `foldDiscovered` hashes each body EXACTLY ONCE (davetho
+   * / whitlockk). Rebuilding this set per discovery would re-hash every retained body
    * for every same-name definition — O(N²) full-content hashes in the DB host, a
    * CPU/availability problem for a project root with many same-name SKILL.md
    * variants. Seeded with the primary's hash on creation; each new distinct
@@ -126,8 +126,8 @@ function foldHarness(
  * variant) contributes no new variant (dedup on `sha256(content)`), so
  * genuinely-identical content in two roots stays a single version row — no
  * double-count. This is what keeps a dual-installed same-content skill attributed
- * `both` with one row (wongk review, FEA-4028) while a same-name
- * DIFFERENT-content project agent no longer loses its bytes (shafty023,
+ * `both` with one row (whitlockk review, FEA-4028) while a same-name
+ * DIFFERENT-content project agent no longer loses its bytes (davetho,
  * ISS-4564).
  */
 export function foldDiscovered(
@@ -140,7 +140,7 @@ export function foldDiscovered(
       primary: discovered,
       variants: [],
       // Seed the seen-hash set with the primary so later same-name variants
-      // dedup against it; each body is hashed exactly once (shafty023 / wongk).
+      // dedup against it; each body is hashed exactly once (davetho / whitlockk).
       seenHashes: new Set([sha256Hex(discovered.content)]),
     });
     return;

@@ -61,10 +61,13 @@ export const IdleConcept = {
    * a pause between two stamped items in the cross-session merged trace. A
    * presentational trace element, never a session. SSOT: `buildMergedTrace`
    * (`@repo/lib/branches/merged-trace`), which synthesizes the `idle`
-   * `MergedTraceItem` wherever consecutive items gap by the idle threshold. (The
-   * per-session `session-trace.tsx` view *discards* the dormant
-   * `{ type: "idle"; gap }` `TurnItem` variant in `buildTraceGroups`, so that
-   * variant is not the rendered gap.)
+   * `MergedTraceItem` wherever the pause between the end of the last item still
+   * running and the next item's start reaches the idle threshold (ISS-8720 — a
+   * `tools` run's own duration is not part of the pause).
+   * ISS-8652: `buildTraceGroups` no longer discards the adapted
+   * `{ type: "idle"; gap }` `TurnItem` — behind `session-trace-idle-rows` it
+   * renders as `TraceIdleRow`, so that variant IS the rendered gap when the
+   * gate is open.
    */
   TraceGap: "trace_gap",
 } as const;
@@ -115,7 +118,7 @@ export const IDLE_CONCEPTS: Readonly<
     concept: IdleConcept.PhantomSession,
     label: "Idle session",
     condition:
-      "A persisted sessionDetail row that is NOT substantive: 0 turns AND 0 tokens (input + output + cache read + cache write) AND 0 tool uses; nulls coalesce to 0.",
+      "A persisted sessionDetail row that is NOT substantive: 0 turns AND 0 tokens (input + output + cache read + cache write) AND 0 tool uses AND 0 component invocations (ISS-5801); nulls coalesce to 0.",
     rationale:
       "The desktop live-hook INSERTs a 0-turn/0-token row on SessionStart before any real activity. This is the only session-level idle concept and the only thing counted as a session (the idleCount reveal, the quality filter).",
     ssot: "@repo/api/src/agent-session-filters (isSubstantiveSession); SQL twin SESSION_SUBSTANTIVE_WHERE/SESSION_IDLE_WHERE; desktop sync twin synced-session-substantive.ts",
@@ -149,9 +152,9 @@ export const IDLE_CONCEPTS: Readonly<
     concept: IdleConcept.TraceGap,
     label: "Idle gap",
     condition:
-      "An idle MergedTraceItem synthesized at render time to visualize a pause wherever two consecutive stamped items in the cross-session merged trace gap by the idle threshold.",
+      "An idle MergedTraceItem synthesized at render time to visualize a pause in the cross-session merged trace, wherever the interval from the end of the last still-running item to the next item's start reaches the idle threshold.",
     rationale:
-      "A presentational trace element synthesized for the merged trace; never persisted, never a session, not counted; needs no reclassification. (The per-session session-trace.tsx view discards the dormant `{ type: 'idle'; gap }` TurnItem variant, so that variant is not the rendered gap.)",
+      "A presentational trace element synthesized for the merged trace; never persisted, never a session, not counted; needs no reclassification. (ISS-8652: buildTraceGroups renders the adapted `{ type: 'idle'; gap }` TurnItem as its own row behind the session-trace-idle-rows gate, so that variant is the rendered gap once the gate is open.)",
     ssot: "@repo/lib/branches/merged-trace (buildMergedTrace — synthesized `idle` MergedTraceItem)",
     isSession: false,
   },

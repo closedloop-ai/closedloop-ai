@@ -154,7 +154,7 @@ describe.skipIf(!hasDatabase)(
         });
         // The SAME shape an already-deployed `apps/app` sends, and what a new
         // build sends with the flag off. Both must still see every row — that is
-        // the whole reason omission does not mean "windowed" (wongk).
+        // the whole reason omission does not mean "windowed" (whitlockk).
         const legacyPaged = await documentListService.countAll({
           organizationId,
           assigneeId: user.id,

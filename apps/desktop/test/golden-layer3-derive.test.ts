@@ -19,30 +19,37 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
 import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import { median } from "@repo/api/src/utils/math";
+import { test } from "vitest";
 import {
   assertCorpusExpectationsWritable,
   CorpusExpectationsStatus,
 } from "./golden/corpus-expectations-file.js";
 import {
+  type ArtifactLinkRow,
+  type ArtifactRow,
+  activeWriteLinks,
+  branchHasPushEvidence,
   deriveSessionPageSet,
   inWindow,
   type L3Rows,
   localDayOf,
   localHourOf,
-  rangeTwin,
   type SessionRow,
 } from "./golden/golden-layer3-derive.js";
 import {
   deriveKloc,
   deriveMedianPrSize,
 } from "./golden/golden-layer3-derive-loc.js";
+import { rangeTwin } from "./golden/golden-layer3-range-twin.js";
 
 const REF = "2026-07-09T22:40:42.009Z";
 const SIGNED_OVERWRITE_ERROR =
   /Refusing to overwrite SIGNED corpus expectations/;
+/** `last_activity_at`'s NOT NULL default (migration 0005) — "not computed yet".
+ *  A literal, so re-valuing that sentinel reddens here rather than drifting. */
+const SESSION_EPOCH = "1970-01-01T00:00:00.000Z";
 
 function sessionRow(overrides: Partial<SessionRow>): SessionRow {
   return {
@@ -59,6 +66,48 @@ function sessionRow(overrides: Partial<SessionRow>): SessionRow {
     awaiting_input_since: null,
     cost_usd_estimated: null,
     metadata: null,
+    // The store's invariant, not a convenience: `recomputeSessionLastActivityAt`
+    // writes COALESCE(MAX(events.created_at), <started_at floor>), so a row with
+    // an earlier last activity than its start cannot exist. A row with NO start
+    // sits at the epoch SENTINEL — never null, and an all-time window admits it,
+    // which is what production does. Defaulting to null here would have
+    // described an impossible store AND inverted that behaviour. Spread AFTER
+    // the defaults so a case can still pin it.
+    last_activity_at: overrides.started_at ?? SESSION_EPOCH,
+    ...overrides,
+  };
+}
+
+function artifactRow(overrides: Partial<ArtifactRow>): ArtifactRow {
+  return {
+    id: "a",
+    kind: "branch",
+    identity_key: "branch::x",
+    repo_full_name: null,
+    branch_name: null,
+    pr_number: null,
+    url: null,
+    title: null,
+    sha: null,
+    committed_at: null,
+    observed_at: null,
+    created_at: null,
+    first_pushed_at: null,
+    harness: null,
+    ...overrides,
+  };
+}
+
+function linkRow(overrides: Partial<ArtifactLinkRow>): ArtifactLinkRow {
+  return {
+    id: "l",
+    artifact_id: "a",
+    session_id: "s1",
+    relation: "created",
+    method: null,
+    is_primary: null,
+    observed_at: null,
+    created_at: null,
     ...overrides,
   };
 }
@@ -77,18 +126,24 @@ function rowsWith(sessions: SessionRow[]): L3Rows {
   };
 }
 
-test("rangeTwin: numeric periods are exact rolling instants ending at now", () => {
+test("rangeTwin: numeric periods are inclusive UTC-day spans ending with REF's day", () => {
   const r7 = rangeTwin(InsightsPeriod.Week, REF);
-  assert.equal(r7.endIso, REF);
-  assert.equal(r7.startIso, "2026-07-02T22:40:42.009Z");
-  assert.equal(r7.priorStartIso, "2026-06-25T22:40:42.009Z");
+  assert.equal(r7.endIso, "2026-07-09T23:59:59.999Z");
+  assert.equal(r7.elapsedEndIso, REF, "the clock, not the window edge");
+  assert.equal(r7.startIso, "2026-07-03T00:00:00.000Z");
+  assert.equal(r7.priorStartIso, "2026-06-26T00:00:00.000Z");
+  assert.equal(
+    r7.priorEndIso,
+    "2026-07-02T22:40:42.009Z",
+    "prior window closes after the elapsed span, not a full period"
+  );
   assert.equal(
     r7.trendStartIso,
     r7.startIso,
     "7d trend window equals the period"
   );
   const r90 = rangeTwin(InsightsPeriod.Quarter, REF);
-  assert.equal(r90.startIso, "2026-04-10T22:40:42.009Z");
+  assert.equal(r90.startIso, "2026-04-11T00:00:00.000Z");
   assert.equal(r90.trendStartIso, r90.startIso, "90d trend is capped AT 90d");
 });
 
@@ -96,7 +151,7 @@ test("rangeTwin: 'all' spans from the epoch with a 90d trend cap and no prior", 
   const all = rangeTwin(InsightsPeriod.All, REF);
   assert.equal(all.startIso, "1970-01-01T00:00:00.000Z");
   assert.equal(all.priorStartIso, "1970-01-01T00:00:00.000Z");
-  assert.equal(all.trendStartIso, "2026-04-10T22:40:42.009Z");
+  assert.equal(all.trendStartIso, "2026-04-11T00:00:00.000Z");
 });
 
 test("inWindow: inclusive on both edges, exclusive outside, null-safe", () => {
@@ -242,6 +297,55 @@ test("deriveSessionPageSet: status vocabulary, search columns, ordering", () => 
     deriveSessionPageSet(rows, { q: "  " }).length,
     4,
     "blank q is no filter"
+  );
+});
+
+test("activeWriteLinks: the Wrote corpus is NOT push-qualified (ISS-8751)", () => {
+  // The production twin, `activeWriteLinkSql` in branch-reads.ts, is exactly
+  // `method IN (BRANCH_WRITE_METHOD_SQL)`. ISS-8148 / PRD-683 D7 moved
+  // publication eligibility downstream of that projection, and this derivation
+  // kept the old push gate — invisible until a corpus session finally carried a
+  // Wrote-linked branch with zero push evidence, which is what minted `#lc`.
+  const rows = rowsWith([sessionRow({ id: "s1" })]);
+  rows.artifacts = [
+    artifactRow({ id: "a-pushed", branch_name: "pushed" }),
+    artifactRow({ id: "a-unpushed", branch_name: "unpushed" }),
+    artifactRow({ id: "a-notbranch", kind: "pull_request", branch_name: "pr" }),
+    artifactRow({ id: "a-unnamed", branch_name: null }),
+  ];
+  rows.artifactLinks = [
+    linkRow({ id: "l1", artifact_id: "a-pushed", method: "git_commit" }),
+    linkRow({ id: "l2", artifact_id: "a-pushed", method: "git_push" }),
+    linkRow({ id: "l3", artifact_id: "a-unpushed", method: "git_commit" }),
+    linkRow({ id: "l4", artifact_id: "a-notbranch", method: "git_commit" }),
+    linkRow({ id: "l5", artifact_id: "a-unnamed", method: "git_commit" }),
+    // A read method is not a write link on any branch, pushed or not.
+    linkRow({ id: "l6", artifact_id: "a-pushed", method: "git_checkout" }),
+  ];
+
+  assert.deepEqual(
+    activeWriteLinks(rows)
+      .map((w) => w.link.id)
+      .sort(),
+    ["l1", "l2", "l3"],
+    "a Wrote link to a named branch counts whether or not the branch was pushed"
+  );
+
+  // The push predicate survives on its own, for the one key named after it.
+  const byId = new Map(rows.artifacts.map((a) => [a.id, a]));
+  assert.equal(branchHasPushEvidence(byId.get("a-pushed")!, rows), true);
+  assert.equal(branchHasPushEvidence(byId.get("a-unpushed")!, rows), false);
+  // `first_pushed_at` is push evidence even with no push-method link.
+  assert.equal(
+    branchHasPushEvidence(
+      artifactRow({
+        id: "a-stamped",
+        branch_name: "stamped",
+        first_pushed_at: "2026-06-01T00:00:00.000Z",
+      }),
+      rows
+    ),
+    true
   );
 });
 

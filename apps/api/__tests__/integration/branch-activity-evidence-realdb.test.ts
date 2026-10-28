@@ -155,20 +155,11 @@ describe.skipIf(!hasDatabase)(
             headShaObservedAt: new Date("2026-08-10T12:00:00.000Z"),
           }
         );
-        const isolated = await seedBranch("migration-isolated");
         const pullRequestId = await seedPullRequest(primary, 6060, {
           githubCreatedAt: openedAt,
           mergedAt,
           closedAt: mergedAt,
         });
-        const mismatchedPullRequestId = await seedPullRequest(
-          {
-            organizationId: isolated.organizationId,
-            branchArtifactId: primary.branchArtifactId,
-          },
-          6061,
-          { githubCreatedAt: openedAt }
-        );
         await withDb((db) =>
           db.gitHubPRReview.createMany({
             data: [
@@ -178,7 +169,7 @@ describe.skipIf(!hasDatabase)(
                 authorLogin: "trusted-reviewer",
                 state: ReviewDecision.Approved,
                 htmlUrl:
-                  "https://github.com/closedloop-ai/symphony-alpha/pull/6060#pullrequestreview-6058001",
+                  "https://github.com/closedloop-ai/closedloop-ai/pull/6060#pullrequestreview-6058001",
                 submittedAt: reviewSubmittedAt,
               },
               {
@@ -187,7 +178,7 @@ describe.skipIf(!hasDatabase)(
                 authorLogin: "malformed-reviewer",
                 state: ReviewDecision.Approved,
                 htmlUrl:
-                  "https://github.com/closedloop-ai/symphony-alpha/pull/6060#pullrequestreview-malformed",
+                  "https://github.com/closedloop-ai/closedloop-ai/pull/6060#pullrequestreview-malformed",
                 submittedAt: reviewSubmittedAt,
               },
             ],
@@ -248,10 +239,16 @@ describe.skipIf(!hasDatabase)(
         );
         await expect(
           withDb((db) =>
+            // ISS-10170 added `pull_request_detail_branch_artifact_tenant_fkey`,
+            // so a PR-detail row whose organization disagrees with its branch
+            // artifact's can no longer be written at all. The backfill's
+            // indifference to such a row used to be asserted here by seeding
+            // one; that scenario is now refused by the database, and the
+            // refusal itself is covered by
+            // `packages/database/__tests__/integration/iss10170-pull-request-detail-branch-tenant-fk.integration.test.ts`.
             db.branchActivityAtom.count({
               where: {
                 OR: [
-                  { pullRequestDetailId: mismatchedPullRequestId },
                   {
                     branchArtifactId: routine.branchArtifactId,
                     sourceEventId: "routine-refresh-head-sha",

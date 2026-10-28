@@ -120,15 +120,18 @@ describe("buildOverviewStats subagent types (ISS-4677)", () => {
         agents: [mainAgent, agent({ subagentType: "reviewer" })],
       },
     ],
-  ])("keeps the Subagents count and the types-availability flag consistent (%s)", (_label, overrides) => {
-    const stats = overview(createAgentSessionDetailFixture(overrides));
+  ])(
+    "keeps the Subagents count and the types-availability flag consistent (%s)",
+    (_label, overrides) => {
+      const stats = overview(createAgentSessionDetailFixture(overrides));
 
-    // A null count and an "unavailable" tally are the same statement; a
-    // non-null count and an available tally are the other one.
-    expect(stats.subagents === null).toBe(
-      stats.subagentTypesAvailable === false
-    );
-  });
+      // A null count and an "unavailable" tally are the same statement; a
+      // non-null count and an available tally are the other one.
+      expect(stats.subagents === null).toBe(
+        stats.subagentTypesAvailable === false
+      );
+    }
+  );
 
   it("orders types by count desc with a stable tie-break and caps the list", () => {
     const stats = overview(

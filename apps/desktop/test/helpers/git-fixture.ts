@@ -1,12 +1,11 @@
 /**
  * @file git-fixture.ts
- * @description Shared builders for the symphony suites that need a REAL git repo
- * with a real origin — `symphony-loop-multi-repo-worktree.test.ts` and
- * `symphony-loop-branch-materialization.test.ts`, which carried byte-identical
- * private copies of `createRepoWithOrigin` before ISS-5836.
+ * @description Shared builders for the suites that need a REAL git repo with a
+ * real origin. Suites carried byte-identical private copies of
+ * `createRepoWithOrigin` before ISS-5836.
  *
- * Keeping one copy is what makes hermeticity impossible to apply to only one of
- * them: every git spawn here goes through `runGitFixture`, so a fixture repo
+ * Keeping one copy is what makes hermeticity impossible to apply to only some
+ * of them: every git spawn here goes through `runGitFixture`, so a fixture repo
  * cannot be built non-hermetically by adding a call to the wrong helper.
  *
  * Full rationale for the hermetic env — why the operator's `~/.gitconfig`
@@ -33,11 +32,10 @@ const execFileAsync = promisify(execFile);
  * draining. Either way the failure is reported by the coarse 900s whole-runner
  * cap as a dead suite rather than by the named test. Bounding the CHILD is what
  * restores attribution. This is the second half of the ISS-5403 lesson (PR
- * #4736, `wongk` review); that PR's `packages/crewd/test/helpers/git-fixture.ts`
- * is the reference.
+ * #4736, `whitlockk` review), whose crewd git fixture (since removed with crewd)
+ * was the reference.
  *
- * 60s is sized against desktop's `--test-timeout=120000` per-test cap, not
- * crewd's 30s one: it sits far above any honest spawn — the slowest WHOLE test
+ * 60s is sized against desktop's `--test-timeout=120000` per-test cap: it sits far above any honest spawn — the slowest WHOLE test
  * measured here made a dozen-plus spawns in ~9s on a machine at 1-min load 230 —
  * and at half the per-test cap it still leaves node:test room to attribute the
  * failure to the named test instead of the runner.

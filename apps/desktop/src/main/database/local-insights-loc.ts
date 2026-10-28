@@ -1,27 +1,9 @@
 /**
- * Captured-PR lines-of-change resolution for the desktop-local Delivery
- * insights.
+ * The captured-PR size KPIs of the desktop-local Delivery insights.
  *
- * This is the local SSOT for turning the per-PR LOC projection rows into the
- * "KLOC captured" total, the "Median PR size" population, the KLOC-over-time
- * buckets, the coverage exclusion that says how much of the population the
- * projection could not size, and the four Delivery KPIs built from them.
- * Extracted from `local-insights.ts` — grandfathered and shrink-only at the
- * time — under ISS-5412 so the cohesive LOC logic lives in one module, mirroring
- * the cloud
- * read service's `apps/api/app/insights/merged-pr-loc.ts` split, whose
- * null-preserving contract this file follows.
- *
- * Two populations, deliberately different, both derived in SQL by
- * `computeDelivery`'s LOC projection:
- *
- * - **enriched** (BOTH line counts present — AND) is the size-known population.
- *   Only these have a usable per-PR size, so only these median.
- * - **sized** (EITHER line count present — OR) is the population the COALESCE'd
- *   `loc` sum can actually see. A half-projected row still contributes its
- *   known side to the sum, so it IS evidence the sum read even though its total
- *   size is unknown. When NOTHING is sized the sum is vacuously 0, and the KLOC
- *   total is UNKNOWN rather than a real zero.
+ * Per-PR line counts are not stored locally (ISS-12709), so every captured PR is
+ * unsized: KLOC, LOC and Median PR size are unknown (`null`), and the coverage
+ * pair says all scanned PRs lack a known size.
  */
 
 import type { KpiStat } from "@closedloop-ai/loops-api/insights";
@@ -32,22 +14,7 @@ import {
   SizeCoveragePopulation,
   withSizeCoverage,
 } from "@closedloop-ai/loops-api/insights";
-import { median, round } from "@repo/api/src/utils/math";
-import { numberOrZero as num } from "./db-helpers.js";
-
-/** One captured-PR LOC row, as the current-window projection selects it. */
-export type CapturedPrLocRow = {
-  loc: bigint | number;
-  enriched: bigint | number;
-  sized: bigint | number;
-  day: string;
-};
-
-/** One captured-PR LOC row from the prior window (no day bucket needed). */
-export type PriorPrLocRow = {
-  loc: bigint | number;
-  enriched: bigint | number;
-};
+import { CAPTURED_LOC_LABEL } from "@repo/api/src/types/insights-loc-terminology-flag";
 
 /** Null-preserving KLOC / median / coverage figures over one window. */
 export type CapturedPrLocTotals = {
@@ -76,124 +43,23 @@ export type CapturedPrLocTotals = {
   prsWithoutKnownSize: number;
 };
 
-/**
- * FEA-2944: round a KLOC (thousands-of-lines) value to one decimal, the single
- * canonical KLOC rounding shared with the cloud dashboard's `round(x, 1)` in
- * apps/api/app/insights/merged-pr-loc.ts. Both the "KLOC captured" KPI and its
- * trend pass thousands-of-lines through this so the two surfaces (and the KPI
- * vs. its own trend) can never print a different KLOC for the same underlying
- * lines. Delegates to the canonical `round` helper in @repo/api/src/utils/math
- * rather than re-implementing the round-to-decimals pattern.
- */
-export function roundKloc(value: number): number {
-  return round(value, 1);
-}
-
-/**
- * FEA-2038 / FEA-2868 / FEA-2923 / ISS-5412 — the current window's LOC figures.
- *
- * KLOC sums over ALL captured PRs (an un-enriched PR folds in as 0 via the
- * projection's COALESCE, which leaves a sum unchanged), while the median is
- * taken over ENRICHED PRs only — folding un-enriched PRs in as 0 was dragging
- * the Delivery median toward 0 and disagreeing with the Branches list, which
- * uses the same enriched-only rule (FEA-2949).
- *
- * ISS-5412: a window where NO captured PR carries line counts has an UNKNOWN
- * KLOC, not a KLOC of zero — `roundKloc(0 / 1000)` rendered "0.0 thousands of
- * lines changed in captured PRs" over PRs that certainly changed lines, the
- * unavailable-as-real-zero conflation the shared insights rules forbid. `null`
- * renders `—` (formatKpiValue), exactly as cloud's twin does
- * (`knownLocValues.length > 0 ? … : null`), so the same missing data no longer
- * reads `0.0` in Local mode and `—` in Cloud mode. Once SOME PR is sized the
- * sum is a genuine (possibly partial) figure and still reports, with
- * `prsWithoutKnownSize` carrying how much of the population it could not size.
- *
- * An EMPTY window (no captured PRs at all) is `null` too, not `0.0`, for the
- * same reason cloud's twin returns null on an empty population: the tile is a
- * measurement of captured PRs, and there is nothing to measure. It dashes
- * alongside its already-nullable row neighbours — "Median PR size" (FEA-2923)
- * and "Merge rate" (FEA-3217) — rather than being the one tile on the row
- * asserting a figure over an empty cohort.
- */
-export function capturedPrLocTotals(
-  rows: readonly CapturedPrLocRow[]
+/** Totals for a window of `capturedPrCount` PRs, none of which has a known size. */
+export function unsizedCapturedPrLocTotals(
+  capturedPrCount: number
 ): CapturedPrLocTotals {
-  const totalLoc = sumLoc(rows);
-  const sizedPrCount = rows.filter((row) => num(row.sized) === 1).length;
-  const enrichedPrCount = rows.filter((row) => num(row.enriched) === 1).length;
   return {
-    totalLoc,
-    klocCaptured: sizedPrCount > 0 ? roundKloc(totalLoc / 1000) : null,
-    medianPrSize: enrichedMedian(rows),
-    scanned: rows.length,
-    prsWithoutKnownSize: rows.length - enrichedPrCount,
+    totalLoc: 0,
+    klocCaptured: null,
+    medianPrSize: null,
+    scanned: capturedPrCount,
+    prsWithoutKnownSize: capturedPrCount,
   };
-}
-
-/**
- * Prior-window equivalents for the period-over-period deltas.
- *
- * The KLOC delta is computed in RAW LINES (see the `kloc` KPI) — the ratio is
- * unit-invariant, but comparing in lines keeps a small-but-real prior (e.g. 900
- * lines / 0.9 KLOC) above the near-zero-count floor.
- *
- * FEA-2868 (thread 1): the prior median stays NULLABLE. When the prior window
- * has no enriched PRs, `median()` returns null and it must NOT be coerced to 0
- * — a 0 baseline would surface a bogus +100% PR-size delta against a baseline
- * that does not exist.
- */
-export function priorPrLocTotals(rows: readonly PriorPrLocRow[]): {
-  totalLoc: number;
-  medianPrSize: number | null;
-} {
-  return { totalLoc: sumLoc(rows), medianPrSize: enrichedMedian(rows) };
-}
-
-/**
- * FEA-2944: accumulate raw thousands-of-lines per day, then round each day to
- * one decimal at emit — matching both the KLOC KPI and the cloud KLOC trend
- * (`bucketKlocByDay`, which rounds `round(dayTotal, 1)`). Emitting the
- * unrounded `loc / 1000` was a THIRD rounding that disagreed with the desktop
- * KPI's own headline number.
- */
-export function klocByDay(
-  rows: readonly CapturedPrLocRow[]
-): Map<string, number> {
-  const byDay = new Map<string, number>();
-  for (const row of rows) {
-    byDay.set(row.day, (byDay.get(row.day) ?? 0) + num(row.loc) / 1000);
-  }
-  for (const [day, dayKloc] of byDay) {
-    byDay.set(day, roundKloc(dayKloc));
-  }
-  return byDay;
-}
-
-function sumLoc(rows: readonly { loc: bigint | number }[]): number {
-  return rows
-    .map((row) => num(row.loc))
-    .filter((value) => value >= 0)
-    .reduce((sum, value) => sum + value, 0);
-}
-
-// FEA-2923: when NO captured PR in the window is LOC-enriched (all sizes
-// unknown) there is nothing to take a median over — `null` so the KPI renders
-// `—` instead of a misleading 0. `null` (not a non-finite number) keeps the
-// value JSON-serializable and matches the `KpiStat.value: number | null`
-// contract.
-function enrichedMedian(
-  rows: readonly { loc: bigint | number; enriched: bigint | number }[]
-): number | null {
-  const enriched = rows
-    .filter((row) => num(row.enriched) === 1)
-    .map((row) => num(row.loc))
-    .filter((value) => value >= 0);
-  return enriched.length > 0 ? (median(enriched) ?? 0) : null;
 }
 
 /** The Delivery KPIs derived wholly from {@link CapturedPrLocTotals}. */
 export type CapturedLocKpis = {
   kloc: KpiStat;
+  loc: KpiStat;
   prsWithoutLoc: KpiStat;
   prsScanned: KpiStat;
   prSize: KpiStat;
@@ -221,7 +87,8 @@ export type CapturedLocKpis = {
  * a lower bound. Quoting the OR-population instead would print "sized 1 of 1"
  * over a tile showing half a PR's real size — asserting complete coverage of an
  * incomplete figure, which is what `prsWithoutKnownSize`'s contract forbids.
- * Cloud has no such row: `mergedPrLoc` nulls a half-projected row outright.
+ * Cloud has no such row: `mergedPullRequestLoc` nulls a half-projected row
+ * outright.
  *
  * The keys are `capturedPrs*`, NOT cloud's `mergedPrs*`, even though the pair
  * plays the same role on both surfaces. A `merged`-prefixed insights key is a
@@ -236,6 +103,7 @@ export type CapturedLocKpis = {
  */
 export function capturedLocKpis(
   {
+    totalLoc,
     klocCaptured,
     medianPrSize,
     scanned,
@@ -257,6 +125,21 @@ export function capturedLocKpis(
       klocCaptured,
       KpiFormat.Number,
       coverageSub("thousands of lines changed in captured PRs"),
+      deltas.klocDeltaPct
+    ),
+    // ISS-8184: the raw-line twin of `kloc`, backing the same tile under the LOC
+    // terminology flag. `totalLoc` rather than `klocCaptured * 1000` — the
+    // latter is rounded to one decimal, which would round-trip a line count to
+    // the nearest hundred — but it inherits `klocCaptured`'s null, so an
+    // unsizable window still dashes on both vocabularies rather than one of them
+    // asserting a measured 0. The delta is a PERCENTAGE and so scale-invariant,
+    // which is why both tiles can report the same one.
+    loc: comparableKpi(
+      "loc",
+      CAPTURED_LOC_LABEL,
+      klocCaptured === null ? null : totalLoc,
+      KpiFormat.Number,
+      coverageSub("lines changed in captured PRs"),
       deltas.klocDeltaPct
     ),
     // ISS-5412: the KLOC tile's coverage exclusion — captured PRs the local
@@ -289,9 +172,17 @@ export function capturedLocKpis(
       "captured PRs the size coverage is taken of",
       true
     ),
+    // ISS-7868: the LABEL names the population, the way `kloc` above sends
+    // "KLOC captured" against cloud's "KLOC merged". Both producers used to emit
+    // the byte-identical "Median PR size" for two different medians — this one
+    // over CAPTURED PRs, cloud's (`apps/api/app/insights/merged-pr-loc.ts`) over
+    // MERGED ones — and the desktop swaps producers on auth state, so the same
+    // card silently changed what it measured when a user signed in. The only
+    // disclosure was this `sub`, which lives behind the info tooltip; a figure a
+    // reader has to hover to interpret is one they will read wrong.
     prSize: comparableKpi(
       "pr-size",
-      "Median PR size",
+      "Median captured PR size",
       medianPrSize,
       KpiFormat.Number,
       coverageSub("median lines changed per captured PR"),

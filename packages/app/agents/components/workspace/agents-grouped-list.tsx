@@ -7,18 +7,23 @@
  *
  * Renders:
  *   (1) Type quick-filter tab bar (`AgentsTypeTabStrip`, extracted by ISS-4803):
- *       All + one tab per AgentComponentKind in SCOPED_CORE_KINDS. FEA-4019
+ *       All + one tab per AgentComponentKind in AGENTS_TYPE_TAB_CORE_KINDS
+ *       (`agents/lib/agents-type-tab-vocabulary.ts`). FEA-4019
  *       graduated Tools / MCPs / Hooks to first-class top-level tabs
  *       (unconditionally, on BOTH web and desktop), so the strip is now
  *       Agents / Commands / Skills / Plugins / MCPs / Tools / Hooks. Workflow,
  *       Config, and Orchestration have no dedicated tab and stay reachable via
- *       "All" (see SCOPED_OUT_KINDS at the bottom of this file).
+ *       "All" (see `agents/lib/agents-type-tab-vocabulary.ts`).
  *   (2) Toolbar row: FilterPopover (via agentComponentFilterFacetGroups) +
  *       AgentsViewMenu (group-by / show-hide columns / reset).
- *   (3) AgentsTable: data from useAgentComponents() piped through
- *       sortAgentComponentRows → groupAgentComponentRows.
+ *   (3) AgentsTable: the current page from `useAgentsInventoryView()`, grouped
+ *       for display by `groupAgentComponentRows`.
  *
- * Filter state: useAgentComponentsFilterState
+ * Data:         useAgentsInventoryView — ISS-6822 put BOTH inventory read shapes
+ *               behind one hook: the legacy full-population reads reduced here,
+ *               and the bounded page-data read where the producer reduces. This
+ *               component renders the same five results either way.
+ * Filter state: useAgentsInventoryView (over useAgentComponentsFilterState)
  * View state:   useAgentComponentsViewState(persistKey)
  * Navigation:   getComponentHref prop — callers supply the href factory; no
  *               surface route is hardcoded in this component.
@@ -36,290 +41,65 @@ import {
   type AgentComponentSortDir,
   AgentComponentSortKey,
   AgentMetricMode,
-  Harness,
 } from "@repo/api/src/types/agent-component";
-import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
-import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
+import type { AgentComponentFilters } from "@repo/api/src/utils/agent-component-reduce";
+import { DEFAULT_AGENT_COMPONENT_FILTERS } from "@repo/api/src/utils/agent-component-reduce";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
-import { formatLocPerDollar } from "@repo/app/shared/lib/format-utils";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { FilterPopover } from "@repo/design-system/components/ui/filter-popover";
 import { Input } from "@repo/design-system/components/ui/input";
-import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
-import { TablePagination } from "@repo/design-system/components/ui/table-pagination";
-import { LayersIcon, SearchIcon } from "lucide-react";
+import { TablePagination } from "@repo/design-system/components/ui/table-pagination-v2";
+import { SearchIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { DateRangeFilter } from "../../../shared/components/date-range-filter";
-import {
-  SummaryCardRow,
-  summaryCardClass,
-} from "../../../shared/components/summary-card-row";
 import { useTabParam } from "../../../shared/hooks/use-tab-param";
-import { NOOP_TABLE_FILTERS_CONTROLLER } from "../../../shared/lib/facet-filter";
 import {
+  buildFacetOnlyFiltersViewModel,
+  NOOP_TABLE_FILTERS_CONTROLLER,
+} from "../../../shared/lib/facet-filter";
+import {
+  AGENTS_BOUNDED_PAGE_DATA_FEATURE_FLAG_KEY,
   AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY,
   AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY,
+  AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY,
   AGENTS_TYPE_TAB_OVERFLOW_FEATURE_FLAG_KEY,
 } from "../../../shared/lib/feature-flags";
 import { useAgentComponentsDataSource } from "../../data-source/provider";
-import { useAgentComponents } from "../../hooks/use-agent-components";
-import {
-  type AgentComponentFilters,
-  DEFAULT_AGENT_COMPONENT_FILTERS,
-  filterAgentComponentRows,
-  normalizedSearch,
-  useAgentComponentsFilterState,
-} from "../../hooks/use-agent-components-filter-state";
 import { useAgentComponentsViewState } from "../../hooks/use-agent-components-view-state";
+import { useAgentsInventoryView } from "../../hooks/use-agents-inventory-view";
+import { groupAgentComponentRows } from "../../lib/agent-component-sort-group";
+import { agentsColumnSortKey } from "../../lib/agents-column-sort-keys";
 import {
-  groupAgentComponentRows,
-  sortAgentComponentRows,
-} from "../../lib/agent-component-sort-group";
+  type AgentsTypeTabValue,
+  ALL_TYPES,
+  agentsWindowNoun,
+  emptyStateMessage,
+  hasActiveAgentsFacetOrSearch,
+  isHonestAgentsPluginsEmpty,
+  pluginHarnessScope,
+} from "../../lib/agents-empty-state-copy";
 import {
-  computeSummaryAggregatePair,
-  invocationsDerivation,
-} from "../../lib/agents-summary-aggregate";
-import {
-  AGENT_INVENTORY_FETCH_LIMIT,
   AGENTS_PAGE_SIZE,
   AGENTS_TIME_RANGE_DEFAULT,
   AGENTS_TIME_RANGE_LABELS,
   AGENTS_TIME_RANGE_SHORT_LABELS,
   AGENTS_TIME_RANGES,
-  AgentsTimeRange,
+  type AgentsTimeRange,
   getAgentsPrecedingRangeIso,
   getAgentsRangeStartIso,
 } from "../../lib/agents-timeframe";
 import {
-  HARNESS_META,
-  KIND_ORDER,
-  kindMeta,
-  NUMBER_FORMAT,
-} from "../../lib/component-meta";
+  AGENTS_TYPE_TAB_OPTIONS,
+  AGENTS_TYPE_TAB_VALUES,
+} from "../../lib/agents-type-tab-vocabulary";
+import { kindMeta } from "../../lib/component-meta";
 import { agentComponentFilterFacetGroups } from "./agent-component-filter-adapter";
+import { AgentsSummaryCards } from "./agents-summary-cards";
 import { AgentsTable, type AgentsTableGroup } from "./agents-table";
-import {
-  type AgentsTypeTabOption,
-  AgentsTypeTabStrip,
-} from "./agents-type-tab-strip";
+import { AgentsTypeTabStrip } from "./agents-type-tab-strip";
 import { AgentsViewMenu } from "./agents-view-menu";
 
-const ALL_TYPES = "all" as const;
-
-// FEA-3178: strips the leading "Last " from a window label ("Last 30 days" →
-// "30 days") when building the delta-chip caption. Top-level per
-// lint/performance/useTopLevelRegex.
-const LEADING_LAST_RE = /^Last\s+/i;
-
-// ---------------------------------------------------------------------------
-// Summary cards — same logic as the prototype AgentsSummaryCards but now
-// fully typed against production AgentComponent rows.
-//
-// FEA-3178: each card shows a period-over-period delta (e.g. "+12% vs prev 30
-// days") comparing the current time-scoped aggregate to the preceding
-// equivalent window. The previous-window population is fetched by a second
-// `useAgentComponents` query in AgentsGroupedList (startDate=prevStart,
-// endDate=prevEnd) and passed in here. No delta is shown for the "All" window
-// (no finite prior period) or when a prior aggregate is empty.
-// ---------------------------------------------------------------------------
-
-// ISS-5534: the `SummaryAggregate` shape and its reduction now live in
-// `../../lib/agents-summary-aggregate`, which also owns the plugin-rollup
-// de-duplication of the Invocations total (a plugin's invocations ARE its
-// children's, and on the All tab both are rows). Extracted so the aggregation
-// has a component-free test target and this grandfathered file shrinks.
-
-// Whole-percent rounding factor for the period-over-period delta chip (the
-// MetricCard chip renders `{delta}%` as an integer with a leading `+`).
-const PERCENT = 100;
-
-/**
- * FEA-3178: signed integer percentage change from `previous` → `current`,
- * rounded to a whole percent. Returns `undefined` — meaning "render no delta
- * chip" — whenever a percentage would be meaningless or misleading:
- *
- *  - `previous` is undefined (the "All" window has no prior period, or the
- *    preceding query has not resolved), or
- *  - the prior aggregate is 0 (division by zero — a jump from nothing to
- *    something is not a defensible "N%").
- *
- * This never fabricates a delta: an absent or empty baseline yields no chip,
- * never a placeholder number.
- */
-function percentDelta(
-  current: number,
-  previous: number | undefined
-): number | undefined {
-  if (previous === undefined || previous === 0) {
-    return undefined;
-  }
-  return Math.round(((current - previous) / previous) * PERCENT);
-}
-
-type SummaryCardsProps = {
-  /**
-   * ISS-5534: whether the Invocations total de-duplicates plugin rollups against
-   * the child rows they were rolled up from. Resolved once by the list (PostHog
-   * on web, Labs on desktop) and threaded in, so the CURRENT and PRECEDING
-   * windows are always aggregated under the same rule — a delta computed from a
-   * deduped current against a flat baseline would be meaningless.
-   */
-  dedupePluginRollups: boolean;
-  /**
-   * The FULL windowed, filtered population across ALL pages — never the current
-   * page slice (`pagedRows`). The headline stats (Components / Invocations /
-   * LOC-per-$ / Owners) must aggregate over the entire filtered set so they do
-   * not change as the user pages through the list. Passing `pagedRows` here
-   * would silently under-count everything on the visible page.
-   */
-  allFilteredComponents: readonly AgentComponent[];
-  /**
-   * FEA-3178: the PRECEDING equivalent window's population (same duration,
-   * shifted back one period), run through the SAME facet filters as
-   * `allFilteredComponents` so the delta compares like-for-like. `undefined`
-   * when there is no meaningful prior period — the "All" window, a data source
-   * that does not honor the date window (e.g. the desktop local source; showing
-   * a fabricated 0% would be misleading), or the preceding query has not
-   * resolved — in which cases no delta chips render.
-   */
-  previousComponents?: readonly AgentComponent[];
-  /**
-   * Human caption for the delta chip, e.g. "vs prev 30 days". Only used when a
-   * delta actually renders.
-   */
-  deltaLabel?: string;
-};
-
-function AgentsSummaryCards({
-  allFilteredComponents,
-  previousComponents,
-  deltaLabel,
-  dedupePluginRollups,
-}: SummaryCardsProps) {
-  // ISS-5842 (ISS-4779 closed-by-default): opt in to the unified delta pill
-  // only when this surface's own gate is on — PostHog on web, Labs on desktop.
-  const deltaTreatment = useMetricDeltaTreatment();
-  const { current, previous } = computeSummaryAggregatePair(
-    allFilteredComponents,
-    previousComponents,
-    dedupePluginRollups
-  );
-
-  const cards = [
-    {
-      key: "components",
-      label: "Components",
-      value: NUMBER_FORMAT.format(current.components),
-      delta: percentDelta(current.components, previous?.components),
-      detail: "matched by the current filters",
-      info: {
-        what: "Agents, commands, and skills in the current view.",
-        how: "Count of components in the active filter set.",
-      },
-    },
-    {
-      key: "invocations",
-      label: "Invocations",
-      value: NUMBER_FORMAT.format(current.invocations),
-      delta: percentDelta(current.invocations, previous?.invocations),
-      detail: "across components in view",
-      info: {
-        what: "Total tool calls attributed to these components.",
-        // ISS-6182: read the explainer from the same gate that picks the
-        // reduction, so the card can never describe a derivation it no longer
-        // runs.
-        how: invocationsDerivation(dedupePluginRollups).how,
-      },
-    },
-    // FEA-4052: the LOC/$ card renders ONLY when the population has at least
-    // one verifiable-kind component (currently only `subagent`; skill/command
-    // are session-level, not component-level, so they are excluded — wongk, PR
-    // #3720). A view built solely of non-verifiable kinds (skill/command/plugin/
-    // mcp/tool/…) hides the card in lockstep with the hidden column, so the
-    // summary never shows a LOC/$ card over a table with no LOC/$ column (or a
-    // fabricated `0.0`).
-    ...(current.hasVerifiableLocPerDollar
-      ? [
-          {
-            key: "loc-per-dollar",
-            label: LOC_PER_DOLLAR_LABEL,
-            value: formatLocPerDollar(current.avgLocPerDollar),
-            delta:
-              current.avgLocPerDollar === null
-                ? undefined
-                : percentDelta(
-                    current.avgLocPerDollar,
-                    previous?.avgLocPerDollar ?? undefined
-                  ),
-            detail: `avg across ${NUMBER_FORMAT.format(current.locPerDollarSampleSize)} ${
-              current.locPerDollarSampleSize === 1 ? "component" : "components"
-            }`,
-            info: {
-              // ISS-5366: "changed", not "merged". This averages the same
-              // non-merge-scoped `locPerDollar` the Metric column renders (see
-              // POLISHED_METRIC_HEADER in agents-table.tsx); only the Sessions
-              // card's `mergedLocPerDollar` earns the word "merged".
-              what: "Average lines changed per dollar across these components. Higher is better.",
-              how: "A session-level metric, so read it as directional. One component doesn't cause it.",
-            },
-          },
-        ]
-      : []),
-    {
-      key: "collaborators",
-      label: AGENT_COMPONENT_AUTHORS_LABEL,
-      value: NUMBER_FORMAT.format(current.collaborators),
-      delta: percentDelta(current.collaborators, previous?.collaborators),
-      detail: "authoring components in view",
-      info: {
-        what: "Distinct authors of components in the current view.",
-        how: "Unique discoverer or editor across every visible component's version lineage.",
-      },
-    },
-  ];
-
-  // FEA-3985: reuse the shared SummaryCardRow with `wrapBelow` — the same strip
-  // and `md` breakpoint the Sessions list page already ships — so the four cards
-  // wrap into a two-column grid below `md` instead of clipping past the right
-  // edge, and keep the fixed-min-width, non-shrinking row at `md+`.
-  return (
-    <SummaryCardRow wrapBelow>
-      {cards.map((card) => {
-        const commonProps = {
-          className: summaryCardClass(true),
-          detail: card.detail,
-          info: card.info,
-          label: card.label,
-          value: card.value,
-        };
-        // `delta`/`deltaPolarity` are a paired union on MetricCard (wongk review
-        // on #4148): these are all activity counts (sessions, PRs, components,
-        // authors) where a rise is the product working, so they declare
-        // higher-is-better explicitly alongside a real number; an absent delta
-        // renders no chip.
-        if (card.delta === undefined) {
-          return <MetricCard key={card.key} {...commonProps} />;
-        }
-        return (
-          <MetricCard
-            key={card.key}
-            {...commonProps}
-            delta={card.delta}
-            deltaLabel={deltaLabel}
-            deltaPolarity={MetricPolarity.HigherIsBetter}
-            deltaTreatment={deltaTreatment}
-          />
-        );
-      })}
-    </SummaryCardRow>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Props
-// ---------------------------------------------------------------------------
 
 export type AgentsGroupedListProps = {
   /**
@@ -350,10 +130,8 @@ export type AgentsGroupedListProps = {
   pluginsFooter?: ReactNode;
 };
 
-// ---------------------------------------------------------------------------
 // renderContent — helper to avoid nested ternaries in the render tree
 // (noNestedTernary lint rule).
-// ---------------------------------------------------------------------------
 
 type RenderContentProps = {
   isLoading: boolean;
@@ -410,8 +188,14 @@ function renderContent({
   // tell every org "no agents" during an outage. Surface a real error instead
   // (mirrors TokenTrendChart's `text-destructive` failure copy).
   if (isError) {
+    // ISS-9398 gave this paragraph a live region so an outage is ANNOUNCED, and
+    // backported it here: a screen-reader user's experience of a failed read
+    // must not depend on which side of `agent-ops-complete-surface` they are on.
     return (
-      <p className="px-4 py-12 text-center text-destructive text-sm">
+      <p
+        className="px-4 py-12 text-center text-destructive text-sm"
+        role="alert"
+      >
         Couldn't load components. Check your connection and try again.
       </p>
     );
@@ -446,9 +230,7 @@ function renderContent({
   );
 }
 
-// ---------------------------------------------------------------------------
 // AgentsGroupedList
-// ---------------------------------------------------------------------------
 
 /**
  * Production consolidated grouped-list component (T-3.4).
@@ -462,17 +244,22 @@ export function AgentsGroupedList({
   getComponentHref,
   pluginsFooter,
 }: AgentsGroupedListProps) {
-  // ── Data-source window support (FEA-3178) ──────────────────────────────────
-  // The period-over-period delta is only meaningful when the active data source
-  // actually HONORS the `startDate`/`endDate` window. The HTTP/web source
-  // ("agent-components:http") applies the window server-side, so the preceding
-  // query returns a genuinely different population. The desktop LOCAL source
-  // ("agent-components:local") ignores the window, so the preceding query would
-  // return the SAME rows as the current one and every delta would compute a
-  // FABRICATED 0%. Gate the delta on the windowed source: on any non-HTTP source
-  // we render NO delta rather than a fake baseline.
+  // ── Data-source window support (FEA-3178, ISS-6888) ────────────────────────
+  // Both window-relative reads — the preceding-period baseline behind the delta
+  // chip, and the unwindowed facet universe that keeps an idle owner listed as a
+  // zero-count option — are only meaningful from a source that actually APPLIES
+  // the `startDate`/`endDate` bounds. From one that ignores them the preceding
+  // read returns the SAME rows as the current one and every delta computes a
+  // FABRICATED 0%, so `false` suppresses both and renders no delta at all.
+  //
+  // ISS-6888: the source DECLARES that, it is not inferred from its scope string.
+  // This was `scope === "agent-components:http"`, written by FEA-3178 when the
+  // desktop local source genuinely ignored the window — and left untouched when
+  // FEA-3196 taught it to apply the bounds end to end, so desktop kept losing
+  // both reads long after the reason had gone. A string comparison cannot notice
+  // that; a required field on the port makes the next source answer for itself.
   const dataSource = useAgentComponentsDataSource();
-  const supportsDateWindow = dataSource.scope === "agent-components:http";
+  const supportsDateWindow = dataSource.honorsDateWindow;
 
   // ── Time window (All / 30 / 60 / 90 day) ───────────────────────────────────
   // FEA-3160: the window is enforced SERVER-SIDE. The old client filtered the
@@ -505,73 +292,10 @@ export function AgentsGroupedList({
     };
   }, [timeRange, supportsDateWindow]);
 
-  // ── Data ──────────────────────────────────────────────────────────────────
-  // Fetch the whole (server-windowed) org inventory in one request (bounded by
-  // the server's MAX_ORG_INVENTORY_ROWS cap) so filtering, grouping, the summary
-  // cards, and pagination are all computed over the FULL windowed set
-  // client-side. Without the explicit limit the API defaults to 50, which
-  // silently truncated the list and made the summary cards count only the first
-  // 50 rows. `startDate` is part of the query key, so changing the window
-  // re-queries and React Query serves a fresh windowed page.
-  const { data, isLoading, isError } = useAgentComponents({
-    limit: AGENT_INVENTORY_FETCH_LIMIT,
-    startDate,
-  });
-  const allRows: AgentComponent[] = data?.items ?? [];
-
-  // ── Facet value universe (FEA-3202) ────────────────────────────────────────
-  // The Owner/Source filter-popover options are supposed to stay visible as
-  // zero-count entries as the window narrows. FEA-3160 made the window
-  // server-enforced, so the main `allRows` query above now returns the WINDOWED
-  // subset (the service drops usage-trackable components with zero in-window
-  // usage). Feeding that subset to the facet adapter as the "value universe"
-  // makes an owner/source vanish from the dropdown the moment its components
-  // have no recent usage. Fetch a SECOND, unwindowed inventory (no `startDate`)
-  // solely to seed the facet value universe so every owner/source stays listed.
-  //
-  // Only needed on a windowed source (HTTP) with a bounded window selected: the
-  // desktop LOCAL source ignores the window (its `allRows` is already all-time),
-  // and the "All" window sends no `startDate` (the main query is already
-  // unwindowed), so in both cases `allRows` IS the universe and this extra query
-  // is skipped. While the universe query is in flight (or skipped) we fall back
-  // to `allRows`, which is a superset-safe default (never hides a value that the
-  // windowed set contains).
-  const facetUniverseEnabled = supportsDateWindow && startDate !== undefined;
-  const { data: facetUniverseData } = useAgentComponents(
-    { limit: AGENT_INVENTORY_FETCH_LIMIT },
-    { enabled: facetUniverseEnabled }
-  );
-  const facetUniverseRows: AgentComponent[] =
-    facetUniverseData?.items ?? allRows;
-
-  // FEA-3178: second query for the PRECEDING equivalent window (same duration,
-  // shifted back one period) — bounded above by `endDate=prevEnd` so it does
-  // NOT overlap the current window. Drives the period-over-period delta chips on
-  // the summary cards. Disabled for the "All" range (no finite prior period),
-  // where `precedingRange` is undefined and no baseline is fetched, so the cards
-  // render no delta. `startDate`/`endDate` are part of the query key.
-  const { data: previousData } = useAgentComponents(
-    {
-      limit: AGENT_INVENTORY_FETCH_LIMIT,
-      startDate: precedingRange?.prevStart,
-      endDate: precedingRange?.prevEnd,
-    },
-    { enabled: precedingRange !== undefined }
-  );
-  // Raw preceding-window population. It is run through the SAME facet-filter
-  // pipeline as the current rows below (see `previousFilteredRows`) so the delta
-  // compares like-for-like (facet-filtered current vs facet-filtered previous),
-  // not facet-filtered-current vs unfiltered-previous.
-  const previousRows: AgentComponent[] | undefined = precedingRange
-    ? (previousData?.items ?? undefined)
-    : undefined;
-
   // Human caption for the delta chip, derived from the active window's label
   // (e.g. "Last 30 days" → "vs prev 30 days").
   const deltaLabel = precedingRange
-    ? `vs prev ${AGENTS_TIME_RANGE_LABELS[timeRange]
-        .replace(LEADING_LAST_RE, "")
-        .toLowerCase()}`
+    ? `vs prev ${agentsWindowNoun(timeRange)}`
     : undefined;
 
   // ── View state ────────────────────────────────────────────────────────────
@@ -588,20 +312,8 @@ export function AgentsGroupedList({
     resetColumns,
     setGroupBy,
     setMetricMode,
+    isViewReady,
   } = useAgentComponentsViewState(persistKey);
-
-  // ── Sort → filter → paginate pipeline ──────────────────────────────────────
-  // `allRows` is already windowed by the server, so sort it directly (no
-  // client-side time filter). Sort FIRST, then feed the filter-state hook so its
-  // filter (order-preserving) and its own pagination operate on the already
-  // sorted set. This reuses the hook's page/pagedRows/totalPages/clamp machinery
-  // (the single owner of the "resets to page 0 on filter change" + "clamp a
-  // stale page after the set shrinks" logic) at AGENTS_PAGE_SIZE, instead of
-  // hand-rolling a second parallel pagination system here.
-  const sortedRows = useMemo(
-    () => sortAgentComponentRows(allRows, sortKey, sortDir),
-    [allRows, sortKey, sortDir]
-  );
 
   // ── Type-tab selection (FEA-3557: durable URL permalink) ───────────────────
   // The active type tab lives in the `?kind=` URL param via useTabParam, so
@@ -616,15 +328,11 @@ export function AgentsGroupedList({
   // deep-linked `?kind=` that isn't a visible tab (a scoped-out kind reachable
   // only via "All", or a bogus value) falls back to ALL_TYPES — the default is
   // omitted from the URL for a clean canonical link (useTabParam handles both).
-  const validKindTabs: readonly (AgentComponentKind | typeof ALL_TYPES)[] = [
-    ALL_TYPES,
-    ...SCOPED_CORE_KINDS,
-  ];
   const { activeTab: activeKindTab, setActiveTab: setActiveKindTab } =
-    useTabParam<AgentComponentKind | typeof ALL_TYPES>({
+    useTabParam<AgentsTypeTabValue>({
       defaultTab: ALL_TYPES,
       paramName: "kind",
-      validTabs: validKindTabs,
+      validTabs: AGENTS_TYPE_TAB_VALUES,
     });
 
   // Kinds narrowing derived from the URL tab: empty = All, one entry = that
@@ -672,34 +380,55 @@ export function AgentsGroupedList({
     AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY
   );
 
+  // ISS-6822 (ISS-4779 closed-by-default): whether the inventory is read as ONE
+  // bounded page — page rows, matched total, facet counts, and both window
+  // aggregates — instead of pulling up to three full populations here and
+  // reducing them in the browser. `…Optional` for the same reason as above, and
+  // the honest default there is the read that ships today. A data source with no
+  // `pageData` ignores this entirely and keeps the legacy path (see
+  // `useAgentsInventoryView`), which is what an installed desktop build whose
+  // preload predates the IPC method gets.
+  const boundedPageDataEnabled = useFeatureFlagEnabledOptional(
+    AGENTS_BOUNDED_PAGE_DATA_FEATURE_FLAG_KEY
+  );
+
+  // ISS-5530 / ISS-5527 (ISS-4779 closed-by-default): the two swaps this module
+  // owns in the Agents honesty batch — where the KPI strip sits relative to the
+  // table's scroll plane, and whether a kind that contributed no row to THIS
+  // page still gets a header. `…Optional` for the same reason as above.
+  const surfaceHonestyEnabled = useFeatureFlagEnabledOptional(
+    AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY
+  );
+
+  // ── Inventory read ────────────────────────────────────────────────────────
+  // One hook owns BOTH read shapes and returns the same five things either way:
+  // the page, the matched total, the facet counts, both window aggregates, and
+  // the load/error state. Nothing below this line knows which one ran, which is
+  // exactly why the flag can be flipped without the rendering changing.
   const {
     filters,
-    filteredRows,
-    pagedRows,
+    handleFiltersChange,
     page,
     setPage,
     totalPages,
-    handleFiltersChange,
-  } = useAgentComponentsFilterState(
-    sortedRows,
-    AGENTS_PAGE_SIZE,
+    pageRows,
+    facets,
+    summary,
+    isLoading,
+    isError,
+  } = useAgentsInventoryView({
+    startDate,
+    precedingRange,
+    supportsDateWindow,
+    sortKey,
+    sortDir,
+    pageSize: AGENTS_PAGE_SIZE,
     initialFilters,
-    honestSourceEnabled
-  );
-
-  // FEA-3178: apply the SAME facet filters to the preceding-window population as
-  // the current window (the `filteredRows` the summary cards aggregate). The
-  // delta must compare like-for-like — facet-filtered current vs facet-filtered
-  // previous — otherwise a facet-narrowed current view is compared against the
-  // whole unfiltered prior inventory, producing an apples-to-oranges percentage.
-  // Sorting is irrelevant to the aggregate, so only the facet filter is applied.
-  const previousFilteredRows: AgentComponent[] | undefined = useMemo(
-    () =>
-      previousRows === undefined
-        ? undefined
-        : filterAgentComponentRows(previousRows, filters, honestSourceEnabled),
-    [previousRows, filters, honestSourceEnabled]
-  );
+    honestSourceEnabled,
+    dedupePluginRollups,
+    boundedPageDataEnabled,
+    isViewReady,
+  });
 
   // The hook already resets to page 0 inside handleFiltersChange, so callers do
   // not need their own reset. Time-window changes are NOT filter changes (the
@@ -732,13 +461,13 @@ export function AgentsGroupedList({
   };
 
   // ── Group the current page ─────────────────────────────────────────────────
-  // pagedRows is the current AGENTS_PAGE_SIZE slice of the sorted+filtered set;
+  // `pageRows` is the current AGENTS_PAGE_SIZE slice of the sorted+filtered set;
   // group WITHIN the page so the same page-size cap applies whether or not
-  // grouping is on. The summary cards below intentionally read the FULL filtered
-  // set (filteredRows), not the page slice.
+  // grouping is on. The summary cards read the aggregate over the FULL filtered
+  // set, never this slice.
   const groups = useMemo(
-    () => groupAgentComponentRows(pagedRows, groupBy),
-    [pagedRows, groupBy]
+    () => groupAgentComponentRows(pageRows, groupBy),
+    [pageRows, groupBy]
   );
 
   // Derive groups/flat-items for AgentsTable.
@@ -747,10 +476,15 @@ export function AgentsGroupedList({
     ? groups
         .filter(
           (g) =>
-            // Always include labeled groups even when empty (show empty-state
-            // row rather than omitting); for the None case (empty label) we
-            // skip empty groups.
-            g.label !== "" || g.items.length > 0
+            // ISS-5527: a labeled group is kept only when it has rows. Grouping
+            // runs over the PAGE, so a kind with no row on this page has no
+            // header to earn — and the header it used to get read as "this org
+            // has no Workflows" when it meant "none landed in these 50". This is
+            // the answer the `Harness` branch of `groupAgentComponentRows`
+            // already reached for the same reason. Flag OFF keeps every labeled
+            // group, empty or not. The None case (empty label) drops empties
+            // either way.
+            g.items.length > 0 || (!surfaceHonestyEnabled && g.label !== "")
         )
         .map((g) => ({
           key: g.label || "ungrouped",
@@ -760,7 +494,7 @@ export function AgentsGroupedList({
     : undefined;
   const flatItems: AgentComponent[] = isGrouped
     ? []
-    : (groups[0]?.items ?? pagedRows);
+    : (groups[0]?.items ?? pageRows);
 
   const isEmpty = isGrouped
     ? (tableGroups?.every((g) => g.items.length === 0) ?? true)
@@ -770,11 +504,7 @@ export function AgentsGroupedList({
   // set" for messaging purposes — it is the tab they are on — so only the facet
   // (collaborators/source/harness) and search inputs flip to the generic filter
   // copy.
-  const hasActiveFacetOrSearch =
-    filters.collaborators.length > 0 ||
-    filters.sources.length > 0 ||
-    filters.harnesses.length > 0 ||
-    normalizedSearch(filters) !== "";
+  const hasActiveFacetOrSearch = hasActiveAgentsFacetOrSearch(filters);
   // FEA-4086: the Plugins tab is an installed-plugins inventory, so an empty
   // Plugins tab means "nothing is installed" — an honest, install-oriented copy
   // rather than the vaguer "No plugins yet." shared with the observed kinds, or
@@ -791,12 +521,12 @@ export function AgentsGroupedList({
   // plugins USED in this window", not "none installed" — claiming the latter
   // would lie about the inventory. Windowed empties therefore fall through to
   // the usage-worded copy inside `emptyStateMessage`.
-  const isAllTimeWindow = timeRange === AgentsTimeRange.All;
   const harnessScope = pluginHarnessScope(activeKindTab, filters);
-  const isHonestPluginsEmpty =
-    activeKindTab === AgentComponentKind.Plugin &&
-    isAllTimeWindow &&
-    (!hasActiveFacetOrSearch || harnessScope !== undefined);
+  const isHonestPluginsEmpty = isHonestAgentsPluginsEmpty(
+    activeKindTab,
+    timeRange,
+    filters
+  );
   const emptyMessage = emptyStateMessage(
     activeKindTab,
     timeRange,
@@ -821,20 +551,7 @@ export function AgentsGroupedList({
 
   // ── Sort handler forwarded from AgentsTable ───────────────────────────────
   const handleSort = (col: string, dir: typeof sortDir) => {
-    // Map column id → AgentComponentSortKey. Unmapped columns fall back to Name.
-    // FEA-4098 (Slice 3): no `owner`/`collaborators` entry — the Collaborators
-    // column (authors people-set) is unsortable, so it never reaches here.
-    const COL_TO_SORT_KEY: Record<string, AgentComponentSortKey> = {
-      name: AgentComponentSortKey.Name,
-      type: AgentComponentSortKey.Type,
-      metric: AgentComponentSortKey.Metric,
-      source: AgentComponentSortKey.Source,
-      harness: AgentComponentSortKey.Harness,
-      invocations: AgentComponentSortKey.Invocations,
-      sessions: AgentComponentSortKey.Sessions,
-    };
-    const key = COL_TO_SORT_KEY[col] ?? AgentComponentSortKey.Name;
-    setSort(key, dir);
+    setSort(agentsColumnSortKey(col), dir);
   };
 
   // ── Reset ─────────────────────────────────────────────────────────────────
@@ -847,6 +564,20 @@ export function AgentsGroupedList({
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
+  // ISS-5517: the strip is handed the read's own load state so it can tell an
+  // unfetched population from a counted-and-empty one. It decides what to render
+  // from that alone; this file only owns WHERE it sits.
+  const summaryCards = (
+    <AgentsSummaryCards
+      current={summary.current}
+      dedupePluginRollups={dedupePluginRollups}
+      deltaLabel={deltaLabel}
+      isError={isError}
+      isLoading={isLoading}
+      previous={summary.previous}
+    />
+  );
+
   return (
     <>
       {/* Type quick-filter tab bar — its OWN row above the controls. FEA-4019
@@ -858,7 +589,7 @@ export function AgentsGroupedList({
           overflow menu the clipped tabs previously had no way out of. */}
       <AgentsTypeTabStrip
         onValueChange={handleKindTabChange}
-        options={TYPE_TAB_OPTIONS}
+        options={AGENTS_TYPE_TAB_OPTIONS}
         overflowMenuEnabled={typeTabOverflowEnabled}
         value={activeKindTab}
       />
@@ -868,9 +599,11 @@ export function AgentsGroupedList({
         {/* Inventory search (FEA-3054). The filter itself already exists in
             useAgentComponentsFilterState (filterAgentComponentRows matches
             filters.search); this control was the only missing piece. Bound
-            directly to filters.search — filtering is in-memory over the fetched
-            inventory, so no debounce is needed; clearing the box restores the
-            (type-tab-scoped) list. Shared component → web AND desktop. */}
+            directly to filters.search, which stays live so the box never lags
+            the keystroke; the bounded read settles the term downstream in
+            useAgentsInventoryView, where a keystroke costs a request rather than
+            an in-memory pass. Clearing the box restores the (type-tab-scoped)
+            list. Shared component → web AND desktop. */}
         <div className="relative w-full min-w-[180px] sm:w-56">
           <SearchIcon
             className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
@@ -902,26 +635,19 @@ export function AgentsGroupedList({
         {/* Filter menu */}
         <FilterPopover
           controller={NOOP_TABLE_FILTERS_CONTROLLER}
-          viewModel={{
-            teamMembers: [],
-            statusOptions: [],
-            priorityOptions: [],
-            hideQuickToggles: true,
-            facetGroups: agentComponentFilterFacetGroups(
-              // filteredRows drives per-option counts; facetUniverseRows (the
-              // UNWINDOWED org inventory, NOT the server time-scoped subset —
-              // FEA-3202) is the value universe so zero-count Owner/Source
-              // options stay visible as the time window narrows.
-              filteredRows,
-              facetUniverseRows,
+          viewModel={buildFacetOnlyFiltersViewModel(
+            // `facets` carries per-option counts over the filtered set with the
+            // UNWINDOWED org inventory as the value universe (FEA-3202), so
+            // zero-count Owner/Source options stay visible as the time window
+            // narrows — and it was counted under the SAME source projection the
+            // membership predicate uses (ISS-5009), because one reduction
+            // produced both.
+            agentComponentFilterFacetGroups(
+              facets,
               filters,
-              handleFiltersChange,
-              // ISS-5009: the same flag value the membership predicate above was
-              // built with, so an option in this menu always matches the rows it
-              // claims to cover.
-              honestSourceEnabled
-            ),
-          }}
+              handleFiltersChange
+            )
+          )}
         />
 
         {/* View menu: Group-by, Show/Hide columns, Reset */}
@@ -934,17 +660,25 @@ export function AgentsGroupedList({
         />
       </div>
 
+      {/* ISS-5530: the KPI strip summarizes the whole filtered population, so it
+          is not part of the table's scroll plane. Inside the `overflow-auto`
+          wrapper below, scrolling the table right to reach the trailing columns
+          dragged the cards sideways out of view with it. Pinned here it stays
+          put while the table scrolls under it. Flag OFF keeps it in the scroll
+          area exactly as it ships today. */}
+      {surfaceHonestyEnabled ? (
+        <div className="flex shrink-0 flex-col gap-4 px-4 pt-3 pb-4">
+          {summaryCards}
+        </div>
+      ) : null}
+
       {/* Scrollable content area */}
       <div className="min-h-0 flex-1 overflow-auto">
-        {/* Summary metric cards */}
-        <div className="flex flex-col gap-4 px-4 pt-3 pb-4">
-          <AgentsSummaryCards
-            allFilteredComponents={filteredRows}
-            dedupePluginRollups={dedupePluginRollups}
-            deltaLabel={deltaLabel}
-            previousComponents={previousFilteredRows}
-          />
-        </div>
+        {surfaceHonestyEnabled ? null : (
+          <div className="flex flex-col gap-4 px-4 pt-3 pb-4">
+            {summaryCards}
+          </div>
+        )}
 
         {/* Error / empty state / loading / table */}
         {renderContent({
@@ -965,7 +699,9 @@ export function AgentsGroupedList({
           onColumnOrderChange: setColumnOrder,
         })}
 
-        {/* Client-side pagination — renders nothing when there is one page. */}
+        {/* Client-side pagination. The v2 pager stays mounted on a single
+            page with both boundaries locked, as v2 is designed (ISS-11412);
+            it is left out only while the inventory is loading or failed. */}
         {isLoading || isError ? null : (
           <TablePagination
             className="px-4 py-3"
@@ -982,157 +718,4 @@ export function AgentsGroupedList({
       </div>
     </>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Type-tab scoping
-//
-// Kinds hidden from the top-level type-tab bar — reachable via "All" only,
-// never a promoted top-level type tab:
-//   • Workflow / Config      — no dedicated tab historically.
-//   • Orchestration          — FEA-4019 graduates ONLY Tools, MCPs, and Hooks;
-//     harness/orchestration primitives stay scoped out here (they are also
-//     non-promotable per isPromotableKind, so there is nothing to act on from a
-//     dedicated tab). Keeping it out also keeps `?kind=orchestration` off the
-//     permalink surface on both web and desktop.
-//
-// FEA-4019: Tools/MCPs/Hooks are now first-class tabs unconditionally on BOTH
-// the web and desktop surfaces (this shared component drives both). They were
-// previously gated behind the `agents-show-tools-mcps-hooks` desktop Labs flag
-// (FEA-3152); that gate was removed so web reaches parity with the desktop tab
-// set with no flag/opt-in, and FEA-3995 fully retired the flag (desktop
-// registry entry + wire key deleted). Tool stays observable-only (never
-// promotable); Mcp and Hook ARE promotable (see isPromotableKind), so promoting
-// them to first-class tabs is consistent with the rest of the promote/catalog
-// flow.
-// ---------------------------------------------------------------------------
-const SCOPED_OUT_KINDS: ReadonlySet<AgentComponentKind> =
-  new Set<AgentComponentKind>([
-    AgentComponentKind.Workflow,
-    AgentComponentKind.Config,
-    AgentComponentKind.Orchestration,
-  ]);
-
-/**
- * Core kinds shown as top-level type tabs, in `KIND_ORDER` (so mcp/tool/hook
- * render in their canonical order position: Plugin → Mcp → Tool → Hook).
- */
-const SCOPED_CORE_KINDS: readonly AgentComponentKind[] = KIND_ORDER.filter(
-  (kind) => !SCOPED_OUT_KINDS.has(kind)
-);
-
-/**
- * The type strip's segments, in render order: `All` then one per core kind.
- *
- * Built once at module scope rather than per render because the vocabulary is
- * static — `SCOPED_CORE_KINDS` is itself derived from `KIND_ORDER` — and
- * `AgentsTypeTabStrip` measures and partitions this array on every resize.
- * Labels come from `kindMeta().plural`, the same map the group-by-Type headers
- * and the empty-state copy read, so a tab can never name a kind differently
- * from the rows it filters to.
- */
-const TYPE_TAB_OPTIONS: readonly AgentsTypeTabOption[] = [
-  { value: ALL_TYPES, label: "All", icon: LayersIcon },
-  ...SCOPED_CORE_KINDS.map((kind) => ({
-    value: kind,
-    label: kindMeta(kind).plural,
-    icon: kindMeta(kind).icon,
-  })),
-];
-
-/**
- * Empty-state copy for the current tab + window. FEA-4019 promotes four
- * likely-sparse tabs (Tools/MCPs/Hooks) on web, so a generic "No components
- * match the current filters." lands on most first clicks and wrongly implies a
- * filter the user never set. When the only narrowing is the type tab + time
- * window (no facet/search filter), name the kind and the window instead so the
- * message is honest about why the list is empty; fall back to the filter copy
- * only when a facet or search filter really is active.
- *
- * FEA-4086: the Plugins tab is an installed-plugins inventory (the desktop
- * component-scanner projects installed `agent_packs` into `kind:"plugin"` rows;
- * web surfaces the same rows). An empty Plugins tab means nothing is installed,
- * so — when `isHonestPluginsEmpty` — it gets its own honest copy, "No plugins
- * installed", scoped to the active harness when `harnessScope` is set, rather
- * than the vaguer "No plugins yet." or the misleading filter copy. This string
- * is the `EmptyState` title; the pointer to the Packs page is the caller's
- * `EmptyState` description (`emptyNode`), so it is not baked into this string.
- */
-export function emptyStateMessage(
-  activeKindTab: AgentComponentKind | typeof ALL_TYPES,
-  timeRange: AgentsTimeRange,
-  hasActiveFacetOrSearch: boolean,
-  isHonestPluginsEmpty: boolean,
-  harnessScope?: string
-): string {
-  // FEA-4086: the Plugins-tab "nothing installed" state wins over the generic
-  // filter copy even when a single harness facet is the only narrowing, so it
-  // is checked before hasActiveFacetOrSearch.
-  if (isHonestPluginsEmpty) {
-    const scopeSuffix = harnessScope ? ` for ${harnessScope}` : "";
-    return `No plugins installed${scopeSuffix}.`;
-  }
-  if (hasActiveFacetOrSearch) {
-    return "No components match the current filters.";
-  }
-  const kindNoun =
-    activeKindTab === ALL_TYPES
-      ? "components"
-      : kindMeta(activeKindTab).plural.toLowerCase();
-  if (timeRange === AgentsTimeRange.All) {
-    return `No ${kindNoun} yet.`;
-  }
-  const windowLabel = AGENTS_TIME_RANGE_LABELS[timeRange]
-    .replace(LEADING_LAST_RE, "")
-    .toLowerCase();
-  // FEA-4086: a windowed Plugins tab drops plugins with zero in-window usage
-  // (`dropZeroWindowUsage` on the API), so an empty windowed Plugins tab means
-  // "none USED in this window" — not "none in the last N days" (which reads as
-  // "none installed"). Word it as usage so it never claims the inventory is
-  // empty when the window is what emptied the list.
-  if (activeKindTab === AgentComponentKind.Plugin) {
-    return `No plugins used in the last ${windowLabel}.`;
-  }
-  return `No ${kindNoun} in the last ${windowLabel}.`;
-}
-
-/**
- * FEA-4086: the display label for the harness the empty Plugins-tab copy is
- * scoped to. A harness scope is claimed only when the Plugins tab is active,
- * a SINGLE harness facet is selected, and NO other facet or search narrows the
- * view — so "No plugins installed for Claude." is only shown when the harness
- * really is the sole narrowing. With no harness facet the inventory spans every
- * harness (no scope claimed); with several selected there is no single harness
- * to name; with an owner/source/search filter the view is a filtered one, not
- * an honest install state. Returns undefined in all of those cases.
- *
- * The lone facet must also be a NAMEABLE single harness: `Harness.Both` is the
- * rollup's "used across more than one harness" marker, not one harness, and its
- * label is "Multiple harnesses". "No plugins installed for Multiple harnesses."
- * would misread as a compound scope, so a `Both`-only facet claims no scope and
- * falls back to the unscoped "No plugins installed." copy.
- *
- * Search is read through `normalizedSearch` so a whitespace-only box counts as
- * no search here exactly as it does in `filterAgentComponentRows` — the two
- * boundaries must agree or a single space empties the list while this still
- * claims a scoped install state.
- */
-export function pluginHarnessScope(
-  activeKindTab: AgentComponentKind | typeof ALL_TYPES,
-  filters: AgentComponentFilters
-): string | undefined {
-  const harnessOnly =
-    filters.harnesses.length === 1 &&
-    filters.collaborators.length === 0 &&
-    filters.sources.length === 0 &&
-    normalizedSearch(filters) === "";
-  if (activeKindTab !== AgentComponentKind.Plugin || !harnessOnly) {
-    return undefined;
-  }
-  const only = filters.harnesses[0];
-  // `Both` is not a single nameable harness — skip the scope suffix.
-  if (only === Harness.Both) {
-    return undefined;
-  }
-  return HARNESS_META[only].label;
 }

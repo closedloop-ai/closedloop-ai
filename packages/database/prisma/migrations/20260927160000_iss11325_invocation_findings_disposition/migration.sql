@@ -1,0 +1,27 @@
+-- ISS-11325: WHY a findings row reads what it reads.
+--
+-- Additive: one new nullable column with no default, so no existing row is
+-- rewritten and no existing column changes type.
+--
+-- ISS-10725 persisted the funnel as exactly two counts, which is the right pair
+-- to store and leaves nowhere to say how a value got there. Two honest states
+-- and one dishonest one were therefore indistinguishable to a cloud reader: an
+-- envelope the ISS-11310 fold budget sized exactly and declined, one the #7978
+-- byte gate refused to open, and one that could not be read at all all read as
+-- NULL/NULL; and a funnel `preserveStrongerEvidence` carried forward from an
+-- earlier run read as a current measurement with nothing saying otherwise.
+--
+-- NULL means "this build recorded no disposition" — every row written before
+-- this migration, and every row a peer below the sync protocol version that
+-- carries the field writes. The read resolves it to the `unrecorded` member, so
+-- an unlabelled row is listed rather than dropped or promoted.
+--
+-- TEXT rather than an enum, matching `usage_measurement` and
+-- `attribution_source` on this table: the vocabulary is owned by
+-- `packages/api/src/types/agent-component-findings-disposition.ts`, the read
+-- tolerates a member this build has no descriptor for, and a Postgres enum
+-- would make every new member a migration the desktop cannot ship in step with.
+--
+-- The desktop half is `20260927160000_iss11325_invocation_findings_disposition`
+-- under apps/desktop, added in this same change.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_disposition" TEXT;

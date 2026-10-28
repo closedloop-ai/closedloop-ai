@@ -1,20 +1,17 @@
 /**
- * ISS-4768 (wongk review): the legacy `pullRequests` blob's omit-vs-clear
- * semantics at the sync write boundary.
+ * ISS-4768 (whitlockk review): the legacy `pullRequests` blob's omit-vs-clear
+ * semantics at the sync write boundary, and (ISS-9859) the append a
+ * continuation part of a paginated PR sequence does instead.
  *
- * The desktop producer emits `prs` CONDITIONALLY (`...(prs.length > 0 ? { prs } :
- * {})` in `apps/desktop/src/main/database/session-trace.ts`), so an omitted `prs`
- * means one of two very different things. A pre-link-extraction build never sends
- * it at all and its stored blob must be preserved. A CURRENT build whose PR set
- * recalculated to empty also omits it — and that snapshot's `prRefs: []` deletes
- * the session→PR links, so preserving the blob left the row as stale-blob-plus-
- * zero-links, exactly the shape the read boundary's authoring gate keeps because
- * "no link adjudicates this PR". The retracted phantom would outlive the sync that
- * retracted it.
+ * The desktop emits `prs` only when it is non-empty, so on a whole-set payload
+ * an omitted `prs` means one of two things. A pre-link-extraction build never
+ * sends it, and its stored blob must be preserved. A current build whose PR set
+ * recalculated to empty also omits it, and that payload's `prRefs: []` deletes
+ * the session→PR links, so preserving the blob would leave a stale blob beside
+ * zero links. `prRefs` tells the two apart.
  *
- * `prRefs` is the discriminator: every link-extracting build emits it
- * unconditionally, and the chunked-sync builders replicate the whole session into
- * each chunk, so `prRefs`-without-`prs` can only mean "recalculated to empty".
+ * A continuation part is not a whole-set payload. It carries one page, may carry
+ * `prRefs` with no `prs`, and may only add to the stored blob.
  */
 import type { SyncedAgentSession } from "@repo/api/src/types/agent-session";
 import {
@@ -28,7 +25,7 @@ import {
   toTraceDetailPatch,
 } from "./persist-session-children";
 
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 
 function baseSession(
   extras: Partial<SyncedAgentSession> = {}

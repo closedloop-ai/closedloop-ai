@@ -1,10 +1,13 @@
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
+import type { TimelineStackSegment } from "@repo/app/agents/lib/session-timeline-stacks";
+import { SESSION_TIMELINE_LEGEND_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import { expect, within } from "storybook/test";
 import type { DotColor } from "./activity-dot-rendering";
 import type { ActivityMarker } from "./session-timeline-axis";
 import { SessionTimelineDotRail } from "./session-timeline-dot-rail";
+import { SessionTimelineLegend } from "./session-timeline-legend";
 
 /**
  * The Session Timeline's DOT RAIL in isolation.
@@ -39,9 +42,9 @@ const STAGE_DETAIL_WIDTH_PX = 936;
 const JUMP_TO_DOT_NAME = /^Jump to /;
 
 const meta = {
-  title: "App Core/Agents/Session Timeline Dot Rail",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Dot Rail",
   component: SessionTimelineDotRail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     buckets: stageBuckets(),
@@ -143,6 +146,49 @@ export const DisabledStrip: Story = {
 };
 
 /**
+ * ISS-12117 (ISS-10676): the rail's own palette beside every bar colour the
+ * strip can paint. The legend is gated on
+ * `SESSION_TIMELINE_LEGEND_FEATURE_FLAG_KEY`, opened here, and its Bars group
+ * is fed one segment per `--chart-*` slot (the five a Model-grouped strip
+ * cycles through, a superset of the three token-type colours), so every bar
+ * hue sits next to the three marks it must never be mistaken for.
+ *
+ * What to look for: no mark shares a hue with a bar swatch, and each lane's
+ * shape (square, circle, diamond) is the same in the rail and in the key. Compare with
+ * {@link PaletteKeyDark}; the dark-mode collision ISS-10676 measured did not
+ * exist in light mode, so one theme alone proves nothing.
+ */
+export const PaletteKey: Story = {
+  parameters: {
+    appCore: { enabledFlags: [SESSION_TIMELINE_LEGEND_FEATURE_FLAG_KEY] },
+  },
+  decorators: [
+    (Story) => (
+      <DotRailStage caption="Every bar colour the strip can paint, in the key above the rail's three marks. Steering is a magenta square, commits and PRs a violet circle, failures and limits a crimson diamond: none shares a hue with a bar, and each mark has its own shape, which is what tells them apart when colour cannot.">
+        <Story />
+      </DotRailStage>
+    ),
+  ],
+  render: (args) => (
+    <>
+      <SessionTimelineLegend
+        buckets={args.buckets}
+        cells={args.cells}
+        costUnmeasured={false}
+        stacks={allChartSlotStacks()}
+      />
+      <SessionTimelineDotRail {...args} />
+    </>
+  ),
+};
+
+/** {@link PaletteKey} in the dark theme, where `--chart-1` met `--primary`. */
+export const PaletteKeyDark: Story = {
+  ...PaletteKey,
+  globals: { theme: "dark" },
+};
+
+/**
  * The rail's own layout lives in `.sd3-drail` under `.sd3-actbar`. Without those
  * ancestors the cells have no column width to distribute across, so every story
  * would bunch the dots at the left edge.
@@ -194,19 +240,18 @@ function dotEvent(
 }
 
 /**
- * The same event with no transcript row.
+ * The same event with no transcript row — the state ISS-5479 exists for, since
+ * a SYNCED marker can deserialize without one and the rail reads `?.tl ?? null`.
  *
- * The prop type cannot express this directly — `tl` is declared `number` — yet
- * the rail reads `?.tl ?? null` precisely because a SYNCED marker can
- * deserialize without one, which is the state ISS-5479 exists for. Dropping the
- * key and widening once is the narrowest way to reach a state the runtime
- * genuinely has; the alternative is a fixture that cannot exercise the fix.
+ * ISS-7632: this is now plain key omission. `ActivityMarker.tl` is optional, so
+ * the prop type says what the runtime already did and the fixture no longer has
+ * to cast its way to a reachable state.
  */
 function withoutRow(
   event: Omit<ActivityMarker, "x">
 ): Omit<ActivityMarker, "x"> {
   const { tl: _row, ...rowless } = event;
-  return rowless as Omit<ActivityMarker, "x">;
+  return rowless;
 }
 
 function emptyLanes(): Record<DotColor, Omit<ActivityMarker, "x">[]> {
@@ -248,4 +293,25 @@ function rowlessCells(): Record<DotColor, Omit<ActivityMarker, "x">[]>[] {
     g: cell.g.map(withoutRow),
     r: cell.r.map(withoutRow),
   }));
+}
+
+/**
+ * One column per `--chart-*` slot, labelled as the Model grouping labels them.
+ * The model names are fixture data; the colours are the point.
+ */
+function allChartSlotStacks(): TimelineStackSegment[][] {
+  return [
+    "claude-opus-4-1",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "gpt-5",
+    "gemini-2.5-pro",
+  ].map((model, index) => [
+    {
+      colorVar: `var(--chart-${index + 1})`,
+      key: model,
+      label: model,
+      value: 1,
+    },
+  ]);
 }

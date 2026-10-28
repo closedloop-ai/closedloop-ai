@@ -6,7 +6,7 @@ type Redis = RedisClient;
 // through their own logger (e.g. @repo/observability) instead of raw console.
 type RedisLogger = {
   info: (message: string, meta?: Record<string, unknown>) => void;
-  warn: (message: string, meta?: Record<string, unknown>) => void;
+  warn: (message: string, meta: Record<string, unknown>) => void;
 };
 
 type RedisClientOptions = {
@@ -14,13 +14,18 @@ type RedisClientOptions = {
   keyPrefix?: string;
   onError?: (error: Error) => void;
   logger?: RedisLogger;
+  /**
+   * Rejects a command at once while the connection is down, and never resends
+   * one that was in flight when it dropped, so a caller that gave up on a
+   * command is not surprised by it running after a reconnect.
+   */
+  failWhileDisconnected?: boolean;
 };
 
 const consoleLogger: RedisLogger = {
   info: (message, meta) =>
     meta ? console.log(message, meta) : console.log(message),
-  warn: (message, meta) =>
-    meta ? console.warn(message, meta) : console.warn(message),
+  warn: (message, meta) => console.warn(message, meta),
 };
 
 export function createRedisClient(options: RedisClientOptions): RedisClient {
@@ -34,6 +39,9 @@ export function createRedisClient(options: RedisClientOptions): RedisClient {
       return Math.min(times * 200, 5000);
     },
     lazyConnect: true,
+    ...(options.failWhileDisconnected
+      ? { enableOfflineQueue: false, autoResendUnfulfilledCommands: false }
+      : {}),
   });
 
   client.on("error", (error) => {

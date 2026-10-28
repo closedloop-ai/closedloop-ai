@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import {
   buildAgentComponentSyncSourceKey,
   buildAgentSessionSyncSourceKey,
@@ -39,6 +39,21 @@ const PRE_MEASURED_ZERO_VERSION = 1;
  * the population the bump exists to re-walk.
  */
 const PRE_BIN_BOUNDS_VERSION = 2;
+
+/**
+ * The integrity revision shipped before ISS-8001 added durable Branch
+ * materialization retries. This literal is the population whose cursor may have
+ * advanced after the cloud retained only identity/cause metadata. Revision 4
+ * belongs to ISS-5850's span-extent replay on current main, so ISS-8001's replay
+ * must advance beyond it.
+ */
+const PRE_BRANCH_MATERIALIZATION_RETRY_VERSION = 4;
+const SPAN_EXTENT_SERVER = {
+  spanExtent: true,
+  humanTurnTimestamps: true,
+  agentTurnTimestamps: true,
+  tokenEventOwner: true,
+};
 
 type Db = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
 
@@ -166,6 +181,37 @@ test("ISS-5999: a cursor stamped at the pre-bin-bounds revision re-walks exactly
     sessionSyncIntegrityCursorIsStale(
       buildAgentComponentSyncSourceKey("target-iss5999"),
       PRE_BIN_BOUNDS_VERSION
+    ),
+    false
+  );
+});
+
+test("ISS-8001: a cursor stamped before durable Branch retry re-walks exactly once", () => {
+  const sessionKey = buildAgentSessionSyncSourceKey("target-iss8001");
+
+  assert.equal(
+    sessionSyncIntegrityCursorIsStale(
+      sessionKey,
+      PRE_BRANCH_MATERIALIZATION_RETRY_VERSION,
+      SPAN_EXTENT_SERVER
+    ),
+    true,
+    "a revision-4 cursor must be stale so full branch-ref evidence is re-sent"
+  );
+  assert.equal(
+    sessionSyncIntegrityCursorIsStale(
+      sessionKey,
+      AGENT_SESSION_SYNC_INTEGRITY_VERSION,
+      SPAN_EXTENT_SERVER
+    ),
+    false,
+    "and must stop being stale once re-stamped, so the re-walk never repeats"
+  );
+  assert.equal(
+    sessionSyncIntegrityCursorIsStale(
+      buildAgentComponentSyncSourceKey("target-iss8001"),
+      PRE_BRANCH_MATERIALIZATION_RETRY_VERSION,
+      SPAN_EXTENT_SERVER
     ),
     false
   );

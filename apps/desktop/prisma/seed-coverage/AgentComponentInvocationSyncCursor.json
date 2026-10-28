@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Per-session high-water mark for the invocation cloud-sync lane; no view reads it."
+}

@@ -3,7 +3,13 @@
   "pages": [
     "listAgentSessions",
     "getAgentSession",
+    "createAgentSession",
+    "updateAgentSession",
+    "getAgentSessionEvents",
     "getAgentSessionUsage",
-    "getAgentSessionAnalytics"
+    "getAgentSessionStatusCounts",
+    "getAgentSessionAnalytics",
+    "bulkAssignAgentSessions",
+    "bulkAssignAgentSessionsV2"
   ]
 }

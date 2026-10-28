@@ -4,14 +4,16 @@ import {
   BranchTraceSessionHydrationState,
   BranchTraceUnavailableReason,
 } from "@repo/api/src/types/branch-trace";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   makeBranchDetail,
   makeBranchSession,
 } from "../../__tests__/branch-fixtures";
+import { BranchTimelineGrouping } from "../../lib/branch-session-buckets";
 import { BranchPrActivityTimeline } from "../branch-pr-activity-timeline";
+import { costStat } from "./branch-timeline-header-stats.test-helpers";
 
 const SESSIONS_RE = /2 sessions/;
 const NO_SESSIONS_RE = /no sessions on this branch yet/i;
@@ -24,16 +26,24 @@ const NOT_TWO_SESSIONS_RE = /2 sessions?/;
 const PR_TIMELINE_RE = /PR timeline/;
 const WALL_CLOCK_LABEL_RE = /wall clock/i;
 const TOKENS_RE = /tokens/i;
-const CHRIS_UNAVAILABLE_RE = /Chris Unavailable/i;
+const COSIMO_UNAVAILABLE_RE = /Cosimo Unavailable/i;
 const ALL_TIMING_UNAVAILABLE_RE = /Timing is unavailable for s1, s2/;
 const SES_2_TIMING_UNAVAILABLE_RE = /Timing is unavailable for SES-2/;
 const LATE_ACTIVITY_OMITTED_RE = /90-day timeline limit.*late-session/;
 const LONG_RUNNING_ACTIVITY_OMITTED_RE = /90-day timeline limit.*long-running/;
 const UNTIMED_TIMING_UNAVAILABLE_RE = /Timing is unavailable for untimed/;
-const CHRIS_PARTIAL_COST_RE = /Chris \$5\.00\*/;
+const COSIMO_PARTIAL_COST_RE = /Cosimo \$5\.00\*/;
+const GROUP_BY_NAME_RE = /group by/i;
+const PHASE_BAR_LABEL_RE = /Implement \$5\.00.*Review \$5\.00/;
 
 function bars(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(".bq-bar"));
+}
+
+function activeBars(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('.bq-bar:not([data-gap="true"])')
+  );
 }
 
 // FEA-3576 — bars segment by the human user and size by cost, so fixtures carry
@@ -47,14 +57,14 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 2,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
           startedAt: "2026-06-10T13:00:00.000Z",
           endedAt: "2026-06-10T14:00:00.000Z",
           estimatedCostUsd: 1,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
@@ -77,7 +87,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 3,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
@@ -101,7 +111,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 100,
           evenSplitCostUsd: 25,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
@@ -110,7 +120,8 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     const stats = container.querySelector(".bq-stats");
     expect(stats).toHaveTextContent("$25.00");
     expect(stats).not.toHaveTextContent("$100.00");
-    expect(stats).toHaveTextContent("LOC/$");
+    // Deletions are unset, so the ratio reads "—"; ISS-12207 drops the unit after it.
+    expect(stats).not.toHaveTextContent("LOC/$");
   });
 
   it("does not fall back from explicit null or zero attributed cost", () => {
@@ -129,7 +140,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       />
     );
     expect(container.querySelector(".bq-stats")).toHaveTextContent(
-      "Unavailablecost"
+      "Unavailable cost"
     );
 
     rerender(
@@ -156,14 +167,14 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 6,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 4,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
     });
@@ -179,9 +190,82 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     // actor color domain; heights remain proportional to cost (60% / 40%).
     expect(
       Array.from(segments ?? []).map((el) => el.getAttribute("data-actor-key"))
-    ).toEqual(["legacy:chris", "legacy:thadeus"]);
+    ).toEqual(["legacy:cosimo", "legacy:tamsin"]);
     expect(segments?.[0]?.style.height).toBe("60%");
     expect(segments?.[1]?.style.height).toBe("40%");
+  });
+
+  it("switches Branch timeline grouping without changing the bar total", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 10,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 30 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 30 * 60_000,
+              endMs: start + 60 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+    const onGroupingChange = vi.fn();
+    const onScrubHour = vi.fn();
+    const { container, rerender } = render(
+      <BranchPrActivityTimeline
+        detail={detail}
+        grouping={BranchTimelineGrouping.SessionOwner}
+        onGroupingChange={onGroupingChange}
+        onScrubHour={onScrubHour}
+      />
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: GROUP_BY_NAME_RE })
+    ).toHaveTextContent("Session owner");
+    expect(activeBars(container)[0]).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Cosimo $10.00")
+    );
+
+    rerender(
+      <BranchPrActivityTimeline
+        detail={detail}
+        grouping={BranchTimelineGrouping.ActivityPhase}
+        onGroupingChange={onGroupingChange}
+        onScrubHour={onScrubHour}
+      />
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: GROUP_BY_NAME_RE })
+    ).toHaveTextContent("Activity phase");
+    expect(container.querySelector(".bq-stats")).toHaveTextContent("$10.00");
+    expect(activeBars(container)[0]).toHaveAttribute(
+      "aria-label",
+      expect.stringMatching(PHASE_BAR_LABEL_RE)
+    );
+    expect(container.querySelectorAll("[data-actor-key]")).toHaveLength(2);
   });
 
   it("uses the rendered subtotal when Branch-level cost is unavailable", () => {
@@ -195,14 +279,14 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 6,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
 
     render(<BranchPrActivityTimeline detail={detail} />);
 
-    expect(screen.getByText("$6.00")).toBeInTheDocument();
+    expect(within(costStat()).getByText("$6.00")).toBeInTheDocument();
     expect(screen.getByText("—", { exact: true })).toBeInTheDocument();
   });
 
@@ -225,7 +309,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     const instant = "2026-06-10T10:00:00.000Z";
     const detail = makeBranchDetail({
       // A merged-PR fixture with CONSISTENT linked sessions: `sessionIds` names
-      // the same two session rows carried in `sessions` (shafty023 flagged the
+      // the same two session rows carried in `sessions` (davetho flagged the
       // prior fixture as internally inconsistent — `sessionIds` disagreed with
       // `sessions` and it was not marked merged despite the "merged PR" comment).
       status: BranchStatus.Merged,
@@ -240,14 +324,14 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: instant,
           endedAt: instant,
           estimatedCostUsd: 12,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
           startedAt: instant,
           endedAt: instant,
           estimatedCostUsd: 22,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
       mergedTrace: [
@@ -255,7 +339,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           type: "sessionstart",
           sessionId: "s1",
           t: instant,
-          actor: { name: "Chris", harness: "claude" },
+          actor: { name: "Cosimo", harness: "claude" },
         },
         {
           type: "prompt",
@@ -263,7 +347,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           t: instant,
           tMs: Date.parse(instant),
           cumCostUsd: null,
-          actorName: "Chris",
+          actorName: "Cosimo",
           text: "kick off the work",
         },
       ],
@@ -303,7 +387,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 5,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
@@ -311,7 +395,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T12:00:00.000Z",
           endedAt: "2026-06-10T12:00:00.000Z",
           estimatedCostUsd: 7,
-          ownerUserName: "Thadeus",
+          ownerUserName: "Tamsin",
         }),
       ],
     });
@@ -319,7 +403,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     const { container } = render(<BranchPrActivityTimeline detail={detail} />);
 
     expect(bars(container)).toHaveLength(1);
-    const chartableCost = screen.getByText("$5.00*");
+    const chartableCost = within(costStat()).getByText("$5.00*");
     expect(chartableCost).toHaveAccessibleDescription(
       SES_2_TIMING_UNAVAILABLE_RE
     );
@@ -358,7 +442,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    expect(screen.getByText("$5.00*")).toHaveAccessibleDescription(
+    expect(within(costStat()).getByText("$5.00*")).toHaveAccessibleDescription(
       LATE_ACTIVITY_OMITTED_RE
     );
     expect(screen.getByText("129600m 0s*")).toHaveAccessibleDescription(
@@ -388,7 +472,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    expect(screen.getByText("$90.00*")).toHaveAccessibleDescription(
+    expect(within(costStat()).getByText("$90.00*")).toHaveAccessibleDescription(
       LONG_RUNNING_ACTIVITY_OMITTED_RE
     );
     expect(screen.getByText("129600m 0s*")).toHaveAccessibleDescription(
@@ -408,14 +492,14 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 5,
           evenSplitCostUsd: 5,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "unpriced",
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: null,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "untimed",
@@ -433,13 +517,13 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    const chartableCost = screen.getByText("$5.00*");
+    const chartableCost = within(costStat()).getByText("$5.00*");
     expect(chartableCost).toHaveAccessibleDescription(
       UNTIMED_TIMING_UNAVAILABLE_RE
     );
     expect(bars(container)[0]).toHaveAttribute(
       "aria-label",
-      expect.stringMatching(CHRIS_PARTIAL_COST_RE)
+      expect.stringMatching(COSIMO_PARTIAL_COST_RE)
     );
   });
 
@@ -452,7 +536,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           endedAt: "2026-06-10T11:00:00.000Z",
           // Un-priced session: real activity but no attributable cost.
           estimatedCostUsd: null,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
           inputTokens: 500,
         }),
       ],
@@ -469,7 +553,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     expect(bars(container)[0]).not.toHaveAttribute("data-gap");
     expect(bars(container)[0]).toHaveAttribute(
       "aria-label",
-      expect.stringMatching(CHRIS_UNAVAILABLE_RE)
+      expect.stringMatching(COSIMO_UNAVAILABLE_RE)
     );
     expect(
       screen.queryByText(NO_MEASURABLE_DURATION_RE)
@@ -485,7 +569,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 4,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
         makeBranchSession({
           sessionId: "s2",
@@ -493,7 +577,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           endedAt: "2026-06-10T14:00:00.000Z",
           // Unavailable-cost activity in a later hour remains an active mark.
           estimatedCostUsd: null,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
@@ -517,7 +601,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 3,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
           inputTokens: 1_200_000,
         }),
       ],
@@ -543,7 +627,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 3,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
           // ISS-5746: 999_950 tokens is 999.95k, which rounds to "1000.0k" at
           // 1dp — the tier has to carry with the rounding. The other two rows
           // pin the tier below it (1dp, not whole-k) and the dash an empty
@@ -573,7 +657,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 3,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });
@@ -651,12 +735,12 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       />
     );
 
-    expect(screen.getByText("$2.00*")).toBeInTheDocument();
+    expect(within(costStat()).getByText("$2.00*")).toBeInTheDocument();
     expect(screen.getByText("10*")).toBeInTheDocument();
     expect(screen.getByText("LOC/$")).toBeInTheDocument();
   });
 
-  // FEA-4269 review (wongk) — a branch can carry the SAME session as multiple
+  // FEA-4269 review (whitlockk) — a branch can carry the SAME session as multiple
   // rows (one per PR link). The bars already dedup by `sessionId`, so the
   // "N sessions" message must derive its count from DISTINCT ids too, or a single
   // zero-duration session repeated across two links falsely reads as "2 sessions".
@@ -670,7 +754,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       startedAt: instant,
       endedAt: instant,
       estimatedCostUsd: 5,
-      ownerUserName: "Chris",
+      ownerUserName: "Cosimo",
     };
     const detail = makeBranchDetail({
       estimatedCostUsd: 5,
@@ -696,7 +780,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
           startedAt: "2026-06-10T10:00:00.000Z",
           endedAt: "2026-06-10T11:00:00.000Z",
           estimatedCostUsd: 3,
-          ownerUserName: "Chris",
+          ownerUserName: "Cosimo",
         }),
       ],
     });

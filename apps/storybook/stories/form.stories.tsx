@@ -17,9 +17,9 @@ import { z } from "zod";
  * Building forms with React Hook Form and Zod.
  */
 const meta: Meta<typeof Form> = {
-  title: "Design System/Primitives/Form",
+  title: "Primitives v1.0/Inputs/Form",
   component: Form,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   render: (args) => <ProfileForm {...args} />,
 } satisfies Meta<typeof Form>;

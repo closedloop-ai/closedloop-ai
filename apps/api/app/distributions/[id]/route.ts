@@ -1,3 +1,4 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { DistributionDto } from "@repo/api/src/types/distribution";
 import {
   DistributionMode,
@@ -5,7 +6,17 @@ import {
 } from "@repo/api/src/types/distribution";
 import { Status } from "@repo/api/src/types/result";
 import { z } from "zod";
+import { roleUnresolvedResponse } from "@/lib/auth/org-admin-denial";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isUuid } from "@/lib/is-uuid";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  recordNoOpUnlessRecorded,
+  recordOrganizationWrite,
+} from "@/lib/organization-write-receipt";
 import {
   errorResponse,
   forbiddenResponse,
@@ -46,6 +57,13 @@ const updateDistributionSchema = z
 export const GET = withAnyAuth<DistributionDto, "/distributions/[id]">(
   async ({ user }, _request, params) => {
     const { id } = await params;
+    // The path segment is untrusted and `Distribution.id` is `@db.Uuid`, so a
+    // malformed one raises at the driver and the catch below would report a
+    // caller's typo as a 500, recording a RouteHandler error span with it.
+    if (!isUuid(id)) {
+      return notFoundResponse("Distribution");
+    }
+
     try {
       const distribution = await distributionsService.getDetailForOrg(
         user.organizationId,
@@ -68,39 +86,49 @@ export const GET = withAnyAuth<DistributionDto, "/distributions/[id]">(
  * Update a distribution's mode, targeting type, or targeting set (admin-only).
  */
 export const PATCH = withAnyAuth<DistributionDto, "/distributions/[id]">(
-  async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-    const { id } = await params;
-
-    const { body, errorResponse: parseErr } = await parseBody(
-      request,
-      updateDistributionSchema
-    );
-    if (parseErr) {
-      return parseErr;
-    }
-
-    try {
-      const result = await distributionsService.update(
-        user.organizationId,
-        id,
-        clerkOrgId,
-        clerkUserId,
-        body
-      );
-      if (!result.ok) {
-        if (result.error === 403) {
-          return forbiddenResponse();
-        }
-        if (result.error === 404) {
-          return notFoundResponse("Distribution");
-        }
-        return errorResponse("Failed to update distribution", result.error);
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, params, receipts) => {
+      const { id } = await params;
+      if (!isUuid(id)) {
+        return notFoundResponse("Distribution");
       }
-      return successResponse(result.value);
-    } catch (error) {
-      return errorResponse("Failed to update distribution", error);
+
+      const { body, errorResponse: parseErr } = await parseBody(
+        request,
+        updateDistributionSchema
+      );
+      if (parseErr) {
+        return parseErr;
+      }
+
+      try {
+        const result = await distributionsService.update(
+          user.organizationId,
+          id,
+          clerkOrgId,
+          clerkUserId,
+          body,
+          recordOrganizationWrite(receipts)
+        );
+        if (!result.ok) {
+          if (result.error === Status.ServiceUnavailable) {
+            return roleUnresolvedResponse();
+          }
+          if (result.error === Status.Forbidden) {
+            return forbiddenResponse();
+          }
+          if (result.error === Status.NotFound) {
+            return notFoundResponse("Distribution");
+          }
+          return errorResponse("Failed to update distribution", result.error);
+        }
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        return errorResponse("Failed to update distribution", error);
+      }
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );
 
@@ -117,30 +145,43 @@ export const PATCH = withAnyAuth<DistributionDto, "/distributions/[id]">(
  * distribution succeeds as a no-op and returns the same record.
  */
 export const DELETE = withAnyAuth<DistributionDto, "/distributions/[id]">(
-  async ({ user, clerkOrgId, clerkUserId }, _request, params) => {
-    const { id } = await params;
-
-    try {
-      const result = await distributionsService.withdraw(
-        user.organizationId,
-        id,
-        user.id,
-        clerkOrgId,
-        clerkUserId
-      );
-      if (!result.ok) {
-        if (result.error === Status.Forbidden) {
-          return forbiddenResponse();
-        }
-        if (result.error === Status.NotFound) {
-          return notFoundResponse("Distribution");
-        }
-        return errorResponse("Failed to withdraw distribution", result.error);
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, _request, params, receipts) => {
+      const { id } = await params;
+      if (!isUuid(id)) {
+        return notFoundResponse("Distribution");
       }
-      return successResponse(result.value);
-    } catch (error) {
-      return errorResponse("Failed to withdraw distribution", error);
+
+      try {
+        const result = await distributionsService.withdraw(
+          user.organizationId,
+          id,
+          user.id,
+          clerkOrgId,
+          clerkUserId,
+          recordOrganizationWrite(receipts)
+        );
+        if (!result.ok) {
+          if (result.error === Status.ServiceUnavailable) {
+            return roleUnresolvedResponse();
+          }
+          if (result.error === Status.Forbidden) {
+            return forbiddenResponse();
+          }
+          if (result.error === Status.NotFound) {
+            return notFoundResponse("Distribution");
+          }
+          return errorResponse("Failed to withdraw distribution", result.error);
+        }
+        // ISS-12552: withdrawing an already-withdrawn distribution changes
+        // nothing, so it is recorded as a no-op on its own.
+        await recordNoOpUnlessRecorded(receipts);
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        return errorResponse("Failed to withdraw distribution", error);
+      }
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );

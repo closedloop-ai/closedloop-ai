@@ -12,7 +12,7 @@ import {
  * origin would link the user at a same-named production org — someone else's
  * data — so the configured origin is read rather than assumed.
  *
- * wongk + codex review: the hook must also fail UNRESOLVED. Seeding state with
+ * whitlockk + codex review: the hook must also fail UNRESOLVED. Seeding state with
  * the production default meant the pending window and every settings-IPC failure
  * produced an allowlisted PRODUCTION href for a non-production org slug, which
  * is the same cross-tenant link the ticket is about — only harder to see,
@@ -38,24 +38,24 @@ afterEach(() => {
 
 describe("useWebAppOrigin (ISS-4898)", () => {
   it("resolves the configured origin", async () => {
-    installSettings({ webAppOrigin: "https://app.closedloop-stage.ai" });
+    installSettings({ webAppOrigin: "https://app.stage.example" });
 
     const { result } = renderHook(() => useWebAppOrigin());
 
     await waitFor(() =>
-      expect(result.current.origin).toBe("https://app.closedloop-stage.ai")
+      expect(result.current.origin).toBe("https://app.stage.example")
     );
   });
 
   it("normalizes a configured value that carries a path", async () => {
     installSettings({
-      webAppOrigin: "https://app.closedloop-stage.ai/some/path",
+      webAppOrigin: "https://app.stage.example/some/path",
     });
 
     const { result } = renderHook(() => useWebAppOrigin());
 
     await waitFor(() =>
-      expect(result.current.origin).toBe("https://app.closedloop-stage.ai")
+      expect(result.current.origin).toBe("https://app.stage.example")
     );
   });
 
@@ -63,7 +63,7 @@ describe("useWebAppOrigin (ISS-4898)", () => {
     // The pending window is the one the review flagged: identity can resolve
     // first, so a production default here would mint a live prod link for a
     // stage org between mount and this promise settling.
-    installSettings({ webAppOrigin: "https://app.closedloop-stage.ai" });
+    installSettings({ webAppOrigin: "https://app.stage.example" });
 
     const { result } = renderHook(() => useWebAppOrigin());
 

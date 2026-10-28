@@ -56,7 +56,7 @@ function makeBranches(count: number): BranchRow[] {
     id: `owner%2Frepo::bounded-branch-${i}`,
     branchName: `bounded-branch-${i}`,
     baseBranch: "main",
-    repoFullName: "closedloop-ai/symphony-alpha",
+    repoFullName: "closedloop-ai/closedloop-ai",
     status: BranchStatus.Open,
     prNumber: null,
     prTitle: null,
@@ -123,7 +123,7 @@ describe("detail tabs bounded render (FEA-3579)", () => {
     expect(screen.queryByText(RE_SESSIONS_TRUNCATION_NOTE)).toBeNull();
   });
 
-  // wongk (#3688): an empty `sessionsTab` projection is NOT proof of zero
+  // whitlockk (#3688): an empty `sessionsTab` projection is NOT proof of zero
   // usage. Desktop keeps a nonzero `component.sessions` metric (and
   // `usageSessions` rows) when it cannot hydrate the individual session
   // records, so the true-zero copy would contradict the metrics shown above.
@@ -276,7 +276,7 @@ describe("detail tabs bounded render (FEA-3579)", () => {
     expect(screen.queryAllByText(RE_BRANCH_NAME)).toHaveLength(0);
   });
 
-  // wongk (#3688): desktop's local detail reader always returns
+  // whitlockk (#3688): desktop's local detail reader always returns
   // `branchesTab: []`, so an unconditional "no branches reference this
   // component" is a claim its data cannot support. When `usageSessions` carries
   // branch attribution but the branch rows aren't hydrated, show the honest
@@ -337,8 +337,8 @@ describe("detail tabs bounded render (FEA-3579)", () => {
   // `lastActivityAt.localeCompare(...)`, assuming a string. A malformed record
   // (the stage Skill-component crash class, same as #3208) can deliver a
   // non-string `lastActivityAt` — a Date or epoch number — which threw a
-  // `TypeError` from inside the top-level LiveblocksErrorBoundary → crash-spiral.
-  // The tab must render such rows without throwing.
+  // `TypeError` and took the tab down with it. The tab must render such rows
+  // without throwing.
   it("renders Branches with non-string lastActivityAt values without crashing", () => {
     // A Date, an epoch number, and a missing value — every non-string shape a
     // malformed record can carry for the recency-sort key.

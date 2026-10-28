@@ -5,9 +5,15 @@ import {
   CardDensity,
 } from "@repo/design-system/components/ui/card-density";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { restoreGridTier, stubGridTier } from "./summary-card-grid-tier-stub";
+import {
+  restoreTrackStub,
+  stubTrackGap,
+  stubTrackWidth,
+  type TrackStubDescriptors,
+} from "./summary-card-track-stub";
 
 /**
  * ISS-5149 (gate retired by ISS-5366 — the tier is unconditional): the ROW half
@@ -89,28 +95,8 @@ const COMPACT_ONLY_RULES = [
  */
 const LABEL_REFLOW_RULE = "[data-slot=card-description]]:block";
 
-const COLUMN_GAP_PX = 16;
-
-let clientWidthDescriptor: PropertyDescriptor | undefined;
-let computedStyleDescriptor: PropertyDescriptor | undefined;
+let trackStub: TrackStubDescriptors | undefined;
 let gridTierDescriptor: PropertyDescriptor | undefined;
-
-/**
- * Supply the two layout inputs the hook reads and jsdom cannot produce: the
- * row's content-box width, and its resolved `column-gap`.
- *
- * The gap MATTERS and is stubbed rather than left at jsdom's `""` → 0: four
- * 16px gutters are 64px of the 1364px comfortable crossover, so a test run at
- * gap 0 would assert the wrong boundary and pass against an implementation that
- * ignored the gutters entirely. Everything downstream of these two values is the
- * real hook.
- */
-function stubTrackWidth(width: number) {
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
-    configurable: true,
-    get: () => width,
-  });
-}
 
 beforeEach(() => {
   // Every width this suite pins is a DESKTOP track, so it renders in the `md+`
@@ -118,69 +104,19 @@ beforeEach(() => {
   // which since ISS-5366 puts the density tier in its below-`md` fixed-rank
   // regime and would answer a 1099px track with the phone question.
   gridTierDescriptor = stubGridTier(true);
-  clientWidthDescriptor = Object.getOwnPropertyDescriptor(
-    HTMLElement.prototype,
-    "clientWidth"
-  );
-  computedStyleDescriptor = Object.getOwnPropertyDescriptor(
-    globalThis.window,
-    "getComputedStyle"
-  );
-  const original = globalThis.window.getComputedStyle.bind(globalThis.window);
-  Object.defineProperty(globalThis.window, "getComputedStyle", {
-    configurable: true,
-    value: (element: Element, pseudo?: string | null) => {
-      const style = original(element, pseudo ?? undefined);
-      // `columnGap` only: padding and every other property still come from
-      // jsdom, so nothing else about the measurement is faked.
-      return new Proxy(style, {
-        get(target, key) {
-          if (key === "columnGap") {
-            return `${COLUMN_GAP_PX}px`;
-          }
-          const value = Reflect.get(target, key, target);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      });
-    },
-    writable: true,
-  });
+  // The track-width half of the harness (`summary-card-track-stub.ts`): the
+  // `columnGap` proxy plus the `clientWidth` getter each case sets.
+  trackStub = stubTrackGap();
 });
 
 afterEach(() => {
-  restoreOwnProperty(
-    HTMLElement.prototype,
-    "clientWidth",
-    clientWidthDescriptor
-  );
-  clientWidthDescriptor = undefined;
-  restoreOwnProperty(
-    globalThis.window,
-    "getComputedStyle",
-    computedStyleDescriptor
-  );
-  computedStyleDescriptor = undefined;
+  if (trackStub) {
+    restoreTrackStub(trackStub);
+    trackStub = undefined;
+  }
   restoreGridTier(gridTierDescriptor);
   gridTierDescriptor = undefined;
 });
-
-/**
- * Put a stubbed property back exactly as it was: the captured descriptor when
- * the object owned one, and otherwise removed entirely. Assigning `undefined`
- * would leave the key present with a dead value rather than restoring the
- * prototype/host behaviour the stub shadowed.
- */
-function restoreOwnProperty(
-  target: object,
-  key: string,
-  descriptor: PropertyDescriptor | undefined
-): void {
-  if (descriptor) {
-    Object.defineProperty(target, key, descriptor);
-    return;
-  }
-  Reflect.deleteProperty(target, key);
-}
 
 describe("SummaryCardRow density tier (ISS-5149)", () => {
   it("is compact at the measured desktop launch track, floor and attribute together", () => {
@@ -355,6 +291,95 @@ describe("SummaryCardRow density tier (ISS-5149)", () => {
     });
   });
 
+  describe("a pinned density (ISS-10540)", () => {
+    // Operator ruling, Tamsin, 2026-09-21: the Sessions and Branches listing
+    // strips pin `Compact` so the two read at one vertical rhythm. The pin has
+    // to be observable, so every case here stands the row where the MEASURED
+    // tier would resolve Comfortable — an unmeasured jsdom row already folds to
+    // Compact and would pass with the prop deleted.
+
+    it("wins over a track where the measurement resolves Comfortable — attribute AND floor", () => {
+      stubTrackWidth(COMFORTABLE_ONE_RANK_WIDTH);
+      // The negative control first: the same track, un-pinned, hands the roomy
+      // card back. Without this the assertion below cannot tell the pin from
+      // a measurement that happened to agree.
+      renderStrip();
+      expect(stripRow().dataset.density).toBe(CardDensity.Comfortable);
+      cleanup();
+
+      renderStrip({ density: CardDensity.Compact });
+
+      const row = stripRow();
+      expect(row.dataset.density).toBe(CardDensity.Compact);
+      // The floor moves WITH the attribute or the tier is half-applied — the
+      // ISS-4787 baseline regression from the other direction.
+      expect(row.style.getPropertyValue(SUMMARY_CARD_MIN_PROPERTY)).toBe(
+        DENSE_MIN_WIDTH
+      );
+    });
+
+    it("wins below the band too, where the measurement's deliberate degradation resolves Comfortable", () => {
+      stubTrackWidth(COMPACT_ONE_RANK_WIDTH - 1);
+      renderStrip({ density: CardDensity.Compact });
+
+      expect(stripRow().dataset.density).toBe(CardDensity.Compact);
+    });
+
+    it("wins below `md` on a paired cell that clears the comfortable floor", () => {
+      restoreGridTier(gridTierDescriptor);
+      gridTierDescriptor = stubGridTier(false);
+      stubTrackWidth(ROOMY_PAIRED_TRACK_WIDTH);
+      renderStrip({ density: CardDensity.Compact });
+
+      expect(stripRow().dataset.density).toBe(CardDensity.Compact);
+    });
+
+    it("skips the measurement entirely rather than resolving a tier it discards", () => {
+      // The pin is not "measure and ignore": a row that pins its tier attaches
+      // no `ResizeObserver` for it, so neither listing strip re-renders on every
+      // resize for an answer nothing reads.
+      //
+      // The one case in this block that does NOT stand the row at a
+      // Comfortable-measuring track, deliberately: its subject is the observer,
+      // not the tier, and holding the RESOLVED density equal on both renders is
+      // what makes the counts comparable. The row's two sibling derivations
+      // observe the same element, and the column one re-attaches when the
+      // published floor moves — so a control that resolved a different tier
+      // would differ by two observers for two reasons and the assertion could
+      // not tell them apart. At the launch track both renders resolve Compact,
+      // so the only difference left is the tier's own observer. Delete
+      // `enabled` from the row's `useSummaryCardDensity` call and the counts
+      // match.
+      stubTrackWidth(LAUNCH_TRACK_WIDTH);
+      const measuredObservers = countRowObservers(() => {
+        renderStrip();
+      });
+      expect(stripRow().dataset.density).toBe(CardDensity.Compact);
+      cleanup();
+
+      const pinnedObservers = countRowObservers(() => {
+        renderStrip({ density: CardDensity.Compact });
+      });
+
+      expect(stripRow().dataset.density).toBe(CardDensity.Compact);
+      expect(pinnedObservers).toBe(measuredObservers - 1);
+    });
+
+    it("still yields the floor to an explicit minWidth", () => {
+      // `minWidth`'s contract is unchanged by the pin: an explicit value
+      // outranks whichever floor the density — pinned or measured — would
+      // publish, while the interior still follows the pin.
+      stubTrackWidth(COMFORTABLE_ONE_RANK_WIDTH);
+      renderStrip({ density: CardDensity.Compact, minWidth: 320 });
+
+      const row = stripRow();
+      expect(row.style.getPropertyValue(SUMMARY_CARD_MIN_PROPERTY)).toBe(
+        "320px"
+      );
+      expect(row.dataset.density).toBe(CardDensity.Compact);
+    });
+  });
+
   it("keeps an explicit minWidth authoritative over the resolved tier", () => {
     // A caller that measured its own surface owns its floor; the tier only
     // supplies the row's DEFAULT.
@@ -369,9 +394,15 @@ describe("SummaryCardRow density tier (ISS-5149)", () => {
   });
 });
 
-function renderStrip({ minWidth }: { minWidth?: number } = {}) {
+function renderStrip({
+  density,
+  minWidth,
+}: {
+  density?: CardDensity;
+  minWidth?: number;
+} = {}) {
   render(
-    <SummaryCardRow minWidth={minWidth} wrapBelow>
+    <SummaryCardRow density={density} minWidth={minWidth} wrapBelow>
       {CARD_LABELS.map((label) => (
         <MetricCard detail="in range" key={label} label={label} value="1" />
       ))}
@@ -388,4 +419,27 @@ function stripRow(): HTMLElement {
     throw new Error("No summary strip rendered");
   }
   return row;
+}
+
+/**
+ * How many elements the strip put under a `ResizeObserver` while `run` rendered
+ * it. Counts `observe` calls rather than constructions, so a hook that
+ * constructs an observer and never attaches it is correctly counted as zero.
+ */
+function countRowObservers(run: () => void): number {
+  const installed = globalThis.ResizeObserver;
+  let observed = 0;
+  class CountingResizeObserver extends installed {
+    observe(target: Element, options?: ResizeObserverOptions) {
+      observed += 1;
+      super.observe(target, options);
+    }
+  }
+  globalThis.ResizeObserver = CountingResizeObserver;
+  try {
+    run();
+  } finally {
+    globalThis.ResizeObserver = installed;
+  }
+  return observed;
 }

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   TokenCostBasis,
   TokenCostCompleteness,
@@ -7,6 +6,7 @@ import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
+import { test } from "vitest";
 import type { NormalizedTokenRecord } from "../src/main/collectors/types.js";
 import { resolveTokenEventCostSummary } from "../src/main/database/token-event-contract.js";
 

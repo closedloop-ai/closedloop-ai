@@ -10,6 +10,8 @@ import type { FilterCategory } from "@repo/app/documents/components/table/filter
 import { useTableViewPagination } from "@repo/app/documents/hooks/use-table-view-pagination";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 import type { GroupByMode } from "@repo/app/documents/lib/group-by";
+import { useTablePageSizeOptions } from "@repo/app/shared/hooks/use-table-page-size-options";
+import { useViewStatePersistence } from "@repo/app/shared/hooks/use-view-state-persistence";
 import {
   buildTableRangeReadout,
   DEFAULT_TABLE_PAGE_SIZE,
@@ -24,7 +26,16 @@ import {
 type UseProjectArtifactsPaginationInput = {
   /** Whether the ISS-5307 pagination flag is on for this viewer. */
   isEnabled: boolean;
-  projectId: string;
+  /**
+   * ISS-9726: the identity-namespaced page-size and sort keys, resolved ONCE by
+   * the page (`useProjectArtifactsViewStateKeys`) and threaded in rather than
+   * rebuilt here. The sort key in particular is also read by `DocumentsView`, so
+   * a second construction site is how one reader's sort splits across two
+   * stored values. `null` means "hold it in memory" — the identity or the flag
+   * has not resolved, so there is no key it can honestly be written under.
+   */
+  pageSizeStorageKey: string | null;
+  sortPersistenceKey: string | null;
   filterCategory: FilterCategory;
   filterText: string;
   groupBy: GroupByMode;
@@ -79,6 +90,8 @@ type UseProjectArtifactsPaginationResult = {
   totalPages: number;
   pageSize: number;
   onPageSizeChange: (pageSize: number) => void;
+  /** ISS-9692: the rungs this viewer is offered, for the footer's select. */
+  pageSizeOptions: readonly number[];
   /** "1–25 of 240 issues", built from the tab's TRUE total. */
   readout: string | null;
   /** Present only when the server bounded the read. */
@@ -90,6 +103,14 @@ type UseProjectArtifactsPaginationResult = {
    * case instead of disappearing at the moment it explains the screen.
    */
   emptyStateTruncationNote: string | null;
+  /**
+   * ISS-4704: each group section's true size, and the sections continuing from
+   * an earlier page, for `DocumentsView`'s headers. Both `undefined` unless a
+   * section-aware page plan is in force — this surface pages by whole sections
+   * under the same gate My Tasks does, so it needs the same two.
+   */
+  sectionTotalsByKey: ReadonlyMap<string, number> | undefined;
+  continuedSectionKeys: ReadonlySet<string> | undefined;
 };
 
 /**
@@ -107,7 +128,33 @@ type UseProjectArtifactsPaginationResult = {
 export function useProjectArtifactsPagination(
   input: UseProjectArtifactsPaginationInput
 ): UseProjectArtifactsPaginationResult {
-  const [pageSize, setPageSize] = useState<number>(DEFAULT_TABLE_PAGE_SIZE);
+  // ISS-9692: the rows-per-page persists through the SAME per-surface store this
+  // tab's sort already uses (`table:sort:project-artifacts:<id>` beside it), so
+  // the choice survives a reload and a navigate-away-and-back. Keyed by project
+  // so one project's page size cannot leak onto another's.
+  //
+  // ISS-9692 (davetho review): the store is READ whatever the gate says. It
+  // used to be built on a `null` key while the flag was off — that hook's
+  // memory-only mode — which did not merely withhold the two large rungs, it
+  // hid the stored value entirely and handed back 25. A reader who had chosen
+  // 500 came back to the smallest page on the ladder and, on their next choice,
+  // overwrote what was on disk. Reading it always and resolving it against the
+  // ladder in force is the documented stale-value contract: a stored 500 becomes
+  // 100, the largest rung still offered, not the default.
+  const [persistedPageSize, setPersistedPageSize] =
+    useViewStatePersistence<number>(
+      input.pageSizeStorageKey,
+      DEFAULT_TABLE_PAGE_SIZE
+    );
+  // What the reader has chosen during THIS visit, which is the only thing a
+  // gated-off session may change: the control still moves, and nothing is
+  // written, so a reader without the flag gets the tab exactly as it shipped.
+  const [visitPageSize, setVisitPageSize] = useState<number | null>(null);
+  const {
+    isExtendedLadderEnabled,
+    options: pageSizeOptions,
+    pageSize,
+  } = useTablePageSizeOptions(visitPageSize ?? persistedPageSize);
 
   const artifactPage = useTableViewPagination({
     applyProjectFilters: input.applyProjectFilters,
@@ -118,7 +165,7 @@ export function useProjectArtifactsPagination(
     groupBy: input.groupBy,
     isFilterActive: input.isFilterActive,
     pageSize,
-    sortPersistenceKey: `table:sort:project-artifacts:${input.projectId}`,
+    sortPersistenceKey: input.sortPersistenceKey,
     treeData: input.treeData ?? null,
   });
 
@@ -135,7 +182,15 @@ export function useProjectArtifactsPagination(
   );
   const onPageSizeChange = useCallback(
     (next: number) => {
-      setPageSize(next);
+      setVisitPageSize(next);
+      // ISS-9692 (davetho review): only a gated-ON choice is DURABLE. The
+      // control moves either way — the line above — but a gated-off session
+      // must not write, or persistence would be perceivably on for a reader
+      // whose flag is off, and their write would destroy the value the flag
+      // exists to restore.
+      if (isExtendedLadderEnabled) {
+        setPersistedPageSize(next);
+      }
       // The shared footer deliberately does not reset the page on a size
       // change, and the paginator only resets on a FILTER change. Without this
       // a viewer on page 4 of 25-row pages lands on page 4 of 100-row pages —
@@ -145,7 +200,7 @@ export function useProjectArtifactsPagination(
         scrollContainer.scrollTop = 0;
       }
     },
-    [setPage, scrollContainer]
+    [setPage, scrollContainer, setPersistedPageSize, isExtendedLadderEnabled]
   );
 
   // The footer is a claim about a paginated table, so it renders only where one
@@ -161,9 +216,14 @@ export function useProjectArtifactsPagination(
   const showsTable = input.isEnabled && !input.isOverview;
   const showFooter = showsTable && artifactPage.total > 0;
 
+  // The caveat names what the bounded read counted, so it speaks in the active
+  // tab's own unit: a category-scoped read (ISS: filter-after-paginate) bounds
+  // PRDs/issues/plans/branches, not mixed top-level artifacts, and describing
+  // its floor as "top-level artifacts" would misstate the population.
+  const noun = resolveProjectArtifactsPageNoun(input.filterCategory);
   const isTruncated = isProjectTreeTruncated(input.treeData);
   const truncationNote = isTruncated
-    ? resolveProjectArtifactsTruncationNote(input.treeData)
+    ? resolveProjectArtifactsTruncationNote(input.treeData, noun)
     : null;
   // With no rows there is no footer, and the caveat would vanish exactly where
   // it decides what an empty tab MEANS: "nothing matches" versus "nothing
@@ -171,7 +231,7 @@ export function useProjectArtifactsPagination(
   // render it beside the empty state instead.
   const emptyStateTruncationNote =
     isTruncated && showsTable && artifactPage.total === 0
-      ? resolveProjectArtifactsEmptyTruncationNote(input.treeData)
+      ? resolveProjectArtifactsEmptyTruncationNote(input.treeData, noun)
       : null;
 
   return {
@@ -185,8 +245,9 @@ export function useProjectArtifactsPagination(
     // view's own loading gate is unchanged; the page renders `null` for both.
     pagedTreeData: artifactPage.pagedTreeData ?? null,
     pageSize,
+    pageSizeOptions,
     readout: buildTableRangeReadout({
-      noun: resolveProjectArtifactsPageNoun(input.filterCategory),
+      noun,
       page: artifactPage.page,
       pageSize,
       // A bounded server read makes this a count of the prefix the client
@@ -198,11 +259,17 @@ export function useProjectArtifactsPagination(
       // never `pagedDocuments.length`, which is the size of the page already
       // on screen.
       total: artifactPage.total,
+      // ISS-4704: section-aware paging makes pages variable-height, so the
+      // range comes from the plan the rows were drawn from rather than from
+      // `page * pageSize`, which would name rows this page does not hold.
+      range: { from: artifactPage.from, to: artifactPage.to },
     }),
     setPage,
     showFooter,
     total: artifactPage.total,
     totalPages: artifactPage.totalPages,
     truncationNote,
+    sectionTotalsByKey: artifactPage.sectionTotalsByKey,
+    continuedSectionKeys: artifactPage.continuedSectionKeys,
   };
 }

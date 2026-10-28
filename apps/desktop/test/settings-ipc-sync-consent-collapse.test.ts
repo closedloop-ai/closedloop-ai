@@ -14,18 +14,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
-import {
-  registerSettingsIpcHandlers,
-  SettingsIpcChannel,
-} from "../src/main/ipc/settings-ipc.js";
+import { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
+import { afterEach, test } from "vitest";
+import { registerSettingsIpcHandlers } from "../src/main/ipc/settings-ipc.js";
 import {
   ApiKeyStore,
   type SafeStorageLike,
 } from "../src/main/settings/api-key-store.js";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
-import { DataSyncLevel } from "../src/shared/contracts.js";
 import { DESKTOP_TRANSCRIPT_SYNC_FEATURE_FLAG_KEY } from "../src/shared/feature-flags.js";
+import { SettingsIpcChannel } from "../src/shared/settings-ipc-channel.js";
 
 const tempDirs: string[] = [];
 
@@ -102,7 +100,10 @@ function setup(): {
 
 test("FEA-4103: updateSettings cannot independently enable transcript sync", async () => {
   const { update, store } = setup();
-  // Canonical default level is Metadata → transcript lane OFF.
+  // ISS-10554 made a first launch land on Full, so the level is set DOWN to
+  // Metadata here: the contract under test is that the generic path cannot raise
+  // the transcript lane, which is only observable from a level that has it off.
+  store.setDataSyncLevel(DataSyncLevel.Metadata);
   assert.equal(store.getDataSyncLevel(), DataSyncLevel.Metadata);
   assert.equal(store.getTranscriptSyncEnabled(), false);
 
@@ -135,7 +136,8 @@ test("FEA-4103: updateSettings cannot independently set the observability tier",
     null,
     "the derived observability tier must NOT be settable through the generic path"
   );
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Metadata);
+  // ISS-10554: the untouched level of a first launch is the recommended one.
+  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Full);
 });
 
 test("FEA-4103: setDataSyncLevel remains the single writer that flips the derived flags", () => {
@@ -152,7 +154,7 @@ test("FEA-4103: setDataSyncLevel remains the single writer that flips the derive
 
 test("FEA-4103: orthogonal connectivity/pause flags stay settable through updateSettings", async () => {
   const { update, store } = setup();
-  // Start from the connected default (Metadata → connection on, not paused).
+  // Start from the connected default (ISS-10554: Full → connection on, not paused).
   assert.equal(store.getCloudConnectionEnabled(), true);
   assert.equal(store.getCloudCommandsPaused(), false);
 
@@ -173,6 +175,9 @@ test("FEA-4103: orthogonal connectivity/pause flags stay settable through update
 
 test("FEA-4103: mixed payload strips only the consent sub-flags, keeps the rest", async () => {
   const { update, store } = setup();
+  // ISS-10554: down to Metadata first, so both injected sub-flags are attempts to
+  // WIDEN — the direction this strip exists to refuse.
+  store.setDataSyncLevel(DataSyncLevel.Metadata);
   await update({
     [DESKTOP_TRANSCRIPT_SYNC_FEATURE_FLAG_KEY]: true,
     syncObservabilityTier: "full",
@@ -185,8 +190,8 @@ test("FEA-4103: mixed payload strips only the consent sub-flags, keeps the rest"
   );
   assert.equal(
     store.getSyncObservabilityTier(),
-    null,
-    "observability tier stripped (left unset, not the injected value)"
+    "metadata",
+    "observability tier stripped — it still reads the level's derived value, not the injected one"
   );
   assert.equal(
     store.getFlag("verboseLogging"),

@@ -40,7 +40,7 @@ const COST_NORMALIZATION_FACTOR = 10 ** COST_NORMALIZATION_DECIMALS;
  * — the SAME signals `deriveCostAvailability` renders through — so a no-work
  * subscription session reads Unknown, and a tiny raw positive cost (`0.0000004`,
  * which the cell shows as `$0.00`) reads KNOWN rather than being rounded to 0 and
- * mislabeled Unknown (wongk thread). Only the BUCKET-boundary comparison uses the
+ * mislabeled Unknown (whitlockk thread). Only the BUCKET-boundary comparison uses the
  * 6dp-normalized value, to stay Decimal-exact against the cloud column.
  *
  * `rawSummedCost` is the un-normalized `sumTokenUsage(session).estimatedCost`;

@@ -1,6 +1,7 @@
 import { SESSION_COST_FILTER_OPTIONS } from "@repo/api/src/agent-session-filters";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import {
@@ -33,9 +34,9 @@ const usage = createAgentSessionUsageSummaryFixture(
       },
     ],
     byRepository: [
-      "closedloop-ai/symphony-alpha",
+      "closedloop-ai/closedloop-ai",
       "closedloop-ai/design-system",
-      "closedloop-ai/relay-host",
+      "closedloop-ai/collector-host",
       "closedloop-ai/mcp-server",
       "closedloop-ai/desktop-gateway",
     ].map((repositoryFullName) => ({
@@ -61,7 +62,7 @@ const usage = createAgentSessionUsageSummaryFixture(
     byProject: [
       {
         projectId: PROJECT_ID,
-        projectName: "Symphony Alpha",
+        projectName: "ClosedLoop AI",
         sessionCount: 9,
       },
       {
@@ -80,9 +81,9 @@ const MANY_FACET_FILTERS: SessionFacetFilters = {
   statuses: [SESSION_STATUS.INACTIVE, SESSION_STATUS.ERROR],
   userIds: ["user-ada"],
   repositories: [
-    "closedloop-ai/symphony-alpha",
+    "closedloop-ai/closedloop-ai",
     "closedloop-ai/design-system",
-    "closedloop-ai/relay-host",
+    "closedloop-ai/collector-host",
     "closedloop-ai/mcp-server",
     "closedloop-ai/desktop-gateway",
   ],
@@ -92,9 +93,9 @@ const MANY_FACET_FILTERS: SessionFacetFilters = {
 };
 
 const meta = {
-  title: "App Core/Agents/Sessions Active Filters Bar",
+  title: "Composites v1.0/Sessions/Sessions Active Filters Bar",
   component: SessionsActiveFiltersBar,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   // The chip labels resolve owner names through an auth-aware hook, so this bar
   // needs the app-core ports mounted. Without them every story in this file
@@ -104,19 +105,46 @@ const meta = {
     onFiltersChange: () => undefined,
     usage,
   },
+  argTypes: {
+    // `filters` is the full `SessionFacetFilters` record (nine `string[]`
+    // facet arrays) — no single control edits that meaningfully, and every
+    // story already sets the exact combination it wants to demonstrate via
+    // `args`/`InteractiveBar`'s own remount-and-edit flow.
+    filters: { control: false },
+    // `usage` is the `AgentSessionUsageSummary` fixture the chip labels
+    // resolve names from (owners/repos/harnesses/models/projects); it is
+    // fixture data wiring, not a value a reviewer would hand-edit.
+    usage: { control: false },
+    // Callback args: this repo has no actions addon configured, so a
+    // function gets no usable widget — only the "Setup controls" placeholder
+    // — and each is already exercised through `InteractiveBar`'s real state.
+    onFiltersChange: { control: false },
+    onClearAll: { control: false },
+    onRemoveScopeUser: { control: false },
+    // `scopeUserId` (`string | null`) and `includeProjectFilter` (`boolean`)
+    // are left un-overridden on purpose: both are genuine primitives, and
+    // Storybook already infers a real text / boolean widget for them — they
+    // are not part of this "no sensible control" bucket.
+  },
 } satisfies Meta<typeof SessionsActiveFiltersBar>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/**
+ * Seeds its local state from the `filters`/`includeProjectFilter` args it is
+ * given rather than a literal closed over the render function, so editing
+ * either in the Controls panel actually changes what mounts (remounted via
+ * {@link remountKey}) while staying interactive in the canvas afterward.
+ */
 function InteractiveBar({
-  initial,
+  filters: initialFilters,
   includeProjectFilter,
 }: {
-  initial: SessionFacetFilters;
+  filters: SessionFacetFilters;
   includeProjectFilter?: boolean;
 }) {
-  const [filters, setFilters] = useState<SessionFacetFilters>(initial);
+  const [filters, setFilters] = useState<SessionFacetFilters>(initialFilters);
   return (
     <SessionsActiveFiltersBar
       filters={filters}
@@ -128,82 +156,91 @@ function InteractiveBar({
   );
 }
 
+function renderInteractiveBar(args: {
+  filters: SessionFacetFilters;
+  includeProjectFilter?: boolean;
+}) {
+  return (
+    <InteractiveBar
+      filters={args.filters}
+      includeProjectFilter={args.includeProjectFilter}
+      key={remountKey(args.filters, args.includeProjectFilter)}
+    />
+  );
+}
+
 // No active facets: the bar renders nothing, so the default toolbar stays clean.
 export const NoActiveFilters: Story = {};
 
 // A single active facet: one removable chip plus Clear all.
 export const SingleChip: Story = {
-  render: () => (
-    <InteractiveBar
-      initial={{
-        ...DEFAULT_SESSION_FACET_FILTERS,
-        statuses: [SESSION_STATUS.INACTIVE],
-      }}
-    />
-  ),
+  args: {
+    filters: {
+      ...DEFAULT_SESSION_FACET_FILTERS,
+      statuses: [SESSION_STATUS.INACTIVE],
+    },
+  },
+  render: renderInteractiveBar,
 };
 
 // Two facets: shows the facet-then-selection order and the per-facet remove.
 export const StatusAndOwner: Story = {
-  render: () => (
-    <InteractiveBar
-      initial={{
-        ...DEFAULT_SESSION_FACET_FILTERS,
-        statuses: [SESSION_STATUS.INACTIVE],
-        userIds: ["user-ada"],
-      }}
-    />
-  ),
+  args: {
+    filters: {
+      ...DEFAULT_SESSION_FACET_FILTERS,
+      statuses: [SESSION_STATUS.INACTIVE],
+      userIds: ["user-ada"],
+    },
+  },
+  render: renderInteractiveBar,
 };
 
 // Many chips at once: the row caps its height and scrolls internally instead of
 // wrapping to several lines and eating the pinned toolbar's space.
 export const ManyChipsWrap: Story = {
-  render: () => <InteractiveBar initial={MANY_FACET_FILTERS} />,
+  args: { filters: MANY_FACET_FILTERS },
+  render: renderInteractiveBar,
 };
 
 // ISS-5355 — the Project facet, as it arrives from the project-detail strip's
 // link: `?project=<id>&status=active`. The chip names the project by name and
 // removes just that narrowing.
 export const ProjectFilterFromProjectDetail: Story = {
-  render: () => (
-    <InteractiveBar
-      includeProjectFilter={true}
-      initial={{
-        ...DEFAULT_SESSION_FACET_FILTERS,
-        projectIds: [PROJECT_ID],
-        statuses: [SESSION_STATUS.ACTIVE],
-      }}
-    />
-  ),
+  args: {
+    filters: {
+      ...DEFAULT_SESSION_FACET_FILTERS,
+      projectIds: [PROJECT_ID],
+      statuses: [SESSION_STATUS.ACTIVE],
+    },
+    includeProjectFilter: true,
+  },
+  render: renderInteractiveBar,
 };
 
 // A Project selection whose usage row dropped out of the active date window:
 // the option (and so the chip) survives on the raw id, so the filter that is
 // still narrowing the list stays nameable and removable.
 export const ProjectFilterOutOfRange: Story = {
-  render: () => (
-    <InteractiveBar
-      includeProjectFilter={true}
-      initial={{
-        ...DEFAULT_SESSION_FACET_FILTERS,
-        projectIds: ["019f8008-1969-74f9-b056-000000000000"],
-      }}
-    />
-  ),
+  args: {
+    filters: {
+      ...DEFAULT_SESSION_FACET_FILTERS,
+      projectIds: ["019f8008-1969-74f9-b056-000000000000"],
+    },
+    includeProjectFilter: true,
+  },
+  render: renderInteractiveBar,
 };
 
 // The surface that does not offer the facet (desktop, which cannot resolve
 // cloud projects): the same `projectIds` value produces no chip at all, because
 // no Project filter was ever applied there.
 export const ProjectFilterNotOfferedOnThisSurface: Story = {
-  render: () => (
-    <InteractiveBar
-      initial={{
-        ...DEFAULT_SESSION_FACET_FILTERS,
-        projectIds: [PROJECT_ID],
-        statuses: [SESSION_STATUS.ACTIVE],
-      }}
-    />
-  ),
+  args: {
+    filters: {
+      ...DEFAULT_SESSION_FACET_FILTERS,
+      projectIds: [PROJECT_ID],
+      statuses: [SESSION_STATUS.ACTIVE],
+    },
+  },
+  render: renderInteractiveBar,
 };

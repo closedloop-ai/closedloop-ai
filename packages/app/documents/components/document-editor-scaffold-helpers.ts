@@ -45,3 +45,30 @@ export function resolveActiveRoomId({
   const collaborationReady = !isUserLoading && hasCurrentUser;
   return collaborationReady ? liveblocksRoomId : null;
 }
+
+/**
+ * The content whose rendered inline images the attachment panels must HIDE.
+ *
+ * Deliberately NOT {@link getLatestContentForAttachmentWarnings}. That one
+ * answers "would deleting this file break the document?", which is a question
+ * about the latest saved body however far back the reader has scrolled. This one
+ * answers "is the reader already looking at this image?", which is a question
+ * about the version ON SCREEN. Sharing one derivation made a historical view
+ * hide a file the selected version does not render, and list one it does
+ * (ISS-8036 review).
+ */
+export function getSelectedContentForAttachmentVisibility({
+  currentVersion,
+  document,
+  latestDraftContent,
+}: {
+  currentVersion: number;
+  document: Pick<DocumentDetail, "latestVersion" | "version">;
+  latestDraftContent: string;
+}): string {
+  if (currentVersion === document.latestVersion) {
+    return latestDraftContent;
+  }
+
+  return document.version.content ?? "";
+}

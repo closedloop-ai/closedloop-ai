@@ -1,9 +1,11 @@
 import { SessionDetailLoading } from "@repo/app/agents/components/detail/agent-session-detail-states";
 import { AgentDetailLoading } from "@repo/app/agents/components/workspace/agent-detail-states";
+import { SESSION_DETAIL_LOADING_LABEL } from "@repo/app/agents/lib/session-detail-slots";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AgentDetailRouteFallback,
+  DETAIL_FALLBACK_LABELS,
   DetailRouteFallback,
 } from "../route-fallbacks";
 
@@ -69,7 +71,7 @@ describe("detail route fallback geometry (ISS-4838)", () => {
     const realGeometry = geometryOf(real.container);
     real.unmount();
 
-    render(<DetailRouteFallback label="Loading session" />);
+    render(<DetailRouteFallback label={DETAIL_FALLBACK_LABELS.session} />);
     const fallbackGeometry = geometryOf(
       screen.getByTestId("detail-route-fallback")
     );
@@ -79,6 +81,30 @@ describe("detail route fallback geometry (ISS-4838)", () => {
     }
     expect(fallbackGeometry).toContain("h-[520px]");
     expect(fallbackGeometry).not.toContain("max-w-5xl");
+  });
+
+  /**
+   * ISS-5662: the fallback and the view that replaces it must announce ONE name.
+   *
+   * The geometry assertions above compare classes and never the accessible
+   * name, so a rename on either side of the handoff — the fallback saying
+   * "Loading session" while the view that replaces it says something else, or
+   * nothing, the ISS-5593 gap — stayed green. Both sides now resolve the name
+   * from `SESSION_DETAIL_LOADING_LABEL`; this is what makes reintroducing a
+   * second copy fail rather than drift.
+   */
+  it("announces the same accessible name as the session loading state that replaces it", () => {
+    const real = render(<SessionDetailLoading />);
+    const viewName = screen.getByRole("status").getAttribute("aria-label");
+    real.unmount();
+
+    render(<DetailRouteFallback label={DETAIL_FALLBACK_LABELS.session} />);
+    const fallbackName = screen.getByRole("status").getAttribute("aria-label");
+
+    expect(fallbackName).toBe(viewName);
+    // Pinned to the canonical constant, so two SILENT states cannot satisfy the
+    // equality above.
+    expect(viewName).toBe(SESSION_DETAIL_LOADING_LABEL);
   });
 
   it("names what is loading on a polite live region rather than as visible text", () => {

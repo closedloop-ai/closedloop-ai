@@ -22,8 +22,8 @@
  * full one, so its breakdown is reused verbatim and NO extra read is issued. An
  * unfiltered Sessions view therefore performs exactly the reads it did before.
  * Only a dimension the user actually filtered on costs one additional
- * metadata-only aggregate (`getSharedAgentSessionUsage` prefers the SQL
- * COUNT/SUM/GROUP BY path — it never hydrates the corpus).
+ * grouped SQLite aggregate for supported filters. Evidence-derived or search
+ * filters still take the bounded fallback.
  *
  * ## What is deliberately NOT relaxed
  *

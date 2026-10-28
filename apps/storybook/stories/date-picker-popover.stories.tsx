@@ -3,9 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 
 const meta = {
-  title: "Design System/Primitives/Date Picker Popover",
+  title: "Composites v1.0/Inputs/Date Picker Popover",
   component: DatePickerPopover,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     onSelect: () => {},
   },

@@ -1,5 +1,7 @@
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
+import { branchPushBackfillService } from "@/app/branches/branch-push-backfill-service";
 import { validateCronSecret } from "@/lib/auth/cron-secret";
 import { scheduleLogFlush } from "@/lib/route-utils";
 import { githubPullRequestReconcilerService } from "./service";
@@ -21,12 +23,20 @@ export const GET = async (request: Request): Promise<Response> => {
   if (denied) {
     return denied;
   }
+  waitUntil(
+    branchPushBackfillService.runNext().catch((error) => {
+      log.warn(`${LOG_PREFIX} Branch pusher backfill failed`, {
+        error: parseError(error),
+      });
+      scheduleLogFlush();
+    })
+  );
   try {
     const summary = await githubPullRequestReconcilerService.run();
     log.info(`${LOG_PREFIX} sweep completed`, summary);
     scheduleLogFlush();
     return new Response(
-      `OK: swept ${summary.reposSwept}, deferred ${summary.reposDeferredBudget}, reclassified ${summary.reposReclassified}, failed ${summary.reposFailed}, wrote ${summary.pullRequestsWritten}`,
+      `OK: swept ${summary.reposSwept}, deferred ${summary.reposDeferredBudget} budget / ${summary.reposDeferredContention} contention, reclassified ${summary.reposReclassified}, failed ${summary.reposFailed}, wrote ${summary.pullRequestsWritten}`,
       { status: 200 }
     );
   } catch (error) {

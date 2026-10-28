@@ -1,9 +1,9 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
-import { SessionOrigin, type TransactionClient, withDb } from "@repo/database";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { captureSystemSessionStatusChange } from "@/lib/artifact-activity-recording";
+import { getPrismaRawQuerySqlState } from "@/lib/db-utils";
+import { IndexKeyOrigin } from "@/lib/index-key-lookup";
 import { acquireSessionAdvisoryLocks } from "./service/advisory-locks";
 import { resolvePositiveEnvNumber } from "./service/env-config";
 
@@ -14,22 +14,20 @@ async function runStaleSessionSweep(): Promise<StaleSessionSweepResult> {
   const candidates = await withDb((db) =>
     db.sessionDetail.findMany({
       where: {
-        origin: SessionOrigin.DESKTOP_SYNC,
+        // ISS-11129 (operator ruling, 2026-09-24): every origin is closed the
+        // same way at the same cutoff, so the scan carries no origin filter.
+        // This sweep deletes nothing, it closes a session's STATUS.
         artifact: {
           is: {
             status: { in: REAPABLE_SESSION_STATUSES },
           },
         },
-        OR: [
-          { lastActivityAt: { lt: cutoff } },
-          { lastActivityAt: null, sessionStartedAt: { lt: cutoff } },
-        ],
+        lastActivityAt: { lt: cutoff },
       },
       select: {
         artifactId: true,
         externalSessionId: true,
         lastActivityAt: true,
-        sessionStartedAt: true,
       },
       take: STALE_SESSION_BATCH_SIZE,
     })
@@ -103,17 +101,26 @@ async function reapCandidate(
   cutoff: Date
 ): Promise<boolean> {
   await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
-  await acquireSessionAdvisoryLocks(tx, candidate.externalSessionId);
+  // ISS-8200 (review): `candidate.externalSessionId` was READ OUT of
+  // `SessionDetail`, so it is a STORED key. The Wire path would project it
+  // again — and `projectIndexKey` is not idempotent, so an already-projected
+  // key becomes a THIRD value and this sweep would lock a slot the ingest never
+  // takes, which is worse than the shared slot it took before.
+  await acquireSessionAdvisoryLocks(
+    tx,
+    candidate.externalSessionId,
+    IndexKeyOrigin.Stored
+  );
 
   const current = await tx.sessionDetail.findUnique({
     where: { artifactId: candidate.artifactId },
     select: {
       lastActivityAt: true,
-      sessionStartedAt: true,
       endsWithError: true,
       artifact: {
         select: {
           status: true,
+          organizationId: true,
         },
       },
     },
@@ -162,9 +169,17 @@ async function reapCandidate(
   await tx.sessionDetail.update({
     where: { artifactId: candidate.artifactId },
     data: {
-      sessionEndedAt: current.lastActivityAt ?? current.sessionStartedAt,
+      sessionEndedAt: current.lastActivityAt,
       awaitingInputSince: null,
     },
+    select: { artifactId: true },
+  });
+  await captureSystemSessionStatusChange({
+    tx,
+    organizationId: current.artifact.organizationId,
+    artifactId: candidate.artifactId,
+    before: current.artifact.status,
+    after: reapedStatus,
   });
   return true;
 }
@@ -174,11 +189,10 @@ function isReapableStatus(status: string): boolean {
 }
 
 function isStale(
-  session: Pick<StaleSessionCandidate, "lastActivityAt" | "sessionStartedAt">,
+  session: Pick<StaleSessionCandidate, "lastActivityAt">,
   cutoff: Date
 ): boolean {
-  const activityAt = session.lastActivityAt ?? session.sessionStartedAt;
-  return activityAt < cutoff;
+  return session.lastActivityAt < cutoff;
 }
 
 export const FALLBACK_STALE_SESSION_AGE_HOURS = 24;
@@ -189,28 +203,18 @@ const STALE_SESSION_TRANSACTION_TIMEOUT_MS = 30_000;
 const SWEEP_TIME_BUDGET_MS = 240_000;
 /**
  * The stored `artifacts.status` values a sweep may reap, matched literally by
- * the Prisma `in` clauses below — so this list is STORED vocabulary, and the
- * `DISPLAYED_SESSION_STATUS.WAITING` entry in it is deliberate rather than a
- * miscategorization the ISS-5592 split missed (thadeusb, #5007).
+ * the Prisma `in` clauses below — so this list is STORED vocabulary.
  *
- * `waiting` is display vocabulary that nothing is SUPPOSED to store. ISS-5981
- * closed the cloud write path — the ingest now folds every incoming status, so
- * no NEW row can carry it — but rows written before that were not backfilled and
- * still can. Such a row is a live run that can go silent like any other, so
- * dropping this entry would strand exactly those rows as permanently unreapable.
- * Remove it only once those rows are gone; the constant being display-typed is
- * not on its own a reason, and neither is ISS-5981 being closed.
+ * ISS-10364 removed the `waiting` entry. The comment it carried set its own
+ * release condition — "Remove it only once those rows are gone" — and Cosimo
+ * confirmed on 2026-09-23 that no row has ever stored the value, which meets it.
  */
-const REAPABLE_SESSION_STATUSES = [
-  SESSION_STATUS.ACTIVE,
-  DISPLAYED_SESSION_STATUS.WAITING,
-];
+const REAPABLE_SESSION_STATUSES = [SESSION_STATUS.ACTIVE];
 
 type StaleSessionCandidate = {
   artifactId: string;
   externalSessionId: string;
-  lastActivityAt: Date | null;
-  sessionStartedAt: Date;
+  lastActivityAt: Date;
 };
 
 export const staleSessionReaperService = {
@@ -218,21 +222,44 @@ export const staleSessionReaperService = {
   getStaleSessionAgeHours,
 };
 
+/**
+ * ISS-8804: reads the SQLSTATE through {@link getPrismaRawQuerySqlState} rather
+ * than off `error.code` / `error.cause.code`.
+ *
+ * Both of those were dead, and were dead before the Prisma 7.10 bump too: for a
+ * raw failure Prisma sets its own `P2010` on `code` and puts the driver
+ * SQLSTATE in `meta`, and a `PrismaClientKnownRequestError` carries no `cause`.
+ * So the only live check was the message regex — which is why this is a
+ * pre-existing defect and not upgrade fallout.
+ *
+ * WHAT THIS DOES AND DOES NOT COVER, because the distinction decides how much
+ * the regex below is still carrying. `reapCandidate` blocks in two places:
+ *   - the RAW advisory-lock acquisition, which produces the `P2010` envelope
+ *     this extractor reads. Covered.
+ *   - the TYPED writes (`artifact.updateMany`, `sessionDetail.update`), which
+ *     are not raw. Those do not arrive as `P2010`, so the extractor returns
+ *     undefined and the message regex is the only thing classifying them.
+ * Narrowing, not a hole — the regex already did that work — but the structured
+ * read is not a replacement for it on that path, and saying otherwise would
+ * overstate what changed.
+ *
+ * 55P03 only. `isDropContentionError` also accepts 57014, but it may: its
+ * caller sets its own `statement_timeout`, so a cancel there is one it caused.
+ * `reapCandidate` sets only `lock_timeout`, so any 57014 reaching here is an
+ * EXTERNAL cancel — a session/role timeout, a pooler, an operator — and
+ * counting that as contention would suppress the one `log.error` that says a
+ * pathological reap exists.
+ */
 function isLockTimeoutError(error: unknown): boolean {
+  if (getPrismaRawQuerySqlState(error) === "55P03") {
+    return true;
+  }
   if (error instanceof Error) {
-    if ("code" in error && error.code === "55P03") {
-      return true;
-    }
     if (LOCK_TIMEOUT_MESSAGE_RE.test(error.message)) {
       return true;
     }
     if ("cause" in error && error.cause instanceof Error) {
-      if ("code" in error.cause && error.cause.code === "55P03") {
-        return true;
-      }
-      if (LOCK_TIMEOUT_MESSAGE_RE.test(error.cause.message)) {
-        return true;
-      }
+      return LOCK_TIMEOUT_MESSAGE_RE.test(error.cause.message);
     }
   }
   return false;

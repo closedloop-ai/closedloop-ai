@@ -76,8 +76,8 @@ const ARIA_STRUCTURE_RULES = [
 // Deliberately NOT in the list: axe's best-practice `empty-table-header`, which
 // keys on VISIBLE text rather than the accessible name, so it flags the
 // row-actions column even once `ariaLabel` names it. Naming that column is
-// asserted directly below (by accessible name) instead — and the failing side of
-// that contract (a blank column with NO name) has its own regression case below.
+// asserted directly below (by accessible name) instead — as is the arm where no
+// `ariaLabel` is declared at all and the column id becomes that name.
 
 function noop() {
   // Sorting is asserted through `aria-sort`, never by invoking the callback.
@@ -253,26 +253,33 @@ describe("GridTable ARIA table semantics", () => {
     expect(statusHeader).not.toHaveAttribute("aria-sort");
   });
 
-  it("leaves a blank-label column without an ariaLabel with no accessible name", () => {
-    // The label-less-column contract, pinned from the failing side: a blank
-    // `label` with NO `ariaLabel` produces a `columnheader` with no accessible
-    // name at all — the exact hole this PR closes. This is what the two prototype
-    // callers used to ship (`installed` / `actions`); it is asserted here so a
-    // regression that reintroduces a blank-label column without a name is caught,
-    // rather than relying on every caller to remember the rule.
+  it("names a blank-label column from its id when it declares no ariaLabel", () => {
+    // ISS-9706. This case used to pin the label-less contract from the FAILING
+    // side — a blank `label` with NO `ariaLabel` rendered a `columnheader` with
+    // no accessible name at all, which is what the prototype callers shipped
+    // (`installed` / `actions`) and what every body cell in that track was then
+    // announced against. `resolveColumnHeaderAriaLabel` now falls back to the
+    // column id for v1 and v2 alike, so the cell carries the same ugly-but-
+    // unique name its own controls already resolved. An unreadable name beats
+    // no name; the registry still refuses this declaration, and this is the
+    // fallback for the hand-built column it cannot refuse.
     const unnamedColumn: GridTableColumn = { id: "actions", label: "" };
     renderGridTable({ columns: [...COLUMNS, unnamedColumn] });
 
-    const headerCells = within(screen.getByRole("table")).getAllByRole(
-      "row"
-    )[0];
-    const trailingHeader = within(headerCells)
+    const headerRow = within(screen.getByRole("table")).getAllByRole("row")[0];
+    const trailingHeader = within(headerRow)
       .getAllByRole("columnheader")
       .at(-1);
-    // No visible text AND no `aria-label`, so the `columnheader` has an empty
-    // accessible name — nothing for a screen reader to announce the column by.
+    // The id names the column for assistive tech ONLY — nothing unreadable is
+    // painted into the header, so the column still looks blank on screen.
     expect(trailingHeader).toHaveTextContent("");
-    expect(trailingHeader).not.toHaveAttribute("aria-label");
+    expect(trailingHeader).toHaveAttribute("aria-label", unnamedColumn.id);
+    // And that attribute is what the accessible-name algorithm actually
+    // resolves to: looked up by NAME rather than by attribute, so a name landing
+    // on some other element — or assembled from something else — fails here.
+    expect(
+      within(headerRow).getByRole("columnheader", { name: unnamedColumn.id })
+    ).toBe(trailingHeader);
   });
 
   it("keeps a collapsible group header inside the table's reading order", () => {

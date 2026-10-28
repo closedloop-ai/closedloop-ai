@@ -6,8 +6,12 @@ import {
   autoRollbackTransaction,
   createTestOrganization,
 } from "@/__tests__/utils/db-helpers";
-import { computeNextRetryAt } from "@/app/cron/reconcile-pull-requests/repo-reconciler";
+import {
+  persistFailureSettlement,
+  RECONCILE_UNEXPECTED_FAILURE_REASON,
+} from "@/app/cron/reconcile-pull-requests/repo-reconciler";
 import { GitHubRepoSyncTier } from "@/lib/github/github-repo-sync-state";
+import { computeNextRetryAt } from "@/lib/github/github-retry-backoff";
 
 const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
@@ -179,6 +183,88 @@ describe.skipIf(!hasDatabase)(
         );
         expect(final?.consecutiveFailureCount).toBe(0);
         expect(final?.nextRetryAt).toBeNull();
+      });
+    });
+
+    it("ISS-6589: an unstamped settlement backs the row off while preserving its queue position", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const now = new Date("2026-08-14T12:00:00.000Z");
+        const sweptAt = new Date("2026-08-10T00:00:00.000Z");
+
+        const row = await seedSyncState(orgId, {
+          consecutiveFailureCount: 0,
+          nextRetryAt: null,
+          lastSweptAt: sweptAt,
+        });
+
+        await persistFailureSettlement(
+          {
+            organizationId: orgId,
+            repositoryFullName: row.repositoryFullName,
+            consecutiveFailureCount: 0,
+          },
+          now,
+          { stampSwept: false, reason: RECONCILE_UNEXPECTED_FAILURE_REASON }
+        );
+
+        const settled = await withDb((db) =>
+          db.gitHubRepoSyncState.findUnique({
+            where: { id: row.id },
+            select: {
+              consecutiveFailureCount: true,
+              nextRetryAt: true,
+              lastSweptAt: true,
+            },
+          })
+        );
+        expect(settled?.consecutiveFailureCount).toBe(1);
+        expect(settled?.nextRetryAt).toEqual(computeNextRetryAt(1, now));
+        // The load-bearing half: an omitted column really is left alone, so the
+        // oldest-swept-first queue is not reordered by a fault.
+        expect(settled?.lastSweptAt).toEqual(sweptAt);
+
+        // And the row is genuinely out of the batch until the window elapses —
+        // the whole point of settling a throw.
+        expect(await queryDueRepos(orgId, now)).toHaveLength(0);
+        expect(
+          await queryDueRepos(orgId, computeNextRetryAt(1, now))
+        ).toHaveLength(1);
+      });
+    });
+
+    it("ISS-6589: repeated throws escalate the window instead of re-heading the batch", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const now = new Date("2026-08-14T12:00:00.000Z");
+
+        const row = await seedSyncState(orgId, {
+          consecutiveFailureCount: 1,
+          nextRetryAt: computeNextRetryAt(1, now),
+        });
+
+        const secondThrowAt = computeNextRetryAt(1, now);
+        await persistFailureSettlement(
+          {
+            organizationId: orgId,
+            repositoryFullName: row.repositoryFullName,
+            consecutiveFailureCount: 1,
+          },
+          secondThrowAt,
+          { stampSwept: false, reason: RECONCILE_UNEXPECTED_FAILURE_REASON }
+        );
+
+        const settled = await withDb((db) =>
+          db.gitHubRepoSyncState.findUnique({
+            where: { id: row.id },
+            select: { consecutiveFailureCount: true, nextRetryAt: true },
+          })
+        );
+        expect(settled?.consecutiveFailureCount).toBe(2);
+        expect(settled?.nextRetryAt).toEqual(
+          computeNextRetryAt(2, secondThrowAt)
+        );
+        expect(await queryDueRepos(orgId, secondThrowAt)).toHaveLength(0);
       });
     });
 

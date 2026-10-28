@@ -18,8 +18,8 @@
  * predicate nobody reaches.
  */
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
 import type { IpcMainInvokeEvent } from "electron";
+import { test, vi } from "vitest";
 import { rethrowAsBranchSourceError } from "../src/main/branch/branch-read-boundaries.js";
 import { createDbIpcHandlerWrappers } from "../src/main/dashboard/agent-dashboard-ipc-handler-wrappers.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "../src/main/dashboard/agent-dashboard-runtime-options.js";
@@ -54,6 +54,9 @@ function fakeRuntimeOptions(
     getWindow: () => null,
     isTrustedSender,
     onTerminalFailure: () => {
+      // unused
+    },
+    setAgentMonitorRuntimeStatus: () => {
       // unused
     },
   } as AgentDashboardDesignSystemRuntimeOptions;
@@ -97,7 +100,7 @@ test("a Branches read abandoned by the shutdown resolves the sentinel, not a rej
 });
 
 test("a genuine Branches failure still rejects with the sanitized code", async () => {
-  const isTrustedSender = mock.fn(() => true);
+  const isTrustedSender = vi.fn(() => true);
   const handler = branchHandlerRejecting(
     new Error("SQLITE_ERROR: no such column: branches.bogus"),
     isTrustedSender

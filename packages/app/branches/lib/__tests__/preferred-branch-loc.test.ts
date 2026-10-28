@@ -40,19 +40,22 @@ describe("resolvePreferredBranchLoc", () => {
   it.each([
     { additions: 12, deletions: null },
     { additions: null, deletions: 4 },
-  ])("refuses to fabricate the missing side when only one dimension is present (%o)", (columns) => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 42,
-      ...columns,
-    });
+  ])(
+    "refuses to fabricate the missing side when only one dimension is present (%o)",
+    (columns) => {
+      const detail = makeBranchDetail({
+        repoFullName: "octo/repo",
+        prNumber: 42,
+        ...columns,
+      });
 
-    const loc = resolvePreferredBranchLoc(detail);
+      const loc = resolvePreferredBranchLoc(detail);
 
-    expect(loc.additions).toBeNull();
-    expect(loc.deletions).toBeNull();
-    expect(loc.churn).toBeNull();
-  });
+      expect(loc.additions).toBeNull();
+      expect(loc.deletions).toBeNull();
+      expect(loc.churn).toBeNull();
+    }
+  );
 
   it("tolerates a detail that has not loaded yet", () => {
     expect(resolvePreferredBranchLoc(undefined).churn).toBeNull();

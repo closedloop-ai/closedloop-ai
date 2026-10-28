@@ -59,6 +59,9 @@ vi.mock("socket.io", () => {
   };
   return {
     Server: class MockServer {
+      // Engine.IO stub: index.ts attaches a `connection_error` listener to
+      // `io.engine` at module load, so a Server double without one crashes on import.
+      engine = { on: vi.fn() };
       of() {
         return mockNamespace;
       }
@@ -138,13 +141,18 @@ afterEach(() => {
 /**
  * Recursively serialize a log argument to a string for pattern matching.
  * This handles both string messages and object arguments.
+ *
+ * Errors are expanded by `expandErrors` first. Without that the scanner below
+ * cannot see inside one at all, which is the shape the auth path actually logs
+ * (`index.ts` puts the rejection under `error`, after `vercel-client.ts` has
+ * scrubbed any credential out of its message and stack).
  */
 function serializeLogArg(arg: unknown): string {
   if (typeof arg === "string") {
     return arg;
   }
   try {
-    return JSON.stringify(arg);
+    return JSON.stringify(arg, expandErrors);
   } catch {
     return String(arg);
   }
@@ -410,9 +418,14 @@ describe("T-6.3: auth validation log security — no key material or raw body in
 
     const socket = makeMockSocket("socket-logsec-6", RAW_API_KEY);
 
+    // The rejection carries the key it was sent with, which is the shape a
+    // transport failure can actually take here — this is the one client that
+    // posts a raw `sk_live_` key. An innocuous "Network timeout" would let the
+    // production catch hand a secret-bearing rejection straight to the logger
+    // with nothing here to notice.
     globalThis.fetch = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Network timeout"));
+      .mockRejectedValueOnce(new Error(`verify failed for ${RAW_API_KEY}`));
 
     await new Promise<void>((resolve) => {
       (capturedMiddleware as SocketMiddlewareFn)(socket, () => {
@@ -421,6 +434,12 @@ describe("T-6.3: auth validation log security — no key material or raw body in
     });
 
     const allOutput = collectAllLogOutput();
+
+    // The rejection has to REACH the scanner for the two loops below to say
+    // anything: a catch that stops passing it under `error`, or any change that
+    // keeps it away from the serializer, leaves a suite proving only that no log
+    // was written. The message survives scrubbed, so this pins both halves.
+    expect(allOutput.join("\n")).toContain("verify failed for");
 
     // No log argument should contain the raw API key
     for (const output of allOutput) {
@@ -433,3 +452,26 @@ describe("T-6.3: auth validation log security — no key material or raw body in
     }
   });
 });
+
+describe("the leak scanner itself", () => {
+  it("sees a secret an Error carries, which the scanner used to be blind to", () => {
+    // `message` and `stack` are non-enumerable, so a bare `JSON.stringify` of
+    // `{ error }` collapses to `{"error":{}}` and every case above passes over
+    // a key-bearing rejection without seeing it.
+    expect(
+      serializeLogArg({ error: new Error(`verify failed for ${RAW_API_KEY}`) })
+    ).toContain(RAW_API_KEY);
+  });
+});
+
+/**
+ * `JSON.stringify` replacer that turns an Error into its own enumerable shape.
+ * Applies at every depth, so an Error nested under a log payload's `error` key
+ * is expanded too.
+ */
+function expandErrors(_key: string, value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  return value;
+}

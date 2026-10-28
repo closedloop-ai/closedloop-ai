@@ -87,31 +87,35 @@
  * is a batch-source property. A file harness re-parses one transcript, where the
  * replay is cheap and the cursor would only add risk.
  *
+ * ## Where it is persisted
+ *
+ * ISS-9839: in SQLite, alongside the session data the cursor names, rather than
+ * in a JSON file in the ingest state dir. The medium reaches this module only as
+ * {@link BatchResumeCursorStore} — a narrow injected port — because `collectors/`
+ * may not import `agentDatabase` or `@repo/database` (ISS-9837 R1c).
+ *
  * ## Bounds
  *
  * One entry per in-flight source, dropped at that source's DURABLE terminal
  * outcome, and cleared wholesale on stop. {@link MAX_SESSION_IDS_PER_SOURCE}
  * caps the recorded ids for a single source so a pathological corpus cannot grow
- * the map or the persisted file without limit; past the cap the cursor simply
+ * the map or the persisted payload without limit; past the cap the cursor simply
  * stops fast-forwarding (those sessions are re-read and re-imported, which is
  * correct, only slower), which is the honest degradation rather than a silent
  * unbounded write.
  */
-import {
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 
 /**
- * Bump when the persisted cursor format changes so a differently-shaped file
+ * Bump when the persisted cursor format changes so a differently-shaped payload
  * from an older build is discarded wholesale rather than mis-parsed. A discarded
  * cursor costs one replayed prefix, never correctness.
+ *
+ * ISS-9839 (ISS-9837 R3): WHOLE-STORE, deliberately. A version discriminates a
+ * FORMAT, and a format is a property of the store rather than of a row, so this
+ * is one value for the whole persisted payload and never a per-row column.
+ * Per-row versioning is the option with the data-loss shape: it makes selective
+ * retention of rows a newer build misreads easy.
  */
 const PERSIST_VERSION = 2;
 
@@ -130,68 +134,102 @@ const FLUSH_INTERVAL_MS = 10_000;
 export const MAX_SESSION_IDS_PER_SOURCE = 100_000;
 
 /**
- * Ceiling on distinct source keys loaded from disk. Only in-flight sources hold a
- * cursor, and there is one batch harness, so this is a backstop against a file
- * that accumulated orphans (a store deleted, or a collector toggled off, before
+ * Ceiling on distinct source keys loaded from the persisted payload. Only
+ * in-flight sources hold a cursor, and there is one batch harness, so this is a
+ * backstop against a payload that accumulated orphans (a store deleted, or a collector toggled off, before
  * its source ever reached a terminal outcome) rather than a normal-path limit.
  */
 export const MAX_CURSOR_SOURCES = 64;
 
 /**
- * ISS-5161 (wongk review): byte ceiling applied BEFORE the file is read, so an
- * oversized or corrupt cursor can never be materialized and walked on the
+ * ISS-5161 (whitlockk review): byte ceiling applied BEFORE the payload is read, so
+ * an oversized or corrupt cursor can never be materialized and walked on the
  * Electron main thread. The collection caps below bound what this module
  * WRITES, but they are enforced by validation — which only runs after the whole
  * payload has already been read and parsed — so they cannot bound an
- * adversarial or corrupt file. This can, and it is the only bound that runs
- * before any allocation proportional to the file.
+ * adversarial or corrupt payload. This can, and it is the only bound that runs
+ * before any allocation proportional to it. That is why the port asks
+ * {@link BatchResumeCursorStore.byteLength} before
+ * {@link BatchResumeCursorStore.read}.
  *
- * Sized at ~2x the largest file this module can legitimately produce for one
+ * Sized at ~2x the largest payload this module can legitimately produce for one
  * saturated source ({@link MAX_SESSION_IDS_PER_SOURCE} ids at a generous ~70
  * bytes of JSON each), because only in-flight sources hold a cursor and there
- * is one batch harness. A file above it is treated exactly like any other
+ * is one batch harness. A payload above it is treated exactly like any other
  * unreadable cursor: reported, and resumed without (the prefix replays once).
  */
-export const MAX_CURSOR_FILE_BYTES = 16 * 1024 * 1024;
+export const MAX_CURSOR_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 /**
- * Zod validator for the persisted file. This is unknown JSON at a persistence
- * boundary, so it is validated rather than `typeof`-checked: a hand-edited or
- * truncated file must load as "no cursor" (replay the prefix once) and never as
- * a partially-trusted cursor that could skip sessions it never imported.
+ * Zod validator for the persisted cursor map. This is unknown JSON at a
+ * persistence boundary, so it is validated rather than `typeof`-checked: a
+ * hand-edited or truncated payload must load as "no cursor" (replay the prefix
+ * once) and never as a partially-trusted cursor that could skip sessions it
+ * never imported.
  *
- * ISS-5161 (wongk review): the collection caps are declared HERE rather than
- * applied as a post-validation `slice`, so an over-cap file is rejected as
+ * ISS-5161 (whitlockk review): the collection caps are declared HERE rather than
+ * applied as a post-validation `slice`, so an over-cap payload is rejected as
  * invalid instead of silently truncated to an arbitrary subset. Rejection is
  * the same honest degradation as any other corrupt cursor — replay the prefix
  * once — whereas an arbitrary truncation keeps a partially-trusted cursor.
+ *
+ * ISS-9839: the format version is no longer inside this object — it is the
+ * store-wide {@link PersistedBatchResumeCursors.version}, checked before this
+ * runs, so a foreign format never reaches the shape validator at all.
  */
-const persistedCursorsSchema = z.object({
-  version: z.number(),
-  cursors: z
-    .record(
-      z.string(),
-      z.object({
-        /**
-         * The store fingerprint these ids were recorded under. `null` only for a
-         * collector that exposes no `sourceFingerprint`, which cannot be validated
-         * and is therefore never honored from disk.
-         */
-        fingerprint: z.string().nullable(),
-        sessionIds: z.array(z.string()).max(MAX_SESSION_IDS_PER_SOURCE),
-      })
-    )
-    .refine((cursors) => Object.keys(cursors).length <= MAX_CURSOR_SOURCES, {
-      message: `more than ${MAX_CURSOR_SOURCES} cursor sources`,
-    }),
-});
+const persistedCursorsSchema = z
+  .record(
+    z.string(),
+    z.object({
+      /**
+       * The store fingerprint these ids were recorded under. `null` only for a
+       * collector that exposes no `sourceFingerprint`, which cannot be validated
+       * and is therefore never honored from a persisted payload.
+       */
+      fingerprint: z.string().nullable(),
+      sessionIds: z.array(z.string()).max(MAX_SESSION_IDS_PER_SOURCE),
+    })
+  )
+  .refine((cursors) => Object.keys(cursors).length <= MAX_CURSOR_SOURCES, {
+    message: `more than ${MAX_CURSOR_SOURCES} cursor sources`,
+  });
+
+/**
+ * The persisted payload: the store's FORMAT version plus the serialized cursor
+ * map. One value for the whole store — see {@link PERSIST_VERSION}.
+ */
+export type PersistedBatchResumeCursors = {
+  version: number;
+  cursors: string;
+};
+
+/**
+ * ISS-9839 (ISS-9837 R1c): the narrow durable-backing port. `collectors/` may
+ * not import `agentDatabase` or `@repo/database`, so the runtime injects the
+ * implementation — the same shape `CollectorManager` already uses for
+ * `importer` and `emit`.
+ *
+ * Every method is async because the desktop store is Prisma over libSQL, where
+ * a write is a write-back rather than the `writeFileSync` this replaced. That
+ * costs nothing the guarantee depended on; see {@link BatchResumeCursors.flush}.
+ */
+export type BatchResumeCursorStore = {
+  /**
+   * Byte size of the persisted payload, or `null` when nothing is persisted
+   * yet. Asked BEFORE {@link BatchResumeCursorStore.read} so an oversized
+   * payload is never materialized — see {@link MAX_CURSOR_PAYLOAD_BYTES}.
+   */
+  byteLength: () => Promise<number | null>;
+  read: () => Promise<PersistedBatchResumeCursors | null>;
+  write: (payload: PersistedBatchResumeCursors) => Promise<void>;
+};
 
 export type BatchResumeCursorsOptions = {
-  /** Absolute path of the persisted cursor file; omitted = memory-only. */
-  persistPath?: string;
+  /** Durable backing for the cursor; omitted = memory-only. */
+  store?: BatchResumeCursorStore;
   /**
    * The MONITORED diagnostic sink (the same `CollectorManager` logger that emits
-   * `collector <key> …`). A corrupt cursor file is recoverable but is not
+   * `collector <key> …`). A corrupt cursor is recoverable but is not
    * nothing: it means durable state this process wrote came back unreadable, so
    * it is reported rather than swallowed. Omitted = a no-op, as in tests.
    */
@@ -223,18 +261,27 @@ export class BatchResumeCursors {
    */
   private readonly awaitingValidation = new Set<string>();
   private loggedFlushFailure = false;
-  private readonly persistPath: string | null;
+  private loggedOversizedPayload = false;
+  private readonly store: BatchResumeCursorStore | null;
   private readonly log: (message: string) => void;
   private readonly now: () => number;
-  private loaded = false;
+  /**
+   * The one in-flight hydrate, memoized. The load is async now, so a second
+   * caller arriving mid-read must join it rather than see a `loaded` flag the
+   * first caller set before its rows arrived and read an empty map.
+   */
+  private loadPromise: Promise<void> | null = null;
+  /**
+   * Flushes are serialized on this chain. `stop()` can flush while an in-flight
+   * `noteImported` is already awaiting one, and two concurrent writes would both
+   * observe `dirty` before either cleared it.
+   */
+  private flushChain: Promise<void> = Promise.resolve();
   private dirty = false;
   private lastFlushAt: number;
 
   constructor(options: BatchResumeCursorsOptions = {}) {
-    this.persistPath =
-      typeof options.persistPath === "string" && options.persistPath.length > 0
-        ? options.persistPath
-        : null;
+    this.store = options.store ?? null;
     this.log = options.log ?? (() => undefined);
     this.now = options.now ?? Date.now;
     this.lastFlushAt = this.now();
@@ -246,13 +293,13 @@ export class BatchResumeCursors {
    * `currentFingerprint` is the store fingerprint captured by THIS pass's pending
    * scan. Every cursor is gated on it — see {@link validateEntry}.
    */
-  isImported(
+  async isImported(
     key: string,
     source: string,
     sessionId: string,
     currentFingerprint: string | null
-  ): boolean {
-    this.ensureLoaded();
+  ): Promise<boolean> {
+    await this.ensureLoaded();
     const mapKey = cursorKey(key, source);
     this.validateEntry(mapKey, currentFingerprint);
     return this.bySource.get(mapKey)?.ids.has(sessionId) === true;
@@ -263,13 +310,13 @@ export class BatchResumeCursors {
    * a later process — skips it. Persisted on a throttle so a hard kill loses at
    * most one interval's worth of fast-forward rather than the whole pass.
    */
-  noteImported(
+  async noteImported(
     key: string,
     source: string,
     sessionId: string,
     currentFingerprint: string | null
-  ): void {
-    this.ensureLoaded();
+  ): Promise<void> {
+    await this.ensureLoaded();
     const mapKey = cursorKey(key, source);
     // Validating BEFORE recording is what pins the fingerprint: if the store has
     // moved since this entry was created, the prefix it holds is no longer known
@@ -285,7 +332,7 @@ export class BatchResumeCursors {
         ids: new Set([sessionId]),
       });
       this.dirty = true;
-      this.flushIfDue();
+      await this.flushIfDue();
       return;
     }
     if (entry.ids.size >= MAX_SESSION_IDS_PER_SOURCE) {
@@ -298,7 +345,7 @@ export class BatchResumeCursors {
     }
     entry.ids.add(sessionId);
     this.dirty = true;
-    this.flushIfDue();
+    await this.flushIfDue();
   }
 
   /**
@@ -355,15 +402,15 @@ export class BatchResumeCursors {
    * Dropping it there sent the next pass back to session zero on any transient
    * parse failure.
    */
-  forget(key: string, source: string): void {
-    this.ensureLoaded();
+  async forget(key: string, source: string): Promise<void> {
+    await this.ensureLoaded();
     const mapKey = cursorKey(key, source);
     this.awaitingValidation.delete(mapKey);
     if (!this.bySource.delete(mapKey)) {
       return;
     }
     this.dirty = true;
-    this.flush();
+    await this.flush();
   }
 
   /**
@@ -386,75 +433,48 @@ export class BatchResumeCursors {
    * has no write to retry, so it always releases.
    */
   clear(): void {
-    if (this.persistPath !== null && this.dirty) {
+    if (this.store !== null && this.dirty) {
       return;
     }
     this.bySource.clear();
     this.awaitingValidation.clear();
-    this.loaded = false;
+    this.loadPromise = null;
     this.dirty = false;
   }
 
-  /** Persist the cursors (best-effort; no-op when not dirty / memory-only). */
-  flush(): void {
-    if (!(this.persistPath && this.dirty)) {
-      return;
+  /**
+   * Persist the cursors (best-effort; no-op when not dirty / memory-only).
+   *
+   * ISS-9839 (ISS-9837 R4): what this store guarantees is an ORDERING invariant
+   * — the cursor must never name a session whose data is not already committed —
+   * and NOT a synchrony property of the `writeFileSync` this replaced. The gate
+   * that enforces it is the caller's (`collector-manager.ts` checkpoints only a
+   * FULLY-COMMITTED session), so an async write-back cannot violate it: a write
+   * that never lands leaves the cursor BEHIND committed data, which replays a
+   * prefix, never AHEAD of it, which would skip one. What the synchronous write
+   * bought was a bound on that replay, and that bound was already
+   * {@link FLUSH_INTERVAL_MS} rather than zero.
+   *
+   * Serialized through {@link BatchResumeCursors.flushChain}: two concurrent
+   * writes would both observe `dirty` before either cleared it.
+   */
+  flush(): Promise<void> {
+    const payload = this.takeDirtyPayload();
+    if (payload === null) {
+      return this.flushChain;
     }
-    // Same-directory temp file + atomic rename, and `dirty` cleared only after the
-    // write succeeds (mirroring `parse-quarantine.ts`): a reader always sees either
-    // the old valid file or the new complete one, never a truncated one, and a
-    // failed write stays retryable.
-    const tmpPath = `${this.persistPath}.${process.pid}.${this.now()}.tmp`;
-    try {
-      mkdirSync(path.dirname(this.persistPath), { recursive: true });
-      // `Object.fromEntries`, not a `{}` accumulator: it defines own properties,
-      // so a source path colliding with an inherited key cannot pollute the
-      // prototype of the object being written. (Such a key is dropped by
-      // `z.record` on the way back IN, so it does not round-trip — that is
-      // acceptable: a dropped cursor costs one replayed prefix, never a skip.)
-      const cursors = Object.fromEntries(
-        [...this.bySource].map(([key, entry]) => [
-          key,
-          { fingerprint: entry.fingerprint, sessionIds: [...entry.ids] },
-        ])
-      );
-      writeFileSync(
-        tmpPath,
-        JSON.stringify({ version: PERSIST_VERSION, cursors })
-      );
-      renameSync(tmpPath, this.persistPath);
-      this.dirty = false;
-      this.lastFlushAt = this.now();
-    } catch (error) {
-      // ISS-5161 (review H2): advance the throttle even on failure. `dirty` stays
-      // set so the write is retried, but leaving `lastFlushAt` behind would make
-      // `flushIfDue` true for EVERY subsequent session — turning a read-only state
-      // dir into a per-session write storm on the import hot path. Report it once
-      // per instance for the same reason: this is the monitored `collector …`
-      // channel, not a per-session debug line.
-      this.lastFlushAt = this.now();
-      if (!this.loggedFlushFailure) {
-        this.loggedFlushFailure = true;
-        this.log(
-          `collector batch resume cursor flush failed at ${this.persistPath}: ${errorText(error)}; the pass stays correct in memory and retries the write (further flush failures for this run are not repeated)`
-        );
-      }
-      try {
-        rmSync(tmpPath, { force: true });
-      } catch {
-        /* the temp file is already gone or unremovable — nothing further to do */
-      }
-    }
+    this.flushChain = this.flushChain.then(() => this.writePayload(payload));
+    return this.flushChain;
   }
 
   /** Cursor entries currently held (one per in-flight source). Test observability. */
-  size(): number {
-    this.ensureLoaded();
+  async size(): Promise<number> {
+    await this.ensureLoaded();
     return this.bySource.size;
   }
 
   /**
-   * ISS-5161 (wongk review): has this source's cursor hit
+   * ISS-5161 (whitlockk review): has this source's cursor hit
    * {@link MAX_SESSION_IDS_PER_SOURCE}, so it can no longer record progress?
    *
    * A mid-source yield is only progress-preserving while the cursor can record
@@ -466,51 +486,62 @@ export class BatchResumeCursors {
    * completion instead; the per-session cooperative delay still keeps the main
    * thread responsive, and the SOURCE-level yield after it still runs.
    */
-  isSaturated(key: string, source: string): boolean {
-    this.ensureLoaded();
+  async isSaturated(key: string, source: string): Promise<boolean> {
+    await this.ensureLoaded();
     const entry = this.bySource.get(cursorKey(key, source));
     return (entry?.ids.size ?? 0) >= MAX_SESSION_IDS_PER_SOURCE;
   }
 
-  private flushIfDue(): void {
+  private flushIfDue(): Promise<void> {
     if (this.now() - this.lastFlushAt >= FLUSH_INTERVAL_MS) {
-      this.flush();
+      return this.flush();
     }
+    return Promise.resolve();
   }
 
-  private ensureLoaded(): void {
-    if (this.loaded) {
+  /**
+   * Lazy hydrate (ISS-9837 R1b), memoized on the PROMISE rather than a flag: the
+   * read is async now, so a flag set before the rows arrive would let a second
+   * caller read an empty map and report a recorded session as un-imported.
+   */
+  private ensureLoaded(): Promise<void> {
+    this.loadPromise ??= this.load();
+    return this.loadPromise;
+  }
+
+  private async load(): Promise<void> {
+    const store = this.store;
+    if (!store) {
       return;
     }
-    this.loaded = true;
-    if (!this.persistPath) {
+    const payload = await this.readPersisted(store);
+    if (payload === null) {
       return;
     }
-    const raw = this.readPersistedFile(this.persistPath);
-    if (raw === null) {
+    if (payload.version !== PERSIST_VERSION) {
+      // A different format version is expected across an upgrade and is
+      // discarded silently — WHOLESALE, never row by row (ISS-9837 R3). It costs
+      // one replayed prefix.
       return;
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(payload.cursors);
     } catch (error) {
       this.log(
-        `collector batch resume cursor unreadable at ${this.persistPath}: ${errorText(error)}; resuming without it (the store's prefix is replayed once)`
+        `collector batch resume cursor unreadable: ${errorText(error)}; resuming without it (the store's prefix is replayed once)`
       );
       return;
     }
     const validated = persistedCursorsSchema.safeParse(parsed);
-    if (!(validated.success && validated.data.version === PERSIST_VERSION)) {
-      // A different format version is expected across an upgrade and is discarded
-      // silently; a same-shape file that fails validation is corrupt and reported.
-      if (!validated.success) {
-        this.log(
-          `collector batch resume cursor invalid at ${this.persistPath}: ${validated.error.message}; resuming without it (the store's prefix is replayed once)`
-        );
-      }
+    if (!validated.success) {
+      // A same-version payload that fails validation is corrupt, and is reported.
+      this.log(
+        `collector batch resume cursor invalid: ${validated.error.message}; resuming without it (the store's prefix is replayed once)`
+      );
       return;
     }
-    for (const [key, entry] of Object.entries(validated.data.cursors)) {
+    for (const [key, entry] of Object.entries(validated.data)) {
       this.bySource.set(key, {
         fingerprint: entry.fingerprint,
         ids: new Set(entry.sessionIds),
@@ -523,33 +554,139 @@ export class BatchResumeCursors {
 
   /**
    * Read the persisted cursor, or `null` when there is nothing trustworthy to
-   * load. Two distinctions the previous bare `catch` collapsed:
+   * load. Two distinctions a bare `catch` would collapse:
    *
-   * - ISS-5161 (wongk review): only ENOENT is the ordinary first-launch case. A
-   *   permission or I/O error means durable resume is silently OFF — the exact
-   *   failure this cursor exists to prevent — so it goes to the MONITORED
-   *   `collector …` channel rather than being swallowed as "no file yet".
-   * - The size is checked before the read, so an oversized file is rejected
+   * - ISS-5161 (whitlockk review): only "nothing persisted yet" is the ordinary
+   *   first-launch case, and the port reports that as `null` rather than by
+   *   throwing. A read that THROWS means durable resume is silently OFF — the
+   *   exact failure this cursor exists to prevent — so it goes to the MONITORED
+   *   `collector …` channel rather than being swallowed as "no cursor yet".
+   * - The size is asked before the read, so an oversized payload is rejected
    *   without ever being materialized on the main thread.
    */
-  private readPersistedFile(persistPath: string): string | null {
+  private async readPersisted(
+    store: BatchResumeCursorStore
+  ): Promise<PersistedBatchResumeCursors | null> {
     try {
-      const { size } = statSync(persistPath);
-      if (size > MAX_CURSOR_FILE_BYTES) {
+      const bytes = await store.byteLength();
+      if (bytes === null) {
+        return null;
+      }
+      if (bytes > MAX_CURSOR_PAYLOAD_BYTES) {
         this.log(
-          `collector batch resume cursor oversized at ${persistPath}: ${size} bytes exceeds the ${MAX_CURSOR_FILE_BYTES}-byte ceiling; resuming without it (the store's prefix is replayed once)`
+          `collector batch resume cursor oversized: ${bytes} bytes exceeds the ${MAX_CURSOR_PAYLOAD_BYTES}-byte ceiling; resuming without it (the store's prefix is replayed once)`
         );
         return null;
       }
-      return readFileSync(persistPath, "utf8");
+      return await store.read();
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-        this.log(
-          `collector batch resume cursor unreadable at ${persistPath}: ${errorText(error)}; resuming without it (the store's prefix is replayed once, and durable resume stays off until the read succeeds)`
-        );
-      }
+      this.log(
+        `collector batch resume cursor unreadable: ${errorText(error)}; resuming without it (the store's prefix is replayed once, and durable resume stays off until the read succeeds)`
+      );
       return null;
     }
+  }
+
+  /**
+   * Serialize the current map and clear `dirty` — SYNCHRONOUSLY, on the caller's
+   * own turn rather than inside the microtask that performs the write. A
+   * `noteImported` that runs in between would otherwise ride along in a payload
+   * the caller believed it had already committed, and `stop()`'s awaited flush
+   * would report a cursor it had not actually written. `null` = nothing to
+   * write.
+   */
+  private takeDirtyPayload(): PersistedBatchResumeCursors | null {
+    if (!(this.store && this.dirty)) {
+      return null;
+    }
+    // `Object.fromEntries`, not a `{}` accumulator: it defines own properties,
+    // so a source path colliding with an inherited key cannot pollute the
+    // prototype of the object being written. (Such a key is dropped by
+    // `z.record` on the way back IN, so it does not round-trip — that is
+    // acceptable: a dropped cursor costs one replayed prefix, never a skip.)
+    const cursors = Object.fromEntries(
+      [...this.bySource].map(([key, entry]) => [
+        key,
+        { fingerprint: entry.fingerprint, sessionIds: [...entry.ids] },
+      ])
+    );
+    // Cleared HERE rather than after the write resolves: an entry recorded while
+    // that write is in flight is not in this payload, so clearing on the way out
+    // would drop it. A failed write sets the flag again below.
+    this.dirty = false;
+    return {
+      version: PERSIST_VERSION,
+      cursors: JSON.stringify(cursors),
+    };
+  }
+
+  private async writePayload(
+    payload: PersistedBatchResumeCursors
+  ): Promise<void> {
+    const store = this.store;
+    if (!store) {
+      return;
+    }
+    if (this.isOverBudget(payload)) {
+      return;
+    }
+    try {
+      await store.write(payload);
+      this.lastFlushAt = this.now();
+    } catch (error) {
+      // ISS-5161 (review H2), preserved as ISS-9837 C3: a failed write keeps
+      // `dirty` so it is retried, advances the throttle anyway, and logs once.
+      // Leaving `lastFlushAt` behind would make `flushIfDue` true for EVERY
+      // subsequent session — turning an unwritable store into a per-session write
+      // storm on the import hot path. Report it once per instance for the same
+      // reason: this is the monitored `collector …` channel, not a per-session
+      // debug line.
+      this.dirty = true;
+      this.lastFlushAt = this.now();
+      if (!this.loggedFlushFailure) {
+        this.loggedFlushFailure = true;
+        this.log(
+          `collector batch resume cursor flush failed: ${errorText(error)}; the pass stays correct in memory and retries the write (further flush failures for this run are not repeated)`
+        );
+      }
+    }
+  }
+
+  /**
+   * ISS-9839 (davetho review): the WRITE half of
+   * {@link MAX_CURSOR_PAYLOAD_BYTES}. The read gate alone bounds what is
+   * MATERIALIZED, not what is stored: the collection caps admit
+   * {@link MAX_CURSOR_SOURCES} sources of {@link MAX_SESSION_IDS_PER_SOURCE} ids
+   * each, so this module can legitimately produce a payload the reader will then
+   * refuse — serialized, cloned across the db-host boundary, and persisted, only
+   * to be discarded on the next launch. Refusing it here costs the same replayed
+   * prefix and none of that work.
+   *
+   * Measured on `cursors` alone, in BYTES, because that is exactly the quantity
+   * the read gate measures (`length(CAST("cursors" AS BLOB))`). A write gate
+   * counting anything else would admit payloads the reader rejects, which is the
+   * disagreement this exists to close.
+   *
+   * `dirty` is deliberately LEFT SET: entries are dropped at each source's
+   * durable terminal outcome, so the next payload can be back under budget and
+   * must then be written. The throttle is advanced for the same reason the
+   * flush-failure path advances it — otherwise every subsequent session would
+   * re-serialize an over-budget map on the import hot path.
+   */
+  private isOverBudget(payload: PersistedBatchResumeCursors): boolean {
+    const bytes = Buffer.byteLength(payload.cursors, "utf8");
+    if (bytes <= MAX_CURSOR_PAYLOAD_BYTES) {
+      return false;
+    }
+    this.dirty = true;
+    this.lastFlushAt = this.now();
+    if (!this.loggedOversizedPayload) {
+      this.loggedOversizedPayload = true;
+      this.log(
+        `collector batch resume cursor oversized: produced ${bytes} bytes, above the ${MAX_CURSOR_PAYLOAD_BYTES}-byte ceiling; not persisted (the pass stays correct in memory and the store's prefix is replayed once)`
+      );
+    }
+    return true;
   }
 }
 
@@ -559,16 +696,4 @@ function cursorKey(key: string, source: string): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Node's filesystem errors carry a `code` (`ENOENT`, `EACCES`, `EIO`, …). It is
- * read through a validator rather than a `typeof` chain because the caught value
- * is `unknown` at this boundary.
- */
-const nodeErrorSchema = z.object({ code: z.string() });
-
-function errorCode(error: unknown): string | undefined {
-  const parsed = nodeErrorSchema.safeParse(error);
-  return parsed.success ? parsed.data.code : undefined;
 }

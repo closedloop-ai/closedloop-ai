@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Delivered watermark for the Claude Code telemetry sync lane (ISS-10717); no view reads it."
+}

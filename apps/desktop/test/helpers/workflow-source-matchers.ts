@@ -2,7 +2,7 @@
  * Deciding, from GitHub workflow SOURCE, whether a step actually RUNS a
  * command.
  *
- * Split out of `run-node-tests-job-cap.test.ts` (ISS-6410 review, wongk): that
+ * Split out of `run-node-tests-job-cap.test.ts` (ISS-6410 review, whitlockk): that
  * guard is only ever as good as this decision, and a decision with its own
  * defeat space deserves its own module and its own counterfactuals.
  *

@@ -3,7 +3,7 @@
  * @description ISS-4795 — leading-slash command frontmatter through BOTH
  * definition-collector producers.
  *
- * wongk (PR #4322): "Where's the regression that sends leading-slash frontmatter
+ * whitlockk (PR #4322): "Where's the regression that sends leading-slash frontmatter
  * through both collector paths? The current helper and live-materializer tests
  * stay green if either changed caller goes back to prefixing the slash."
  *
@@ -33,11 +33,11 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import {
   createNormalizedSession,
   HarnessImportMode,
 } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
   captureInvocationDefinitionEvidence,

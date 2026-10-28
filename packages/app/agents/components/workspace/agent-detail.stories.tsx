@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { AGENTS_DEFINITION_EMPTY_STATE_FEATURE_FLAG_KEY } from "../../../shared/lib/feature-flags";
 import type { AgentComponentsDataSource } from "../../data-source/agent-components-data-source";
 import { AgentComponentsDataSourceProvider } from "../../data-source/provider";
+import { createAgentSessionListItemFixture } from "../sessions/session-list-fixtures";
 import { makeDetail } from "./agent-component-fixtures";
 import { AgentDetail } from "./agent-detail";
 
@@ -81,9 +82,11 @@ const COMPLETE_HISTORY_DETAIL = makeDetail({
 });
 
 const meta: Meta<typeof AgentDetail> = {
-  title: "App Core/Agents/Agent Detail",
+  title: "Surfaces v1.0/Agents/Agent Detail",
+  tags: ["deprecated"],
   component: AgentDetail,
-  parameters: { layout: "fullscreen" },
+  // No controls: these stories exercise canonical data-source payloads and route tabs.
+  parameters: { layout: "fullscreen", controls: { disable: true } },
 };
 
 export default meta;
@@ -207,6 +210,59 @@ export const DefinitionAbsenceFlagOff: Story = {
   decorators: [storyDecorator(NEVER_RECORDED_DETAIL)],
 };
 
+export const UnknownMetrics: Story = {
+  args: { backHref: "/acme/agents", slug: "subagent::unknown" },
+  decorators: [
+    storyDecorator(
+      makeDetail({
+        slug: "subagent::unknown",
+        invocations: null,
+        sessions: null,
+        locPerDollar: null,
+        mergedPrs: null,
+      })
+    ),
+  ],
+};
+
+export const MeasuredZeroMetrics: Story = {
+  args: { backHref: "/acme/agents", slug: "subagent::zero" },
+  decorators: [
+    storyDecorator(
+      makeDetail({
+        slug: "subagent::zero",
+        invocations: 0,
+        sessions: 0,
+        locPerDollar: null,
+        mergedPrs: 0,
+        mergedPrsTruncated: false,
+      })
+    ),
+  ],
+};
+
+export const PagedSessions: Story = {
+  args: { backHref: "/acme/agents", slug: "subagent::review" },
+  decorators: [
+    storyDecorator(
+      makeDetail({
+        slug: "subagent::review",
+        name: "Design review",
+        sessions: 52,
+        sessionsTab: Array.from({ length: 52 }, (_, index) =>
+          createAgentSessionListItemFixture({
+            id: `review-session-${index}`,
+            name:
+              index % 2 === 0
+                ? "Review artifact detail interactions"
+                : "Validate responsive comment rail",
+          })
+        ),
+      })
+    ),
+  ],
+};
+
 function revision(index: number, isCurrent: boolean): ComponentVersion {
   return {
     hash: `hash000${index}`,
@@ -221,6 +277,7 @@ function revision(index: number, isCurrent: boolean): ComponentVersion {
 function detailSource(detail: AgentComponentDetail): AgentComponentsDataSource {
   return {
     scope: "story-agent-detail",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in these stories")),
     detail: () => Promise.resolve(detail),
   };

@@ -70,12 +70,6 @@ export function AgentCard({
         <AgentStatusBadge status={agent.status} />
       </div>
 
-      {agent.task ? (
-        <p className="mt-3 line-clamp-2 text-muted-foreground text-xs leading-relaxed">
-          {agent.task}
-        </p>
-      ) : null}
-
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         {agent.currentTool ? (
           <span className="inline-flex items-center gap-1">

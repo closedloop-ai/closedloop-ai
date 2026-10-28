@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { ImportPauseGate } from "../src/main/collectors/engine/collector-manager-import-pause";
 
 /**
- * ISS-5115 (wongk review): the startup panel used to render a pause REQUEST as
+ * ISS-5115 (whitlockk review): the startup panel used to render a pause REQUEST as
  * an outcome, claiming history processing had stopped while the collector was
  * still mid-scan. `isParked()` is the acknowledgement channel that fixed it, so
  * its divergence from `isPaused()` is the contract under test here.

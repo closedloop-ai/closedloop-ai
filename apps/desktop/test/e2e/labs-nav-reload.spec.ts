@@ -12,6 +12,8 @@ import { expect, test } from "@playwright/test";
 import { DESKTOP_LABS_NAV_SECTION_STORAGE_KEY } from "../../src/renderer/components/layout/sidebar-persistence";
 import { launchDesktopApp } from "./helpers/desktop-app";
 
+const INSIGHTS_LINK_NAME = "Insights";
+
 test.describe("Labs nav reload persistence", () => {
   test("keeps Labs expanded after a full desktop renderer reload", async () => {
     const { app, page, pageErrors, cleanup } = await launchDesktopApp({
@@ -21,12 +23,16 @@ test.describe("Labs nav reload persistence", () => {
     try {
       const labsToggle = page.getByRole("button", { name: "Labs" });
       await expect(labsToggle).toHaveAttribute("aria-expanded", "false");
-      await expect(page.getByRole("link", { name: "Insights" })).toHaveCount(0);
+      await expect(
+        page.getByRole("link", { name: INSIGHTS_LINK_NAME })
+      ).toHaveCount(0);
 
       await labsToggle.click();
 
       await expect(labsToggle).toHaveAttribute("aria-expanded", "true");
-      await expect(page.getByRole("link", { name: "Insights" })).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: INSIGHTS_LINK_NAME })
+      ).toBeVisible();
       await expect
         .poll(() =>
           page.evaluate(
@@ -48,7 +54,9 @@ test.describe("Labs nav reload persistence", () => {
         "aria-expanded",
         "true"
       );
-      await expect(page.getByRole("link", { name: "Insights" })).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: INSIGHTS_LINK_NAME })
+      ).toBeVisible();
       const persistedAfterReload = await page.evaluate(
         (key) => window.localStorage.getItem(key),
         DESKTOP_LABS_NAV_SECTION_STORAGE_KEY

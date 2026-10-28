@@ -2,15 +2,14 @@
 
 import type { AgentComponentInvocationAnchor } from "@repo/api/src/types/agent-component-invocation";
 import type { TurnItem } from "@repo/api/src/types/agent-session";
-import { cn } from "@repo/design-system/lib/utils";
 import { memo } from "react";
 import {
   containsHarnessTag,
   renderTraceEventContent,
 } from "./trace-harness-tags";
+import { TraceMarkBullet } from "./trace-mark-bullet";
 import {
   formatTraceTimestamp,
-  getEventDotClassName,
   invocationAnchorTarget,
 } from "./trace-row-utils";
 
@@ -43,7 +42,6 @@ export const TraceEventRow = memo(function TraceEventRow({
   invocationAnchor?: AgentComponentInvocationAnchor | null;
   onJump?: (row: number) => void;
 }>) {
-  const dotClassName = getEventDotClassName(group.item.dot);
   // A folded harness tag renders as a chip whose head is a `<button>`. Never wrap
   // such a row in the clickable separator `<button>` below: it would be a button
   // inside a button (invalid DOM) and expanding the chip would bubble a timeline
@@ -57,9 +55,13 @@ export const TraceEventRow = memo(function TraceEventRow({
   );
   const content = (
     <>
-      {dotClassName ? (
-        <span aria-hidden className={cn("st-sys-dot", dotClassName)} />
-      ) : null}
+      {/* ISS-12117: the same mark the timeline rail above draws for this
+          event, so a click on a crimson diamond lands on one (Branch detail's
+          rail keeps its round dots; see `TraceMarkBullet`). Steering (`b`)
+          rows stay bulletless, as before. */}
+      {group.item.dot === "b" ? null : (
+        <TraceMarkBullet color={group.item.dot} />
+      )}
       <span className="st-sysline-text">
         {renderTraceEventContent(group.item.text, onJump)}
       </span>

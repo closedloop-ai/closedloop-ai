@@ -88,10 +88,13 @@ export const METRIC_CARD_LABEL_JOIN_SLOT = "metric-card-label-join";
 /** The inner half of the island: the label text, wrapping normally. */
 export const METRIC_CARD_LABEL_TEXT_SLOT = "metric-card-label-text";
 
+/** The muted label a card shows where it has no value to state. */
+export const METRIC_CARD_NO_DATA_LABEL = "No data";
+
 /**
  * The `delta`/`deltaPolarity` pair, as a discriminated union so a numeric
  * `delta` cannot be rendered without the metric declaring which direction is
- * good (ISS-4633, wongk review on #4148). There is deliberately NO
+ * good (ISS-4633, whitlockk review on #4148). There is deliberately NO
  * `deltaPolarity` default: a default would let any future spend/latency card omit
  * the semantic decision and silently compile back to the green-rise reading this
  * PR removes. A caller that has a period-over-period number MUST state its
@@ -100,7 +103,7 @@ export const METRIC_CARD_LABEL_TEXT_SLOT = "metric-card-label-text";
  *
  * Only the `delta`/`deltaPolarity` pair is unioned; the other delta-slot fields
  * (`deltaLabel`, `deltaCapped`, `deltaPlaceholder`, `sparkline`) stay on the base
- * so the change is exactly wongk's ask — pair the semantic decision — without
+ * so the change is exactly whitlockk's ask — pair the semantic decision — without
  * churning every call site's placeholder wiring.
  */
 type MetricCardDeltaProps =
@@ -141,6 +144,20 @@ type MetricCardBaseProps = {
   unitLabel?: ReactNode;
   detail?: ReactNode;
   trend?: ReactNode;
+  /**
+   * A breakdown of the headline into named parts, rendered beneath the footer.
+   *
+   * Compose it from `MetricCardLane` / `MetricCardLaneList` so the share and
+   * figure columns line up across every consumer. The slot is a `ReactNode` and
+   * not a structured prop on purpose: what the parts MEAN, how they are
+   * classified and whether they reconcile are domain facts, and this package is
+   * gated from domain code. The card owns where they sit and how they align; the
+   * consumer owns what they say.
+   *
+   * Absent on every existing consumer, and an absent slot renders nothing, so
+   * this is additive to the shipped card.
+   */
+  lanes?: ReactNode;
   className?: string;
   /** Short explainer rendered in an info popover beside the label. */
   info?: { what: string; how?: string };
@@ -175,7 +192,26 @@ type MetricCardBaseProps = {
    * the delta chip renders a real sparkline of the trend instead of a static
    * up/down icon. Falls back to the icon when fewer than two points exist.
    */
-  sparkline?: Array<number | null | undefined>;
+  sparkline?: readonly (number | null | undefined)[];
+  /**
+   * Draw {@link sparkline} in the delta slot even when this card has no
+   * comparable numeric delta (ISS-10363).
+   *
+   * The series and the delta are two different operands answering two different
+   * questions — what the period looked like, and how it compares to the one
+   * before it. Shipped, the trend mark lives INSIDE the delta chip, so a card
+   * with a valid series and no prior window drew nothing: one absent operand
+   * deleted a capability computed from the other. On Branches that is every card
+   * in every window, because no producer supplies a prior figure (ISS-10208).
+   *
+   * This is an ISS-4779 rollout opt-in, NOT a judgment about the data: it lets
+   * each of this primitive's four surfaces adopt the standalone mark behind its
+   * own PostHog gate instead of inheriting a new look from a primitive bump, the
+   * same reason {@link deltaTreatment} defaults to Legacy. It can only ever ADD
+   * the mark — a card that is off renders byte-for-byte what it ships today, and
+   * a card that is on still draws nothing without two finite points.
+   */
+  sparklineWithoutDelta?: boolean;
   /**
    * Renders the card at reduced opacity with a "Sample" badge to flag that its
    * value is placeholder data pending real backend wiring.
@@ -210,6 +246,24 @@ type MetricCardBaseProps = {
   valueUnavailable?: boolean;
   /** Copy for the no-data value slot when `valueUnavailable` is set. */
   valueUnavailableLabel?: ReactNode;
+  /**
+   * Render NOTHING at all — no card, no glyph, no caption — when the metric is
+   * not computable, instead of the muted "No data" slot (ISS-9730).
+   *
+   * Off by default because this package is shared by Sessions, Branches, the
+   * Insights dashboard, the packs cards and the desktop renderer, and the
+   * ISS-4779 closed-by-default policy requires each surface to opt in through
+   * its own gate rather than inherit a changed look from a primitive bump — the
+   * same reason {@link MetricCardBaseProps.deltaTreatment} takes a prop. In
+   * `packages/app`, resolve it with `useMetricCardHideUnavailable()`.
+   *
+   * ONLY the not-computable state hides. `loading` keeps its skeleton (a row
+   * that sheds cards mid-fetch and grows them back is worse than a placeholder)
+   * and `muted` — a FAILED read — keeps rendering, because an error is not an
+   * absence and hiding it removes the reader's only signal. A real `0` is a
+   * fact about the population and was never a no-data state to begin with.
+   */
+  hideWhenUnavailable?: boolean;
 };
 
 // A numeric `delta` carries a required `deltaPolarity` (see `MetricCardDeltaProps`);
@@ -224,6 +278,7 @@ export function MetricCard({
   unitLabel,
   detail,
   trend,
+  lanes,
   className,
   info,
   delta,
@@ -231,22 +286,32 @@ export function MetricCard({
   deltaCapped = false,
   // No polarity default: the discriminated `MetricCardDeltaProps` union makes
   // `deltaPolarity` required whenever `delta` is a number, so a rising figure
-  // can never silently fall back to the green-rise reading (wongk review, #4148).
+  // can never silently fall back to the green-rise reading (whitlockk review, #4148).
   deltaPolarity,
   deltaLabel,
   deltaTreatment = MetricDeltaTreatment.Legacy,
   sparkline,
+  sparklineWithoutDelta = false,
   placeholder = false,
   muted = false,
   loading = false,
   valueUnavailable = false,
-  valueUnavailableLabel = "No data",
+  valueUnavailableLabel = METRIC_CARD_NO_DATA_LABEL,
+  hideWhenUnavailable = false,
   ...props
 }: MetricCardProps) {
   // A nullish value IS a no-data state — derive it so callers never keep a dead
   // `value` in sync beside the flag (FEA-4236). An explicit `valueUnavailable`
   // still forces the slot for a non-null placeholder value.
   const noData = valueUnavailable || value == null;
+  // `loading` and `muted` are checked here, not by the caller: they are the two
+  // states this hide must never swallow (ISS-9730). Hiding a hydrating card
+  // makes the row shed and regrow cards mid-fetch; hiding a FAILED read deletes
+  // the reader's only signal that something broke, which would turn a
+  // presentation change into a silent honesty regression.
+  if (hideWhenUnavailable && noData && !(loading || muted)) {
+    return null;
+  }
   // `deltaPolarity` is present iff `delta` is a number (the `MetricCardDeltaProps`
   // union), but destructuring severs that link for the type checker — so gate on
   // both here to narrow the pair for the chip/caption, which each require a
@@ -254,7 +319,7 @@ export function MetricCard({
   // A non-finite delta (NaN / ±Infinity from a caller without its own finite
   // guard — e.g. a percent-change over a zero base) is really "no comparison",
   // not a real movement: without this it would slip through as a false "down"
-  // and render a bogus chip (shafty023 review on #4148). Reject it here so the
+  // and render a bogus chip (davetho review on #4148). Reject it here so the
   // card falls to the no-comparison placeholder instead of grading a non-number.
   const showDelta =
     delta !== undefined &&
@@ -264,11 +329,20 @@ export function MetricCard({
   // fills the SAME delta slot (not a different footer corner) so the layout stays
   // stable.
   const showDeltaPlaceholder = !showDelta && Boolean(deltaPlaceholder);
+  // ISS-10363: the chip owns the mark whenever there IS a chip, so this is the
+  // no-chip case only — never a second sparkline beside the first.
+  const showStandaloneSparkline =
+    sparklineWithoutDelta &&
+    !showDelta &&
+    sparkline !== undefined &&
+    countFinitePoints(sparkline) >= MIN_SPARKLINE_POINTS;
   const hasFooter =
     Boolean(detail) ||
     Boolean(trend) ||
+    Boolean(lanes) ||
     showDelta ||
-    showDeltaPlaceholder;
+    showDeltaPlaceholder ||
+    showStandaloneSparkline;
 
   return (
     <Card
@@ -290,7 +364,7 @@ export function MetricCard({
       >
         <div className="min-w-0 space-y-1">
           {/* The label region carries NO height floor of its own (ISS-4787
-              review, wongk): a reservation here would charge every consumer,
+              review, whitlockk): a reservation here would charge every consumer,
               including the Insights KPI tiles that are pinned to a fixed 156px
               host and would push their trend footer into the grid gutter. The
               shared-baseline reservation belongs to the surface that actually
@@ -390,8 +464,22 @@ export function MetricCard({
               />
             </div>
           ) : null}
-          {showDeltaPlaceholder ? (
+          {showStandaloneSparkline || showDeltaPlaceholder ? (
             <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {showStandaloneSparkline ? (
+                <span className="inline-flex items-center text-muted-foreground">
+                  <Sparkline
+                    className="shrink-0"
+                    height={SPARKLINE_HEIGHT}
+                    values={sparkline ?? []}
+                    width={SPARKLINE_WIDTH}
+                  />
+                  {/* The mark is `aria-hidden`, so standing alone it would be
+                      silent to a screen reader — the chip that normally carries
+                      it also carries the percentage that names it. */}
+                  <span className="sr-only">{STANDALONE_SPARKLINE_LABEL}</span>
+                </span>
+              ) : null}
               {deltaPlaceholder}
             </div>
           ) : null}
@@ -407,6 +495,7 @@ export function MetricCard({
               ) : null}
             </div>
           ) : null}
+          {lanes}
         </CardContent>
       ) : null}
     </Card>
@@ -461,7 +550,7 @@ function MetricDeltaChip({
   treatment,
 }: {
   delta: number;
-  sparkline?: Array<number | null | undefined>;
+  sparkline?: readonly (number | null | undefined)[];
   polarity: MetricPolarity;
   capped?: boolean;
   treatment: MetricDeltaTreatment;
@@ -476,11 +565,7 @@ function MetricDeltaChip({
   const sentiment = deltaSentiment(delta, polarity);
   // Render a real sparkline of the metric's trend when we have enough points;
   // otherwise fall back to the directional icon.
-  const finitePoints = sparkline
-    ? sparkline.filter(
-        (value) => typeof value === "number" && Number.isFinite(value)
-      ).length
-    : 0;
+  const finitePoints = countFinitePoints(sparkline);
   // Delegate the display string to the shared `formatDeltaPct` SSOT so a capped
   // magnitude reads as ">999%" / "<-999%" identically here and in the Insights
   // `TrendBadge` (FEA-3959/3960). `capped` from the caller marks a pre-clamped
@@ -559,11 +644,16 @@ function renderDeltaGlyph({
   finitePoints: number;
   flat: boolean;
   rising: boolean;
-  sparkline?: Array<number | null | undefined>;
+  sparkline?: readonly (number | null | undefined)[];
 }): ReactNode {
-  if (finitePoints >= 2 && sparkline) {
+  if (finitePoints >= MIN_SPARKLINE_POINTS && sparkline) {
     return (
-      <Sparkline className="shrink-0" height={11} values={sparkline} width={26} />
+      <Sparkline
+        className="shrink-0"
+        height={SPARKLINE_HEIGHT}
+        values={sparkline}
+        width={SPARKLINE_WIDTH}
+      />
     );
   }
   if (flat) {
@@ -573,4 +663,33 @@ function renderDeltaGlyph({
     return <TrendingUpIcon className="size-3" />;
   }
   return <TrendingDownIcon className="size-3" />;
+}
+
+/**
+ * The trend mark's geometry, shared by the in-chip and standalone placements so
+ * the same series cannot be drawn at two sizes on one row (ISS-10363).
+ */
+const SPARKLINE_WIDTH = 26;
+const SPARKLINE_HEIGHT = 11;
+
+/** Two points make a line; one is a dot claiming to be a trend. */
+const MIN_SPARKLINE_POINTS = 2;
+
+/**
+ * What the standalone mark says to a screen reader. It names the mark and its
+ * scope and stops there: the shape is the whole statement, and inventing a
+ * direction word here would grade a trend this component has not been told how
+ * to grade (`deltaPolarity` is absent exactly when this mark stands alone).
+ */
+const STANDALONE_SPARKLINE_LABEL = "Trend across the period";
+
+function countFinitePoints(
+  sparkline: readonly (number | null | undefined)[] | undefined
+): number {
+  if (!sparkline) {
+    return 0;
+  }
+  return sparkline.filter(
+    (value) => typeof value === "number" && Number.isFinite(value)
+  ).length;
 }

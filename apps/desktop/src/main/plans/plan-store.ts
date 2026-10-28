@@ -12,7 +12,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
   PlanRecord,
@@ -111,16 +111,47 @@ export function planKeyFor(capture: PlanCapture): string {
 // Title extraction (from plan-extractor.js)
 // ---------------------------------------------------------------------------
 
+const HEADING_RE = /^\s{0,3}#\s+([\s\S]*)$/;
+const WHITESPACE_RE = /\s/;
+const LINE_TERMINATOR_RE = /[\n\r\u{2028}\u{2029}]/u;
+
+function stripHeadingClosers(body: string): string {
+  let end = body.length;
+  while (end > 0 && WHITESPACE_RE.test(body[end - 1])) {
+    end--;
+  }
+  while (end > 0 && body[end - 1] === "#") {
+    end--;
+  }
+  while (end > 0 && WHITESPACE_RE.test(body[end - 1])) {
+    end--;
+  }
+  // Not a defensive guard: HEADING_RE's greedy `\s+` means body[0] is never
+  // whitespace, so end reaches 0 only when body is all `#`. Keeping one char
+  // reproduces the old regex, which returned "#" for "# ###". A caller whose
+  // body can start with whitespace would get a bare space back.
+  return body.slice(0, Math.max(1, end));
+}
+
 export function titleFromMarkdown(
   markdown: string | null | undefined,
   fallback: string
 ): string {
   if (typeof markdown === "string") {
     for (const rawLine of markdown.split("\n", 40)) {
-      const m = /^\s{0,3}#\s+(.+?)\s*#*\s*$/.exec(rawLine);
-      if (m?.[1].trim()) {
-        return m[1].trim().slice(0, 200);
+      const m = HEADING_RE.exec(rawLine);
+      if (!m?.[1]) {
+        continue;
       }
+      const head = stripHeadingClosers(m[1]);
+      if (LINE_TERMINATOR_RE.test(head)) {
+        continue;
+      }
+      const title = head.trim();
+      if (!title) {
+        continue;
+      }
+      return title.slice(0, 200);
     }
   }
   return fallback;
@@ -201,7 +232,7 @@ export function makeCapture(opts: {
 
 export function extractPlansFromPlansDir(plansDir: string): PlanCapture[] {
   const out: PlanCapture[] = [];
-  let entries: import("node:fs").Dirent[];
+  let entries: Dirent[];
   try {
     entries = readdirSync(plansDir, { withFileTypes: true, encoding: "utf8" });
   } catch {

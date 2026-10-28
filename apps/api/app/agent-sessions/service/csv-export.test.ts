@@ -33,21 +33,22 @@ describe("agentSessionsService", () => {
             sessionStartedAt: SESSION_STARTED_AT,
             harness: "claude",
             model: "claude-sonnet-4",
-            user: {
-              id: "user-1",
-              email: "ada@example.com",
-              firstName: "Ada",
-              lastName: "Lovelace",
-              avatarUrl: null,
-              teamMemberships: [
-                {
-                  team: {
-                    name: "Platform",
-                  },
-                },
-              ],
-            },
             artifact: {
+              // ISS-12251 D-4: the export's person is the session's creator.
+              createdBy: {
+                id: "user-1",
+                email: "<redacted-email>",
+                firstName: "Ada",
+                lastName: "Lovelace",
+                avatarUrl: null,
+                teamMemberships: [
+                  {
+                    team: {
+                      name: "Platform",
+                    },
+                  },
+                ],
+              },
               project: {
                 name: "Agent Platform",
               },
@@ -92,15 +93,17 @@ describe("agentSessionsService", () => {
       sessionStartedAt: SESSION_STARTED_AT,
       harness: "claude",
       model: "claude-sonnet-4",
-      user: {
-        id: "user-1",
-        email: "ada@example.com",
-        firstName: "Ada",
-        lastName: "Lovelace",
-        avatarUrl: null,
-        teamMemberships: [{ team: { name: "Platform" } }],
+      artifact: {
+        createdBy: {
+          id: "user-1",
+          email: "ada@example.com",
+          firstName: "Ada",
+          lastName: "Lovelace",
+          avatarUrl: null,
+          teamMemberships: [{ team: { name: "Platform" } }],
+        },
+        project: { name: "Agent Platform" },
       },
-      artifact: { project: { name: "Agent Platform" } },
       tokenUsageByModel: [],
     });
 
@@ -169,34 +172,23 @@ describe("agentSessionsService", () => {
     await agentSessionsService.findExportRows(input);
 
     // The `where` the export streams over must be the IDENTICAL cohort the table
-    // resolves for the same filters: the `lastActivityAt` OR-window (with the
-    // null-lastActivityAt fallback to sessionStartedAt), NOT a bare
-    // `sessionStartedAt` range. A non-cost-sensitive query resolves
+    // resolves for the same filters: the `lastActivityAt` window (one comparison
+    // since ISS-6463 made the column NOT NULL), NOT a bare `sessionStartedAt`
+    // range. A non-cost-sensitive query resolves
     // `buildUsageSummaryWhere` straight to `buildWhere(..., "lastActivityAt")`, so
     // deep-equality against that seam pins the cohort exactly.
     const exportWhere = findMany.mock.calls[0]?.[0]?.where;
-    const tableWhere = buildWhere(input, input.filters, "lastActivityAt");
+    const tableWhere = await buildWhere(input, input.filters, "lastActivityAt");
     expect(exportWhere).toEqual(tableWhere);
 
     // Explicit cohort shape: the cross-boundary session (active-in-range but
     // started-before-range) is kept via the lastActivityAt window, and the
     // export never falls back to the bare "started in range" predicate the bug
     // used.
-    expect(exportWhere.OR).toEqual([
-      {
-        lastActivityAt: {
-          gte: new Date(input.filters.startDate),
-          lte: new Date(input.filters.endDate),
-        },
-      },
-      {
-        lastActivityAt: null,
-        sessionStartedAt: {
-          gte: new Date(input.filters.startDate),
-          lte: new Date(input.filters.endDate),
-        },
-      },
-    ]);
+    expect(exportWhere.lastActivityAt).toEqual({
+      gte: new Date(input.filters.startDate),
+      lte: new Date(input.filters.endDate),
+    });
     expect(exportWhere.sessionStartedAt).toBeUndefined();
   });
 });

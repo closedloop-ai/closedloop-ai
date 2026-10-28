@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { SessionTraceToolRowDetail } from "./session-trace-tool-row-detail";
 
 /**
- * FEA-3696 (wongk review, PR #4256): the expanded panel for one tool-call row,
+ * FEA-3696 (whitlockk review, PR #4256): the expanded panel for one tool-call row,
  * lifted out of `session-trace.tsx` into its own module in the same change.
  *
  * The TRUTHFUL empty state is the whole point of FEA-3696 — a cloud row whose
@@ -23,9 +23,9 @@ function buildTool(overrides: Partial<ToolItem> = {}): ToolItem {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Trace Tool Row Detail",
+  title: "Composites v1.0/Agents/Detail/Session Trace Tool Row Detail",
   component: SessionTraceToolRowDetail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     tool: buildTool({

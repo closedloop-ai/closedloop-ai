@@ -1,5 +1,5 @@
 import { ArtifactSubtype } from "@repo/api/src/types/artifact";
-import { type Artifact, ArtifactType, withDb } from "@repo/database";
+import { type Artifact, type ArtifactType, withDb } from "@repo/database";
 
 /**
  * Cross-type artifact reads. Owns the general/CRUD surface that does not
@@ -16,6 +16,32 @@ export const artifactService = {
     return withDb((db) =>
       db.artifact.findUnique({
         where: { id, organizationId },
+      })
+    );
+  },
+
+  /**
+   * Find a bounded set of artifacts by id within an organization.
+   */
+  findByIds(
+    ids: readonly string[],
+    organizationId: string
+  ): Promise<Pick<Artifact, "id" | "type">[]> {
+    const artifactIds = [...new Set(ids)];
+    if (artifactIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    return withDb((db) =>
+      db.artifact.findMany({
+        where: {
+          id: { in: artifactIds },
+          organizationId,
+        },
+        select: {
+          id: true,
+          type: true,
+        },
       })
     );
   },
@@ -43,45 +69,6 @@ export const artifactService = {
           subtype: { not: ArtifactSubtype.Template },
         },
         orderBy: { createdAt: "desc" },
-      })
-    );
-  },
-
-  /**
-   * List templates (DOCUMENT artifacts that live on the sentinel project) for
-   * an organization.
-   */
-  listTemplates(organizationId: string): Promise<Artifact[]> {
-    return withDb((db) =>
-      db.artifact.findMany({
-        where: {
-          organizationId,
-          type: ArtifactType.DOCUMENT,
-          subtype: ArtifactSubtype.Template,
-        },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-  },
-
-  /**
-   * Fetch the outbound links (this artifact is the source) for a given artifact.
-   */
-  findSourceLinks(artifactId: string, organizationId: string) {
-    return withDb((db) =>
-      db.artifactLink.findMany({
-        where: { sourceId: artifactId, organizationId },
-      })
-    );
-  },
-
-  /**
-   * Fetch the inbound links (this artifact is the target) for a given artifact.
-   */
-  findTargetLinks(artifactId: string, organizationId: string) {
-    return withDb((db) =>
-      db.artifactLink.findMany({
-        where: { targetId: artifactId, organizationId },
       })
     );
   },

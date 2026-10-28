@@ -14,34 +14,14 @@
  * inventory reads `0 / 0 / —`. A list-level assertion written over identical
  * rows is an assertion that cannot fail.
  *
- * THE TWO PREDICATES A NAIVE USAGE SEED SILENTLY FAILS
- * ---------------------------------------------------
- * Writing `agent_component_session_usage` rows alone is NOT enough to put a
- * `locPerDollar` on screen, and the reason is not visible from the usage table:
- *
- *  1. `locPerDollarForKind` (`src/main/dashboard/shared-agent-components-api.ts`)
- *     returns null for any kind outside `isLocPerDollarVerifiableKind`, which
- *     today is `subagent` ALONE. A `skill`/`command` row can carry a thousand
- *     invocations and still render an em-dash in the Metric column.
- *  2. The LOC numerator is `sessionLocalGitLoc` (`src/main/session/
- *     session-loc-cost.ts`), i.e. `gitDiffStats` — and `gitDiffStats` is
- *     populated by `sync-source.ts`'s `gitLocRows` query, whose `authored_sessions`
- *     CTE requires the session to own at least one `session_artifact_links` row
- *     with `relation = 'created'` pointing at a `kind = 'commit'` artifact.
- *     BOTH of that query's lanes sit behind that gate, including the
- *     branch/PR-total fallback. So the existing
- *     `seedSessionDetailLocPerDollarBranch` corpus (a `kind='branch'` artifact
- *     and no commit) — which is enough for the SESSION-DETAIL ratio, because
- *     that one reads `sessionLocPerDollarNumeratorLoc`'s `max(gitLoc, branchLoc)`
- *     and `branchLocRows` is ungated — yields `gitDiffStats: undefined` here,
- *     `totalLoc = 0`, and `locPerDollarFromLines` returning null.
- *
- * So this module seeds an authored COMMIT artifact per session, not a branch
- * one, and defaults components to `subagent`. `agent-component-usage-read-path.test.ts`
- * executes {@link agentComponentUsageBatchItems} against an ephemeral migrated
- * store and reads the result back through the production
- * `listAgentComponentsLocal`, so the corpus is proven to survive the real read
- * predicates rather than merely to have been inserted.
+ * Components default to `subagent`, the only kind whose per-component LOC/$
+ * attribution is verifiable (`isLocPerDollarVerifiableKind`); any other kind
+ * renders the Metric em-dash regardless of usage.
+ * `agent-component-usage-read-path.test.ts` executes
+ * {@link agentComponentUsageBatchItems} against an ephemeral migrated store and
+ * reads the result back through the production `listAgentComponentsLocal`, so
+ * the corpus is proven to survive the real read predicates rather than merely
+ * to have been inserted.
  *
  * Substrate contract is `desktop-seed-core.ts`'s, unchanged: open a SECOND
  * `@libsql/client` connection on the app's own `agent-dashboard.sqlite` (the
@@ -76,7 +56,7 @@ export type SeedBatchItem = {
   args: Array<string | number | null>;
 };
 
-/** An invoking session, and the authored churn + spend its LOC/$ divides. */
+/** An invoking session, and the spend its LOC/$ divides. */
 export type AgentComponentUsageSessionSeed = {
   /** `sessions.id`, and the `agent_component_session_usage.session_id` it is invoked from. */
   sessionId: string;
@@ -89,21 +69,11 @@ export type AgentComponentUsageSessionSeed = {
    * ON SCREEN must set it.
    */
   name?: string | null;
-  /**
-   * Authored COMMIT churn. Seeded onto a `kind='commit'` artifact linked
-   * `relation='created'`, because that is the only shape `gitLocRows` accepts —
-   * see the module docstring. `linesAdded + linesRemoved` is the LOC/$ numerator.
-   */
-  linesAdded: number;
-  linesRemoved: number;
-  filesChanged?: number;
   /** GitHub-style "owner/repo" for the commit artifact's identity. */
   repoFullName?: string;
   /**
-   * The session's priced spend — the LOC/$ denominator. OMIT for the
-   * "unavailable metric" control: with no `token_usage` row the summed cost is
-   * 0 and `locPerDollarFromLines` returns null (never a fabricated 0), so the
-   * component renders the Metric column's em-dash while still carrying real
+   * The session's priced spend. OMIT for the "unpriced" control: no
+   * `token_usage` row is written, while the component still carries real
    * invocation and session counts. Same explicit-undefined convention as
    * `seedSessionDetailLocPerDollarBranch`'s `costUsd`.
    */
@@ -226,10 +196,12 @@ const DEFAULT_REPO_FULL_NAME = "acme/seeded-repo";
 const DEFAULT_HARNESS = "claude";
 
 /**
- * The current `DATA_REVISION`, PINNED rather than imported — see the long note
- * on the `sessions` INSERT below for why the value matters at all.
+ * The current data revision, PINNED rather than imported — see the long note
+ * on the `sessions` INSERT below for why the value matters at all. ISS-12552
+ * (PRD-800 "Rollout"): a launched app with no flag answer runs the base
+ * parse policy, so this is `DATA_REVISION_BASE`.
  *
- * It cannot be imported here. `DATA_REVISION` lives in
+ * It cannot be imported here. The revision lives in
  * `src/main/collectors/engine/data-revision.ts`, which imports
  * `src/main/database/db-constants.ts`, which imports
  * `@repo/api/src/types/session-artifact-link` WITHOUT a file extension — the
@@ -243,26 +215,33 @@ const DEFAULT_HARNESS = "claude";
  *
  * So the value is pinned, and `agent-component-usage-read-path.test.ts` — a
  * node-runner test with no such loader constraint — imports the real constant
- * and asserts it equals this one. A `DATA_REVISION` bump fails there, loudly and
+ * and asserts it equals this one. A revision bump fails there, loudly and
  * with this file named, instead of silently returning the E2E corpus to the
  * empty-usage state the pin exists to prevent.
  */
-export const SEEDED_DATA_REVISION = 78;
+export const SEEDED_DATA_REVISION = 112;
 
 /**
- * Seed a multi-row component inventory WITH matching usage, invoking sessions,
- * authored-commit LOC and priced spend, straight into the launched app's real
+ * Seed a multi-row component inventory WITH matching usage, invoking sessions
+ * and priced spend, straight into the launched app's real
  * SQLite store — so the app's own local IPC `AgentComponentsDataSource`
  * (`listAgentComponentsLocal`) projects rows carrying genuinely DIFFERENT
  * per-row aggregates.
  *
  * Called with the app DOWN, between two `launchDesktopApp` calls against one
  * `userDataDir`, exactly like every sibling seeder.
+ *
+ * `observedAt` (#6725) is the instant the whole corpus is stamped with —
+ * session timestamps and, through them, `last_invoked_at`, which is the column
+ * every usage WINDOW is applied to. It defaults to now, which is what every
+ * pre-existing caller wants. A spec that needs a population in a PAST window
+ * calls this once per epoch with disjoint ids; the statements are pure inserts,
+ * so the epochs accumulate rather than replacing one another.
  */
 export async function seedAgentComponentUsage(
   userDataDir: string,
   corpus: AgentComponentUsageCorpus,
-  options: { schemaTimeoutMs?: number } = {}
+  options: { schemaTimeoutMs?: number; observedAt?: string } = {}
 ): Promise<void> {
   const client = createClient({
     url: `file:${branchesDbPath(userDataDir)}`,
@@ -281,7 +260,10 @@ export async function seedAgentComponentUsage(
     );
 
     await client.batch(
-      agentComponentUsageBatchItems(corpus, new Date().toISOString()),
+      agentComponentUsageBatchItems(
+        corpus,
+        options.observedAt ?? new Date().toISOString()
+      ),
       "write"
     );
 
@@ -318,8 +300,8 @@ export function agentComponentUsageBatchItems(
 }
 
 /**
- * The session, its substantive event, its authored commit artifact + link, and
- * (when priced) its `token_usage` row.
+ * The session, its substantive event, its commit artifact + link, and (when
+ * priced) its `token_usage` row.
  */
 function sessionBatchItems(
   seed: AgentComponentUsageSessionSeed,
@@ -389,32 +371,22 @@ function sessionBatchItems(
     },
     substantiveToolEventBatchItem(seed.sessionId, observedAt),
     {
-      // `lines_added` MUST be non-null: `gitLocRows`'s commit lane filters on
-      // it, and its branch/PR fallback lane is gated on this same link existing.
       sql: `INSERT INTO artifacts
               (id, identity_key, kind, repo_full_name, sha,
-               lines_added, lines_removed, files_changed,
                created_at, last_seen_at, observed_at)
             VALUES (?, ?, 'commit', ?, ?,
-                    ?, ?, ?,
                     ?, ?, ?)`,
       args: [
         artifactId,
         `commit:${repoFullName}:${sha}`,
         repoFullName,
         sha,
-        seed.linesAdded,
-        seed.linesRemoved,
-        seed.filesChanged ?? 1,
         observedAt,
         observedAt,
         observedAt,
       ],
     },
     {
-      // `relation='created'` on a commit artifact is the `authored_sessions`
-      // gate — the predicate the branch-only seeders in `seed-loc-per-dollar-db.ts`
-      // never satisfy, which is why their corpus yields no `gitDiffStats`.
       sql: `INSERT INTO session_artifact_links
               (id, session_id, artifact_id, relation, method, evidence,
                is_primary, status, extractor_version, observed_at, created_at)

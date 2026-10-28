@@ -4,6 +4,10 @@ import { getTranscriptDispositionLabel } from "@repo/app/agents/lib/session-sync
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  CloudSyncDisclosure,
+  getCloudSyncDisclosureCopy,
+} from "../cloud-sync-state-badge";
 import { createAgentSessionListItemFixture } from "../session-list-fixtures";
 import { SyncedSessionsTable } from "../synced-sessions-table";
 import {
@@ -27,7 +31,7 @@ const SYNCING_ARIA_LABEL_RE = /syncing\.$/i;
 // pills. An uploading row carries both `cloudSyncState: "pending"` (the gray
 // "Local only" pill) and `transcriptDisposition: "syncing"` (the blue "Syncing"
 // pill) — the two this collapses into one.
-// Every default data column EXCEPT Status — the View-menu state wongk's
+// Every default data column EXCEPT Status — the View-menu state whitlockk's
 // hidden-column case describes.
 // ISS-5666: `qualifiers` listed explicitly. This set means "everything but
 // Status" and predates the `Signals` column, so leaving that id out was
@@ -92,7 +96,7 @@ describe("SyncedSessionsTable — ISS-4774 sync state in the Status pill", () =>
     expect(statusCell).toHaveTextContent("Active");
     expect(statusCell).not.toHaveTextContent(SYNCING_STATUS_LABEL_REGEX);
     expect(statusBadge.className).toMatch(PULSE_RING_CLASS_RE);
-    // The duplicate Mike filed repeatedly: assert the SECOND pill is absent,
+    // The duplicate Marisol filed repeatedly: assert the SECOND pill is absent,
     // not merely that a pill exists.
     expect(statusCell.querySelectorAll(TONE_BADGE_SELECTOR)).toHaveLength(1);
     // ISS-5279: and no separate dot. `SessionLivenessDot` existed only to carry
@@ -119,11 +123,13 @@ describe("SyncedSessionsTable — ISS-4774 sync state in the Status pill", () =>
     expect(screen.queryByText(LOCAL_ONLY_LABEL_REGEX)).not.toBeInTheDocument();
     const nameCell = screen.getByText("Uploading session").closest("span");
     expect(nameCell?.textContent).not.toContain("Syncing");
-    expect(nameCell?.textContent).not.toContain("Local only");
+    expect(nameCell?.textContent).not.toContain(
+      getCloudSyncDisclosureCopy(CloudSyncDisclosure.LocalOnly).label
+    );
   });
 
   it("an ERROR row that is uploading keeps its 'Failed' Status pill (never painted over as 'Syncing')", () => {
-    // The reconciliation invariant (wongk / logical-QA, PR #4202): the Status
+    // The reconciliation invariant (whitlockk / logical-QA, PR #4202): the Status
     // column carries the RUN outcome. Folding "Syncing" over a Failed row would
     // erase the only error signal and read as a calm blue pill. The fold is
     // scoped to Active rows, so a Failed+uploading row keeps "Failed".
@@ -274,7 +280,7 @@ describe("SyncedSessionsTable — ISS-4774 sync state in the Status pill", () =>
   });
 
   it("the Status column is hidden: the fold stands down, and no sync chip is left behind on the row (ISS-4848)", () => {
-    // wongk: with Status hidden from the View menu the grid renders no Status
+    // whitlockk: with Status hidden from the View menu the grid renders no Status
     // cell, so a folded row's sync pill has nowhere to live — and the fold also
     // suppresses the name-cell badge, which left an actively-uploading row with
     // no sync signal anywhere in the grid. `isSyncStateFoldActive` gates the fold

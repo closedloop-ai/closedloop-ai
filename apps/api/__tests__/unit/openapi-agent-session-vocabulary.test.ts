@@ -131,11 +131,13 @@ describe("openapi.json agent-session vocabulary contract (ISS-6042)", () => {
   });
 
   it("keeps both status filter schemas open strings rather than closed enums", () => {
-    // wongk, #5085: the response `status` is a read-time projection that can
-    // exceed this vocabulary, and a version-skewed client still sends the
-    // retired spellings — so the vocabulary is ADVERTISED in prose while the
-    // request schemas stay open. Pinning an enum onto either would generate
-    // clients that reject a value the server folds and answers.
+    // whitlockk, #5085: the response `status` is a read-time projection that can
+    // exceed this vocabulary, and a version-skewed client still sends spellings
+    // outside it — so the vocabulary is ADVERTISED in prose while the request
+    // schemas stay open. The route matches any spelling it is given against the
+    // stored status and answers (since ISS-5592 a retired one selects nothing
+    // rather than joining `inactive`). Pinning an enum onto either would
+    // generate clients that reject that value before the call is ever sent.
     const single = openApi.components.parameters.AgentSessionStatus.schema;
     const multi = openApi.components.parameters.AgentSessionStatuses.schema;
 
@@ -170,7 +172,7 @@ describe("openapi.json agent-session vocabulary contract (ISS-6042)", () => {
  * The schema of the query parameter `name` on `path`'s GET, declared either
  * inline or as a `$ref` into `components/parameters`.
  *
- * Resolving the ref is the point (thread thadeusb). `comparison` is the only
+ * Resolving the ref is the point (thread tamsinb). `comparison` is the only
  * inline parameter on this path today, so a bare `find` on `parameter.name`
  * works — but `$ref` entries carry no `name`, so moving `comparison` into the
  * shared component block alongside its nine siblings would take this lookup out
@@ -200,8 +202,8 @@ function queryParameterSchema(
  * The vocabulary sentence in the `status` parameter's description, up to the em
  * dash that ends the list. Scoped rather than read over the whole description
  * on purpose: the sentence AFTER it names the retired `completed`/`abandoned`
- * spellings, which are accepted but are deliberately NOT part of the advertised
- * vocabulary, so a whole-description sweep would assert the wrong set.
+ * spellings in order to say they are no longer recognized (ISS-5592), so a
+ * whole-description sweep would assert the wrong set.
  */
 const ADVERTISED_STATUS_VOCABULARY_SENTENCE =
   /canonical filter vocabulary this parameter advertises is ([^—]+)/;
@@ -211,12 +213,14 @@ const BACKTICKED_VALUE = /`([^`]+)`/g;
 
 /**
  * The status values `components/parameters/AgentSessionStatus` advertises in
- * prose (ISS-6470, thread wongk).
+ * prose (ISS-6470, thread whitlockk).
  *
  * The spec cannot express this as an `enum` — the request schema stays an open
- * string so a version-skewed client's retired spelling still reaches the
- * `inactive` predicate — so the vocabulary is published as prose instead, which
- * puts it back in reach of the same drift this file guards everywhere else.
+ * string so a spelling outside the six reaches the route, which matches it
+ * exactly against the stored status and answers (a retired one selects nothing
+ * since ISS-5592) instead of a generated client rejecting the call before it is
+ * sent — so the vocabulary is published as prose instead, which puts it back in
+ * reach of the same drift this file guards everywhere else.
  */
 function advertisedStatusVocabulary(): string[] {
   const description =

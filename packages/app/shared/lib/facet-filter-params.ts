@@ -83,16 +83,53 @@ export function writeFacetFilterParams<
  * the desktop hash router the snapshot is synchronous and `location.search`
  * sits outside the hash (always empty for list routes), so the fallback never
  * fires there.
+ *
+ * `routePath` is the path of the surface doing the seeding, and it is required
+ * rather than optional: see {@link browserSearchParams}.
  */
 export function initialFacetParamsSource(
-  snapshot: Pick<URLSearchParams, "getAll" | "toString">
+  snapshot: Pick<URLSearchParams, "getAll" | "toString">,
+  routePath: string
 ): Pick<URLSearchParams, "getAll"> {
   if (snapshot.toString() !== "") {
     return snapshot;
   }
-  const browserSearch =
-    globalThis.window === undefined ? "" : globalThis.location.search;
-  return browserSearch ? new URLSearchParams(browserSearch) : snapshot;
+  return browserSearchParams(routePath) ?? snapshot;
+}
+
+/**
+ * The browser URL's query as params, or `null` when there is none to read —
+ * on the server, when the address bar carries no query at all, or when the
+ * address bar is not (yet) on `routePath`.
+ *
+ * The one place the raw `location.search` read lives. All three callers use it
+ * for the same reconciliation gap ({@link initialFacetParamsSource} for the
+ * facet seed, `useSessionsCustomDateWindow` for the explicit window,
+ * `readSessionsPageIndex` for the page index), and a second copy of an
+ * SSR-guarded global read is exactly the kind that acquires a divergent guard
+ * later — which is what the page reader had, and what let it keep leaking
+ * across surfaces after the facet seed was fixed.
+ *
+ * ISS-8187: `routePath` is what makes that read safe, and it has no default
+ * because a permissive default is the bug. An unscoped read assumes the address
+ * bar is converging TOWARD the mounting surface, which holds for a reload or a
+ * deep link and is false for a client-side navigation: an App Router transition
+ * renders the destination — running these mount-only seeds — while the address
+ * bar still carries the ORIGIN surface's query. Sessions and Branches map
+ * different identity vocabularies onto the same `owner`/`repo`/`status` param
+ * names, so an unscoped seed silently adopted the other view's selection as its
+ * own. Requiring the caller's own path means the fallback fires only when the
+ * query on screen genuinely belongs to the surface reading it.
+ */
+export function browserSearchParams(routePath: string): URLSearchParams | null {
+  if (globalThis.window === undefined) {
+    return null;
+  }
+  if (globalThis.location.pathname !== routePath) {
+    return null;
+  }
+  const browserSearch = globalThis.location.search;
+  return browserSearch ? new URLSearchParams(browserSearch) : null;
 }
 
 function dedupeNonEmpty(values: readonly string[]): string[] {

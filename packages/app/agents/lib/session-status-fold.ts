@@ -1,6 +1,5 @@
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import {
-  isDisplayOnlySessionStatus,
   normalizeDisplayedSessionStatus,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
@@ -9,7 +8,7 @@ import {
 // into the dashboard/insights/telemetry bundles that embed the Sessions table —
 // the exact cost this module's "Zod-free" claim existed to avoid (#3449).
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { SessionSyncPresentation } from "@repo/app/agents/lib/session-sync-presentation";
 import {
   agentSessionToSessionTableRow,
@@ -23,15 +22,14 @@ import { SESSIONS_STATUS_COLUMN_ID } from "./sessions-table-columns";
  * whether a row's still-uploading sync state is surfaced in the Status column
  * instead of as inline pills beside the Session Name.
  *
- * Extracted out of `synced-sessions-table.tsx` (ISS-4847) because the fold has
- * TWO adapters, not one: the shared `SyncedSessionsTable` (dashboard/telemetry
- * embeds + the desktop Sessions page) and the primary web `/sessions` table
- * (`apps/app/components/agent-sessions/sessions-table.tsx`). Those adapters had
- * drifted — the fold flag only reached the shared one, so turning the PostHog
- * flag on left the main web Sessions list unchanged. One exported predicate
- * means the two adapters cannot disagree about which rows fold.
+ * Extracted out of `synced-sessions-table.tsx` (ISS-4847) because the fold had
+ * TWO adapters that drifted — the fold flag reached only the shared
+ * `SyncedSessionsTable`, leaving the web `/sessions` table's own wrapper
+ * unchanged when the PostHog flag went on. ISS-10301 retired that second
+ * wrapper with the v1 list stack, so the predicate now has one consumer; it
+ * stays exported here because the derivation is the contract, not the caller.
  *
- * This module is deliberately React-free and Zod-free so both adapters (and the
+ * This module is deliberately React-free and Zod-free so every consumer (and the
  * bundle-sensitive embeds) can import it without pulling a component runtime in.
  */
 
@@ -88,16 +86,13 @@ export function isSessionRowUploading(item: AgentSessionListItem): boolean {
  *    the server-side Status sort ranks, so gating on it keeps the fold aligned
  *    with both.
  *
- *    wongk (#4324): the status this reads is the row's DISPLAYED one, passed in
- *    by the caller, NOT the raw stored column. With the honest-unknown flag on
- *    the mapper can turn a stale `active` row into "Stale", and judging the fold
- *    on the raw value then folded a row whose badge says the opposite — so the
- *    cell showed a pulsing "Stale" pill while the name cell dropped
- *    its inline sync disclosure, which is the one outcome this predicate's
- *    Active-only rule exists to prevent. `isDisplayOnlySessionStatus` is checked
- *    FIRST because `normalizeDisplayedSessionStatus` deliberately fail-opens the
- *    display-only members to `active`, so it alone would answer "running" for a
- *    row displaying "Stale".
+ *    whitlockk (#4324): the status this reads is the row's DISPLAYED one, passed in
+ *    by the caller, NOT the raw stored column — judging the fold on the raw
+ *    value could disagree with what the badge actually says. ISS-10364 retired
+ *    the display-only `stale`/`unknown` members this used to guard against
+ *    separately from the ACTIVE check; `normalizeDisplayedSessionStatus` now
+ *    answers one of the three lifecycle values for any input, so the equality
+ *    check alone is exhaustive.
  *
  * Every other transcript verdict — `stale`, `failedTransient`, `failedPermanent`,
  * `neverExpected`, or none at all — does NOT fold: it never pulses and it KEEPS
@@ -122,7 +117,7 @@ export function isSessionSyncStateFolded(
 }
 
 /**
- * ISS-4848 (wongk): the fold is only honest while the Status column is actually
+ * ISS-4848 (whitlockk): the fold is only honest while the Status column is actually
  * on screen.
  *
  * Both adapters let the user hide columns from the View menu. When Status is
@@ -176,14 +171,17 @@ export function isSyncStateFoldActive(visibleColumns?: Set<string>): boolean {
  * bucketed as Active and offered no way to gather. Three things now read one
  * derivation: `projectDisplayedSessionStatus` (`apps/api`) delegates to the
  * shared `resolveDisplayedSessionStatus`, so the SERVED status carries the fold;
- * `buildStatusFacetPredicate` PARTITIONS the old Active population into Active
- * and Stale against the same cutoff (and matches Unknown by exclusion over
- * `RECOGNIZED_SESSION_STATUS_VALUES`); and `SessionStatusFacetValue` offers both
- * as options. The desktop-local `matchesStatusFilter` mirrors the same split.
+ * `buildStatusFacetPredicate` PARTITIONED the old Active population into Active
+ * and Stale against the same cutoff (and matched Unknown by exclusion over
+ * `RECOGNIZED_SESSION_STATUS_VALUES`); and `SessionStatusFacetValue` offered
+ * both as options. The desktop-local `matchesStatusFilter` mirrored the split.
  *
- * So the badge, the filter, and the sort no longer make three claims about one
- * row. If you add another display-only status, add its predicate and facet
- * option in the same change — that symmetry is the invariant here.
+ * ISS-9939 / ISS-10629 (operator ruling, 2026-09-18) UNDID the filter half of
+ * that on purpose: the Status FILTER is now a plain equality on the persisted
+ * column on both surfaces, and `SessionStatusFacetValue` offers only the three
+ * lifecycle values. The BADGE still folds. So a display-only status is now
+ * deliberately something the row can SAY and the filter cannot gather — do not
+ * re-add a facet option for one without a new ruling.
  */
 export function toSessionTableRowWithSyncFold(
   item: AgentSessionListItem,
@@ -195,7 +193,7 @@ export function toSessionTableRowWithSyncFold(
     resolveSessionRepoLabel(item),
     options
   );
-  // Judge the fold on the status the row will actually DISPLAY (wongk, #4324),
+  // Judge the fold on the status the row will actually DISPLAY (whitlockk, #4324),
   // not the raw stored column — see `isSessionSyncStateFolded`.
   const syncPresentation = resolveSessionSyncPresentation(
     item,
@@ -240,7 +238,6 @@ export function resolveSessionSyncPresentation(
     return undefined;
   }
   if (
-    isDisplayOnlySessionStatus(displayedStatus) ||
     normalizeDisplayedSessionStatus(displayedStatus) !== SESSION_STATUS.ACTIVE
   ) {
     return undefined;

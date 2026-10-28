@@ -22,7 +22,7 @@
  * keyset semantics against an in-memory, `(last_seen_at, id)`-sorted table.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";
 import type {
@@ -233,7 +233,7 @@ test("component cursor keyset: a component whose last_seen_at advances past the 
 });
 
 /**
- * ISS-5029 (wongk, #4391): a durable cursor store, so this suite can drive the
+ * ISS-5029 (whitlockk, #4391): a durable cursor store, so this suite can drive the
  * lane the way a REAL install runs it — with a watermark persisted by an earlier
  * version of the app.
  */
@@ -291,13 +291,15 @@ test("ISS-5029: the payload revision bump replays an already-drained component c
   ];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
 
-  // Pin the revision itself: a silent revert to `v2` is exactly the regression
-  // this test exists to catch, and it is invisible from behaviour alone once the
-  // key below is derived from the constant.
+  // Pin the revision itself: a silent revert to an already-drained value is exactly
+  // the regression this test exists to catch, and it is invisible from behaviour
+  // alone once the key below is derived from the constant. The pin is a RATCHET —
+  // ISS-5029 moved it to v3 and ISS-11327 to v4, the latter because the lane's
+  // ORDERING changed and a position written in the old order must not be resumed.
   assert.equal(
     AGENT_COMPONENT_SYNC_PAYLOAD_REVISION,
-    "v3",
-    "ISS-5029 bumped the component payload revision; see the constant's comment"
+    "v4",
+    "ISS-11327 bumped the component payload revision; see the constant's comment"
   );
   const currentKey = buildAgentComponentSyncSourceKey(COMPUTE_TARGET);
   const drainedLegacyKey = `${AGENT_COMPONENT_SYNC_SOURCE_KIND}:v2:${COMPUTE_TARGET}`;

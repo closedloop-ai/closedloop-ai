@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Claude Code OTel capture (tool permission decisions) read only by the telemetry rollup that syncs to the cloud; no Desktop view reads it."
+}

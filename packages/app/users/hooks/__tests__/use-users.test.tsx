@@ -1,6 +1,6 @@
 /**
  * FEA-4123: prove the profile-stats split at the hook + React Query layer with
- * a real transport, closing wongk's deferred #3691 architectural review.
+ * a real transport, closing whitlockk's deferred #3691 architectural review.
  *
  * The page-level tests (`apps/app/.../users/[userId]/__tests__/`) mock the
  * hooks and prove the *filter* the toggle drives; the service tests prove the
@@ -57,11 +57,6 @@ const headlineBody = {
   documentsByType: [],
   totalComments: 5,
   totalPRsLanded: 3,
-  totalLoops: 7,
-  avgConcurrency: 1.2,
-  totalTokensInput: 1000,
-  totalTokensOutput: 500,
-  totalEstimatedCost: 4.2,
 };
 
 const heatmapBody = { contributionHeatmap: [] };

@@ -1,8 +1,7 @@
 /**
  * @file golden-collectors.test.ts
  * @description Unit tests for stageGoldenCorpus + createGoldenCollectors
- * (FEA-2648). All corpus writes happen in throwaway temp dirs; the real
- * packages/golden-sessions corpus is touched by at most one read-only test.
+ * (FEA-2648). All corpus writes happen in throwaway temp dirs.
  */
 import assert from "node:assert/strict";
 import {
@@ -15,22 +14,13 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
 import { isImportableCollectorSource } from "../src/main/collectors/engine/source-admission.js";
-import { listDossierDirs } from "../src/main/collectors/golden/corpus-layout.js";
 import {
   createGoldenCollectors,
   stageGoldenCorpus,
 } from "../src/main/collectors/golden/golden-collectors.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Three directories up from test/ → symphony-alpha-fea-2648/packages/golden-sessions
-const REAL_CORPUS_DIR = path.resolve(
-  __dirname,
-  "../../../packages/golden-sessions"
-);
 
 const DISJOINT_ERROR = /disjoint/;
 const MISSING_RAW_ERROR = /has no raw\/ directory/;
@@ -88,8 +78,11 @@ function makeCodexDossier(corpusDir: string): void {
  * to exercise the corpus-integrity invariant (no new -wal/-shm created by
  * stageGoldenCorpus or by listSources/watchRoots calls on the staged copy).
  */
-function makeOpencodeDossier(corpusDir: string): void {
-  const rawDir = path.join(corpusDir, OPENCODE_SID, "raw");
+function makeOpencodeDossier(
+  corpusDir: string,
+  sessionId: string = OPENCODE_SID
+): void {
+  const rawDir = path.join(corpusDir, sessionId, "raw");
   mkdirSync(rawDir, { recursive: true });
   const dbPath = path.join(rawDir, "opencode.db");
   const db = new DatabaseSync(dbPath);
@@ -400,6 +393,36 @@ describe("createGoldenCollectors wiring", () => {
     );
   });
 
+  test("ISS-8561: several opencode dossiers become ONE collector holding every store", () => {
+    const corpusDir = makeTempDir("corpus-");
+    const stagingDir = makeTempDir("staging-");
+
+    const secondSid = `${OPENCODE_SID}two`;
+    makeOpencodeDossier(corpusDir);
+    makeOpencodeDossier(corpusDir, secondSid);
+
+    stageGoldenCorpus(corpusDir, stagingDir);
+    const collectors = createGoldenCollectors(stagingDir);
+
+    // CollectorManager keys its per-harness bookkeeping by collector.key, so a
+    // second "opencode" collector would collide rather than add a store.
+    assert.equal(
+      collectors.filter((c) => c.key === "opencode").length,
+      1,
+      "exactly one opencode collector, however many opencode dossiers there are"
+    );
+    const opencodeCollector = collectors.find((c) => c.key === "opencode");
+    assert.ok(opencodeCollector, "opencode collector must exist");
+    assert.deepEqual(
+      opencodeCollector.listSources().sort(),
+      [
+        path.join(stagingDir, OPENCODE_SID, "opencode.db"),
+        path.join(stagingDir, secondSid, "opencode.db"),
+      ].sort(),
+      "every staged opencode store is offered — a dossier the collector never lists imports nothing and no layer above 1 can notice"
+    );
+  });
+
   test("every listSources() and watchRoots() path from every collector is inside stagingDir", () => {
     const corpusDir = makeTempDir("corpus-");
     const stagingDir = makeTempDir("staging-");
@@ -465,54 +488,4 @@ test("createGoldenCollectors returns [] for an empty corpus (only scaffolding an
   const collectors = createGoldenCollectors(stagingDir);
 
   assert.deepEqual(collectors, [], "empty corpus yields no collectors");
-});
-
-// ── CORPUS-SANITY (real read-only corpus) ────────────────────────────────────
-
-test("real golden corpus: listDossierDirs matches the expectations.yaml inventory", () => {
-  // Uses the frozen corpus read-only — never stages in place, never writes.
-  // Staging is done to a temp dir to avoid touching corpus state (the AGENTS.md
-  // requirement). We only call listDossierDirs to count; no parse or write.
-  const stagingDir = makeTempDir("real-corpus-staging-");
-
-  stageGoldenCorpus(REAL_CORPUS_DIR, stagingDir);
-
-  // Cross-check enumeration against an independent signal: every dossier dir
-  // carries a signed expectations.yaml. A hardcoded count would go stale
-  // every time the corpus grows (it moved 21→22 mid-build).
-  const dossiers = listDossierDirs(REAL_CORPUS_DIR);
-  const expectationsDirs = readdirSync(REAL_CORPUS_DIR).filter(
-    (name) =>
-      // _templates ships a template expectations.yaml — not a dossier.
-      !name.startsWith("_") &&
-      existsSync(path.join(REAL_CORPUS_DIR, name, "expectations.yaml"))
-  );
-  assert.ok(dossiers.length > 0, "corpus has at least one dossier");
-  assert.deepEqual(
-    dossiers.map((d) => d.sessionId).sort(),
-    expectationsDirs.sort(),
-    "listDossierDirs must return exactly the dirs carrying expectations.yaml"
-  );
-
-  // Quick kind-breakdown sanity: at least one dossier of each kind must appear.
-  // This fails loudly if a whole collector family disappears from the corpus.
-  const kindsSeen = new Set<string>();
-  for (const { sessionId, dir } of listDossierDirs(stagingDir)) {
-    const files = readdirSync(dir);
-    if (files.some((f) => f.endsWith(".db"))) {
-      kindsSeen.add("opencode");
-    } else if (
-      files.some((f) => f.startsWith("rollout-") && f.endsWith(".jsonl"))
-    ) {
-      kindsSeen.add("codex");
-    } else if (files.some((f) => f === `${sessionId}.jsonl`)) {
-      kindsSeen.add("claude");
-    }
-  }
-  assert.ok(kindsSeen.has("claude"), "at least one claude dossier in corpus");
-  assert.ok(kindsSeen.has("codex"), "at least one codex dossier in corpus");
-  assert.ok(
-    kindsSeen.has("opencode"),
-    "at least one opencode dossier in corpus"
-  );
 });

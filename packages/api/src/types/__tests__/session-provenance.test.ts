@@ -6,7 +6,7 @@ describe("classifySessionProvenance (FEA-3575)", () => {
     expect(
       classifySessionProvenance({
         harness: "ci",
-        branchName: "mikeangstadt/fea-3575",
+        branchName: "marisolashgrove/fea-3575",
         worktreePath: null,
       })
     ).toBe(BranchProvenance.Bot);
@@ -65,7 +65,7 @@ describe("classifySessionProvenance (FEA-3575)", () => {
   it("treats real human sessions as human", () => {
     expect(
       classifySessionProvenance({
-        branchName: "mikeangstadt/fea-3575",
+        branchName: "marisolashgrove/fea-3575",
         worktreePath: "/Users/x/repo",
         harness: "claude",
       })

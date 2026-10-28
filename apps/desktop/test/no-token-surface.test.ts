@@ -1,79 +1,34 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
+import {
+  collectTokenSurfaceMatches,
+  DESKTOP_SOURCE_SCAN_ROOTS,
+} from "./support/token-surface-scan.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
-const forbiddenNeedles = [
-  ["CL", "POSTHOG"].join("_"),
-  ["posthog", "node"].join("-"),
-  ["posthog", "config"].join("-"),
-  ["PostHog", "Analytics"].join(""),
-  ["phc", "_"].join(""),
-];
 
-const scannedPaths = [
-  ".github",
-  "apps/desktop/electron-builder.yml",
-  "apps/desktop/package.json",
-  "apps/desktop/src",
-];
-
-const optionalBuildOutputs = [
-  "apps/desktop/dist",
-  "apps/desktop/dist-dmg/mac-universal/Closedloop.app/Contents/Resources/app.asar",
-];
-
-test("Electron package, source, and release surfaces contain no direct PostHog token/client contract", () => {
+/**
+ * SOURCE surfaces only. The BUILT-output half of this scan lives in
+ * `no-token-surface-dist.test.ts`, which `desktop-build` runs after the bundle
+ * compiles (ISS-6367): every lane that runs THIS file is now on `build:prereqs`,
+ * so an `existsSync`-guarded `apps/desktop/dist` scan here would find no
+ * directory and pass having read nothing.
+ *
+ * DESKTOP surfaces only, since ISS-9219. The `.github` root this used to carry
+ * is scanned by `scripts/deploy/no-token-surface-github.test.ts`, from a lane
+ * whose path filter covers the whole directory — the roots below are all under
+ * `apps/desktop/**`, which is what the `desktop` filter gating this lane
+ * actually watches.
+ */
+test("Electron package and source surfaces contain no direct PostHog token/client contract", () => {
   const matches: string[] = [];
-  for (const relativePath of scannedPaths) {
-    collectMatches(path.join(repoRoot, relativePath), relativePath, matches);
-  }
-  for (const relativePath of optionalBuildOutputs) {
-    const absolutePath = path.join(repoRoot, relativePath);
-    if (existsSync(absolutePath)) {
-      collectMatches(absolutePath, relativePath, matches);
-    }
+  for (const relativePath of DESKTOP_SOURCE_SCAN_ROOTS) {
+    collectTokenSurfaceMatches(
+      path.join(repoRoot, relativePath),
+      relativePath,
+      matches
+    );
   }
   assert.deepEqual(matches, []);
 });
-
-function collectMatches(
-  absolutePath: string,
-  relativePath: string,
-  matches: string[]
-): void {
-  const stat = statSync(absolutePath);
-  if (stat.isDirectory()) {
-    for (const entry of readdirSync(absolutePath)) {
-      if (
-        entry === "dist" ||
-        entry === "dist-dmg" ||
-        entry === "node_modules"
-      ) {
-        continue;
-      }
-      collectMatches(
-        path.join(absolutePath, entry),
-        path.join(relativePath, entry),
-        matches
-      );
-    }
-    return;
-  }
-
-  if (isBinaryPath(relativePath)) {
-    return;
-  }
-
-  const contents = readFileSync(absolutePath, "utf8");
-  for (const needle of forbiddenNeedles) {
-    if (contents.includes(needle)) {
-      matches.push(`${relativePath}: ${needle}`);
-    }
-  }
-}
-
-function isBinaryPath(relativePath: string): boolean {
-  return /\.(icns|png|zip|dmg)$/i.test(relativePath);
-}

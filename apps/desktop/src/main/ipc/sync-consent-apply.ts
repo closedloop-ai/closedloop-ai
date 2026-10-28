@@ -1,18 +1,15 @@
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import { z } from "zod";
-import type {
-  DataSyncLevel,
-  SyncObservabilityTier,
-} from "../../shared/contracts.js";
+import type { SyncObservabilityTier } from "../../shared/contracts.js";
 import { normalizeDataSyncLevel } from "../../shared/data-sync-level.js";
 import type { SyncConsentRecord } from "../../shared/sync-consent.js";
 
 /**
  * ISS-5489 — the collaborators the post-auth consent takeover's read and write
- * need. Kept electron-free (no `import "electron"`), following the FEA-4103
- * {@link applySyncObservabilityTier} precedent, so the logic runs in the desktop
- * `test:node` slice without booting Electron; the IPC module (which does pull in
- * `electron` for the onboarding popup) is a thin trusted-sender guard over these
- * two functions.
+ * need. Kept electron-free (no `import "electron"`) so the logic runs in the
+ * desktop `test:node` slice without booting Electron; the IPC module (which
+ * does pull in `electron` for the onboarding popup) is a thin trusted-sender
+ * guard over these two functions.
  */
 export type SyncConsentApplyDeps = {
   /** `null` until the user has answered the consent question on this device. */

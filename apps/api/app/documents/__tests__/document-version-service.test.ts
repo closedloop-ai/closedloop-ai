@@ -24,9 +24,14 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+vi.mock("../attachment-inline-image-create-service", () => ({
+  attachmentInlineImageCreateService: {
+    createInlineImageAttachment: mockCreateInlineImageAttachment,
+  },
+}));
+
 vi.mock("../attachments-service", () => ({
   attachmentsService: {
-    createInlineImageAttachment: mockCreateInlineImageAttachment,
     deleteAttachment: mockDeleteAttachment,
   },
 }));
@@ -103,7 +108,8 @@ describe("documentVersionService.createNewVersionWithInlineImages", () => {
       DOCUMENT_ID,
       ORGANIZATION_ID,
       USER_ID,
-      expectedContent
+      expectedContent,
+      undefined
     );
     expect(result.value.inlineImages).toEqual([
       expect.objectContaining({

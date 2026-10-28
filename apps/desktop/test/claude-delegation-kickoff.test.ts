@@ -15,11 +15,11 @@
  * hardcodes to "\n".
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile } from "../src/main/collectors/claude/claude-parser.js";
+import { createTempDirManager } from "./helpers/temp-dir.js";
 
 const PARENT_TS = "2026-06-07T10:00:00.000Z";
 const CHILD_HEX = "a7bb59fb7a25cac2e";
@@ -44,7 +44,7 @@ function writeSession(options: {
   eol?: string;
 }): string {
   const eol = options.eol ?? "\n";
-  const projDir = mkdtempSync(path.join(os.tmpdir(), "claude-deleg-"));
+  const projDir = makeTempDir();
   const filePath = path.join(projDir, `${options.sessionId}.jsonl`);
   writeFileSync(
     filePath,
@@ -219,11 +219,11 @@ test("sidecar subagent carries its delegation kickoff from meta.json + tool_use 
 });
 
 test("a NESTED delegation resolves through its parent subagent's transcript", async () => {
-  // The 16-of-18 shape in golden dossier f216298d: the child was spawned by
+  // The 16-of-18 shape in golden dossier 3870c244: the child was spawned by
   // another SUBAGENT, so its kickoff tool_use is in that sibling sidecar, not
-  // the parent transcript. The merged tool-use record cannot serve as the
-  // source — subagent-scanner bounds inputs at 1000 JSON chars — so this also
-  // pins that the raw sidecar line is what gets read.
+  // the parent transcript, so the merged tool-use record — which is
+  // per-subagent — cannot serve as the source. This pins that the raw sidecar
+  // line is what gets read. (Until ISS-6480 the bound was a second reason.)
   const parentHex = "aaaa1111bbbb2222";
   const nestedHex = "cccc3333dddd4444";
   const longPrompt = `Nested kickoff: ${"detail ".repeat(300)}`;
@@ -275,7 +275,7 @@ test("a NESTED delegation resolves through its parent subagent's transcript", as
   assert.equal(
     nested?.task,
     longPrompt,
-    "the nested kickoff prompt must survive in full, not be lost to the scanner's 1000-char input bound"
+    "the nested kickoff prompt must survive in full"
   );
   assert.equal(nested?.metadata?.spawnedByToolUseId, "toolu_nested");
 });
@@ -460,3 +460,5 @@ test("a NESTED workflow agent joins on its provider id, not its path-qualified i
   assert.equal(child?.task, "Review the nested change");
   assert.equal(child?.metadata?.spawnedByToolUseId, "toolu_wf");
 });
+
+const { makeTempDir } = createTempDirManager("claude-deleg-");

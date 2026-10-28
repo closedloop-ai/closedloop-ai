@@ -7,8 +7,12 @@
  * for sessions not yet scanned at the current ACTIVITY_CLASSIFIER_VERSION (or
  * whose transcript mtime changed). Mirrors `artifact-link-backfill.ts` almost
  * beat-for-beat: a marker table with an mtime + version high-water mark, a
- * version-bump full re-scan, one atomic prisma.write($transaction) per session,
- * cooperating with the desktop stop/close lifecycle.
+ * version-bump full re-scan, and — since ISS-11088 — TWO prisma.write
+ * transactions per session: the re-tile itself (segments + work-item stamps +
+ * the activity-metrics rollup, committed together so the pair is never skewed),
+ * then a publish transaction carrying the seen marker and the sync-lane
+ * watermark (see {@link publishRetiledSession}). Cooperates with the desktop
+ * stop/close lifecycle.
  *
  * SCOPE (FEA-4184): this classifier-version backfill only enumerates
  * BUILTIN_TRANSCRIPT_SOURCES, which is Claude/Codex/Cursor — the JSONL
@@ -21,18 +25,15 @@
  * `classifyActivitySegments` at the current version): OpenCode via its
  * `listSourcesForRebuild` fingerprint bypass, Copilot via the unmapped-source
  * reparse. A classifier bump that must reach every harness therefore pairs with a
- * DATA_REVISION bump (see `data-revision.ts` rev 41).
+ * DATA_REVISION bump (see `docs/desktop-data-revision-history.md` rev 41).
  */
 import { statSync } from "node:fs";
 import { upsertActivityMetricsRollup } from "../../database/activity-metrics.js";
 import type { Prisma } from "../../database/generated/client.js";
 import type { DesktopPrisma } from "../../database/prisma-client.js";
 import { stampSegmentWorkItemRefs } from "../../database/segment-work-item-stamp.js";
-import {
-  bumpSessionsUpdatedAt,
-  chunkWatermark,
-} from "../../database/session-sync-watermark.js";
-import { persistActivitySegments } from "../../database/write-core.js";
+import { advanceSessionSyncWatermark } from "../../database/session-sync-watermark.js";
+import { persistActivitySegments } from "../../database/write-core-import-phases-usage.js";
 import { sessionIdFromTranscriptPath as claudeSessionId } from "../claude/claude-home.js";
 import { parseSessionFile as parseClaudeSession } from "../claude/claude-parser.js";
 import { Harness, type NormalizedSession } from "../types.js";
@@ -57,28 +58,96 @@ export type ActivitySegmentBackfillResult = {
   errors: number;
 };
 
+/** What {@link publishRetiledSession} needs to close out one re-tiled session. */
+type RetilePublishInput = {
+  sessionId: string;
+  filePath: string;
+  mtimeMs: number;
+  /** Per-session sync watermark, read fresh at publish time (see
+   * {@link createSyncWatermarkClock}). */
+  syncWatermark: string;
+};
+
 /**
- * FEA-2273: best-effort refresh of one session's activity-metrics rollup after a
- * segment re-tile, in its OWN transaction. Decoupled from the re-tile so a metrics
- * failure never rolls the re-tile back or counts as a re-tile error; the
- * version-aware boot backfill (backfillActivityMetrics) re-derives it if this
- * fails.
+ * FEA-2273 / ISS-11088: the SECOND transaction of a re-tile — record the
+ * backfill marker and advance the sync watermark, together.
+ *
+ * `sessions.updated_at` is what advertises a session to the metadata sync lane,
+ * and since ISS-10721 the activity-metrics rollup rides that lane's payload. The
+ * defect was the ORDER: the watermark was bumped in the re-tile transaction while
+ * the rollup refresh ran in a separate later one, so a hydration read served in
+ * that gap uploaded the NEW tiling with the OLD rollup and nothing was left to
+ * re-enqueue the row.
+ *
+ * The fix has two halves, and the store-side half is now the load-bearing one:
+ *
+ *  - the ROLLUP commits WITH the segments it summarises, in the re-tile
+ *    transaction, so no committed state ever pairs new segments with a stale
+ *    rollup. That matters because ordering the advertisement alone would close
+ *    the gap only for a reader entering through the `updated_at` cursor, and the
+ *    sync lane also drains ids already sitting on its incremental and backfill
+ *    queues, which are hydrated without re-consulting `updated_at`
+ *    (whitlockk on #7865). A metrics failure now rolls the segments back with it;
+ *    that is the intended trade — `persistActivitySegments` is idempotent and the
+ *    next sweep re-tiles, so the cost is re-work, and what it buys is that a
+ *    half-applied re-tile is never committed at all.
+ *  - the MARKER and the WATERMARK ride here, after the re-tile committed. A
+ *    THROWN failure must not leave the re-tile marked done, so with the marker in
+ *    this transaction a failure leaves the session unseen and the next sweep
+ *    re-tiles and retries. That retry does not depend on a classifier bump, nor
+ *    on `backfillActivityMetrics`, whose predicate JOINs `session_analytics` and
+ *    reads `session_activity_segments`, so it cannot re-select a session that
+ *    tiled to zero segments or has no analytics rollup yet. The bump is the
+ *    strictly-forward per-row `advanceSessionSyncWatermark` rather than the blind
+ *    `SET updated_at` it was (the ISS-8758 rule): this transaction opens after
+ *    the re-tile committed, so an import may have moved the row to a later stamp
+ *    in between and a blind write would move it BACKWARDS, behind a cursor that
+ *    has already read it.
+ *
+ * A DECLINED watermark advance is NOT a failure and is deliberately committed
+ * (tamsinb on #7865). The decline is a pure function of the stored `updated_at`
+ * — a legacy non-timestamp, or the four-digit-year ceiling — so re-running the
+ * publish recomputes the same decline: retrying buys no advertisement, only an
+ * unbounded re-parse-and-re-tile of that session on every sweep, forever, and a
+ * permanently non-zero `errors`. The work itself is committed and internally
+ * consistent, so committing the marker bounds the sweep and leaves the session to
+ * be advertised by whatever write next moves the column into an orderable range.
+ * It is logged and still counted as an error, so the run does not report itself
+ * complete.
  */
-async function refreshActivityMetricsBestEffort(
+async function publishRetiledSession(
   prisma: DesktopPrisma,
-  sessionId: string,
-  now: string,
+  input: RetilePublishInput,
   log: (message: string) => void
-): Promise<void> {
+): Promise<RetilePublishOutcome> {
+  let advertised = false;
   try {
     await prisma.write((client) =>
-      client.$transaction((tx) =>
-        upsertActivityMetricsRollup(tx, sessionId, now)
-      )
+      client.$transaction(async (tx) => {
+        await markActivitySegmentSeen(
+          tx,
+          input.sessionId,
+          input.filePath,
+          input.mtimeMs
+        );
+        advertised = await advanceSessionSyncWatermark(
+          tx,
+          input.sessionId,
+          input.syncWatermark
+        );
+      })
     );
   } catch {
-    log(`activity-segment backfill: metrics refresh failed for ${sessionId}`);
+    log(`activity-segment backfill: publish failed for ${input.sessionId}`);
+    return RetilePublishOutcome.Failed;
   }
+  if (!advertised) {
+    log(
+      `activity-segment backfill: ${input.sessionId} re-tiled and rolled up, but its updated_at has no orderable successor, so the sync lane cannot be told until another write repairs that column`
+    );
+    return RetilePublishOutcome.Unadvertisable;
+  }
+  return RetilePublishOutcome.Published;
 }
 
 /**
@@ -136,6 +205,7 @@ async function markActivitySegmentSeen(
     where: { sessionId },
     create: { sessionId, ...fields },
     update: fields,
+    select: { sessionId: true },
   });
 }
 
@@ -224,10 +294,11 @@ export async function backfillActivitySegmentsFromTranscripts(
     seenBySession = new Map();
   }
 
-  // FEA-3568: monotonic counter for staggering the per-session sync-dirty bump
-  // (chunkWatermark) so a version-bump full re-scan never collapses the sync
-  // cursor's top-group onto a single timestamp.
-  let syncBumpIndex = 0;
+  // FEA-3568 / ISS-11088: the per-session sync-dirty stamp. Strictly increasing
+  // so a version-bump full re-scan never collapses the sync cursor's top-group
+  // onto a single timestamp, and read from the LIVE clock at publish time rather
+  // than derived from this pass's base `now` (see {@link createSyncWatermarkClock}).
+  const nextSyncWatermark = createSyncWatermarkClock();
 
   for (const {
     filePath,
@@ -302,7 +373,6 @@ export async function backfillActivitySegmentsFromTranscripts(
       return result;
     }
 
-    const syncWatermark = chunkWatermark(now, syncBumpIndex);
     try {
       await prisma.write((client) =>
         client.$transaction(async (tx) => {
@@ -317,26 +387,37 @@ export async function backfillActivitySegmentsFromTranscripts(
             sessionId,
             extractWorkItemOccurrences(session)
           );
-          await markActivitySegmentSeen(tx, sessionId, filePath, mtimeMs);
-          // FEA-3568: the re-tile replaced this session's segments, but segment
-          // writes don't touch the session row — so bump updated_at inside the
-          // same transaction to re-enqueue the session on the metadata sync lane
-          // (see write-core's SYNC INVARIANT). Staggered per re-tiled session so a
-          // version-bump full re-scan can't collapse the sync cursor's top-group.
-          await bumpSessionsUpdatedAt(tx, [sessionId], syncWatermark);
+          // ISS-11088 (whitlockk on #7865): the rollup commits WITH the segments it
+          // summarises, so the store is never in a new-segments/old-rollup state
+          // at all. Ordering the advertisement after a separate rollup commit
+          // closed that pair only for a reader entering through the
+          // `updated_at` cursor; a session id already sitting on the sync lane's
+          // incremental or backfill queue is hydrated without re-consulting
+          // `updated_at` (`agent-session-sync-service.ts` incrementalQueue /
+          // backfillQueue), and `loadSyncedSessions` reads segments and the
+          // rollup on a reader connection that sees this transaction's commit.
+          // Making the pair atomic is what closes that entry path too.
+          await upsertActivityMetricsRollup(tx, sessionId, now);
         })
       );
       result.captured += 1;
-      syncBumpIndex += 1;
-      // FEA-2273: the re-tile just changed this session's segments (possibly at a
-      // new ACTIVITY_CLASSIFIER_VERSION), so refresh its metrics rollup — in a
-      // SEPARATE best-effort transaction, decoupled from the re-tile above so a
-      // metrics failure can neither roll the re-tile back nor count as a re-tile
-      // error. The version-aware boot backfill is the safety net if this fails.
-      await refreshActivityMetricsBestEffort(prisma, sessionId, now, log);
+      // ISS-11088: the re-tile is committed and durable, but nothing has
+      // advertised it yet. The rollup refresh, the backfill marker and the
+      // FEA-3568 sync-lane bump land together in the next transaction so the
+      // session is never published carrying a rollup it has outgrown. The
+      // watermark is read HERE, after the re-tile committed, so it is never
+      // below a cursor that moved while this pass was parsing transcripts.
+      const published = await publishRetiledSession(
+        prisma,
+        { sessionId, filePath, mtimeMs, syncWatermark: nextSyncWatermark() },
+        log
+      );
+      if (published !== RetilePublishOutcome.Published) {
+        result.errors += 1;
+      }
     } catch {
-      // The previous segments + seen marker stay transactionally intact; retry
-      // on a later sweep.
+      // The previous segments stay transactionally intact and the seen marker is
+      // untouched, so a later sweep retries this session.
       log(`activity-segment backfill: persist failed for ${sessionId}`);
       result.errors++;
     }
@@ -348,3 +429,48 @@ export async function backfillActivitySegmentsFromTranscripts(
   );
   return result;
 }
+
+/**
+ * ISS-11088 (tamsinb on #7865): the per-session sync watermark, read from the
+ * LIVE clock at publish time rather than offset off the pass's base `now`.
+ *
+ * A classifier-version bump re-scans every transcript, which runs for minutes.
+ * Live imports stamp the wall clock through their own
+ * `advanceSessionSyncWatermark` calls, so the metadata sync lane's cursor can
+ * pass this pass's start time mid-sweep. Every session published after that at
+ * `runStart + k ms` then sits BELOW `updated_at > $1` in
+ * `listUpdatedSessionCursorRows` and is never selected again —
+ * `advanceSessionSyncWatermark` guards only against the row's OWN stored stamp,
+ * not against the lane cursor. Since ISS-11088 the publish transaction is the
+ * only thing that advertises a re-tile, so that stranding is permanent.
+ *
+ * The monotonic step keeps FEA-3485's other property: consecutive publishes
+ * inside the same millisecond still get DISTINCT, strictly increasing stamps, so
+ * a full re-scan never folds an O(corpus) set into the cursor's
+ * `observedIdsAtTopUpdatedAt` group. `toISOString` millisecond precision matches
+ * every other writer of this column, so lexical ordering stays chronological.
+ */
+function createSyncWatermarkClock(
+  readNowMs: () => number = Date.now
+): () => string {
+  let lastMs = 0;
+  return () => {
+    const fresh = readNowMs();
+    lastMs = fresh > lastMs ? fresh : lastMs + 1;
+    return new Date(lastMs).toISOString();
+  };
+}
+
+/**
+ * How one re-tile's publish transaction ended. `Unadvertisable` is committed
+ * work the sync lane cannot be told about (see {@link publishRetiledSession});
+ * `Failed` is a thrown, rolled-back publish the next sweep retries. Both count
+ * toward `errors`, so neither lets a run report itself complete.
+ */
+export const RetilePublishOutcome = {
+  Published: "published",
+  Unadvertisable: "unadvertisable",
+  Failed: "failed",
+} as const;
+export type RetilePublishOutcome =
+  (typeof RetilePublishOutcome)[keyof typeof RetilePublishOutcome];

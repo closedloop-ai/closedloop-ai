@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   SESSION_UNKNOWN_COST_BUCKET_ID,
   type SessionSubstantiveCounts,
 } from "@repo/api/src/agent-session-filters";
+import { describe, test } from "vitest";
 import { matchesLocalCostBucketFilter } from "../src/main/session/local-cost-bucket-filter.js";
 
 // A session that clearly did measurable work (a turn) — the common case, so the
@@ -42,7 +42,7 @@ describe("matchesLocalCostBucketFilter", () => {
     // sumTokenUsage can yield 0.9999999999999998 for a true $1.00 — 6dp
     // normalization + the shared 2dp display rounding put it at exactly $1.00,
     // which is IN "≤ $1" (the inclusive top of the first bucket) and OUT of
-    // "$1 to $10" (its lower bound is exclusive) (FEA-4293, Mike's decision).
+    // "$1 to $10" (its lower bound is exclusive) (FEA-4293, Marisol's decision).
     assert.equal(
       matchesLocalCostBucketFilter(0.999_999_999_999_999_8, "api", WORKED, [
         "under_1",
@@ -102,7 +102,7 @@ describe("matchesLocalCostBucketFilter", () => {
     );
   });
 
-  test("ISS-4481 (wongk): a raw sub-cent priced cost that displays $0.00 is KNOWN, not Unknown", () => {
+  test("ISS-4481 (whitlockk): a raw sub-cent priced cost that displays $0.00 is KNOWN, not Unknown", () => {
     // The display renders `formatCost(0.0000004)` = "$0.00" (a $ figure), so the
     // availability check on the RAW cost must read it as KNOWN. It must NOT be
     // rounded to 0 first and mislabeled Unknown. It does not fall in "≤ $1"'s

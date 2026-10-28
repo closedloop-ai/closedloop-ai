@@ -3,9 +3,22 @@ import {
   Card,
   CardContent,
 } from "@closedloop-ai/design-system/components/ui/card";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@closedloop-ai/design-system/components/ui/select";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination-v2";
+import { SESSION_MESH_V1_FEATURE_FLAG_KEY } from "@repo/api/src/types/session-mesh-flag";
+import { resolveTotalPages } from "@repo/api/src/utils/math";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
+import { refetchAsUser } from "@repo/app/agents/hooks/read-initiator";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import { SessionMeshInsightsCard } from "@repo/app/insights/components/session-mesh-insights-card";
+import { useSessionMeshInsights } from "@repo/app/insights/hooks/use-session-mesh-insights";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { desktopSessionDetailHref } from "../../shared-agent-sessions/session-hrefs";
@@ -23,14 +36,19 @@ const PAGE_SIZE = 25;
  * paged list-only query and keeps aggregate analysis out of the click path.
  */
 export function DesktopInsightsBoundedView() {
+  const sessionMeshEnabled = useFeatureFlagEnabled(
+    SESSION_MESH_V1_FEATURE_FLAG_KEY
+  );
   const [page, setPage] = useState(0);
+  const [meshScope, setMeshScope] = useState<"me" | "org">("me");
+  const [meshPeriod, setMeshPeriod] = useState<"7" | "30" | "90" | "all">("30");
   const sessionsQuery = useAgentSessions({
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
   const items = sessionsQuery.data?.items ?? [];
   const total = sessionsQuery.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = resolveTotalPages(total, PAGE_SIZE);
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min((page + 1) * PAGE_SIZE, total);
 
@@ -41,7 +59,7 @@ export function DesktopInsightsBoundedView() {
   }, [page, sessionsQuery.isLoading, totalPages]);
 
   const handleRefresh = () => {
-    sessionsQuery.refetch().catch(() => undefined);
+    refetchAsUser(sessionsQuery.refetch).catch(() => undefined);
   };
 
   // FEA-3989: one page subtitle (INSIGHTS_PAGE_DESCRIPTION) instead of a
@@ -65,6 +83,14 @@ export function DesktopInsightsBoundedView() {
       description={INSIGHTS_PAGE_DESCRIPTION}
       title={INSIGHTS_PAGE_TITLE}
     >
+      {sessionMeshEnabled ? (
+        <DesktopSessionMeshInsights
+          onPeriodChange={setMeshPeriod}
+          onScopeChange={setMeshScope}
+          period={meshPeriod}
+          scope={meshScope}
+        />
+      ) : null}
       <Card>
         <CardContent className="space-y-4">
           <InsightsSessionsContent
@@ -77,16 +103,76 @@ export function DesktopInsightsBoundedView() {
               {from.toLocaleString()}-{to.toLocaleString()} of{" "}
               {total.toLocaleString()}
             </div>
-            <TablePagination
-              className="justify-start sm:justify-end"
-              onPageChange={setPage}
-              page={page}
-              totalPages={totalPages}
-            />
+            {/* ISS-11412: the v2 pager stays mounted on a single page by
+                design, so a settled one-page (or empty) list shows it with
+                both boundaries locked. With no data yet (first load, a page
+                still loading, an error with nothing retained) `total` is only
+                the 0 default, and the pager stays out as it did before. */}
+            {sessionsQuery.data ? (
+              <TablePagination
+                className="justify-start sm:justify-end"
+                onPageChange={setPage}
+                page={page}
+                totalPages={totalPages}
+              />
+            ) : null}
           </div>
         </CardContent>
       </Card>
     </PageShell>
+  );
+}
+
+function DesktopSessionMeshInsights({
+  onPeriodChange,
+  onScopeChange,
+  period,
+  scope,
+}: {
+  onPeriodChange: (value: "7" | "30" | "90" | "all") => void;
+  onScopeChange: (value: "me" | "org") => void;
+  period: "7" | "30" | "90" | "all";
+  scope: "me" | "org";
+}) {
+  const sessionMeshQuery = useSessionMeshInsights(true, scope, period);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <Select
+          onValueChange={(value) => onScopeChange(value as "me" | "org")}
+          value={scope}
+        >
+          <SelectTrigger aria-label="Metrics scope" className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="me">My metrics</SelectItem>
+            <SelectItem value="org">Organization</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          onValueChange={(value) =>
+            onPeriodChange(value as "7" | "30" | "90" | "all")
+          }
+          value={period}
+        >
+          <SelectTrigger aria-label="Metrics period" className="w-32">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7">7 days</SelectItem>
+            <SelectItem value="30">30 days</SelectItem>
+            <SelectItem value="90">90 days</SelectItem>
+            <SelectItem value="all">All retained</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <SessionMeshInsightsCard
+        data={sessionMeshQuery.data}
+        isError={sessionMeshQuery.isError}
+        isLoading={sessionMeshQuery.isLoading}
+      />
+    </div>
   );
 }
 

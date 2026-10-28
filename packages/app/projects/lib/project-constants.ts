@@ -1,8 +1,4 @@
-import {
-  DocumentStatus,
-  DocumentType,
-  IssueStatus,
-} from "@repo/api/src/types/document";
+import { DocumentType } from "@repo/api/src/types/document";
 import {
   GITHUB_PR_STATE_LABELS,
   GitHubPRState,
@@ -14,7 +10,12 @@ import {
   DOCUMENT_TYPE_BADGE_LABELS as DOCUMENT_TYPE_BADGE_LABELS_CANONICAL,
   DOCUMENT_TYPE_LABELS as DOCUMENT_TYPE_LABELS_CANONICAL,
 } from "@repo/app/documents/lib/document-type-labels";
+import {
+  DOCUMENT_STATUS_LABELS,
+  ISSUE_STATUS_LABELS,
+} from "@repo/app/shared/lib/artifact-status-labels";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
+import { resolveCompletionDisplay } from "@repo/design-system/lib/completion-percentage";
 import {
   BoxIcon,
   FileIcon,
@@ -27,46 +28,18 @@ import type * as React from "react";
 // Priority display constants moved to @repo/app/shared/lib/priority-constants
 // (unified across all entities, keyed by the shared Priority enum).
 
-// ---------------------------------------------------------------------------
-// Status display config (PRD-495). Documents (PRD/IMPLEMENTATION_PLAN/TEMPLATE)
-// and Features (FEATURE) carry disjoint status vocabularies. Single-artifact
-// editors and per-type pickers use the per-vocabulary maps; the mixed
-// documents table (which renders both kinds) uses the combined ARTIFACT_STATUS_LABELS
-// map for lookup since the two sets overlap only on IN_REVIEW (identically).
-// ---------------------------------------------------------------------------
-
-export const DOCUMENT_STATUS_LABELS: Record<DocumentStatus, string> = {
-  [DocumentStatus.Draft]: "Draft",
-  [DocumentStatus.InReview]: "In Review",
-  [DocumentStatus.ChangesRequested]: "Changes Requested",
-  [DocumentStatus.Approved]: "Approved",
-  [DocumentStatus.Executed]: "Executed",
-  [DocumentStatus.Obsolete]: "Obsolete",
-};
-
 // Document/Issue status → icon mapping now lives in the dedicated
 // DocumentStatusIcon / IssueStatusIcon components (each owns its own glyph per
 // status). For status-grouped or mixed surfaces where the artifact type is not
 // singular, use ArtifactStatusIcon. See
 // @repo/app/documents/components/{document,issue,artifact}-status-icon.
 
-export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
-  [IssueStatus.Triage]: "Triage",
-  [IssueStatus.Backlog]: "Backlog",
-  [IssueStatus.Todo]: "Todo",
-  [IssueStatus.InProgress]: "In Progress",
-  [IssueStatus.InReview]: "In Review",
-  [IssueStatus.Blocked]: "Blocked",
-  [IssueStatus.Done]: "Done",
-  [IssueStatus.Canceled]: "Canceled",
-};
-
 /**
  * Combined label lookup map for the mixed documents table, which renders
  * Documents and Features in one list. The two vocabularies overlap only on
  * `IN_REVIEW` (identical label), so a flat status-keyed lookup is unambiguous.
  * Use this for read-only display by status string; use the per-vocabulary maps
- * above wherever the artifact type is known and options must be scoped.
+ * in `@repo/app/shared/lib/artifact-status-labels` wherever the artifact type is known and options must be scoped.
  * Status *icons* are rendered by ArtifactStatusIcon (or the per-type
  * DocumentStatusIcon / IssueStatusIcon), not a map.
  */
@@ -127,7 +100,6 @@ export const DOCUMENT_TYPE_COLORS: Record<
 // table); re-bound from the canonical documents-slice map (FEA-3954 SSOT).
 export const DOCUMENT_TYPE_BADGE_LABELS = DOCUMENT_TYPE_BADGE_LABELS_CANONICAL;
 
-// Project status labels
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   [ProjectStatus.NotStarted]: "Not Started",
   [ProjectStatus.InProgress]: "In Progress",
@@ -182,7 +154,12 @@ export const PROJECT_COMPLETION_POPULATION_NOUN =
  * the call site, so the sentence and the population it describes have one home.
  */
 export function formatProjectCompletionSummary(percentage: number): string {
-  return `${Math.round(percentage)}% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`;
+  // The same rule the ring's mark answers to, rather than a second rounding of
+  // an already-rounded wire value: re-rounding here could only ever push a
+  // partial percentage up into the "100% ... complete" sentence the filled
+  // check is not showing beside it (ISS-9922).
+  const { percentage: display } = resolveCompletionDisplay(percentage);
+  return `${display}% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`;
 }
 
 /**

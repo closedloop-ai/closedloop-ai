@@ -21,7 +21,10 @@
  * workflow token (PRD-488's stated #1 risk). Regexes are module-level constants
  * per AGENTS.md (`useTopLevelRegex`).
  */
-import { ACTIVITY_PHASE, type ActivityPhase } from "../activity-taxonomy.js";
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 
 /** Upper bound on prose scanned per segment — defends against pathological input. */
 export const MAX_PROSE_SCAN_CHARS = 20_000;

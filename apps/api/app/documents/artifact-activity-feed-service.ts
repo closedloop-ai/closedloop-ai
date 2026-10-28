@@ -1,4 +1,8 @@
-import { ArtifactActivityActorType } from "@repo/api/src/types/artifact-activity";
+import {
+  ArtifactActivityAction,
+  type ArtifactActivityAction as ArtifactActivityActionValue,
+  ArtifactActivityActorType,
+} from "@repo/api/src/types/artifact-activity";
 import {
   type ActivityFeedActor,
   ActivityFeedActorKind,
@@ -8,23 +12,33 @@ import {
   type ArtifactActivityFeedItem,
   type ArtifactActivityFeedResult,
 } from "@repo/api/src/types/artifact-activity-feed";
+import type { CommentSurface } from "@repo/api/src/types/comment";
 import { LinkType, withDb } from "@repo/database";
+import { parseTraceCommentMetadata } from "@/app/comments/service/trace-comment-metadata";
+import { isUuid } from "@/lib/is-uuid";
+import { decodeTimeIdCursor, encodeTimeIdCursor } from "@/lib/time-id-cursor";
 import { fromJsonColumn } from "./artifact-activity-service";
+import { commentThreadActivityActor } from "./comment-thread-activity-actor";
 
 /**
  * Artifact activity FEED service (FEA-3864 / FEA-3535 Slice 3).
  *
- * Reads the aggregate, on-read activity timeline for a single artifact for
- * `GET /documents/[id]/activity`. Merges the persisted `ArtifactActivityEvent`
- * store rows with on-read PROJECTIONS of history that already lives in other
- * tables — document versions, PRODUCES derivation links (both directions),
- * loops referencing the artifact, and evaluations — into one normalized,
- * newest-first, cursor-paginated stream.
+ * Reads one artifact's activity with shared cursor mechanics. The Document
+ * route merges persisted `ArtifactActivityEvent` rows with versions, PRODUCES
+ * links and evaluations. Session and Branch routes read stored V1 edits
+ * only. Both paths return the same newest-first, cursor-paginated page.
  *
  * Every source query is org-scoped (`organizationId` in the WHERE) so the feed
- * never leaks another org's rows. Comments are deliberately NOT projected — the
- * live Liveblocks comment source already delivers them; re-projecting would
- * double-count (CLAUDE.md aggregation rule).
+ * never leaks another org's rows.
+ *
+ * Comments are projected for the Session and Branch read (ISS-11004, operator
+ * 2026-10-07) and NOT for the Document read, because the Document feed rail
+ * mounts this feed's activity source AND the live Liveblocks comment source
+ * side by side: projecting there would list every document comment twice, once
+ * as a live card carrying its body and reply composer and once as a read-only
+ * pointer. The operator's ruling was to leave how comments work alone and add
+ * only the link to them, so the duplication is avoided by scope rather than by
+ * taking the live source away.
  *
  * Pagination: the merged stream spans multiple tables and cannot page on a
  * single table's row id, so we use a `(createdAt, id)` keyset encoded into an
@@ -39,43 +53,41 @@ import { fromJsonColumn } from "./artifact-activity-service";
 /**
  * Opaque cursor: base64url of `${createdAtMs}:${id}`. The last item's timestamp
  * + source-qualified id, so a shared `createdAt` across sources still paginates
- * deterministically.
+ * deterministically. The codec itself is `@/lib/time-id-cursor`, shared with
+ * the other keyset reads that page on a timestamp plus a tiebreaking id.
  */
 type DecodedCursor = { createdAtMs: number; id: string };
 
 function encodeCursor(item: ArtifactActivityFeedItem): string {
-  return Buffer.from(`${item.createdAt.getTime()}:${item.id}`, "utf8").toString(
-    "base64url"
-  );
+  return encodeTimeIdCursor(item.createdAt.getTime(), item.id);
 }
 
 function decodeCursor(cursor: string | null | undefined): DecodedCursor | null {
-  if (!cursor) {
+  const decoded = decodeTimeIdCursor(cursor);
+  if (!decoded) {
     return null;
   }
-  const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-  const sep = decoded.indexOf(":");
-  if (sep === -1) {
-    return null;
-  }
-  const createdAtMs = Number(decoded.slice(0, sep));
-  const id = decoded.slice(sep + 1);
-  if (!(Number.isFinite(createdAtMs) && id)) {
-    return null;
-  }
-  return { createdAtMs, id };
+  return { createdAtMs: decoded.ms, id: decoded.id };
 }
 
 /**
- * Normalize a store `actorType` to the feed's actor kind. `agent` → agent,
- * `system` → system, everything else (`user`) → human.
+ * Normalize a stored actor; an unknown V1 type has no truthful client kind.
  */
-function actorKindFromStore(actorType: string): ActivityFeedActor["kind"] {
+function actorKindFromStore(
+  actorType: string,
+  excludeUnknownActorType = false
+): ActivityFeedActor["kind"] | null {
   if (actorType === ArtifactActivityActorType.Agent) {
     return ActivityFeedActorKind.Agent;
   }
   if (actorType === ArtifactActivityActorType.System) {
     return ActivityFeedActorKind.System;
+  }
+  if (actorType === ArtifactActivityActorType.User) {
+    return ActivityFeedActorKind.Human;
+  }
+  if (excludeUnknownActorType) {
+    return null;
   }
   return ActivityFeedActorKind.Human;
 }
@@ -130,8 +142,8 @@ const FeedIdPrefix = {
   Event: "event",
   Version: "version",
   Derivation: "derivation",
-  Loop: "loop",
   Evaluation: "evaluation",
+  Comment: "comment",
 } as const;
 type FeedIdPrefix = (typeof FeedIdPrefix)[keyof typeof FeedIdPrefix];
 
@@ -203,31 +215,137 @@ function keysetCreatedAtFragment(
   return strictlyBefore;
 }
 
-/** Project the persisted store rows. */
-async function projectEvents(
+/**
+ * Project `comment_threads` as `comment` items (ISS-11004). One item per
+ * thread, attributed to its author ({@link commentThreadActivityActor}); a
+ * thread with no attributable author is still projected, because the comment
+ * happened either way.
+ *
+ * The payload carries the thread's trace-comment SURFACE where it has one
+ * (ISS-10980, operator 2026-10-08: a Branch comment row sends the reader to
+ * the Artifact canvas or the Sessions tab, whichever holds the comment). It is
+ * read from `metadata`, which is where a trace thread records it; a thread
+ * with no parseable trace metadata omits the key rather than guessing one.
+ */
+async function projectCommentThreads(
   ctx: FeedQueryContext
 ): Promise<ArtifactActivityFeedItem[]> {
   const rows = await withDb((db) =>
-    db.artifactActivityEvent.findMany({
+    db.commentThread.findMany({
       where: {
         organizationId: ctx.organizationId,
         artifactId: ctx.artifactId,
-        AND: [keysetCreatedAtFragment(ctx.cursor, FeedIdPrefix.Event)],
+        // A root delete soft-deletes every comment row and leaves the thread
+        // row, so a thread with no live comment is gone for the rail too.
+        comments: { some: { deletedAt: null } },
+        AND: [keysetCreatedAtFragment(ctx.cursor, FeedIdPrefix.Comment)],
+      },
+      select: {
+        id: true,
+        createdById: true,
+        source: true,
+        status: true,
+        metadata: true,
+        createdAt: true,
+        comments: {
+          where: { deletedAt: null },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          take: 1,
+          select: {
+            authorId: true,
+            githubProjection: {
+              select: {
+                externalAuthor: {
+                  where: { organizationId: ctx.organizationId },
+                  select: { providerDetail: true },
+                },
+              },
+            },
+          },
+        },
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: ctx.take,
     })
   );
   return rows.map((row) => ({
-    id: `${FeedIdPrefix.Event}:${row.id}`,
-    source: ActivityFeedItemSource.Event,
-    action: row.action,
-    actor: { kind: actorKindFromStore(row.actorType), id: row.actorId },
-    before: fromJsonColumn(row.before),
-    after: fromJsonColumn(row.after),
-    payload: null,
+    id: `${FeedIdPrefix.Comment}:${row.id}`,
+    source: ActivityFeedItemSource.Comment,
+    action: null,
+    actor: commentThreadActivityActor(row),
+    before: null,
+    after: null,
+    // `threadId` is what a client needs to deep-link the comment; `status` and
+    // `source` say whether it is resolved and where it came from; `surface`
+    // says which of a host's tabs holds it. `surface` is OMITTED, never null,
+    // when the thread records none — an absent optional field on a
+    // version-skewed wire (root `AGENTS.md` -> Cross-Repo Compatibility).
+    payload: {
+      threadId: row.id,
+      status: row.status,
+      source: row.source,
+      ...commentThreadSurfacePayload(row.metadata),
+    },
     createdAt: row.createdAt,
   }));
+}
+
+/** Project the persisted store rows. */
+async function projectEvents(
+  ctx: FeedQueryContext,
+  actions?: readonly ArtifactActivityActionValue[],
+  excludeUnknownActorType = false
+): Promise<ArtifactActivityFeedItem[]> {
+  const rows = await withDb(async (db) => {
+    // Each edit action can use the action-leading cursor index even with a
+    // generic query plan. The Document path retains its single unfiltered read.
+    const pages = await Promise.all(
+      (actions ?? [undefined]).map((action) =>
+        db.artifactActivityEvent.findMany({
+          where: {
+            organizationId: ctx.organizationId,
+            artifactId: ctx.artifactId,
+            ...(action ? { action } : {}),
+            ...(excludeUnknownActorType
+              ? { actorType: { in: Object.values(ArtifactActivityActorType) } }
+              : {}),
+            AND: [keysetCreatedAtFragment(ctx.cursor, FeedIdPrefix.Event)],
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: ctx.take,
+          // The projected item never restates its known org or artifact scope.
+          select: {
+            id: true,
+            action: true,
+            actorType: true,
+            actorId: true,
+            before: true,
+            after: true,
+            createdAt: true,
+          },
+        })
+      )
+    );
+    return pages.flat();
+  });
+  return rows.flatMap((row) => {
+    const kind = actorKindFromStore(row.actorType, excludeUnknownActorType);
+    if (!kind) {
+      return [];
+    }
+    return [
+      {
+        id: `${FeedIdPrefix.Event}:${row.id}`,
+        source: ActivityFeedItemSource.Event,
+        action: row.action,
+        actor: { kind, id: row.actorId },
+        before: fromJsonColumn(row.before),
+        after: fromJsonColumn(row.after),
+        payload: null,
+        createdAt: row.createdAt,
+      },
+    ];
+  });
 }
 
 /** Project `document_versions` as `version_created` items. */
@@ -309,41 +427,6 @@ async function projectDerivations(
   });
 }
 
-/** Project `loops` referencing this artifact as `loop` items. */
-async function projectLoops(
-  ctx: FeedQueryContext
-): Promise<ArtifactActivityFeedItem[]> {
-  const rows = await withDb((db) =>
-    db.loop.findMany({
-      where: {
-        organizationId: ctx.organizationId,
-        artifactId: ctx.artifactId,
-        AND: [keysetCreatedAtFragment(ctx.cursor, FeedIdPrefix.Loop)],
-      },
-      select: {
-        id: true,
-        userId: true,
-        status: true,
-        command: true,
-        createdAt: true,
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: ctx.take,
-    })
-  );
-  return rows.map((row) => ({
-    id: `${FeedIdPrefix.Loop}:${row.id}`,
-    source: ActivityFeedItemSource.Loop,
-    action: null,
-    // A loop is an agent run; attribute to the run's owner as an agent actor.
-    actor: { kind: ActivityFeedActorKind.Agent, id: row.userId },
-    before: null,
-    after: null,
-    payload: { loopId: row.id, status: row.status, command: row.command },
-    createdAt: row.createdAt,
-  }));
-}
-
 /** Project `artifact_evaluations` as `evaluation` items. */
 async function projectEvaluations(
   ctx: FeedQueryContext
@@ -357,7 +440,6 @@ async function projectEvaluations(
       },
       select: {
         id: true,
-        loopId: true,
         reportType: true,
         createdAt: true,
       },
@@ -372,7 +454,7 @@ async function projectEvaluations(
     actor: { kind: ActivityFeedActorKind.System, id: null },
     before: null,
     after: null,
-    payload: { reportType: row.reportType, loopId: row.loopId },
+    payload: { reportType: row.reportType },
     createdAt: row.createdAt,
   }));
 }
@@ -384,12 +466,30 @@ export type ListActivityFeedInput = {
   limit?: number;
 };
 
+type FeedProjector = (
+  context: FeedQueryContext
+) => Promise<ArtifactActivityFeedItem[]>;
+
+const V1_EDIT_ACTIONS = [
+  ArtifactActivityAction.StatusChange,
+  ArtifactActivityAction.FieldChange,
+  ArtifactActivityAction.Assignment,
+] as const;
+
 /**
- * Merge the store rows + on-read projections into one newest-first,
- * cursor-paginated page for a single artifact. Org-scoped on every source.
+ * V1 shows known edits and actors. Filtering future actor kinds in the query
+ * keeps pagination complete on older servers without assigning a false person.
  */
-async function listActivityFeed(
-  input: ListActivityFeedInput
+function projectV1EditEvents(
+  context: FeedQueryContext
+): Promise<ArtifactActivityFeedItem[]> {
+  return projectEvents(context, V1_EDIT_ACTIONS, true);
+}
+
+/** Apply the same bounded keyset page mechanics to each artifact's sources. */
+async function listFeed(
+  input: ListActivityFeedInput,
+  projectors: readonly FeedProjector[]
 ): Promise<ArtifactActivityFeedResult> {
   if (!(input.organizationId && input.artifactId)) {
     throw new Error("organizationId and artifactId are required");
@@ -400,35 +500,20 @@ async function listActivityFeed(
     ARTIFACT_ACTIVITY_FEED_MAX_LIMIT
   );
   const cursor = decodeCursor(input.cursor);
-  const ctx: FeedQueryContext = {
+  const context: FeedQueryContext = {
     organizationId: input.organizationId,
     artifactId: input.artifactId,
     cursor,
-    // Each source only needs enough rows to fill one merged page; +1 lookahead.
     take: limit + 1,
   };
 
-  const [events, versions, derivations, loops, evaluations] = await Promise.all(
-    [
-      projectEvents(ctx),
-      projectVersions(ctx),
-      projectDerivations(ctx),
-      projectLoops(ctx),
-      projectEvaluations(ctx),
-    ]
+  const sourcePages = await Promise.all(
+    projectors.map((projector) => projector(context))
   );
+  let merged = sourcePages.flat().sort(compareDesc);
 
-  let merged = [
-    ...events,
-    ...versions,
-    ...derivations,
-    ...loops,
-    ...evaluations,
-  ].sort(compareDesc);
-
-  // Every source's keyset predicate already excludes the cursor row and prior
-  // pages, so this in-memory filter is now a defensive no-op — kept so a future
-  // regression in a per-source predicate cannot leak an already-returned row.
+  // The source predicates already exclude prior pages. Keep this guard against
+  // a future projector that forgets the complete time-and-id boundary.
   if (cursor) {
     merged = merged.filter((item) => isAfterCursor(item, cursor));
   }
@@ -441,6 +526,59 @@ async function listActivityFeed(
   return { items, nextCursor };
 }
 
+/** Merge Document events and projections without changing their public route. */
+function listActivityFeed(
+  input: ListActivityFeedInput
+): Promise<ArtifactActivityFeedResult> {
+  return listFeed(input, [
+    projectEvents,
+    projectVersions,
+    projectDerivations,
+    projectEvaluations,
+  ]);
+}
+
+/** V1 stored edits plus comments, for the Session and Branch Activity hosts. */
+function listStoredEventActivityFeed(
+  input: ListActivityFeedInput
+): Promise<ArtifactActivityFeedResult> {
+  return listFeed(input, [projectV1EditEvents, projectCommentThreads]);
+}
+
+/**
+ * The Session/Branch route accepts only a cursor one of ITS sources could
+ * mint. Since ISS-11004 that is the stored event source or the comment source,
+ * so a page whose last item is a comment pages on; before comments joined the
+ * feed, an `event:`-only check was the whole contract.
+ */
+export function isValidStoredEventCursor(cursor: string): boolean {
+  const prefixes = [`${FeedIdPrefix.Event}:`, `${FeedIdPrefix.Comment}:`];
+  const decoded = decodeTimeIdCursor(cursor, (id) => {
+    const prefix = prefixes.find((candidate) => id.startsWith(candidate));
+    if (!prefix) {
+      return false;
+    }
+    const rowId = id.slice(prefix.length);
+    return isUuid(rowId) && rowId === rowId.toLowerCase();
+  });
+  return (
+    decoded !== null && encodeTimeIdCursor(decoded.ms, decoded.id) === cursor
+  );
+}
+
 export const artifactActivityFeedService = {
   listActivityFeed,
+  listStoredEventActivityFeed,
 };
+
+/**
+ * The `{ surface }` fragment a comment item's payload carries, or `{}` when
+ * the thread records no parseable trace-comment surface. A fragment rather
+ * than a value so the key is absent on the wire instead of null.
+ */
+function commentThreadSurfacePayload(
+  metadata: unknown
+): { surface: CommentSurface } | Record<string, never> {
+  const surface = parseTraceCommentMetadata(metadata)?.surface;
+  return surface ? { surface } : {};
+}

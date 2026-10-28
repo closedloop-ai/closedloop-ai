@@ -9,7 +9,7 @@
     "rules": {
       "style": {
         "useConsistentTypeDefinitions": {
-          "level": "warn",
+          "level": "error",
           "options": {
             "style": "type"
           }
@@ -39,6 +39,83 @@
     "globals": ["Liveblocks"]
   },
   "overrides": [
+    {
+      "includes": ["scripts/deploy/check-database.mjs"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 35 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/api/app/desktop/analytics/sign-in/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@/lib/auth/pkce": {
+                    "allowImportNames": ["isValidS256CodeChallenge"],
+                    "message": "ISS-11127: analytics may validate shape, never verify PKCE."
+                  }
+                },
+                "patterns": [
+                  {
+                    "group": [
+                      "**/desktop/src/server/operations/**",
+                      "**/desktop/server/operations/**"
+                    ],
+                    "message": "API routes must never import privileged Desktop gateway operations (FEA-1511)."
+                  },
+                  {
+                    "group": [
+                      "**/desktop/authorize/**",
+                      "**/authorize/service",
+                      "**/authorize/token/**"
+                    ],
+                    "message": "ISS-11127: analytics must not call the auth mint/token path."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/api/app/desktop/authorize/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/desktop/src/server/operations/**",
+                      "**/desktop/server/operations/**"
+                    ],
+                    "message": "API routes must never import privileged Desktop gateway operations (FEA-1511)."
+                  },
+                  {
+                    "group": ["**/analytics/sign-in/**"],
+                    "message": "ISS-11127: auth mint/token must never depend on the analytics lookup."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     {
       // ISS-5810: verbatim `claude plugin list` captures used as a test oracle.
       // Formatting them would rewrite the exact bytes the fixtures exist to
@@ -128,17 +205,13 @@
     {
       "includes": [
         "apps/app/components/engineer/**",
-        "apps/app/components/chat/**",
         "apps/app/hooks/engineer/**",
-        // Narrowed from hooks/chat/** to the single remaining offender
-        "apps/app/hooks/chat/use-stream-dispatch.ts",
-        "apps/app/lib/engineer/**",
-        "apps/app/lib/chat/**"
+        "apps/app/lib/engineer/**"
       ],
       "linter": {
         "rules": {
           "performance": {
-            // Keep engineer/chat noBarrel carve-out while compatibility shims and
+            // Keep engineer noBarrel carve-out while compatibility shims and
             // existing barrel patterns remain in this scope.
             "noBarrelFile": "off"
           }
@@ -147,50 +220,8 @@
     },
     {
       "includes": [
-        "apps/app/components/chat/MessageContent.tsx",
-        "apps/app/components/engineer/__tests__/HealthCheckDialog.test.tsx",
-        "apps/app/hooks/engineer/use-slash-commands.ts",
-        "apps/app/lib/chat/chat-markdown.tsx",
-        "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/relay-client.ts"
-      ],
-      "linter": {
-        "rules": {
-          "performance": {
-            // FEA-520: keep regex-hoisting carve-out limited to files still requiring
-            // behavior-safe parser/streaming refactors.
-            "useTopLevelRegex": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "apps/app/hooks/chat/use-stream-dispatch.ts",
-        "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/engineer-fetch-interceptor.ts",
-        "apps/app/lib/engineer/queries/health-check.ts",
-        "apps/app/lib/engineer/relay-client.ts"
-      ],
-      "linter": {
-        "rules": {
-          "complexity": {
-            // FEA-520: keep cognitive-complexity carve-out only on current
-            // orchestration/parser hotspots that still need module-level refactors.
-            "noExcessiveCognitiveComplexity": {
-              "level": "error",
-              "options": { "maxAllowedComplexity": 106 }
-            }
-          }
-        }
-      }
-    },
-    {
-      "includes": [
         // FEA-520: postpone PascalCase -> kebab-case migration to a dedicated rename pass.
-        "apps/app/components/chat/**",
-        "apps/app/components/engineer/**",
-        "apps/app/lib/chat/runner-token/**"
+        "apps/app/components/engineer/**"
       ],
       "linter": {
         "rules": {
@@ -227,7 +258,10 @@
                   "next/navigation": {
                     "message": "Use @repo/navigation hooks instead (navigation port, PLN-806). Only server redirect/notFound may be imported from next/navigation; client hooks live in lib/navigation/next-adapter.tsx.",
                     "allowImportNames": ["redirect", "notFound"]
-                  }
+                  },
+                  // PLN-2188: in this block for the same no-merge reason as
+                  // the gateway patterns below.
+                  "@repo/document-schema/markdown": "@repo/document-schema/markdown is server/test-only (PLN-2188): it statically imports jsdom, which would land in the browser bundle. See packages/document-schema/AGENTS.md."
                 },
                 // FEA-1511 / PRD-430 (AC-040.4): the privileged Desktop gateway
                 // tree (apps/desktop/src/server/operations/*) runs in the
@@ -406,6 +440,13 @@
                   {
                     "group": ["@/**"],
                     "message": "@repo/app must not reach into an app's @/ alias (FEA-1510): shared code cannot depend on a specific shell."
+                  },
+                  {
+                    // PLN-2188: here, not in its own override, because a
+                    // second packages/app override for this rule would
+                    // replace these groups rather than merge with them.
+                    "group": ["@repo/document-schema/markdown"],
+                    "message": "@repo/document-schema/markdown is server/test-only (PLN-2188): it statically imports jsdom, which would land in the browser bundle. See packages/document-schema/AGENTS.md."
                   }
                 ]
               }
@@ -486,7 +527,9 @@
         // navigation override above (merged into the same noRestrictedImports
         // options so Biome does not clobber the navigation ban); apps/api has no
         // navigation ban, so it gets its own dedicated override here.
-        "apps/api/**"
+        "apps/api/**",
+        "!apps/api/app/desktop/analytics/sign-in/**",
+        "!apps/api/app/desktop/authorize/**"
       ],
       "linter": {
         "rules": {
@@ -543,7 +586,28 @@
                     "message": "Prototypes are an isolated sandbox: no database access. Use inline mock data (docs/design/prototype-sandbox.md)."
                   },
                   {
-                    "group": ["@repo/api", "@repo/api/**"],
+                    // The one negated path is the canonical onboarding phase
+                    // vocabulary (ISS-8345). Values only — no Zod, no React, no
+                    // transition logic — and the prototype's own phase type is
+                    // derived from it, so a prototype-local copy of the
+                    // spellings would be the second vocabulary that ticket
+                    // exists to delete. ISS-8375 moved the module out of
+                    // `@repo/app` into its canonical `@repo/api` owner, so the
+                    // already-approved exception moves with it — from
+                    // `check-catalog-imports.mjs`'s `portableSurfaceAllowlist`,
+                    // whose `importPattern` no longer matches it, to here. The
+                    // negation is exact: every other `@repo/api` subpath is
+                    // still refused. `data-sync-level` is the second exact
+                    // exception on the same terms (PR #8823): a values-only
+                    // module with no imports, read so the data-sync sandbox
+                    // pre-selects RECOMMENDED_DATA_SYNC_LEVEL rather than a
+                    // hand-kept copy that could drift from the card's badge.
+                    "group": [
+                      "@repo/api",
+                      "@repo/api/**",
+                      "!@repo/api/src/types/onboarding-phase",
+                      "!@repo/api/src/types/data-sync-level"
+                    ],
                     "message": "Prototypes never call the API: props in, mock data inline (docs/design/prototype-sandbox.md)."
                   },
                   {
@@ -571,12 +635,7 @@
         // The generator's output is canonical: keep Biome (and the pre-commit
         // hook) from reformatting it, which would make the next regeneration
         // produce a spurious diff.
-        "apps/prototypes/lib/registry.generated.ts",
-        // Machine-written by
-        // apps/desktop/scripts/generate-audit-character-roster.mjs (FEA-4013) —
-        // the discovered Audit Bot review-character cast. Same rationale: the
-        // generator's output is canonical, so keep Biome from reformatting it.
-        "apps/desktop/src/shared/audit-character-roster.generated.ts"
+        "apps/prototypes/lib/registry.generated.ts"
       ],
       "formatter": {
         "enabled": false
@@ -598,20 +657,6 @@
           "a11y": {
             "useButtonType": "off",
             "useSemanticElements": "off"
-          }
-        }
-      }
-    },
-    {
-      // FEA-3812: `@repo/crewd`'s package entry point re-exports the fs/CLI-free
-      // scheduler core (Daemon/cascade/model/ports) so apps/desktop can
-      // `import { Daemon, cascade } from "@repo/crewd"`. That single public-API
-      // module is intentionally a barrel.
-      "includes": ["packages/crewd/src/index.ts"],
-      "linter": {
-        "rules": {
-          "performance": {
-            "noBarrelFile": "off"
           }
         }
       }
@@ -662,86 +707,6 @@
         }
       }
     },
-    // FEA-1544: exact-file legacy Desktop diagnostics retained during ESLint removal.
-    // These are explicit file-list carve-outs for pre-existing non-safety diagnostics;
-    // Desktop safety rules restored by this plan remain active.
-    {
-      "includes": [
-        "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
-        "apps/desktop/src/main/cost/anthropic-admin-client.ts",
-        "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/approvals/approval-operations.ts",
-        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
-        "apps/desktop/src/main/cost/claude-code-analytics-client.ts",
-        "apps/desktop/src/main/cloud/cloud-command-executor.ts",
-        "apps/desktop/src/main/collectors/codex/codex-parser.ts",
-        "apps/desktop/src/main/collectors/engine/collector-manager.ts",
-        "apps/desktop/src/main/collectors/copilot/copilot-parser.ts",
-        "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
-        "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
-        "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
-        "apps/desktop/src/main/command-signing/command-key-target-context.ts",
-        "apps/desktop/src/main/database/dashboard-queries.ts",
-        "apps/desktop/src/main/database/db-host/db-host-agent-database.ts",
-        "apps/desktop/src/main/database/import-metadata-builders.ts",
-        "apps/desktop/src/main/database/live-hook.ts",
-        "apps/desktop/src/main/database/read-stores.ts",
-        "apps/desktop/src/main/database/session-trace.ts",
-        "apps/desktop/src/main/database/sync-source.ts",
-        "apps/desktop/src/main/database/token-cost-maintenance.ts",
-        "apps/desktop/src/main/database/transcript.ts",
-        "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
-        "apps/desktop/src/main/loop/loop-heartbeat.ts",
-        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
-        "apps/desktop/src/main/loop/loop-refresh.ts",
-        "apps/desktop/src/main/telemetry/observability.ts",
-        "apps/desktop/src/main/packs/catalog-contents.ts",
-        "apps/desktop/src/main/packs/catalog-fetcher.ts",
-        "apps/desktop/src/main/packs/catalog-store.ts",
-        "apps/desktop/src/main/packs/pack-scanner.ts",
-        "apps/desktop/src/main/plans/plan-store.ts",
-        "apps/desktop/src/main/pull-requests/pr-store.ts",
-        "apps/desktop/src/main/cost/reconciliation-worker.ts",
-        "apps/desktop/src/main/settings/settings-store.ts",
-        "apps/desktop/src/server/operations/binary-paths.ts",
-        "apps/desktop/src/server/operations/codex.ts",
-        "apps/desktop/src/server/operations/deploy.ts",
-        "apps/desktop/src/server/operations/filesystem-directories.ts",
-        "apps/desktop/src/server/operations/filesystem-search.ts",
-        "apps/desktop/src/server/operations/git-action.ts",
-        "apps/desktop/src/server/operations/git-diff.ts",
-        "apps/desktop/src/server/operations/git-pr.ts",
-        "apps/desktop/src/server/operations/git-worktree.ts",
-        "apps/desktop/src/server/operations/health-check.ts",
-        "apps/desktop/src/server/operations/learnings.ts",
-        "apps/desktop/src/server/operations/loop-http.ts",
-        "apps/desktop/src/server/operations/metadata-routes.ts",
-        "apps/desktop/src/server/operations/output-tailer.ts",
-        "apps/desktop/src/server/operations/run-viewer-chat.ts",
-        "apps/desktop/src/server/operations/stream-events.ts",
-        "apps/desktop/src/server/operations/symphony-chat-history.ts",
-        "apps/desktop/src/server/operations/symphony-interactive.ts",
-        "apps/desktop/src/server/operations/symphony-job-snapshot.ts",
-        "apps/desktop/src/server/operations/symphony-judges.ts",
-        "apps/desktop/src/server/operations/symphony-kill.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/src/server/operations/symphony-plan-loop.ts",
-        "apps/desktop/src/server/operations/symphony-plan.ts",
-        "apps/desktop/src/server/operations/symphony-status.ts",
-        "apps/desktop/src/server/operations/symphony-upload.ts",
-        "apps/desktop/src/server/operations/ticket-chat.ts",
-        "apps/desktop/src/server/router.ts",
-        "apps/desktop/test/symphony-test-utils.ts"
-      ],
-      "linter": {
-        "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "off"
-          }
-        }
-      }
-    },
     {
       "includes": ["apps/desktop/src/main/telemetry/observability.ts"],
       "linter": {
@@ -757,54 +722,28 @@
         "apps/desktop/src/main/dashboard/agent-dashboard-design-system-runtime.ts",
         "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
-        "apps/desktop/src/main/command-signing/browser-command-key-approval-request.ts",
         "apps/desktop/src/main/cloud/cloud-command-executor.ts",
         "apps/desktop/src/main/cloud/cloud-socket.ts",
         "apps/desktop/src/main/collectors/engine/collector-manager.ts",
         "apps/desktop/src/main/collectors/engine/watcher.ts",
-        "apps/desktop/src/main/command-signing/command-key-reconciler.ts",
         "apps/desktop/src/main/cost/cost-reconciliation-service.ts",
         "apps/desktop/src/main/lifecycle/gateway-recovery.ts",
         "apps/desktop/src/main/index.ts",
         "apps/desktop/src/main/startup.ts",
-        "apps/desktop/src/main/loop/loop-heartbeat.ts",
-        "apps/desktop/src/main/loop/loop-scheduler-context.ts",
-        "apps/desktop/src/main/loop/loop-sleep-recovery.ts",
         "apps/desktop/src/main/packs/install-orchestrator.ts",
-        "apps/desktop/src/main/command-signing/pending-command-key-notifier.ts",
         "apps/desktop/src/main/window.ts",
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
-        "apps/desktop/src/server/operations/codex.ts",
-        "apps/desktop/src/server/operations/deploy.ts",
-        "apps/desktop/src/server/operations/learnings.ts",
-        "apps/desktop/src/server/operations/run-viewer-chat.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/src/server/operations/terminal-chat.ts",
-        "apps/desktop/src/server/operations/ticket-chat.ts",
         "apps/desktop/src/server/process-manager.ts",
         "apps/desktop/src/server/server.ts",
         "apps/desktop/test/cloud-command-executor.test.ts",
         "apps/desktop/test/cloud-socket-presence.test.ts",
         "apps/desktop/test/resolve-binary.test.ts",
-        "apps/desktop/test/symphony-loop-branch-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-ssrf.test.ts",
         "apps/desktop/test/symphony-test-utils.ts"
       ],
       "linter": {
         "rules": {
           "complexity": {
             "noVoid": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["apps/desktop/src/server/operations/symphony-loop.ts"],
-      "linter": {
-        "rules": {
-          "performance": {
-            "noBarrelFile": "off"
           }
         }
       }
@@ -822,9 +761,7 @@
     {
       "includes": [
         "apps/desktop/src/main/dashboard/agent-dashboard-design-system-runtime.ts",
-        "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/database/db-host/db-host-worker.ts",
-        "apps/desktop/src/main/loop/loop-scheduler-context.ts"
+        "apps/desktop/src/main/app.ts"
       ],
       "linter": {
         "rules": {
@@ -846,9 +783,7 @@
         "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
         "apps/desktop/src/main/cost/cost-math.ts",
         "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/telemetry/decision-table-verification-telemetry.ts",
         "apps/desktop/src/main/auth/desktop-pop.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",
         "apps/desktop/src/main/packs/pack-scanner.ts",
@@ -856,20 +791,11 @@
         "apps/desktop/src/main/plans/plan-store.ts",
         "apps/desktop/src/main/pull-requests/pr-store.ts",
         "apps/desktop/src/main/window.ts",
-        "apps/desktop/src/server/operations/chat-backend-client.ts",
-        "apps/desktop/src/server/operations/chat-session.ts",
-        "apps/desktop/src/server/operations/codex.ts",
-        "apps/desktop/src/server/operations/deploy.ts",
         "apps/desktop/src/server/operations/git-action.ts",
         "apps/desktop/src/server/operations/git-helpers.ts",
         "apps/desktop/src/server/operations/git-local-changes.ts",
         "apps/desktop/src/server/operations/git-pr.ts",
         "apps/desktop/src/server/operations/git-worktree.ts",
-        "apps/desktop/src/server/operations/health-check.ts",
-        "apps/desktop/src/server/operations/learnings.ts",
-        "apps/desktop/src/server/operations/plugin-cache.ts",
-        "apps/desktop/src/server/operations/symphony-interactive.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
         "apps/desktop/src/server/operations/symphony-utils.ts",
         "apps/desktop/src/server/router.ts",
         "apps/desktop/src/shared/network-utils.ts",
@@ -878,49 +804,22 @@
         "apps/desktop/test/admin-key-store.test.ts",
         "apps/desktop/test/agent-monitor-hooks-core.test.ts",
         "apps/desktop/test/app-lifecycle.test.ts",
-        "apps/desktop/test/authorized-command-key-store.test.ts",
-        "apps/desktop/test/authorized-public-keys-client.test.ts",
         "apps/desktop/test/binary-paths.test.ts",
-        "apps/desktop/test/boot-recovery.test.ts",
-        "apps/desktop/test/chat-backend-client.test.ts",
-        "apps/desktop/test/chat-session.test.ts",
         "apps/desktop/test/claude-code-analytics-client.test.ts",
         "apps/desktop/test/claude-code-analytics-service.test.ts",
         "apps/desktop/test/cloud-socket-presence.test.ts",
-        "apps/desktop/test/codex-log-parsing.test.ts",
-        "apps/desktop/test/codex-spawn-enoent.test.ts",
-        "apps/desktop/test/command-key-notification-boundary.test.ts",
-        "apps/desktop/test/command-key-reconciler.test.ts",
         "apps/desktop/test/cost-math.test.ts",
         "apps/desktop/test/cost-reconciliation-service.test.ts",
         "apps/desktop/test/error-handlers.test.ts",
         "apps/desktop/test/feature-flags.test.ts",
-        "apps/desktop/test/gateway-auth.test.ts",
         "apps/desktop/test/gateway-server.test.ts",
         "apps/desktop/test/gateway-signing-key-store.test.ts",
         "apps/desktop/test/git-local-changes.test.ts",
-        "apps/desktop/test/health-check-mcp.test.ts",
-        "apps/desktop/test/loop-finalizer.test.ts",
-        "apps/desktop/test/loop-http.test.ts",
-        "apps/desktop/test/loop-perf-telemetry.test.ts",
-        "apps/desktop/test/loop-sleep-recovery.test.ts",
-        "apps/desktop/test/no-token-surface.test.ts",
         "apps/desktop/test/origin-policy.test.ts",
-        "apps/desktop/test/pending-command-key-notifier.test.ts",
         "apps/desktop/test/persistent-log.test.ts",
         "apps/desktop/test/saved-configs.test.ts",
         "apps/desktop/test/shutdown-lifecycle.test.ts",
         "apps/desktop/test/shutdown.test.ts",
-        "apps/desktop/test/symphony-bootstrap.test.ts",
-        "apps/desktop/test/symphony-loop-branch-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-cloud-failures.test.ts",
-        "apps/desktop/test/symphony-loop-evaluate-context-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-evaluate-feature.test.ts",
-        "apps/desktop/test/symphony-loop-execute.test.ts",
-        "apps/desktop/test/symphony-loop-multi-repo-contract.test.ts",
-        "apps/desktop/test/symphony-loop-multi-repo-spawn.test.ts",
-        "apps/desktop/test/symphony-loop-multi-repo-worktree.test.ts",
-        "apps/desktop/test/symphony-loop-resolve-primary-artifact.test.ts",
         "apps/desktop/test/symphony-test-utils.ts",
         "apps/desktop/test/update-banner-state.test.ts"
       ],
@@ -928,16 +827,6 @@
         "rules": {
           "performance": {
             "useTopLevelRegex": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["apps/desktop/test/symphony-loop-cloud-failures.test.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noDoneCallback": "off"
           }
         }
       }
@@ -964,20 +853,12 @@
         "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
         "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
-        "apps/desktop/src/main/command-signing/command-key-app-lifecycle.ts",
-        "apps/desktop/src/main/command-signing/command-key-target-context.ts",
-        "apps/desktop/src/main/telemetry/decision-table-verification-telemetry.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/main/cost/reconciliation-store.ts",
         "apps/desktop/src/renderer/components/activity/ActivityPanel.tsx",
         "apps/desktop/src/renderer/components/approvals/ApprovalsPanel.tsx",
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
         "apps/desktop/src/renderer/components/features/PlansView.tsx",
-        "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
-        "apps/desktop/src/server/operations/chat-providers.ts",
-        "apps/desktop/src/server/operations/health-check.ts",
         "apps/desktop/src/server/operations/repos-config-utils.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
         "apps/desktop/src/server/shell-path.ts",
         "apps/desktop/test/gateway-server.test.ts"
       ],
@@ -990,22 +871,11 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/server/operations/symphony-loop.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noParameterAssign": "off"
-          }
-        }
-      }
-    },
-    {
       "includes": [
         "apps/desktop/src/main/database/db-host/db-host-client.ts",
         "apps/desktop/src/main/auth/gateway-identity.ts",
         "apps/desktop/src/main/logging/gateway-logger.ts",
         "apps/desktop/src/main/lifecycle/gateway-recovery.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
         "apps/desktop/test/agent-monitor-listener.test.ts"
       ],
       "linter": {
@@ -1017,47 +887,9 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/server/operations/symphony-loop.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "useCollapsedElseIf": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["apps/desktop/src/server/operations/symphony-loop.ts"],
-      "linter": {
-        "rules": {
-          "style": {
-            "useConsistentArrayType": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/test/chat-session.test.ts"
-      ],
-      "linter": {
-        "rules": {
-          "style": {
-            "useConsistentMemberAccessibility": "off"
-          }
-        }
-      }
-    },
-    {
       "includes": [
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/approvals/approval-policy.ts",
-        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
-        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
-        "apps/desktop/src/server/operations/output-tailer.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/src/server/operations/symphony-status.ts"
+        "apps/desktop/src/main/approvals/approval-policy.ts"
       ],
       "linter": {
         "rules": {
@@ -1077,12 +909,10 @@
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
         "apps/desktop/src/renderer/components/features/CoreFeaturesView.tsx",
         "apps/desktop/src/renderer/components/features/PlansView.tsx",
-        "apps/desktop/src/renderer/components/features/Sparkline.tsx",
         "apps/desktop/src/renderer/components/layout/Sidebar.tsx",
         "apps/desktop/src/renderer/components/layout/Topbar.tsx",
         "apps/desktop/src/renderer/components/sessions/SessionDetailView.tsx",
         "apps/desktop/src/renderer/components/sessions/SessionsView.tsx",
-        "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
         "apps/desktop/src/renderer/hooks/useDesktopApi.ts",
         "apps/desktop/src/renderer/hooks/useQueryCache.ts"
       ],
@@ -1090,19 +920,6 @@
         "rules": {
           "style": {
             "useFilenamingConvention": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "apps/desktop/test/gateway-server.test.ts",
-        "apps/desktop/test/health-check-mcp.test.ts"
-      ],
-      "linter": {
-        "rules": {
-          "style": {
-            "useThrowOnlyError": "off"
           }
         }
       }
@@ -1121,8 +938,7 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/agent-monitor/agent-monitor-hooks-core.ts",
-        "apps/desktop/src/server/operations/output-tailer.ts"
+        "apps/desktop/src/main/agent-monitor/agent-monitor-hooks-core.ts"
       ],
       "linter": {
         "rules": {
@@ -1143,10 +959,7 @@
       }
     },
     {
-      "includes": [
-        "apps/desktop/src/main/diagnostics/diagnostics-helpers.ts",
-        "apps/desktop/src/main/loop/loop-perf-telemetry.ts"
-      ],
+      "includes": ["apps/desktop/src/main/diagnostics/diagnostics-helpers.ts"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -1169,9 +982,7 @@
       "includes": [
         "apps/desktop/src/main/app.ts",
         "apps/desktop/src/main/collectors/engine/collector-manager.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
-        "apps/desktop/src/shared/token-cost.ts",
-        "apps/desktop/test/ipc-job-reconciliation-race.test.ts"
+        "apps/desktop/src/shared/token-cost.ts"
       ],
       "linter": {
         "rules": {
@@ -1182,11 +993,12 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/server/operations/codex.ts"],
+      // ultracite/core turns noExplicitAny off for tests; ISS-12075 bans `any` everywhere.
+      "includes": ["**/*.{test,spec}.{ts,tsx,js,jsx}", "**/__tests__/**/*"],
       "linter": {
         "rules": {
           "suspicious": {
-            "noExplicitAny": "off"
+            "noExplicitAny": "error"
           }
         }
       }
@@ -1208,15 +1020,9 @@
       // carried at their old desktop paths (see the codex/claude/parser-utils
       // overrides above) so the move stays a behavior-neutral relocation rather
       // than a lint-driven rewrite.
-      "includes": [
-        "packages/lib/harness/parser-utils.ts",
-        "packages/lib/harness/codex/parse-codex.ts"
-      ],
+      "includes": ["packages/lib/harness/parser-utils.ts"],
       "linter": {
         "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "off"
-          },
           "performance": {
             "useTopLevelRegex": "off"
           },
@@ -1232,10 +1038,34 @@
       }
     },
     {
+      // ISS-7623 split parse-codex.ts into siblings. Its FEA-2717 carve-out is
+      // re-scoped to the two rules the moved code still trips, on only the files
+      // that trip them: the driver and codex-token-usage.ts now need none of it.
       "includes": [
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
-        "apps/desktop/src/shared/token-cost.ts"
+        "packages/lib/harness/codex/codex-event-handlers.ts",
+        "packages/lib/harness/codex/codex-response-item-handlers.ts"
       ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNestedTernary": "off"
+          }
+        }
+      }
+    },
+    {
+      // ISS-7623: `classify`'s bare-`type` fallback cascade, moved verbatim.
+      "includes": ["packages/lib/harness/codex/codex-accumulator.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noDuplicateElseIf": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/desktop/src/shared/token-cost.ts"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -1248,33 +1078,18 @@
       "includes": [
         "apps/desktop/test/admin-key-store.test.ts",
         "apps/desktop/test/agent-monitor-listener.test.ts",
-        "apps/desktop/test/fixtures/health-check-route.ts",
-        "apps/desktop/test/gateway-server.test.ts",
         "apps/desktop/test/gateway-signing-key-store.test.ts",
         "apps/desktop/test/git-branch-worktree.test.ts",
         "apps/desktop/test/git-local-changes.test.ts",
-        "apps/desktop/test/health-check-mcp.test.ts",
-        "apps/desktop/test/learnings-routes.test.ts",
+        "apps/desktop/test/helpers/gateway-auth-fixtures.ts",
         "apps/desktop/test/reconciliation-worker.test.ts",
         "apps/desktop/test/resolve-binary.test.ts",
-        "apps/desktop/test/symphony-loop-evaluate-context-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-execute.test.ts",
-        "apps/desktop/test/symphony-loop-handle-process-completion.test.ts"
+        "apps/mcp/src/__tests__/fixtures/zod-issues.ts"
       ],
       "linter": {
         "rules": {
           "suspicious": {
             "noMisplacedAssertion": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["apps/desktop/test/symphony-loop-multi-repo-spawn.test.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noTemplateCurlyInString": "off"
           }
         }
       }
@@ -1290,72 +1105,36 @@
         "apps/desktop/src/main/database/sync-source.ts",
         "apps/desktop/src/main/database/token-cost-writes.ts",
         "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",
         "apps/desktop/src/main/packs/catalog-store.ts",
         "apps/desktop/src/main/packs/pack-scanner.ts",
-        "apps/desktop/src/server/operations/codex.ts",
         "apps/desktop/src/server/operations/git-pr.ts",
-        "apps/desktop/src/server/operations/health-check.ts",
-        "apps/desktop/src/server/operations/metadata-routes.ts",
-        "apps/desktop/src/server/operations/run-viewer-chat.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/src/server/operations/symphony-plan-loop.ts",
-        "apps/desktop/src/server/operations/terminal-chat.ts",
-        "apps/desktop/src/server/operations/ticket-chat.ts",
         "apps/desktop/src/server/process-manager.ts",
         "apps/desktop/test/admin-cost-clients.test.ts",
         "apps/desktop/test/agent-session-sync-bulk-drain.test.ts",
         "apps/desktop/test/agent-session-sync-sanitization.test.ts",
         "apps/desktop/test/agent-session-sync-service.test.ts",
         "apps/desktop/test/app-lifecycle.test.ts",
-        "apps/desktop/test/authorized-public-keys-client.test.ts",
-        "apps/desktop/test/boot-recovery.test.ts",
         "apps/desktop/test/bootstrap-claim.test.ts",
         "apps/desktop/test/catalog-store-contract.test.ts",
-        "apps/desktop/test/chat-backend-client.test.ts",
-        "apps/desktop/test/chat-session.test.ts",
         "apps/desktop/test/claude-code-analytics-service.test.ts",
         "apps/desktop/test/cloud-command-executor.test.ts",
-        "apps/desktop/test/command-key-app-lifecycle.test.ts",
-        "apps/desktop/test/command-key-reconciler.test.ts",
         "apps/desktop/test/cost-reconciliation-service.test.ts",
-        "apps/desktop/test/deploy-outbound-policy.test.ts",
-        "apps/desktop/test/gateway-auth.test.ts",
         "apps/desktop/test/gateway-recovery.test.ts",
-        "apps/desktop/test/gateway-server.test.ts",
         "apps/desktop/test/git-local-changes.test.ts",
-        "apps/desktop/test/health-check-mcp.test.ts",
         "apps/desktop/test/helpers/admin-fetch.ts",
+        "apps/desktop/test/ingest-orchestrator-boot-import.test.ts",
         "apps/desktop/test/ingest-orchestrator.test.ts",
-        "apps/desktop/test/local-auth-verifier.test.ts",
         "apps/desktop/test/local-session-store.test.ts",
-        "apps/desktop/test/loop-command-preparer.test.ts",
-        "apps/desktop/test/loop-execution-credentials-client.test.ts",
-        "apps/desktop/test/loop-finalizer.test.ts",
-        "apps/desktop/test/loop-heartbeat.test.ts",
-        "apps/desktop/test/loop-http.test.ts",
-        "apps/desktop/test/loop-refresh-scheduler.test.ts",
-        "apps/desktop/test/loop-refresh.test.ts",
-        "apps/desktop/test/loop-sleep-recovery.test.ts",
         "apps/desktop/test/managed-onboarding.test.ts",
         "apps/desktop/test/observability.test.ts",
         "apps/desktop/test/onboarding-popup.test.ts",
-        "apps/desktop/test/pending-command-key-notifier.test.ts",
         "apps/desktop/test/reconciliation-worker.test.ts",
         "apps/desktop/test/security-sandbox.test.ts",
         "apps/desktop/test/security-upgrade-route.test.ts",
         "apps/desktop/test/shutdown.test.ts",
-        "apps/desktop/test/spawn-retry.test.ts",
-        "apps/desktop/test/symphony-loop-attachment-ssrf.test.ts",
-        "apps/desktop/test/symphony-loop-branch-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-cloud-failures.test.ts",
-        "apps/desktop/test/symphony-loop-evaluate-context-materialization.test.ts",
-        "apps/desktop/test/symphony-loop-handle-process-completion.test.ts",
-        "apps/desktop/test/symphony-plan-loop-pop.test.ts",
-        "apps/desktop/test/symphony-test-utils.ts",
-        "apps/desktop/test/update-and-restart.test.ts"
+        "apps/desktop/test/symphony-test-utils.ts"
       ],
       "linter": {
         "rules": {
@@ -1366,37 +1145,14 @@
       }
     },
     {
-      "includes": ["apps/desktop/test/deploy-outbound-policy.test.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "useStaticResponseMethods": "off"
-          }
-        }
-      }
-    },
-    {
       "includes": ["containers/**", "scripts/deploy/**"],
       "linter": {
         "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "off"
-          },
           "suspicious": {
             "useAwait": "off"
           },
           "performance": {
             "useTopLevelRegex": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["scripts/deploy/check-database.ts"],
-      "linter": {
-        "rules": {
-          "complexity": {
-            "noExcessiveCognitiveComplexity": "error"
           }
         }
       }
@@ -1421,6 +1177,10 @@
         // (the file crossed the 1,000-line ceiling); its fixtures carry the same
         // verbatim `${{ … }}` audit strings.
         "scripts/lint/merge-group-required-contexts-drift.test.ts",
+        // ISS-9109 moved the synthetic workflow/entry pair into the shared
+        // fixtures module, which carries the verbatim `${{ … }}` audit strings.
+        // The matrix-leg suite that shared them was removed by ISS-10525.
+        "scripts/lint/merge-group-required-contexts-fixtures.ts",
         "scripts/lint/lint-scripts-gate.test.ts"
       ],
       "linter": {
@@ -1446,99 +1206,40 @@
         "apps/api/__tests__/api/documents-attachments.test.ts",
         "apps/api/__tests__/desktop-telemetry-handler.test.ts",
         "apps/api/__tests__/integration/branch-artifact-flows.test.ts",
-        "apps/api/__tests__/integration/comment-projection-runtime.test.ts",
         "apps/api/__tests__/unit/branch-service.test.ts",
-        "apps/api/__tests__/unit/cron-timeout-loops.test.ts",
-        "apps/api/__tests__/unit/preview-schemas-service.test.ts",
-        "apps/api/__tests__/unit/webhook-pull-request.test.ts",
         "apps/api/app/agent-components/__tests__/service.test.ts",
         "apps/api/app/agent-components/__tests__/token-trend.test.ts",
-        "apps/api/app/agent-sessions/service/analytics-aggregation.test.ts",
         "apps/api/app/agent-sessions/service/artifact-links/branch-links.test.ts",
         "apps/api/app/agent-sessions/service/projections.test.ts",
-        "apps/api/app/branch-view/\\[externalLinkId\\]/comments/direct-write-service.ts",
-        "apps/api/app/branch-view/\\[externalLinkId\\]/service.test.ts",
-        "apps/api/app/branch-view/\\[externalLinkId\\]/service.ts",
         "apps/api/app/branches/branch-read-service.test.ts",
-        "apps/api/app/branches/branch-read-service.ts",
         "apps/api/app/catalog/__tests__/service.test.ts",
         "apps/api/app/catalog/service.ts",
-        "apps/api/app/comments/github-projection.ts",
         "apps/api/app/compute-targets/service.test.ts",
-        "apps/api/app/compute-targets/service.ts",
         "apps/api/app/documents/__tests__/attachments-service.test.ts",
-        "apps/api/app/documents/attachments-service.ts",
-        "apps/api/app/documents/document-service.ts",
         "apps/api/app/insights/service.test.ts",
-        "apps/api/app/insights/service.ts",
         "apps/api/app/integrations/github/service.test.ts",
-        "apps/api/app/integrations/github/service.ts",
-        "apps/api/app/internal/relay/socket-event/service.ts",
         "apps/api/app/judges-analytics/service.ts",
-        "apps/api/app/loops/__tests__/service.test.ts",
-        "apps/api/app/loops/service.ts",
         "apps/api/app/trace-comments/service.test.ts",
-        "apps/api/app/trace-comments/service.ts",
         "apps/api/lib/__tests__/desktop-agent-sessions-handler.test.ts",
-        "apps/api/lib/desktop-command-store.ts",
-        "apps/api/lib/desktop-gateway-socket-server.ts",
-        "apps/api/lib/loops/loop-orchestrator.ts",
-        "apps/app/__tests__/components/loop-detail-container.test.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/__tests__/branch-diff-view.test.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/__tests__/branch-pr-comments-section.test.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-diff-view.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-pr-comments-section.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/teams/\\[teamId\\]/projects/\\[projectId\\]/components/__tests__/create-document-modal.test.tsx",
-        "apps/app/lib/__tests__/desktop-managed-onboarding.test.ts",
-        "apps/app/lib/engineer/__tests__/relay-client.test.ts",
-        "apps/app/lib/system-check/pre-loop-system-check-provider.tsx",
+        "apps/app/lib/__tests__/desktop-installer-script.test.ts",
         "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/branch/shared-branches-api.ts",
-        "apps/desktop/src/main/cloud/cloud-command-executor.ts",
-        "apps/desktop/src/main/collectors/copilot/copilot-parser.ts",
         "apps/desktop/src/main/collectors/parsing/artifact-ref-extractor.ts",
         "apps/desktop/src/main/dashboard/shared-agent-components-api.ts",
         "apps/desktop/src/main/database/component-invocations.ts",
-        "apps/desktop/src/main/database/session-trace.ts",
         "apps/desktop/src/main/database/sync-source.ts",
-        "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/loop/loop-finalizer.ts",
-        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
         "apps/desktop/src/main/packs/pack-scanner.ts",
         "apps/desktop/src/main/session/shared-agent-sessions-api.ts",
-        "apps/desktop/src/main/trace-comments/shared-trace-comments-store.ts",
-        "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
-        "apps/desktop/src/server/operations/codex.ts",
-        "apps/desktop/src/server/operations/deploy.ts",
-        "apps/desktop/src/server/operations/health-check.ts",
-        "apps/desktop/src/server/operations/symphony-interactive.ts",
-        "apps/desktop/src/server/operations/symphony-loop.ts",
-        "apps/desktop/src/server/router.ts",
         "apps/desktop/test/agent-session-sync-service.test.ts",
-        "apps/desktop/test/app-otel-runtime.test.ts",
         "apps/desktop/test/artifact-ref-extractor.test.ts",
-        "apps/desktop/test/boot-recovery.test.ts",
-        "apps/desktop/test/chat-session.test.ts",
         "apps/desktop/test/cloud-command-executor.test.ts",
         "apps/desktop/test/collectors-parsers.test.ts",
         "apps/desktop/test/component-invocations-materialization.test.ts",
         "apps/desktop/test/component-model-analytics.test.ts",
         "apps/desktop/test/data-revision-rebuild.test.ts",
-        "apps/desktop/test/e2e/trace-comments-ipc.spec.ts",
         "apps/desktop/test/gateway-server.test.ts",
-        "apps/desktop/test/golden/golden-layer2.ts",
         "apps/desktop/test/golden/golden-layer3-derive.ts",
-        "apps/desktop/test/golden/golden-layer3.ts",
-        "apps/desktop/test/golden/golden-layer4.ts",
-        "apps/desktop/test/health-check-mcp.test.ts",
-        "apps/desktop/test/historical-parse-worker-protocol.test.ts",
-        "apps/desktop/test/ingest-orchestrator.test.ts",
         "apps/desktop/test/local-insights-contract.test.ts",
-        "apps/desktop/test/loop-finalizer.test.ts",
-        "apps/desktop/test/loop-heartbeat.test.ts",
-        "apps/desktop/test/loop-perf-telemetry.test.ts",
-        "apps/desktop/test/output-tailer-tokens.test.ts",
         "apps/desktop/test/saved-configs.test.ts",
         "apps/desktop/test/session-analytics-backfill-batch.test.ts",
         "apps/desktop/test/session-artifact-markers.test.ts",
@@ -1546,35 +1247,19 @@
         "apps/desktop/test/shared-agent-sessions-api.test.ts",
         "apps/desktop/test/shared-branches-api.test.ts",
         "apps/desktop/test/sqlite-agent-dashboard-database.test.ts",
-        "apps/desktop/test/symphony-loop-cloud-failures.test.ts",
-        "apps/desktop/test/symphony-loop-execute.test.ts",
-        "apps/desktop/test/symphony-loop-multi-repo-worktree.test.ts",
-        "apps/desktop/test/symphony-loop-output-events.test.ts",
         "apps/desktop/test/write-core-component-usage.test.ts",
         "apps/mcp/src/__tests__/oauth-endpoints.test.ts",
         "apps/mcp/src/index.ts",
         "apps/relay/src/__tests__/connection-events.test.ts",
         "apps/relay/src/index.ts",
-        "containers/claude-runner/harness-agent.mjs",
-        "containers/claude-runner/harness-agent.test.mjs",
-        "e2e/branch-view-comments.spec.ts",
-        "packages/api/src/types/agent-session.ts",
         "packages/app/agents/components/detail/__tests__/agent-session-detail-view.test.tsx",
-        "packages/app/agents/components/detail/agent-session-detail-view.tsx",
-        "packages/app/agents/components/detail/session-trace.tsx",
-        "packages/app/agents/components/workspace/__tests__/agents-grouped-list.test.tsx",
         "packages/app/agents/hooks/__tests__/use-session-transcript.test.tsx",
         "packages/app/agents/lib/session-mock-data.ts",
-        "packages/app/documents/hooks/__tests__/use-branch-view.test.ts",
         "packages/app/styles.css",
-        "packages/database/scripts/seed/__tests__/integration/reset.integration.test.ts",
         "packages/github/index.ts",
         "packages/lib/harness/codex/parse-codex.test.ts",
-        "packages/lib/harness/codex/parse-codex.ts",
         "packages/observability/__tests__/telemetry-schema.test.ts",
         "packages/telemetry-contract/scripts/test-perf-jsonl-sample.ts",
-        "scripts/deploy/check-prod-alias.test.ts",
-        "scripts/deploy/check-prod-alias.ts",
         "scripts/deploy/e2e-workflow-source.test.ts",
         "scripts/deploy/redeploy-services.test.ts",
         "scripts/lint/check-api-contract-removals.test.ts",
@@ -1643,29 +1328,26 @@
         // (28 files / 56 casts at landing). Same discipline as the
         // noExcessiveLinesPerFile grandfather list above: NEVER add an entry to
         // route around the gate; delete a file's entry once its casts are gone
-        // (verify with `./node_modules/.bin/biome check <file>` — `npx biome`
-        // is a broken wrapper in this repo). Per-file only, no directory globs.
+        // (verify with `pnpm exec biome check <file>` — never `npx biome`,
+        // which resolves an unrelated registry package and exits 0 without
+        // checking anything; see AGENTS.md -> "Ultracite (Biome preset)").
+        // Per-file only, no directory globs.
         // Next route segments need escaped brackets (`\\[id\\]`) — Biome globs
         // read `[...]` as a character class, so an unescaped `[id]` matches
         // nothing and silently allowlists nothing.
         "!apps/api/app/compute-targets/service.ts",
         "!apps/api/app/documents/\\[id\\]/context-attachments/validators.ts",
-        "!apps/api/app/loops/\\[id\\]/stream/route.ts",
         "!apps/api/app/webhooks/github/handlers/installation-handler.ts",
         "!apps/api/app/webhooks/github/handlers/installation-repositories-handler.ts",
         "!apps/api/lib/desktop-command-store.ts",
-        "!apps/api/lib/loops/loop-orchestrator.ts",
         "!apps/app/app/(authenticated)/\\[orgSlug\\]/users/\\[userId\\]/components/documents-by-type-chart.tsx",
         "!apps/desktop/src/main/app.ts",
-        "!apps/desktop/src/main/jobs/job-store.ts",
         "!apps/desktop/src/main/settings/settings-migrations.ts",
         "!apps/desktop/src/main/settings/settings-store.ts",
         "!apps/desktop/src/main/telemetry/relay-telemetry-transport.ts",
         "!apps/desktop/src/main/transcript/desktop-transcripts-client.ts",
         "!apps/desktop/src/main/transcript/transcript-read-cache.ts",
         "!apps/desktop/src/main/window.ts",
-        "!apps/desktop/src/server/operations/symphony-loop-request.ts",
-        "!apps/desktop/src/server/operations/symphony-loop.ts",
         "!apps/mcp/src/index.ts",
         "!apps/web/proxy.ts",
         "!packages/analytics/node.ts",
@@ -1697,17 +1379,18 @@
       // Coverage caveat: `files.includes` below excludes
       // packages/design-system/{components/ui,lib,hooks} from Biome entirely
       // (shadcn upstream conventions), and those are the bulk of the package —
-      // Biome never lints a domain import added there. The AST backstop
-      // scripts/lint/check-design-system-domain-imports.ts scans the WHOLE
-      // package and is what actually closes the boundary; this rule is the
-      // in-editor, fail-fast half.
+      // Biome never lints a domain import added there. The AST backstop — the
+      // `no-design-system-domain-import` rule in `pnpm check:source-gates` —
+      // scans the WHOLE package and is what actually closes the boundary; this
+      // rule is the in-editor, fail-fast half.
       //
       // FEA-4296 added the @repo/loops-api group. It carries NO exception here
       // on purpose, even though two files still import that package: both
       // (components/ui/types.ts and components/ui/primitives/metric-card.tsx)
       // sit under components/ui, which the `files.includes` exclusion above
-      // already hides from Biome. The exception list they need lives in the AST
-      // backstop — the only half that can see them — as LOOPS_API_EXCEPTIONS.
+      // already hides from Biome. The exception they need lives with the AST
+      // backstop — the only half that can see them — as shrink-only entries in
+      // scripts/lint/source-gate-allowlist.json.
       // Do not "fix" the apparent asymmetry by adding a carve-out override
       // here; it would be dead config, and a real Biome-visible violation
       // (e.g. under storybook/ or providers/) must keep failing.
@@ -1727,7 +1410,7 @@
                 // Groups are disjoint so an import matches exactly one message.
                 // Each lists the bare specifier AND the subpath glob, because
                 // domain code is imported by subpath far more often than by
-                // package root (e.g. @repo/api/src/types/loop).
+                // package root (e.g. @repo/api/src/types/session-status).
                 "patterns": [
                   {
                     "group": ["@repo/app", "@repo/app/**"],
@@ -1743,10 +1426,307 @@
                   },
                   {
                     "group": ["@repo/loops-api", "@repo/loops-api/**"],
-                    "message": "@repo/design-system is generic and project-agnostic (FEA-4296): @repo/loops-api owns the Closedloop status vocabularies (SessionStatus, LoopStatus, DocumentStatus, IssueStatus, Priority, LoopErrorCode). A component or fixture that needs them is domain code and belongs in @repo/app/<feature>/ — domain Storybook sample data goes in @repo/app/<feature>/lib/. Two files under components/ui carry a named shrink-only exception (see LOOPS_API_EXCEPTIONS in scripts/lint/check-design-system-domain-imports.ts); do not add a third. See packages/design-system/AGENTS.md."
+                    "message": "@repo/design-system is generic and project-agnostic (FEA-4296): @repo/loops-api owns the Closedloop status vocabularies (DocumentStatus, IssueStatus, Priority, LoopErrorCode). A component or fixture that needs them is domain code and belongs in @repo/app/<feature>/ — domain Storybook sample data goes in @repo/app/<feature>/lib/. Two files under components/ui carry a named shrink-only exception (see the no-design-system-domain-import entries in scripts/lint/source-gate-allowlist.json); do not add a third. See packages/design-system/AGENTS.md."
                   }
                 ]
               }
+            }
+          }
+        }
+      }
+    },
+    {
+      // PLN-2104 decision 6: the realtime service is kind-opaque. It knows the
+      // address grammar, the signal envelope and its delivery classes, never a
+      // kind list or a per-type signal schema, so a new kind or signal type
+      // ships from apps/api alone.
+      "includes": ["apps/realtime/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@repo/realtime-contract/signals": "apps/realtime is kind-opaque (PLN-2104 decision 6, PLN-2103 decision 6): per-type signal schemas belong to apps/api and the SDK. Validate only the signal envelope from @repo/realtime-contract/signal.",
+                  "@repo/realtime-contract/channels": {
+                    "message": "apps/realtime is kind-opaque (PLN-2104 decision 6, PLN-2103 decision 6): it must not know the kind list. Use parseChannelAddress, which accepts any well-formed kind.",
+                    "importNames": ["ChannelKind", "formatChannelAddress"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // PLN-2106: @repo/realtime-client ships in browser bundles. No other
+      // override's noRestrictedImports covers this path, so nothing clobbers.
+      "includes": ["packages/realtime-client/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@repo/realtime-contract/token": "@repo/realtime-client ships in browser bundles (PLN-2106): @repo/realtime-contract/token signs and verifies tokens with the server secret and pulls jose in with it. Take IssuedRealtimeToken and the other wire shapes from @repo/realtime-contract/protocol. See packages/realtime-client/AGENTS.md.",
+                  "@repo/realtime-contract/token-public-keys": "@repo/realtime-client ships in browser bundles (PLN-2106): @repo/realtime-contract/token-public-keys parses the services' token verification keys with node:crypto. Take IssuedRealtimeToken and the other wire shapes from @repo/realtime-contract/protocol. See packages/realtime-client/AGENTS.md.",
+                  "@repo/realtime-contract/revocations": "@repo/realtime-client ships in browser bundles (PLN-2106): @repo/realtime-contract/revocations is the services' revocation ledger and pulls the token module, with jose, in with it. Take IssuedRealtimeToken and the other wire shapes from @repo/realtime-contract/protocol. See packages/realtime-client/AGENTS.md."
+                },
+                "patterns": [
+                  {
+                    "group": ["**/apps/realtime/**"],
+                    "message": "@repo/realtime-client must not import the realtime service (PLN-2106): it ships in browser bundles, and the service is a Node server. Share what both need through @repo/realtime-contract. See packages/realtime-client/AGENTS.md."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // PLN-2188: @repo/document-schema runs in a Node service with no DOM.
+      // No other override's noRestrictedImports covers this path, so nothing
+      // clobbers. Tests included: the Liveblocks parity tests live in
+      // packages/collaboration/__tests__.
+      "includes": ["packages/document-schema/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "react": "@repo/document-schema is DOM-free and React-free (PLN-2188): doc-sync loads it under plain Node. Node views belong to @repo/rich-text. See packages/document-schema/AGENTS.md.",
+                  "@tiptap/react": "@repo/document-schema is DOM-free and React-free (PLN-2188): doc-sync loads it under plain Node. Add node views in @repo/rich-text with .extend({ addNodeView }). See packages/document-schema/AGENTS.md.",
+                  "mermaid": "@repo/document-schema must not load mermaid (PLN-2188): it needs a DOM. Rendering belongs to @repo/rich-text. See packages/document-schema/AGENTS.md.",
+                  "@repo/design-system": "@repo/document-schema is DOM-free and React-free (PLN-2188). See packages/document-schema/AGENTS.md.",
+                  "@repo/rich-text": "@repo/document-schema must not load the browser editor (PLN-2188): @repo/rich-text builds from this package, not the reverse. See packages/document-schema/AGENTS.md."
+                },
+                "patterns": [
+                  {
+                    "group": ["@liveblocks/**"],
+                    "message": "@repo/document-schema defines the Liveblocks names itself (PLN-2188, PLN-2099 E6); @liveblocks/* pulls in React and the DOM. Parity with @liveblocks/react-tiptap is tested in packages/collaboration/__tests__. See packages/document-schema/AGENTS.md."
+                  },
+                  {
+                    "group": ["@repo/design-system/**", "@repo/rich-text/**"],
+                    "message": "@repo/document-schema is DOM-free and React-free (PLN-2188); the editor builds from this package, not the reverse. See packages/document-schema/AGENTS.md."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // PLN-2188: keep @repo/document-schema/markdown out of browser bundles.
+      // apps/app and packages/app carry the same ban inside their existing
+      // noRestrictedImports overrides: a second override for the rule on an
+      // overlapping path replaces the earlier one's options, it does not merge.
+      "includes": [
+        "packages/rich-text/**",
+        "apps/desktop/src/renderer/**",
+        "!**/*.test.*",
+        "!**/__tests__/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@repo/document-schema/markdown": "@repo/document-schema/markdown is server/test-only (PLN-2188): it statically imports jsdom, which would land in the browser bundle. See packages/document-schema/AGENTS.md."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // ISS-12135: the Desktop main bundle leaves these workspace packages
+      // external (they are not in WORKSPACE_INLINE, apps/desktop/vite.main.config.ts)
+      // and they ship TypeScript source, so a main-process import of one fails
+      // at boot with ERR_MODULE_NOT_FOUND. Type-only imports are erased, but
+      // this rule cannot tell them apart and none exist here.
+      "includes": [
+        "apps/desktop/src/main/**",
+        "apps/desktop/src/server/**",
+        "!**/*.test.*",
+        "!**/__tests__/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@repo/app",
+                      "@repo/app/**",
+                      "@repo/design-system",
+                      "@repo/design-system/**",
+                      "@repo/navigation",
+                      "@repo/navigation/**"
+                    ],
+                    "message": "ISS-12135: the Desktop main bundle leaves this package external and it ships TypeScript source, so the built app cannot load it and crashes on boot. Import shared constants from @repo/api or apps/desktop/src/shared, and read flags with isDesktopMainFeatureFlagEnabled (src/main/auth/desktop-feature-flag-assignment.ts)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    // Cognitive-complexity debt ledger (measured 2026-08-21, Biome 2.5.2).
+    //
+    // The enforced default is ultracite/core's `noExcessiveCognitiveComplexity`
+    // at error / maxAllowedComplexity 20, minus its own exemption for
+    // `**/*.{test,spec}.{ts,tsx,js,jsx}` and `**/__tests__/**` (which is why a
+    // few `.test.mjs` files and `apps/desktop/test/symphony-test-utils.ts`
+    // appear below — those globs do not match them).
+    //
+    // These bands REPLACE four blanket carve-outs that hid far more than they
+    // needed to: FEA-520's `maxAllowedComplexity: 106` block (real worst case
+    // 79), FEA-1544's 69-file Desktop `off` list, FEA-2717's harness-parser
+    // `off`, and an `off` over ALL of `containers/**` + `scripts/deploy/**`,
+    // where only 48 of 235 lintable files had a function over the default.
+    // Every file that already passed at 20 was dropped from the carve-outs, so
+    // the rule now reaches ~190 files it previously did not.
+    //
+    // Each file is banded just above its worst measured function (the trailing
+    // comment is that measurement), so the ceiling caps growth instead of
+    // waiving it. Direction of travel is DOWN: when a refactor lands, move the
+    // file to a lower band or delete its entry — never raise a band to make a
+    // new function fit. A read-only audit of all the offending functions found
+    // no dead code among them, so every entry is live logic awaiting a helper
+    // extraction, not deletable weight.
+    {
+      // Band 25: 18 files, worst measured function 25.
+      "includes": [
+        "apps/desktop/src/main/cloud/cloud-command-executor.ts", // 23
+        "apps/desktop/src/main/collectors/opencode/opencode-parser.ts", // 25
+        "apps/desktop/src/main/cost/anthropic-admin-client.ts", // 22
+        "apps/desktop/src/main/cost/claude-code-analytics-client.ts", // 21
+        "apps/desktop/src/main/cost/reconciliation-worker.ts", // 24
+        "apps/desktop/src/main/database/db-host/db-host-agent-database.ts", // 21
+        "apps/desktop/src/main/database/import-metadata-builders.ts", // 22
+        "apps/desktop/src/main/database/write-core.ts", // 22
+        "apps/desktop/src/main/pull-requests/pr-store.ts", // 21
+        "apps/desktop/src/server/operations/binary-paths.ts", // 24
+        "packages/lib/harness/codex/codex-accumulator.ts", // 23
+        "packages/lib/harness/parser-utils.ts", // 25
+        "scripts/deploy/build-changelog.ts", // 24
+        "scripts/deploy/enforce-ecs-outcomes.ts", // 23
+        "scripts/deploy/post-failure-report.ts", // 22
+        "scripts/deploy/query-prior-run.ts", // 25
+        "scripts/deploy/resolve-bot-threads.ts", // 25
+        "scripts/deploy/rollback-app-on-api-skew.ts" // 23
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 25 }
+            }
+          }
+        }
+      }
+    },
+    {
+      // Band 30: 19 files, worst measured function 30.
+      "includes": [
+        "apps/desktop/src/main/database/read-stores.ts", // 28
+        "apps/desktop/src/main/database/session-trace.ts", // 27
+        "apps/desktop/src/main/packs/catalog-contents.ts", // 27
+        "apps/desktop/src/server/operations/filesystem-directories.ts", // 28
+        "apps/desktop/src/server/operations/filesystem-search.ts", // 30
+        "apps/desktop/src/server/operations/git-worktree.ts", // 27
+        "packages/lib/harness/codex/parse-codex.ts", // 29
+        "scripts/deploy/capture-error-context.ts", // 26
+        "scripts/deploy/check-prod-alias.ts", // 29
+        "scripts/deploy/check-vercel.ts", // 30
+        "scripts/deploy/classify-e2e-failure.ts", // 27
+        "scripts/deploy/ecs-rollout.ts", // 29
+        "scripts/deploy/slack-post.ts" // 29
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 30 }
+            }
+          }
+        }
+      }
+    },
+    {
+      // Band 45: 25 files, worst measured function 45.
+      "includes": [
+        "apps/desktop/src/main/collectors/copilot/copilot-parser.ts", // 39
+        "apps/desktop/src/main/database/token-cost-maintenance.ts", // 33
+        "apps/desktop/src/main/database/transcript.ts", // 36
+        "apps/desktop/src/main/packs/pack-scanner.ts", // 41
+        "apps/desktop/src/main/plans/plan-store.ts", // 31
+        "apps/desktop/src/server/operations/git-action.ts", // 31
+        "apps/desktop/src/server/operations/git-diff.ts", // 39
+        "apps/desktop/src/server/router.ts", // 35
+        "packages/lib/harness/codex/codex-event-handlers.ts", // 35
+        "scripts/deploy/poll-ecs-workflows.ts", // 41
+        "scripts/deploy/redeploy-services-runtime.ts" // 32 (pollVercelDeploymentReady; moved intact from redeploy-services.ts)
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 45 }
+            }
+          }
+        }
+      }
+    },
+    {
+      // Band 70: 9 files, worst measured function 67.
+      "includes": [
+        "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts", // 60
+        "apps/desktop/src/main/database/live-hook.ts", // 47
+        "apps/desktop/src/main/database/write-core-import-phases-events.ts", // 67
+        "apps/desktop/src/main/database/write-core-import-phases-session.ts", // 54
+        "scripts/deploy/sequence-merge-deployment.ts" // 48
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 70 }
+            }
+          }
+        }
+      }
+    },
+    {
+      // Band 255: 3 files, worst measured function 255.
+      "includes": [
+        "apps/desktop/src/main/collectors/engine/collector-manager.ts", // 115
+        "apps/desktop/src/main/database/sync-source.ts" // 159
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 255 }
             }
           }
         }
@@ -1801,11 +1781,27 @@
       // policy — Biome must NOT reformat them or every regeneration produces a
       // spurious whole-file diff against the runner's JSON.stringify output.
       "!apps/desktop/test/golden/layer2-snapshots/*.json",
+      // ISS-12552: the base-policy Layer 2 set, compared byte for byte.
+      "!apps/desktop/test/golden/layer2-snapshots-base/*.json",
+      // ISS-12552: main's Layer 2 digests, written by
+      // derive-layer2-main-parity.ts (JSON.stringify), which Biome would reformat.
+      "!apps/desktop/test/golden/layer2-main-parity.json",
       // PLN-1389 golden web-sync derived payloads: reproduced byte-for-byte by
       // apps/desktop/scripts/regen-golden-sync-payloads.ts (JSON.stringify) and
       // asserted for regen determinism — Biome must NOT reformat them or every
       // regeneration produces a spurious whole-file diff.
       "!apps/api/__tests__/fixtures/golden-web-sync/*.json",
+      // ISS-9846 desktop→cloud contract-replay fixtures: produced byte-for-byte
+      // by apps/desktop/test/contract-replay/fixtures-build.ts (JSON.stringify)
+      // and compared byte-for-byte by the desktop staleness gate — Biome must
+      // NOT reformat them, or the formatter and the generator disagree forever
+      // (Biome collapses a single-element array that JSON.stringify expands).
+      "!apps/api/__tests__/fixtures/desktop-contract-replay/*.json",
+      // ISS-11262 control skill: feature-map.json is written by
+      // `pnpm control map generate` (JSON.stringify) and compared byte-for-byte
+      // by `map check` and the feature-map-sync workflow. Biome must NOT
+      // reformat it, or every regeneration reads as drift.
+      "!.claude/skills/control/feature-map.json",
       // ISS-5373 golden-session normalized dossiers (PRD-516): generated oracle
       // data frozen under packages/golden-sessions/AGENTS.md's human-only
       // amendment policy — Biome must NOT reformat them. Four of them exceed
@@ -1814,6 +1810,23 @@
       // is the ONLY mechanism that prunes traversal: an `overrides` entry and a
       // suppression comment both still read the file.
       "!packages/golden-sessions/**/normalized.json",
+      // ISS-8659: the FROZEN SOURCE BYTES of every dossier. `packages/golden-
+      // sessions/AGENTS.md` makes `*/raw/*` a real session "frozen as
+      // collected" — that is the entire basis of its authority as an oracle —
+      // so Biome must never reformat anything under it. Only `.meta.json`
+      // sidecar files are even eligible (Biome does not read `.jsonl`), and
+      // Claude Code writes them MINIFIED, so a formatter run rewrites bytes a
+      // provenance record attests to by SHA-256. Excluded by `files.includes`
+      // rather than `overrides` because only `!` prunes traversal, and named
+      // without a trailing `/**` per `useBiomeIgnoreFolder`.
+      "!packages/golden-sessions/**/raw",
+      // ISS-12552: the frozen server captures beside raw/, attested by SHA-256
+      // in provenance.md the same way.
+      "!packages/golden-sessions/**/server",
+      // ISS-12552: generated by their checked-in producers and byte-compared
+      // with them by apps/desktop/test/golden-attribution-derived-files.utc.test.ts.
+      "!packages/golden-sessions/contract-fixtures",
+      "!packages/golden-sessions/reports",
       "!packages/collaboration/config.ts",
       "!docs/components/ui",
       "!docs/lib",

@@ -10,6 +10,17 @@
  * → exit code 5. Because the dashboard re-fires get-insights on every launch,
  * the worker crash-looped and the backfill never drained (the queue only grew).
  *
+ * ISS-8246 M4 — that premise survived M1 and this gate does not shrink. The
+ * process now holds TWO isolates, which sounds like the sentence above stopped
+ * being true, but every op this mutex governs executes on the STORE thread: the
+ * `*.backfill` store ops run there, and an insights recompute is a store read
+ * the dispatcher only caches. So the two peaks still land in ONE heap and can
+ * still sum past ONE ceiling. What M1 changed is the signal, not the shape —
+ * `admit` now reads the max of the two isolates (§1.11), which is what keeps
+ * this gate from measuring the near-empty dispatcher heap — and the
+ * consequence: an OOM here kills the store thread, and §1.3 turns that into the
+ * same process exit and FEA-3072 restart ladder it always was.
+ *
  * `createHeavyOpGate` below serializes the work routed to IT: at most one of
  * {insights recompute, store-op/backfill} holds it at a time, so those peaks are
  * a single heavy operation and never the sum. It extends the codified

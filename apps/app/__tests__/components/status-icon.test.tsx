@@ -13,6 +13,7 @@ describe("StatusIcon", () => {
       "executed",
       "complete",
       "wont-do",
+      "failed",
       "decorative",
     ] as const;
 
@@ -23,9 +24,9 @@ describe("StatusIcon", () => {
   });
 
   it("renders without crashing when status is an unknown string", () => {
-    // A caller can pass an unrecognized status string at runtime; the default
-    // case in getStatusConfig must handle this gracefully rather than render an
-    // empty/broken icon.
+    // A caller can pass an unrecognized status string at runtime; the
+    // appearance fallback must handle it rather than render an empty/broken
+    // icon. What it NAMES the mark is pinned in the design-system lane.
     const { container } = render(
       <StatusIcon
         size={16}

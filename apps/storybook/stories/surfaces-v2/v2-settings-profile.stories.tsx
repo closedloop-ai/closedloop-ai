@@ -1,0 +1,53 @@
+import { SettingsPanelId } from "@repo/api/src/types/settings-panel";
+import type { Meta, StoryObj } from "@storybook/react";
+import {
+  pendingRead,
+  settingsApiRoutes,
+  withSettingsRoutes,
+} from "./fixtures/settings-fixtures";
+import { withLiveRoute } from "./live-route";
+import {
+  expectSettingsPanel,
+  SettingsLivePage,
+  settingsPanelRoute,
+} from "./settings-live-page";
+
+// ISS-11361 Target sidebar, entry 21 of 62: Profile (Tool page).
+// The live Settings page at `/<org>/settings?panel=profile`
+// (`apps/app/.../[orgSlug]/settings/page.tsx`): the Settings dialog, with its
+// rail and the Profile panel, over the app frame. Each story is one state the
+// live page reaches from its reads.
+// The profile, email and sign-in method rows read Clerk; Storybook's Clerk
+// stand-in is the signed-in user.
+
+const meta = {
+  title: "Surfaces/Workspace Menu/Settings/Profile",
+  tags: ["stable"],
+  decorators: [withLiveRoute],
+  render: () => <SettingsLivePage />,
+  parameters: {
+    layout: "fullscreen",
+    controls: { disable: true },
+    liveRoute: settingsPanelRoute(SettingsPanelId.Profile),
+    appCore: { apiRoutes: settingsApiRoutes },
+  },
+} satisfies Meta;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    await expectSettingsPanel(canvasElement, SettingsPanelId.Profile);
+  },
+};
+
+/** The Settings authorization read is still in flight. */
+export const Loading: Story = {
+  parameters: {
+    appCore: {
+      apiRoutes: withSettingsRoutes([pendingRead("/settings/view-model")]),
+    },
+  },
+};

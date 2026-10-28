@@ -8,45 +8,34 @@ import {
   normalizeRepoFullName,
 } from "@repo/api/src/types/branch";
 import type { SyncedArtifactRef } from "@repo/api/src/types/session-artifact-link";
+import {
+  normalizeSessionStatus,
+  type SessionStatus,
+} from "@repo/api/src/types/session-status";
 import { Prisma } from "@repo/database";
 import { normalizeRepositoryIdentity } from "@repo/lib/sessions/repository-identity";
-import { persistSessionActivitySegments } from "./activity-segment-persistence";
+import { isStorableInt4Count } from "@/lib/int4-column-bounds";
+import { persistSessionActivityMetrics } from "./activity-metrics-persistence";
+import {
+  type ActivityTilingSkipReason,
+  type ActivityTilingSkipReport,
+  persistSessionActivitySegments,
+} from "./activity-segment-persistence";
+import {
+  isPaginatedPrListPageZero,
+  isPrRefContinuationPart,
+} from "./artifact-links/session-pr-link-merge";
 import { collectBranchRefs } from "./artifact-links/shared";
 import { normalizeNullableString, roundCost, toDate } from "./coercion";
+import { resolveGuardedStatus } from "./field-regression-guards";
 import type { AgentSessionUpsertTx } from "./records";
+import { persistSessionEventRows } from "./session-event-persistence";
+import { resolvePullRequestsBlobPatchInput } from "./session-pull-requests-blob";
+import {
+  UNSTORABLE_ROLLUP_FIELD_PREFIX,
+  UNSTORABLE_SESSION_DETAIL_FIELD_PREFIX,
+} from "./session-sync-metrics";
 import { persistSessionTokenEvents } from "./token-event-persistence";
-
-/**
- * Collapse events that share an `externalEventId` down to a single row (last
- * occurrence wins) before they reach the multi-row
- * `INSERT ... ON CONFLICT (agent_session_id, external_event_id) DO UPDATE` in
- * `persistSessionChildren`.
- *
- * Postgres aborts a statement with SQLSTATE 21000 ("ON CONFLICT DO UPDATE
- * command cannot affect row a second time") when one INSERT targets the same
- * conflict key twice, which would roll back the entire session upsert and make
- * the handler return `ingestion_failed` — the desktop then dead-letters after
- * retries, silently dropping *every* event for that session. The trust boundary
- * permits duplicates: the sync Zod schema does not enforce event-id uniqueness,
- * and the fragment transport concatenates event sets across fragment
- * materializations without dedup, so two rows with the same id can reach the
- * INSERT together. Collapsing them here keeps the upsert crash-safe. Last-wins
- * mirrors the `DO UPDATE SET ... = EXCLUDED` a re-sync would apply.
- */
-function dedupeEventsByExternalId(
-  events: SyncedAgentSession["events"]
-): SyncedAgentSession["events"] {
-  if (events.length < 2) {
-    return events;
-  }
-  const byExternalId = new Map<string, SyncedAgentSession["events"][number]>();
-  for (const event of events) {
-    byExternalId.set(event.externalEventId, event);
-  }
-  return byExternalId.size === events.length
-    ? events
-    : [...byExternalId.values()];
-}
 
 /**
  * Persist a session's event + token-usage child rows (keyed on the session's
@@ -87,6 +76,28 @@ function dedupeEventsByExternalId(
 export type PersistSessionChildrenResult = {
   lastActivityAt: Date | null;
   maxEventCreatedAt: Date | null;
+  /**
+   * ISS-7265: whether activity-segment rows were actually WRITTEN by this slice.
+   * Distinct from "the payload carried rows" — `persistSessionActivitySegments`
+   * has three paths that carry rows and persist none of them — and it is the
+   * only honest basis for clearing a recorded tiling strip.
+   */
+  activityTilingPersisted: boolean;
+  /**
+   * ISS-8603: why this slice's tiling append was refused, or `null` if it was
+   * not. Carried UP rather than emitted here for the reason
+   * `unstorableCounterFields` below is — the batch emits once per request. NOT
+   * derivable from `activityTilingPersisted`: three different refusals all
+   * produce that same `false`.
+   */
+  activityTilingSkipReason: ActivityTilingSkipReason | null;
+  /**
+   * ISS-8881: the rollup counter fields this payload could not store, carried UP
+   * rather than reported here. The slice merges them with the trace-detail
+   * counters it collected separately, and the batch emits once per request — the
+   * amplification bound `session-slice-result.ts` states for its siblings.
+   */
+  unstorableCounterFields: string[];
 };
 
 export async function persistSessionChildren(
@@ -96,10 +107,14 @@ export async function persistSessionChildren(
   session: SyncedAgentSession,
   normalizedTokenUsage: readonly SyncedAgentSessionTokenUsage[],
   options: {
+    /** The guarded lifecycle status this slice writes to `artifacts.status`. */
+    guardedStatus: SessionStatus;
     shouldReplace: boolean;
     shouldUpdateTokenEventCosts: boolean;
   }
 ): Promise<PersistSessionChildrenResult> {
+  // ISS-8881: collected here, reported once per REQUEST by the batch.
+  const unstorableCounterFields: string[] = [];
   if (options.shouldReplace) {
     await tx.agentSessionEvent.deleteMany({
       where: {
@@ -111,39 +126,11 @@ export async function persistSessionChildren(
     });
   }
 
-  // Batch upsert events into the child table — single round-trip via raw SQL.
-  // `id` is supplied inline via gen_random_uuid(): the Prisma schema's
-  // @default(uuid(7)) is client-side and does not apply to raw SQL, and the
-  // column has no DB default — omitting it produces a 23502 null violation on
-  // every new event.
-  //
-  // Collapse duplicate externalEventIds first: the single multi-row
-  // `INSERT ... ON CONFLICT DO UPDATE` below aborts with SQLSTATE 21000 if it
-  // targets the same (agent_session_id, external_event_id) twice, which would
-  // roll back the whole session upsert and dead-letter the sync — silently
-  // dropping every event for the session (FEA-2690).
-  const events = dedupeEventsByExternalId(session.events);
-  if (events.length > 0) {
-    const rows = events.map((event) => [
-      artifactId,
-      event.externalEventId,
-      event.agentExternalId ?? null,
-      event.eventType,
-      event.toolName ?? null,
-      new Date(event.createdAt),
-    ]);
-    const flatValues = rows.flat();
-    const rowPlaceholders = rows
-      .map((_, i) => {
-        const base = i * 6;
-        return `(gen_random_uuid(), $${base + 1}::uuid, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::timestamp)`;
-      })
-      .join(", ");
-    await tx.$executeRawUnsafe(
-      `INSERT INTO "agent_session_events" ("id", "agent_session_id", "external_event_id", "agent_external_id", "event_type", "tool_name", "event_created_at") VALUES ${rowPlaceholders} ON CONFLICT ("agent_session_id", "external_event_id") DO UPDATE SET "agent_external_id" = EXCLUDED."agent_external_id", "event_type" = EXCLUDED."event_type", "tool_name" = EXCLUDED."tool_name", "event_created_at" = EXCLUDED."event_created_at"`,
-      ...flatValues
-    );
-  }
+  // Batch upsert events into the child table, deduped and chunked so the
+  // statement width is bounded independently of the session's event count
+  // (ISS-10168). The bound and the two ceilings it clears are named on
+  // `AGENT_SESSION_EVENT_INSERT_CHUNK_SIZE`.
+  await persistSessionEventRows(tx, artifactId, session.events);
 
   // Recompute event-derived counts AND the latest genuine-activity timestamp
   // from the full child table in ONE conditional-aggregation scan. Two
@@ -247,7 +234,14 @@ export async function persistSessionChildren(
   // rows untouched rather than destroying them. This mirrors the attribution
   // and agents resync rules above: a payload that simply omits data must never
   // clear it. Only when replacement rows are present do we delete + recreate.
-  if (normalizedTokenUsage.length > 0) {
+  // ISS-8515: BOTH conditions, and the second is new. Omission still preserves
+  // (the array is empty when the payload carried no replacement rows), and now
+  // staleness preserves too — ruling 1 requires the per-model table to move in the
+  // same freshness unit as the rollup columns and the cost, so a stale batch
+  // changes none of the three. Without this gate the aggregate and the per-model
+  // rows could be written from different vintages, and the session read serves
+  // the counts and the cost as a matched pair.
+  if (normalizedTokenUsage.length > 0 && options.shouldUpdateTokenEventCosts) {
     await tx.agentSessionTokenUsage.deleteMany({
       where: {
         agentSessionId: artifactId,
@@ -281,20 +275,98 @@ export async function persistSessionChildren(
     session,
     options.shouldUpdateTokenEventCosts
   );
-  await persistSessionAnalytics(tx, artifactId, session);
+  await persistSessionAnalytics(
+    tx,
+    artifactId,
+    session,
+    options.shouldUpdateTokenEventCosts,
+    options.guardedStatus,
+    unstorableCounterFields
+  );
+  // ISS-8603: filled in by the lane below, reported once per REQUEST by the
+  // batch.
+  const activityTilingSkips: ActivityTilingSkipReport = {
+    refusalReason: null,
+  };
   // ISS-4541: chunk-aware activity-segment persistence. `shouldReplace` is the
   // caller's chunk-0-of-an-advancing-revision signal (from `resolveChunkGating`):
   // chunk 0 delete-replaces the stored tiling; every later chunk appends its slice
   // idempotently. See `persistSessionActivitySegments`.
-  await persistSessionActivitySegments(
+  const activityTilingPersisted = await persistSessionActivitySegments(
     tx,
     artifactId,
     organizationId,
     session,
-    options.shouldReplace
+    options.shouldReplace,
+    activityTilingSkips
   );
 
-  return { lastActivityAt, maxEventCreatedAt };
+  // ISS-10721: the activity-metrics rollup rides the same payload as the tiling
+  // it summarizes, and is keyed on the session rather than on a chunk, so it is
+  // upserted here once per part that carries it — behind the same freshness
+  // watermark as the per-event costs and the analytics rollup, so a reordered
+  // delivery cannot regress it past what the guarded columns accepted.
+  await persistSessionActivityMetrics(
+    tx,
+    artifactId,
+    session,
+    options.shouldUpdateTokenEventCosts
+  );
+
+  return {
+    activityTilingPersisted,
+    activityTilingSkipReason: activityTilingSkips.refusalReason,
+    lastActivityAt,
+    maxEventCreatedAt,
+    unstorableCounterFields,
+  };
+}
+
+/**
+ * The five `AgentSessionUsageRollup` counters that are Postgres `int4`.
+ *
+ * ISS-8881: their neighbours `inputTokens`/`outputTokens`/`cacheReadTokens`/
+ * `cacheWriteTokens` are `BigInt` and genuinely safe at the wire's 2^53
+ * envelope, and `runtimeMs` is `BigInt?` — which is why the reasoning already in
+ * this file does not cover these five. They are the only unguarded fields in the
+ * object.
+ *
+ * Derived from an exhaustive `Record` rather than written out as a bare array so
+ * a sixth `int4` counter cannot be added to the rollup without failing `tsc`
+ * here — the side-inventory hole the root `AGENTS.md` names.
+ */
+const ROLLUP_INT4_COUNTERS: Record<
+  | "humanTurns"
+  | "agentTurns"
+  | "eventCount"
+  | "toolInvocations"
+  | "errorEvents",
+  true
+> = {
+  agentTurns: true,
+  errorEvents: true,
+  eventCount: true,
+  humanTurns: true,
+  toolInvocations: true,
+};
+
+const ROLLUP_COUNTER_FIELDS = Object.keys(ROLLUP_INT4_COUNTERS) as Array<
+  keyof typeof ROLLUP_INT4_COUNTERS
+>;
+
+/**
+ * Whether a rollup counter can be stored in its `int4` column.
+ *
+ * SCOPE, stated so the next reader does not over-trust this guard: it covers the
+ * five `int4` COUNTERS only. `estimatedCost` on the same statement is
+ * `Decimal(14,6)` and reaches it through `roundCost`, which rounds without
+ * bounding, while the wire declares only `.finite().nonnegative()` — so a
+ * sufficiently large cost still raises `22003` on this very write, with the same
+ * deterministic poison-retry shape. That is a different column type and a
+ * different ticket; ISS-8881 is the nine int4 counters.
+ */
+function isStorableRollupCounter(value: number): boolean {
+  return isStorableInt4Count(value);
 }
 
 /**
@@ -305,16 +377,74 @@ export async function persistSessionChildren(
 async function persistSessionAnalytics(
   tx: AgentSessionUpsertTx,
   artifactId: string,
-  session: SyncedAgentSession
+  session: SyncedAgentSession,
+  /**
+   * ISS-7176 (whitlockk): the caller's freshness watermark — the SAME
+   * `freshness.shouldUpdateGuardedColumns` that already gates the per-event costs.
+   * Desktop sync is at-least-once and can reorder, so without it a delayed older
+   * batch would overwrite a newer whole-session cost, and this column is now the
+   * DISPLAYED authority rather than a rollup nobody read.
+   */
+  shouldUpdateCost: boolean,
+  /**
+   * ISS-9434: the guarded lifecycle status this same slice writes to
+   * `artifacts.status`. The rollup's own status column is resolved against it so
+   * the two records of one fact cannot disagree — see the note at the write.
+   */
+  guardedStatus: SessionStatus,
+  /**
+   * ISS-8881: sink for the rollup counters this payload could not store. The
+   * batch folds it into ONE emission per request — a per-session warn here would
+   * be caller-drivable log amplification on an uncapped `sessions` array, the
+   * bound `session-slice-result.ts` states for its sibling reports.
+   */
+  unstorableCounterFields?: string[]
 ): Promise<void> {
   const analytics = session.sessionAnalytics;
   if (!analytics) {
     return;
   }
+  const unstorable = ROLLUP_COUNTER_FIELDS.filter(
+    (field) => !isStorableRollupCounter(analytics[field])
+  );
   const data = {
     startedAt: toDate(analytics.startedAt),
     startedDay: analytics.startedDay ?? null,
-    status: analytics.status ?? null,
+    // ISS-9434: the one cloud status column that still had an open path for a
+    // retired spelling. `session_analytics.status` is `SELECT s.status` off the
+    // desktop `sessions` table, so a skewed store holding `waiting` — or, before
+    // desktop migration 0042, `completed`/`abandoned` — landed that string here
+    // verbatim. It now takes the same fold the lifecycle column takes: FAIL-OPEN
+    // to `active`, never a rejection, because the wire schema deliberately keeps
+    // this a bare nullable string (see the note there) and a bound that threw
+    // would 400 every session in the request — the array is unbounded since
+    // ISS-8051, so the batch is whatever the pre-parse byte budget admitted.
+    //
+    // AND the same GUARD. The fold alone was not parity, which the first version
+    // of this comment wrongly claimed: the lifecycle write resolves through
+    // `resolveGuardedStatus`, so a stored terminal status outranks a
+    // non-terminal incoming one. Without it here, a straggler batch stamps
+    // `active` on the rollup of a session whose artifact row the guard is
+    // holding at `inactive` — two records of one fact, disagreeing, which is the
+    // defect class this ticket exists to close. `options.guardedStatus` is the
+    // value this same slice writes to `artifacts.status`, so the two cannot part.
+    //
+    // No new counter: this and `session.status` are the same desktop column, and
+    // the batch-level `agent_sessions.sync.unmodelled_status_folded` tally
+    // already carries the raw spelling for that fleet condition. Not a proof that
+    // every fold HERE is reported — a materialized rollup can lag the session row
+    // by a vintage — but not worth a second emission for one copy of one column.
+    //
+    // ABSENT stays absent, rather than a fabricated `active`; the parser has
+    // already folded a blank string to null, so the truthiness test drops none.
+    status: analytics.status
+      ? normalizeSessionStatus(
+          resolveGuardedStatus(
+            guardedStatus,
+            normalizeSessionStatus(analytics.status)
+          )
+        )
+      : null,
     harness: analytics.harness ?? null,
     isHuman: analytics.isHuman,
     humanTurns: analytics.humanTurns,
@@ -331,11 +461,78 @@ async function persistSessionAnalytics(
     rollupUpdatedAt: toDate(analytics.updatedAt),
     lastSyncedAt: new Date(),
   };
-  await tx.agentSessionUsageRollup.upsert({
-    where: { artifactId },
-    create: { artifactId, ...data },
-    update: data,
-  });
+  // ISS-8881: the rollup is VALID-OR-ABSENT as a whole row, never partially
+  // written. All five counters are `Int @default(0)` NOT NULL, so the row can
+  // express neither "absent" nor "unknown" for one of them — on a CREATE an
+  // omitted key stores a real `0` (a fabricated measurement, #6370), and on an
+  // UPDATE a per-field omission leaves the PRIOR sync's counter beside this
+  // sync's tokens and cost while `rollupUpdatedAt`/`lastSyncedAt` are stamped
+  // current, which is a composite no reader can tell from a real snapshot. The
+  // root `AGENTS.md` names both: store a valid record or nothing, never a
+  // partially-corrupt one.
+  //
+  // So one unstorable counter withholds the whole write. On a resync the prior
+  // row survives intact at its OWN vintage — nothing is lost, it is simply not
+  // refreshed — and on a first sync no row is written at all, which the one
+  // production reader (`agent-components/analytics-service.ts` `deriveRuntimeMs`)
+  // already handles: it falls back to `sessionEndedAt - sessionStartedAt`, the
+  // same path every session without a rollup takes. It is never read as a zero.
+  // The next sync carrying sound counters writes the row normally.
+  if (unstorable.length > 0) {
+    // ISS-8881 (marisolashgrove review): QUALIFIED with the table, because the two
+    // producers of this array have opposite outcomes and an operator reading a
+    // bare `eventCount` cannot tell them apart. A `sessionDetail.*` field is
+    // omitted from a row that still writes; a `usageRollup.*` field withholds
+    // the ENTIRE row — tokens, cost, runtimeMs and all five counters.
+    unstorableCounterFields?.push(
+      ...unstorable.map((field) => `${UNSTORABLE_ROLLUP_FIELD_PREFIX}${field}`)
+    );
+  } else {
+    await tx.agentSessionUsageRollup.upsert({
+      where: { artifactId },
+      create: { artifactId, ...data },
+      update: data,
+      select: { artifactId: true },
+    });
+  }
+
+  // ISS-7813: the DISPLAYED whole-session cost lives on `SessionDetail.estimatedCost`,
+  // which every list/detail read projects.
+  //
+  // It is NOT the only writer of that column: `resolveTokenRollupColumns`
+  // (`field-regression-guards.ts`) also stamps a token-derived total through both
+  // arms of the `sessionDetail.upsert` earlier in this same transaction. As of
+  // ISS-8515 that writer is FRESHNESS-GATED on the same watermark this one uses, so
+  // the two can no longer disagree by vintage — a stale batch writes neither, and on
+  // a fresh batch this write still runs later and still wins.
+  //
+  // ISS-7176 ruled on 2026-08-20 that `token_usage` is NOT a cost source, which
+  // settled the question this comment used to call "still open against #5502".
+  //
+  // Written from the same payload field as the rollup above, but NULL-preserving: that
+  // column is `NOT NULL` and folds an absent cost to 0, which is the conflation this
+  // ticket removes — on `SessionDetail` a null means "never priced" and a 0 means a
+  // real $0.00, and the cost facets depend on telling those apart.
+  //
+  // Skipped entirely when the field is ABSENT (a Desktop build predating this sends
+  // no cost at all), following the same "omission never clears" rule as the rollup
+  // above — an older client leaves whatever was last written rather than blanking it.
+  if (shouldUpdateCost && analytics.estimatedCostUsd !== undefined) {
+    await tx.sessionDetail.update({
+      where: { artifactId },
+      data: {
+        estimatedCost:
+          analytics.estimatedCostUsd === null
+            ? null
+            : roundCost(analytics.estimatedCostUsd),
+      },
+      // Narrow `RETURNING *` to the primary key: the row is discarded, and the
+      // `*Detail` tables key on `artifactId`. Keeps the single-row semantics —
+      // including the P2025 throw when the session row is missing, which would be
+      // a real ordering bug here, not something to swallow with `updateMany`.
+      select: { artifactId: true },
+    });
+  }
 }
 
 /**
@@ -348,7 +545,6 @@ type SessionAttributionColumns = {
   repositoryFullName: string | null;
   worktreePath: string | null;
   sourceArtifactId: string | null;
-  sourceLoopId: string | null;
   baseBranch: string | null;
 };
 
@@ -359,7 +555,6 @@ type NullableJsonPatch =
 type SessionTraceDetailPatch = {
   billingMode?: string | null;
   endsWithError?: boolean | null;
-  branch?: string | null;
   pullRequests?: NullableJsonPatch;
   wallClock?: string | null;
   activeAgent?: string | null;
@@ -432,7 +627,6 @@ export function toAttributionColumns(
     sourceArtifactId: normalizeNullableString(
       session.attribution?.sourceArtifactId
     ),
-    sourceLoopId: normalizeNullableString(session.attribution?.sourceLoopId),
     baseBranch: normalizeNullableString(session.attribution?.baseBranch),
   };
 }
@@ -469,6 +663,11 @@ export function toNullableJsonPatch(value: unknown): NullableJsonPatch {
  * the session→PR link lane uses (`resolveSessionPullRequestWriteGate`) — the two
  * lanes describe one PR state and a row where only one of them was written is a
  * state the read boundary reconciles wrongly.
+ *
+ * ISS-9859: what the blob patch then CARRIES depends on the stored blob too,
+ * because a continuation part of a paginated PR sequence appends its page to it
+ * rather than replacing it. That is `storedPullRequests`, and
+ * `resolvePullRequestsBlobPatchInput` owns the whole decision.
  */
 export function toTraceDetailPatch(
   session: SyncedAgentSession,
@@ -477,6 +676,22 @@ export function toTraceDetailPatch(
     includeEndsWithError?: boolean;
     includeTraceDurations?: boolean;
     includePullRequests?: boolean;
+    /**
+     * ISS-9859: the blob the stored row holds, `null` when it holds none. A
+     * continuation part of a paginated PR sequence appends its page to this;
+     * omitted, such a part leaves the column alone rather than writing its page
+     * over every earlier one. See `resolvePullRequestsBlobPatchInput`.
+     */
+    storedPullRequests?: Prisma.JsonValue;
+    /**
+     * ISS-8881: sink for the counter fields this payload could not store. A
+     * mutable option rather than a second return value so the ~30 existing call
+     * sites (`persist-frustration-gate.test.ts`,
+     * `persist-pull-requests-blob.test.ts`) stay untouched, and so the drop is
+     * derived exactly once — the alternative, re-deriving storability at the
+     * caller, is two copies of one rule.
+     */
+    unstorableCounterFields?: string[];
   }
 ): SessionTraceDetailPatch {
   const patch: SessionTraceDetailPatch = {};
@@ -498,7 +713,6 @@ export function toTraceDetailPatch(
       identityPatchValue
     );
   }
-  setPatchValue(patch, "branch", session.branch, normalizeNullableString);
   // ISS-4946: gated like `endsWithError` above. ISS-4768 made an omitted `prs`
   // with a present `prRefs` CLEAR the stored blob, and that write was
   // unconditional — so a redelivered older batch (desktop sync is at-least-once
@@ -511,11 +725,11 @@ export function toTraceDetailPatch(
     setPatchValue(
       patch,
       "pullRequests",
-      resolvePullRequestsBlobPatchInput(session),
+      resolvePullRequestsBlobPatchInput(session, options.storedPullRequests),
       toNullableJsonPatch
     );
   }
-  // ISS-4688 (wongk, #4121): the trace-duration triple is gated behind the SAME
+  // ISS-4688 (whitlockk, #4121): the trace-duration triple is gated behind the SAME
   // freshness watermark as `endsWithError` above. These three were written
   // unconditionally, so a delayed sync from an older Desktop build — arriving at
   // the same dataRevision, after a newer one already landed — overwrote
@@ -590,12 +804,18 @@ export function toTraceDetailPatch(
   // contributed lines) — a distinct metric kept in dedicated branch_* columns so
   // it never collides with the gitDiffStats scalars above.
   applyBranchDiffStatsPatch(patch, session.branchDiffStats);
-  setPatchValue(patch, "turns", session.turns, identityPatchValue);
-  setPatchValue(
+  // ISS-8881: bounded, unlike the LOC family above — see `setStorableCounterPatch`.
+  setStorableCounterPatch(
+    patch,
+    "turns",
+    session.turns,
+    options?.unstorableCounterFields
+  );
+  setStorableCounterPatch(
     patch,
     "steeringEpisodes",
     session.steeringEpisodes,
-    identityPatchValue
+    options?.unstorableCounterFields
   );
   setPatchValue(patch, "autonomy", session.autonomy, identityPatchValue);
   setPatchValue(
@@ -713,6 +933,58 @@ function identityPatchValue<T>(value: T): T {
 }
 
 /**
+ * Write a nullable counter into the patch only when the column can hold it.
+ *
+ * ISS-8881: `turns` and `steeringEpisodes` land in Postgres `int4` columns
+ * (`SessionDetail.turns` / `.steering_episodes`). The wire declares them
+ * `z.number().int().nonnegative()` (`lib/desktop-agent-sessions-schema.ts:633-634`)
+ * — so it refuses a fractional or negative value, but carries no `.max()`,
+ * 21 lines below `boundedLocFieldSchema`, whose comment names this exact
+ * failure. A past-the-ceiling value makes the `sessionDetail.upsert` raise
+ * `22003`, which fails the slice, withholds the session from
+ * `persistedSessionIds`, and has the desktop re-send the identical payload
+ * forever.
+ *
+ * THE NULL IS NOT A REJECTION. These fields are `.nullable().optional()` on the
+ * wire and `Int?` in the column, and today `setPatchValue` writes whenever the
+ * value is not `undefined` — so an explicit `null` CLEARS the column, and that
+ * is valid input with a defined meaning. Folding null into the storability test
+ * would turn a clear into a no-op, which is a behaviour change on VALID input.
+ * The contract is three-way:
+ *
+ *   undefined         → key ABSENT   → column untouched (omission never clears)
+ *   null              → key present  → column CLEARED, exactly as today
+ *   storable integer  → key present  → written
+ *   anything else     → key ABSENT   → column untouched, field reported
+ *
+ * The last row covers the whole impossible set rather than just "too big": a
+ * fractional or negative `turns` is as fabricated a measurement as an overflowed
+ * one. Only the overflow is reachable through the route today — the wire refuses
+ * the other two — so the rest is defence in depth at the write, matching
+ * `lib/int4-column-bounds.ts`. Reported rather than clamped for the reason
+ * #6370 gives — a stored ceiling value is indistinguishable from a real count.
+ */
+function setStorableCounterPatch(
+  patch: SessionTraceDetailPatch,
+  key: "turns" | "steeringEpisodes",
+  value: number | null | undefined,
+  unstorableFields?: string[]
+): void {
+  if (value === undefined) {
+    return;
+  }
+  if (value === null) {
+    patch[key] = null;
+    return;
+  }
+  if (isStorableInt4Count(value)) {
+    patch[key] = value;
+    return;
+  }
+  unstorableFields?.push(`${UNSTORABLE_SESSION_DETAIL_FIELD_PREFIX}${key}`);
+}
+
+/**
  * Update-arm projection of {@link toAttributionColumns}: only non-null values,
  * so an attribution-less resync preserves previously captured attribution
  * (mirrors the parent artifact's connect-only project handling).
@@ -726,43 +998,7 @@ export function toNonNullAttributionPatch(
 }
 
 /**
- * ISS-4768 (wongk review): what the legacy `pullRequests` blob patch should carry
- * for this snapshot — the payload's own list, an explicit CLEAR, or nothing.
- *
- * An omitted `prs` is NOT always "this build does not send PRs". The desktop
- * producer emits the field conditionally — `...(prs.length > 0 ? { prs } : {})`
- * in `apps/desktop/src/main/database/session-trace.ts` — so a CURRENT-generation
- * session whose PR set legitimately recalculated to EMPTY (a link retracted, a PR
- * ref reclassified) also arrives with `prs` omitted. Treating that as "preserve"
- * left the previously stored blob in place forever, and because the same snapshot's
- * `prRefs: []` DOES delete the session→PR links, the row settled into
- * stale-blob-plus-zero-links — precisely the state the read boundary's authoring
- * gate reads as "no link adjudicates this PR, keep it". The phantom would outlive
- * the very sync that retracted it.
- *
- * `prRefs` disambiguates, and is the only field that can: it is emitted
- * UNCONDITIONALLY by every build that extracts session→PR links (`prRefs:
- * boundedPrRefs` in `sync-source.ts`), and the chunked-sync builders replicate the
- * whole session into every chunk (`baseFor` spreads `...session`), so a
- * continuation chunk can never present `prRefs` without `prs` by accident.
- *   - `prs` present → write it (unchanged).
- *   - `prs` omitted, `prRefs` present → a current producer that recalculated to
- *     empty. CLEAR the blob so the stored row matches what the producer sees.
- *   - `prs` omitted, `prRefs` omitted → a pre-link-extraction build that sends
- *     neither. PRESERVE (Compatibility Guardrail: this is the genuine legacy row
- *     the read boundary's compat escape exists for).
- */
-function resolvePullRequestsBlobPatchInput(
-  session: SyncedAgentSession
-): SyncedAgentSession["prs"] | undefined {
-  if (session.prs !== undefined) {
-    return session.prs;
-  }
-  return session.prRefs === undefined ? undefined : null;
-}
-
-/**
- * ISS-4946 (wongk review, PR #4327): whether this snapshot carries PR evidence,
+ * ISS-4946 (whitlockk review, PR #4327): whether this snapshot carries PR evidence,
  * reported PER LANE. Used as the equal-watermark tie-breaker in
  * `resolveSessionPullRequestWriteGate`, where a pre-3bc26f527 build's empty
  * pre-link snapshot and populated post-link snapshot share one `updatedAt` and
@@ -771,8 +1007,8 @@ function resolvePullRequestsBlobPatchInput(
  * The two shapes are reported SEPARATELY, and that separation is load-bearing.
  * The obvious version of this helper ORs them into one boolean handed to both
  * lanes, which reintroduces the exact defect the gate exists to prevent: the two
- * producers have independent 100-row caps and different admission predicates
- * (see `session-pr-status.ts`), so a snapshot can legitimately carry
+ * producers have different admission predicates (see `session-pr-status.ts`),
+ * so a snapshot can legitimately carry
  * `prs: [ ... ]` with `prRefs: []`. Under an OR that snapshot clears the gate on
  * blob evidence alone, the blob lane writes its list, and then
  * `persistSessionPrArtifactLinks` runs with an empty ref list and its
@@ -792,6 +1028,13 @@ function resolvePullRequestsBlobPatchInput(
  * Only a lane that actually had a write to lose belongs in the tie counter, per
  * the AGENTS.md rule that a quality signal increments inside the branch its
  * precondition held in.
+ *
+ * ISS-9859: a continuation part of a paginated PR sequence only ADDS, so it has
+ * a write to lose only when its own page is non-empty. For `prs` that follows
+ * from `resolvePullRequestsBlobPatchInput`. For `prRefs` it is stated here: an
+ * empty strong-ref page still yields prose twins minted from `artifactRefs`,
+ * but those ride every part whole, so the first page carried the same twins and
+ * skipping this part loses nothing.
  */
 export function resolveSessionPullRequestEvidence(
   session: SyncedAgentSession
@@ -800,11 +1043,19 @@ export function resolveSessionPullRequestEvidence(
   hasLinkEvidence: boolean;
   hasBlobWrite: boolean;
   hasLinkWrite: boolean;
+  /** ISS-9859: page 0 of a paginated PR list, which the tie admits. */
+  isPrListPageZero: boolean;
 } {
   return {
+    isPrListPageZero: isPaginatedPrListPageZero(session),
     hasBlobEvidence: (session.prs?.length ?? 0) > 0,
     hasLinkEvidence: (session.prRefs?.length ?? 0) > 0,
-    hasBlobWrite: resolvePullRequestsBlobPatchInput(session) !== undefined,
-    hasLinkWrite: session.prRefs !== undefined,
+    // `null` stands for "no stored blob". The stored value decides what a
+    // write carries, never whether there is one.
+    hasBlobWrite:
+      resolvePullRequestsBlobPatchInput(session, null) !== undefined,
+    hasLinkWrite: isPrRefContinuationPart(session)
+      ? (session.prRefs?.length ?? 0) > 0
+      : session.prRefs !== undefined,
   };
 }

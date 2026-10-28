@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { segmentIndexForMs } from "../src/main/collectors/parsing/activity-segment-classifier.js";
 import type {
   NormalizedSubagent,

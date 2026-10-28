@@ -3,6 +3,7 @@ import { ArtifactType } from "./artifact.ts";
 import type { JsonObject, Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
 import type { TagSummary } from "./tag";
+import type { ProjectTeamOption } from "./teams";
 import type { BasicUser } from "./user";
 
 export const ProjectStatus = {
@@ -18,7 +19,13 @@ export type Project = {
   organizationId: string;
   name: string;
   description: string | null;
-  priority: Priority;
+  /**
+   * `null` is "no priority", the artifact priority contract (ISS-9833). Readers
+   * tolerate it before the column can hold it: `apps/app` and `apps/api` deploy
+   * independently, so no response may carry a value a deployed client cannot
+   * render (ISS-9441).
+   */
+  priority: Priority | null;
   status: ProjectStatus;
   assigneeId: string | null;
   createdById: string;
@@ -45,6 +52,27 @@ export type ProjectWithDetails = Project & {
    * empty population serializes `0` here, and the empty case is signalled
    * additively by {@link completionPopulationEmpty} — old clients that ignore
    * that flag simply see a 0% project, the pre-ISS-4679 behavior.
+   *
+   * ISS-9922: `100` is RESERVED, not a rounding outcome. It is sent only when
+   * every counted artifact is terminal; `0` is sent when none is. Everything in
+   * between ROUNDS and is then capped at 99 (operator ruling 2026-09-18), so a
+   * partial population can never reach `100` while the mid-range keeps the
+   * value it has always sent — 2/3 is still `67`. The field's type and range are
+   * unchanged, so a client on an older bundle reads it exactly as before; it now
+   * receives `99` where 199 of 200 documents used to send `100`. Anything
+   * downstream treating `=== 100` as "project complete" gets a truthful answer
+   * rather than a promoted one.
+   *
+   * DEPLOY api-prod AHEAD OF app-prod for this change (davetho review). The
+   * reserve is a PRODUCER guarantee and the field carries no marker saying it
+   * was applied, so a new app talking to a not-yet-promoted API still receives
+   * the legacy `100` for 199 of 200 and cannot tell it from a genuine one. That
+   * window is the pre-ISS-9922 behaviour persisting, not a new defect, and it
+   * closes the moment the API lands; a client-side refusal of every `100` from
+   * an unknown producer would hide the check on genuinely complete projects
+   * instead, which is a worse trade for a bounded window. An additive
+   * producer-owned marker — the shape {@link completionPopulationEmpty} already
+   * uses — is the fix if that window ever needs to be safe on its own.
    */
   completionPercentage: number;
   /**
@@ -52,11 +80,13 @@ export type ProjectWithDetails = Project & {
    * complete), which is distinct from a real `0` (there are documents/issues
    * but none are complete). Additive and optional (ISS-4679): omitted when the
    * population is non-empty, so old clients that never read it degrade to the
-   * legacy 0% behavior. The ring renders the empty case as a dashed
-   * backlog-style track rather than a solid 0%.
+   * legacy 0% behavior. ISS-4835: the empty case renders as a muted dash with
+   * NO ring at all — not the dashed backlog-style track this docblock described
+   * until #7530 — which is what `status-percentage-icon.tsx` and `name-cell.tsx`
+   * both do.
    */
   completionPopulationEmpty?: boolean;
-  teams: Array<{ id: string; name: string }>;
+  teams: ProjectTeamOption[];
   /** Custom field values attached to this project. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
   tags?: TagSummary[];
@@ -70,14 +100,32 @@ export type CreateProjectInput = {
   assigneeId?: string | null;
   slug?: string | null;
   targetDate?: Date | null;
-  teamIds?: string[];
+  /**
+   * Required, and required to be non-empty at the API boundary
+   * (`createProjectValidator`). A project with zero teams has no
+   * `/teams/<teamId>/projects/<id>` URL, so it is invisible in the web UI while
+   * still alive in the API — and `Artifact.project` is `onDelete: Cascade`, so
+   * deleting one silently destroys its documents (ISS-6966).
+   *
+   * The required key is what stops a caller omitting it outright; non-emptiness
+   * is the validator's job, since `string[]` still admits `[]`.
+   */
+  teamIds: string[];
 };
 
 export type UpdateProjectInput = {
   id: string;
   name?: string;
   description?: string;
-  priority?: Priority;
+  /**
+   * ISS-11198: optimistic guards, each valid only beside its own field and
+   * refused with `ProjectFieldMutationErrorCode`. An unset description is
+   * expected as `""`, the value a client renders for it.
+   */
+  expectedName?: string;
+  expectedDescription?: string;
+  /** `null` clears it; omitted leaves it alone (ISS-9441). */
+  priority?: Priority | null;
   status?: ProjectStatus;
   assigneeId?: string | null;
   targetDate?: Date | null;
@@ -255,3 +303,32 @@ function inheritFromSingleTeam(
  * renaming the label, or the reverse, is exactly the drift ISS-4636 reported.
  */
 export const PROJECT_COMPLETION_ARTIFACT_TYPE = ArtifactType.Document;
+
+/**
+ * Error codes the project routes emit as the `code` on a failure envelope.
+ *
+ * `ProjectTeamRequired` is the one a caller can act on without a human: its
+ * `details.teams` (and, for MCP clients whose transport strips `details`, the
+ * message itself) names the teams the caller may retry with. Gate it to denials
+ * that team list can actually fix — never the over-cap denial, which more teams
+ * cannot resolve.
+ */
+export const ProjectErrorCode = {
+  ProjectTeamRequired: "project_team_required",
+} as const;
+export type ProjectErrorCode =
+  (typeof ProjectErrorCode)[keyof typeof ProjectErrorCode];
+
+/**
+ * Upper bound on how many teams one project may be linked to.
+ *
+ * Enforced twice on purpose. The validators reject an over-cap array at the API
+ * boundary, so a caller cannot make the route resolve an unbounded id list or
+ * render one Zod issue per element; the service re-checks it because it is also
+ * reachable from non-HTTP callers. Both read this constant so the two limits
+ * cannot drift.
+ */
+export const MAX_PROJECT_TEAMS = 100;
+
+/** The single wording for the over-cap denial, shared by both enforcement points. */
+export const PROJECT_TEAM_CAP_MESSAGE = `A project can be linked to at most ${MAX_PROJECT_TEAMS} teams.`;

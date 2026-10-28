@@ -3,10 +3,16 @@ import {
   BranchViewLocalGatewayPath,
   BranchViewLocalHeader,
 } from "@repo/api/src/types/branch-view-local";
+import {
+  type ComputeTarget,
+  DesktopCommandStatus,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeStoredCommand } from "@/__tests__/support/compute-targets/compute-target.test-fixtures";
 import { POST as commandsPOST } from "@/app/compute-targets/[id]/commands/route";
-import { POST as dispatchPOST } from "@/app/compute-targets/[id]/operations/route";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { usersService } from "@/app/users/service";
 import { env } from "@/env";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import { enforceRegisteredBrowserPublicKey } from "@/lib/browser-command-public-key-enforcement";
@@ -45,8 +51,10 @@ vi.mock("@repo/analytics/server", () => ({
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 vi.mock("@/app/compute-targets/service", async (importOriginal) => {
@@ -66,23 +74,23 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
 
 vi.mock("@/app/users/service", () => ({
   usersService: {
-    findById: vi.fn().mockResolvedValue({
+    findById: vi.fn(async () => ({
       id: "user-1",
       active: true,
       githubUsername: "octocat",
-    }),
+    })),
   },
 }));
 
 vi.mock("@/lib/resolve-pr-context", () => ({
-  resolvePrContext: vi.fn().mockResolvedValue({
+  resolvePrContext: vi.fn(async () => ({
     owner: "acme",
     repo: "widget",
     pullNumber: 42,
     branch: { branchName: "feature" },
     gitHubPullRequest: { number: 42, headBranch: "feature" },
     externalLink: { createdBy: { githubUsername: "octocat" } },
-  }),
+  })),
 }));
 
 vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
@@ -93,7 +101,6 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
     relayEventBus: {
       ...original.relayEventBus,
       publishOperation: vi.fn(),
-      publishResult: vi.fn(),
     },
   };
 });
@@ -106,7 +113,6 @@ vi.mock("@/lib/desktop-command-store", async (importOriginal) => {
     desktopCommandStore: {
       ...original.desktopCommandStore,
       createCommand: vi.fn(),
-      createFromRelayOperation: vi.fn(),
       markCommandExpired: vi.fn(),
     },
   };
@@ -127,7 +133,7 @@ vi.mock("@/lib/browser-command-public-key-enforcement", () => ({
   enforceRegisteredBrowserPublicKey: vi.fn(),
 }));
 
-const mockTarget = {
+const mockTarget: ComputeTarget = {
   id: "target-1",
   organizationId: "org-1",
   userId: "user-1",
@@ -138,6 +144,8 @@ const mockTarget = {
   gatewayId: "gateway-1",
   lastSeenAt: new Date(),
   isOnline: true,
+  isSharedWithOrg: false,
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -157,27 +165,6 @@ function branchViewLocalCommandBody() {
   };
 }
 
-function branchViewLocalOperationBody() {
-  return {
-    operationId: "op-local",
-    operation: "engineer_http_request",
-    params: {
-      request: {
-        method: "GET",
-        path: BranchViewLocalGatewayPath.List,
-        headers: {
-          [BranchViewLocalHeader.ExternalLinkId]: "branch-link-1",
-          [BranchViewLocalHeader.RepoFullName]: "acme/widget",
-          [BranchViewLocalHeader.HeadBranch]: "feature",
-          [BranchViewLocalHeader.PrNumber]: "42",
-        },
-        body: { kind: "none" },
-      },
-    },
-    streaming: false,
-  };
-}
-
 /**
  * Headers a hostile caller supplies alongside an otherwise legitimate
  * local-content request: a marker claiming the command is already authorized,
@@ -192,9 +179,9 @@ const SPOOFED_CALLER_PROOF_HEADERS = {
 };
 
 /**
- * The proof that must be present on the STORED command for the replay helpers
- * (`authorizeBranchViewLocalEventRead`, `isStoredBranchViewLocalCommand`) to
- * re-derive authorization from it later.
+ * The proof that must be present on the STORED command for the replay helper
+ * (`authorizeBranchViewLocalEventRead`) to re-derive authorization from it
+ * later.
  */
 const EXPECTED_STAMPED_HEADERS = {
   "x-caller": "keep",
@@ -236,14 +223,10 @@ function mockCommandRelayDelivery(result: {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
-  vi.mocked(desktopCommandStore.createFromRelayOperation).mockResolvedValue({
-    command: { commandId: "cmd-1" },
-    deduped: false,
-  } as any);
   vi.mocked(desktopCommandStore.createCommand).mockResolvedValue({
-    command: { commandId: "cmd-1", status: "queued" },
+    command: makeStoredCommand({ status: DesktopCommandStatus.Queued }),
     deduped: false,
-  } as any);
+  });
   vi.mocked(enforceRegisteredBrowserPublicKey).mockResolvedValue(null);
   vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
     status: CommandSigningRequirementStatus.NotRequired,
@@ -251,86 +234,14 @@ beforeEach(() => {
   vi.mocked(computeTargetsService.findById).mockResolvedValue({
     ...mockTarget,
     user: { clerkId: "clerk-user-1", firstName: "Owner", lastName: "User" },
-  } as any);
+  });
   mockIsFeatureEnabled.mockResolvedValue(true);
   mockAuthContext = createTestAuthContext({
-    user: { id: "user-1", organizationId: "org-1" } as any,
-  });
-});
-
-describe("POST /compute-targets/:id/operations — Branch View local content", () => {
-  it("rejects local-content operations before command creation when branch-pr is not explicitly enabled", async () => {
-    mockIsFeatureEnabled.mockResolvedValue(false);
-    vi.mocked(computeTargetsService.markStaleTargetsOffline).mockResolvedValue(
-      0
-    );
-    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(
-      mockTarget as any
-    );
-
-    const response = await dispatchPOST(
-      createMockRequest({
-        method: "POST",
-        body: branchViewLocalOperationBody(),
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      success: false,
-      error: BranchViewLocalErrorCode.FeatureDisabled,
-      code: BranchViewLocalErrorCode.FeatureDisabled,
-    });
-    expect(desktopCommandStore.createFromRelayOperation).not.toHaveBeenCalled();
-    expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
-  });
-
-  it("stores the API-owned proof on a successfully dispatched local-content operation", async () => {
-    vi.mocked(computeTargetsService.markStaleTargetsOffline).mockResolvedValue(
-      0
-    );
-    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(
-      mockTarget as any
-    );
-    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
-      mockTarget as any
-    );
-    mockCommandRelayDelivery({ deliveredToSubscriber: true });
-
-    const operationBody = branchViewLocalOperationBody();
-    const response = await dispatchPOST(
-      createMockRequest({
-        method: "POST",
-        body: {
-          ...operationBody,
-          params: {
-            ...operationBody.params,
-            request: {
-              ...operationBody.params.request,
-              headers: {
-                ...operationBody.params.request.headers,
-                ...SPOOFED_CALLER_PROOF_HEADERS,
-              },
-            },
-          },
-        },
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(200);
-    expect(desktopCommandStore.createFromRelayOperation).toHaveBeenCalledWith(
-      "target-1",
-      expect.objectContaining({
-        params: expect.objectContaining({
-          request: expect.objectContaining({
-            path: BranchViewLocalGatewayPath.List,
-            headers: EXPECTED_STAMPED_HEADERS,
-          }),
-        }),
-      })
-    );
+    user: {
+      ...createTestAuthContext().user,
+      id: "user-1",
+      organizationId: "org-1",
+    },
   });
 });
 
@@ -345,11 +256,43 @@ describe("POST /compute-targets/:id/commands — Branch View local content", () 
         throw new Error("flag unavailable");
       },
     ],
-  ])("rejects local-content command creation when branch-pr is %s", async (_label, flagImpl) => {
-    mockIsFeatureEnabled.mockImplementation(flagImpl);
+  ])(
+    "rejects local-content command creation when branch-pr is %s",
+    async (_label, flagImpl) => {
+      mockIsFeatureEnabled.mockImplementation(flagImpl);
+      vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
+        mockTarget
+      );
+
+      const response = await commandsPOST(
+        createMockRequest({
+          method: "POST",
+          body: branchViewLocalCommandBody(),
+        }),
+        createMockRouteContext({ id: "target-1" })
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        success: false,
+        error: BranchViewLocalErrorCode.FeatureDisabled,
+        code: BranchViewLocalErrorCode.FeatureDisabled,
+      });
+      expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
+      expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
+    }
+  );
+
+  it("denies local-content command creation when the caller is not the PR author", async () => {
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
-      mockTarget as any
+      mockTarget
     );
+    vi.mocked(usersService.findById).mockResolvedValueOnce({
+      ...createTestAuthContext().user,
+      id: "user-1",
+      active: true,
+      githubUsername: "not-the-pr-author",
+    });
 
     const response = await commandsPOST(
       createMockRequest({
@@ -360,10 +303,10 @@ describe("POST /compute-targets/:id/commands — Branch View local content", () 
     );
 
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
+    await expect(response.json()).resolves.toEqual({
       success: false,
-      error: BranchViewLocalErrorCode.FeatureDisabled,
-      code: BranchViewLocalErrorCode.FeatureDisabled,
+      error: BranchViewLocalErrorCode.NotAuthor,
+      code: BranchViewLocalErrorCode.NotAuthor,
     });
     expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
     expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
@@ -371,7 +314,7 @@ describe("POST /compute-targets/:id/commands — Branch View local content", () 
 
   it("stores the API-owned proof on a successfully dispatched local-content command", async () => {
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
-      mockTarget as any
+      mockTarget
     );
     mockCommandRelayDelivery({ deliveredToSubscriber: true });
 
@@ -398,7 +341,8 @@ describe("POST /compute-targets/:id/commands — Branch View local content", () 
         path: BranchViewLocalGatewayPath.List,
         headers: EXPECTED_STAMPED_HEADERS,
       }),
-      expect.anything()
+      expect.anything(),
+      undefined
     );
   });
 });

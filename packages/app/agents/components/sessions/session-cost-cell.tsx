@@ -16,7 +16,7 @@ import { CostAvailability } from "../../lib/cost-availability";
  *
  * The Cost column used to route through the table's shared `renderTooltipChip`
  * helper, whose scaffold is `Tooltip → Chip variant="outline"` — an outlined
- * pill. Product's ask (Mike, 2026-08-10) is "just show the numbers", which is
+ * pill. Product's ask (Marisol, 2026-08-10) is "just show the numbers", which is
  * also what this repo's own frontend rule already says: *no badge where a plain
  * string works*. A cost is a number on a continuous scale. The pill encodes no
  * state, no category and no threshold, so it was decoration carrying no
@@ -59,7 +59,7 @@ import { CostAvailability } from "../../lib/cost-availability";
  * right-aligns the cell, so the figures line up for scanning down the column —
  * the thing a centred pill defeated.
  *
- * ## No ellipsis, ever (wongk review)
+ * ## No ellipsis, ever (whitlockk review)
  *
  * The first cut of this component carried `truncate` on the shared class,
  * inherited from `renderTooltipChip`'s inner span — where it belonged, because
@@ -91,7 +91,7 @@ export function SessionCostCell({
   tooltip?: string | null;
 }) {
   if (availability === CostAvailability.NoUsage) {
-    // Story-only in practice, and deliberately so: `sessions-table.tsx` returns
+    // Story-only in practice, and deliberately so: `session-detail-table.tsx` returns
     // the shared sentinel BEFORE reaching this component, because
     // `isEmptyCellValue` identifies an empty cell by element TYPE and a wrapper
     // hides it. The branch stays so the component is total over its own prop

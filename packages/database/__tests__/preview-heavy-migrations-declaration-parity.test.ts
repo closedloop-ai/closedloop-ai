@@ -142,21 +142,24 @@ export function check(sql: string): boolean;`,
     ["ReadonlyArray<'a' | 'b'>", 'ReadonlyArray<"a" | "b">'],
     ["a bare union", '"a" | "b"'],
     ["a mutable literal array", '("a" | "b")[]'],
-  ])("reports drift in %s, which spells values out without being a tuple", (_label, typeText) => {
-    // Keying "does this restate values?" on `isTupleTypeNode` let every one of
-    // these shapes drift in silence — a re-introduced declaration written any
-    // of these ways would have passed both guards.
-    const declared = parseDeclaredExports(
-      `export const LIST: ${typeText};
+  ])(
+    "reports drift in %s, which spells values out without being a tuple",
+    (_label, typeText) => {
+      // Keying "does this restate values?" on `isTupleTypeNode` let every one of
+      // these shapes drift in silence — a re-introduced declaration written any
+      // of these ways would have passed both guards.
+      const declared = parseDeclaredExports(
+        `export const LIST: ${typeText};
 export const MARKER: "preview-skip: no";
 export function check(sql: string): boolean;`,
-      "synthetic.d.mts"
-    );
-    const problems = findDeclarationParityProblems(declared, runtime);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"LIST"');
-    expect(problems[0]).toContain('["a","b","c"]');
-  });
+        "synthetic.d.mts"
+      );
+      const problems = findDeclarationParityProblems(declared, runtime);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('"LIST"');
+      expect(problems[0]).toContain('["a","b","c"]');
+    }
+  );
 
   it.each([
     ["a backtick tuple", "readonly [`a`, `b`]"],
@@ -311,21 +314,27 @@ export const check: readonly ["a"];`,
     ["an object", { a: "b" }],
     ["undefined", undefined],
     ["null", null],
-  ])("reports a widened `readonly string[]` sitting over %s at runtime", (_label, runtimeValue) => {
-    // The declaration restates nothing, so there are no literals to compare —
-    // but `readonly string[]` is still a claim, and the runtime value does not
-    // satisfy it. Reporting agreement here would hand every TypeScript
-    // consumer a `string[]` contract the module does not honor.
-    const declared = parseDeclaredExports(DECLARED_SURFACE, "synthetic.d.mts");
-    const problems = findDeclarationParityProblems(declared, [
-      toRuntimeExport("LIST", runtimeValue),
-      toRuntimeExport("MARKER", "preview-skip: no"),
-      toRuntimeExport("check", (sql: string) => sql.length > 0),
-    ]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"LIST"');
-    expect(problems[0]).toContain("cannot be verified");
-  });
+  ])(
+    "reports a widened `readonly string[]` sitting over %s at runtime",
+    (_label, runtimeValue) => {
+      // The declaration restates nothing, so there are no literals to compare —
+      // but `readonly string[]` is still a claim, and the runtime value does not
+      // satisfy it. Reporting agreement here would hand every TypeScript
+      // consumer a `string[]` contract the module does not honor.
+      const declared = parseDeclaredExports(
+        DECLARED_SURFACE,
+        "synthetic.d.mts"
+      );
+      const problems = findDeclarationParityProblems(declared, [
+        toRuntimeExport("LIST", runtimeValue),
+        toRuntimeExport("MARKER", "preview-skip: no"),
+        toRuntimeExport("check", (sql: string) => sql.length > 0),
+      ]);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('"LIST"');
+      expect(problems[0]).toContain("cannot be verified");
+    }
+  );
 
   it("reports a declared function whose runtime export is not callable", () => {
     const declared = parseDeclaredExports(DECLARED_SURFACE, "synthetic.d.mts");
@@ -349,25 +358,23 @@ export const check: (sql: string) => boolean;`,
     expect(findDeclarationParityProblems(declared, runtime)).toEqual([]);
   });
 
-  it.each([
-    "number",
-    "readonly number[]",
-    "unknown",
-    "Record<string, string>",
-  ])("reports `%s` as a declared type it cannot verify rather than passing it", (typeText) => {
-    // Fail-closed: an unrecognized declared type is a claim the comparator
-    // cannot check, not a claim that needs no checking.
-    const declared = parseDeclaredExports(
-      `export const LIST: ${typeText};
+  it.each(["number", "readonly number[]", "unknown", "Record<string, string>"])(
+    "reports `%s` as a declared type it cannot verify rather than passing it",
+    (typeText) => {
+      // Fail-closed: an unrecognized declared type is a claim the comparator
+      // cannot check, not a claim that needs no checking.
+      const declared = parseDeclaredExports(
+        `export const LIST: ${typeText};
 export const MARKER: "preview-skip: no";
 export function check(sql: string): boolean;`,
-      "synthetic.d.mts"
-    );
-    const problems = findDeclarationParityProblems(declared, runtime);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"LIST"');
-    expect(problems[0]).toContain("cannot check any runtime value against");
-  });
+        "synthetic.d.mts"
+      );
+      const problems = findDeclarationParityProblems(declared, runtime);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('"LIST"');
+      expect(problems[0]).toContain("cannot check any runtime value against");
+    }
+  );
 
   it("classifies the declared surface it accepts, so agreement is not the absence of a verdict", () => {
     const declared = parseDeclaredExports(DECLARED_SURFACE, "synthetic.d.mts");

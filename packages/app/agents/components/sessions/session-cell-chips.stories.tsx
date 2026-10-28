@@ -1,13 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import {
-  SessionAutonomyChip,
-  SessionHarnessChip,
-  SessionModelChip,
-} from "./session-cell-chips";
+import { AutonomyChip, HarnessChip, ModelChip } from "./session-cell-chips";
 
 /**
  * ISS-6005: the Harness / Model / Autonomy column treatments, isolated — the
- * prototype-specified pills (`apps/prototypes/app/p/sessions/components/
+ * prototype-specified pills (`packages/app/agents/components/sessions/web-master-legacy-preview/components/
  * session-cells.tsx`), on production's Radix tooltip mechanism.
  *
  * The matrix IS the point: every autonomy tier (the calibrated High / Mixed /
@@ -18,7 +14,8 @@ import {
  * while its neighbours keep the treatment.
  */
 const meta: Meta = {
-  title: "App Core/Agents/Session Cell Chips",
+  title: "Composites v1.0/Sessions/Session Cell Chips",
+  tags: ["deprecated"],
 };
 
 export default meta;
@@ -29,13 +26,13 @@ type Story = StoryObj;
 export const HarnessPills: Story = {
   render: () => (
     <div className="flex flex-wrap items-center gap-2">
-      <SessionHarnessChip harness="claude" />
-      <SessionHarnessChip harness="codex" />
-      <SessionHarnessChip harness="cursor" />
-      <SessionHarnessChip harness="copilot" />
-      <SessionHarnessChip harness="opencode" />
+      <HarnessChip harness="claude" />
+      <HarnessChip harness="codex" />
+      <HarnessChip harness="cursor" />
+      <HarnessChip harness="copilot" />
+      <HarnessChip harness="opencode" />
       {/* Unknown harness degrades to the raw string, still a neutral pill. */}
-      <SessionHarnessChip harness="some-new-harness" />
+      <HarnessChip harness="some-new-harness" />
     </div>
   ),
 };
@@ -48,13 +45,13 @@ export const HarnessPills: Story = {
 export const ModelPills: Story = {
   render: () => (
     <div className="flex flex-wrap items-center gap-2">
-      <SessionModelChip model="claude-opus-4-8" />
-      <SessionModelChip model="claude-sonnet-5" />
-      <SessionModelChip model="claude-fable-5" />
-      <SessionModelChip model="gpt-5.5" />
-      <SessionModelChip model="gpt-5-codex" />
-      <SessionModelChip model="gemini-3-pro" />
-      <SessionModelChip model="unknown-model-2026" />
+      <ModelChip model="claude-opus-4-8" />
+      <ModelChip model="claude-sonnet-5" />
+      <ModelChip model="claude-fable-5" />
+      <ModelChip model="gpt-5.5" />
+      <ModelChip model="gpt-5-codex" />
+      <ModelChip model="gemini-3-pro" />
+      <ModelChip model="unknown-model-2026" />
     </div>
   ),
 };
@@ -68,9 +65,9 @@ export const ModelPills: Story = {
 export const AutonomyPills: Story = {
   render: () => (
     <div className="flex flex-wrap items-center gap-2">
-      <SessionAutonomyChip autonomy={84} />
-      <SessionAutonomyChip autonomy={50} />
-      <SessionAutonomyChip autonomy={12} />
+      <AutonomyChip autonomy={84} />
+      <AutonomyChip autonomy={50} />
+      <AutonomyChip autonomy={12} />
     </div>
   ),
 };
@@ -93,24 +90,24 @@ export const RowPairing: Story = {
   render: () => (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <SessionHarnessChip harness="claude" />
-        <SessionModelChip model="claude-opus-4-8" />
-        <SessionAutonomyChip autonomy={84} />
+        <HarnessChip harness="claude" />
+        <ModelChip model="claude-opus-4-8" />
+        <AutonomyChip autonomy={84} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <SessionHarnessChip harness="codex" />
-        <SessionModelChip model="gpt-5.5" />
-        <SessionAutonomyChip autonomy={92} />
+        <HarnessChip harness="codex" />
+        <ModelChip model="gpt-5.5" />
+        <AutonomyChip autonomy={92} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <SessionHarnessChip harness="cursor" />
-        <SessionModelChip model="gemini-3-pro" />
-        <SessionAutonomyChip autonomy={50} />
+        <HarnessChip harness="cursor" />
+        <ModelChip model="gemini-3-pro" />
+        <AutonomyChip autonomy={50} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <SessionHarnessChip harness="a-very-long-unrecognized-harness-id" />
-        <SessionModelChip model="unknown-model-2026" />
-        <SessionAutonomyChip autonomy={12} />
+        <HarnessChip harness="a-very-long-unrecognized-harness-id" />
+        <ModelChip model="unknown-model-2026" />
+        <AutonomyChip autonomy={12} />
       </div>
     </div>
   ),

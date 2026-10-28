@@ -12,9 +12,9 @@ import { useState } from "react";
  * one at a time.
  */
 const meta: Meta<typeof Tabs> = {
-  title: "Design System/Navigation & Shell/Tabs",
+  title: "Primitives v1.0/Navigation/Tabs",
   component: Tabs,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     defaultValue: "account",
@@ -61,7 +61,7 @@ export const Default: Story = {};
 
 export const DisabledTrigger: Story = {
   render: (args) => (
-    <Tabs {...args} defaultValue="account">
+    <Tabs {...args}>
       <TabsList className="grid grid-cols-3">
         <TabsTrigger value="account">Account</TabsTrigger>
         <TabsTrigger disabled value="billing">

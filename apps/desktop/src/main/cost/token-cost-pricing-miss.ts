@@ -10,6 +10,7 @@
  * off to the deduplicating facade) so the four call sites stay one line each.
  */
 import {
+  coerceObservedAt,
   computeTokenCost,
   type EstimateTokenCostInput,
   type TokenCostNotPricedReason,
@@ -18,10 +19,13 @@ import { Observability } from "../telemetry/observability.js";
 import type { TokenCostPricingMissSurface } from "../telemetry/telemetry-protocol.js";
 
 /**
- * Report that a costing layer could not price `input`. Call ONLY on the miss
- * path (when `estimateTokenCost(input)` returned `undefined`). The
- * canonical re-compute that derives the reason is deferred behind a thunk so it
- * runs only for events that survive the facade's dedup gate.
+ * Report that a costing layer could not price `input`. Two admissible callers:
+ * the miss path (`estimateTokenCost(input)` returned `undefined`), and — since
+ * ISS-7261 — a layer whose SINK cannot record pricing provenance, for which an
+ * `unknownModelFallbackApplied` estimate is not a usable price either. Every
+ * caller with a `cost_source` column keeps the fallback figure and reports only
+ * a true miss. The canonical re-compute that derives the reason is deferred
+ * behind a thunk so it runs only for events that survive the dedup gate.
  */
 export function reportTokenCostPricingMiss(
   input: EstimateTokenCostInput,
@@ -40,7 +44,7 @@ export function reportTokenCostPricingMiss(
 function resolveNotPricedReason(
   input: EstimateTokenCostInput
 ): TokenCostNotPricedReason {
-  const timestamp = coerceTimestamp(input.observedAt);
+  const timestamp = coerceObservedAt(input.observedAt);
   const result = computeTokenCost({
     model: input.model ?? "",
     inputTokens: input.inputTokens ?? 0,
@@ -49,20 +53,8 @@ function resolveNotPricedReason(
     cacheWriteTokens: input.cacheWriteTokens ?? 0,
     ...(timestamp ? { timestamp } : {}),
   });
-  // Defensive: callers invoke this only on the miss path, so `reason` is set —
-  // fall back to "no_match" if the engine somehow priced it here.
+  // The library-pure engine leaves `reason` set for both admissible callers: a
+  // true miss, and the fallback-tier case, which is `no_match` here because the
+  // Opus-standard recovery lives in the parity layer, not in this engine.
   return result.reason ?? "no_match";
-}
-
-function coerceTimestamp(
-  observedAt: Date | string | null | undefined
-): Date | undefined {
-  if (observedAt instanceof Date) {
-    return Number.isNaN(observedAt.getTime()) ? undefined : observedAt;
-  }
-  if (typeof observedAt !== "string" || observedAt.length === 0) {
-    return undefined;
-  }
-  const parsed = new Date(observedAt);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }

@@ -1,5 +1,9 @@
 import { createRequire } from "node:module";
-import type { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import type {
+  DesktopSignInFraming,
+  DesktopSignInMethod,
+} from "@repo/api/src/types/desktop-authorize-url";
+import type { DesktopFeatureFlagAssignment } from "@repo/api/src/types/desktop-feature-flags";
 import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
 import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
 import type {
@@ -15,31 +19,41 @@ import type {
   GitHubConnectOpenResult,
   SandboxInspectResult,
 } from "../renderer/types/desktop-api.js";
-import {
-  type AuditFileRequest,
-  type AuditFileResult,
-  AuditIpcChannel,
-  type AuditProgressPayload,
-  type AuditRunRequest,
-  type AuditRunResult,
-} from "../shared/audit-contract.js";
+import { AgentMonitorIpcChannel } from "../shared/agent-monitor-ipc-channel.js";
+import { ApiKeyIpcChannel } from "../shared/api-key-ipc-channel.js";
+import { ApprovalsIpcChannel } from "../shared/approvals-ipc-channel.js";
+import { BinaryPathsIpcChannel } from "../shared/binary-paths-ipc-channel.js";
 import {
   CLOUD_API_FETCH_CHANNEL,
   type CloudApiFetchRequest,
   type CloudApiFetchResult,
 } from "../shared/cloud-api-fetch-contract.js";
-import type { CloudReadReadinessSnapshot } from "../shared/cloud-read-readiness-contract.js";
+import { CloudControlIpcChannel } from "../shared/cloud-control-ipc-channel.js";
+import { CoachingIpcChannel } from "../shared/coaching-ipc-channel.js";
 import type { CoachingHarnessResult } from "../shared/coaching-pack-contract.js";
 import type {
   AgentMonitorHooksResult,
+  DesktopBootstrapOrganizationInput,
+  DesktopBootstrapOrganizationResult,
+  DesktopSignInOptions,
   ManagedKeyHintState,
 } from "../shared/contracts.js";
+import { CostReconciliationIpcChannel } from "../shared/cost-reconciliation-ipc-channel.js";
+import type { NotDbGuarded } from "../shared/db-host-shutdown-contract.js";
 import {
-  type DbGuardedChannel,
-  type NotDbGuarded,
-  rejectIfDbHostShuttingDown,
-} from "../shared/db-host-shutdown-contract.js";
+  DEAD_END_TELEMETRY_CHANNEL,
+  type DeadEndTelemetryPayload,
+} from "../shared/dead-end-telemetry-contract.js";
+import { DebugIpcChannel } from "../shared/debug-ipc-channel.js";
+import { DesktopAuthIpcChannel } from "../shared/desktop-auth-ipc-channel.js";
+import { DesktopDevModeIpcChannel } from "../shared/desktop-dev-mode-channel.js";
+import { DesktopFeatureFlagsIpcChannel } from "../shared/desktop-feature-flags-channel.js";
 import { DesktopIdentityIpcChannel } from "../shared/desktop-identity-channel.js";
+import { DesktopRendererEventChannel } from "../shared/desktop-renderer-event-channel.js";
+import {
+  DirectoryScopeIpcChannel,
+  type DirectoryScopePickPayload,
+} from "../shared/directory-scope-ipc-channel.js";
 import {
   type DocsHelpGetPageResult,
   DocsHelpIpcChannel,
@@ -48,29 +62,33 @@ import {
   type DocsHelpStatus,
 } from "../shared/docs-help-contract.js";
 import { GATEWAY_DISPATCH_CHANNEL } from "../shared/gateway-dispatch-channel.js";
+import { GitHubConnectIpcChannel } from "../shared/github-connect-opener-ipc-channel.js";
 import { GitHubIntegrationStatusIpcChannel } from "../shared/github-integration-status-channel.js";
+import { LogsActivityIpcChannel } from "../shared/logs-activity-ipc-channel.js";
+import { ManagedKeyHintIpcChannel } from "../shared/managed-key-hint-ipc-channel.js";
 import { MOVE_TO_APPLICATIONS_IPC_CHANNEL } from "../shared/move-to-applications-ipc-channel.js";
+import { OnboardingIpcChannel } from "../shared/onboarding-ipc-channel.js";
+import { RendererLifecycleIpcChannel } from "../shared/renderer-lifecycle-ipc-channel.js";
 import {
   RENDERER_OTEL_EXPORT_CHANNEL,
   type RendererOtelBridgePayload,
   type RendererOtelExportResult,
 } from "../shared/renderer-otel-bridge-constants.js";
 import { RendererReadyPhase } from "../shared/renderer-ready-phase.js";
-import {
-  SCHEDULED_TASKS_CHANGED_CHANNEL,
-  type ScheduledTaskListItem,
-  type ScheduledTaskRunItem,
-  type ScheduledTaskRunsRequest,
-  type ScheduledTaskSaveInput,
-  ScheduledTasksIpcChannel,
-  type SchedulePreviewRequest,
-  type SchedulePreviewResult,
-} from "../shared/scheduled-tasks-channel.js";
+import { RuntimeInfoIpcChannel } from "../shared/runtime-info-ipc-channel.js";
+import { SandboxIpcChannel } from "../shared/sandbox-ipc-channel.js";
+import { SESSION_ANALYSIS_AGREEMENT_IPC_CHANNEL } from "../shared/session-analysis-agreement-channel.js";
 import {
   SessionLimitsIpcChannel,
   type SessionLimitsSnapshot,
   type StatuslineCaptureResult,
 } from "../shared/session-limits-channel.js";
+import { SettingsIpcChannel } from "../shared/settings-ipc-channel.js";
+import {
+  SURFACE_ANALYTICS_IPC_CHANNEL,
+  type SurfaceAnalyticsIpcPayload,
+  type SurfaceAnalyticsIpcResult,
+} from "../shared/surface-analytics-ipc-contract.js";
 import {
   TRANSCRIPT_CANCEL_CHANNEL,
   TRANSCRIPT_FORCE_ARCHIVE_CHANNEL,
@@ -82,12 +100,18 @@ import {
   type TranscriptPrepareResult,
 } from "../shared/transcript-read-contract.js";
 import type { TranscriptSyncStatusSnapshot } from "../shared/transcript-sync-status-contract.js";
+import { UpdateIpcChannel } from "../shared/update-ipc-channel.js";
+import { registerDesktopApiEventForwarders } from "./desktop-api-event-forwarders.js";
+import { createRealtimeDesktopApi } from "./desktop-realtime-preload.js";
+import { createDesktopSessionReplayDesktopApi } from "./desktop-session-replay-preload.js";
 import {
   DESKTOP_EXISTING_USER_RESOLUTION_CHANGED_CHANNEL,
   DesktopExistingUserIpcChannel,
 } from "./ipc/desktop-existing-user-ipc.js";
-import { RuntimeInfoIpcChannel } from "./ipc/runtime-info-ipc.js";
+import { createOnboardingLocalStateDesktopApi } from "./onboarding-local-state-preload.js";
 import { createProfileConfigDesktopApi } from "./profile-config-preload.js";
+import { createSettingsLocalDeviceDesktopApi } from "./settings-local-device-preload.js";
+import { createSigningKeysAndApprovalsDesktopApi } from "./signing-keys-approvals-preload.js";
 
 declare const window: {
   dispatchEvent(event: CustomEvent<unknown>): boolean;
@@ -104,7 +128,7 @@ type IpcRendererLike = {
   /**
    * ISS-5262: `NotDbGuarded` makes this reject any `withDb`-backed channel, so a
    * new bridge cannot reach one without going through a helper that unwraps the
-   * shutdown sentinel (see {@link invokeScheduledTasksDb}). Every other channel
+   * shutdown sentinel (see `invokeLiveDb` in `preload-design-system.ts`). Every other channel
    * is unaffected.
    */
   invoke: <TChannel extends string>(
@@ -121,10 +145,6 @@ type IpcRendererLike = {
 type IpcRendererEventsLike = {
   on: (channel: string, listener: (...args: never[]) => void) => void;
 };
-type WindowLike = {
-  dispatchEvent(event: CustomEvent<unknown>): boolean;
-};
-
 type ElectronPreloadApi = {
   contextBridge: {
     exposeInMainWorld: (apiKey: string, api: unknown) => void;
@@ -154,34 +174,6 @@ function readMacOSMajorVersion(): number | null {
   return Number.isNaN(major) ? null : major;
 }
 
-/**
- * ISS-5262 — invoke a Scheduled Tasks channel and unwrap the db-host shutdown
- * sentinel.
- *
- * Every `desktop:scheduled-tasks:*` handler is registered through `withDb`
- * (`agent-dashboard-scheduled-tasks-ipc.ts`), which now RESOLVES a payload-free
- * sentinel rather than rejecting when the db-host went away mid-read — that is
- * what stops `ipcMain.handle` printing a handler error after the shutdown
- * sequence reported clean. These bridges cast the IPC result, so without this
- * unwrap the sentinel would typecheck as the declared type and reach the
- * renderer as DATA: a truthy object read as a successful `delete`/`runNow`, and
- * a non-array handed to the routines table. It rejects instead, which is what a
- * caller already saw for any other db-host lifecycle failure.
- */
-function invokeScheduledTasksDb<TResult>(
-  ipcRendererLike: IpcRendererLike,
-  channel: DbGuardedChannel,
-  ...args: unknown[]
-): Promise<TResult> {
-  // The ONE sanctioned widening of a guarded channel back to `string`. It is
-  // safe precisely here because this helper is the guarded path: the `.then`
-  // below is what the `NotDbGuarded` constraint on `invoke` exists to force.
-  const rawChannel: string = channel;
-  return (ipcRendererLike.invoke(rawChannel, ...args) as Promise<TResult>).then(
-    rejectIfDbHostShuttingDown
-  );
-}
-
 export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
   return {
     /**
@@ -197,7 +189,9 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
      */
     macOSMajorVersion: readMacOSMajorVersion(),
     getSettings: () =>
-      ipcRendererLike.invoke("desktop:get-settings") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        SettingsIpcChannel.GetSettings
+      ) as Promise<unknown>,
     getSessionLimits: () =>
       ipcRendererLike.invoke(
         SessionLimitsIpcChannel.Get
@@ -213,82 +207,15 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
         SessionLimitsIpcChannel.SetStatuslineCaptureEnabled,
         enabled
       ) as Promise<StatuslineCaptureResult>,
-    /**
-     * FEA-3852/3853/3854 (PRD-553): the Scheduled Tasks surface. `list`/`runs`
-     * read the crewd scheduler's SQLite-mirrored store (empty when the daemon is
-     * off / the store is unavailable — never a reject); `create`/`update`/
-     * `delete`/`toggle`/`runNow` write through the trusted-sender-gated handlers
-     * (payload validated at the main boundary); `previewSchedule` validates a cron
-     * and returns its next fire times; `onChanged` subscribes to the main →
-     * renderer change push and returns an unsubscribe fn.
-     */
-    scheduledTasks: {
-      list: () =>
-        invokeScheduledTasksDb<ScheduledTaskListItem[]>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.List
-        ),
-      runs: (request?: ScheduledTaskRunsRequest) =>
-        invokeScheduledTasksDb<ScheduledTaskRunItem[]>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.Runs,
-          request
-        ),
-      create: (payload: ScheduledTaskSaveInput) =>
-        invokeScheduledTasksDb<ScheduledTaskListItem>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.Create,
-          payload
-        ),
-      update: (payload: ScheduledTaskSaveInput) =>
-        invokeScheduledTasksDb<ScheduledTaskListItem>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.Update,
-          payload
-        ),
-      delete: (id: string) =>
-        invokeScheduledTasksDb<boolean>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.Delete,
-          id
-        ),
-      toggle: (id: string, enabled: boolean) =>
-        invokeScheduledTasksDb<ScheduledTaskListItem | null>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.Toggle,
-          id,
-          enabled
-        ),
-      runNow: (id: string) =>
-        invokeScheduledTasksDb<boolean>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.RunNow,
-          id
-        ),
-      previewSchedule: (request: SchedulePreviewRequest) =>
-        invokeScheduledTasksDb<SchedulePreviewResult>(
-          ipcRendererLike,
-          ScheduledTasksIpcChannel.PreviewSchedule,
-          request
-        ),
-      onChanged: (callback: () => void) => {
-        const handler = (() => callback()) as (...args: never[]) => void;
-        ipcRendererLike.on?.(SCHEDULED_TASKS_CHANGED_CHANNEL, handler);
-        return () => {
-          ipcRendererLike.removeListener?.(
-            SCHEDULED_TASKS_CHANGED_CHANNEL,
-            handler
-          );
-        };
-      },
-    },
     updateSettings: (partial: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:update-settings",
+        SettingsIpcChannel.UpdateSettings,
         partial
       ) as Promise<unknown>,
     getRuntimeStatus: () =>
-      ipcRendererLike.invoke("desktop:get-runtime-status") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        RuntimeInfoIpcChannel.GetRuntimeStatus
+      ) as Promise<unknown>,
     // FEA-2715 / ISS-4719: per-file transcript archive-lane status for the
     // availability UI (FEA-2716/2717). Mirrors the main-process handler in
     // `runtime-info-ipc.ts`; returns a disabled snapshot when the flag is off.
@@ -296,15 +223,6 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
       ipcRendererLike.invoke(
         RuntimeInfoIpcChannel.GetTranscriptSyncStatus
       ) as Promise<TranscriptSyncStatusSnapshot>,
-    /**
-     * ISS-5477: per-lane desktop→cloud drain state + queue depths, so the
-     * renderer's app-core mode can keep reading this machine's own data until
-     * the cloud actually has it. Counts and states only, never content.
-     */
-    getCloudReadReadiness: () =>
-      ipcRendererLike.invoke(
-        RuntimeInfoIpcChannel.GetCloudReadReadiness
-      ) as Promise<CloudReadReadinessSnapshot>,
     /**
      * FEA-3843 / PRD-555: in-app Docs & Help bridge — search the local docs
      * index, fetch a bundled page, read the bundle status (M1), and list the
@@ -331,154 +249,91 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
           DocsHelpIpcChannel.Nav
         ) as Promise<DocsHelpNavResult>,
     },
-    listCommandSigningKeys: () =>
-      ipcRendererLike.invoke(
-        "desktop:list-command-signing-keys"
-      ) as Promise<unknown>,
-    listAuthorizedKeys: () =>
-      ipcRendererLike.invoke(
-        "desktop:list-authorized-keys"
-      ) as Promise<unknown>,
-    authorizeKey: (payload: unknown) =>
-      ipcRendererLike.invoke(
-        "desktop:authorize-key",
-        payload
-      ) as Promise<unknown>,
-    removeAuthorizedKey: (fingerprint: string) =>
-      ipcRendererLike.invoke(
-        "desktop:remove-authorized-key",
-        fingerprint
-      ) as Promise<unknown>,
-    listOrgPublicKeys: () =>
-      ipcRendererLike.invoke(
-        "desktop:list-org-public-keys"
-      ) as Promise<unknown>,
-    approveOrgPublicKey: (fingerprint: string) =>
-      ipcRendererLike.invoke(
-        "desktop:approve-org-public-key",
-        fingerprint
-      ) as Promise<unknown>,
-    rejectOrgPublicKey: (fingerprint: string) =>
-      ipcRendererLike.invoke(
-        "desktop:reject-org-public-key",
-        fingerprint
-      ) as Promise<unknown>,
-    authorizeCommandSigningKey: (fingerprint: string) =>
-      ipcRendererLike.invoke(
-        "desktop:authorize-command-signing-key",
-        fingerprint
-      ) as Promise<unknown>,
-    revokeCommandSigningKey: (fingerprint: string) =>
-      ipcRendererLike.invoke(
-        "desktop:revoke-command-signing-key",
-        fingerprint
-      ) as Promise<unknown>,
+    ...createSigningKeysAndApprovalsDesktopApi(ipcRendererLike),
     getActivityEvents: () =>
-      ipcRendererLike.invoke("desktop:get-activity-events") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        LogsActivityIpcChannel.GetActivityEvents
+      ) as Promise<unknown>,
     clearActivityEvents: () =>
       ipcRendererLike.invoke(
-        "desktop:clear-activity-events"
-      ) as Promise<unknown>,
-    getPendingApprovals: () =>
-      ipcRendererLike.invoke(
-        "desktop:get-pending-approvals"
-      ) as Promise<unknown>,
-    approveApproval: (approvalId: string) =>
-      ipcRendererLike.invoke(
-        "desktop:approve-approval",
-        approvalId
-      ) as Promise<unknown>,
-    denyApproval: (approvalId: string) =>
-      ipcRendererLike.invoke(
-        "desktop:deny-approval",
-        approvalId
-      ) as Promise<unknown>,
-    alwaysAllowApproval: (approvalId: string) =>
-      ipcRendererLike.invoke(
-        "desktop:always-allow-approval",
-        approvalId
-      ) as Promise<unknown>,
-    clearPendingApprovals: () =>
-      ipcRendererLike.invoke(
-        "desktop:clear-pending-approvals"
-      ) as Promise<unknown>,
-    getResolvedApprovals: () =>
-      ipcRendererLike.invoke(
-        "desktop:get-resolved-approvals"
-      ) as Promise<unknown>,
-    clearResolvedApprovals: () =>
-      ipcRendererLike.invoke(
-        "desktop:clear-resolved-approvals"
+        LogsActivityIpcChannel.ClearActivityEvents
       ) as Promise<unknown>,
     getApiKeyStatus: () =>
-      ipcRendererLike.invoke("desktop:get-api-key-status") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        ApiKeyIpcChannel.GetApiKeyStatus
+      ) as Promise<unknown>,
     setApiKey: (apiKey: string) =>
-      ipcRendererLike.invoke("desktop:set-api-key", apiKey) as Promise<unknown>,
+      ipcRendererLike.invoke(
+        ApiKeyIpcChannel.SetApiKey,
+        apiKey
+      ) as Promise<unknown>,
     clearApiKey: () =>
-      ipcRendererLike.invoke("desktop:clear-api-key") as Promise<unknown>,
+      ipcRendererLike.invoke(ApiKeyIpcChannel.ClearApiKey) as Promise<unknown>,
     // FEA-1435/1436: vendor Admin key intake + cost reconciliation. The bridge only
     // ever moves existence-only statuses, persisted drift rows, and key-free run
     // summaries — never the Admin key material itself (main-process only).
     getAdminKeyStatuses: () =>
       ipcRendererLike.invoke(
-        "desktop:get-admin-key-statuses"
+        ApiKeyIpcChannel.GetAdminKeyStatuses
       ) as Promise<unknown>,
     setAdminKey: (vendor: string, key: string) =>
-      ipcRendererLike.invoke("desktop:set-admin-key", {
+      ipcRendererLike.invoke(ApiKeyIpcChannel.SetAdminKey, {
         vendor,
         key,
       }) as Promise<unknown>,
     clearAdminKey: (vendor: string) =>
       ipcRendererLike.invoke(
-        "desktop:clear-admin-key",
+        ApiKeyIpcChannel.ClearAdminKey,
         vendor
       ) as Promise<unknown>,
     runCostReconciliation: () =>
       ipcRendererLike.invoke(
-        "desktop:run-cost-reconciliation"
+        CostReconciliationIpcChannel.RunCostReconciliation
       ) as Promise<unknown>,
     listCostReconciliation: (query?: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:list-cost-reconciliation",
+        CostReconciliationIpcChannel.ListCostReconciliation,
         query
       ) as Promise<unknown>,
     // FEA-1436: Claude Code per-user usage (Anthropic's own estimate). Returns
     // per-actor usage rows only — never any Admin key material.
     getClaudeCodeAnalytics: (query?: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:get-claude-code-analytics",
+        CostReconciliationIpcChannel.GetClaudeCodeAnalytics,
         query
       ) as Promise<unknown>,
     getCloudCommandsPaused: () =>
       ipcRendererLike.invoke(
-        "desktop:get-cloud-commands-paused"
+        CloudControlIpcChannel.GetCloudCommandsPaused
       ) as Promise<unknown>,
     setCloudCommandsPaused: (paused: boolean) =>
       ipcRendererLike.invoke(
-        "desktop:set-cloud-commands-paused",
+        CloudControlIpcChannel.SetCloudCommandsPaused,
         paused
       ) as Promise<unknown>,
     getCloudConnectionEnabled: () =>
       ipcRendererLike.invoke(
-        "desktop:get-cloud-connection-enabled"
+        CloudControlIpcChannel.GetCloudConnectionEnabled
       ) as Promise<unknown>,
     setCloudConnectionEnabled: (enabled: boolean) =>
       ipcRendererLike.invoke(
-        "desktop:set-cloud-connection-enabled",
+        CloudControlIpcChannel.SetCloudConnectionEnabled,
         enabled
       ) as Promise<unknown>,
     getOnboardingState: () =>
       ipcRendererLike.invoke(
-        "desktop:get-onboarding-state"
+        OnboardingIpcChannel.GetOnboardingState
       ) as Promise<unknown>,
     completeOnboarding: (payload: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:complete-onboarding",
+        OnboardingIpcChannel.CompleteOnboarding,
         payload
       ) as Promise<unknown>,
     // FEA-1333: mark the one-time Agent Dashboard welcome as seen.
     markDashboardWelcomeSeen: () =>
-      ipcRendererLike.invoke("desktop:mark-dashboard-welcome-seen") as Promise<{
+      ipcRendererLike.invoke(
+        OnboardingIpcChannel.MarkDashboardWelcomeSeen
+      ) as Promise<{
         ok: boolean;
       }>,
     // PRD-532 (M4) → FEA-4103: legacy sync-consent tier setter, kept as a
@@ -487,178 +342,179 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     // so it can no longer set the tier in isolation and desync the level UI.
     setSyncObservabilityTier: (tier: string) =>
       ipcRendererLike.invoke(
-        "desktop:set-sync-observability-tier",
+        OnboardingIpcChannel.SetSyncObservabilityTier,
         tier
       ) as Promise<{ tier: string }>,
     // FEA-3907: read/persist the graduated data sync level (Settings "Data &
     // Sync"). The main process derives the connectivity/sync booleans from it.
     getDataSyncLevel: () =>
-      ipcRendererLike.invoke("desktop:get-data-sync-level") as Promise<{
+      ipcRendererLike.invoke(OnboardingIpcChannel.GetDataSyncLevel) as Promise<{
         level: string;
       }>,
     setDataSyncLevel: (level: string) =>
-      ipcRendererLike.invoke("desktop:set-data-sync-level", level) as Promise<{
+      ipcRendererLike.invoke(
+        OnboardingIpcChannel.SetDataSyncLevel,
+        level
+      ) as Promise<{
         level: string;
+      }>,
+    // ISS-7249: report one dead-end treatment — a rendered "we could not show
+    // you the thing you asked for" state, the retry the user took, or what that
+    // retry settled into. Closed enums, a boolean, and two bounded numbers; the
+    // payload has no field that could carry a session id, a name, or a path.
+    recordDeadEndTelemetry: (payload: DeadEndTelemetryPayload) =>
+      ipcRendererLike.invoke(DEAD_END_TELEMETRY_CHANNEL, payload) as Promise<{
+        ok: boolean;
       }>,
     // ISS-5489: read/write the post-auth sync-consent answer. The read exposes
     // the raw tier (null = never answered) because the level reconciles a
     // missing value into a real one and so cannot report "never asked".
     getSyncConsentRecord: () =>
-      ipcRendererLike.invoke("desktop:get-sync-consent-record") as Promise<{
-        tier: string | null;
-        organizationId: string | null;
-        bound: boolean;
-      }>,
+      ipcRendererLike.invoke(
+        OnboardingIpcChannel.GetSyncConsentRecord
+      ) as Promise<PreloadSyncConsentRecord>,
     recordSyncConsent: (payload: {
       level: string;
       organizationId: string | null;
     }) =>
       ipcRendererLike.invoke(
-        "desktop:record-sync-consent",
+        OnboardingIpcChannel.RecordSyncConsent,
         payload
       ) as Promise<{ level: string; organizationId: string | null }>,
+    recordSessionAnalysisAgreement: () =>
+      ipcRendererLike.invoke(
+        SESSION_ANALYSIS_AGREEMENT_IPC_CHANNEL
+      ) as Promise<{
+        ok: boolean;
+      }>,
+    // ISS-5489: main pushes the post-write record so every renderer surface
+    // sharing the consent snapshot moves together, not just the one that wrote.
+    onSyncConsentRecordChanged: (
+      callback: (record: PreloadSyncConsentRecord) => void
+    ) => {
+      const handler = ((_event: unknown, record: PreloadSyncConsentRecord) =>
+        callback(record)) as (...args: never[]) => void;
+      ipcRendererLike.on?.(
+        DesktopRendererEventChannel.SyncConsentChanged,
+        handler
+      );
+      return () => {
+        ipcRendererLike.removeListener?.(
+          DesktopRendererEventChannel.SyncConsentChanged,
+          handler
+        );
+      };
+    },
     startDeviceOnboarding: (payload: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:start-device-onboarding",
+        OnboardingIpcChannel.StartDeviceOnboarding,
         payload
       ) as Promise<unknown>,
     dismissOnboardingPopup: (payload: { permanent: boolean }) =>
       ipcRendererLike.invoke(
-        "desktop:dismiss-onboarding-popup",
+        OnboardingIpcChannel.DismissOnboardingPopup,
         payload
       ) as Promise<unknown>,
     onboardingPopupCta: () =>
       ipcRendererLike.invoke(
-        "desktop:onboarding-popup-cta"
+        OnboardingIpcChannel.OnboardingPopupCta
       ) as Promise<unknown>,
     pickSandboxDirectory: () =>
       ipcRendererLike.invoke(
-        "desktop:pick-sandbox-directory"
+        SandboxIpcChannel.PickSandboxDirectory
       ) as Promise<SandboxInspectResult | null>,
     inspectSandboxPath: (path: string) =>
       ipcRendererLike.invoke(
-        "desktop:inspect-sandbox-path",
+        SandboxIpcChannel.InspectSandboxPath,
         path
       ) as Promise<SandboxInspectResult | null>,
+    pickDirectoryScopeEntry: () =>
+      ipcRendererLike.invoke(
+        DirectoryScopeIpcChannel.PickDirectory
+      ) as Promise<DirectoryScopePickPayload | null>,
     getDangerousAutoApprove: () =>
       ipcRendererLike.invoke(
-        "desktop:get-dangerous-auto-approve"
+        DebugIpcChannel.GetDangerousAutoApprove
       ) as Promise<boolean>,
     setDangerousAutoApprove: (enabled: boolean) =>
       ipcRendererLike.invoke(
-        "desktop:set-dangerous-auto-approve",
+        DebugIpcChannel.SetDangerousAutoApprove,
         enabled
       ) as Promise<boolean>,
     removeAlwaysAllowRule: (ruleId: string) =>
       ipcRendererLike.invoke(
-        "desktop:remove-always-allow-rule",
+        ApprovalsIpcChannel.RemoveAlwaysAllowRule,
         ruleId
       ) as Promise<unknown>,
     checkForUpdate: () =>
-      ipcRendererLike.invoke("desktop:check-for-update") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        UpdateIpcChannel.CheckForUpdate
+      ) as Promise<unknown>,
     applyUpdate: () =>
-      ipcRendererLike.invoke("desktop:apply-update") as Promise<unknown>,
+      ipcRendererLike.invoke(UpdateIpcChannel.ApplyUpdate) as Promise<unknown>,
     moveToApplications: async () =>
       (await ipcRendererLike.invoke(MOVE_TO_APPLICATIONS_IPC_CHANNEL)) === true,
     isDebugAuthEnabled: () =>
       ipcRendererLike.invoke(
-        "desktop:is-debug-auth-enabled"
+        DebugIpcChannel.IsDebugAuthEnabled
       ) as Promise<boolean>,
     mintDebugToken: (origin?: string) =>
       ipcRendererLike.invoke(
-        "desktop:mint-debug-token",
+        DebugIpcChannel.MintDebugToken,
         origin
       ) as Promise<unknown>,
-    listRunningJobs: () =>
-      ipcRendererLike.invoke("desktop:list-running-jobs") as Promise<unknown>,
-    listCompletedJobs: () =>
-      ipcRendererLike.invoke("desktop:list-completed-jobs") as Promise<unknown>,
-    getJob: (jobId: string) =>
-      ipcRendererLike.invoke("desktop:get-job", jobId) as Promise<unknown>,
-    getJobLogTail: (jobId: string, lines?: number) =>
-      ipcRendererLike.invoke(
-        "desktop:get-job-log-tail",
-        jobId,
-        lines
-      ) as Promise<unknown>,
     getLogs: () =>
-      ipcRendererLike.invoke("desktop:get-logs") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        LogsActivityIpcChannel.GetLogs
+      ) as Promise<unknown>,
     clearLogs: () =>
-      ipcRendererLike.invoke("desktop:clear-logs") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        LogsActivityIpcChannel.ClearLogs
+      ) as Promise<unknown>,
     getLogFilePath: () =>
-      ipcRendererLike.invoke("desktop:get-log-file-path") as Promise<string>,
+      ipcRendererLike.invoke(
+        LogsActivityIpcChannel.GetLogFilePath
+      ) as Promise<string>,
     openLogFile: () =>
-      ipcRendererLike.invoke("desktop:open-log-file") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        LogsActivityIpcChannel.OpenLogFile
+      ) as Promise<unknown>,
     getAppVersion: () =>
-      ipcRendererLike.invoke("desktop:get-app-version") as Promise<string>,
+      ipcRendererLike.invoke(
+        RuntimeInfoIpcChannel.GetAppVersion
+      ) as Promise<string>,
     generateCoachingTips: (prompt: string) =>
       ipcRendererLike.invoke(
-        "desktop:agent-coaching:generate",
+        CoachingIpcChannel.Generate,
         prompt
       ) as Promise<CoachingHarnessResult>,
     installCoachingArtifact: (draft: string, harness?: string, kind?: string) =>
       ipcRendererLike.invoke(
-        "desktop:agent-coaching:install",
+        CoachingIpcChannel.Install,
         draft,
         harness,
         kind
       ) as Promise<CoachingHarnessResult>,
     getCoachingPack: () =>
-      ipcRendererLike.invoke(
-        "desktop:agent-coaching:get-pack"
-      ) as Promise<unknown>,
+      ipcRendererLike.invoke(CoachingIpcChannel.GetPack) as Promise<unknown>,
     installCoachingPack: (sourceDir: string) =>
       ipcRendererLike.invoke(
-        "desktop:agent-coaching:install-pack",
+        CoachingIpcChannel.InstallPack,
         sourceDir
       ) as Promise<unknown>,
-    /**
-     * Audit Bot (FEA-3847 / PRD-556 M1). `run` executes a crewd review character
-     * against the open repo via the harness cascade and resolves with the parsed
-     * findings; `onProgress` subscribes to the streamed cascade trail for
-     * in-flight runs. The request may carry the operator-selected harness / model
-     * / cascade order (FEA-4009); an omitted cascade defaults main-side to the
-     * historical fixed order. Gated main-side by the `auditBot` Labs flag +
-     * sender trust — a disabled/denied run resolves with a typed refusal result.
-     */
-    audit: {
-      run: (request: AuditRunRequest) =>
-        ipcRendererLike.invoke(
-          AuditIpcChannel.Run,
-          request
-        ) as Promise<AuditRunResult>,
-      // FEA-3849 (M3): file the user's SELECTED findings to ClosedLoop. Only
-      // called after the user selects + confirms — never automatically. Gated
-      // main-side by sender trust + the `auditBot` flag; the ClosedLoop network
-      // call runs main-side (the access token never crosses this bridge).
-      file: (request: AuditFileRequest) =>
-        ipcRendererLike.invoke(
-          AuditIpcChannel.File,
-          request
-        ) as Promise<AuditFileResult>,
-      onProgress: (callback: (payload: AuditProgressPayload) => void) => {
-        const handler = (_event: unknown, payload: AuditProgressPayload) =>
-          callback(payload);
-        ipcRendererLike.on?.(
-          AuditIpcChannel.Progress,
-          handler as (...args: never[]) => void
-        );
-        return () =>
-          ipcRendererLike.removeListener?.(
-            AuditIpcChannel.Progress,
-            handler as (...args: never[]) => void
-          );
-      },
-    },
     getBinaryPaths: () =>
-      ipcRendererLike.invoke("desktop:get-binary-paths") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        BinaryPathsIpcChannel.GetBinaryPaths
+      ) as Promise<unknown>,
     patchBinaryPaths: (patch: unknown) =>
       ipcRendererLike.invoke(
-        "desktop:patch-binary-paths",
+        BinaryPathsIpcChannel.PatchBinaryPaths,
         patch
       ) as Promise<unknown>,
     detectCliTools: () =>
-      ipcRendererLike.invoke("desktop:detect-cli-tools") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        BinaryPathsIpcChannel.DetectCliTools
+      ) as Promise<unknown>,
     /**
      * Engineer gateway transport (M-001): dispatch an `/api/gateway/*` request
      * to the trusted main process, which validates it (sender trust + exact-path
@@ -675,6 +531,11 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
         RENDERER_OTEL_EXPORT_CHANNEL,
         payload
       ) as Promise<RendererOtelExportResult>,
+    captureSurfaceAnalytics: (payload: SurfaceAnalyticsIpcPayload) =>
+      ipcRendererLike.invoke(
+        SURFACE_ANALYTICS_IPC_CHANNEL,
+        payload
+      ) as Promise<SurfaceAnalyticsIpcResult>,
     /**
      * Notify main that the renderer reached a readiness milestone. ISS-5346:
      * the phase distinguishes the pre-mount static shell from the mounted React
@@ -684,7 +545,7 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     notifyRendererReady: (
       phase: RendererReadyPhase = RendererReadyPhase.Shell
     ) => {
-      ipcRendererLike.send("desktop:renderer-ready", phase);
+      ipcRendererLike.send(RendererLifecycleIpcChannel.RendererReady, phase);
     },
     // First-party desktop auth (FEA-2219 / PLN-1138). Sign-in/out + identity
     // flow entirely through the main-process DesktopSessionManager. No
@@ -694,19 +555,39 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     // secret never leave main either.
     getDesktopAuthState: () =>
       ipcRendererLike.invoke(
-        "desktop:get-desktop-auth-state"
+        DesktopAuthIpcChannel.GetState
       ) as Promise<DesktopAuthState>,
-    // ISS-5112: `provider` is optional and forwarded verbatim. Main validates it
-    // (an unknown value degrades to no hint), so this stays a thin pass-through.
-    beginDesktopSignIn: (provider?: DesktopSignInProvider) =>
+    // ISS-5112/ISS-5954: `method`, the M5 `emailHint`, and the door `framing`
+    // are optional and forwarded verbatim. Main validates all three (an
+    // unknown value degrades to no hint), so this stays a thin pass-through.
+    beginDesktopSignIn: (
+      method?: DesktopSignInMethod,
+      emailHint?: string,
+      framing?: DesktopSignInFraming,
+      options?: DesktopSignInOptions
+    ) =>
       ipcRendererLike.invoke(
-        "desktop:begin-desktop-sign-in",
-        provider
+        DesktopAuthIpcChannel.BeginSignIn,
+        method,
+        emailHint,
+        framing,
+        options
       ) as Promise<DesktopBrowserSignInResult>,
     cancelDesktopSignIn: () =>
-      ipcRendererLike.invoke("desktop:cancel-desktop-sign-in") as Promise<void>,
+      ipcRendererLike.invoke(
+        DesktopAuthIpcChannel.CancelSignIn
+      ) as Promise<void>,
+    confirmDesktopSignIn: () =>
+      ipcRendererLike.invoke(
+        DesktopAuthIpcChannel.ConfirmSignIn
+      ) as Promise<void>,
+    createBootstrapOrganization: (input: DesktopBootstrapOrganizationInput) =>
+      ipcRendererLike.invoke(
+        DesktopAuthIpcChannel.CreateBootstrapOrganization,
+        input
+      ) as Promise<DesktopBootstrapOrganizationResult>,
     signOutDesktop: () =>
-      ipcRendererLike.invoke("desktop:sign-out-desktop") as Promise<void>,
+      ipcRendererLike.invoke(DesktopAuthIpcChannel.SignOut) as Promise<void>,
     // Cloud-API fetch bridge (PLN-1138 D-G Option B): the renderer's shared
     // ApiAdapter marshals origin-relative cloud REST requests here; the main
     // process attaches the real Authorization header, so no access token
@@ -749,9 +630,47 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
       ipcRendererLike.invoke(
         DesktopIdentityIpcChannel.Get
       ) as Promise<DesktopIdentity | null>,
+    // ISS-8024: the signed-in user's PostHog flag assignment, evaluated
+    // server-side. `null` for every failure — the renderer reads that as
+    // UNRESOLVED, so every gate stays closed.
+    getDesktopFeatureFlags: () =>
+      ipcRendererLike.invoke(
+        DesktopFeatureFlagsIpcChannel.Get
+      ) as Promise<DesktopFeatureFlagAssignment | null>,
+    // ISS-12048: Dev Tools overrides for main's own flag reads. Main applies
+    // them only under its own Dev Mode check, never on this call's say-so.
+    setFeatureFlagOverrides: (overrides: Readonly<Record<string, boolean>>) =>
+      ipcRendererLike.invoke(
+        DesktopDevModeIpcChannel.SetFeatureFlagOverrides,
+        overrides
+      ) as Promise<boolean>,
+    getMainCheckedFeatureFlags: () =>
+      ipcRendererLike.invoke(
+        DesktopDevModeIpcChannel.GetCheckedFeatureFlags
+      ) as Promise<unknown>,
+    onMainCheckedFeatureFlagsChanged: (callback: () => void) => {
+      ipcRendererLike.on?.(
+        DesktopDevModeIpcChannel.CheckedFeatureFlagsChanged,
+        callback
+      );
+      return () => {
+        ipcRendererLike.removeListener?.(
+          DesktopDevModeIpcChannel.CheckedFeatureFlagsChanged,
+          callback
+        );
+      };
+    },
+    // ISS-8753: the Electron E2E harness's seeded assignment for this launch.
+    // `null` on every shipped launch — main refuses a packaged build outright
+    // and refuses an unpackaged one that was not started with the harness launch
+    // argument — so the renderer falls through to the real assignment above.
+    getE2eSeededFeatureFlags: () =>
+      ipcRendererLike.invoke(
+        DesktopFeatureFlagsIpcChannel.GetE2eSeed
+      ) as Promise<DesktopFeatureFlagAssignment | null>,
     openGitHubConnect: (request?: GitHubConnectOpenRequest) =>
       ipcRendererLike.invoke(
-        "desktop:open-github-connect",
+        GitHubConnectIpcChannel.Open,
         request
       ) as Promise<GitHubConnectOpenResult>,
     onDesktopAuthStateChanged: (
@@ -759,9 +678,15 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     ) => {
       const handler = ((_event: unknown, state: DesktopAuthState) =>
         callback(state)) as (...args: never[]) => void;
-      ipcRendererLike.on?.("desktop:auth-state-changed", handler);
+      ipcRendererLike.on?.(
+        DesktopRendererEventChannel.AuthStateChanged,
+        handler
+      );
       return () => {
-        ipcRendererLike.removeListener?.("desktop:auth-state-changed", handler);
+        ipcRendererLike.removeListener?.(
+          DesktopRendererEventChannel.AuthStateChanged,
+          handler
+        );
       };
     },
     // Existing-user resolution (PRD-532 §8 / M6). Only the advisory prompt state
@@ -793,32 +718,46 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
         );
       };
     },
+    ...createOnboardingLocalStateDesktopApi(ipcRendererLike),
     ...createProfileConfigDesktopApi(ipcRendererLike),
+    ...createRealtimeDesktopApi(ipcRendererLike),
+    ...createDesktopSessionReplayDesktopApi(ipcRendererLike),
+    ...createSettingsLocalDeviceDesktopApi(ipcRendererLike),
     getAgentMonitorUrl: () =>
       ipcRendererLike.invoke(
-        "desktop:get-agent-monitor-url"
+        AgentMonitorIpcChannel.GetAgentMonitorUrl
       ) as Promise<AgentMonitorUrl>,
     openAgentMonitor: () =>
-      ipcRendererLike.invoke("desktop:open-agent-monitor") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        AgentMonitorIpcChannel.OpenAgentMonitor
+      ) as Promise<unknown>,
     getAgentMonitorHooksEnabled: () =>
       ipcRendererLike.invoke(
-        "desktop:get-agent-monitor-hooks-enabled"
+        AgentMonitorIpcChannel.GetAgentMonitorHooksEnabled
       ) as Promise<boolean>,
     setAgentMonitorHooksEnabled: (enabled: boolean) =>
       ipcRendererLike.invoke(
-        "desktop:set-agent-monitor-hooks-enabled",
+        AgentMonitorIpcChannel.SetAgentMonitorHooksEnabled,
         enabled
       ) as Promise<AgentMonitorHooksResult>,
     getAllFlags: () =>
-      ipcRendererLike.invoke("desktop:get-all-flags") as Promise<unknown>,
+      ipcRendererLike.invoke(
+        RuntimeInfoIpcChannel.GetAllFlags
+      ) as Promise<unknown>,
     onFlagsChanged: (callback: () => void) => {
-      ipcRendererLike.on?.("desktop:flags-changed", callback);
+      ipcRendererLike.on?.(DesktopRendererEventChannel.FlagsChanged, callback);
+      return () => {
+        ipcRendererLike.removeListener?.(
+          DesktopRendererEventChannel.FlagsChanged,
+          callback
+        );
+      };
     },
     // FEA-1334: cold-start ingest progress for the floating progress card.
     // Resolves null when the sidecar is unreachable or has no progress yet.
     getAgentMonitorIngestProgress: () =>
       ipcRendererLike.invoke(
-        "desktop:get-agent-monitor-ingest-progress"
+        AgentMonitorIpcChannel.GetAgentMonitorIngestProgress
       ) as Promise<{
         running: boolean;
         startedAt: number | null;
@@ -836,7 +775,7 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     // in-memory in the main process, so it resets to running on app restart.
     setAgentMonitorImportPaused: (paused: boolean) =>
       ipcRendererLike.invoke(
-        "desktop:set-agent-monitor-import-paused",
+        AgentMonitorIpcChannel.SetAgentMonitorImportPaused,
         paused
       ) as Promise<void>,
     // FEA-3639: re-run the boot import after the user grants a previously-denied
@@ -844,12 +783,14 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     // app restart (the Sessions file-access prompt's Reload action).
     reimportAgentSessions: () =>
       ipcRendererLike.invoke(
-        "desktop:reimport-agent-sessions"
+        AgentMonitorIpcChannel.ReimportAgentSessions
       ) as Promise<void>,
     // FEA-1334: clear the dashboard DB and restart the sidecar so it re-imports
     // every agent session from scratch. The progress banner tracks the re-import.
     reprocessAgentLogs: () =>
-      ipcRendererLike.invoke("desktop:reprocess-agent-logs") as Promise<{
+      ipcRendererLike.invoke(
+        AgentMonitorIpcChannel.ReprocessAgentLogs
+      ) as Promise<{
         ok: boolean;
         error?: string;
       }>,
@@ -860,7 +801,7 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
      */
     getManagedKeyHintState: () =>
       ipcRendererLike.invoke(
-        "desktop:get-managed-key-hint-state"
+        ManagedKeyHintIpcChannel.GetManagedKeyHintState
       ) as Promise<ManagedKeyHintState>,
     /**
      * Dismisses the managed-key revival limitation hint (D5).
@@ -868,7 +809,9 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
      * The renderer does not supply any arguments — provenance is main-process-only.
      */
     dismissManagedKeyHint: () =>
-      ipcRendererLike.invoke("desktop:dismiss-managed-key-hint") as Promise<{
+      ipcRendererLike.invoke(
+        ManagedKeyHintIpcChannel.DismissManagedKeyHint
+      ) as Promise<{
         success: boolean;
       }>,
   };
@@ -889,51 +832,6 @@ export function exposeDesktopApi(extensions: DesktopApiExtensions = {}): void {
   });
 }
 
-export function registerDesktopApiEventForwarders(
-  ipcRendererLike: IpcRendererEventsLike,
-  targetWindow: WindowLike
-): void {
-  ipcRendererLike.on("desktop:navigate-tab", (_event, tab: string) => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:navigate-tab", { detail: tab })
-    );
-  });
-
-  ipcRendererLike.on("desktop:navigate-settings-tab", (_event, tab: string) => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:navigate-settings-tab", { detail: tab })
-    );
-  });
-
-  ipcRendererLike.on("desktop:command-keys-changed", () => {
-    targetWindow.dispatchEvent(new CustomEvent("desktop:command-keys-changed"));
-  });
-
-  ipcRendererLike.on("desktop:update-available", (_event, result) => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:update-available", { detail: result })
-    );
-  });
-
-  ipcRendererLike.on("desktop:update-status", (_event, result) => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:update-status", { detail: result })
-    );
-  });
-
-  ipcRendererLike.on("desktop:onboarding-state-changed", () => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:onboarding-state-changed")
-    );
-  });
-
-  ipcRendererLike.on("desktop:show-onboarding-popup", () => {
-    targetWindow.dispatchEvent(
-      new CustomEvent("desktop:show-onboarding-popup")
-    );
-  });
-}
-
 if (typeof window !== "undefined") {
   const { ipcRenderer } = getElectronPreloadApi();
   registerDesktopApiEventForwarders(ipcRenderer, window);
@@ -943,3 +841,10 @@ function getElectronPreloadApi(): ElectronPreloadApi {
   const require = createRequire(import.meta.url);
   return require("electron") as ElectronPreloadApi;
 }
+
+/** The consent record, pulled and pushed — one shape, so the two cannot drift. */
+type PreloadSyncConsentRecord = {
+  tier: string | null;
+  organizationId: string | null;
+  bound: boolean;
+};

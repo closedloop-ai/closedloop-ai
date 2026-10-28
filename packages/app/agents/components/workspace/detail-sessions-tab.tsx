@@ -22,10 +22,14 @@ import type {
 } from "@repo/api/src/types/agent-component";
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import { SESSION_DURATION_TICK_MS } from "@repo/app/agents/lib/session-duration";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useCoarseNow } from "@repo/app/shared/hooks/use-coarse-now";
+import { ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { MonoIdCell } from "@repo/design-system/components/ui/mono-id-cell";
 import { Link } from "@repo/navigation/link";
 import { Clock3Icon } from "lucide-react";
+import type { ReactNode } from "react";
 import type { SessionHrefTarget } from "../../lib/agent-component-session-adapter";
 import { adaptAgentComponentSessions } from "../../lib/agent-component-session-adapter";
 import { AGENTS_PAGE_SIZE } from "../../lib/agents-timeframe";
@@ -35,7 +39,7 @@ import {
 } from "../../lib/detail-tab-truncation-readout";
 import { resolveUsageSignal, UsageSignal } from "../../lib/usage-signal";
 import { versionLabelBySession } from "../../lib/version-label";
-import { SessionsTable } from "../sessions/sessions-table";
+import { SessionsTable } from "../sessions/session-detail-table";
 
 export function DetailSessionsTab({
   component,
@@ -72,12 +76,17 @@ export function DetailSessionsTab({
    */
   getSessionHref?: (session: SessionHrefTarget) => string;
 }) {
+  // ISS-6384. `…Optional` so a mount site with no flag provider (Storybook, a
+  // bare unit test) degrades to OFF — today's bare span — rather than crashing.
+  const sharedCells = useFeatureFlagEnabledOptional(
+    ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY
+  );
   // Bound the rendered row count (FEA-3579). The detail page has no
   // pagination or virtualization, so a component with a large usage history
   // would render every session row at once — blowing up the DOM/memory and
   // freezing the browser tab. Cap at AGENTS_PAGE_SIZE (the same page size the
   // list view uses) so the DOM stays bounded regardless of dataset size.
-  // ISS-4996 / ISS-4997 / ISS-4998 (wongk, #4324): the staleness fold and the
+  // ISS-4996 / ISS-4997 / ISS-4998 (whitlockk, #4324): the staleness fold and the
   // Duration cell both read the clock, so this tab needs the same coarse time
   // signal the list adapters use — otherwise a row that crosses the cutoff keeps
   // reading "Active" and a running session's Duration sits frozen at mount. This
@@ -105,19 +114,36 @@ export function DetailSessionsTab({
   );
   const showVersion = labelBySession.size > 0;
 
+  // ISS-6384: the Version column was a bare `<span className="text-sm">`, which
+  // is the hand-roll `MonoIdCell` absorbs. The shared cell gives an opaque token
+  // like `v3` or `4f2a1c` the two things a bare span cannot: a monospaced face,
+  // so a column of them lines up digit for digit, and an accessible name saying
+  // it is a VERSION rather than announcing the token alone (WCAG 1.1.1). The
+  // missing branch keeps the shared empty glyph either way.
+  const renderVersion = (rowId: string): ReactNode => {
+    const label = labelBySession.get(rowId);
+    if (sharedCells) {
+      return <MonoIdCell label="Version" value={label} />;
+    }
+    if (label === undefined) {
+      return <span className="text-muted-foreground text-sm">—</span>;
+    }
+    return <span className="text-sm">{label}</span>;
+  };
+
   // Zero-row state: mirror the shared Sessions list surface
-  // (`AgentSessionsListContent`), which renders the DS `EmptyState` rather than
+  // which renders the DS `EmptyState` rather than
   // a bare, body-less `GridTable` header. `compact` is the in-panel scale (this
   // tab sits inside the detail page alongside other sections).
   //
-  // An empty `sessionsTab` projection is NOT proof of "no sessions" (wongk,
+  // An empty `sessionsTab` projection is NOT proof of "no sessions" (whitlockk,
   // #3688). Desktop's local detail reader keeps a nonzero `component.sessions`
   // metric (and `usageSessions` attribution rows) even when it cannot hydrate
   // the individual session records into `sessionsTab`. Telling the user "no
   // sessions have invoked this component" while the metrics above say otherwise
   // is a lying empty state. So split true-zero (no usage anywhere) from
   // details-unavailable (usage exists but this source can't project the rows).
-  // ISS-5363 (wongk): `?? 0` here turned an UNMEASURED session count into a
+  // ISS-5363 (whitlockk): `?? 0` here turned an UNMEASURED session count into a
   // confident "No sessions yet" while the Sessions card directly above showed a
   // dash for the same payload. The shared `resolveUsageSignal` keeps the three
   // states apart, so the denial is only ever printed when the count was actually
@@ -139,14 +165,7 @@ export function DetailSessionsTab({
         extraColumnLabel={showVersion ? "Version" : undefined}
         items={rows}
         renderExtraColumn={
-          showVersion
-            ? (row) =>
-                labelBySession.has(row.id) ? (
-                  <span className="text-sm">{labelBySession.get(row.id)}</span>
-                ) : (
-                  <span className="text-muted-foreground text-sm">—</span>
-                )
-            : undefined
+          showVersion ? (row) => renderVersion(row.id) : undefined
         }
         renderName={(row, className) =>
           getSessionHref ? (
@@ -183,7 +202,7 @@ export function DetailSessionsTab({
 /**
  * The zero-row state, split by what the payload can actually prove.
  *
- * `Present` is the wongk/#3688 case: desktop's local detail keeps a nonzero
+ * `Present` is the whitlockk/#3688 case: desktop's local detail keeps a nonzero
  * session metric (and `usageSessions` attribution rows) while returning an empty
  * `sessionsTab`, so "no sessions have invoked this" would contradict the card
  * above. `Unknown` is the ISS-5363 case: the producer could not compute the
@@ -223,9 +242,10 @@ function SessionsEmptyState({ signal }: { signal: UsageSignal }) {
 /**
  * ISS-5464: the Sessions tab's truncation notice, or `null` for "nothing to say".
  *
- * `delivered` (the `sessionsTab` array length) can never be the total — it is
- * bounded on the way here by `MAX_DETAIL_SESSION_IN_IDS` and, since ISS-5464, by
- * the payload row cap. Printing it as "of N" is what
+ * `delivered` (the `sessionsTab` array length) can never be the total — since
+ * ISS-5464 it is bounded on the way here by the payload row cap (ISS-9855
+ * removed the second bound, a 1,000-id fan-out above it). Printing it as
+ * "of N" is what
  * made a component with 1218 sessions read "Showing 50 of 1000" beside a
  * Sessions card reading 1218. The detail's own `sessions` field is the uncapped
  * count, so it is the only honest total.
@@ -238,12 +258,13 @@ function SessionsEmptyState({ signal }: { signal: UsageSignal }) {
  * like `null` rather than printed or silently believed.
  *
  * The notice deliberately does NOT claim these are the most recent sessions,
- * though the read is recency-ordered. Two upstream steps break that claim and
- * neither is visible from here: `resolveDetailSessionTabs` slices the session-id
- * set to `MAX_DETAIL_SESSION_IN_IDS` from an UNORDERED group-by, so above 1000
- * sessions the delivered rows are the recency-head of an arbitrary subset; and
- * desktop's local reader silently drops ids it cannot hydrate. "Showing 50 of
- * 1218 sessions." is true either way; "(most recent)" would not be.
+ * though the read is recency-ordered. ISS-9855 closed the first of the two
+ * upstream steps that broke the claim — the cloud read no longer slices an
+ * UNORDERED group-by, it sorts by `lastInvokedAt` and serves that head — but
+ * the second survives and is not visible from here: desktop's local reader
+ * silently drops ids it cannot hydrate. One producer being ordered is not the
+ * field being ordered. "Showing 50 of 1218 sessions." is true either way;
+ * "(most recent)" would not be.
  *
  * With no credible total we cannot state one — but silence would imply
  * completeness, which is the same lie one field over. So the delivered count is

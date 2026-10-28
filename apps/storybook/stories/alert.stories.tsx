@@ -15,9 +15,9 @@ import {
  * Displays a callout for user attention.
  */
 const meta = {
-  title: "Design System/Primitives/Alert",
+  title: "Primitives v1.0/Feedback & Status/Alert",
   component: Alert,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     variant: {
       options: [

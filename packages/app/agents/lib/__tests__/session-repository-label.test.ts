@@ -12,22 +12,22 @@ describe("session repository identity (FEA-3780)", () => {
   it("resolves a well-formed remote", () => {
     expect(
       resolveSessionRepositoryFullName({
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       })
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
     expect(
       resolveSessionRepositoryLabel({
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       })
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("trims surrounding whitespace off an otherwise valid remote", () => {
     expect(
       resolveSessionRepositoryLabel({
-        repositoryFullName: "  closedloop-ai/symphony-alpha  ",
+        repositoryFullName: "  closedloop-ai/closedloop-ai  ",
       })
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("preserves the stored spelling verbatim", () => {
@@ -46,18 +46,18 @@ describe("session repository identity (FEA-3780)", () => {
     expect(
       resolveSessionRepositoryLabel({
         repositoryFullName: null,
-        repo: "closedloop-ai/symphony-alpha",
+        repo: "closedloop-ai/closedloop-ai",
       })
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("skips a degenerate `repositoryFullName` in favour of a valid alias", () => {
     expect(
       resolveSessionRepositoryLabel({
         repositoryFullName: "/",
-        repo: "closedloop-ai/symphony-alpha",
+        repo: "closedloop-ai/closedloop-ai",
       })
-    ).toBe("closedloop-ai/symphony-alpha");
+    ).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("never renders a bare slash — the reported FEA-3780 symptom", () => {
@@ -98,7 +98,7 @@ describe("session repository identity (FEA-3780)", () => {
     ["a gitolite remote", "~user/repo"],
     ["a non-ASCII self-hosted owner", "Grüne/repo"],
     ["a deeper self-hosted path", "group/subgroup/repo"],
-    ["a single-segment name", "symphony-alpha"],
+    ["a single-segment name", "closedloop-ai"],
   ])("renders %s rather than claiming Unknown", (_label, value) => {
     expect(resolveSessionRepositoryLabel({ repositoryFullName: value })).toBe(
       value
@@ -118,8 +118,8 @@ describe("session repository identity (FEA-3780)", () => {
 
 describe("toGitHubRepoPath", () => {
   it("accepts a github-shaped owner/repo", () => {
-    expect(toGitHubRepoPath("closedloop-ai/symphony-alpha")).toBe(
-      "closedloop-ai/symphony-alpha"
+    expect(toGitHubRepoPath("closedloop-ai/closedloop-ai")).toBe(
+      "closedloop-ai/closedloop-ai"
     );
     expect(toGitHubRepoPath("  Owner/Repo.js  ")).toBe("Owner/Repo.js");
   });
@@ -131,7 +131,7 @@ describe("toGitHubRepoPath", () => {
     ["a gitolite remote", "~user/repo"],
     ["a non-ASCII owner", "Grüne/repo"],
     ["a three-segment path", "group/subgroup/repo"],
-    ["a single segment", "symphony-alpha"],
+    ["a single segment", "closedloop-ai"],
   ])("rejects %s — it cannot become a github.com URL", (_label, value) => {
     // Stricter than the display label on purpose: these are legitimate repo
     // LABELS (covered above) but would build a broken github.com link.
@@ -147,11 +147,11 @@ describe("resolveSessionRepositoryDisplay (ISS-4996)", () => {
   it("resolves a real remote", () => {
     expect(
       resolveSessionRepositoryDisplay({
-        repositoryFullName: "closedloop-ai/symphony-alpha",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       })
     ).toEqual({
       kind: SessionRepositoryDisplayKind.Resolved,
-      label: "closedloop-ai/symphony-alpha",
+      label: "closedloop-ai/closedloop-ai",
     });
   });
 

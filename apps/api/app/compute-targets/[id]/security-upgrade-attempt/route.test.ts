@@ -1,5 +1,10 @@
 import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  stubTrustedOriginEnv,
+  TRUSTED_APP_ORIGIN,
+  UNTRUSTED_ORIGIN,
+} from "@/__tests__/utils/trusted-origin.test-helpers";
 
 const mocks = vi.hoisted(() => ({
   resolveSessionUser: vi.fn(),
@@ -13,11 +18,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/auth/session-user", () => ({
   resolveSessionUser: mocks.resolveSessionUser,
-}));
-
-vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
-  canonicalizeTrustedOrigin: (origin: string) =>
-    origin.startsWith("https://") ? origin : null,
 }));
 
 vi.mock("@/app/desktop/onboarding-attempt/service", () => ({
@@ -71,6 +71,7 @@ function request(body: unknown): Request {
 describe("POST /compute-targets/:id/security-upgrade-attempt", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubTrustedOriginEnv();
     mocks.resolveSessionUser.mockResolvedValue({
       clerkUserId: "clerk-user-1",
       user: {
@@ -92,18 +93,59 @@ describe("POST /compute-targets/:id/security-upgrade-attempt", () => {
       params: {},
       streaming: false,
     });
-    mocks.dispatchRelayCommandToRelay.mockResolvedValue(true);
+    // `dispatchRelayCommandToRelay` resolves a `RelayDispatchResult`, and the
+    // route branches on `.delivered`; a bare `true` reads as undelivered.
+    mocks.dispatchRelayCommandToRelay.mockResolvedValue({ delivered: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects a non-allowlisted webAppOrigin before the target is ever looked up", async () => {
+    // This route answers 422 TARGET_NOT_UPGRADEABLE from two places: a body
+    // that fails schema validation, and a non-allowlisted origin. So status
+    // alone proves nothing. Here the body parses, and the origin guard runs
+    // before the target lookup — so `findOwnedById` never being called is what
+    // pins the rejection to the allowlist. Drop the canonicalizeTrustedOrigin
+    // call and the request proceeds to look up the target and mint an attempt.
+    const response = await POST(request({ webAppOrigin: UNTRUSTED_ORIGIN }), {
+      params: Promise.resolve({ id: "target-1" }),
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      code: "TARGET_NOT_UPGRADEABLE",
+      retryable: false,
+    });
+    expect(mocks.findOwnedById).not.toHaveBeenCalled();
+    expect(mocks.createAttempt).not.toHaveBeenCalled();
+    expect(mocks.createCommand).not.toHaveBeenCalled();
+    expect(mocks.dispatchRelayCommandToRelay).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the upgrade command for an allowlisted webAppOrigin", async () => {
+    // The positive half of the guard: the same request shape with an
+    // allowlisted origin reaches the target lookup and dispatches, so the
+    // rejection above is attributable to the origin and nothing else.
+    const response = await POST(request({ webAppOrigin: TRUSTED_APP_ORIGIN }), {
+      params: Promise.resolve({ id: "target-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mocks.findOwnedById).toHaveBeenCalled();
+    expect(mocks.createAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ webAppOrigin: TRUSTED_APP_ORIGIN })
+    );
+    expect(mocks.dispatchRelayCommandToRelay).toHaveBeenCalled();
   });
 
   it("returns a retryable contract error when attempt persistence fails", async () => {
     mocks.createAttempt.mockRejectedValue(new Error("database unavailable"));
 
-    const response = await POST(
-      request({ webAppOrigin: "https://app.closedloop.ai" }),
-      {
-        params: Promise.resolve({ id: "target-1" }),
-      }
-    );
+    const response = await POST(request({ webAppOrigin: TRUSTED_APP_ORIGIN }), {
+      params: Promise.resolve({ id: "target-1" }),
+    });
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({

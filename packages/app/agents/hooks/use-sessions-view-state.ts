@@ -1,33 +1,53 @@
 "use client";
 
-import { useCallback } from "react";
+import { GridPreferenceGridKey } from "@repo/api/src/types/grid-preferences";
+import { useCallback, useMemo } from "react";
 import { z } from "zod";
-import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
+import { isListCustomFieldWidthColumnId } from "../../custom-fields/lib/list-custom-field-columns";
 import {
   type RestoredTableView,
   usePersistedTableViewState,
 } from "../../shared/hooks/use-persisted-table-view-state";
-import { SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY } from "../../shared/lib/feature-flags";
-import type { DateRange } from "../../shared/lib/format-utils";
+import {
+  DATE_RANGES,
+  type DateRange,
+  DEFAULT_DATE_RANGE,
+} from "../../shared/lib/format-utils";
+import {
+  advanceViewStateVersions,
+  legacyViewStateVersions,
+  PERSISTED_COLUMN_WIDTHS_SCHEMA,
+  PERSISTED_PAGE_SIZE_SCHEMA,
+  PERSISTED_STRING_ARRAY_SCHEMA,
+  PERSISTED_VERSION_MARKER_SCHEMA,
+  PERSISTED_VIEW_STATE_VERSIONS_SCHEMA,
+  persistedEnumValues,
+  resolveViewStateVersions,
+  VIEW_STATE_AXIS_UNUSED,
+  ViewStateAxis,
+  type ViewStateLegacyMirrors,
+  type ViewStateVersions,
+  viewStateVersionOf,
+} from "../../shared/lib/view-state-axes";
 import { coerceSessionGroupBy, SessionGroupBy } from "../lib/session-grouping";
 import {
   type SessionSortDir,
   type SessionSortKey,
+  type SessionSortRule,
   SessionSortDir as SortDir,
   SessionSortKey as SortKey,
 } from "../lib/session-sort-group";
+import { selectOfferableSessionColumns } from "../lib/sessions-column-visibility";
 import {
   migrateSavedColumnOrder,
   migrateSavedHiddenColumns,
   SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
-  SESSIONS_SAVED_VIEW_UNVERSIONED,
   SESSIONS_SAVED_VIEW_VERSION,
 } from "../lib/sessions-saved-view-migration";
 import {
   normalizeSessionColumnId,
   SESSIONS_AUTONOMY_COLUMN_ID,
   SESSIONS_COLUMN_SPECS,
-  SESSIONS_COLUMN_WIDTH_PX,
   SESSIONS_DATA_COLUMN_ORDER,
   SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS,
   SESSIONS_ISSUES_COLUMN_ID,
@@ -37,8 +57,8 @@ import {
   SESSIONS_UPDATED_COLUMN_ID,
   type SessionsColumnGateState,
   type SessionsColumnId,
-  selectOfferableSessionColumns,
 } from "../lib/sessions-table-columns";
+import { TOTAL_ESTIMATED_COST_SESSIONS_COLUMN_WIDTH_PX } from "../lib/sessions-total-estimated-cost-columns";
 
 /**
  * Toggleable data columns for the Sessions table (the Name lead is always shown;
@@ -54,10 +74,10 @@ import {
  *
  * Deriving makes the menu's ORDER the table's declared order by construction, so
  * a freshly-loaded table and its View menu cannot disagree. The old caveat still
- * applies and is unchanged by this: `sessions-toolbar` renders this list without
- * the user's persisted `columnOrder`, so after someone drag-reorders a header
- * (FEA-4021) the table moves and the menu does not. Default-state agreement is
- * the guarantee; tracking a customised order is not.
+ * applies and is unchanged by this: a host that renders this list without the
+ * user's persisted `columnOrder` leaves the menu behind after someone
+ * drag-reorders a header (FEA-4021) — the table moves and the menu does not.
+ * Default-state agreement is the guarantee; tracking a customised order is not.
  *
  * Columns that ship hidden stay in this list — hiding a column by default must
  * never make it unreachable.
@@ -119,89 +139,115 @@ const SESSIONS_ORDERABLE_COLUMN_IDS: readonly string[] = [
   SESSIONS_AUTONOMY_COLUMN_ID,
 ];
 
-const SORT_KEYS = Object.values(SortKey) as [
-  SessionSortKey,
-  ...SessionSortKey[],
-];
-const SORT_DIRS = Object.values(SortDir) as [
-  SessionSortDir,
-  ...SessionSortDir[],
-];
-const GROUP_BY_VALUES = Object.values(SessionGroupBy) as [
-  SessionGroupBy,
-  ...SessionGroupBy[],
-];
+const SORT_KEYS = persistedEnumValues(SortKey);
+const SORT_DIRS = persistedEnumValues(SortDir);
+const GROUP_BY_VALUES = persistedEnumValues(SessionGroupBy);
 
-/**
- * The default Sessions time window for both persisted-view surfaces (web
- * `/{org}/sessions` and desktop). Exported as the SSOT the honest empty state
- * compares the active window against to tell a narrowed filter from the default
- * (review cid 3653717604), so no surface re-hardcodes the literal.
- */
-export const DEFAULT_SESSIONS_DATE_RANGE: DateRange = "7d";
+const secondarySortSchema = z.object({
+  direction: z.enum(SORT_DIRS),
+  // ISS-9447 M3: normalized through the same rename map the column axes use.
+  // A secondary rule naming a renamed column is a stored SORT id, and an
+  // unmapped one fails the closed enum, which drops the WHOLE rule list.
+  fieldId: z.preprocess(normalizeStoredSortKey, z.enum(SORT_KEYS)),
+});
 
 const savedViewSchema = z.object({
   // Null = no explicit sort: queries omit sortBy so the server uses its default
   // order (and the desktop local source keeps its fast paginated path).
-  sortKey: z.enum(SORT_KEYS).nullable().default(null),
+  //
+  // ISS-9447 M3: the stored id is normalized BEFORE the closed enum runs, which
+  // is the only order that works — `z.enum` rejects a renamed id, and a rejected
+  // `sortKey` fails the whole object parse and discards the reader's columns,
+  // window and grouping along with their sort. Normalizing first fixes that
+  // without widening the enum, which a `.catch` would have done permanently.
+  sortKey: z
+    .preprocess(normalizeStoredSortKey, z.enum(SORT_KEYS).nullable())
+    .default(null),
   sortDir: z.enum(SORT_DIRS),
-  // Time window for the list + summary metrics. Defaults to
-  // DEFAULT_SESSIONS_DATE_RANGE (the SSOT the honest empty state compares the
-  // active window against to tell a narrowed filter from the default).
-  dateRange: z
-    .enum(["7d", "30d", "90d", "all"])
-    .default(DEFAULT_SESSIONS_DATE_RANGE),
+  /**
+   * ISS-8335: the sort rules AFTER `sortKey`/`sortDir`, in priority order.
+   *
+   * The v2 toolbar stacks rules and this view had one slot, so the rest lived in
+   * host-component state, reached no query, and reordered nothing. They are
+   * persisted here for the same reason the primary is — a rule the reader can
+   * see in the toolbar has to be a rule the next read applies.
+   *
+   * Entries are validated against the SAME closed `SORT_KEYS`/`SORT_DIRS` the
+   * primary uses, and a malformed or unknown entry drops the WHOLE list back to
+   * empty rather than the view: the fields are optional with a `[]` default, so
+   * a view written before this existed restores as "no secondary rules", which
+   * is exactly what it meant.
+   */
+  secondarySorts: z
+    .preprocess(
+      (value) => (Array.isArray(value) ? value : []),
+      z.array(secondarySortSchema).catch([])
+    )
+    .default([]),
+  // Time window for the list + summary metrics. Defaults to the shared
+  // DEFAULT_DATE_RANGE (the SSOT the honest empty state compares the active
+  // window against to tell a narrowed filter from the default).
+  dateRange: z.enum(DATE_RANGES).default(DEFAULT_DATE_RANGE),
   // ISS-5315: persisted Group-by dimension. An unknown/legacy value degrades to
   // "none" rather than failing the whole view parse.
   groupBy: z
     .preprocess((value) => coerceSessionGroupBy(value), z.enum(GROUP_BY_VALUES))
     .default(SessionGroupBy.None),
-  hiddenColumns: z
-    .preprocess(
-      (value) =>
-        Array.isArray(value)
-          ? value.filter((item) => typeof item === "string")
-          : [],
-      z.array(z.string())
-    )
-    .default([]),
+  hiddenColumns: PERSISTED_STRING_ARRAY_SCHEMA,
   // FEA-4021: persisted data-column order (ids). Same data-cleaning preprocess
   // as `hiddenColumns` — keep only the string entries; a missing/non-array
   // value degrades to the table's natural order.
-  columnOrder: z
-    .preprocess(
-      (value) =>
-        Array.isArray(value)
-          ? value.filter((item) => typeof item === "string")
-          : [],
-      z.array(z.string())
-    )
-    .default([]),
+  columnOrder: PERSISTED_STRING_ARRAY_SCHEMA,
+  // ISS-9447 M2 declared this so a width map a NEWER build persisted survived
+  // this build's mount: `usePersistedTableViewState` writes the whole record on
+  // restore, so an undeclared field is stripped by this `z.object` and then
+  // written back as `{}` — a whole axis destroyed by a reader who only opened
+  // the page. ISS-9567 gave the axis a READER as well as a keeper; Sessions has
+  // shipped drag-resizable headers throughout, which is what made the sentence
+  // this replaces wrong rather than merely narrow.
+  //
+  // ISS-10356 (Perrin, confirmed with Marisol, 2026-09-15): this axis carries
+  // `custom-field:*` widths beside the declared columns' — see
+  // `isWidthOnlyColumnId` below. Custom-field VISIBILITY is deliberately NOT in
+  // this record and stays host-local (FEA-4222): a saved view restores how a
+  // custom column the host shows LOOKS, never WHICH custom fields it shows.
+  columnWidths: PERSISTED_COLUMN_WIDTHS_SCHEMA,
   // ISS-4890: which one-time saved-view migrations have already been applied to
   // THIS stored view. Absent (every view written before ISS-4890) or malformed
   // degrades to `SESSIONS_SAVED_VIEW_UNVERSIONED`, which is exactly the "never
   // migrated" state — so an older or corrupt marker is safe rather than skipping
   // a repair. A version from a NEWER build is preserved verbatim (see
   // `migrateSavedColumnOrder`) instead of being rolled back.
-  savedViewVersion: z.preprocess(
-    (value) =>
-      typeof value === "number" && Number.isInteger(value) && value >= 0
-        ? value
-        : SESSIONS_SAVED_VIEW_UNVERSIONED,
-    z.number()
-  ),
+  //
+  // ISS-9447 M2: this and `hiddenColumnsVersion` are now the LEGACY MIRROR of
+  // `viewStateVersions` below. Still read (a view written before the envelope
+  // carries only these) and still written (a build without the envelope reads
+  // only these), which is what makes the new shape an additive superset.
+  savedViewVersion: PERSISTED_VERSION_MARKER_SCHEMA,
+  // FEA-4217: summary cards the reader has switched off in the toolbar's Options
+  // menu. Stored as the HIDDEN ids, the same direction `hiddenColumns` uses, so
+  // a card added in a later build is visible for a reader whose stored view
+  // predates it instead of silently missing until they reset. Same data-cleaning
+  // preprocess: keep only the string entries, degrade a missing/non-array value
+  // to "nothing hidden" rather than failing the whole view parse.
+  hiddenSummaryCards: PERSISTED_STRING_ARRAY_SCHEMA,
   // ISS-6005: which one-time HIDDEN-COLUMNS migrations have been applied to
   // this stored view. A separate marker from `savedViewVersion` because the
   // column-order migrations are flag-gated while this one runs for everyone —
   // see `SESSIONS_SAVED_VIEW_HIDDEN_VERSION`. Absent/malformed degrades to
   // unversioned ("never migrated"), the safe direction.
-  hiddenColumnsVersion: z.preprocess(
-    (value) =>
-      typeof value === "number" && Number.isInteger(value) && value >= 0
-        ? value
-        : SESSIONS_SAVED_VIEW_UNVERSIONED,
-    z.number()
-  ),
+  hiddenColumnsVersion: PERSISTED_VERSION_MARKER_SCHEMA,
+  // ISS-9447 M2: the canonical per-axis envelope. Laid OVER the two legacy
+  // markers above, so a record carrying only those still restores every stamp
+  // and a record carrying both takes the envelope's answer.
+  viewStateVersions: PERSISTED_VIEW_STATE_VERSIONS_SCHEMA,
+  // ISS-9692: persisted rows-per-page. A malformed or non-positive value
+  // degrades to `undefined` ("nothing stored", so the surface default stands)
+  // rather than failing the whole view parse and costing the reader their sort
+  // and columns too. It is NOT clamped to the ladder here — the ladder moves
+  // with a feature flag, so the raw choice is kept and resolved at render
+  // (`useTablePageSizeOptions`).
+  pageSize: PERSISTED_PAGE_SIZE_SCHEMA,
 });
 
 // Feature-specific "extra" dimensions persisted alongside sort + columns.
@@ -213,39 +259,70 @@ const savedViewSchema = z.object({
 type SessionsExtras = {
   dateRange: DateRange;
   groupBy: SessionGroupBy;
+  /** ISS-8335: the sort rules after the primary — see the schema field above. */
+  secondarySorts: readonly SessionSortRule[];
+  /**
+   * ISS-9447 M2: the canonical per-axis stamps. The two scalars below are its
+   * LEGACY MIRROR, derived from it by `advanceViewStateVersions` at the one
+   * place the view is assembled, so the envelope and the fields beside it
+   * cannot drift — and required rather than optional, for the reason
+   * `SESSIONS_VIEW_STATE_MIRRORS` gives.
+   */
+  viewStateVersions: ViewStateVersions;
   savedViewVersion: number;
   /** ISS-6005: hidden-columns migration marker — see the schema field above. */
   hiddenColumnsVersion: number;
+  /** FEA-4217: switched-off summary cards — see the schema field above. */
+  hiddenSummaryCards: readonly string[];
 };
+
+/**
+ * ISS-9447: which extras field mirrors each axis, and the reason the mirror is
+ * mandatory rather than a courtesy.
+ *
+ * A build deployed before the envelope existed parses this view with a plain
+ * `z.object`, which strips `viewStateVersions`, and re-serializes a fixed field
+ * set that never names it — so the envelope is DELETED by any round trip
+ * through such a build, and nothing we do here can change that. The loose
+ * mirror is the only channel that survives it. `ViewStateLegacyMirrors` makes
+ * that structural: it is exhaustive over `ViewStateAxis`, so a new axis fails
+ * `tsc` here until it names a real `SessionsExtras` field, and
+ * `advanceViewStateVersions` will not stamp an axis this table leaves unused.
+ * An envelope-only axis therefore cannot ship — which matters because it would
+ * come back reading as never-migrated and re-run every step, re-hiding a column
+ * the reader deliberately showed (ISS-6065) by a third route.
+ */
+const SESSIONS_VIEW_STATE_MIRRORS = {
+  [ViewStateAxis.ColumnOrder]: "savedViewVersion",
+  [ViewStateAxis.HiddenColumns]: "hiddenColumnsVersion",
+  // Sessions persists no sort migration, so it has no marker to mirror.
+  [ViewStateAxis.Sort]: VIEW_STATE_AXIS_UNUSED,
+} as const satisfies ViewStateLegacyMirrors<SessionsExtras>;
+
+/** The stamps a NEVER-SAVED view starts at: every repair this build ships is moot. */
+const DEFAULT_SESSIONS_AXIS_VERSIONS = {
+  [ViewStateAxis.ColumnOrder]: SESSIONS_SAVED_VIEW_VERSION,
+  [ViewStateAxis.HiddenColumns]: SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
+} as const;
+
+const DEFAULT_SESSIONS_VERSION_STATE = advanceViewStateVersions(
+  SESSIONS_VIEW_STATE_MIRRORS,
+  {},
+  DEFAULT_SESSIONS_AXIS_VERSIONS
+);
 
 // Stable module-level reference so the shared hook's restore effect (which takes
 // `defaultExtras` as a dependency) does not see a fresh object every render.
 const DEFAULT_SESSIONS_EXTRAS: SessionsExtras = {
-  dateRange: DEFAULT_SESSIONS_DATE_RANGE,
+  dateRange: DEFAULT_DATE_RANGE,
   groupBy: SessionGroupBy.None,
-  savedViewVersion: SESSIONS_SAVED_VIEW_VERSION,
-  hiddenColumnsVersion: SESSIONS_SAVED_VIEW_HIDDEN_VERSION,
+  secondarySorts: [],
+  viewStateVersions: DEFAULT_SESSIONS_VERSION_STATE.versions,
+  ...DEFAULT_SESSIONS_VERSION_STATE.mirrors,
+  hiddenSummaryCards: [],
 };
 
-function parseSavedView(
-  raw: unknown
-): RestoredTableView<
-  SessionSortKey | null,
-  SessionSortDir,
-  SessionsExtras
-> | null {
-  return parseSavedViewInternal(raw, false);
-}
-
-/**
- * ISS-4890: the same parser, with the one-time saved-view migrations applied on
- * the way out — used only while the fold-legibility flag is on.
- *
- * Selected as a whole function (rather than the migration being a branch inside
- * one parser) because the shared persistence hook takes `parse` as a dependency
- * and expects a stable module-level reference; two module-level functions swap
- * cleanly, a closure over the flag would not.
- */
+/** ISS-4890: applies the one-time saved-view migrations on the way out. */
 function parseSavedViewWithMigrations(
   raw: unknown
 ): RestoredTableView<
@@ -253,12 +330,11 @@ function parseSavedViewWithMigrations(
   SessionSortDir,
   SessionsExtras
 > | null {
-  return parseSavedViewInternal(raw, true);
+  return parseSavedViewInternal(raw);
 }
 
 function parseSavedViewInternal(
-  raw: unknown,
-  applyMigrations: boolean
+  raw: unknown
 ): RestoredTableView<
   SessionSortKey | null,
   SessionSortDir,
@@ -273,11 +349,28 @@ function parseSavedViewInternal(
     sortDir,
     hiddenColumns: storedHiddenColumns,
     columnOrder: storedColumnOrder,
+    columnWidths,
     dateRange,
     groupBy,
     savedViewVersion,
     hiddenColumnsVersion,
+    viewStateVersions,
+    hiddenSummaryCards,
+    secondarySorts,
+    pageSize,
   } = result.data;
+  // ISS-9447 M2: the legacy marker names are mapped to axes by THIS surface's
+  // table, not in the shared module. `savedViewVersion` means the COLUMN-ORDER
+  // axis on this surface and the SORT axis on Agent Components — the two do not
+  // collide only because the surfaces use different storage keys — so one table
+  // naming both would silently stamp one axis with the other's repair.
+  const storedVersions = resolveViewStateVersions(
+    legacyViewStateVersions(SESSIONS_VIEW_STATE_MIRRORS, {
+      hiddenColumnsVersion,
+      savedViewVersion,
+    }),
+    viewStateVersions
+  );
   // ISS-5770: THE restore boundary — every persisted column id enters the app
   // through here, so this is the one place the `branch` → `branches` rename has
   // to be absorbed. Applied to BOTH arrays, before anything downstream reads
@@ -292,52 +385,64 @@ function parseSavedViewInternal(
   // with the new spelling is untouched.
   const hiddenColumns = storedHiddenColumns.map(normalizeSessionColumnId);
   const columnOrder = storedColumnOrder.map(normalizeSessionColumnId);
-  // ISS-6005: the hidden-columns migration runs UNCONDITIONALLY — in BOTH
-  // parsers, unlike the flag-gated column-order migration below. The defect it
-  // repairs (a persisted view rendering a column this build ships default-hidden
-  // — PR/Merge/Started on views predating ISS-5315, and `Updated` / `Projects` /
-  // `Issues` on any view that predates their addition) must not depend on an
-  // unrelated flag resolving on. Version-stamped via its own marker so a user
-  // who re-shows a column afterwards is not fought on the next load; the
-  // shared hook re-persists the migrated view after restore, which is what
+  // ISS-6005: the hidden-columns migration is version-stamped via its own marker
+  // so a user who re-shows a column afterwards is not fought on the next load;
+  // the shared hook re-persists the migrated view after restore, which is what
   // advances the stored marker.
   const migratedHidden = migrateSavedHiddenColumns(
     hiddenColumns,
-    hiddenColumnsVersion
+    viewStateVersionOf(storedVersions, ViewStateAxis.HiddenColumns)
   );
-  // Flag OFF: the stored order and its version are returned untouched, so
-  // nothing is rewritten and the next load still sees an unmigrated view.
-  const migrated = applyMigrations
-    ? migrateSavedColumnOrder(
-        columnOrder,
-        SESSIONS_DATA_COLUMN_ORDER,
-        savedViewVersion,
-        {
-          // ISS-4890 (wongk + stage review): the relocation is bounded by the
-          // legible-width budget, not only by a canonical predecessor — a
-          // predecessor the user dragged past the fold would otherwise drag Cost
-          // past it too, hiding a figure that was legible and then stamping the
-          // view so it is never revisited. THIS view's hidden columns are passed
-          // because a hidden column renders no track and so costs nothing.
-          budgetPx: SESSIONS_LEGIBLE_COLUMN_BUDGET_PX,
-          // The POST-migration hidden set: a column the hidden migration just
-          // hid renders no track, so the budget arithmetic must not charge it.
-          hiddenColumnIds: new Set(migratedHidden.hiddenColumns),
-          leadWidthPx: SESSIONS_LEAD_COLUMN_MIN_WIDTH_PX,
-          widthsPx: SESSIONS_COLUMN_WIDTH_PX,
-        }
-      )
-    : { columnOrder, version: savedViewVersion };
+  const migrated = migrateSavedColumnOrder(
+    columnOrder,
+    SESSIONS_DATA_COLUMN_ORDER,
+    viewStateVersionOf(storedVersions, ViewStateAxis.ColumnOrder),
+    {
+      // ISS-4890 (whitlockk + stage review): the relocation is bounded by the
+      // legible-width budget, not only by a canonical predecessor — a
+      // predecessor the user dragged past the fold would otherwise drag Cost
+      // past it too, hiding a figure that was legible and then stamping the
+      // view so it is never revisited. THIS view's hidden columns are passed
+      // because a hidden column renders no track and so costs nothing.
+      budgetPx: SESSIONS_LEGIBLE_COLUMN_BUDGET_PX,
+      // The POST-migration hidden set: a column the hidden migration just hid
+      // renders no track, so the budget arithmetic must not charge it.
+      hiddenColumnIds: new Set(migratedHidden.hiddenColumns),
+      leadWidthPx: SESSIONS_LEAD_COLUMN_MIN_WIDTH_PX,
+      // The map `SessionsTable` actually DRAWS, not the spec declaration.
+      // ISS-10636 widened the Cost track to 168px for the one dollar phrase; a
+      // budget charging the spec's 124 calls a placement legible that ends 44px
+      // past the fold, and then stamps the view so it is never revisited
+      // (tamsinb review).
+      widthsPx: TOTAL_ESTIMATED_COST_SESSIONS_COLUMN_WIDTH_PX,
+    }
+  );
+  // The envelope the migrated view is re-persisted with: every stamp the record
+  // arrived with, including one for an axis only a NEWER build names, with the
+  // two axes this build just ran laid over it — plus the legacy mirrors derived
+  // from the same value, so the envelope and the fields beside it cannot drift.
+  const advanced = advanceViewStateVersions(
+    SESSIONS_VIEW_STATE_MIRRORS,
+    storedVersions,
+    {
+      [ViewStateAxis.ColumnOrder]: migrated.version,
+      [ViewStateAxis.HiddenColumns]: migratedHidden.version,
+    }
+  );
   return {
     sortKey,
     sortDir,
     hiddenColumns: migratedHidden.hiddenColumns,
     columnOrder: migrated.columnOrder,
+    columnWidths,
+    pageSize,
     extras: {
       dateRange,
       groupBy,
-      savedViewVersion: migrated.version,
-      hiddenColumnsVersion: migratedHidden.version,
+      viewStateVersions: advanced.versions,
+      ...advanced.mirrors,
+      hiddenSummaryCards,
+      secondarySorts,
     },
   };
 }
@@ -353,29 +458,19 @@ function parseSavedViewInternal(
  * fail-soft.
  */
 export function useSessionsViewState(persistKey?: string) {
-  // ISS-4890: gates the one-time relocation of a persisted `columnOrder`'s Cost
-  // column to its canonical pre-fold slot. Read OPTIONALLY so a mount without a
-  // flag provider (Storybook, hook tests) resolves OFF and restores the stored
-  // view verbatim.
-  //
-  // A LATE resolve applies mid-session, not on the next load (wongk review): the
-  // gate picks the parser below, and `usePersistedTableViewState` re-runs its
-  // restore whenever the parser identity changes, so the false→true flip
-  // re-reads the stored view through the migrating parser. That matters most on
-  // Desktop, where every Labs key starts `false` and hydrates asynchronously
-  // while Sessions stays mounted — a restore-wins race would otherwise leave the
-  // view unmigrated on every single launch.
-  const foldLegibilityEnabled = useFeatureFlagEnabledOptional(
-    SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY
-  );
   const {
     sortKey,
     sortDir,
     extras,
     setExtras,
+    isViewReady,
     visibleColumns,
     columnOrder,
     setColumnOrder,
+    columnWidths,
+    setColumnWidth,
+    pageSize,
+    setPageSize,
     setSort,
     toggleSortDir,
     toggleColumn,
@@ -388,11 +483,19 @@ export function useSessionsViewState(persistKey?: string) {
   >({
     persistKey,
     keyPrefix: "sessions:saved-view:",
+    // ISS-9450: the account-level copy of this record. Inert until the
+    // closed-by-default gate inside `useGridPreferenceRemote` opens.
+    gridKey: GridPreferenceGridKey.Sessions,
     // Includes the always-shown, non-toggleable `autonomy` column so a persisted
     // reorder that carries it survives the shared setter's valid-id filter
     // (FEA-4150). The columns menu is built separately from
     // SESSIONS_TOGGLEABLE_COLUMNS, so autonomy stays out of the show/hide menu.
     columnIds: SESSIONS_ORDERABLE_COLUMN_IDS,
+    // ISS-10356: widths only — see `columnWidths` in the schema above. A
+    // custom-field id stays out of `columnIds`, so the record never restores it
+    // into the visible set; `toSessionsHostViewState` keeps it out of the
+    // hidden one.
+    isWidthOnlyColumnId: isListCustomFieldWidthColumnId,
     // PLN-1034: default to most-recent genuine activity, descending. A persisted
     // view still wins; a persisted null (older saved view) also resolves here.
     // ISS-5315: PR / Merge / Started ship hidden. Only seeds a never-saved view
@@ -402,10 +505,14 @@ export function useSessionsViewState(persistKey?: string) {
     defaultSortDir: SortDir.Desc,
     sortDirs: [SortDir.Asc, SortDir.Desc],
     defaultExtras: DEFAULT_SESSIONS_EXTRAS,
-    parse: foldLegibilityEnabled
-      ? parseSavedViewWithMigrations
-      : parseSavedView,
+    resetColumnVersions: resetSessionsColumnVersions,
+    parse: parseSavedViewWithMigrations,
   });
+
+  const hiddenSummaryCards = useMemo(
+    () => new Set(extras.hiddenSummaryCards),
+    [extras.hiddenSummaryCards]
+  );
 
   const setDateRange = useCallback(
     (dateRange: DateRange) => setExtras((prev) => ({ ...prev, dateRange })),
@@ -418,9 +525,31 @@ export function useSessionsViewState(persistKey?: string) {
   );
 
   /**
+   * FEA-4217: flip one summary card's visibility.
+   *
+   * Reported one id at a time rather than as a whole replacement set, matching
+   * `toggleColumn` and the design-system Options menu's own contract — a caller
+   * that had to hand back a Set would have to hold visibility in local state,
+   * which is exactly what persisting it here is meant to avoid.
+   */
+  const toggleSummaryCard = useCallback(
+    (cardId: string) =>
+      setExtras((prev) => {
+        const next = new Set(prev.hiddenSummaryCards);
+        if (next.has(cardId)) {
+          next.delete(cardId);
+        } else {
+          next.add(cardId);
+        }
+        return { ...prev, hiddenSummaryCards: [...next] };
+      }),
+    [setExtras]
+  );
+
+  /**
    * The View menu's "Reset view" — back to how the surface ships.
    *
-   * #4480 (wongk): that has to include the Group-by dimension. It is persisted
+   * #4480 (whitlockk): that has to include the Group-by dimension. It is persisted
    * in the same saved view, chosen from the same menu, and sits directly above
    * the control that resets it, so a reset that restored the columns and left
    * the rows banded was not a reset. `resetColumns` alone (the shared hook's
@@ -428,18 +557,73 @@ export function useSessionsViewState(persistKey?: string) {
    */
   const resetView = useCallback(() => {
     resetColumns();
-    setGroupBy(DEFAULT_SESSIONS_EXTRAS.groupBy);
-  }, [resetColumns, setGroupBy]);
+    // FEA-4217: for the same reason Group-by is here. A hidden summary card is
+    // persisted in the same saved view and switched off from the same menu, so a
+    // "Reset view" that restored the columns and left the strip missing two
+    // cards would not be a reset.
+    setExtras((prev) => ({
+      ...prev,
+      groupBy: DEFAULT_SESSIONS_EXTRAS.groupBy,
+      hiddenSummaryCards: DEFAULT_SESSIONS_EXTRAS.hiddenSummaryCards,
+      // ISS-8335: for the same reason as the two above. A secondary sort rule is
+      // persisted in this same view and set from the same toolbar, so a "Reset
+      // view" that restored the columns and left the list still ordered by a
+      // second rule would not be a reset.
+      secondarySorts: DEFAULT_SESSIONS_EXTRAS.secondarySorts,
+    }));
+  }, [resetColumns, setExtras]);
+
+  /**
+   * ISS-8335: replace the sort rules AFTER the primary.
+   *
+   * A sibling of `setSort` rather than a widening of it, because the two write
+   * different stores — the primary is the shared hook's own `sortKey`/`sortDir`,
+   * the rest is this surface's `extras`. A caller that moves the primary and the
+   * tail in one gesture calls both; they land in the same render.
+   */
+  const setSecondarySorts = useCallback(
+    (next: readonly SessionSortRule[]) => {
+      setExtras((prev) => ({ ...prev, secondarySorts: next }));
+    },
+    [setExtras]
+  );
 
   return {
     sortKey,
     sortDir,
     dateRange: extras.dateRange,
+    // ISS-7250: `dateRange` above is still the DEFAULT until the persisted view
+    // restores (a post-mount effect by design, FEA-4125). A consumer reporting
+    // the window — to telemetry or to a query key — needs to know when it has
+    // stopped being a guess, exactly as `useBranchViewState` re-exports this.
+    //
+    // ISS-6382 (follow-up to ISS-4655): `sortKey`/`sortDir` land in that query
+    // key too, so surfaces gate their READ on this and paginate once, against
+    // the view the user actually keeps. Fails OPEN after
+    // `VIEW_RESTORE_AUTH_DEADLINE_MS`; see the shared hook.
+    isViewReady,
     groupBy: extras.groupBy,
     setGroupBy,
+    // FEA-4217: a Set, not the stored array, so the strip and the menu both ask
+    // membership rather than each building their own lookup and drifting on how
+    // an unknown id is treated. Memoized on the stored array so an unrelated
+    // change in this hook does not hand every consumer a fresh identity.
+    hiddenSummaryCards,
+    toggleSummaryCard,
     visibleColumns,
     columnOrder,
     setColumnOrder,
+    // ISS-9567: the record has carried `columnWidths` since ISS-9447 M2; handing
+    // it back is what lets a Sessions resize outlive its mount.
+    columnWidths,
+    setColumnWidth,
+    // ISS-9692: the rows-per-page the reader last chose, restored from the same
+    // saved view the sort and columns come from. RAW — not clamped to the ladder
+    // in force, which is `useTablePageSizeOptions`' job at the render site.
+    pageSize,
+    setPageSize,
+    secondarySorts: extras.secondarySorts,
+    setSecondarySorts,
     setSort,
     toggleSortDir,
     setDateRange,
@@ -515,7 +699,7 @@ export const SESSIONS_GLANCEABLE_COLUMNS: Set<string> = new Set(
  * A function rather than reading {@link SESSIONS_TOGGLEABLE_COLUMNS} at the call
  * site so the menu and the table cannot drift.
  *
- * ISS-5770 review (codex + wongk): it takes the SAME `enabledGates` /
+ * ISS-5770 review (codex + whitlockk): it takes the SAME `enabledGates` /
  * `hostSuppliedColumnIds` pair `SessionsTable` hands
  * {@link resolveRenderedSessionColumnIds}, and answers with the SAME
  * {@link selectOfferableSessionColumns} derivation, reading each column's `gate`
@@ -540,4 +724,50 @@ export function sessionsToggleableColumns({
     enabledGates,
     ...(hostSuppliedColumnIds ? { hostSuppliedColumnIds } : {}),
   }).map((column) => ({ id: column.id, label: column.label }));
+}
+
+/**
+ * ISS-9447 M3: one stored SORT id, resolved through the column-rename map.
+ *
+ * The map is keyed by COLUMN id, and every Sessions sort key is its column's id
+ * — with one exception, Owner, whose column is `owner` and whose sort key is
+ * `user` (`columnIdToSessionSortKey` bridges the two). So renaming Owner would
+ * need that bridge as well as this; renaming any other column is covered here.
+ *
+ * A non-string is returned untouched so `null` ("no explicit sort") and an
+ * absent key still reach the schema as themselves.
+ */
+function normalizeStoredSortKey(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  return normalizeSessionColumnId(value);
+}
+
+/**
+ * ISS-9447: the stamps a "Reset view" puts back, alongside the columns it just
+ * rewrote.
+ *
+ * A reset lands the reader on THIS build's default hidden set and natural order,
+ * so the two axes are, by definition, fully repaired at this build's versions.
+ * Leaving a newer build's stamp on that payload is the ISS-6065 defect by a
+ * second route: the newer build reads its own stamp, skips the step that hides
+ * the column it ships hidden, and renders it permanently. The stamp has to
+ * describe what is stored, and after a reset that is this build.
+ *
+ * The envelope is spread first so an axis only a NEWER build names keeps its
+ * stamp — the same version-skew rule the restore path follows. A reset of the
+ * column axes says nothing about anyone else's.
+ */
+function resetSessionsColumnVersions(extras: SessionsExtras): SessionsExtras {
+  const reset = advanceViewStateVersions(
+    SESSIONS_VIEW_STATE_MIRRORS,
+    extras.viewStateVersions,
+    DEFAULT_SESSIONS_AXIS_VERSIONS
+  );
+  return {
+    ...extras,
+    viewStateVersions: reset.versions,
+    ...reset.mirrors,
+  };
 }

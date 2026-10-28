@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     app: "app.ts",
+    "app-boot-failure-kind": "app-boot-failure-kind.ts",
     "app-exception-origin": "app-exception-origin.ts",
     attributes: "src/attributes.ts",
     "collector-tail-sampling-policy": "collector-tail-sampling-policy.ts",

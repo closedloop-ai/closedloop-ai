@@ -75,8 +75,8 @@ export function LostWorkPageClient() {
     (value) => value.lostSessions
   );
 
+  // plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate).
   return (
-    // plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate).
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <AnalyticsPageHeader
         onPeriodChange={setPeriod}

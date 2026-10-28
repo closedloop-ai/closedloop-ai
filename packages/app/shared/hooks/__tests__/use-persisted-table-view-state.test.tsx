@@ -3,96 +3,23 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthAdapterProvider } from "../../auth/provider";
 import { createStaticAuthAdapter } from "../../auth/static-auth-adapter";
+import { usePersistedTableViewState } from "../use-persisted-table-view-state";
+import { VIEW_RESTORE_AUTH_DEADLINE_MS } from "../use-table-view-storage-key";
 import {
-  type RestoredTableView,
-  usePersistedTableViewState,
-  VIEW_RESTORE_AUTH_DEADLINE_MS,
-} from "../use-persisted-table-view-state";
+  COLUMN_IDS,
+  type ColumnId,
+  type Extras,
+  parse,
+  render,
+  renderAsUser,
+  type SortDir,
+  type SortKey,
+  useTestView,
+} from "./persisted-table-view-state.test-support";
 
 afterEach(() => {
   localStorage.clear();
 });
-
-// A minimal concrete configuration to exercise the generic machinery in
-// isolation from any feature hook.
-type SortKey = "name" | "date";
-type SortDir = "asc" | "desc";
-type ColumnId = "a" | "b" | "c";
-type Extras = { window: "7d" | "30d"; revealed: boolean };
-
-const COLUMN_IDS: readonly ColumnId[] = ["a", "b", "c"];
-
-function parse(
-  raw: unknown
-): RestoredTableView<SortKey, SortDir, Extras> | null {
-  if (raw === null || typeof raw !== "object") {
-    return null;
-  }
-  const record = raw as Record<string, unknown>;
-  const sortKey = record.sortKey === "date" ? "date" : "name";
-  const sortDir = record.sortDir === "asc" ? "asc" : "desc";
-  const hiddenColumns = Array.isArray(record.hiddenColumns)
-    ? record.hiddenColumns.filter((id): id is string => typeof id === "string")
-    : [];
-  const columnOrder = Array.isArray(record.columnOrder)
-    ? record.columnOrder.filter((id): id is string => typeof id === "string")
-    : [];
-  const columnWidths =
-    record.columnWidths !== null &&
-    typeof record.columnWidths === "object" &&
-    !Array.isArray(record.columnWidths)
-      ? (record.columnWidths as Record<string, number>)
-      : {};
-  return {
-    sortKey,
-    sortDir,
-    hiddenColumns,
-    columnOrder,
-    columnWidths,
-    extras: {
-      window: record.window === "30d" ? "30d" : "7d",
-      revealed: record.revealed === true,
-    },
-  };
-}
-
-// The subject under test, declared once so every helper below drives the same
-// configuration and none can silently diverge from the others.
-function useTestView(persistKey?: string) {
-  return usePersistedTableViewState<SortKey, SortDir, ColumnId, Extras>({
-    persistKey,
-    keyPrefix: "test:view:",
-    columnIds: COLUMN_IDS,
-    defaultSortKey: "name",
-    defaultSortDir: "asc",
-    sortDirs: ["asc", "desc"],
-    defaultExtras: { window: "7d", revealed: false },
-    parse,
-  });
-}
-
-function render(persistKey?: string) {
-  return renderHook(() => useTestView(persistKey));
-}
-
-// Mount under a static auth adapter so the hook resolves a signed-in user and
-// namespaces its storage key per user (FEA-4168, wongk review). A `null` userId
-// models a signed-out surface; `isLoaded: false` models auth still hydrating,
-// the state a real Clerk mount passes through before it resolves.
-function renderAsUser(
-  userId: string | null,
-  persistKey: string | undefined = "web",
-  isLoaded = true
-) {
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <AuthAdapterProvider
-      adapter={createStaticAuthAdapter({ isLoaded, userId })}
-    >
-      {children}
-    </AuthAdapterProvider>
-  );
-  return renderHook(() => useTestView(persistKey), { wrapper });
-}
 
 describe("usePersistedTableViewState", () => {
   it("returns the configured defaults with all columns visible", () => {
@@ -566,6 +493,34 @@ function renderWithAuth(auth: { isLoaded: boolean }, persistKey?: string) {
   return renderHook(() => useTestView(persistKey), { wrapper });
 }
 
+// As `renderWithAuth`, but records the gate and the sort key on EVERY render
+// into `seen`. The pairing of the two is the contract ISS-8262 is about, and it
+// is only observable per-render: a settled-state assertion cannot tell an
+// always-correct gate from one that opened on the defaults first.
+function renderTracedWithAuth(
+  auth: { isLoaded: boolean },
+  seen: { ready: boolean; sortKey: SortKey }[]
+) {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <AuthAdapterProvider
+      adapter={createStaticAuthAdapter({
+        isLoaded: auth.isLoaded,
+        userId: "user_alice",
+      })}
+    >
+      {children}
+    </AuthAdapterProvider>
+  );
+  return renderHook(
+    () => {
+      const view = useTestView("web");
+      seen.push({ ready: view.isViewReady, sortKey: view.sortKey });
+      return view;
+    },
+    { wrapper }
+  );
+}
+
 /**
  * ISS-4655. `isViewReady` is what a surface gates its data request on, so these
  * assert the gate's two failure directions, not just its happy path: it must not
@@ -634,12 +589,280 @@ describe("usePersistedTableViewState / isViewReady", () => {
       act(() => vi.advanceTimersByTime(VIEW_RESTORE_AUTH_DEADLINE_MS));
 
       // Degrades to the pre-gate behavior — one read on the default window —
-      // rather than to a permanently pending query behind a skeleton. The saved
-      // view is still unreachable because the key needs a user id.
+      // rather than to a permanently pending query behind a skeleton. A view
+      // saved under a PER-USER key stays unreachable past the deadline: reaching
+      // it needs an id auth never delivered. ISS-8262 recovers the LEGACY key
+      // instead (below), which is the one an unidentified surface can name.
       expect(result.current.isViewReady).toBe(true);
       expect(result.current.extras.window).toBe("7d");
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * ISS-8262. The deadline above is a real safety net, but it used to pay for
+   * itself with the user's saved view: past it `storageKey` was still null, so
+   * the restore read NOTHING, committed the DEFAULTS, and `isViewReady` opened
+   * on them. The single read a stalled surface issues then paginated under the
+   * default sort while the saved view sat intact on disk, never overwritten
+   * (the persist effect is gated separately) and never applied.
+   *
+   * This is the desktop Sessions list's real failure: every desktop profile is
+   * signed out, so its saved view lives under exactly this legacy key.
+   */
+  it("restores the LEGACY saved view when auth never resolves (ISS-8262)", () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(
+        "test:view:web",
+        JSON.stringify({
+          sortKey: "date",
+          sortDir: "desc",
+          hiddenColumns: ["b"],
+          window: "30d",
+          revealed: true,
+        })
+      );
+
+      const { result } = renderWithAuth({ isLoaded: false }, "web");
+      // Before the deadline the gate is shut and the view is still the default:
+      // auth may yet hydrate and name a per-user key, so committing now would
+      // be committing to the wrong one.
+      expect(result.current.isViewReady).toBe(false);
+      expect(result.current.sortKey).toBe("name");
+
+      act(() => vi.advanceTimersByTime(VIEW_RESTORE_AUTH_DEADLINE_MS));
+
+      expect(result.current.isViewReady).toBe(true);
+      expect(result.current.sortKey).toBe("date");
+      expect(result.current.sortDir).toBe("desc");
+      expect(result.current.extras.window).toBe("30d");
+      expect(result.current.visibleColumns.has("b")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never opens the gate on the defaults while a legacy view is restorable (ISS-8262)", () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(
+        "test:view:web",
+        JSON.stringify({
+          sortKey: "date",
+          sortDir: "desc",
+          hiddenColumns: [],
+          window: "30d",
+          revealed: true,
+        })
+      );
+
+      // Every render the hook produces, not just the settled one. A consumer
+      // reads `isViewReady` on each of them, so a SINGLE render pairing an open
+      // gate with the default sort is the wasted first pagination — the bug —
+      // even when the view is correct by the time the test settles.
+      const seen: { ready: boolean; sortKey: SortKey }[] = [];
+      renderTracedWithAuth({ isLoaded: false }, seen);
+
+      act(() => vi.advanceTimersByTime(VIEW_RESTORE_AUTH_DEADLINE_MS));
+
+      const opened = seen.filter((frame) => frame.ready);
+      expect(opened.length).toBeGreaterThan(0);
+      for (const frame of opened) {
+        expect(frame.sortKey).toBe("date");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not PERSIST under the legacy key when auth never resolves (ISS-8262)", () => {
+    vi.useFakeTimers();
+    try {
+      const stored = JSON.stringify({
+        sortKey: "date",
+        sortDir: "desc",
+        hiddenColumns: [],
+        window: "30d",
+        revealed: true,
+      });
+      localStorage.setItem("test:view:web", stored);
+
+      const { result } = renderWithAuth({ isLoaded: false }, "web");
+      act(() => vi.advanceTimersByTime(VIEW_RESTORE_AUTH_DEADLINE_MS));
+      act(() => result.current.setSort("name", "asc"));
+
+      // FEA-4168's shadowing guard is about the WRITE, and the deadline read
+      // must not weaken it: a viewer auth never identified may read the
+      // un-namespaced view but may never overwrite it, because a signed-in user
+      // whose per-user key is empty migrates from this exact key.
+      expect(localStorage.getItem("test:view:web")).toBe(stored);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * ISS-8262 (codex review, PR #6123): the deadline read is a STAND-IN for an
+   * identity that has not arrived, never a latch. A stalled auth that later
+   * hydrates must supersede the un-namespaced view with the viewer's own — a
+   * legacy blob left on a shared profile by an earlier occupant may be on
+   * screen while nobody is identified, but it must not survive the moment
+   * somebody is.
+   *
+   * The three states are distinguishable on purpose: the DEFAULT hides nothing,
+   * the LEGACY view sorts by `date` and hides `a`, and Alice's own view sorts by
+   * `name` and hides `c`. So this cannot pass by landing on the defaults, and it
+   * cannot pass by the restore simply never re-running.
+   */
+  it("supersedes the deadline restore with the viewer's own view when auth resolves late (ISS-8262)", () => {
+    vi.useFakeTimers();
+    try {
+      const legacy = JSON.stringify({
+        sortKey: "date",
+        sortDir: "desc",
+        hiddenColumns: ["a"],
+        window: "30d",
+        revealed: true,
+      });
+      localStorage.setItem("test:view:web", legacy);
+      localStorage.setItem(
+        "test:view:web:u:user_alice",
+        JSON.stringify({
+          sortKey: "name",
+          sortDir: "asc",
+          hiddenColumns: ["c"],
+          window: "7d",
+          revealed: false,
+        })
+      );
+
+      let authLoaded = false;
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <AuthAdapterProvider
+          adapter={createStaticAuthAdapter({
+            isLoaded: authLoaded,
+            userId: authLoaded ? "user_alice" : null,
+          })}
+        >
+          {children}
+        </AuthAdapterProvider>
+      );
+      const { result, rerender } = renderHook(() => useTestView("web"), {
+        wrapper,
+      });
+
+      act(() => vi.advanceTimersByTime(VIEW_RESTORE_AUTH_DEADLINE_MS));
+      // The unidentified window: the legacy view is what an anonymous surface
+      // can name, so it is what the surface shows.
+      expect(result.current.sortKey).toBe("date");
+      expect(result.current.visibleColumns.has("a")).toBe(false);
+
+      authLoaded = true;
+      act(() => rerender());
+
+      // Identity arrives: `storageKey` resolves, `restoreStorageKey` follows it,
+      // and the restore re-runs against Alice's own key.
+      expect(result.current.sortKey).toBe("name");
+      expect(result.current.visibleColumns.has("a")).toBe(true);
+      expect(result.current.visibleColumns.has("c")).toBe(false);
+      expect(result.current.extras.window).toBe("7d");
+      // And the read stayed one-way throughout: nothing the unidentified viewer
+      // saw was written back over the legacy blob.
+      expect(localStorage.getItem("test:view:web")).toBe(legacy);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * ISS-5528. A feature may SELECT its `defaultHiddenColumns` from a feature flag,
+ * and on web PostHog resolves that flag AFTER the component has mounted. The
+ * restore effect is the only thing that applies the set, and its re-entry guard
+ * compared just the storage key and the parser — so the pre-flag set was the
+ * only one that ever landed and the column stayed visible for every real
+ * viewer, while a test that resolved the flag before mount passed happily.
+ *
+ * This is the same defect ISS-4890 fixed for a flag-selected `parse`, one field
+ * over.
+ */
+describe("usePersistedTableViewState — a default-hidden set that resolves late", () => {
+  it("re-applies a default-hidden set that changed after mount", () => {
+    let defaultHidden: readonly ColumnId[] = [];
+    const { result, rerender } = renderHook(() =>
+      useTestView(undefined, defaultHidden)
+    );
+
+    // Precondition, not decoration: without it, a column that was never visible
+    // would satisfy the post-flip assertion below.
+    expect(result.current.visibleColumns.has("b")).toBe(true);
+
+    defaultHidden = ["b"];
+    act(() => rerender());
+
+    expect(result.current.visibleColumns.has("b")).toBe(false);
+    // Only the declared column goes — a re-run must not reset the whole view.
+    expect(result.current.visibleColumns.has("a")).toBe(true);
+    expect(result.current.visibleColumns.has("c")).toBe(true);
+  });
+
+  /**
+   * The case above is memory-only, and whitlockk's review of PR #6592 is that the
+   * memory-only path is the one path where the ISS-5528 guard fix was already
+   * sufficient. On a PERSISTING surface — which is every real viewer — the
+   * pre-flag pass used to write its own defaults to storage, so the post-flag
+   * re-run found a "saved view" this hook had just manufactured, took the
+   * `saved` branch, and never reached the new default at all.
+   */
+  it("re-applies a late default-hidden set on a PERSISTING surface with no prior view", () => {
+    let defaultHidden: readonly ColumnId[] = [];
+    const { result, rerender } = renderHook(() =>
+      useTestView("web", defaultHidden)
+    );
+
+    // Precondition: the column is genuinely visible, and — the part the
+    // memory-only case cannot state — the unresolved pass has NOT materialized a
+    // saved view. That storage entry is the whole defect: it is what the re-run
+    // would restore instead of the newly-resolved default.
+    expect(result.current.visibleColumns.has("b")).toBe(true);
+    expect(localStorage.getItem("test:view:web")).toBeNull();
+
+    defaultHidden = ["b"];
+    act(() => rerender());
+
+    expect(result.current.visibleColumns.has("b")).toBe(false);
+    expect(result.current.visibleColumns.has("a")).toBe(true);
+    expect(result.current.visibleColumns.has("c")).toBe(true);
+  });
+
+  /**
+   * The other side of the same contract (ISS-5315): a view the USER shaped is
+   * the whole truth about what they hid or showed, so a default that resolves
+   * afterwards must not reach in and hide a column they are looking at.
+   *
+   * Paired with the case above deliberately. Alone, either one passes under a
+   * hook that ignores the input it is about — "the late default lands" is
+   * satisfied by always applying defaults, and "the saved view wins" by never
+   * applying them.
+   */
+  it("leaves a view the user shaped alone when the default-hidden set resolves late", () => {
+    let defaultHidden: readonly ColumnId[] = [];
+    const { result, rerender } = renderHook(() =>
+      useTestView("web", defaultHidden)
+    );
+
+    // The user shapes the view — on a dimension that is NOT column visibility,
+    // so the assertion below cannot be satisfied by the toggle itself.
+    act(() => result.current.setSort("date", "desc"));
+    expect(localStorage.getItem("test:view:web")).not.toBeNull();
+
+    defaultHidden = ["b"];
+    act(() => rerender());
+
+    expect(result.current.visibleColumns.has("b")).toBe(true);
+    // …and their own dimension survived the re-run that restored it.
+    expect(result.current.sortKey).toBe("date");
   });
 });

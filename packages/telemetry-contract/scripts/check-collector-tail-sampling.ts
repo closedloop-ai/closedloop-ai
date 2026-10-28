@@ -5,24 +5,14 @@ import type { CollectorGuardFinding } from "./collector-codegen-common";
 import {
   type ConsoleErrorLike,
   describeError,
+  errorAnnotation,
   isRecord,
-  repoRootAnnotationPath,
 } from "./collector-codegen-common";
 import {
   CollectorTailSamplingPath,
   collectorTailSamplingArtifacts,
   REGENERATE_COMMAND,
 } from "./generate-collector-tail-sampling";
-
-/**
- * C4 drift guard (FEA-1992): fail the build when the committed collector
- * `tail_sampling` fragment no longer matches the policy SSOT. The fragment is
- * vendored cross-repo into the cl-tofu collector config, so a hand-edit that
- * silently diverges from the contract is exactly the failure mode to catch.
- *
- * `evaluateCollectorTailSampling` is pure so it is unit-testable without disk;
- * the CLI wrapper reads the committed artifact and emits GitHub annotations.
- */
 
 type EvaluateInput = {
   fragmentSource: string;
@@ -118,9 +108,7 @@ export function runCollectorTailSamplingCheck(
   });
 
   for (const finding of findings) {
-    stderr.error(
-      `::error file=${repoRootAnnotationPath(finding.file)}::${finding.message}`
-    );
+    stderr.error(errorAnnotation(finding.file, finding.message));
   }
 
   return findings.length === 0 ? 0 : 1;
@@ -131,7 +119,10 @@ function readSource(path: string, stderr: ConsoleErrorLike): string {
     return readFileSync(path, "utf-8");
   } catch (error) {
     stderr.error(
-      `::error file=${repoRootAnnotationPath(path)}::Unable to read committed collector artifact: ${describeError(error)}. ${REGENERATE_HINT}`
+      errorAnnotation(
+        path,
+        `Unable to read committed collector artifact: ${describeError(error)}. ${REGENERATE_HINT}`
+      )
     );
     // A missing/unreadable artifact is itself drift: an empty source cannot
     // match a fresh render, so evaluation fails.

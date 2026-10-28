@@ -5,7 +5,7 @@
  * through, and that the exclusions matching the extractor's bare-slug pass hold.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { extractWorkItemOccurrences } from "../src/main/collectors/parsing/work-item-occurrences.js";
 import {
   createNormalizedSession,
@@ -120,8 +120,8 @@ test("occurrences are time-ordered regardless of input order", () => {
 test("a slug spelled lower-case in a branch name is an occurrence", () => {
   // The dominant spelling of the real work item is the branch, and branches are
   // lower-case by convention. A case-SENSITIVE scan made the strongest signal in
-  // the session invisible: golden `019effc3` is entirely FEA-2159 on branch
-  // `kaiticarp/fea-2159-…`, and resolved to a chattier unrelated slug without it.
+  // the session invisible: golden `f04610b7` is entirely FEA-2159 on branch
+  // `kaitoc/fea-2159-…`, and resolved to a chattier unrelated slug without it.
   const occurrences = extractWorkItemOccurrences(
     sessionWith({
       toolUses: [

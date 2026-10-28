@@ -5,9 +5,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A control that allows the user to toggle between checked and not checked.
  */
 const meta: Meta<typeof Checkbox> = {
-  title: "Design System/Primitives/Checkbox",
+  title: "Primitives v1.0/Inputs/Checkbox",
   component: Checkbox,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     id: "terms",

@@ -13,7 +13,12 @@ import { mockWithDbCall } from "../utils/db-helpers";
 
 // --- Mocks (must come before imports) ---
 
-vi.mock("@repo/database", () => ({
+// Spreads the real module so Prisma enum consts (`ArtifactType`, reached at
+// import time by the custom-field values service in this graph) stay available.
+// `withDb` and the `Prisma.JsonNull` sentinel stay stubbed on top so this suite
+// keeps asserting against the sentinel it controls, with no live DB.
+vi.mock("@repo/database", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: { JsonNull: "DbNull" },
 }));

@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { createClaudeCollector } from "../src/main/collectors/claude/claude-collector.js";
 import {
   cleanupTempDirs,
@@ -77,7 +77,13 @@ test("sourcePathsForWatchEvent does not remap when 'subagents' has no parent ses
 // ── extraMtime — subagent change detection ───────────────────────────────────
 
 function claudeExtraMtime(mainTranscriptPath: string): number | null {
-  const collector = createClaudeCollector();
+  // The Desktop sidecar reader is pinned OFF here so these cases stay about the
+  // SUBAGENT clock. Left at its default it resolves to the host's real
+  // `~/Library/.../claude-code-sessions` on macOS and to nothing elsewhere, which
+  // both scans the developer's own Desktop history mid-test and makes the fold's
+  // no-extras value platform-dependent. `claude-desktop-origin.test.ts` owns the
+  // sidecar half of the fold.
+  const collector = createClaudeCollector({ desktopSessionsDir: null });
   if (!collector.extraMtime) {
     throw new Error("claude collector must define extraMtime");
   }

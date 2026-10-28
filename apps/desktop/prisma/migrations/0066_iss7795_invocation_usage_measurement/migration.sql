@@ -1,0 +1,22 @@
+-- ISS-7795: record HOW a per-invocation telemetry row was arrived at.
+--
+-- FEA-3981 added the telemetry columns and left capture to "Slice B". This is
+-- that slice, and it widens the population: `model` and the token counts stop
+-- being subagent-only and start carrying skill and command invocations too.
+-- Two numbers that answer the same question with different confidence must not
+-- land in one indistinguishable column, so the label rides alongside them.
+--
+-- The cloud half is `20260823120000_iss7795_invocation_usage_measurement`; this
+-- is the desktop column the sync item reads from. Without it the desktop could
+-- never emit a v3 part — the wire schema requires the label on any part that
+-- declares the measurement protocol version, and there would be nowhere to
+-- read it from.
+--
+-- Nullable with NO default, matching every other column on this table added
+-- after 0001: NULL means "no telemetry", which is a different fact from a
+-- measured zero and must stay distinguishable from one. Rows written before
+-- this migration are correctly NULL — nothing ever wrote telemetry for them.
+--
+-- Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it), matching the 0059
+-- and 0062 precedent.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "usage_measurement" TEXT;

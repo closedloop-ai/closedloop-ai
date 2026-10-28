@@ -1,6 +1,6 @@
 /**
  * @file opencode-withheld-reconciliation.ts
- * @description ISS-5266 (wongk review): the boot-time answer to "does this
+ * @description ISS-5266 (whitlockk review): the boot-time answer to "does this
  * install still owe an OpenCode withheld-subagent reconciliation pass?"
  *
  * An install upgrading from a release that predates the withheld record has an
@@ -12,8 +12,8 @@
  * upgrade, and converges as soon as that scan commits.
  *
  * Extracted from `agent-dashboard-design-system-runtime.ts` rather than inlined
- * there: that runtime is on the shrink-only `noExcessiveLinesPerFile`
- * grandfather list, so a new cohesive unit belongs in its own module.
+ * there: a new cohesive unit belongs in its own module rather than accreting
+ * onto that runtime (AGENTS.md → "File Size and Organization").
  */
 
 /** The collector-manager option slice this reconciliation contributes. */

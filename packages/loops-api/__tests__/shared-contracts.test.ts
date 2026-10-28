@@ -12,13 +12,12 @@ import {
   DocumentType,
   ISSUE_STATUS_OPTIONS,
   IssueStatus,
+  isPrimaryRepoObserved,
+  isSnapshotCorrectable,
   PullRequestState,
 } from "../src/document";
 import { LoopErrorCode } from "../src/error-codes";
-import {
-  DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-  resolveFriendlyError,
-} from "../src/friendly-error";
+import { resolveFriendlyError } from "../src/friendly-error";
 
 describe("shared contract exports", () => {
   it("exposes document enums used by design-system", () => {
@@ -45,7 +44,7 @@ describe("shared contract exports", () => {
     const parsed = artifactRepositorySnapshotSchema.parse({
       repositories: [
         {
-          fullName: "closedloop-ai/symphony-alpha",
+          fullName: "closedloop-ai/closedloop-ai",
           role: "primary",
           position: 0,
         },
@@ -54,8 +53,47 @@ describe("shared contract exports", () => {
     });
 
     expect(parsed.repositories[0]?.fullName).toBe(
-      "closedloop-ai/symphony-alpha"
+      "closedloop-ai/closedloop-ai"
     );
+  });
+
+  // ISS-8164. Spelled as literals, not as SnapshotSource members: a fixture
+  // built from the const it polices still passes when a member is renamed or
+  // dropped, which is exactly the drift these rows exist to catch.
+  //
+  // The columns differ on `parent_artifact` and `legacy` on purpose. Both read
+  // unobserved but neither is correctable: an inherited snapshot may be a human
+  // selection copied from the parent, and a legacy row is the backfill of this
+  // artifact's own caller-supplied `target_repo`/`target_branch` — pinned
+  // branches and all. `project_defaults` is the only guess nobody chose.
+  it.each([
+    ["project_defaults", false, true],
+    ["parent_artifact", false, false],
+    ["legacy", false, false],
+    ["none", false, false],
+    ["loop_selection", true, false],
+    ["branch_link", true, false],
+  ] as const)(
+    "classifies %s as primaryObserved=%s correctable=%s",
+    (source, observed, correctable) => {
+      expect(isPrimaryRepoObserved(source)).toBe(observed);
+      expect(isSnapshotCorrectable(source)).toBe(correctable);
+    }
+  );
+
+  it("accepts a branch-link snapshot at the persistence boundary", () => {
+    const parsed = artifactRepositorySnapshotSchema.parse({
+      repositories: [
+        {
+          fullName: "example-org/infrastructure",
+          role: "primary",
+          position: 0,
+        },
+      ],
+      source: "branch_link",
+    });
+
+    expect(parsed.source).toBe("branch_link");
   });
 
   it("resolves known loop errors to display-safe copy", () => {
@@ -70,15 +108,6 @@ describe("shared contract exports", () => {
     );
   });
 
-  it("preserves runner subcode copy", () => {
-    expect(
-      resolveFriendlyError({
-        code: "RUNNER_ERROR",
-        result: { subcode: "CLAUDE_UNKNOWN_SKILL" },
-      }).title
-    ).toBe("Closedloop plugin command unavailable");
-  });
-
   it("explains MISSING_REQUIRED_ARTIFACTS in operator terms (ISS-5872)", () => {
     expect(
       resolveFriendlyError({
@@ -89,9 +118,8 @@ describe("shared contract exports", () => {
 
   it("degrades an unrecognized error code to the generic failure, never a throw", () => {
     // Cross-repo skew: a desktop build newer than this client can emit a code
-    // this build has never heard of. `LoopEventErrorSchema.code` is `z.string()`
-    // so the event is accepted, and resolution must fall back rather than crash
-    // or leave the loop un-terminalized.
+    // this build has never heard of, so resolution must fall back rather than
+    // crash.
     const result = resolveFriendlyError({
       code: "SOME_FUTURE_DESKTOP_CODE",
       message: "produced no widget.json",
@@ -110,26 +138,5 @@ describe("shared contract exports", () => {
       timestamp: "2026-08-08T00:00:00.000Z",
     });
     expect(result).not.toHaveProperty("code");
-  });
-
-  it("selects exact desktop signing guidance for its gateway message", () => {
-    expect(
-      resolveFriendlyError({
-        code: LoopErrorCode.ProcessFailed,
-        message: DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-      }).title
-    ).toBe("Desktop managed signing is not ready");
-  });
-
-  it("humanizes a future runner subcode without hiding the failure", () => {
-    expect(
-      resolveFriendlyError({
-        code: LoopErrorCode.RunnerError,
-        result: { subcode: "FUTURE_RUNNER_FAILURE" },
-      })
-    ).toMatchObject({
-      title: "Future Runner Failure",
-      description: "The runner reported an unrecognized failure reason.",
-    });
   });
 });

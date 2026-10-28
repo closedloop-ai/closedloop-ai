@@ -11,7 +11,6 @@ import {
   SessionAgentsSection,
   SessionErrorDetailsPanel,
   SessionMetadataPanel,
-  SessionModelUsageTable,
   SessionOverviewSection,
   SessionSummaryMetrics,
   SessionTimelineSection,
@@ -27,33 +26,14 @@ const summaryMetrics = [
 
 const metadata = [
   { label: "Session", value: "Storybook coverage backfill" },
-  { label: "Repository", value: "closedloop-ai/symphony-alpha" },
+  { label: "Repository", value: "closedloop-ai/closedloop-ai" },
   { label: "Harness", value: "codex" },
   { label: "Model", value: "gpt-5" },
 ];
 
 const details = [
-  { label: "Working directory", value: "/workspace/symphony-alpha" },
+  { label: "Working directory", value: "/workspace/closedloop-ai" },
   { label: "Branch", value: "bot/nightly-storyteller-steve-2026-06-13" },
-];
-
-const modelRows = [
-  {
-    model: "gpt-5",
-    inputTokens: "42.6M",
-    outputTokens: "255.9K",
-    cacheReadTokens: "40.2M",
-    cacheWriteTokens: "0",
-    estimatedCost: "$18.94",
-  },
-  {
-    model: "claude-sonnet-4.6",
-    inputTokens: "6.8M",
-    outputTokens: "84.1K",
-    cacheReadTokens: "5.9M",
-    cacheWriteTokens: "120K",
-    estimatedCost: "$4.11",
-  },
 ];
 
 const toolRows = [
@@ -88,7 +68,6 @@ const agents: SessionAgent[] = [
     name: "Main agent",
     type: "main",
     status: "working",
-    task: "Convert nightly findings into implementation PRs.",
     currentTool: "apply_patch",
     startedAt: "2026-06-13T09:10:00.000Z",
     updatedAt: "2026-06-13T15:21:00.000Z",
@@ -102,7 +81,6 @@ const agents: SessionAgent[] = [
     type: "subagent",
     subagentType: "reviewer",
     status: "completed",
-    task: "Review coverage gaps before Storybook validation.",
     currentTool: null,
     startedAt: "2026-06-13T09:34:00.000Z",
     endedAt: "2026-06-13T10:02:00.000Z",
@@ -145,7 +123,7 @@ const groups: SessionEventGroup[] = [
         summary:
           "The run identified eight design-system components without stories.",
         toolName: "Read",
-        project: "symphony-alpha",
+        project: "closedloop-ai",
         createdAt: "2026-06-13T09:11:00.000Z",
         metadata: [{ label: "components", value: "8" }],
       },
@@ -179,7 +157,6 @@ const overviewStats: SessionOverviewStats = {
   activeAgent: {
     name: "Main agent",
     currentTool: "apply_patch",
-    task: "Adding missing Storybook stories and catalog references.",
   },
 };
 
@@ -196,7 +173,6 @@ function SessionDetailPanelsOverview() {
 function SessionDetailPanelsTables() {
   return (
     <div className="space-y-6">
-      <SessionModelUsageTable rows={modelRows} />
       <SessionToolInvocationsPanel rows={toolRows} />
       <SessionErrorDetailsPanel errors={errors} />
     </div>
@@ -222,29 +198,38 @@ function SessionDetailPanelsActivity() {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Detail Panels",
+  title: "Composites v1.0/Agents/Detail/Session Detail Panels",
   component: SessionDetailPanelsOverview,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionDetailPanelsOverview>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Overview: Story = {};
+// These four stories predate the "one story, one concept" rule and bundle
+// three-plus real components each; `packages/design-system/AGENTS.md` marks
+// that non-retroactive, so they stay grouped. `!manifest` keeps them out of
+// the AI-readable catalog as multi-concept comparisons rather than atomic
+// component states.
+
+export const Overview: Story = {
+  tags: ["!manifest"],
+};
 
 export const Tables: Story = {
   render: () => <SessionDetailPanelsTables />,
+  tags: ["!manifest"],
 };
 
 export const Activity: Story = {
   render: () => <SessionDetailPanelsActivity />,
+  tags: ["!manifest"],
 };
 
 export const EmptyStates: Story = {
   render: () => (
     <div className="space-y-6">
-      <SessionModelUsageTable rows={[]} />
       <SessionToolInvocationsPanel rows={[]} />
       <SessionErrorDetailsPanel errors={[]} />
       <SessionAgentsSection agents={[]} />
@@ -252,4 +237,5 @@ export const EmptyStates: Story = {
       <JsonPanel title="Attribution" value={null} />
     </div>
   ),
+  tags: ["!manifest"],
 };

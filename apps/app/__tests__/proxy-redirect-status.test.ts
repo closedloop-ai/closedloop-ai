@@ -9,16 +9,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * ISS-4570 — the redirect STATUS each proxy redirect kind emits, driven through
  * the real resolver.
  *
- * FEA-3955 specced the `/features/*` → `/issues/*` rename as a **permanent**
- * redirect; the proxy issued 302 for every redirect it resolved. The status is
+ * FEA-3955 specced the `/features/*` alias as a **permanent** redirect (since
+ * ISS-12855 its detail form lands on `/documents/:slug`); the proxy issued 302 for every redirect it resolved. The status is
  * not cosmetic: a permanent redirect is cached by browsers, often indefinitely,
  * so it may only be used on a target that is a pure function of the URL.
  *
  * That is what splits the two kinds tested here, and why the fix could not be a
  * one-character edit at the `NextResponse.redirect` call:
  *
- *  - The rename of an ALREADY org-scoped path (`/acme/features/X` →
- *    `/acme/issues/X`) resolves identically for every caller. Permanent.
+ *  - The `/features` alias on an ALREADY org-scoped path (`/acme/features/X` →
+ *    `/acme/documents/X`) resolves identically for every caller. Permanent.
  *  - Everything else the resolver does — injecting the missing `/{orgSlug}`
  *    prefix, the empty-search forward, the retired-route forwards — depends on
  *    who is asking. A cached permanent redirect would pin one user's org prefix
@@ -94,6 +94,8 @@ function makeRequest(url: string): NextRequest {
       clone: () => new URL(parsed),
     },
     headers: new Headers({ host: "localhost:3000" }),
+    // The proxy reads the PLN-2118 desktop run cookie; these requests carry none.
+    cookies: { get: () => undefined },
   } as unknown as NextRequest;
 }
 
@@ -114,27 +116,27 @@ async function redirectOf(url: string, orgSlug: string | null = ORG) {
   };
 }
 
-describe("ISS-4570 — the /features → /issues rename redirects permanently", () => {
+describe("ISS-4570 — the /features alias redirects permanently", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("emits 308 for an org-scoped legacy detail route", async () => {
+  it("emits 308 for an org-scoped legacy detail route, straight to /documents (ISS-12855)", async () => {
     const { status, location } = await redirectOf("/acme/features/ISS-6");
 
     expect(status).toBe(RedirectStatus.Permanent);
-    expect(location.pathname).toBe("/acme/issues/ISS-6");
+    expect(location.pathname).toBe("/acme/documents/ISS-6");
   });
 
   // 308, not 301: 301 permits a client to rewrite the method to GET, and this
-  // alias fronts the whole `/issues` subtree rather than one GET page.
+  // alias fronts a whole route subtree rather than one GET page.
   it("preserves the deep-link query the compat window exists for", async () => {
     const { status, location } = await redirectOf(
       "/acme/features/ISS-6?version=3"
     );
 
     expect(status).toBe(RedirectStatus.Permanent);
-    expect(location.pathname).toBe("/acme/issues/ISS-6");
+    expect(location.pathname).toBe("/acme/documents/ISS-6");
     expect(location.searchParams.get("version")).toBe("3");
   });
 
@@ -152,8 +154,44 @@ describe("ISS-4570 — the /features → /issues rename redirects permanently", 
     );
 
     expect(status).toBe(RedirectStatus.Permanent);
-    expect(location.pathname).toBe("/features/issues/ISS-6");
+    expect(location.pathname).toBe("/features/documents/ISS-6");
   });
+});
+
+describe("ISS-12855 — legacy document detail prefixes redirect to /documents", () => {
+  const deepLinkQuery = "?tab=details&version=3&thread=th_1";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ["/acme/prds/PRD-1", "/acme/documents/PRD-1"],
+    ["/acme/implementation-plans/PLN-1", "/acme/documents/PLN-1"],
+    ["/acme/issues/ISS-6", "/acme/documents/ISS-6"],
+  ])("emits 302 for %s", async (source, target) => {
+    const { status, location } = await redirectOf(source);
+
+    expect(status).toBe(RedirectStatus.Temporary);
+    expect(location.pathname).toBe(target);
+  });
+
+  it.each([
+    ["/acme/prds/PRD-1", "/acme/documents/PRD-1"],
+    ["/acme/implementation-plans/PLN-1", "/acme/documents/PLN-1"],
+    ["/acme/issues/ISS-6", "/acme/documents/ISS-6"],
+    ["/acme/features/ISS-6", "/acme/documents/ISS-6"],
+    ["/prds/PRD-1", "/acme/documents/PRD-1"],
+    ["/features/ISS-6", "/acme/documents/ISS-6"],
+  ])(
+    "keeps every query parameter of %s byte-for-byte",
+    async (source, target) => {
+      const { location } = await redirectOf(`${source}${deepLinkQuery}`);
+
+      expect(location.pathname).toBe(target);
+      expect(location.search).toBe(deepLinkQuery);
+    }
+  );
 });
 
 describe("ISS-4570 — every caller-dependent redirect stays temporary", () => {
@@ -165,7 +203,7 @@ describe("ISS-4570 — every caller-dependent redirect stays temporary", () => {
     const { status, location } = await redirectOf("/features/ISS-6");
 
     expect(status).toBe(RedirectStatus.Temporary);
-    expect(location.pathname).toBe("/acme/issues/ISS-6");
+    expect(location.pathname).toBe("/acme/documents/ISS-6");
   });
 
   // Same URL, no active org: it resolves to a DIFFERENT target than the case
@@ -174,7 +212,7 @@ describe("ISS-4570 — every caller-dependent redirect stays temporary", () => {
     const { status, location } = await redirectOf("/features/ISS-6", null);
 
     expect(status).toBe(RedirectStatus.Temporary);
-    expect(location.pathname).toBe("/issues/ISS-6");
+    expect(location.pathname).toBe("/documents/ISS-6");
   });
 
   it("emits 302 for a plain missing-org-prefix redirect", async () => {

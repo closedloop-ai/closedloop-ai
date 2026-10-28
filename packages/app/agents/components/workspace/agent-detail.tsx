@@ -3,13 +3,9 @@
 /**
  * Agent component detail page (T-3.7).
  *
- * Renders the full detail view for a single agent component:
- *  - Header: kind icon + name + a distinct subtitle (path, else the
- *    fully-qualified identity slug; omitted when it would restate the name)
- *  - Per-kind metrics card grid (MetricCard from @repo/design-system)
- *  - Collapsible Properties panel (sourceType, source, harness, collaborators)
- *  - Read-only Prompt panel (only for Subagent / Command / Skill kinds)
- *  - Sessions, Branches, and exact Evidence tabs
+ * Uses the shared Artifact / Details / Sessions shell. The Artifact canvas
+ * carries the live definition, metrics, usage and invocation evidence; Details
+ * retains source properties, and Sessions preserves the branch/evidence views.
  *
  * Data is fetched via `useAgentComponentDetail(slug)`. In Phase 1 the stub
  * source populates sessionsTab/branchesTab with empty arrays; the HTTP source
@@ -35,6 +31,7 @@ import {
   AGENTS_DEFINITION_EMPTY_STATE_FEATURE_FLAG_KEY,
   AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY,
   AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY,
+  AGENTS_VERSION_USAGE_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import {
@@ -73,7 +70,14 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
-import { useTabParam } from "../../../shared/hooks/use-tab-param";
+import { ArtifactDetailShell } from "../../../shared/components/artifact-detail-shell/artifact-detail-shell";
+import { ArtifactTab } from "../../../shared/components/artifact-detail-shell/artifact-tab";
+import { PageHeading } from "../../../shared/components/page-heading";
+import {
+  TabHistoryMode,
+  useTabParam,
+} from "../../../shared/hooks/use-tab-param";
+import { ArtifactDetailTab } from "../../../shared/lib/artifact-detail-tab";
 import { useAgentComponentDetail } from "../../hooks/use-agent-component-detail";
 import {
   AGENT_COMPONENT_AUTHORS_LABEL,
@@ -95,15 +99,17 @@ import {
 import { deriveDefinitionAbsence } from "../../lib/definition-absence";
 import { componentMetrics } from "../../lib/detail-data";
 import { coerceHash } from "../../lib/version-label";
+import { AgentDetailPagedEvidence } from "./agent-detail-pagination";
 import {
   AgentDetailLoading,
   AgentDetailNotFound,
   AgentDetailUnavailable,
 } from "./agent-detail-states";
+import { AgentInvocationFrequency } from "./agent-invocation-frequency";
+import { AgentInvocationsGrid } from "./agent-invocations-grid";
 import { DetailBranchesTab } from "./detail-branches-tab";
-import { DetailSessionsTab } from "./detail-sessions-tab";
-import { InvocationEvidenceList } from "./invocation-evidence-list";
 import { ResolutionBadge } from "./resolution-badge";
+import { VersionUsagePanel } from "./version-usage-panel";
 
 // Kinds that carry a text prompt (read-only Prompt panel shown only for these)
 // are enumerated by the shared `PROMPT_KINDS` in component-meta; the panel gate
@@ -123,16 +129,14 @@ import { ResolutionBadge } from "./resolution-badge";
 // than the `in` operator — `in` walks the prototype chain, so a stored harness
 // named `constructor`/`toString`/etc. would spuriously take the map branch and
 // resolve to `undefined.label`, blanking the eyebrow instead of falling back to
-// the raw value (wongk review).
+// the raw value (whitlockk review).
 function harnessDisplayLabel(harness: string): string {
   return Object.hasOwn(HARNESS_META, harness)
     ? HARNESS_META[harness as keyof typeof HARNESS_META].label
     : harness;
 }
 
-// ---------------------------------------------------------------------------
 // Sub-components
-// ---------------------------------------------------------------------------
 
 const PropRow = ({
   label,
@@ -158,9 +162,7 @@ const PropValue = ({ children }: { children: React.ReactNode }) => (
   <span className="truncate">{children}</span>
 );
 
-// ---------------------------------------------------------------------------
 // DetailHeader
-// ---------------------------------------------------------------------------
 
 function DetailHeader({
   kind,
@@ -168,7 +170,6 @@ function DetailHeader({
   path,
   slug,
   harness,
-  action,
   resolution,
   honest,
 }: {
@@ -186,10 +187,9 @@ function DetailHeader({
   // Typed `string`, not `Harness`: the value is not closed to the union at
   // runtime (desktop `toHarness`/cloud `normalizeHarness` pass arbitrary
   // non-empty collector strings through), so the header must accept and
-  // gracefully fall back for any string (wongk review). `harnessDisplayLabel`
+  // gracefully fall back for any string (whitlockk review). `harnessDisplayLabel`
   // owns the safe own-key resolution.
   harness: string;
-  action?: React.ReactNode;
   resolution?: React.ReactNode;
 }) {
   const KindIcon = kindMeta(kind).icon;
@@ -202,9 +202,9 @@ function DetailHeader({
   // Properties panel, which a user scanning the tabs never sees.
   const harnessLabel = harnessDisplayLabel(harness);
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div className="flex items-start justify-between gap-4 border-b pb-6">
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs uppercase tracking-wide">
           <span className="flex items-center gap-1.5">
             <KindIcon className="size-3.5" />
             {kindMeta(kind).label}
@@ -224,7 +224,9 @@ function DetailHeader({
           </span>
         </span>
         <div className="flex flex-wrap items-center gap-2.5">
-          <h1 className="font-semibold text-2xl tracking-tight">{name}</h1>
+          {/* Not a heading: the page's only h1 is the hidden PageHeading
+              above the shell, as on Branch detail. */}
+          <p className="font-semibold text-2xl tracking-tight">{name}</p>
           {resolution}
         </div>
         {subtitle ? (
@@ -240,14 +242,11 @@ function DetailHeader({
           </span>
         ) : null}
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
 // PropertiesPanel
-// ---------------------------------------------------------------------------
 
 // A wrap of monospace chips for a string list (allowed tools, orchestrated
 // sub-agents). Renders nothing when the list is empty so the row can be omitted.
@@ -447,9 +446,7 @@ function PropertiesPanel({
   );
 }
 
-// ---------------------------------------------------------------------------
 // PromptPanel — read-only, shown only for Subagent / Command / Skill kinds
-// ---------------------------------------------------------------------------
 
 // Dropdown label for one revision. Versions arrive newest-first, so index 0 is
 // the newest; the live revision is tagged "Current", the rest numbered from the
@@ -457,8 +454,9 @@ function PropertiesPanel({
 //
 // `version.hash` is typed `string`, but the Prompt panel renders for Skill /
 // Command / Subagent kinds and a malformed record can deliver a non-string hash;
-// `coerceHash` guards the `.slice` so this never throws inside the page's
-// LiveblocksErrorBoundary (FEA-3520, same class as #3208).
+// `coerceHash` guards the `.slice` so a malformed record renders a label
+// instead of taking the page down to the route error boundary (FEA-3520, same
+// class as #3208).
 function versionLabel(
   version: ComponentVersion,
   index: number,
@@ -593,7 +591,7 @@ function PromptPanel({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-4">
-        <h3 className="font-semibold text-lg tracking-tight">Definition</h3>
+        <h2 className="font-semibold text-lg tracking-tight">Definition</h2>
         {versions.length > 1 ? (
           <Select
             onValueChange={setSelectedHash}
@@ -663,9 +661,7 @@ function PromptPanel({
   );
 }
 
-// ---------------------------------------------------------------------------
 // AgentDetail — the public export
-// ---------------------------------------------------------------------------
 
 /**
  * Render-prop that receives the resolved component detail and returns a header
@@ -739,13 +735,39 @@ export function AgentDetail({
   const honestDetail = useFeatureFlagEnabledOptional(
     AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY
   );
-  // FEA-3557/FEA-3294: durable permalinks for the Invocations tabs.
-  // `/agents/<slug>?tab=branches|evidence` survives refresh/back-forward while
-  // the default Sessions tab keeps the canonical URL clean.
+  // ISS-10467/ISS-10468 (ISS-4779 closed-by-default): the per-content-version
+  // usage drill-down and the side-by-side compare inside it. ONE read site, and
+  // it picks between two whole shapes — the panel, or nothing — so the boolean
+  // never travels into a derivation below
+  // (`scripts/lint/rules/no-threaded-feature-flag.ts`). `Optional` because this
+  // mounts without a flag provider (Storybook, the shared-component tests),
+  // where it must resolve OFF rather than crash the subtree.
+  const versionUsageEnabled = useFeatureFlagEnabledOptional(
+    AGENTS_VERSION_USAGE_FEATURE_FLAG_KEY
+  );
+  // Artifact tabs own `tab`; the invocation subview owns `view`.
+  // Legacy Branches/Evidence permalinks still select their original panel.
   const { activeTab, setActiveTab } = useTabParam({
-    defaultTab: "sessions",
-    validTabs: ["sessions", "branches", "evidence"] as const,
+    defaultTab: ArtifactDetailTab.Artifact,
+    historyMode: TabHistoryMode.Push,
+    validTabs: [
+      ArtifactDetailTab.Artifact,
+      ArtifactDetailTab.Details,
+      ArtifactDetailTab.Sessions,
+      "branches",
+      "evidence",
+    ] as const,
   });
+  const legacyInvocationTab =
+    activeTab === "branches" || activeTab === "evidence"
+      ? activeTab
+      : "sessions";
+  const { activeTab: invocationTab, setActiveTab: setInvocationTab } =
+    useTabParam({
+      defaultTab: legacyInvocationTab,
+      paramName: "view",
+      validTabs: ["sessions", "branches", "evidence"] as const,
+    });
   const getInvocationSessionHref = useMemo(() => {
     if (!(data && getSessionHref)) {
       return undefined;
@@ -808,139 +830,199 @@ export function AgentDetail({
   // shared model derives + labels; this component never re-implements the states.
   const currentVersion = data.versions.find((v) => v.isCurrent);
 
-  return (
-    <div className="flex-1 overflow-auto">
-      {/* Title, properties, prompt, and metrics stay inset (centered column). */}
-      <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 pt-10 pb-6">
-        <DetailHeader
-          action={headerAction?.(data)}
-          harness={data.harness}
-          honest={honestDetail}
-          kind={data.kind}
-          name={data.name}
-          path={path}
-          resolution={
-            <ResolutionBadge
-              normalizerContractVersion={
-                currentVersion?.normalizerContractVersion
-              }
-              resolvedState={data.resolvedState}
-            />
-          }
-          slug={data.slug}
-        />
-
-        <div
-          className={cn(
-            "grid grid-cols-2 gap-3 sm:grid-cols-3",
-            // ISS-5519: deliberately UNCHANGED. Suppressing the two unmeasured
-            // cards takes a subagent from six to four, and four cards in a
-            // five-column track is already exactly how every non-verifiable kind
-            // renders today — so the shipped layout absorbs the new count with no
-            // edit. Deriving the track from the card count instead would have
-            // re-flowed those other kinds too, on a flag that drops none of their
-            // cards (metric-reconciliation review).
-            metrics.length >= 6 ? "lg:grid-cols-6" : "lg:grid-cols-5"
-          )}
-        >
-          {metrics.map((metric) => (
-            <MetricCard
-              info={metric.info}
-              key={metric.key}
-              label={metric.label}
-              value={metric.value}
-            />
-          ))}
+  const invocationPanel = (
+    <div className="pb-6">
+      <Tabs
+        className="gap-4"
+        onValueChange={setInvocationTab}
+        value={invocationTab}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-4 px-4">
+          <h2 className="font-semibold text-lg tracking-tight">Invocations</h2>
+          <div className="flex items-center gap-2">
+            <TabsList aria-label="Invocations">
+              <TabsTrigger value="sessions">Sessions</TabsTrigger>
+              <TabsTrigger value="branches">Branches</TabsTrigger>
+              <TabsTrigger value="evidence">Evidence</TabsTrigger>
+            </TabsList>
+          </div>
         </div>
+        <TabsContent value="sessions">
+          <AgentInvocationsGrid
+            component={data}
+            getSessionHref={getSessionHref}
+            key={data.slug}
+          />
+        </TabsContent>
+        <TabsContent value="branches">
+          <DetailBranchesTab
+            branches={data.branchesTab}
+            branchesTabTruncated={data.branchesTabTruncated}
+            usageSessions={data.usageSessions}
+            versions={data.versions}
+          />
+        </TabsContent>
+        <TabsContent value="evidence">
+          {data.invocationRows ? (
+            <AgentDetailPagedEvidence
+              component={{ ...data, invocationRows: data.invocationRows }}
+              getSessionHref={getInvocationSessionHref}
+              key={data.slug}
+            />
+          ) : (
+            <EmptyState
+              description="This data source does not record exact invocation evidence."
+              icon={FileX2Icon}
+              size="compact"
+              title="Evidence unavailable"
+            />
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+  const artifactPanel = (
+    <ArtifactTab
+      canvas={
+        <div className="size-full overflow-auto px-6 py-6">
+          <div className="flex flex-col gap-6">
+            <DetailHeader
+              harness={data.harness}
+              honest={honestDetail}
+              kind={data.kind}
+              name={data.name}
+              path={path}
+              resolution={
+                <ResolutionBadge
+                  normalizerContractVersion={
+                    currentVersion?.normalizerContractVersion
+                  }
+                  resolvedState={data.resolvedState}
+                />
+              }
+              slug={data.slug}
+            />
 
-        <PropertiesPanel
-          collaborators={resolveComponentAuthors(data)}
-          honestSource={data.honestSource}
-          kind={data.kind}
-          properties={data.properties}
-          source={data.source}
-        />
+            <div
+              className={cn(
+                "grid grid-cols-2 gap-3",
+                metrics.length >= 6 ? "lg:grid-cols-6" : "lg:grid-cols-4"
+              )}
+            >
+              {metrics.map((metric) => (
+                <MetricCard
+                  info={metric.info}
+                  key={metric.key}
+                  label={metric.label}
+                  value={metric.value}
+                />
+              ))}
+            </div>
 
-        {/* FEA-4255: render the Definition section for every prompt-carrying
+            {/* FEA-4255: render the Definition section for every prompt-carrying
             kind (subagent/command/skill with an invocation signal), even when
             the body is missing — the panel owns the honest "No definition
             captured" empty state. Non-prompt kinds (Hook/Config/Tool/…) still
             show no Definition section: they legitimately carry no body. */}
-        {hasVersionHistoryAffordance(data.kind) ? (
-          // Key the panel by the component identity (`slug`) so its local
-          // `selectedHash` revision selection is reset on same-component
-          // navigation. On desktop the detail view can swap `data` in place
-          // (cached B replaces A without unmounting AgentDetail); without this
-          // key A's selected revision would survive into B, showing "No
-          // definition captured" even when B's current revision has content and
-          // leaving the Select value out of B's option set (wongk review).
-          <PromptPanel
-            key={data.slug}
-            prompt={data.prompt}
-            // ISS-5500: the same org-folded state the header badge renders, so
-            // the badge and the Definition panel can never tell two stories.
-            resolvedState={data.resolvedState}
-            // ISS-5029: absent (an older cloud, or the desktop's own uncapped
-            // local read) means "no evidence of truncation" — no marker, exactly
-            // today's rendering.
-            truncated={data.versionsTruncated === true}
-            versions={data.versions}
-          />
-        ) : null}
+            {hasVersionHistoryAffordance(data.kind) ? (
+              // Key the panel by the component identity (`slug`) so its local
+              // `selectedHash` revision selection is reset on same-component
+              // navigation. On desktop the detail view can swap `data` in place
+              // (cached B replaces A without unmounting AgentDetail); without this
+              // key A's selected revision would survive into B, showing "No
+              // definition captured" even when B's current revision has content and
+              // leaving the Select value out of B's option set (whitlockk review).
+              <PromptPanel
+                key={data.slug}
+                prompt={data.prompt}
+                // ISS-5500: the same org-folded state the header badge renders, so
+                // the badge and the Definition panel can never tell two stories.
+                resolvedState={data.resolvedState}
+                // ISS-5029: absent (an older cloud, or the desktop's own uncapped
+                // local read) means "no evidence of truncation" — no marker, exactly
+                // today's rendering.
+                truncated={data.versionsTruncated === true}
+                versions={data.versions}
+              />
+            ) : null}
 
-        {analytics?.(data)}
-      </div>
+            {/* ISS-10467: the per-version drill-down sits BELOW the family
+            headline and the Definition panel whose selector it mirrors, and
+            never replaces either. It needs a revision history to drill into, so
+            it renders only for a kind that has one and only when the org
+            actually holds revisions. */}
+            {versionUsageEnabled &&
+            hasVersionHistoryAffordance(data.kind) &&
+            data.versions.length > 0 ? (
+              <VersionUsagePanel
+                familyInvocations={data.invocations}
+                familySessions={data.sessions}
+                // Reset the panel's local revision selection on same-component
+                // navigation, exactly as the Definition panel above does: desktop
+                // swaps `data` in place, and A's selected revision must not survive
+                // into B and request a hash B has never had. PREFIXED because the
+                // Definition panel above is a SIBLING already keyed on the bare
+                // slug, and two children of one parent carrying the same key is a
+                // reconciliation React calls unsupported — it is free to treat them
+                // as one child and carry this panel's `selectedHash` into a slot
+                // that is not it.
+                key={`version-usage-${data.slug}`}
+                kind={data.kind}
+                slug={data.slug}
+                versions={data.versions}
+              />
+            ) : null}
 
-      {/* The Sessions/Branches table spans the full page width. */}
-      <div className="pb-6">
-        <Tabs className="gap-4" onValueChange={setActiveTab} value={activeTab}>
-          <div className="flex flex-wrap items-center justify-between gap-4 px-4">
-            <h3 className="font-semibold text-lg tracking-tight">
-              Invocations
-            </h3>
-            <div className="flex items-center gap-2">
-              <TabsList>
-                <TabsTrigger value="sessions">Sessions</TabsTrigger>
-                <TabsTrigger value="branches">Branches</TabsTrigger>
-                <TabsTrigger value="evidence">Evidence</TabsTrigger>
-              </TabsList>
-            </div>
+            <AgentInvocationFrequency
+              key={`frequency-${data.slug}`}
+              slug={data.slug}
+            />
           </div>
-          <TabsContent value="sessions">
-            <DetailSessionsTab
-              component={data}
-              getSessionHref={getSessionHref}
-              sessions={data.sessionsTab}
-              sessionsTabTruncated={data.sessionsTabTruncated}
-              usageSessions={data.usageSessions}
-              versions={data.versions}
-            />
-          </TabsContent>
-          <TabsContent value="branches">
-            <DetailBranchesTab
-              branches={data.branchesTab}
-              branchesTabTruncated={data.branchesTabTruncated}
-              usageSessions={data.usageSessions}
-              versions={data.versions}
-            />
-          </TabsContent>
-          <TabsContent value="evidence">
-            {data.invocationRows ? (
-              <InvocationEvidenceList
-                getSessionHref={getInvocationSessionHref}
-                page={data.invocationRows}
+          <section className="mt-8 pb-8">{invocationPanel}</section>
+        </div>
+      }
+      frame="flush"
+      key={data.slug}
+    />
+  );
+
+  return (
+    <>
+      {/* Page chrome above the shell, mounted on every tab, mirroring
+          `branch-shell-view.tsx` (operator ruling 2026-10-20). */}
+      <PageHeading>{data.name}</PageHeading>
+      <ArtifactDetailShell
+        activeTab={
+          activeTab === "branches" || activeTab === "evidence"
+            ? ArtifactDetailTab.Sessions
+            : activeTab
+        }
+        headerActions={headerAction?.(data)}
+        headerEnd={<CollaboratorStack users={resolveComponentAuthors(data)} />}
+        key={data.slug}
+        onActiveTabChange={setActiveTab}
+        panels={{
+          artifact: artifactPanel,
+          details: (
+            <div className="overflow-auto p-6">
+              <PropertiesPanel
+                collaborators={resolveComponentAuthors(data)}
+                honestSource={data.honestSource}
+                kind={data.kind}
+                properties={data.properties}
+                source={data.source}
               />
-            ) : (
-              <EmptyState
-                description="This data source does not record exact invocation evidence."
-                icon={FileX2Icon}
-                size="compact"
-                title="Evidence unavailable"
-              />
-            )}
-          </TabsContent>
-        </Tabs>
-      </div>
-    </div>
+              {analytics?.(data)}
+            </div>
+          ),
+          sessions: <div className="overflow-auto py-6">{invocationPanel}</div>,
+        }}
+        tabs={[
+          ArtifactDetailTab.Artifact,
+          ArtifactDetailTab.Details,
+          ArtifactDetailTab.Sessions,
+        ]}
+      />
+    </>
   );
 }

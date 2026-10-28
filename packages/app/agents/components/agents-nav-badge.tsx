@@ -1,15 +1,11 @@
 "use client";
 
 import { SidebarCountBadge } from "@repo/design-system/components/ui/sidebar-count-badge";
-import { useEffect } from "react";
-import { useAgentsActivityCount } from "../hooks/use-agents-activity-count";
-
-/**
- * Count above which the badge renders `9+` rather than the raw number, so a
- * long-idle surface never overflows the pill or misstates the value. The
- * accessible label still announces the true count.
- */
-const DISPLAY_CAP = 9;
+// Cross-slice on purpose: the shell's model owns when a navigation count may
+// render, so the legacy badge and the v2 sidebar cannot disagree on it.
+import { resolveNavigationBadgeCount } from "../../shell/v2/lib/navigation-section-model";
+import { useAgentsNavActivity } from "../hooks/use-agents-nav-activity";
+import { AGENTS_NAV_BADGE_MAX } from "../lib/agents-nav-count";
 
 type AgentsNavBadgeProps = Readonly<{
   /**
@@ -28,21 +24,20 @@ type AgentsNavBadgeProps = Readonly<{
  * count is announced with meaning rather than as a bare number.
  */
 export function AgentsNavBadge({ isActive }: AgentsNavBadgeProps) {
-  const { count, hasActivity, label, markVisited } = useAgentsActivityCount({
-    isActive,
-  });
+  const { count, label } = useAgentsNavActivity({ isActive });
+  // Only a settled, non-zero count renders. One still loading or one that could
+  // not be read shows nothing, exactly as a zero does.
+  const badgeCount = resolveNavigationBadgeCount(count);
 
-  // Opening Agents clears the "new since last visit" window. Effect (not render)
-  // so the visit stamp is a committed side effect, not a render-phase write.
-  useEffect(() => {
-    if (isActive) {
-      markVisited();
-    }
-  }, [isActive, markVisited]);
-
-  if (isActive || !hasActivity) {
+  if (isActive || badgeCount === null) {
     return null;
   }
 
-  return <SidebarCountBadge count={count} label={label} max={DISPLAY_CAP} />;
+  return (
+    <SidebarCountBadge
+      count={badgeCount}
+      label={label}
+      max={AGENTS_NAV_BADGE_MAX}
+    />
+  );
 }

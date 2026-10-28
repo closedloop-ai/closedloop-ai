@@ -1,5 +1,4 @@
 /**
- * @file help-on-this-button.test.tsx
  * @description Component tests for the contextual "Help on this" header
  * affordance (FEA-3846 / PRD-555 M4). Renders {@link HelpOnThisButton} with a
  * mocked `docsHelp` flag and a stubbed navigation `Link`, and asserts:
@@ -91,7 +90,7 @@ describe("HelpOnThisButton (FEA-3846)", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  // ISS-5037 (wongk review on PR #4341): `docsHelp` stays TRUE here. The Labs
+  // ISS-5037 (whitlockk review on PR #4341): `docsHelp` stays TRUE here. The Labs
   // container gate above it is off, which is what withdrew the Help destination
   // — this button must not keep offering a jump to it.
   it("renders nothing when docsHelp is on but the Labs container gate is off", () => {

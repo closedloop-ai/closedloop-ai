@@ -246,7 +246,10 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     expect(keys).toContain(JSON.stringify(branchesKeys.analyticsRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.cohortAnalyticsRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.pageDataRoot()));
-    expect(keys).toContain(JSON.stringify(branchesKeys.detail("local", "b1")));
+    // ISS-12279: every selected-PR variant of the branch's detail refreshes.
+    expect(keys).toContain(
+      JSON.stringify(branchesKeys.detail("local", "b1").slice(0, -1))
+    );
     // PLN-1148 Phase 2: the lazy trace is scoped to its own branch, not broad.
     expect(keys).toContain(JSON.stringify(branchesKeys.trace("local", "b1")));
     expect(keys).toContain(
@@ -269,7 +272,9 @@ describe("BranchesLiveBridge invalidation scoping", () => {
 
     const keys = invalidatedKeys();
     expect(keys).toContain(
-      JSON.stringify(branchesKeys.detail("local", "b1", queryIdentity))
+      JSON.stringify(
+        branchesKeys.detail("local", "b1", queryIdentity).slice(0, -1)
+      )
     );
     expect(keys).toContain(
       JSON.stringify(branchesKeys.trace("local", "b1", queryIdentity))

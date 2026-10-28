@@ -1,5 +1,5 @@
 /**
- * ISS-4922 (wongk review on PR #4274): the Labs wiring for
+ * ISS-4922 (whitlockk review on PR #4274): the Labs wiring for
  * `localSessionAuthoredPrGate`, proven through the LAUNCHED Electron app.
  *
  * The unit tests cover `localSessionPullRequests` with the boolean passed
@@ -65,7 +65,7 @@ const LOCAL_SESSION_AUTHORED_PR_GATE_FLAG_KEY = "localSessionAuthoredPrGate";
 
 const SESSION_ID = "iss-4922-mixed-pr-session";
 const SESSION_NAME = "iss-4922 mixed pr session";
-const REPO = "closedloop-ai/symphony-alpha";
+const REPO = "closedloop-ai/closedloop-ai";
 const REFERENCED_PR_NUMBER = 4275;
 /**
  * `SESSION_EMPTY_PULL_REQUESTS_LABEL` (`@repo/app`'s `detail-content`) — the

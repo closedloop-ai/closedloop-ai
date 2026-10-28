@@ -6,8 +6,14 @@ import {
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY } from "../../../../shared/lib/feature-flags";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import { makeBranchDetail } from "../../../__tests__/branch-fixtures";
+import { BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL } from "../../../lib/branch-outcome-copy";
+import {
+  PULL_REQUEST_AUTHOR_UNKNOWN_LABEL as AUTHOR_UNKNOWN,
+  PULL_REQUEST_BASE_UNKNOWN_LABEL as BASE_UNKNOWN,
+} from "../../../lib/pull-request-provenance-display";
 import { BranchDeliveredPanel } from "../branch-delivered-panel";
 
 const WHAT_DELIVERED = "What was delivered";
@@ -17,6 +23,10 @@ const NO_PR_DESC_RE = /no pull request opened yet/i;
 const SHOW_FULL_RE = /show full description/i;
 const SHOW_LESS_RE = /show less/i;
 const CLOSEDLOOP_ARTIFACT_RE = /closedloop artifact/i;
+const MEASURED_PROVENANCE = "Base main \u00b7 Opened by octocat";
+const UNKNOWN_PROVENANCE = `${BASE_UNKNOWN} \u00b7 ${AUTHOR_UNKNOWN}`;
+const OPENED_BY_OCTOCAT = "Opened by octocat";
+const OPEN_STATE_LABEL = "Open";
 const AUTOMATION_MARKER = "ISS-4783-AUTOMATION-METADATA";
 const MARKDOWN_BODY = `# Summary
 
@@ -85,21 +95,25 @@ describe("BranchDeliveredPanel", () => {
   it.each([
     BranchLinkedArtifactCollectionState.Incomplete,
     BranchLinkedArtifactCollectionState.Unavailable,
-  ])("does not render complete-empty copy for %s evidence", (collectionState) => {
-    render(
-      <BranchDeliveredPanel
-        detail={makeBranchDetail({
-          linkedArtifactsCollection: {
-            state: collectionState,
-            provenance: BranchLinkedArtifactCollectionProvenance.CloudPersisted,
-          },
-        })}
-      />
-    );
+  ])(
+    "does not render complete-empty copy for %s evidence",
+    (collectionState) => {
+      render(
+        <BranchDeliveredPanel
+          detail={makeBranchDetail({
+            linkedArtifactsCollection: {
+              state: collectionState,
+              provenance:
+                BranchLinkedArtifactCollectionProvenance.CloudPersisted,
+            },
+          })}
+        />
+      );
 
-    expect(screen.queryByText(NO_ARTIFACTS_RE)).not.toBeInTheDocument();
-    expect(screen.getByText(ARTIFACTS_UNAVAILABLE_RE)).toBeInTheDocument();
-  });
+      expect(screen.queryByText(NO_ARTIFACTS_RE)).not.toBeInTheDocument();
+      expect(screen.getByText(ARTIFACTS_UNAVAILABLE_RE)).toBeInTheDocument();
+    }
+  );
 
   it("does not add a technical completeness note to unavailable evidence", () => {
     render(
@@ -261,7 +275,7 @@ describe("BranchDeliveredPanel", () => {
 
     expect(screen.getByText("#42")).toBeInTheDocument();
     expect(screen.getByText("Add the thing")).toBeInTheDocument();
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText(OPEN_STATE_LABEL)).toBeInTheDocument();
     const link = screen.getByRole("link");
     expect(link).toHaveAttribute(
       "href",
@@ -307,7 +321,7 @@ describe("BranchDeliveredPanel", () => {
 
     expect(screen.getByText("#22")).toBeInTheDocument();
     expect(screen.getByText("Selected pull request")).toBeInTheDocument();
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText(OPEN_STATE_LABEL)).toBeInTheDocument();
     expect(screen.getByRole("link")).toHaveAttribute(
       "href",
       "https://github.com/octo/repo/pull/22"
@@ -334,7 +348,7 @@ describe("BranchDeliveredPanel", () => {
     );
 
     expect(screen.getByText("#22")).toBeInTheDocument();
-    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText(OPEN_STATE_LABEL)).toBeInTheDocument();
     expect(
       screen.queryByText("Compatibility pull request")
     ).not.toBeInTheDocument();
@@ -423,6 +437,8 @@ describe("BranchDeliveredPanel", () => {
         closedAt: null,
         mergedAt: null,
         body: MARKDOWN_BODY,
+        baseRefName: "main",
+        authorLogin: "octocat",
         headRefOid: "b".repeat(40),
         mergeCommitSha: null,
         changedFiles: 1,
@@ -559,6 +575,236 @@ describe("BranchDeliveredPanel", () => {
     // No PR → no external link.
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
+
+  // ISS-8422: the shape BOTH producers actually emit — a `selectedPullRequest`
+  // carrying `state: OPEN` beside `lifecycleObserved: false`. `state` is
+  // deliberately never widened to null, so this box read the raw OPEN and said
+  // "Open" while the selector two inches above said "Unconfirmed" about the same
+  // pull request. The compatibility-fallback case below CANNOT catch that: its
+  // fixture has no `selectedPullRequest` at all, so it never takes this arm.
+  it("states a SELECTED unobserved PR in box 2, never its placeholder OPEN", () => {
+    const base = selectedIdentityDetail();
+    const selected = base.selectedPullRequest;
+    if (!selected) {
+      throw new Error("the fixture must carry a selected pull request");
+    }
+    render(
+      <BranchDeliveredPanel
+        detail={{
+          ...base,
+          selectedPullRequest: {
+            ...selected,
+            lifecycleObserved: false,
+            state: GitHubPRState.Open,
+            title: null,
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText("#22")).toBeInTheDocument();
+    expect(
+      screen.getByText(BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(OPEN_STATE_LABEL)).not.toBeInTheDocument();
+  });
+
+  // The COMPATIBILITY arm, where no `selectedPullRequest` is present and the box
+  // falls back to `detail.prState`. Named for that arm deliberately: it was
+  // called "states an unobserved PR in box 2" while pinning only this half, and
+  // the sentence was read as coverage the production path never had.
+  it("states an unobserved PR from the legacy fields instead of falling silent", () => {
+    const detail = makeBranchDetail({
+      prNumber: 42,
+      prTitle: null,
+      prUrl: "https://github.com/octo/repo/pull/42",
+      prState: null,
+    });
+    render(<BranchDeliveredPanel detail={detail} />);
+
+    expect(screen.getByText("#42")).toBeInTheDocument();
+    expect(
+      screen.getByText(BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL)
+    ).toBeInTheDocument();
+    // Never the fabricated OPEN this whole change exists to stop restating.
+    expect(screen.queryByText(OPEN_STATE_LABEL)).not.toBeInTheDocument();
+  });
+
+  it("still renders no state chip when there is no pull request at all", () => {
+    const detail = makeBranchDetail({
+      prNumber: null,
+      prTitle: null,
+      prUrl: null,
+      prState: null,
+    });
+    render(<BranchDeliveredPanel detail={detail} />);
+
+    expect(
+      screen.queryByText(BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL)
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * ISS-8241 Half B — the flag-gated base ref and author on the pull-request box.
+ *
+ * The literal below is a deliberate copy of the shared `@repo/api` leaf, pinned
+ * here because the desktop Labs registry pins the same literal in
+ * `apps/desktop/test/feature-flags-cross-surface.test.ts` and neither surface
+ * imports the other. A rename that reached only one of them would leave the two
+ * fields visible on one surface and hidden on the other, which is the leak the
+ * closed-by-default policy requires both gates to prevent.
+ */
+describe("BranchDeliveredPanel selected-PR base ref and author (ISS-8241)", () => {
+  it("pins the flag key the desktop Labs toggle registers", () => {
+    expect(BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY).toBe(
+      "branch-detail-pr-base-and-author"
+    );
+  });
+
+  it("says nothing about the base ref or the author while the gate is closed", () => {
+    render(
+      <AppCoreStoryProviders>
+        <BranchDeliveredPanel detail={selectedIdentityDetail()} />
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
+    expect(screen.queryByText(OPENED_BY_OCTOCAT)).not.toBeInTheDocument();
+    expect(screen.queryByText(BASE_UNKNOWN)).not.toBeInTheDocument();
+    expect(screen.queryByText(AUTHOR_UNKNOWN)).not.toBeInTheDocument();
+  });
+
+  it("states the PR's own measured base ref and author when the gate is open", () => {
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel detail={selectedIdentityDetail()} />
+      </AppCoreStoryProviders>
+    );
+
+    // The ref is its own `font-mono` element, so `getByText` can never see the
+    // whole statement — assert the paragraph's text, which also pins that the
+    // two halves sit on ONE line in the stated order.
+    expect(
+      provenanceLine(screen.getByText(OPENED_BY_OCTOCAT))
+    ).toHaveTextContent(MEASURED_PROVENANCE);
+  });
+
+  // The branch's own `baseBranch` sits on the same detail and is a plausible
+  // stand-in, so an unmeasured base has to be seen NOT taking it: a PR that
+  // never reported a target must not inherit whichever target the branch points
+  // at now.
+  it("names an unmeasured base ref and author instead of borrowing the branch's base", () => {
+    const detail = selectedIdentityDetail();
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel
+          detail={{
+            ...detail,
+            baseBranch: "release/2026-09",
+            selectedPullRequest: detail.selectedPullRequest
+              ? {
+                  ...detail.selectedPullRequest,
+                  authorLogin: null,
+                  baseRefName: null,
+                }
+              : null,
+          }}
+        />
+      </AppCoreStoryProviders>
+    );
+
+    expect(provenanceLine(screen.getByText(BASE_UNKNOWN))).toHaveTextContent(
+      UNKNOWN_PROVENANCE
+    );
+    expect(screen.queryByText("release/2026-09")).not.toBeInTheDocument();
+  });
+
+  // ISS-8155's `""` absent form reaches this box through the same wire, and a
+  // nullish-only guard would render it as a blank that reads as "targets
+  // nothing" rather than as the named absence.
+  it("treats an empty measured value as absent, not as a blank", () => {
+    const detail = selectedIdentityDetail();
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel
+          detail={{
+            ...detail,
+            selectedPullRequest: detail.selectedPullRequest
+              ? {
+                  ...detail.selectedPullRequest,
+                  authorLogin: "",
+                  baseRefName: "  ",
+                }
+              : null,
+          }}
+        />
+      </AppCoreStoryProviders>
+    );
+
+    expect(provenanceLine(screen.getByText(BASE_UNKNOWN))).toHaveTextContent(
+      UNKNOWN_PROVENANCE
+    );
+  });
+
+  // A Desktop build newer than the cloud it reads receives these two keys
+  // OMITTED, not null — the shape crosses a deploy boundary with no schema to
+  // fill them in. Absent has to land in the same named absence as null and `""`,
+  // or a supported version-skew response renders a blank or throws.
+  it("names an omitted base ref and author instead of blanking the line", () => {
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel
+          detail={withoutProvenanceKeys(selectedIdentityDetail())}
+        />
+      </AppCoreStoryProviders>
+    );
+
+    expect(provenanceLine(screen.getByText(BASE_UNKNOWN))).toHaveTextContent(
+      UNKNOWN_PROVENANCE
+    );
+  });
+
+  // "the producer measured neither field" and "this response carries no PR
+  // record" are different states. Only the first is something to say about a
+  // pull request, so a compatibility response that has a PR NUMBER but no
+  // selected-PR record must stay silent rather than report two unknowns.
+  it("says nothing when the response carries a PR number but no PR record", () => {
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel
+          detail={{ ...selectedIdentityDetail(), selectedPullRequest: null }}
+        />
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.getByText("Pull request")).toBeInTheDocument();
+    expect(screen.queryByText(BASE_UNKNOWN)).not.toBeInTheDocument();
+    expect(screen.queryByText(AUTHOR_UNKNOWN)).not.toBeInTheDocument();
+  });
+
+  it("says nothing at all when the branch has no pull request to describe", () => {
+    render(
+      <AppCoreStoryProviders
+        enabledFlags={[BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY]}
+      >
+        <BranchDeliveredPanel detail={makeBranchDetail()} />
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.queryByText(BASE_UNKNOWN)).not.toBeInTheDocument();
+    expect(screen.queryByText(AUTHOR_UNKNOWN)).not.toBeInTheDocument();
+  });
 });
 
 function selectedIdentityDetail(): BranchPageDetail {
@@ -570,6 +816,8 @@ function selectedIdentityDetail(): BranchPageDetail {
     prUrl: "https://github.com/octo/repo/pull/11",
     selectedPullRequest: {
       additions: 10,
+      authorLogin: "octocat",
+      baseRefName: "main",
       body: "Selected body",
       changedFiles: 1,
       closedAt: null,
@@ -588,4 +836,27 @@ function selectedIdentityDetail(): BranchPageDetail {
       url: "https://github.com/octo/repo/pull/22",
     },
   });
+}
+
+/** The provenance paragraph that owns a rendered base-ref or author statement. */
+function provenanceLine(statement: HTMLElement): HTMLElement {
+  const line = statement.closest("p");
+  if (!line) {
+    throw new Error("the base ref and author statements must share one line");
+  }
+  return line;
+}
+
+/** The same detail with the ISS-8241 keys absent rather than null. */
+function withoutProvenanceKeys(detail: BranchPageDetail): BranchPageDetail {
+  const selected = detail.selectedPullRequest;
+  if (!selected) {
+    throw new Error("the fixture must carry a selected pull request");
+  }
+  const {
+    authorLogin: _authorLogin,
+    baseRefName: _baseRefName,
+    ...withoutProvenance
+  } = selected;
+  return { ...detail, selectedPullRequest: withoutProvenance };
 }

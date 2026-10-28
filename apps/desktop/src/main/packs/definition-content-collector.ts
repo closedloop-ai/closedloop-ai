@@ -41,6 +41,7 @@ import {
   commandUserTurnId,
   normalizeCommandComponentKey,
 } from "@repo/lib/sessions/command-user-turn-id";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { resolveClaudeHome, resolveCodexHome } from "./claude-home.js";
 import {
@@ -58,11 +59,8 @@ import {
   sha256Hex,
   upsertDefinitionVersion,
 } from "./definition-variant-fold.js";
-import {
-  getRecentProjectRoots,
-  type PackScannerDb,
-  parseSkillFrontmatter,
-} from "./pack-scanner.js";
+import { getRecentProjectRoots, type PackScannerDb } from "./pack-scanner.js";
+import { parseSkillFrontmatter } from "./skill-files.js";
 
 export type DefinitionCollectorSummary = {
   upserted: number;
@@ -143,7 +141,7 @@ function isUnder(child: string, parent: string): boolean {
  * A missing `installPath` (invocation-derived rows) yields null: those rows have
  * no local file and correctly carry no scope.
  *
- * `userScopeRoots` (ISS-4386, shafty023) makes scope derivation root-aware for
+ * `userScopeRoots` (ISS-4386, davetho) makes scope derivation root-aware for
  * harnesses whose user-global definitions do NOT live under `<home>/.claude/`:
  * OpenCode's user config home is `~/.config/opencode`, which none of the
  * `.claude`-shaped branches recognize, so without this a user-global OpenCode
@@ -304,14 +302,19 @@ function focusedInvocations(session: NormalizedSession): FocusedInvocation[] {
 }
 
 function defaultFocusedRoots(cwd: string | null): DefinitionCollectorRoots {
-  const projectSkillRoots = cwd
+  // ISS-11914: no reads inside a TCC-protected folder, which would raise a macOS
+  // permission prompt.
+  const projectCwd = cwd && !isTccProtectedPath(cwd) ? cwd : null;
+  const projectSkillRoots = projectCwd
     ? [
-        path.join(cwd, ".claude", "skills"),
-        path.join(cwd, ".agents", "skills"),
-        path.join(cwd, ".codex", "skills"),
+        path.join(projectCwd, ".claude", "skills"),
+        path.join(projectCwd, ".agents", "skills"),
+        path.join(projectCwd, ".codex", "skills"),
       ]
     : [];
-  const projectClaudeRoots = cwd ? [path.join(cwd, ".claude")] : [];
+  const projectClaudeRoots = projectCwd
+    ? [path.join(projectCwd, ".claude")]
+    : [];
   return {
     skillRoots: [
       ...projectSkillRoots,

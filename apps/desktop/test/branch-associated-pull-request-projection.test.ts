@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import {
+  BRANCH_STATUS_PARITY_CASES,
+  BranchStatusEvidence,
+  type BranchStatusParityCase,
+} from "@repo/api/src/branch-status-parity.test-fixtures";
+import { BranchStatus } from "@repo/api/src/types/branch";
 import {
   BranchAssociatedPullRequestCompletenessReason,
   BranchAssociatedPullRequestCompletenessState,
   BranchAssociatedPullRequestSelectionReason,
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { test } from "vitest";
 import {
+  type DesktopAssociatedPullRequestCandidate,
+  desktopAssociatedPullRequestCandidates,
   hasMultipleValidPullRequestNumbers,
   projectDesktopBranchAssociatedPullRequests,
   selectedDesktopPullRequestFields,
@@ -68,20 +76,38 @@ test("Desktop retains repository-qualified collisions and reports multiple activ
   );
 });
 
-test("Desktop reports an absent persisted lifecycle as unavailable", () => {
+// Desktop stores no GitHub lifecycle (operator ruling, ISS-12709): a PR the
+// transcript named stays visible by identity, and its state is not a reading.
+test("Desktop keeps a PR with no stored lifecycle as unobserved", () => {
   const result = projectDesktopBranchAssociatedPullRequests([
-    pr({ state: null }),
+    pr({ prNumber: 7, state: null }),
   ]);
 
-  assert.deepEqual(result.collection.items, []);
+  assert.deepEqual(
+    result.collection.items.map(({ number, lifecycleObserved }) => ({
+      number,
+      lifecycleObserved,
+    })),
+    [{ number: 7, lifecycleObserved: false }]
+  );
+  assert.equal(
+    result.collection.selectionReason,
+    BranchAssociatedPullRequestSelectionReason.Unobserved
+  );
   assert.equal(
     result.collection.completeness.state,
-    BranchAssociatedPullRequestCompletenessState.Unavailable
+    BranchAssociatedPullRequestCompletenessState.Complete
   );
-  assert.ok(
+  assert.equal(
     result.collection.completeness.reasons.includes(
       BranchAssociatedPullRequestCompletenessReason.InvalidLifecycle
-    )
+    ),
+    false
+  );
+  assert.equal(selectedDesktopPullRequestFields(result.selected).prState, null);
+  assert.equal(
+    statusForSelectedDesktopPullRequest(result.selected),
+    BranchStatus.Open
   );
 });
 
@@ -99,6 +125,47 @@ test("Desktop legacy warning ignores null and invalid PR numbers", () => {
     true
   );
 });
+
+/**
+ * ISS-9664 — the DESKTOP half of the cross-surface branch-status contract. The
+ * cloud half walks the same table through its own producer in
+ * `apps/api/app/branches/branch-status-cross-surface-parity.test.ts`; the two
+ * cannot be one test because neither app can import the other, so the shared
+ * fixture is what holds them together. Drift on this surface fails here.
+ *
+ * Before the fix this surface answered "draft" for the first two rows and
+ * "closed" for the last one.
+ */
+for (const parityCase of BRANCH_STATUS_PARITY_CASES) {
+  test(`Desktop branch status parity: ${parityCase.name}`, () => {
+    assert.equal(
+      statusForSelectedDesktopPullRequest(parityCandidate(parityCase)),
+      parityCase.expected
+    );
+  });
+}
+
+function parityCandidate(
+  parityCase: BranchStatusParityCase
+): DesktopAssociatedPullRequestCandidate | null {
+  if (parityCase.evidence === BranchStatusEvidence.None) {
+    return null;
+  }
+  const [candidate] = desktopAssociatedPullRequestCandidates([
+    pr({
+      isDraft: parityCase.isDraft,
+      state: parityCase.prState,
+      mergedAt:
+        parityCase.prState === GitHubPRState.Merged
+          ? "2026-08-02T00:00:00.000Z"
+          : null,
+    }),
+  ]);
+  if (parityCase.evidence === BranchStatusEvidence.Unobserved) {
+    return { ...candidate, lifecycleObserved: false };
+  }
+  return candidate;
+}
 
 function pr(overrides: Partial<BranchPrRow> = {}): BranchPrRow {
   const prNumber = overrides.prNumber ?? 1;

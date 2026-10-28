@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import {
   makeSession,
@@ -61,7 +61,6 @@ test("first-party CollectorManager logs first-pass backfill announce + completio
       importer: {
         importSession: async () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -87,7 +86,7 @@ test("first-party CollectorManager logs first-pass backfill announce + completio
     await new Promise((resolve) => setImmediate(resolve));
     nodeTestTimers.tick(25);
     await bootComplete;
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       logs.some((m) => BACKFILL_ANNOUNCE_RE.test(m)),
@@ -127,7 +126,6 @@ test("first-party CollectorManager still logs the lifecycle of a small first-pas
       importer: {
         importSession: async () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -153,7 +151,7 @@ test("first-party CollectorManager still logs the lifecycle of a small first-pas
     await new Promise((resolve) => setImmediate(resolve));
     nodeTestTimers.tick(25);
     await bootComplete;
-    manager.stop();
+    await manager.stop();
 
     const backfillLines = logs.filter((m) => BACKFILL_LINE_RE.test(m));
     assert.ok(
@@ -176,7 +174,7 @@ test("first-party CollectorManager still logs the lifecycle of a small first-pas
 test("first-pass progress counts a source only once it reaches a terminal outcome", {
   timeout: 15_000,
 }, async () => {
-  // wongk review (ISS-4917): the counter used to be bumped at the TOP of each
+  // whitlockk review (ISS-4917): the counter used to be bumped at the TOP of each
   // loop iteration, so a wedge on the first parse reported 1/N with nothing
   // actually imported, and the last source read N/N before the pass could
   // finish. Both the banner and the no-progress window read off this number.
@@ -204,7 +202,6 @@ test("first-pass progress counts a source only once it reaches a terminal outcom
       importer: {
         importSession: async () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: join(dir, "state"),
       emit: () => {},
       getCollectionMode: () => "disabled",
@@ -253,7 +250,7 @@ test("first-pass progress counts a source only once it reaches a terminal outcom
       sources.length,
       "every source is counted once the pass settles"
     );
-    manager.stop();
+    await manager.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

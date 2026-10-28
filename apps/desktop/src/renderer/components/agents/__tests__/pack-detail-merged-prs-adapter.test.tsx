@@ -1,6 +1,5 @@
 /**
- * @file pack-detail-merged-prs-adapter.test.tsx
- * @description ISS-6462 (wongk, #5096 review) — the DESKTOP half of the
+ * @description ISS-6462 (whitlockk, #5096 review) — the DESKTOP half of the
  * adapter→render regression for the Packs Performance "Merged PRs" tile.
  *
  * `PackDetail` is shared, so the shared component test
@@ -17,15 +16,22 @@
  */
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import { PackDetail } from "@repo/app/packs/components/pack-detail";
+import {
+  metricCardHintName,
+  metricCardText,
+} from "@repo/app/packs/lib/metric-card-test-readout";
 import type { PackView } from "@repo/app/packs/lib/pack-view";
 import { mockPackViews } from "@repo/app/packs/lib/pack-view-mock";
 import {
   createPacksContext,
   PacksMode,
 } from "@repo/app/packs/lib/packs-context";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import { packAnalyticsToBlocks } from "../plugin-pack-view";
@@ -33,6 +39,7 @@ import { packAnalyticsToBlocks } from "../plugin-pack-view";
 const CONTEXT = createPacksContext(PacksMode.DesktopTeam);
 const BASE_PACK = mockPackViews[0];
 const MERGED_PRS_LABEL = "Merged PRs";
+const SUCCESS_RATE_LABEL = "Success rate";
 /** Distinct merged PRs found inside a capped scan: a FLOOR, not a total. */
 const MERGED_PRS_FLOOR = 996;
 
@@ -59,14 +66,25 @@ function makeAnalytics(
 }
 
 /** Render the Performance tab from what the DESKTOP adapter produced. */
-function renderFromAnalytics(analytics: PackAnalyticsResponse): void {
+function renderFromAnalytics(
+  analytics: PackAnalyticsResponse,
+  options: { honest?: boolean } = {}
+): void {
   const { performance, teamUsage } = packAnalyticsToBlocks(analytics);
   const nav = createMemoryNavigation({
     initialPath: "/packs/code?tab=performance",
     orgSlug: "org-test",
   });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+    <FeatureFlagAdapterProvider
+      adapter={createStaticFeatureFlagAdapter({
+        enabledFlags: options.honest
+          ? [AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY]
+          : [],
+      })}
+    >
+      <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+    </FeatureFlagAdapterProvider>
   );
   const pack: PackView = { ...BASE_PACK, performance, teamUsage };
   render(<PackDetail context={CONTEXT} pack={pack} />, { wrapper });
@@ -110,5 +128,55 @@ describe("Desktop Packs Merged PRs tile, through the IPC adapter (ISS-6462)", ()
     // right here rather than shipping a silent full-cohort claim.
     expect(performance.mergedPrsTruncated).toBeUndefined();
     expect(mergedPrsTileText()).toBe("996");
+  });
+});
+/**
+ * ISS-9853 — the same desktop join for the Success-rate tile's population copy.
+ * The web twin lives beside the shared component test; this proves the DESKTOP
+ * adapter carries the coverage the tile reads, behind the same flag.
+ */
+describe("Desktop Packs Success rate tile, through the IPC adapter (ISS-9853)", () => {
+  it("narrows the headline when the response declared a sampled cohort", async () => {
+    renderFromAnalytics(makeAnalytics({ mergedPrsTruncated: true }), {
+      honest: true,
+    });
+
+    const hintName = metricCardHintName(SUCCESS_RATE_LABEL);
+    // `fireEvent`, not `user-event`: the desktop renderer suite does not carry
+    // that dependency, and the hint's trigger is a plain click handler.
+    fireEvent.click(screen.getByRole("button", { name: hintName }));
+
+    const hint = await screen.findByRole("dialog", { name: hintName });
+
+    expect(hint.textContent).toContain("Share of a sample");
+  });
+
+  it("names the comparator's sample in the delta caption", () => {
+    // A delta chip only renders with a delta, and the caption rides beside it.
+    renderFromAnalytics(
+      makeAnalytics({ baselineSampleSize: 500, successDelta: 9 }),
+      { honest: true }
+    );
+
+    expect(metricCardText(screen, SUCCESS_RATE_LABEL)).toContain(
+      "vs. last 500 baseline sessions"
+    );
+  });
+
+  it("says nothing about either sample with the flag off", () => {
+    renderFromAnalytics(
+      makeAnalytics({
+        baselineSampleSize: 500,
+        mergedPrsTruncated: true,
+        successDelta: 9,
+      })
+    );
+
+    expect(metricCardText(screen, SUCCESS_RATE_LABEL)).toContain(
+      "vs. baseline"
+    );
+    expect(metricCardText(screen, SUCCESS_RATE_LABEL)).not.toContain(
+      "baseline sessions"
+    );
   });
 });

@@ -195,6 +195,32 @@ describe("JudgeAnalyticsTable - judge rows", () => {
     );
   });
 
+  /**
+   * ISS-8534. The href interpolated `judge.promptName` raw while both API hooks
+   * for the same value encode it, so a name carrying `/` produced a link Next
+   * decodes back into a second path segment — a different, non-existent route.
+   */
+  test("percent-encodes promptName in the judge detail link", () => {
+    render(
+      <JudgeAnalyticsTable
+        data={[
+          makeJudge({
+            judgeName: "code-quality-judge",
+            promptName: "code/quality",
+            metricName: "code_quality_score",
+          }),
+        ]}
+        reportType={EvaluationReportType.Plan}
+      />
+    );
+
+    const link = screen.getByRole("link", { name: "code-quality-judge" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/test-org/judges-analytics/code%2Fquality?reportType=PLAN"
+    );
+  });
+
   test("shows tooltip content from API description", () => {
     render(
       <JudgeAnalyticsTable

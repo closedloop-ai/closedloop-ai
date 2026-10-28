@@ -40,14 +40,19 @@
 
 import { normalizeExplicitSchemaName } from "../schema-utils";
 import { createSqlClient, endQuietly, type SqlClient } from "./db-utils";
-import { SerializeLockContendedError } from "./migration-lock";
+import {
+  SerializeLockContendedError,
+  withMigrationSerializeLock,
+} from "./migration-lock";
 import {
   applyMigrationsToSchema,
   type MigrationPipelineDeps,
   runMigrateWithRetry,
 } from "./migration-pipeline";
+import { withPreviewBuildLock } from "./preview-clone-first";
 import { isPreviewSchema } from "./preview-schema";
 import { runPreviewSeed } from "./preview-seed";
+import { readVibeEnvironmentMarker } from "./vibe-environment";
 
 /** Default wall-clock budget for the whole walk. One-line tunable via env. */
 export const DEFAULT_PREVIEW_MIGRATOR_BUDGET_MS = 180_000;
@@ -111,8 +116,8 @@ export type MigrateAllPreviewsDeps = {
     baseDatabaseUrl: string
   ) => Promise<PreviewSchemaEntry[]>;
   /**
-   * Brings ONE preview schema to head and reports whether it was reset and
-   * whether a post-reset clone failed. Defaults to the shared pipeline core
+   * Brings ONE preview schema to head and reports whether it was reset; a
+   * failed post-reset clone throws. Defaults to the shared pipeline core
    * bound to fail-closed + a no-op recovery upsert. `remainingBudgetMs` is the
    * walk's remaining admission deadline, threaded into the serialize-lock wait
    * so no single schema can block on the lock past the deadline.
@@ -126,8 +131,11 @@ export type MigrateAllPreviewsDeps = {
     remainingBudgetMs: number,
     refreshDatabaseUrl: () => Promise<string>,
     branch: string | undefined
-  ) => Promise<{ didReset: boolean; cloneFailed: boolean }>;
-  /** Re-seeds a schema after a reset. Defaults to the real preview seed. */
+  ) => Promise<{ didReset: boolean; vibeEnvironment?: boolean }>;
+  /**
+   * Re-seeds a schema after a reset. Defaults to the real preview seed. Never
+   * called for a vibe environment (ISS-12056).
+   */
   runPreviewSeed?: (databaseUrl: string, schema: string) => void;
   /** Injected clock (ms). Defaults to `Date.now`. */
   now?: () => number;
@@ -145,7 +153,7 @@ function extractSqlstate(error: unknown): string | undefined {
  * canonical form the pipeline creates (`normalizeExplicitSchemaName` is a
  * fixed-point). This guards two things:
  *  - the SQL LIKE `_` wildcard (a `previewXfoo` match) — `isPreviewSchema` catches it;
- *  - a NON-canonical valid identifier like `preview_foo-bar` (review: wongk). The
+ *  - a NON-canonical valid identifier like `preview_foo-bar` (review: whitlockk). The
  *    seed path passes the name via `PGSCHEMA`, which `resolveSchemaName` normalizes
  *    (`preview_foo-bar` -> `preview_foo_bar`); if the canonical twin also exists the
  *    seed would write into the WRONG schema. We only ever created canonical names,
@@ -218,9 +226,15 @@ function noopRecoveryUpsert(): Promise<void> {
  * admission deadline. `refreshDatabaseUrl` re-signs the schema's IAM URL so the
  * post-clone index build never runs on an expired token (ISS-5285). `branch` is
  * the registry branch, threaded into the pipeline so a walk-triggered reset of
- * a `gh-readonly-queue/*` schema skips the data clone (ISS-5285). Exported for
- * tests; `overrides` is injectable like `defaultEnumeratePreviewSchemas`'s
- * `createClient` (production passes none).
+ * a `gh-readonly-queue/*` schema skips the data clone (ISS-5285). A schema
+ * whose build lock another run holds is skipped as contended after
+ * `PREVIEW_BUILD_LOCK_WALK_WAIT_MS`: that run brings it to head (ISS-11785).
+ * Exported for tests; `overrides` is injectable like
+ * `defaultEnumeratePreviewSchemas`'s `createClient` (production passes none).
+ *
+ * ISS-12056: a vibe environment's marker is read under the same build lock, so
+ * a reset here re-migrates it empty instead of cloning `public` into it, and the
+ * caller skips the FEA-1715 seed for it.
  */
 export function defaultApplyToSchema(
   databaseUrl: string,
@@ -229,32 +243,56 @@ export function defaultApplyToSchema(
   refreshDatabaseUrl: () => Promise<string>,
   branch: string | undefined,
   overrides: Partial<MigrationPipelineDeps> = {}
-): Promise<{ didReset: boolean; cloneFailed: boolean }> {
-  return applyMigrationsToSchema(
-    databaseUrl,
-    schema,
-    branch,
+): Promise<{ didReset: boolean; vibeEnvironment?: boolean }> {
+  const readMarker =
+    overrides.readVibeEnvironmentMarker ?? readVibeEnvironmentMarker;
+  return withPreviewBuildLock(
+    overrides.withMigrationSerializeLock ?? withMigrationSerializeLock,
     {
-      isNew: false,
-      serializeMode: "skip",
-      serializeBudgetMs: Math.max(1, remainingBudgetMs),
+      databaseUrl,
+      schema,
+      branch,
+      budgetMs: PREVIEW_BUILD_LOCK_WALK_WAIT_MS,
     },
-    {
-      runMigrate: (url, migrateSchema, migrateBranch, hooks, cli) =>
-        runMigrateWithRetry(
-          url,
-          migrateSchema,
-          migrateBranch,
-          noopRecoveryUpsert,
-          hooks,
-          cli
-        ),
-      // ISS-5285: the walk signs ONCE per schema, before this apply. A reset
-      // here runs a full data clone, which can outlive the 15-minute IAM token
-      // just as the direct pipeline can — so the post-clone index build gets a
-      // freshly-signed URL too (review: wongk).
-      refreshDatabaseUrl,
-      ...overrides,
+    async () => {
+      const vibeEnvironment = (await readMarker(databaseUrl, schema)) !== null;
+      const applied = await applyMigrationsToSchema(
+        databaseUrl,
+        schema,
+        branch,
+        {
+          isNew: false,
+          serializeMode: "skip",
+          serializeBudgetMs: Math.max(1, remainingBudgetMs),
+          vibeEnvironment,
+        },
+        {
+          runMigrate: (
+            url,
+            migrateSchema,
+            migrateBranch,
+            hooks,
+            cli,
+            previewReset
+          ) =>
+            runMigrateWithRetry(
+              url,
+              migrateSchema,
+              migrateBranch,
+              noopRecoveryUpsert,
+              hooks,
+              cli,
+              previewReset
+            ),
+          // ISS-5285: the walk signs ONCE per schema, before this apply. A reset
+          // here runs a full data clone, which can outlive the 15-minute IAM token
+          // just as the direct pipeline can — so the post-clone index build gets a
+          // freshly-signed URL too (review: whitlockk).
+          refreshDatabaseUrl,
+          ...overrides,
+        }
+      );
+      return vibeEnvironment ? { ...applied, vibeEnvironment } : applied;
     }
   );
 }
@@ -353,7 +391,7 @@ type MigrateOneSchemaDeps = {
     remainingBudgetMs: number,
     refreshDatabaseUrl: () => Promise<string>,
     branch: string | undefined
-  ) => Promise<{ didReset: boolean; cloneFailed: boolean }>;
+  ) => Promise<{ didReset: boolean; vibeEnvironment?: boolean }>;
   seed: (databaseUrl: string, schema: string) => void;
   logger: MigratorLogger;
 };
@@ -384,29 +422,18 @@ async function migrateOneSchema(
   const refreshDatabaseUrl = () => deps.signDatabaseUrl(schema);
 
   try {
-    const { didReset, cloneFailed } = await deps.applyToSchema(
+    const { didReset, vibeEnvironment } = await deps.applyToSchema(
       url,
       schema,
       remainingBudgetMs,
       refreshDatabaseUrl,
       branch
     );
-    // A reset whose data clone failed leaves the schema at migration head but
-    // data-empty/partial; because the at-head probe is migration-state only it
-    // would be skipped forever after. Surface it as `failed` (visible for triage
-    // / a real redeploy re-clone) rather than silently counting it succeeded
-    // (review: wongk).
-    if (didReset && cloneFailed) {
-      deps.logger.warn(
-        `⚠️ Preview migrator: ${schema} reset but data clone failed — left for redeploy re-clone (not counted succeeded).`
-      );
-      return "failed";
-    }
-    if (didReset) {
+    if (didReset && !vibeEnvironment) {
       // ISS-5285: `url` was signed before the apply, and a reset's data clone
       // can have burned most of the token's 15 minutes. The seed spawns a
       // subprocess that opens its own connection, so re-sign first; fall back to
-      // the original URL rather than skipping the seed (review: wongk).
+      // the original URL rather than skipping the seed (review: whitlockk).
       const seedUrl = await refreshDatabaseUrl().catch((error) => {
         deps.logger.warn(
           `⚠️ Preview migrator: could not re-sign URL for ${schema} seed, reusing the existing one: ${describe(error)}`
@@ -461,7 +488,7 @@ const PREVIEW_MIGRATOR_ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 /**
  * The kill-switch is OFF unless `PREVIEW_MIGRATOR_ENABLED` is an explicit truthy
  * token. A bare `if (process.env.PREVIEW_MIGRATOR_ENABLED)` is wrong — the string
- * `"false"` (or `"0"`) is truthy and would ENABLE the walk (review: wongk). Unset,
+ * `"false"` (or `"0"`) is truthy and would ENABLE the walk (review: whitlockk). Unset,
  * empty, `"false"`, `"0"`, and any other value all resolve to disabled.
  */
 export function isPreviewMigratorEnabled(
@@ -473,3 +500,6 @@ export function isPreviewMigratorEnabled(
     PREVIEW_MIGRATOR_ENABLED_VALUES.has(raw.trim().toLowerCase())
   );
 }
+
+/** How long the walk waits for a preview's build lock before skipping it. */
+const PREVIEW_BUILD_LOCK_WALK_WAIT_MS = 1000;

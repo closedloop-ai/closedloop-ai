@@ -6,12 +6,12 @@
  * fallback gate (both states), commit exclusion, and order-independence.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import {
   ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
+import { test } from "vitest";
 import {
   resolveSegmentWorkItemRefs,
   type SegmentSpan,
@@ -259,7 +259,7 @@ function mention(slugValue: string, occurredAtMs: number) {
 }
 
 test("AA-10: a session working TWO items splits per segment, not one winner", () => {
-  // The shape the audit found on 3d624f34: a first-item stretch, then a second.
+  // The shape the audit found on 3927c8aa: a first-item stretch, then a second.
   // No single-value-per-session rule can express this, which is why the old
   // code-point tie-break stamped one slug across both halves.
   const map = resolveSegmentWorkItemRefs(

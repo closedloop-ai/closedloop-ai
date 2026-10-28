@@ -17,14 +17,16 @@
  * that the surviving pass actually produced the records, so a fold that
  * collapsed the read by dropping the work could not read as a pass.
  *
- * The second case pins the boundary the fold had to carry across rather than
- * quietly widen: the scanner bailed the WHOLE file to `{toolUses: []}` on the
- * first malformed line, where the entries pass around it skips-and-counts.
+ * The second case pins what happens to a sidecar carrying a malformed line.
+ * The fold originally carried the old scanner's whole-file bail across
+ * (`{toolUses: []}` on the first malformed line); ISS-6454 dropped it, so the
+ * lane now skips-and-counts like every pass around it. That case asserts the
+ * surviving records on BOTH sides of the corruption.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 import {
@@ -117,11 +119,20 @@ test("ISS-5542: a sidecar transcript is opened once per import, not twice", asyn
   );
 });
 
-test("ISS-5542: a malformed sidecar line still drops that file's tool uses whole", async () => {
-  // The old scanner returned `{toolUses: []}` from the first malformed line —
-  // strictly narrower than the skip-and-count the entries pass applies, because
-  // a truncated line can split a `tool_use` block and half a block is not a tool
-  // use. The fold reproduces that posture; it must not inherit skip-and-count.
+test("ISS-6454: a malformed sidecar line is skipped, not a whole-file bail", async () => {
+  // BEHAVIOR CHANGE (ISS-6454), not a weakened assertion. This test previously
+  // asserted the opposite — `toolUses` empty — pinning the ISS-5542 rule that
+  // one malformed line discarded the file's entire tool-use projection.
+  //
+  // That rule was dropped because its stated hazard is unreachable here: it
+  // guarded against a truncated line splitting a `tool_use` block, but an
+  // unparseable line is dropped by `readJsonlLinesWithQuality` before any block
+  // is inspected. What it actually cost was a delegated agent losing every tool
+  // call it made while its tokens still counted toward the session.
+  //
+  // The fixture puts one tool use on EACH side of the corruption, so two
+  // survivors is the load-bearing part: it proves the scan continues past the
+  // malformed line rather than merely not bailing at the first one.
   const sessionId = "sess-malformed-sidecar";
   const filePath = writeClaudeTranscript(sessionId, DELEGATING_ONLY_PARENT, {
     subagents: {
@@ -155,13 +166,13 @@ test("ISS-5542: a malformed sidecar line still drops that file's tool uses whole
   assert.ok(subagent, "the sidecar must still produce a sub-agent row");
   assert.deepEqual(
     (subagent.toolUses ?? []).map((toolUse) => toolUse.name),
-    [],
-    "one malformed line drops the whole file's tool uses, as the scanner did"
+    ["Edit", "Edit"],
+    "the tool uses before AND after the malformed line must both survive it"
   );
 
-  // …and the bail stays scoped to the tool-use projection. Everything else the
-  // single pass derives is unchanged: the malformed line is counted, not
-  // swallowed, and the two well-formed turns are still billed.
+  // …and skipping the line does not swallow it. Everything else the single pass
+  // derives is unchanged: the malformed line is still COUNTED into parse
+  // quality, and the two well-formed turns are still billed.
   assert.equal(parsed.parseQuality?.malformedLines, 1);
   assert.equal(
     parsed.tokensByModel[MODEL]?.input,

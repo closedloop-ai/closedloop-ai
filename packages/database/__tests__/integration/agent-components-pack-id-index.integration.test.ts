@@ -24,8 +24,10 @@ import { settleAll } from "../test-helpers/settle-all";
  * This suite runs against a real Postgres that has had `prisma migrate deploy`
  * applied, so the index under test is the one the migration actually creates —
  * deleting the `CREATE INDEX` line from `migration.sql` fails every case here.
- * That is the point: the index is UNMANAGED by Prisma (its DSL cannot declare a
- * partial index), so nothing else in the repo would notice its absence.
+ * Since ISS-7476 the index is also declared in `schema.prisma`
+ * (`where: raw("(pack_id IS NOT NULL)")`), so the drift job would notice it
+ * disappearing; what only this suite can judge is the rest — that the index is
+ * the shape the plan needs and that it changes no result.
  *
  * Three things are asserted, and none of them can be judged by a mock:
  *

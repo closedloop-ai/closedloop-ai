@@ -8,7 +8,7 @@ import {
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ import { AuthAdapterProvider } from "../../../../shared/auth/provider";
 import { createStaticAuthAdapter } from "../../../../shared/auth/static-auth-adapter";
 import { FeatureFlagAdapterProvider } from "../../../../shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "../../../../shared/feature-flags/static-feature-flag-adapter";
+import { EXPECTED_TYPE_TAB_SEGMENTS } from "../../../__tests__/type-tab-strip-vocabulary";
 import type { AgentComponentsDataSource } from "../../../data-source/agent-components-data-source";
 import { AgentComponentsDataSourceProvider } from "../../../data-source/provider";
 import { AgentsGroupedList } from "../agents-grouped-list";
@@ -39,6 +40,9 @@ import { AgentsGroupedList } from "../agents-grouped-list";
 // Top-level regex constants (biome lint/performance/useTopLevelRegex). Exact
 // matches against the ToggleGroup type-tab aria-labels.
 const RE_ALL_TAB = /^All$/;
+/** The type strip's own `ToggleGroup` accessible name — the toolbar above it is
+ * another radio group, so the vocabulary assertions have to scope to this one. */
+const TYPE_TAB_GROUP_NAME = "Component type";
 const RE_COMMANDS_TAB = /^Commands$/;
 const RE_TOOLS_TAB = /^Tools$/;
 
@@ -89,6 +93,7 @@ const FIXTURE: AgentComponent[] = [
 function testDataSource(items: AgentComponent[]): AgentComponentsDataSource {
   return {
     scope: "test",
+    honorsDateWindow: false,
     list: () =>
       Promise.resolve({
         items,
@@ -142,6 +147,44 @@ function renderWorkspace(options: {
   const view = render(<AgentsGroupedList />, { wrapper });
   return { nav, ...view };
 }
+
+describe("AgentsGroupedList type-tab vocabulary (ISS-6271)", () => {
+  it("renders exactly the strip the fit and overflow suites are written against", async () => {
+    // Overflow forced OFF so every segment is on the strip rather than relocated
+    // into a menu: this asserts WHICH tabs exist, not how many fit.
+    renderWorkspace({ initialPath: "/agents", enabledFlags: [] });
+    await screen.findByText("My Orchestrator Agent");
+
+    const labels = within(typeTabStrip())
+      .getAllByRole("radio")
+      .map((tab) => tab.getAttribute("aria-label"));
+
+    expect(labels).toEqual(EXPECTED_TYPE_TAB_SEGMENTS.map((tab) => tab.label));
+  });
+
+  it("selects each segment from its own ?kind= permalink value", async () => {
+    // Pins the value/label PAIRING, which the labels alone cannot: Radix keeps
+    // the item's value out of the DOM, so a `value` that drifted from the kind
+    // production filters on is invisible above. `all` is excluded — it is not a
+    // kind, so a wrong value there falls back to All and matches anyway.
+    const kindSegments = EXPECTED_TYPE_TAB_SEGMENTS.filter(
+      (tab) => tab.value !== "all"
+    );
+    for (const segment of kindSegments) {
+      const view = renderWorkspace({
+        initialPath: `/agents?kind=${segment.value}`,
+        enabledFlags: [],
+      });
+      await screen.findByRole("radiogroup", { name: TYPE_TAB_GROUP_NAME });
+      const selected = within(typeTabStrip())
+        .getAllByRole("radio")
+        .find((tab) => tab.getAttribute("data-state") === "on");
+
+      expect(selected?.getAttribute("aria-label")).toBe(segment.label);
+      view.unmount();
+    }
+  });
+});
 
 describe("AgentsGroupedList type-tab permalink (FEA-3557)", () => {
   it("deep-links straight to the Commands tab from ?kind=command", async () => {
@@ -234,3 +277,7 @@ describe("AgentsGroupedList type-tab permalink (FEA-3557)", () => {
     );
   });
 });
+
+function typeTabStrip(): HTMLElement {
+  return screen.getByRole("radiogroup", { name: TYPE_TAB_GROUP_NAME });
+}

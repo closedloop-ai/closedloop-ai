@@ -1,5 +1,5 @@
 // Shared token-contract patterns + helpers for the Clerk appearance tests
-// (`appearance.test.ts`, `embedded-profile-appearance.test.ts`). The Parker
+// (`appearance.test.ts`, `embedded-profile-appearance.test.ts`). The Pascoe
 // design-system line forbids hard-coded hex colors and raw pixel values in the
 // appearance configs — every value must resolve to a design-system CSS custom
 // property. These patterns are the single source of truth for that check so the

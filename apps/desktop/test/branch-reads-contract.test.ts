@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
 import {
   aggregateBranchCostCompleteness,
@@ -17,6 +16,7 @@ import {
   TokenCostCompleteness,
   TokenSourceIdentityAvailability,
 } from "@repo/api/src/types/token-cost-provenance";
+import { test } from "vitest";
 import { buildDesktopBranchCostEvidence } from "../src/main/branch/branch-cost-evidence.js";
 import {
   readBranchLifecycleEventRowsForBranch,
@@ -45,22 +45,23 @@ import {
 
 /**
  * Contract test for the branch-reads layer on the single `DesktopPrisma` client.
- * Three reads are TYPED delegates and two of the assertions below prove the
- * typed paths against a real libSQL DB:
+ * The assertions below run every read against a real libSQL DB:
  *
- * - `readLocalBranchLinkRows` (`sessionArtifactLink.findMany` + nested artifact/
- *   session select; the `activityAt` COALESCE folded in JS) — proves the join,
- *   the COALESCE precedence, and that Int LOC columns arrive as JS numbers.
- * - `readDistinctBranchKeyRows` (`artifact.findMany` with `distinct`).
+ * - `readLocalBranchLinkRows` — RAW since ISS-10324 (a nested select binds one
+ *   host parameter per parent row and overflowed SQLite's variable limit). The
+ *   `activityAt` COALESCE is still folded in JS, so this proves the join, the
+ *   COALESCE precedence, and that the absent LOC reads as null.
+ * - `readDistinctBranchKeyRows` — RAW since ISS-10324 for the same reason; its
+ *   `SELECT DISTINCT` replaces the delegate's `distinct`.
  * - `readBranchUsageTokenRows` (`tokenUsage.findMany` filtered through the
- *   `TokenUsage.session` relation) — proves the relation resolves and the bigint
- *   token columns coerce to JS numbers.
+ *   `TokenUsage.session` relation) — the remaining TYPED delegate on this path;
+ *   proves the relation resolves and the bigint token columns coerce to numbers.
  *
  * It also seeds a non-branch (`kind='commit'`) artifact linked to the SAME
- * session to prove the typed `kind='branch'` `where` filters actually exclude
- * non-branch artifacts (the unit suite can only assert this for the raw reads).
+ * session to prove the `kind='branch'` filters actually exclude non-branch
+ * artifacts.
  *
- * `readBranchTokenAggregateRows` stays raw (SUM…GROUP BY over a fan-out join);
+ * `readBranchTokenAggregateRows` is raw too (SUM…GROUP BY over a fan-out join);
  * its assertion proves the raw path runs on the Prisma client and Number()-
  * coerces the aggregate totals the raw path can surface as bigint.
  */
@@ -82,20 +83,15 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
       "2026-06-01T01:00:00.000Z",
       "api"
     );
-    // A branch is an artifacts row (kind='branch') carrying the FEA-1899 LOC
-    // enrichment columns.
     await db.run(
       `INSERT INTO artifacts
          (id, identity_key, kind, repo_full_name, branch_name,
-          lines_added, lines_removed, files_changed, created_at, last_seen_at)
-       VALUES ($1, $2, 'branch', $3, $4, $5, $6, $7, $8, $8)`,
+          created_at, last_seen_at)
+       VALUES ($1, $2, 'branch', $3, $4, $5, $5)`,
       "art-b",
       "ik-branch",
       "acme/web",
       "feature/x",
-      100,
-      20,
-      5,
       "2026-06-01T00:00:00.000Z"
     );
     // FEA-2531: a `git_push` link is both a write method AND push evidence, so
@@ -108,7 +104,7 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
       "lnk-1",
       "2026-06-01T00:30:00.000Z"
     );
-    // A non-branch (commit) artifact linked to the SAME session. The typed reads
+    // A non-branch (commit) artifact linked to the SAME session. The branch reads
     // must NOT surface it: their `kind='branch'` where-filters exclude it. It
     // carries a WRITE method (`git_commit`) so the kind filter — not the FEA-2531
     // method filter — is what excludes it.
@@ -141,7 +137,7 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
       "claude-sonnet-4-5"
     );
 
-    // Link read (typed): branch artifact join + COALESCE(ended_at, started_at,
+    // Link read (raw since ISS-10324): branch artifact join + COALESCE(ended_at, started_at,
     // observed_at). The commit artifact's link must NOT add a row.
     const links = await readLocalBranchLinkRows(db.prisma);
     assert.equal(links.length, 1);
@@ -150,15 +146,14 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
     assert.equal(link.branchName, "feature/x");
     assert.equal(link.sessionId, "bs1");
     assert.equal(link.isPrimary, true);
+    assert.equal(link.successfulPushAt, "2026-06-01T00:30:00.000Z");
     // ended_at wins the COALESCE over started_at / observed_at.
     assert.equal(link.activityAt, "2026-06-01T01:00:00.000Z");
-    // INTEGER LOC columns must come back as JS numbers, not bigint.
-    assert.equal(link.linesAdded, 100);
-    assert.equal(typeof link.linesAdded, "number");
-    assert.equal(link.linesRemoved, 20);
-    assert.equal(link.filesChanged, 5);
+    assert.equal(link.linesAdded, null);
+    assert.equal(link.linesRemoved, null);
+    assert.equal(link.filesChanged, null);
 
-    // Distinct (repo, branch) key read (typed) — the commit artifact is excluded.
+    // Distinct (repo, branch) key read (raw since ISS-10324) — commit excluded.
     const keys = await readDistinctBranchKeyRows(db.prisma);
     assert.deepEqual(keys, [
       {
@@ -209,12 +204,7 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
   }
 });
 
-test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enriched branch", async () => {
-  // The production bug (Daniel's desktop): the branch artifact carries NO LOC
-  // while its merged PR artifact (kind='pull_request') IS enriched — the same
-  // source the delivery dashboard medians. The PR read must surface that LOC so
-  // the list projection can fall back to it. Proves the LEFT-JOIN SQL is valid
-  // libSQL AND that INTEGER LOC coerces to JS number (not bigint).
+test("readLocalBranchPrRows returns lifecycle rows with state, draft, merge time and LOC null", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "branch-reads-pr-loc-"));
   const db = await openSqliteAgentDatabase({
     dataDir: path.join(dir, "agent-dashboard.pgdata"),
@@ -231,7 +221,6 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
       "2026-06-01T01:00:00.000Z",
       "metered_api"
     );
-    // Branch artifact — UN-ENRICHED (lines_added/removed/changed all null).
     await db.run(
       `INSERT INTO artifacts
          (id, identity_key, kind, repo_full_name, branch_name,
@@ -253,12 +242,11 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
       "lnk-p1",
       "2026-06-01T00:30:00.000Z"
     );
-    // PR lifecycle row (no LOC columns — pull_requests never carries LOC).
     await db.run(
       `INSERT INTO pull_requests
-         (id, pr_url, pr_number, repo_full_name, branch_name, state,
-          merged_at, observed_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'closed', $6, $6, $6)`,
+         (id, pr_url, pr_number, repo_full_name, branch_name,
+          observed_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $6)`,
       "pr-1",
       "https://github.com/acme/web/pull/7",
       7,
@@ -267,20 +255,10 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
       "2026-06-11T10:00:00.000Z"
     );
     await db.run(
-      `INSERT INTO pull_request_status_observations
-         (id, repo_full_name, pr_number, state, is_draft, source,
-          observed_at, last_checked_at)
-       VALUES ($1, $2, $3, 'closed', 0, 'persisted-test', $4, $4)`,
-      "pr-observation-1",
-      "acme/web",
-      7,
-      "2026-06-11T10:01:00.000Z"
-    );
-    await db.run(
       `INSERT INTO pull_requests
-         (id, pr_url, pr_number, repo_full_name, branch_name, state,
+         (id, pr_url, pr_number, repo_full_name, branch_name,
           opened_at, observed_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $6)`,
       "pr-2",
       "https://github.com/acme/web/pull/8",
       8,
@@ -288,33 +266,6 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
       "feature/pr-enriched",
       "2026-06-12T10:00:00.000Z"
     );
-    await db.run(
-      `INSERT INTO pull_request_status_observations
-         (id, repo_full_name, pr_number, state, is_draft, source,
-          observed_at, last_checked_at)
-       VALUES ($1, $2, $3, 'open', 0, 'persisted-test', $4, $4)`,
-      "pr-observation-2",
-      "acme/web",
-      8,
-      "2026-06-12T10:01:00.000Z"
-    );
-    // PR artifact (kind='pull_request') — ENRICHED with LOC, matched by
-    // (repo_full_name, pr_number) to the lifecycle row above.
-    await db.run(
-      `INSERT INTO artifacts
-         (id, identity_key, kind, repo_full_name, pr_number,
-          lines_added, lines_removed, files_changed, created_at, last_seen_at)
-       VALUES ($1, $2, 'pull_request', $3, $4, $5, $6, $7, $8, $8)`,
-      "art-pr",
-      "ik-pr-artifact",
-      "acme/web",
-      7,
-      600,
-      22,
-      9,
-      "2026-06-01T00:00:00.000Z"
-    );
-
     const prs = await readLocalBranchPrRows(db.prisma);
     // `prNumber` is nullable on `BranchPrRow` (the read does not filter
     // unenriched rows out). Order a null LAST rather than coercing it to 0, so
@@ -332,12 +283,12 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
     assert.ok(pr);
     assert.equal(pr.branchName, "feature/pr-enriched");
     assert.equal(pr.prNumber, 7);
-    assert.equal(pr.isDraft, false);
-    // LOC comes from the joined PR artifact, coerced to JS number.
-    assert.equal(pr.linesAdded, 600);
-    assert.equal(typeof pr.linesAdded, "number");
-    assert.equal(pr.linesRemoved, 22);
-    assert.equal(pr.filesChanged, 9);
+    assert.equal(pr.state, null);
+    assert.equal(pr.isDraft, null);
+    assert.equal(pr.mergedAt, null);
+    assert.equal(pr.linesAdded, null);
+    assert.equal(pr.linesRemoved, null);
+    assert.equal(pr.filesChanged, null);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

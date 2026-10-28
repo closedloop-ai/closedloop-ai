@@ -13,6 +13,7 @@
  */
 
 import type { AgentComponentInvocationReadPage } from "./agent-component-invocation.ts";
+import type { InvocationLocPerDollarUncoveredOperand } from "./agent-component-invocation-lines.ts";
 import type { AgentSessionListItem } from "./agent-session.js";
 import type { CohortDeliveryMetrics } from "./analytics.js";
 import type { BranchRow } from "./branch.js";
@@ -22,26 +23,30 @@ import {
   resolveComponentSource,
 } from "./component-source.ts";
 
-// --- Inventory read caps ---
+// --- Inventory page size ---
 
 /**
- * Upper bound on the org agent-component inventory a single list call may
- * return, across every surface. The org inventory is a bounded, deduped set;
- * capping the working set keeps a pathological org (tens of thousands of raw
- * rows) from OOMing or timing out the request while comfortably exceeding any
- * realistic distinct-component count.
+ * Largest PAGE of the org agent-component inventory a single list call may
+ * return, across every surface.
  *
- * This is the ONE source of truth for the 5000 cap — import it everywhere
+ * ISS-6891: this is a PAGE bound, not a population bound. It used to be both —
+ * the server also stopped reading the org's inventory here — and because that
+ * stop was evaluated AFTER the request's `?kinds=`/`?search=` facets, each facet
+ * computed its own top-5,000 and a narrower filter surfaced components the
+ * unfiltered read had truncated away. The population reads carry no cap at all
+ * now (`apps/api/app/agent-components/org-population-reads.ts`); a caller reaches
+ * the rest of the population by paging, and `total`/`hasMore` describe the whole
+ * of it rather than a capped view.
+ *
+ * This is the ONE source of truth for the 5000 page bound — import it everywhere
  * instead of re-declaring the literal:
  *  - `apps/api/app/agent-components/validators.ts` — the max `limit` a caller
  *    may request (`AGENT_COMPONENT_LIST_MAX_LIMIT`).
- *  - `apps/api/app/agent-components/service.ts` — the cloud DB read cap
- *    (`MAX_ORG_INVENTORY_ROWS`).
- *  - `apps/desktop/src/main/shared-agent-components-api.ts` — the local-source
- *    `limit` clamp, so the shared workspace's full-inventory fetch is not
- *    truncated on desktop.
- *  - `packages/app/agents/lib/agents-timeframe.ts` — the workspace's
- *    single-page fetch limit (`AGENT_INVENTORY_FETCH_LIMIT`).
+ *  - `apps/desktop/src/main/dashboard/shared-agent-components-api.ts` — the
+ *    local-source `limit` clamp.
+ *  - `packages/app/agents/lib/agents-timeframe.ts` — the workspace's per-request
+ *    page size (`AGENT_INVENTORY_FETCH_LIMIT`), which the workspace now pages
+ *    through rather than treating as the whole inventory.
  */
 export const AGENT_COMPONENT_INVENTORY_CAP = 5000;
 
@@ -57,16 +62,21 @@ export const AGENT_COMPONENT_INVENTORY_CAP = 5000;
  * (`AGENTS_PAGE_SIZE` in `packages/app/agents/lib/agents-timeframe.ts`, held
  * equal by `detail-sessions-tab-truncation-total.test.tsx` — the lockstep guard
  * lives on the `packages/app` side because that is the only side that may
- * import both constants). Before this bound the read shipped up to
- * `MAX_DETAIL_SESSION_IN_IDS` (1000) fully-enriched session summaries — measured
+ * import both constants). Before this bound the read shipped up to 1,000
+ * fully-enriched session summaries — a fan-out ISS-9855 has since removed, measured
  * at 1_656_281 of 2_185_823 response bytes for a component with 1218 sessions —
  * and the tab then discarded 95% of them in a `slice(0, 50)`.
  *
  * The rows are chosen by `lastActivityAt DESC` in SQL, so the retained slice is
- * the recency head of the session-id set the detail read saw. The tab's notice
- * deliberately does NOT claim "most recent" — `resolveDetailSessionTabs` slices
- * that id set to `MAX_DETAIL_SESSION_IN_IDS` from an unordered group-by, so above
- * 1000 sessions it is the recency head of an arbitrary subset.
+ * the recency head of the session-id set the detail read saw. ISS-9855: that
+ * set is now sorted by `lastInvokedAt DESC` (the recency signal from the usage
+ * groupBy) instead of arriving from an unordered group-by, so this producer's
+ * 50 rows ARE its most-recently-invoked sessions.
+ *
+ * That does NOT license the tab to say "most recent" (whitlockk review): the
+ * desktop reader projects the same field from a local source that silently
+ * drops ids it cannot hydrate (`local-detail-session-tabs.ts`), so the claim
+ * would be false there. The notice stays recency-neutral.
  */
 export const AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS = 50;
 
@@ -300,6 +310,21 @@ export type AgentComponent = {
    * ({@link isLocPerDollarVerifiableKind}) — never a fabricated `0`.
    */
   locPerDollar: number | null;
+  /**
+   * ISS-10730: WHICH operand was uncovered when {@link locPerDollar} is null.
+   *
+   * A bare `null` says only that no number is shown; it cannot say whether the
+   * lines, the spend, or neither resolved — and a silently absent slot is the
+   * same defect as a deleted one (root AGENTS.md, "Never Delete a Capability
+   * You Cannot Compute"). Naming the operand is what makes the suppression
+   * honest rather than invisible.
+   *
+   * Emitted ONLY alongside a null `locPerDollar`; a resolved ratio carries no
+   * reason. Additive and optional, so a producer that predates this change is
+   * read exactly as today (absence = "reason not stated") and a version-skewed
+   * client that ignores it is unaffected.
+   */
+  locPerDollarUncoveredOperand?: InvocationLocPerDollarUncoveredOperand;
   /**
    * @deprecated ISS-4667 — the KLOC-unit predecessor of {@link locPerDollar}.
    * Present ONLY so a producer that predates ISS-4667 is still understood on
@@ -883,14 +908,20 @@ export type AgentComponentDetail = AgentComponent & {
    * ISS-5464: whether {@link branchesTab} is a bounded sample of the branches
    * that reference this component.
    *
-   * The branch attribution read fans out over the session-id set, which is
-   * `slice`d to `MAX_DETAIL_SESSION_IN_IDS` — so when that slice dropped
-   * sessions, branches reachable only through the dropped ones are missing and
-   * `branchesTab.length` is a floor. Unlike sessions there is no uncapped branch
-   * count anywhere on the detail, so the tab can state nothing BUT a floor;
-   * this flag is what tells it whether it has anything to disclose at all.
+   * ISS-9855: the cloud producer now walks EVERY session in bind-sized chunks,
+   * so it emits `false`, as the desktop producer always has. The flag stays on
+   * the wire for version skew: an older API still emits `true` past its slice,
+   * and the tab still honours it. Unlike sessions there is no uncapped branch
+   * count anywhere on the detail, so a `true` here is the tab's only way to
+   * know it must disclose a floor.
    */
   branchesTabTruncated: boolean;
+  /**
+   * ISS-9855: keyset cursor encoding the position of the last session on this
+   * page. `null` when all sessions fit on one page. Pass it to the optional
+   * source's sessionPage continuation; older clients may safely ignore it.
+   */
+  sessionsTabNextCursor?: string | null;
   /**
    * Per-device provenance: one entry per compute target that has an
    * `AgentComponent` row for this org-level identity. Populated on-read
@@ -902,6 +933,31 @@ export type AgentComponentDetail = AgentComponent & {
     scope?: string;
     projectPath?: string;
   }[];
+  /**
+   * ISS-6768: the per-user INSTALLER roster — the display names of the distinct
+   * org members whose compute targets carry a live inventory row for this
+   * identity, in the inventory read's `lastSeenAt DESC, id ASC` order.
+   *
+   * Folded by the same server-side function as `PackAnalyticsResponse.owners`
+   * (`installerRosterOf`), so the web Packs detail's "Used by" stack and the
+   * desktop overlay agree on who counts as an installer instead of one of them
+   * hardcoding an empty roster. The two responses still bound their own row
+   * POPULATION — the pack rollup scopes by `packId` and caps at
+   * `AGENT_COMPONENT_INVENTORY_CAP`, this one scopes by component identity — as
+   * they already do for every other metric they carry, so above that cap the two
+   * rosters can differ in the same way their device and usage counts already do.
+   *
+   * NOT {@link AgentComponent.owner} / {@link AgentComponent.collaborators},
+   * which model who AUTHORED the definition (discoverer + editors). A person can
+   * appear in one set and not the other, and conflating them would show authors
+   * as users and omit real users who never edited the definition.
+   *
+   * Additive and OPTIONAL: omitted by producers that do not compute it (the
+   * desktop local reader) and by version-skewed responses, so an absent value
+   * means "roster not available", never "nobody uses it". An EMPTY array is a
+   * measured empty from a producer that did compute it.
+   */
+  installers?: readonly string[];
   /**
    * Sessions in which this component was invoked, with optional branch
    * attribution derived on-read via the `artifact_link` SessionBranch join.
@@ -947,10 +1003,17 @@ export type AgentComponentDetail = AgentComponent & {
   analyticsKey?: string;
   /**
    * ISS-4403: the CONTENT SCOPE the detail's usage/session reads were actually
-   * narrowed to — the resolver's `effectiveFingerprint`. Present ONLY when the
-   * detail resolved via a real content-hash route (the URL carried a hash that
-   * matched a live inventory row), in which case it equals the full
-   * `component_version_hash` every usage lane on this page was filtered by.
+   * narrowed to. Present ONLY when the detail resolved via a real content-hash
+   * route (the URL carried a hash that matched a live inventory row), in which
+   * case it equals the full `component_version_hash` every usage lane on this
+   * page was filtered by.
+   *
+   * NOT the fingerprint out of the URL: that is the inventory row's coarse
+   * `content_hash`, while `component_version_hash` holds
+   * `computeDefinitionHash(content, kind)` — a domain-tagged digest of a
+   * different value. The desktop reader recomputes it from the matched row's
+   * captured content and emits THAT, so the number a consumer scopes by is the
+   * one actually on the usage rows.
    *
    * This is deliberately NOT {@link versionId}: `versionId` is the representative
    * bucket's fingerprint and is emitted even for a legacy name-level route (whose
@@ -1136,7 +1199,7 @@ export type SkillLoadedResponse = {
  *     session's LOC/cost can be PARTITIONED across the components co-invoked in
  *     it, a skill/command LOC/$ figure is session-level, not component-level, and
  *     would over-claim. They are excluded rather than render a misleading number
- *     (wongk, PR #3720). Re-add them here once session partitioning exists.
+ *     (whitlockk, PR #3720). Re-add them here once session partitioning exists.
  *   - `plugin` rolls up its children's usage (its own number is version-agnostic
  *     and not a single component's efficiency);
  *   - `mcp` / `tool` / `orchestration` are ambient tool calls, not session
@@ -1165,7 +1228,7 @@ export type SkillLoadedResponse = {
 const LOC_PER_DOLLAR_VERIFIABILITY: Record<AgentComponentKind, boolean> = {
   [AgentComponentKind.Subagent]: true,
   // Session-level attribution, not component-level — excluded until a session can
-  // be partitioned across its co-invoked components (wongk, PR #3720).
+  // be partitioned across its co-invoked components (whitlockk, PR #3720).
   [AgentComponentKind.Skill]: false,
   [AgentComponentKind.Command]: false,
   // Rolls up children / ambient tool calls / no per-component work signal.
@@ -1227,3 +1290,46 @@ export const PLUGIN_CHILD_KINDS: readonly AgentComponentKind[] = [
 export const PLUGIN_CHILD_KIND_SET: ReadonlySet<AgentComponentKind> = new Set(
   PLUGIN_CHILD_KINDS
 );
+
+/**
+ * ISS-8734: ceiling on the `offset` accepted by the agent-component list and
+ * the source-occurrence read. Level with `SESSION_LIST_MAX_OFFSET` and its
+ * siblings; rejected at the schema, never clamped.
+ *
+ * Shared rather than app-local because the MCP tool schema bounds the same
+ * value before it reaches the route, so an agent caller is told the range
+ * instead of being handed an opaque 400 — the shape `TAG_LIST_MAX_OFFSET` and
+ * `SESSION_LIST_MAX_OFFSET` already have.
+ */
+export const AGENT_COMPONENT_LIST_MAX_OFFSET = 10_000;
+
+/**
+ * ISS-9097: the three terms of {@link AgentComponentRow.locPerDollar}, split so
+ * the LOC definition registry can state them without a second spelling.
+ *
+ * SPLIT, never rewritten: `agent-component-loc-per-dollar-terms.test.ts`
+ * reassembles the numerator and the population into the sentence `locPerDollar`
+ * is documented with above, so neither half can drift into words no human
+ * approved. The DENOMINATOR is not a split of that sentence — it says "per
+ * dollar" and names no divisor — so the same file pins it against the
+ * population instead, which is the claim that can actually go wrong here.
+ *
+ * This is NOT the Sessions merged basis and must never be filed under it. There
+ * is no merge predicate anywhere in `apps/api/app/agent-components/loc-per-dollar.ts`
+ * — it sums every session that used the component — which is why
+ * `agents-table.tsx` and `detail-data.ts` both carry an ISS-5366 note refusing
+ * the word "merged" for this number.
+ */
+export const COMPONENT_LOC_PER_DOLLAR_NUMERATOR = "lines changed";
+
+export const COMPONENT_LOC_PER_DOLLAR_POPULATION =
+  "the sessions that used this component";
+
+export const COMPONENT_LOC_PER_DOLLAR_DENOMINATOR =
+  "estimated cost across the sessions that used this component";
+
+/** Invocation totals bucketed by the session's UTC start day, like frequency reads. */
+export type AgentComponentFrequency = {
+  windowDays: number;
+  points: Pick<SubagentFrequencyPoint, "day" | "invocations">[];
+};

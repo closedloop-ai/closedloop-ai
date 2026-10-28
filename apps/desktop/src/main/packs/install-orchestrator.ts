@@ -28,15 +28,16 @@
 
 import { spawn } from "node:child_process";
 import type { BrowserWindow } from "electron";
-import { getShellPathSync } from "../../server/shell-path.js";
+import { getShellPath } from "../../server/shell-path.js";
 import type { CatalogEntry } from "../../shared/agent-db-contract.js";
+import { dropOnDbHostLifecycleError } from "../../shared/db-host-fire-and-forget.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import {
   HARNESS_AUTO,
   StreamRunErrorCode,
   type StreamRunResult,
 } from "../../shared/install-run-contract.js";
 import { redriveOnDbHostExit } from "../database/db-host/db-host-exit-redrive.js";
-import { dropOnDbHostLifecycleError } from "../database/db-host/db-host-fire-and-forget.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
 import { stripAnsi } from "../diagnostics/diagnostics-helpers.js";
 import { sendToRendererWindow } from "../ipc/renderer-ipc.js";
@@ -188,7 +189,7 @@ export async function streamRun(
     });
   }
 
-  const childPath = getShellPathSync();
+  const childPath = await getShellPath();
 
   const resolved = resolveRunCommand(
     entry,
@@ -324,7 +325,11 @@ function sendIpc(
   data: unknown
 ): void {
   const chunk: InstallOutputChunk = { runId, type, data };
-  sendToRendererWindow(getWindow(), "desktop:pack:install-output", chunk);
+  sendToRendererWindow(
+    getWindow(),
+    DesktopRendererEventChannel.PackInstallOutput,
+    chunk
+  );
 }
 
 /**

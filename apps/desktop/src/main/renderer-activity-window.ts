@@ -10,7 +10,7 @@
  * event landed within the recent quiet window. The DB-read arm is the one that
  * matters for a hands-off-keyboard auto-refreshing/polling list reading the same
  * local DB the rebuild is writing — that fires no user-input event but is still
- * active UI serving that must hold the full pause (wongk, PR #4184). The
+ * active UI serving that must hold the full pause (whitlockk, PR #4184). The
  * user-input arm keeps parity with the existing `waitForRendererBackgroundSlot`
  * background-slot policy.
  */

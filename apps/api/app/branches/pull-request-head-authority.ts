@@ -143,12 +143,16 @@ export async function persistPullRequestHeadRepositoryAuthority(
       return false;
     }
 
-    if (
-      !(await claimWebhookReceipt(db, scope, incoming, webhookReceiptClaimed))
-    ) {
+    const claim = await claimWebhookReceipt(
+      db,
+      scope,
+      incoming,
+      webhookReceiptClaimed
+    );
+    if (claim === WebhookReceiptClaim.Lost) {
       return false;
     }
-    webhookReceiptClaimed = true;
+    webhookReceiptClaimed = claim === WebhookReceiptClaim.Claimed;
 
     const outcome = await applyAuthorityDecision(
       db,
@@ -162,12 +166,20 @@ export async function persistPullRequestHeadRepositoryAuthority(
     }
   }
 
-  log.error("github_repository_default_authority_stale_rejected", {
+  // Distinct event identity from the benign stale-observation rejection below:
+  // exhausting every compare-and-swap attempt loses the write, so this one is
+  // the integrity failure the production monitor pages on.
+  log.error("github_repository_default_authority_cas_exhausted", {
     organizationId: scope.organizationId,
     pullRequestDetailId: scope.pullRequestDetailId,
     observationKey: incoming.provenance.observationKey,
     reason: PullRequestHeadAuthorityDiagnosticReason.CompareAndSwapExhausted,
   });
+  // Only a claimed receipt is worth throwing over: it is a durable row, and the
+  // webhook caller's enclosing transaction is the only thing that can undo it.
+  // A non-webhook lane claimed nothing, so exhaustion there is a lost race the
+  // next bounded reconcile repairs — not an exception its caller would turn
+  // into a whole-repo backoff on a fetch that succeeded (ISS-8140).
   if (webhookReceiptClaimed) {
     throw new Error(
       "Webhook repository-default authority compare-and-swap exhausted"
@@ -176,19 +188,24 @@ export async function persistPullRequestHeadRepositoryAuthority(
   return false;
 }
 
-function claimWebhookReceipt(
+/**
+ * Owns the whole webhook/non-webhook distinction, so the caller cannot mistake
+ * "nothing to claim" for "claimed". Only a webhook observation has a durable
+ * receipt, and only a receipt makes a later failure something to roll back.
+ */
+async function claimWebhookReceipt(
   db: PullRequestAuthorityClient,
   scope: { organizationId: string; pullRequestDetailId: string },
   incoming: ResolvedHeadAuthority,
   alreadyClaimed: boolean
-): Promise<boolean> {
-  if (
-    incoming.provenance.mechanism !== GitHubFetchMechanism.Webhook ||
-    alreadyClaimed
-  ) {
-    return Promise.resolve(true);
+): Promise<WebhookReceiptClaim> {
+  if (incoming.provenance.mechanism !== GitHubFetchMechanism.Webhook) {
+    return WebhookReceiptClaim.NotWebhook;
   }
-  return claimRepositoryDefaultObservationReceipt(db, {
+  if (alreadyClaimed) {
+    return WebhookReceiptClaim.Claimed;
+  }
+  const claimed = await claimRepositoryDefaultObservationReceipt(db, {
     organizationId: scope.organizationId,
     targetKind: RepositoryDefaultObservationTargetKind.PullRequestDetail,
     targetId: scope.pullRequestDetailId,
@@ -196,6 +213,7 @@ function claimWebhookReceipt(
     observationKey: incoming.provenance.observationKey,
     observedAt: new Date(incoming.provenance.observedAt),
   });
+  return claimed ? WebhookReceiptClaim.Claimed : WebhookReceiptClaim.Lost;
 }
 
 async function applyAuthorityDecision(
@@ -214,7 +232,9 @@ async function applyAuthorityDecision(
     return outcome === "updated" ? true : "retry";
   }
   if (decision.kind === "stale") {
-    log.error("github_repository_default_authority_stale_rejected", {
+    // A newer observation already won this pull-request head. Expected under
+    // concurrent webhook delivery, so informational rather than an error.
+    log.info("github_repository_default_authority_stale_rejected", {
       organizationId: scope.organizationId,
       pullRequestDetailId: scope.pullRequestDetailId,
       observationKey: incoming.provenance.observationKey,
@@ -651,3 +671,12 @@ const PullRequestHeadAuthorityDiagnosticReason = {
   CompareAndSwapExhausted: "compare_and_swap_exhausted",
   StaleObservation: "stale_observation",
 } as const;
+
+/** Whether this attempt holds a durable receipt a failure would have to undo. */
+const WebhookReceiptClaim = {
+  NotWebhook: "not_webhook",
+  Claimed: "claimed",
+  Lost: "lost",
+} as const;
+type WebhookReceiptClaim =
+  (typeof WebhookReceiptClaim)[keyof typeof WebhookReceiptClaim];

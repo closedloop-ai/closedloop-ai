@@ -43,9 +43,9 @@ const UNATTRIBUTED_LANE = "Unattributed telemetry";
 const NARROW_COLUMN_PX = 320;
 
 const meta = {
-  title: "App Core/Agents/Tool Execution Flow",
+  title: "Composites v1.0/Agents/Detail/Tool Execution Flow",
   component: ToolExecutionFlow,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ToolExecutionFlow>;
 
@@ -199,7 +199,6 @@ function worker(
     type: parentExternalAgentId === null ? "main" : "subagent",
     subagentType: parentExternalAgentId === null ? null : "implement",
     status,
-    task: `${name} did its share of the slice.`,
     currentTool: null,
     startedAt: at(0),
     updatedAt: at(30),

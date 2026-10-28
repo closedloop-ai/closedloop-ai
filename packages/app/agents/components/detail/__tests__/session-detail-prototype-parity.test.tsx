@@ -1,5 +1,4 @@
 import {
-  DISPLAYED_SESSION_STATUS,
   SESSION_STATUS,
   STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
 } from "@repo/api/src/types/session-status";
@@ -19,8 +18,9 @@ import {
 /**
  * ISS-5818 — prototype-conformance regressions for the Sessions DETAIL page,
  * from the ISS-5593 VQA drift pass. The prototype
- * (`apps/prototypes/app/p/sessions/components/session-detail.tsx`) is the source
- * of truth; every assertion below pins production TO it.
+ * (`packages/app/agents/components/sessions/web-master-legacy-preview/components/session-detail.tsx`)
+ * was the source of truth during promotion; every assertion below pins the
+ * resulting production contract.
  *
  * These assert rendered STRUCTURE — which element the title's status chip is, in
  * which order the regions appear, which headings and landmarks the document
@@ -90,14 +90,14 @@ describe("ISS-5818 D1: the session status chip renders inside the title", () => 
     ).toBeInTheDocument();
   });
 
-  it("badges a silent active run Stale in the title, exactly as the list row does", () => {
+  it("keeps badging a silent active run Active in the title, exactly as the list row does", () => {
     // ISS-4997/ISS-4998 guard: the title chip must read the DISPLAYED status
-    // (`resolveDisplayedSessionStatus`), not raw `session.status`. A run still
-    // stored `active` but silent well past the staleness cutoff has to say
-    // "Stale" here for the same reason it does in the Sessions list — a pulsing
-    // green "Active" on a dead run is the precise lie those tickets removed, and
-    // reusing the list's chip without the list's derivation would reintroduce it
-    // on a brand-new surface.
+    // (`resolveDisplayedSessionStatus`), not raw `session.status`, so the title
+    // and the list cannot disagree about one run. ISS-10364 (operator ruling,
+    // 2026-09-23) retired the staleness fold that guard used to pin — the
+    // resolver no longer reads `now` at all — so a run still stored `active`
+    // but silent since 2020 now says "Active" here, for the same reason the
+    // Sessions list does.
     render(
       withProviders(
         <AgentSessionDetailView
@@ -111,13 +111,11 @@ describe("ISS-5818 D1: the session status chip renders inside the title", () => 
     const heading = screen.getByRole("heading", { level: 1 });
     const titleRow = heading.parentElement as HTMLElement;
     expect(
-      within(titleRow).getByText(
-        SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]
-      )
+      within(titleRow).getByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
     ).toBeInTheDocument();
-    expect(
-      within(titleRow).queryByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
-    ).toBeNull();
+    // "Stale" is a plain literal now — ISS-10364 retired the label this used to
+    // read from `SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]`.
+    expect(within(titleRow).queryByText("Stale")).toBeNull();
   });
 
   it("states status ONCE — the collapsed Properties strip stops repeating it", () => {
@@ -310,17 +308,14 @@ describe("ISS-5818 D5: the Comments rail heading", () => {
 });
 
 describe("ISS-5818 (#4739 review): the title chip's display derivation", () => {
-  it("badges an awaiting-input run Waiting even when its status still says active", () => {
-    /*
-     * The desktop-local shape. `mapDetail` inherits `mapListItem`'s status, and
-     * that mapper only projects Waiting when the INDEPENDENT
-     * `sessions-displayed-status-parity` Labs flag is on — so on a desktop
-     * install with only THIS layout flag enabled the payload arrives stored
-     * `active` with `awaitingInputSince` set. The cloud projects Waiting
-     * server-side, so without deriving it here the same session badges "Active"
-     * on desktop and "Waiting" on web: a cross-surface split created purely by
-     * turning on a layout flag.
-     */
+  /**
+   * ISS-10364 (operator ruling, Cosimo Corrigan, 2026-09-23/24) retired the
+   * Waiting projection this case used to pin: the title chip no longer reads
+   * `awaitingInputSince` at all, so a stored `active` row with the anchor set
+   * now badges plain Active — exactly like one with no anchor at all. Kept as
+   * the counterfactual for the withdrawn projection.
+   */
+  it("ISS-10364: badges an awaiting-input run plain Active, since the Waiting word is retired", () => {
     render(
       withProviders(
         <AgentSessionDetailView
@@ -334,25 +329,17 @@ describe("ISS-5818 (#4739 review): the title chip's display derivation", () => {
     const titleRow = screen.getByRole("heading", { level: 1 })
       .parentElement as HTMLElement;
     expect(
-      within(titleRow).getByText(
-        SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.WAITING]
-      )
+      within(titleRow).getByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
     ).toBeInTheDocument();
-    expect(
-      within(titleRow).queryByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
-    ).toBeNull();
   });
 
-  it("stops claiming Active once an open page crosses the staleness cutoff", () => {
+  it("keeps claiming Active once an open page crosses the old staleness cutoff (ISS-10364)", () => {
     /*
-     * A detail page is a surface that stays open for hours, and nothing
-     * re-renders it when the only thing that changed is the time. Left to the
-     * resolver's own `new Date()` the chip is fixed at whatever the last render
-     * caught, so a run that goes quiet under the reader's eyes keeps pulsing
-     * green until some unrelated state change repaints the page.
-     *
-     * Asserted AFTER the clock settles, not at first paint: the initial "Active"
-     * below is the precondition, and the flip is the behaviour under test.
+     * A detail page is a surface that stays open for hours. ISS-10364 (operator
+     * ruling, 2026-09-23) made `resolveDisplayedSessionStatus` stop reading
+     * `now` altogether, so the chip's word no longer depends on the clock and
+     * the coarse clock that used to advance it was deleted with the fold. This
+     * pins that the retired fold does not silently come back.
      */
     render(
       withProviders(
@@ -378,13 +365,11 @@ describe("ISS-5818 (#4739 review): the title chip's display derivation", () => {
     });
 
     expect(
-      within(titleRow).getByText(
-        SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]
-      )
+      within(titleRow).getByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
     ).toBeInTheDocument();
-    expect(
-      within(titleRow).queryByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
-    ).toBeNull();
+    // "Stale" is a plain literal now — ISS-10364 retired the label this used to
+    // read from `SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]`.
+    expect(within(titleRow).queryByText("Stale")).toBeNull();
   });
 });
 
@@ -570,15 +555,16 @@ function emptyTimelineSessionFixture() {
     lastActivityAt: FIXED_NOW,
     activityBuckets: [],
     markers: [],
-    timeline: [],
     turnItems: [],
     events: [],
   });
 }
 
 /**
- * A run still STORED `active` whose last activity is far past the display
- * staleness cutoff — the row the Sessions list badges "Stale".
+ * A run still STORED `active` whose last activity is far past the (retired,
+ * ISS-10364) display staleness cutoff — kept as the name it earned rather than
+ * renamed, since the fixture's shape (silent since 2020) is still the useful
+ * part; what it now proves is that going quiet no longer changes the badge.
  */
 function staleSessionFixture() {
   return createAgentSessionDetailFixture({

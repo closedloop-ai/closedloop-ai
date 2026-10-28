@@ -3,7 +3,8 @@ import {
   AgentComponentInvocationSyncAckState,
   AgentComponentInvocationSyncRejectReason,
 } from "@repo/api/src/types/agent-component-invocation";
-import { Result, Status } from "@repo/api/src/types/result";
+import { DesktopAgentComponentInvocationSyncRestErrorCode } from "@repo/api/src/types/desktop-write-lane";
+import { Result } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -47,27 +48,20 @@ describe("desktopAgentComponentInvocationsSyncService", () => {
     );
   });
 
-  it("returns forbidden without ingesting for an unowned target", async () => {
+  // ISS-11449: target ownership is now the ONLY refusal this service returns;
+  // the org session-sync policy denial (ISS-11426's `FeatureDisabled`) is gone.
+  it("returns target_not_owned without ingesting for an unowned target", async () => {
     mocks.findOwnedById.mockResolvedValueOnce(null);
 
     const result = await desktopAgentComponentInvocationsSyncService.sync(
       input()
     );
 
-    expect(result).toEqual(Result.err(Status.Forbidden));
-    expect(mocks.ingestPart).not.toHaveBeenCalled();
-  });
-
-  it("FEA-4169: denies (Status.Forbidden) when the org session-sync policy is OFF, without ingesting", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-
-    const result = await desktopAgentComponentInvocationsSyncService.sync({
-      ...input(),
-      isOrgPolicyEnabled,
-    });
-
-    expect(result).toEqual(Result.err(Status.Forbidden));
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith("org-1");
+    expect(result).toEqual(
+      Result.err(
+        DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned
+      )
+    );
     expect(mocks.ingestPart).not.toHaveBeenCalled();
   });
 
@@ -99,10 +93,6 @@ function input() {
     computeTargetId: "target-1",
     organizationId: "org-1",
     userId: "user-1",
-    // FEA-4169: inject the org-policy gate as allowed so the write-path tests
-    // exercise ingest without reaching the real DB-backed lookup. The policy-off
-    // denial is covered by its own case above.
-    isOrgPolicyEnabled: async () => true,
     part: {
       protocolVersion: AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
       externalSessionId: "session-1",

@@ -13,13 +13,20 @@
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { RendererReadyPhase } from "../../shared/renderer-ready-phase";
 import { DETAIL_FALLBACK_LABELS } from "../components/route-fallbacks";
+import { BRANCH_DETAIL_PLACEHOLDER_LABEL } from "../navigation/breadcrumb-model";
+import { pageTitleForNav } from "../navigation/nav-config";
+import { NavId } from "../navigation/route-table";
 import {
   findTopbarCurrentPage,
   installDesktopApi,
   renderDesktopApp,
   setupAppShellSuite,
 } from "./app-shell-harness";
+
+/** The legacy sidebar's Labs section header (inline in `Sidebar.tsx`). */
+const LABS_SECTION_LABEL = "Labs";
 
 function NativePageMarker({ id }: { id: string }) {
   return <div data-testid={`native-route:${id}`}>{id}</div>;
@@ -28,17 +35,15 @@ function NativePageMarker({ id }: { id: string }) {
 vi.mock("../components/UpdateBanner", () => ({
   UpdateBanner: () => null,
 }));
-// The marker surfaces `deepLinkTab` so the ISS-5310 `?tab=` wiring can be
-// asserted from the shell (where the NavigationProvider lives) rather than only
-// inside the panel's own unit suite.
-vi.mock("../components/settings/SettingsPanel", () => ({
-  SettingsPanel: ({ deepLinkTab }: { deepLinkTab?: string | null }) => (
-    <div
-      data-deep-link-tab={deepLinkTab ?? ""}
-      data-testid="native-route:settings"
-    >
-      settings
-    </div>
+// ISS-10195: Settings is no longer a nav PAGE. Retiring the
+// workspace-experience gate made the v2 modal unconditional, so `App.tsx` mounts
+// `DesktopSettingsModal` through `DesktopSettingsModalHost`; the legacy panel it
+// replaced was left with no route and deleted by ISS-10246. The marker moves
+// with the route so these cases still exercise App.tsx's routing rather than the
+// modal internals.
+vi.mock("../settings-v2/desktop-settings-modal", () => ({
+  DesktopSettingsModal: () => (
+    <div data-testid="native-route:settings">settings</div>
   ),
 }));
 vi.mock("../components/features/CoreFeaturesView", () => ({
@@ -52,12 +57,6 @@ vi.mock("../components/activity/ActivityPanel", () => ({
 }));
 vi.mock("../components/diagnostics/diagnostics-view", () => ({
   DiagnosticsView: () => <NativePageMarker id="diagnostics" />,
-}));
-// Audit Bot (FEA-3848) is Labs-gated; mock it to a marker so this suite
-// exercises App.tsx flag gating, not the view internals (covered by
-// audit-view.test.tsx). The static flag adapter defaults `auditBot` OFF here.
-vi.mock("../components/audit/audit-view", () => ({
-  AuditView: () => <NativePageMarker id="audit" />,
 }));
 // Branch detail (Epic C) is mocked to a marker so this suite exercises App.tsx
 // routing, not the detail page internals (covered by
@@ -79,18 +78,66 @@ vi.mock("../components/branches/branch-detail-view", () => ({
 describe("App shell routing and the Labs gate", () => {
   setupAppShellSuite();
 
-  it("keeps desktop-only native routes reachable from the shell", async () => {
+  it("announces navigation readiness after installing the route listener", async () => {
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const { notifyRendererReady } = installDesktopApi();
+
     await renderDesktopApp("");
 
-    const nativeRoutes = [
-      ["Plans", "plans"],
-      ["Approvals", "approvals"],
-      ["Requests", "requests"],
-      ["Diagnostics", "diagnostics"],
-      ["Settings", "settings"],
-    ] as const;
+    const listenerCall = addEventListener.mock.calls.findIndex(
+      ([event]) => event === "desktop:navigate-tab"
+    );
+    const listenerOrder =
+      addEventListener.mock.invocationCallOrder[listenerCall];
+    const notificationOrder = notifyRendererReady.mock.invocationCallOrder[0];
+    addEventListener.mockRestore();
+    expect(listenerCall).toBeGreaterThanOrEqual(0);
+    expect(notifyRendererReady).toHaveBeenCalledWith(
+      RendererReadyPhase.NavigationReady
+    );
+    expect(listenerOrder).toBeLessThan(notificationOrder);
+  });
 
-    for (const [, id] of nativeRoutes) {
+  it("keeps ungated desktop-only native routes reachable from the shell", async () => {
+    await renderDesktopApp("");
+
+    // ISS-8759 (desktop mirror): Approvals and Requests LEFT this list, and that
+    // is a behavior change rather than a dropped case. They used to sit in their
+    // own `gateway` section, exempt from the Labs fold and so from the `labsNav`
+    // container gate; the operator's 2026-09-03 direction moved them under Labs,
+    // which on desktop means gated. Their reachability is asserted below, on
+    // both sides of that gate, instead of being quietly deleted from here.
+    const nativeRoutes = ["plans", "diagnostics", "settings"] as const;
+
+    for (const id of nativeRoutes) {
+      window.location.hash = `#/${id}`;
+      expect(await screen.findByTestId(`native-route:${id}`)).toBeDefined();
+    }
+  });
+
+  it("gates the moved Approvals and Requests routes behind the Labs container", async () => {
+    // Gate CLOSED: the queues are no longer reachable by hash, exactly like
+    // every other Labs destination.
+    installDesktopApi({ labsNav: false });
+
+    await renderDesktopApp("");
+
+    for (const [id, title] of [
+      ["approvals", "Approvals"],
+      ["requests", "Requests"],
+    ] as const) {
+      window.location.hash = `#/${id}`;
+      expect(await screen.findByText(`${title} is turned off`)).toBeDefined();
+      expect(screen.queryByTestId(`native-route:${id}`)).toBeNull();
+    }
+  });
+
+  it("reaches the moved Approvals and Requests routes once Labs is on", async () => {
+    installDesktopApi({ labsNav: true });
+
+    await renderDesktopApp("");
+
+    for (const id of ["approvals", "requests"] as const) {
       window.location.hash = `#/${id}`;
       expect(await screen.findByTestId(`native-route:${id}`)).toBeDefined();
     }
@@ -137,7 +184,19 @@ describe("App shell routing and the Labs gate", () => {
     expect(
       await screen.findByRole("region", { name: "Your packs" })
     ).toBeDefined();
-    expect(window.desktopApi.db.getCatalog).toHaveBeenCalled();
+    // ISS-5821: the region is NOT a barrier for the catalog read, so this wait
+    // is the fix for a race, not a loosened expectation. The read is issued by
+    // `PluginsPanel`'s `reload()` (`plugins-panel.tsx`) from a PASSIVE effect,
+    // while the "Your packs" region is `MemberView` shell markup that paints
+    // before the catalog resolves — `app-shell-harness.tsx` says so outright,
+    // that an empty catalog is a valid ready state. `findByRole` resolves on
+    // the DOM mutation, so a synchronous assert here can beat the effect: the
+    // observed failures took ~560ms, a fast fail rather than an exhausted wait.
+    // The expectation still holds, because `LabsPageHold` never issues the
+    // read — a wrongly-resolved route exhausts this `waitFor` instead.
+    await waitFor(() =>
+      expect(window.desktopApi.db.getCatalog).toHaveBeenCalled()
+    );
   });
 
   // ISS-5037 (ISS-4779 closed-by-default): the Labs container gate. Driven at a
@@ -157,18 +216,29 @@ describe("App shell routing and the Labs gate", () => {
     expect(window.location.hash).toBe("#/packs");
     expect(await findTopbarCurrentPage("Packs")).toBeDefined();
     // One explicit way out, rather than an unexplained landing.
+    //
+    // Dashboard, not Sessions, because the destination itself moved:
+    // `DEFAULT_NAV_ID` is now the canonical Dashboard landing, and
+    // `labsPageRecovery` derives BOTH halves of this control from it, so the
+    // label and the href follow it together. Asserting them as a pair is the
+    // point — a derivation that produced one and hardcoded the other would put
+    // a lying label on this link, which is the defect the helper exists to stop.
     expect(
-      screen.getByRole("link", { name: "Go to Sessions" }).getAttribute("href")
-    ).toBe("#/sessions");
+      screen.getByRole("link", { name: "Go to Dashboard" }).getAttribute("href")
+    ).toBe("#/dashboard");
     // And no Labs section header or item is drawn in the sidebar.
-    expect(screen.queryByRole("button", { name: "Labs" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Insights" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: LABS_SECTION_LABEL })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: pageTitleForNav(NavId.Insights) })
+    ).toBeNull();
   });
 
-  // ISS-5037 (wongk review on PR #4341): the startup race the Hold outcome
-  // exists for. Every other shell case resolves `getAllFlags` immediately, so
-  // the hold branch was never exercised — this one keeps the snapshot in flight
-  // and only then releases it.
+  // ISS-5037 (whitlockk review on PR #4341): the startup race the Hold outcome
+  // exists for. Every other shell case settles the flag seed immediately, so
+  // the hold branch was never exercised — this one keeps the assignment in
+  // flight and only then releases it.
   it("holds a Labs deep link while the flag snapshot is in flight instead of declaring it off", async () => {
     let releaseFlags: (() => void) | undefined;
     installDesktopApi({
@@ -189,7 +259,7 @@ describe("App shell routing and the Labs gate", () => {
     ).toBeDefined();
     expect(screen.queryByText("Packs is turned off")).toBeNull();
     expect(window.desktopApi.db.getCatalog).not.toHaveBeenCalled();
-    // And Sessions never mounts on the way (wongk review on PR #4341): the
+    // And Sessions never mounts on the way (whitlockk review on PR #4341): the
     // hold must not fall through to the default surface even for one frame,
     // or an opted-in user's deep link flashes somebody else's page and fires
     // its queries. `pageData` is the Sessions view's own read — the sidebar
@@ -241,28 +311,44 @@ describe("App shell routing and the Labs gate", () => {
     // (ISS-4478), so its destinations are only in the DOM once it is opened;
     // expanding it here is what makes "and its destinations" a real claim
     // rather than a restatement of the header assertion above it.
-    const labsToggle = screen.getByRole("button", { name: "Labs" });
+    const labsToggle = screen.getByRole("button", { name: LABS_SECTION_LABEL });
     expect(labsToggle).toBeDefined();
     fireEvent.click(labsToggle);
     expect(await screen.findByRole("link", { name: "Insights" })).toBeDefined();
   });
 
-  // ISS-5310 (stage cid 3726701529): the shell reads `?tab=` and hands it to the
-  // panel. Without this the Labs "turned off" panel's "Open settings" button
-  // would land on Account while its copy named Labs — the link would resolve,
-  // and nothing would prove the tab it asked for ever reached the panel.
-  it("hands the ?tab= deep link from the Settings hash down to the panel", async () => {
+  // ISS-10195 NARROWED THESE, and the narrowing is the behavior change rather
+  // than a weakened test. The v2 modal reads `?panel=`; `?tab=` reaches no panel
+  // because no v2 panel owns these four legacy tabs. ISS-10286 carries that
+  // ownership decision. What still holds — and is all these cases now claim —
+  // is that the route RESOLVES to Settings and the alias normalizes, which is
+  // what `App.tsx` owns. The tab-to-panel half has no coverage here on purpose:
+  // there is nothing yet to cover.
+  it("opens Settings for a hash carrying a legacy ?tab=", async () => {
     await renderDesktopApp("#/settings?tab=labs");
 
-    const settings = await screen.findByTestId("native-route:settings");
-    expect(settings.getAttribute("data-deep-link-tab")).toBe("labs");
+    expect(await screen.findByTestId("native-route:settings")).toBeDefined();
   });
 
-  it("passes no tab when the Settings hash carries no ?tab=", async () => {
+  it("opens Settings for a plain hash carrying no ?tab=", async () => {
     await renderDesktopApp("#/settings");
 
-    const settings = await screen.findByTestId("native-route:settings");
-    expect(settings.getAttribute("data-deep-link-tab")).toBe("");
+    expect(await screen.findByTestId("native-route:settings")).toBeDefined();
+  });
+
+  it.each([
+    // ISS-10286: three of the four aliases now carry the v2 `panel` vocabulary,
+    // because the Labs → Desktop App panel owns their controls. Account did not
+    // move, so it keeps the legacy `tab` spelling nothing reads.
+    ["#/settings/account", "tab=account"],
+    ["#/settings/security", "panel=desktop-app"],
+    ["#/settings/relay-gateway", "panel=desktop-app"],
+    ["#/settings/cli-tools", "panel=desktop-app"],
+  ])("normalizes %s onto the canonical Settings route", async (hash, query) => {
+    await renderDesktopApp(hash);
+
+    expect(await screen.findByTestId("native-route:settings")).toBeDefined();
+    expect(window.location.hash).toBe(`#/settings?${query}`);
   });
 
   it("routes #/branches/:id to the branch detail view", async () => {
@@ -291,7 +377,9 @@ describe("App shell routing and the Labs gate", () => {
       DETAIL_FALLBACK_LABELS.branch
     );
     expect(currentPage.getAttribute("aria-current")).toBe("page");
-    expect(within(breadcrumb).queryByText("Branch")).toBeNull();
+    expect(
+      within(breadcrumb).queryByText(BRANCH_DETAIL_PLACEHOLDER_LABEL)
+    ).toBeNull();
   });
 
   // FEA-3560: the Branches list mirrors its facet filters into the hash query;
@@ -316,26 +404,8 @@ describe("App shell routing and the Labs gate", () => {
 
   // FEA-4262 branch-detail Back referrer resolution (`?from=session` → sessions
   // list, else Branches) lives in its own focused file —
-  // branch-detail-back-navigation.test.tsx — because this suite is grandfathered
-  // over the 1,000-line ceiling and therefore shrink-only.
-
-  it("hides the Audit nav entry and view when the auditBot flag is off", async () => {
-    // The static flag adapter defaults every flag OFF in this harness, so the
-    // Labs-gated Audit surface must not appear and a direct #/audit nav must
-    // fall through to Sessions rather than render the (mocked) Audit view.
-    renderDesktopApp("");
-
-    const labsToggle = await screen.findByRole("button", { name: "Labs" });
-    fireEvent.click(labsToggle);
-    // Insights is a Labs entry that is always present; Audit Bot is gated off.
-    expect(await screen.findByRole("link", { name: "Insights" })).toBeDefined();
-    expect(screen.queryByRole("link", { name: "Audit Bot" })).toBeNull();
-
-    window.location.hash = "#/audit";
-    // Falls through to Sessions (no audit marker renders).
-    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
-    expect(screen.queryByTestId("native-route:audit")).toBeNull();
-  });
+  // branch-detail-back-navigation.test.tsx — so this suite keeps the one
+  // responsibility the ISS-5147 split gave it.
 
   it("renders a linked Sessions breadcrumb with the session name on the session detail page", async () => {
     await renderDesktopApp("#/sessions/s-active");

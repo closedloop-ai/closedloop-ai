@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeBranchFiltersForMode,
   parseBranchFilterParams,
+  parseBranchPageParam,
   writeBranchFilterParams,
+  writeBranchPageParam,
 } from "../branch-filter-params";
 import {
   type BranchFilters,
@@ -20,6 +22,17 @@ import {
  * param mapping itself.
  */
 describe("branch facet filter URL params", () => {
+  it("round-trips a one-based bookmark and repairs malformed pages to zero", () => {
+    const params = new URLSearchParams();
+    writeBranchPageParam(params, 2);
+    expect(params.toString()).toBe("page=3");
+    expect(parseBranchPageParam(params)).toBe(2);
+    expect(parseBranchPageParam(new URLSearchParams("page=0"))).toBe(0);
+    expect(parseBranchPageParam(new URLSearchParams("page=nope"))).toBe(0);
+    writeBranchPageParam(params, 0);
+    expect(params.has("page")).toBe(false);
+  });
+
   it("round-trips every facet — incl. session presence + LOC range — through the URL", () => {
     const filters: BranchFilters = {
       ...DEFAULT_BRANCH_FILTERS,
@@ -109,7 +122,7 @@ describe("branch facet filter URL params", () => {
       ...DEFAULT_BRANCH_FILTERS,
       names: ["feature/ui"],
       owners: ["Alex", "github:alex"],
-      collaborators: ["github:kris"],
+      collaborators: ["github:kerensa"],
       repos: ["web", "acme/web", RENDER_MISSING],
       pullRequests: ["linked"],
       sessionPresence: [BranchSessionPresence.Has],

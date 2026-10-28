@@ -12,6 +12,7 @@ import { buildComponentVersions } from "@repo/api/src/types/agent-component";
 import type { ComponentSourceProvenance } from "@repo/api/src/types/component-source";
 import type { TransactionClient, withDb } from "@repo/database";
 import { SourceAccessState, SourceOccurrenceType } from "@repo/database";
+import { escapeSqlLikeLiteral } from "@/lib/sql-like";
 
 /**
  * The Prisma client handed to a `withDb`/`withDb.tx` callback — the read methods
@@ -53,8 +54,34 @@ type DbClient = Parameters<Parameters<typeof withDb>[0]>[0];
 export type RegisterDefinitionInput = {
   /** Authenticated caller's org. Threaded into every where/create. */
   organizationId: string;
-  /** The component kind whose bytes are fingerprinted. Folded into the hash. */
+  /**
+   * The component kind whose bytes are fingerprinted. Folded into the hash.
+   *
+   * ALWAYS the RAW kind, never an index-safe projection of it — see
+   * {@link RegisterDefinitionInput.storedComponentKind}.
+   */
   componentKind: AgentComponentKind;
+  /**
+   * The spelling written to the denormalized `componentKind` COLUMN, when it has
+   * to differ from the fingerprint input.
+   *
+   * ISS-8201 (codex P2 + whitlockk review, PR #7220): `DefinitionVersion` carries
+   * `@@index([organizationId, componentKind])`, so the desktop sync lane projects
+   * an over-long kind down to the byte budget before writing it. Passing that
+   * projection as `componentKind` would have folded it into `definitionHash` —
+   * and the hash IS the version identity (`@@unique([organizationId,
+   * definitionHash])`). That rekeys every version already accepted under a raw
+   * multibyte kind: a resync misses the existing row, inserts a duplicate
+   * `DefinitionVersion`, and moves the `AgentComponentVersion` link onto it,
+   * while the same content registered through another producer (packs, F6
+   * discovery) — which has no projection — keeps the raw-kind identity and splits
+   * the provenance in two.
+   *
+   * So the two are separated: the fingerprint always folds the RAW kind, and only
+   * the index-bearing column takes the projection. Defaults to `componentKind`,
+   * so every caller that has no projection is unchanged.
+   */
+  storedComponentKind?: AgentComponentKind;
   /** Whole-file definition text (the Prompt-panel content). */
   content: string;
   /** Source format (md, json, yml, …) at first observation; null when unknown. */
@@ -371,13 +398,18 @@ export async function getVersionsForComponent(
   // name-level reads already carry (FEA-3750). Both the body page and the
   // sentinel probe below share this object, so they can never disagree about
   // which rows the history spans.
-  const where = {
+  //
+  // ISS-6757: the key is escaped because Prisma compiles `mode: "insensitive"`
+  // to a bare `ILIKE $n` with no `ESCAPE` clause, so an unescaped `_` in a key
+  // like `mcp__closedloop__ping` matches ANY character and this history would
+  // splice in `mcpXXclosedloopYYping`'s revisions. Same escaping as the
+  // name-level inventory predicate (agent-components/content-hash-identity.ts),
+  // so the two stay one identity rule.
+  const where = componentVersionKeyWhere(
     organizationId,
     componentKind,
-    OR: componentKeys.map((componentKey) => ({
-      componentKey: { equals: componentKey, mode: "insensitive" as const },
-    })),
-  };
+    componentKeys
+  );
   const orderBy = [
     { lastSeenAt: "desc" as const },
     { firstSeenAt: "desc" as const },
@@ -553,7 +585,9 @@ export async function ensureDefinitionVersion(
     },
     create: {
       organizationId: input.organizationId,
-      componentKind: input.componentKind,
+      // The INDEX-safe spelling; the hash above folded the raw kind. These are
+      // the same string for every caller that passes no projection.
+      componentKind: input.storedComponentKind ?? input.componentKind,
       definitionHash,
       normalizerContractVersion,
       content: input.content,
@@ -570,7 +604,7 @@ export async function ensureDefinitionVersion(
 }
 
 /**
- * FEA-3982 (Mike-approved edit-lineage capture): idempotently record that
+ * FEA-3982 (Marisol-approved edit-lineage capture): idempotently record that
  * `userId` authored/observed this exact version hash. Atomic upsert on the
  * `(definitionVersionId, userId)` unique key — a re-observation only bumps
  * `lastEditedAt`, never duplicates and never races (no findFirst-then-write). A
@@ -590,7 +624,7 @@ async function recordDefinitionVersionEditor(
   if (!editorUserId) {
     return;
   }
-  // FEA-3982 (wongk): one atomic INSERT … ON CONFLICT DO UPDATE with LEAST/GREATEST
+  // FEA-3982 (whitlockk): one atomic INSERT … ON CONFLICT DO UPDATE with LEAST/GREATEST
   // on the observation window, instead of an upsert + two guarded updateMany
   // round-trips. The `(definition_version_id, user_id)` unique key arbitrates the
   // race; `LEAST`/`GREATEST` keep `first_edited_at` monotonically earliest and
@@ -638,6 +672,7 @@ export type EnsureDefinitionVersionInput = Pick<
   RegisterDefinitionInput,
   | "organizationId"
   | "componentKind"
+  | "storedComponentKind"
   | "content"
   | "format"
   | "observedAt"
@@ -734,4 +769,34 @@ export async function getSourceOccurrencesPage(
     }),
   ]);
   return { items: rows.map(toSourceOccurrenceDto), total };
+}
+
+/**
+ * The version-row predicate for one component family, as ONE object.
+ *
+ * Exported because a THIRD reader appeared (ISS-10467's per-version drill-down,
+ * `agent-components/service/version-usage-identity.ts`), and a hand-copy of this
+ * predicate is not merely duplication here: the drill-down admits exactly the
+ * hashes the detail's version selector offered, so if the two spellings drift —
+ * a normalization step added on one side, a change to the ISS-6757 escaping, a
+ * move off `mode: "insensitive"` — the selector offers a revision the drill-down
+ * then answers with nulls, and a revision with real usage renders as an em dash.
+ * Calling one builder is what makes that class of drift a compile unit rather
+ * than a review catch.
+ */
+export function componentVersionKeyWhere(
+  organizationId: string,
+  componentKind: string,
+  componentKeys: readonly string[]
+) {
+  return {
+    organizationId,
+    componentKind,
+    OR: componentKeys.map((componentKey) => ({
+      componentKey: {
+        equals: escapeSqlLikeLiteral(componentKey),
+        mode: "insensitive" as const,
+      },
+    })),
+  };
 }

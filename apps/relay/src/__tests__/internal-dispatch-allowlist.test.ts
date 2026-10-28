@@ -3,6 +3,23 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { InstanceInfo } from "../target-registry.js";
 import { reserveTestPort } from "./helpers/reserve-test-port.js";
 
+// `flush` and `debug` are stubbed even though this file drives neither:
+// @repo/observability/shutdown calls log.flush(), and it is reachable from the
+// relay entrypoint this suite imports, so a partial double fails as a TypeError
+// rather than an assertion the moment a case reaches it.
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+const { log } = await import("@repo/observability/log");
+const logInfo = vi.mocked(log.info);
+
 const TEST_PORT = await reserveTestPort(27_000, 1500);
 const TEST_SECRET = "test-internal-secret";
 const TEST_API_URL = "http://127.0.0.1:19877";
@@ -16,6 +33,9 @@ vi.mock("socket.io", () => {
   const mockNamespace = { use: vi.fn(), on: vi.fn() };
   return {
     Server: class MockServer {
+      // Engine.IO stub: index.ts attaches a `connection_error` listener to
+      // `io.engine` at module load, so a Server double without one crashes on import.
+      engine = { on: vi.fn() };
       of() {
         return mockNamespace;
       }
@@ -36,12 +56,12 @@ beforeAll(async () => {
   process.env.RELAY_INTERNAL_ALLOWED_IPS = "10.0.0.0/foo,192.168.0.0/16";
 
   const relayModule = await import("../index");
+  const peerDispatchModule = await import("../peer-dispatch");
   await relayModule.startRelayServer("127.0.0.1");
   stopRelay = relayModule.stopRelayServer;
-  isAllowedPeerInstance = relayModule.isAllowedPeerInstance;
+  isAllowedPeerInstance = peerDispatchModule.isAllowedPeerInstance;
 
   baseUrl = `http://127.0.0.1:${TEST_PORT}`;
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
 }, 30_000);
 
 afterAll(async () => {
@@ -76,6 +96,13 @@ function post(
 
 describe("POST /internal/dispatch with a CIDR allowlist", () => {
   it("forbids a source IP that matches no allowlist entry", async () => {
+    // ISS-8673: the arrival record is the receiving half of the sender's
+    // not-delivered count, so traffic the CIDR gate refuses must stay out of
+    // it — a record emitted before this gate would put rejected probes in the
+    // stream that comparison is read from, and the sibling suite's
+    // secret-rejection case cannot see that, because it never reaches here.
+    logInfo.mockClear();
+
     const response = await post(
       "/internal/dispatch",
       {
@@ -85,6 +112,10 @@ describe("POST /internal/dispatch with a CIDR allowlist", () => {
       JSON.stringify({ targetId: "t1", operation: {} })
     );
     expect(response.status).toBe(403);
+    expect(logInfo).not.toHaveBeenCalledWith(
+      "Internal dispatch received",
+      expect.anything()
+    );
   });
 });
 

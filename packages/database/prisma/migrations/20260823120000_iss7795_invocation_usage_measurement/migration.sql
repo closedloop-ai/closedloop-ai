@@ -1,0 +1,12 @@
+-- ISS-7795: label every per-invocation telemetry value with HOW it was
+-- arrived at. Additive: one nullable column with no default, so no existing
+-- row is rewritten and no existing column changes type.
+--
+-- The FEA-3981 telemetry columns are read, synced and integrity-checked but
+-- have no producer, so every one of them is NULL today. When a producer lands,
+-- a count bracketed around one invocation and a count derived from a
+-- session-wide average would otherwise arrive in the same columns with nothing
+-- to tell them apart. NULL here means "no telemetry", never "a number whose
+-- method we lost": the ingest boundary refuses a telemetry value without this
+-- label and refuses this label without a telemetry value.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "usage_measurement" TEXT;

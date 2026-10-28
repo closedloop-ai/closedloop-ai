@@ -1,8 +1,45 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AssignmentEntityType,
   computeNewMentions,
   detectAssigneeChange,
+  MentionEntityType,
+  sendAssignmentNotification,
+  sendMentionNotification,
 } from "../server/inbox-notifications";
+
+const mocks = vi.hoisted(() => ({
+  liveblocksConstructor: vi.fn(),
+  liveblocksSecret: "sk_test-secret-key" as string | undefined,
+  logError: vi.fn(),
+  triggerInboxNotification: vi.fn(),
+}));
+
+vi.mock("@liveblocks/node", () => {
+  class MockLiveblocks {
+    triggerInboxNotification = mocks.triggerInboxNotification;
+
+    constructor(options: { secret: string }) {
+      mocks.liveblocksConstructor(options);
+    }
+  }
+
+  return { Liveblocks: MockLiveblocks };
+});
+
+vi.mock("@repo/observability/log", () => ({
+  log: { error: mocks.logError },
+}));
+
+vi.mock("../server/keys", () => ({
+  keys: () => ({ LIVEBLOCKS_SECRET: mocks.liveblocksSecret }),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.liveblocksSecret = "sk_test-secret-key";
+  mocks.triggerInboxNotification.mockResolvedValue(undefined);
+});
 
 /**
  * `detectAssigneeChange` is the gatekeeper deciding whether an assignment
@@ -18,6 +55,141 @@ import {
 const ACTOR = "user_actor";
 const ASSIGNEE = "user_assignee";
 const OTHER = "user_other";
+
+describe("inbox notification delivery", () => {
+  it("does not construct a Liveblocks client when the secret is unset", async () => {
+    mocks.liveblocksSecret = undefined;
+
+    await expect(
+      sendAssignmentNotification({
+        assigneeUserId: ASSIGNEE,
+        actorUserId: ACTOR,
+        organizationId: "org_123",
+        entityType: AssignmentEntityType.Feature,
+        entityTitle: "Notification coverage",
+        entityUrl: "/features/ISS-7628",
+        subjectId: "ISS-7628",
+      })
+    ).resolves.toBeUndefined();
+
+    expect(mocks.liveblocksConstructor).not.toHaveBeenCalled();
+    expect(mocks.triggerInboxNotification).not.toHaveBeenCalled();
+  });
+
+  it("sends the assignment payload through Liveblocks", async () => {
+    await sendAssignmentNotification({
+      assigneeUserId: ASSIGNEE,
+      actorUserId: ACTOR,
+      organizationId: "org_123",
+      entityType: AssignmentEntityType.Feature,
+      entityTitle: "Notification coverage",
+      entityUrl: "/features/ISS-7628",
+      subjectId: "ISS-7628",
+    });
+
+    expect(mocks.liveblocksConstructor).toHaveBeenCalledWith({
+      secret: "sk_test-secret-key",
+    });
+    expect(mocks.triggerInboxNotification).toHaveBeenCalledWith({
+      userId: ASSIGNEE,
+      kind: "$assignment",
+      subjectId: "ISS-7628",
+      tenantId: "org_123",
+      activityData: {
+        entityType: AssignmentEntityType.Feature,
+        entityTitle: "Notification coverage",
+        entityUrl: "/features/ISS-7628",
+        actorId: ACTOR,
+      },
+    });
+  });
+
+  it("sends the mention payload through Liveblocks", async () => {
+    await sendMentionNotification({
+      mentionedUserId: ASSIGNEE,
+      actorUserId: ACTOR,
+      organizationId: "org_123",
+      entityType: MentionEntityType.Branch,
+      entityTitle: "Branch notification coverage",
+      entityUrl: "/branches/branch_123",
+      commentPreview: "Please review this branch",
+      subjectId: "comment_123",
+    });
+
+    expect(mocks.triggerInboxNotification).toHaveBeenCalledWith({
+      userId: ASSIGNEE,
+      kind: "$mention",
+      subjectId: "comment_123",
+      tenantId: "org_123",
+      activityData: {
+        entityType: MentionEntityType.Branch,
+        entityTitle: "Branch notification coverage",
+        entityUrl: "/branches/branch_123",
+        actorId: ACTOR,
+        commentPreview: "Please review this branch",
+      },
+    });
+  });
+
+  it("logs the raw error and resolves when Liveblocks rejects", async () => {
+    const providerError = new Error("Liveblocks unavailable");
+    mocks.triggerInboxNotification.mockRejectedValueOnce(providerError);
+
+    await expect(
+      sendMentionNotification({
+        mentionedUserId: ASSIGNEE,
+        actorUserId: ACTOR,
+        organizationId: "org_123",
+        entityType: MentionEntityType.Branch,
+        entityTitle: "Branch notification coverage",
+        entityUrl: "/branches/branch_123",
+        commentPreview: "Please review this branch",
+        subjectId: "comment_123",
+      })
+    ).resolves.toBeUndefined();
+
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "Failed to send mention notification",
+      {
+        error: providerError,
+        userId: ASSIGNEE,
+        subjectId: "comment_123",
+        entityType: MentionEntityType.Branch,
+      }
+    );
+  });
+
+  it("does not notify an actor who assigns an entity to themselves", async () => {
+    await sendAssignmentNotification({
+      assigneeUserId: ACTOR,
+      actorUserId: ACTOR,
+      organizationId: "org_123",
+      entityType: AssignmentEntityType.Feature,
+      entityTitle: "Notification coverage",
+      entityUrl: "/features/ISS-7628",
+      subjectId: "ISS-7628",
+    });
+
+    expect(mocks.liveblocksConstructor).not.toHaveBeenCalled();
+    expect(mocks.triggerInboxNotification).not.toHaveBeenCalled();
+  });
+
+  it("does not notify an actor who mentions themselves", async () => {
+    await sendMentionNotification({
+      mentionedUserId: ACTOR,
+      actorUserId: ACTOR,
+      organizationId: "org_123",
+      entityType: MentionEntityType.Session,
+      entityTitle: "Session notification coverage",
+      entityUrl: "/sessions/session_123",
+      commentPreview: "Note to self",
+      subjectId: "comment_456",
+    });
+
+    expect(mocks.liveblocksConstructor).not.toHaveBeenCalled();
+    expect(mocks.triggerInboxNotification).not.toHaveBeenCalled();
+  });
+});
 
 describe("detectAssigneeChange", () => {
   describe("returns null when there is no assignee to notify", () => {

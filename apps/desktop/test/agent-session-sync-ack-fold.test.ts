@@ -8,8 +8,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import {
   applyBoundedFailureFold,
   type BoundedFailureFoldDeps,
@@ -22,6 +22,7 @@ type DeadLetterCall = {
   recoverable: boolean;
   reason: string;
   attemptCount?: number;
+  permanentAttemptCount?: number | null;
 };
 
 function makeRecordingDeps(): {
@@ -29,24 +30,49 @@ function makeRecordingDeps(): {
   cleared: string[];
   deadLettered: DeadLetterCall[];
   dequeued: string[];
-  outboxRetries: Array<{ id: string; attemptCount: number }>;
+  outboxRetries: Array<{
+    id: string;
+    attemptCount: number;
+    permanentAttemptCount?: number | null;
+  }>;
   warnings: string[];
   infos: string[];
 } {
   const cleared: string[] = [];
   const deadLettered: DeadLetterCall[] = [];
   const dequeued: string[] = [];
-  const outboxRetries: Array<{ id: string; attemptCount: number }> = [];
+  const outboxRetries: Array<{
+    id: string;
+    attemptCount: number;
+    permanentAttemptCount?: number | null;
+  }> = [];
   const warnings: string[] = [];
   const infos: string[] = [];
   const deps: BoundedFailureFoldDeps = {
     nextRetryAfterMs: new Map<string, number>(),
     clearFailureStateForId: (id) => cleared.push(id),
-    markDeadLettered: (id, recoverable, reason, attemptCount) =>
-      deadLettered.push({ id, recoverable, reason, attemptCount }),
+    markDeadLettered: (
+      id,
+      recoverable,
+      reason,
+      attemptCount,
+      permanentAttemptCount
+    ) =>
+      deadLettered.push({
+        id,
+        recoverable,
+        reason,
+        attemptCount,
+        permanentAttemptCount,
+      }),
     dequeue: (_syncMode, ids) => dequeued.push(...ids),
-    recordOutboxRetry: (id, attemptCount) =>
-      outboxRetries.push({ id, attemptCount }),
+    recordOutboxRetry: (
+      id,
+      attemptCount,
+      _nextAttemptAt,
+      _reason,
+      permanentAttemptCount
+    ) => outboxRetries.push({ id, attemptCount, permanentAttemptCount }),
     queueSizes: () => ({ incremental: 0, backfill: 0, deadLettered: 0 }),
     logWarn: (message) => warnings.push(message),
     logInfo: (message) => infos.push(message),
@@ -111,6 +137,7 @@ test("FEA-4375: at the budget, a counted reason dead-letters and clears state", 
       recoverable: false,
       reason: "validation_failed",
       attemptCount: 0,
+      permanentAttemptCount: 3,
     },
   ]);
   assert.deepEqual(cleared, ["s1"], "failure state was cleared for the id");
@@ -157,7 +184,9 @@ test("FEA-4375: an outbox-recording reason records the retry on a sub-budget def
     deps
   );
 
-  assert.deepEqual(outboxRetries, [{ id: "s1", attemptCount: 1 }]);
+  assert.deepEqual(outboxRetries, [
+    { id: "s1", attemptCount: 1, permanentAttemptCount: 1 },
+  ]);
 });
 
 test("FEA-4375: a no-backoff reason (ack_timeout) defers without a retry deadline", () => {
@@ -226,4 +255,29 @@ test("FEA-4375: countsToward:false defers every id and never counts or dead-lett
     TRANSPORT_UNAVAILABLE_LABEL,
     "the deferLabel is used in the info log"
   );
+});
+
+test("ISS-8617: a durable budget-neutral defer does not write a permanent attempt count", () => {
+  const { deps, outboxRetries } = makeRecordingDeps();
+  const counter = new Map<string, number>([["s1", 4]]);
+  applyBoundedFailureFold(
+    {
+      ids: ["s1"],
+      syncMode: AgentSessionSyncMode.Backfill,
+      payloadBytes: 100,
+      counter,
+      maxConsecutive: 3,
+      reason: "rate_limited",
+      recoverable: true,
+      backoffMs: 30_000,
+      recordOutboxOnDefer: true,
+      countsToward: false,
+      deferLabel: "transport_unavailable (no compute target)",
+    },
+    deps
+  );
+
+  assert.deepEqual(outboxRetries, [
+    { id: "s1", attemptCount: 4, permanentAttemptCount: null },
+  ]);
 });

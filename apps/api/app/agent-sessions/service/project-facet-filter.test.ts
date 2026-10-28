@@ -55,11 +55,11 @@ function projectScopePredicate(where: Prisma.SessionDetailWhereInput) {
 }
 
 describe("ISS-5355 Project facet predicate", () => {
-  it("walks the session→document link, not the session artifact's own projectId", () => {
+  it("walks the session→document link, not the session artifact's own projectId", async () => {
     // The regression this pins: `artifact.projectId` is null on a synced session
     // artifact, so a predicate on that column matches nothing and the strip
     // renders a permanent zero.
-    const where = buildWhere(
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A] })
     );
@@ -76,14 +76,14 @@ describe("ISS-5355 Project facet predicate", () => {
     });
   });
 
-  it("counts only RELATES_TO edges, the link type the projection exposes", () => {
+  it("counts only RELATES_TO edges, the link type the projection exposes", async () => {
     // The session detail's "linked artifacts" list selects `linkType =
     // RELATES_TO` only (`records.ts`). A PRODUCES or BLOCKS edge to a document
     // in the project is reachable on `artifact_links`, so an untyped predicate
     // would attribute a session to a project through an edge the projection
     // never shows — the facet number would exceed what the detail can account
     // for.
-    const where = buildWhere(
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A] })
     );
@@ -91,11 +91,12 @@ describe("ISS-5355 Project facet predicate", () => {
     expect(projectLinkPredicate(where)?.linkType).toBe(LinkType.RelatesTo);
   });
 
-  it("builds that predicate from the shared link definition, not a local copy", () => {
-    // One definition behind the filter AND the facet counts — see
-    // `project-link-where.ts`. If either grows its own copy, they can drift and
-    // the count stops describing the rows.
-    const where = buildWhere(
+  it("builds that predicate from the shared link definition, not a local copy", async () => {
+    // The filter's one definition lives in `project-link-where.ts`, beside the
+    // facet counts' SQL spelling of the same edge, which
+    // `project-facet-options.integration.test.ts` pins to it. A local copy here
+    // could drift and the count would stop describing the rows.
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A] })
     );
@@ -105,8 +106,8 @@ describe("ISS-5355 Project facet predicate", () => {
     );
   });
 
-  it("ORs a multi-project selection rather than dropping all but one", () => {
-    const where = buildWhere(
+  it("ORs a multi-project selection rather than dropping all but one", async () => {
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A, PROJECT_B] })
     );
@@ -116,11 +117,11 @@ describe("ISS-5355 Project facet predicate", () => {
     );
   });
 
-  it("only counts DOCUMENT targets, so a branch or PR link is not a project link", () => {
+  it("only counts DOCUMENT targets, so a branch or PR link is not a project link", async () => {
     // Session→branch and session→PR links share the same `sourceLinks` edge. A
     // predicate that ignored the target type would attribute a session to a
     // project through a branch that merely lives near it.
-    const where = buildWhere(
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A] })
     );
@@ -130,16 +131,16 @@ describe("ISS-5355 Project facet predicate", () => {
     });
   });
 
-  it("applies no link predicate when the facet is unselected", () => {
-    const where = buildWhere({ organizationId: ORG_ID }, listFilters());
+  it("applies no link predicate when the facet is unselected", async () => {
+    const where = await buildWhere({ organizationId: ORG_ID }, listFilters());
 
     expect(projectLinkPredicate(where)).toBeUndefined();
   });
 
-  it("applies no link predicate for an empty selection", () => {
+  it("applies no link predicate for an empty selection", async () => {
     // An empty array is "no project chosen", not "no project matches" — it must
     // not collapse the list to zero rows.
-    const where = buildWhere(
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [] })
     );
@@ -147,8 +148,8 @@ describe("ISS-5355 Project facet predicate", () => {
     expect(projectLinkPredicate(where)).toBeUndefined();
   });
 
-  it("keeps the pre-existing singular projectId scope working unchanged", () => {
-    const where = buildWhere(
+  it("keeps the pre-existing singular projectId scope working unchanged", async () => {
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectId: PROJECT_A })
     );
@@ -157,8 +158,8 @@ describe("ISS-5355 Project facet predicate", () => {
     expect(projectLinkPredicate(where)).toBeUndefined();
   });
 
-  it("ANDs the scope and the facet as the separate dimensions they are", () => {
-    const where = buildWhere(
+  it("ANDs the scope and the facet as the separate dimensions they are", async () => {
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectId: PROJECT_A, projectIds: [PROJECT_B] })
     );
@@ -172,8 +173,8 @@ describe("ISS-5355 Project facet predicate", () => {
   // The strip's shared predicate is `{ statuses: [ACTIVE], projectIds: [id] }`.
   // Both dimensions must survive into one where, or the listing the strip links
   // to answers a different question than the number the user clicked.
-  it("composes with the Active status facet the strip's predicate carries", () => {
-    const where = buildWhere(
+  it("composes with the Active status facet the strip's predicate carries", async () => {
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({
         projectIds: [PROJECT_A],
@@ -184,13 +185,16 @@ describe("ISS-5355 Project facet predicate", () => {
     expect(projectLinkPredicate(where)).toEqual(
       buildProjectLinkWhere([PROJECT_A])
     );
-    // Active is a session-level derivation (`awaitingInputSince` + artifact
-    // status), so it lands in the AND stack, not on `artifact.is.status`.
-    expect(JSON.stringify(where.AND ?? [])).toContain("awaitingInputSince");
+    // ISS-9939 / ISS-10629: Active is now a plain `artifact.status` equality
+    // (hoisted alongside the project scope), not a session-level derivation —
+    // the operator ruling collapsed the FILTER to the three persisted
+    // SESSION_STATUS values.
+    const artifact = where.artifact as { is?: { status?: unknown } };
+    expect(artifact.is?.status).toBe(SESSION_STATUS.ACTIVE);
   });
 
-  it("keeps the org scope alongside the project narrowing", () => {
-    const where = buildWhere(
+  it("keeps the org scope alongside the project narrowing", async () => {
+    const where = await buildWhere(
       { organizationId: ORG_ID },
       listFilters({ projectIds: [PROJECT_A] })
     );

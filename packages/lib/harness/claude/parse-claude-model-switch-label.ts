@@ -1,8 +1,8 @@
 /**
  * @file parse-claude-model-switch-label.ts
  * @description FEA-4376: extract the human-readable model NAME echoed by a
- * `/model` slash-command switch, split out of the grandfathered
- * `parse-claude.ts` (PR #3903 review) so that over-ceiling file shrinks rather
+ * `/model` slash-command switch, split out of
+ * `parse-claude.ts` (PR #3903 review) so that file shrinks rather
  * than grows. Pure string helper — no transcript state, no I/O.
  */
 
@@ -30,10 +30,10 @@ const ANSI_ESC_BOLD_MARKER_RE = new RegExp(`${ESC}\\[(?:1|22)m`, "g");
 // `claude-sonnet-4-6[1m]`, `claude-opus-4-8[1m]`). Only strip the bare markers
 // when they form an actual PAIRED wrapper (`[1m … [22m`) — the closing `[22m`
 // proves it was a bold wrapper, not the alias suffix (which never carries a
-// paired `[22m`). PR #3903 review (wongk): a lone `[1m` must survive verbatim.
+// paired `[22m`). PR #3903 review (whitlockk): a lone `[1m` must survive verbatim.
 const BARE_BOLD_PAIR_RE = /\[1m([\s\S]*?)\[22m/g;
 const MODEL_DEFAULT_SUFFIX_RE = /\s*\(default\)\s*$/;
-// PR #3903 review (wongk): the label is unbounded transcript text, but the
+// PR #3903 review (whitlockk): the label is unbounded transcript text, but the
 // historical-parse-worker `.strict()` schema caps `model` at 8,192 chars — a
 // longer label would make `safeParse` reject the ENTIRE source payload (the
 // FEA-3701 class of silent whole-source drop). A model NAME is never this long,

@@ -1,8 +1,7 @@
 /**
  * @file post-boot-maintenance.ts
  * @description ISS-4824 — the post-boot maintenance CHAIN, extracted whole from
- * `agent-dashboard-design-system-runtime.ts` (a file on the shrink-only
- * `noExcessiveLinesPerFile` grandfather list) so that runtime keeps only the thin
+ * `agent-dashboard-design-system-runtime.ts` so that runtime keeps only the thin
  * composition: build this once, then call `runPostBootMaintenance(generation)`.
  *
  * This is one cohesive responsibility, not a mechanical line slice. The passes
@@ -19,21 +18,28 @@
  * `historicalParseRunner`) and are only reachable once maintenance actually runs.
  */
 
+import { dropOnDbHostLifecycleError } from "../../shared/db-host-fire-and-forget.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import { MaintenancePhase } from "../../shared/maintenance-progress-contract.js";
 import { applyParseSideReport } from "../collectors/engine/collector-manager-pass-resources.js";
-import {
-  type DataRevisionRebuildSummary,
-  runDataRevisionRebuild,
-} from "../collectors/engine/data-revision-rebuild.js";
+import { runDataRevisionRebuild } from "../collectors/engine/data-revision-rebuild.js";
+import type { DataRevisionRebuildSummary } from "../collectors/engine/data-revision-rebuild-summary.js";
 import { mergeDataRevisionRebuildSummaries } from "../collectors/engine/data-revision-rebuild-summary-merge.js";
 import type { HistoricalParseRunner } from "../collectors/engine/historical-parse-runner.js";
 import { runActivitySegmentBackfillRuntimeBoundary } from "../collectors/parsing/activity-segment-backfill-runtime-boundary.js";
 import { runArtifactLinkBackfillRuntimeBoundary } from "../collectors/parsing/artifact-link-backfill-runtime-boundary.js";
-import type { HarnessCollector } from "../collectors/types.js";
+import {
+  CollectorParseScope,
+  type HarnessCollector,
+  type NormalizedSession,
+} from "../collectors/types.js";
 import { redriveOnDbHostExit } from "../database/db-host/db-host-exit-redrive.js";
+import { SESSION_LIST_TRACE_BACKFILL_STORE_OP } from "../database/session-list-trace-maintenance-contract.js";
 import { runSkillShadowInventoryRepairBoundary } from "../database/skill-shadow-inventory-repair-boundary.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
 import { sendToRendererWindow } from "../ipc/renderer-ipc.js";
+import { beginAttributionOwnersRebuild } from "../parse-policy/attribution-owners-derived.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
 import { runDataRevisionSyncEnqueueAndFeed } from "./data-revision-sync-enqueue.js";
 
 /**
@@ -110,6 +116,10 @@ export function createPostBootMaintenance(
     if (!shouldContinue()) {
       return;
     }
+    await runSessionListTraceBackfillMaintenance(shouldContinue);
+    if (!shouldContinue()) {
+      return;
+    }
     // FEA-2267: re-derive activity-segment tiling for sessions scanned at an
     // older ACTIVITY_CLASSIFIER_VERSION (or never scanned), under the same
     // generation/shouldContinue cancellation guard.
@@ -141,7 +151,11 @@ export function createPostBootMaintenance(
       // The Commands tab reads `agent_components` directly, so a deleted
       // phantom is invisible to the renderer until it re-reads. The parked
       // sessions are handled by the rebuild's own invalidation.
-      sendToRendererWindow(deps.getWindow(), "desktop:db:changed", {});
+      sendToRendererWindow(
+        deps.getWindow(),
+        DesktopRendererEventChannel.DbChanged,
+        {}
+      );
     }
   };
 
@@ -160,6 +174,7 @@ export function createPostBootMaintenance(
     // pre-rebuild rows for work that HAD landed. The merge below is what makes the
     // committed results survive the re-drive.
     const attemptSummaries: DataRevisionRebuildSummary[] = [];
+    const ownersRebuilt = beginAttributionOwnersRebuild();
     const failure = await captureDataRevisionRebuildFailure(
       shouldContinue,
       attemptSummaries,
@@ -189,6 +204,9 @@ export function createPostBootMaintenance(
       deps.log(
         `data-revision rebuild failed: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`
       );
+    } else if (!cancelled) {
+      // ISS-12552: sync may send token-event owners from here on.
+      ownersRebuilt();
     }
     return cancelled;
   };
@@ -222,7 +240,7 @@ export function createPostBootMaintenance(
       // still reports the failure — it must never read as a completed pass.
       await redriveOnDbHostExit(
         () => {
-          // ISS-6241 (wongk review): every attempt starts from NO count.
+          // ISS-6241 (whitlockk review): every attempt starts from NO count.
           // `redriveOnDbHostExit` can call this more than once, and the counts
           // belong to ONE attempt's population: if the host dies after the last
           // write commits, the replacement attempt finds zero stale rows and
@@ -271,22 +289,7 @@ export function createPostBootMaintenance(
                 progress
               );
             },
-            // ISS-5266: the rebuild re-reads sources through the SAME worker, so it
-            // sees the same side-report — and must apply it through the same courier
-            // rather than discarding it. The rebuild never seals a fingerprint, so
-            // nothing here can freeze a false zero; routing it anyway keeps the
-            // record current after a rebuild instead of leaving the verdict of
-            // the last import pass standing for a store the rebuild has just
-            // re-read.
-            parseSource: async (collector, source) => {
-              const runner = deps.getHistoricalParseRunner();
-              if (!runner) {
-                return collector.parse(source);
-              }
-              const result = await runner.parseSource(collector.key, source);
-              await applyParseSideReport(collector, result);
-              return result.sessions;
-            },
+            parseSource: rebuildParseSource(deps.getHistoricalParseRunner),
           });
         },
         { label: "data-revision rebuild", log: deps.log }
@@ -323,7 +326,7 @@ export function createPostBootMaintenance(
       // queue so they drain THIS session under the captured identity. The whole
       // hand-off lives in `runDataRevisionSyncEnqueueAndFeed` (which owns the
       // target-swap no-strand, the post-await cancellation re-check, and the
-      // identity-matched inject) so this grandfathered runtime keeps only the thin
+      // identity-matched inject) so the dashboard runtime keeps only the thin
       // call.
       const capturedComputeTargetId = deps.resolveComputeTargetId();
       await runDataRevisionSyncEnqueueAndFeed({
@@ -358,8 +361,29 @@ export function createPostBootMaintenance(
         // the recompute's secondary metrics refresh failed — a metrics-only
         // failure still rewrote analytics rows, so invalidation must fire even
         // though that same recompute withheld the data_revision stamp.
-        deps.agentDatabase.sessions.invalidateHistoricalDetails();
-        sendToRendererWindow(deps.getWindow(), "desktop:db:changed", {});
+        // ISS-8776: through the db-host proxy this is an IPC invoke, NOT the
+        // synchronous cache clear its `(): void` contract type describes — the
+        // proxy turns every method into a promise-returning forward, and this
+        // is the one method on `SqliteAgentDatabase` declared to return `void`,
+        // so it is the one call site where the type hides a rejectable promise.
+        // Discarded bare, its rejection when the child died under it reached
+        // the global unhandled-rejection handler, which shows the crash dialog
+        // and calls `app.exit(1)`. Firing immediately after a DATA_REVISION
+        // rebuild — minutes of heavy store work — puts it squarely in the
+        // window where the host is most likely to have gone.
+        const invalidated: unknown =
+          deps.agentDatabase.sessions.invalidateHistoricalDetails();
+        if (invalidated instanceof Promise) {
+          dropOnDbHostLifecycleError(invalidated, {
+            label: "session historical-details invalidation",
+            log: deps.log,
+          });
+        }
+        sendToRendererWindow(
+          deps.getWindow(),
+          DesktopRendererEventChannel.DbChanged,
+          {}
+        );
       }
     } catch (e: unknown) {
       if (!shouldContinue()) {
@@ -390,14 +414,12 @@ export function createPostBootMaintenance(
     if (!shouldContinue()) {
       return;
     }
-    // FEA-4379: attribute out-of-band-created PRs to the authoring session by
-    // matching the session's authored commit SHAs against PR head/merge SHAs.
-    const correlated = await deps.agentDatabase.correlateCommitShaPrLinks();
-    if (!shouldContinue()) {
-      return;
-    }
-    if (unauthoredRemoved > 0 || linked > 0 || correlated > 0) {
-      sendToRendererWindow(deps.getWindow(), "desktop:db:changed", {});
+    if (unauthoredRemoved > 0 || linked > 0) {
+      sendToRendererWindow(
+        deps.getWindow(),
+        DesktopRendererEventChannel.DbChanged,
+        {}
+      );
     }
   };
 
@@ -444,5 +466,70 @@ export function createPostBootMaintenance(
     }
   };
 
+  const runSessionListTraceBackfillMaintenance = async (
+    shouldContinue: () => boolean
+  ): Promise<void> => {
+    try {
+      await deps.invokeStoreOp(SESSION_LIST_TRACE_BACKFILL_STORE_OP);
+    } catch (error: unknown) {
+      if (!shouldContinue()) {
+        return;
+      }
+      deps.log(
+        `session-list trace repair failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
+
   return { runPostBootMaintenance };
+}
+
+/**
+ * ISS-7696: the DATA_REVISION rebuild's parse hook, on the SAME collector
+ * instances and the SAME worker the ingest engine uses.
+ *
+ * ISS-5266: the rebuild re-reads sources through that worker, so it sees the
+ * same withheld side-report and must apply it through the same courier rather
+ * than discarding it. The rebuild never seals a fingerprint, so nothing here can
+ * freeze a false zero; routing it keeps the record current after a rebuild
+ * instead of leaving the last import pass's verdict standing for a store the
+ * rebuild has just re-read.
+ *
+ * ISS-7696 names the CALLER on the report rather than trusting "the last load".
+ * `droppedSessions` and `resumeAfter` are the ingest engine's seal-gate state:
+ * the pass that owns them parks them and then promotes them from
+ * `markSourceImported`, seconds of DB writes later. The rebuild always parses
+ * from offset 0 and runs on its own schedule, so an unscoped report from here
+ * can land inside that gap and hand an in-flight pass's seal a verdict about a
+ * DIFFERENT window. `CollectorParseScope.Rebuild` is what tells the collector to
+ * leave that state alone; the withheld record has no such handoff (it is written
+ * on arrival) and still routes, which is what this hook reuses the courier for.
+ */
+export function rebuildParseSource(
+  getHistoricalParseRunner: () => HistoricalParseRunner | null
+): (
+  collector: HarnessCollector,
+  source: string,
+  parsePolicy?: ParsePolicy
+) => Promise<NormalizedSession[]> {
+  return async (collector, source, parsePolicy) => {
+    const runner = getHistoricalParseRunner();
+    if (!runner) {
+      return await collector.parse(source);
+    }
+    const result = await runner.parseSource(
+      collector.key,
+      source,
+      undefined,
+      undefined,
+      parsePolicy
+    );
+    await applyParseSideReport(
+      collector,
+      result,
+      CollectorParseScope.Rebuild,
+      source
+    );
+    return result.sessions;
+  };
 }

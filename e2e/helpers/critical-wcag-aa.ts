@@ -3,6 +3,8 @@ import { WCAG_AA_TAGS } from "../../packages/app/test/a11y/axe";
 
 type WcagAaOptions = {
   criticalOnly?: boolean;
+  /** Selectors inside `scope` that the rules skip, with their subtrees. */
+  exclude?: readonly string[];
   scope?: string;
 };
 
@@ -24,13 +26,38 @@ export async function expectWcagAaClean(
   const violations = await page.evaluate(
     async ({ tags, options: runOptions }) => {
       const axe = Reflect.get(globalThis, "axe") as AxeRuntime;
-      const results = await axe.run(runOptions.scope ?? document, {
+      const context = {
+        exclude: [...(runOptions.exclude ?? [])],
+        include: runOptions.scope ?? document,
+      };
+      const axeOptions = {
         resultTypes: ["violations"],
         runOnly: {
-          type: "tag",
+          type: "tag" as const,
           values: [...tags],
         },
-      });
+      };
+      let results: { violations: AxeViolation[] } | undefined;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        try {
+          results = await axe.run(context, axeOptions);
+          break;
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              error.message.includes("Axe is already running")
+            ) ||
+            attempt === 49
+          ) {
+            throw error;
+          }
+          await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+        }
+      }
+      if (!results) {
+        throw new Error("Concurrent axe scan did not finish");
+      }
       return results.violations
         .filter(
           (violation) =>
@@ -58,7 +85,7 @@ type AxeViolation = {
 
 type AxeRuntime = {
   run: (
-    context: Document | string,
+    context: { exclude: string[]; include: Document | string },
     options: {
       resultTypes: string[];
       runOnly: { type: "tag"; values: string[] };

@@ -8,7 +8,7 @@
  * hard here alongside the budgeting behavior.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { packIdsByMetadataBudget } from "../src/main/database/session-analytics-chunking.js";
 
 function flat(chunks: string[][]): string[] {

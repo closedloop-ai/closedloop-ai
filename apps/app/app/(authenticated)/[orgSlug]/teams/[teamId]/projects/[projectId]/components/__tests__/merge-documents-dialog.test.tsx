@@ -1,8 +1,8 @@
 import type { DocumentWithProject } from "@repo/api/src/types/document";
+import { MergeDocumentsDialog } from "@repo/app/documents/components/table/merge-documents-dialog";
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { MergeDocumentsDialog } from "../merge-documents-dialog";
 
 const CANCEL_REGEX = /cancel/i;
 const MERGING_REGEX = /merging/i;

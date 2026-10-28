@@ -1,16 +1,8 @@
+import { CostReconciliationIpcChannel } from "../../shared/cost-reconciliation-ipc-channel.js";
 import type { ClaudeCodeAnalyticsService } from "../cost/claude-code-analytics-service.js";
 import type { CostReconciliationService } from "../cost/cost-reconciliation-service.js";
 import type { ReconciliationQuery } from "../cost/reconciliation-store.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const CostReconciliationIpcChannel = {
-  RunCostReconciliation: "desktop:run-cost-reconciliation",
-  ListCostReconciliation: "desktop:list-cost-reconciliation",
-  GetClaudeCodeAnalytics: "desktop:get-claude-code-analytics",
-} as const;
-
-export type CostReconciliationIpcChannel =
-  (typeof CostReconciliationIpcChannel)[keyof typeof CostReconciliationIpcChannel];
 
 const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 

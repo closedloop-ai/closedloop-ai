@@ -14,107 +14,19 @@
  * own dedicated suites (managed-onboarding, managed-key-provision, bootstrap-claim,
  * desktop-device-onboarding-client); this file does not re-exercise them.
  *
- * Collaborators are `mock.fn()` fakes cast via the whole-bag
- * `as unknown as ManagedOnboardingControllerDeps` cast (an established pattern in
- * these desktop tests); `SettingsStore` is real (temp-dir cwd) so the flag gate
- * and settings projection run against production settings logic.
+ * The controller harness (real temp-dir `SettingsStore`, `vi.fn()` fakes for
+ * every other dep) lives in `helpers/managed-onboarding-controller-harness.ts`,
+ * shared with `managed-onboarding-controller-handoff.test.ts` (handoff and
+ * provisioning flows) and `managed-onboarding-controller-device.test.ts`
+ * (auto-provisioning, browser device onboarding, the onboarding reminder).
  */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
-import {
-  ManagedOnboardingController,
-  type ManagedOnboardingControllerDeps,
-} from "../src/main/onboarding/managed-onboarding-controller.js";
-import { SettingsStore } from "../src/main/settings/settings-store.js";
-
-const tempDirs: string[] = [];
+import { afterEach, describe, test, vi } from "vitest";
+import { makeController } from "./helpers/managed-onboarding-controller-harness.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const dir of tempDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  tempDirs.length = 0;
 });
-
-type ControllerOptions = {
-  shuttingDown?: boolean;
-  setupComplete?: boolean;
-  hasApiKey?: boolean;
-  apiKeyProvenance?: "USER_CREATED" | "DESKTOP_MANAGED" | null;
-  accessToken?: string | null;
-  getOrCreateResult?:
-    | { ok: false; reason: string }
-    | { ok: true; keyPair: unknown };
-};
-
-function makeController(options: ControllerOptions = {}) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "managed-onboarding-"));
-  tempDirs.push(tmpDir);
-  const settingsStore = new SettingsStore({
-    cwd: tmpDir,
-    name: "test-settings",
-  });
-
-  const apiKeyStore = {
-    getApiKey: vi.fn(() => (options.hasApiKey ? "sk_live_x" : null)),
-    getApiKeyProvenance: vi.fn(() => options.apiKeyProvenance ?? null),
-    getStatus: vi.fn(() => ({ hasApiKey: options.hasApiKey ?? false })),
-    setApiKey: vi.fn((_apiKey: string, _provenance: string) => undefined),
-    saveProfileKey: vi.fn(),
-  };
-  const desktopSessionManager = {
-    getAccessToken: vi.fn(
-      (): Promise<string | null> => Promise.resolve(options.accessToken ?? null)
-    ),
-    refreshExistingUserResolution: vi.fn(),
-  };
-  const gatewaySigningKeyStore = {
-    getOrCreate: vi.fn(
-      () => options.getOrCreateResult ?? { ok: false, reason: "no-key" }
-    ),
-    load: vi.fn(() => ({ ok: false as const, reason: "no-key" })),
-  };
-  const telemetryOrgProvider = { warm: vi.fn() };
-  const desktopWindow = {
-    sendToRenderer: vi.fn((..._args: unknown[]) => undefined),
-  };
-
-  const deps = {
-    settingsStore,
-    apiKeyStore,
-    desktopSessionManager,
-    gatewaySigningKeyStore,
-    telemetryOrgProvider,
-    desktopWindow,
-    isShuttingDown: vi.fn(() => options.shuttingDown ?? false),
-    showWindow: vi.fn(),
-    getActiveGatewayId: vi.fn(() => "gateway-1"),
-    resolveDesktopDeviceDescriptor: vi.fn(() => ({})),
-    reportDesktopPopUnavailable: vi.fn(
-      (_surface: string, _reason: string) => undefined
-    ),
-    signDesktopRequest: vi.fn(() => null),
-    persistActiveProfileKey: vi.fn(),
-    persistActiveConfigManagedMetadata: vi.fn(),
-    reportBootstrapClaimDiagnostic: vi.fn(),
-    restartCloudSocket: vi.fn(),
-    isDesktopSetupComplete: vi.fn(() => options.setupComplete ?? false),
-    registerOpenFileHandler: vi.fn(),
-    showMessageBox: vi.fn((_options: unknown) =>
-      Promise.resolve({ response: 0 })
-    ),
-    openExternalUrl: vi.fn((_url: string): Promise<void> => Promise.resolve()),
-  };
-  const controller = new ManagedOnboardingController(
-    deps as unknown as ManagedOnboardingControllerDeps
-  );
-  return { controller, ...deps };
-}
 
 describe("ManagedOnboardingController.getOnboardingState", () => {
   test("reports not-complete with idle managed provisioning by default", () => {

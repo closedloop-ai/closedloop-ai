@@ -4,9 +4,9 @@ import {
   TranscriptAvailability,
   type TranscriptFileDescriptor,
 } from "@repo/api/src/types/desktop-transcripts";
-import { getSignedTranscriptDownloadUrl } from "@repo/aws";
+import { getSignedTranscriptDownloadUrl } from "@repo/aws/transcript-storage";
 import { type SessionTranscript, withDb } from "@repo/database";
-import { BoundedCache } from "@/lib/bounded-cache";
+import { BoundedMap } from "@repo/lib/bounded-map";
 import {
   deriveTranscriptAvailability,
   hasMainTranscript,
@@ -14,13 +14,15 @@ import {
   MAIN_FILE_KEY,
   normalizeSkipReason,
   sessionTranscriptIdentityWhere,
+  type TranscriptAvailabilityInput,
 } from "./transcript-availability";
 
 /**
  * Read path for archived transcripts (FEA-2716 / PLN-1289). Authorizes org +
  * session scope, derives the FR8 availability state per file, and mints (or
  * reuses a cached, still-valid) short-lived signed S3 GET URL only for readable
- * files. Transcript bytes never transit apps/api — the browser fetches raw
+ * files — and, when the caller names a `fileKey`, only for that file
+ * (ISS-12276). Transcript bytes never transit apps/api — the browser fetches raw
  * JSONL directly from S3.
  *
  * Transcripts are looked up by session identity `(computeTargetId,
@@ -49,6 +51,12 @@ type FindTranscriptAccessInput = {
   /** Session artifact id (the route `[id]`). */
   id: string;
   organizationId: string;
+  /**
+   * ISS-12276: the one file the caller is about to read. When set, only that
+   * file's URL is presigned and every other descriptor carries `url: null`.
+   * Omitted by older clients, which keep getting every readable file signed.
+   */
+  fileKey?: string;
   deps?: TranscriptReadDeps;
 };
 
@@ -76,7 +84,7 @@ const TRANSCRIPT_SIGNED_URL_CACHE_SAFETY_MARGIN_MS = 60 * 1000;
  * etag changes, missing the cache and minting a fresh URL that busts the stale
  * browser copy.
  */
-const transcriptDownloadUrlCache = new BoundedCache<
+const transcriptDownloadUrlCache = new BoundedMap<
   string,
   CachedTranscriptDownloadUrl
 >(TRANSCRIPT_SIGNED_URL_CACHE_MAX_ENTRIES);
@@ -133,14 +141,30 @@ function missingDescriptor(fileKey: string): TranscriptFileDescriptor {
   };
 }
 
+/** Exactly the columns {@link toDescriptor} and {@link hasMainTranscript} read. */
+type TranscriptDescriptorRow = Pick<
+  SessionTranscript,
+  | "fileKey"
+  | "objectStorageKey"
+  | "storedEtag"
+  | "rawByteSize"
+  | "rawSha256"
+  | "permanentFailureReason"
+> &
+  TranscriptAvailabilityInput;
+
 async function toDescriptor(
-  row: SessionTranscript,
-  mintDownloadUrl: MintTranscriptDownloadUrl
+  row: TranscriptDescriptorRow,
+  mintDownloadUrl: MintTranscriptDownloadUrl,
+  requestedFileKey: string | undefined
 ): Promise<TranscriptFileDescriptor> {
   const availability = deriveTranscriptAvailability(row);
-  const url = isTranscriptReadable(availability)
-    ? await mintDownloadUrl(row.objectStorageKey, row.storedEtag)
-    : null;
+  const isRequested =
+    requestedFileKey === undefined || row.fileKey === requestedFileKey;
+  const url =
+    isRequested && isTranscriptReadable(availability)
+      ? await mintDownloadUrl(row.objectStorageKey, row.storedEtag)
+      : null;
   return {
     fileKey: row.fileKey,
     availability,
@@ -167,6 +191,7 @@ export const transcriptReadService = {
   async findTranscriptAccess({
     id,
     organizationId,
+    fileKey,
     deps,
   }: FindTranscriptAccessInput): Promise<TranscriptAccessResponse | null> {
     const session = await withDb((db) =>
@@ -193,12 +218,13 @@ export const transcriptReadService = {
           externalSessionId: session.externalSessionId,
         }),
         orderBy: { fileKey: "asc" },
+        select: TRANSCRIPT_DESCRIPTOR_SELECT,
       })
     );
 
     const mintDownloadUrl = deps?.mintDownloadUrl ?? defaultMintDownloadUrl;
     const files = await Promise.all(
-      rows.map((row) => toDescriptor(row, mintDownloadUrl))
+      rows.map((row) => toDescriptor(row, mintDownloadUrl, fileKey))
     );
     // The main transcript is always expected: when only subagent rows exist (or
     // none), surface main as an explicit `missing` file so the UI can tell "not
@@ -215,3 +241,22 @@ export const transcriptReadServiceInternalsForTesting = {
   /** Reset the process-wide signed-URL cache so cases don't leak entries. */
   clearDownloadUrlCache: () => transcriptDownloadUrlCache.clear(),
 };
+
+/**
+ * The `select` behind {@link TranscriptDescriptorRow}. The row carries the
+ * upload machinery (`pendingUploadId`, `syncedByteOffset`, `sourcePathHash`,
+ * `crc64nvme`, the identity FKs) that no descriptor field reads, and this read
+ * feeds a response body, so the projection is the boundary that keeps that
+ * machinery out of it.
+ */
+const TRANSCRIPT_DESCRIPTOR_SELECT = {
+  fileKey: true,
+  objectStorageKey: true,
+  storedEtag: true,
+  rawByteSize: true,
+  rawSha256: true,
+  permanentFailureReason: true,
+  uploadStatus: true,
+  uploadedAt: true,
+  lastObservedAt: true,
+} satisfies Record<keyof TranscriptDescriptorRow, true>;

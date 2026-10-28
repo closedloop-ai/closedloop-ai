@@ -10,13 +10,13 @@ import {
 describe("search-type-tokens (FEA-4134)", () => {
   it("reads active type: kinds via the canonical parser, deduped in order", () => {
     expect(
-      activeTypeKinds("agent type:document type:loop type:document")
-    ).toEqual([SearchEntityType.Document, SearchEntityType.Loop]);
+      activeTypeKinds("agent type:document type:project type:document")
+    ).toEqual([SearchEntityType.Document, SearchEntityType.Project]);
   });
 
   it("ignores an unknown type: value (matches the parser)", () => {
-    expect(activeTypeKinds("type:widget type:loop")).toEqual([
-      SearchEntityType.Loop,
+    expect(activeTypeKinds("type:widget type:project")).toEqual([
+      SearchEntityType.Project,
     ]);
   });
 
@@ -25,40 +25,45 @@ describe("search-type-tokens (FEA-4134)", () => {
   });
 
   it("appends a type: token when absent", () => {
-    expect(addTypeToken("agent", SearchEntityType.Loop)).toBe(
-      "agent type:loop"
+    expect(addTypeToken("agent", SearchEntityType.Project)).toBe(
+      "agent type:project"
     );
   });
 
   it("does not duplicate an already-present type: token", () => {
-    expect(addTypeToken("agent type:loop", SearchEntityType.Loop)).toBe(
-      "agent type:loop"
+    expect(addTypeToken("agent type:project", SearchEntityType.Project)).toBe(
+      "agent type:project"
     );
   });
 
   it("removes every matching type: token, case-insensitively", () => {
     expect(
-      removeTypeToken("agent type:Loop other type:loop", SearchEntityType.Loop)
+      removeTypeToken(
+        "agent type:Project other type:project",
+        SearchEntityType.Project
+      )
     ).toBe("agent other");
   });
 
   it("removes the equality-operator type= form the parser also marks active", () => {
-    // The canonical parser treats `type=loop` as an active Loop filter, so the
+    // The canonical parser treats `type=project` as an active type filter, so the
     // control must be able to deselect it — matching only `type:` would strand
     // it as un-removable.
-    expect(activeTypeKinds("agent type=loop")).toEqual([SearchEntityType.Loop]);
-    expect(removeTypeToken("agent type=loop", SearchEntityType.Loop)).toBe(
-      "agent"
-    );
-    expect(toggleTypeToken("agent type=loop", SearchEntityType.Loop)).toBe(
-      "agent"
-    );
+    expect(activeTypeKinds("agent type=project")).toEqual([
+      SearchEntityType.Project,
+    ]);
+    expect(
+      removeTypeToken("agent type=project", SearchEntityType.Project)
+    ).toBe("agent");
+    expect(
+      toggleTypeToken("agent type=project", SearchEntityType.Project)
+    ).toBe("agent");
   });
 
   it("toggles a type: token off when present", () => {
-    expect(toggleTypeToken("agent type:loop", SearchEntityType.Loop)).toBe(
-      "agent"
-    );
+    expect(
+      toggleTypeToken("agent type:project", SearchEntityType.Project)
+    ).toBe("agent");
   });
 
   it("toggles a type: token on when absent", () => {

@@ -44,9 +44,7 @@ describe("ISS-5574: useDocumentTitle", () => {
   // Review (closedloop-ai-stage on #4661): `previous` captures whatever the last
   // writer left in `document.title`, not the root layout's default — so a writer
   // that never restores would have its name handed BACK by this hook's cleanup,
-  // one navigation later. The repo had exactly one such writer
-  // (`loop-detail-container.tsx`); it now goes through this hook, which restores.
-  // This case pins the mechanic the argument turns on: the restore is faithful to
+  // one navigation later. This case pins the mechanic the argument turns on: the restore is faithful to
   // whatever was there, so every writer must restore for the chain to hold.
   it("restores exactly what it found, including a title set outside React", () => {
     document.title = "Set by something that is not this hook";
@@ -66,9 +64,9 @@ describe("ISS-5574: useDocumentTitle", () => {
     expect(document.title).toBe(`Session | ${DOCUMENT_TITLE_SUFFIX}`);
 
     // ...then the record itself, once it resolves.
-    page.rerender(<TitledPage title="symphony-alpha-iss-5273" />);
+    page.rerender(<TitledPage title="closedloop-ai-iss-5273" />);
     expect(document.title).toBe(
-      `symphony-alpha-iss-5273 | ${DOCUMENT_TITLE_SUFFIX}`
+      `closedloop-ai-iss-5273 | ${DOCUMENT_TITLE_SUFFIX}`
     );
   });
 });

@@ -146,6 +146,90 @@ describe("branchAnalyticsCohortResponseSchema", () => {
     ).toEqual(response);
   });
 
+  it("round-trips the range-scoped companion through both parsers", () => {
+    // ISS-7363/ISS-7364: `z.object` STRIPS what it does not declare, so an
+    // undeclared companion would survive the plain analytics read and vanish
+    // only on this exact-cohort one — silently reverting the gated tiles to
+    // their lifetime values precisely when a facet narrows the list.
+    const response = windowScopedFixture();
+    expect(
+      branchAnalyticsCohortResponseSchema.parse(response).canonicalMetrics
+        .windowScoped
+    ).toEqual(response.canonicalMetrics.windowScoped);
+    expect(
+      branchAnalyticsCohortConsumerResponseSchema.parse(response)
+        .canonicalMetrics.windowScoped
+    ).toEqual(response.canonicalMetrics.windowScoped);
+  });
+
+  it("round-trips a metric's series through both parsers", () => {
+    // ISS-10363 (whitlockk, tamsinb review on #7448): `series` was added to
+    // `BranchListMetricValue` and not to the INNER value shape here, so the
+    // exact-cohort parser stripped it. A filtered Branches request takes exactly
+    // this path on both shells, so the mark drew on the unfiltered read and
+    // vanished the moment a facet narrowed the list.
+    const response = seriesFixture();
+    const expected = [10, null, 30];
+    expect(
+      branchAnalyticsCohortResponseSchema.parse(response).canonicalMetrics
+        .medianPrSize.series
+    ).toEqual(expected);
+    expect(
+      branchAnalyticsCohortConsumerResponseSchema.parse(response)
+        .canonicalMetrics.medianPrSize.series
+    ).toEqual(expected);
+  });
+
+  it("accepts an older producer that omits the series", () => {
+    expect(
+      branchAnalyticsCohortResponseSchema.parse(responseFixture())
+        .canonicalMetrics.medianPrSize.series
+    ).toBeUndefined();
+  });
+
+  it("accepts an older producer that omits the range-scoped companion", () => {
+    const legacy = responseFixture();
+    expect(
+      branchAnalyticsCohortResponseSchema.parse(legacy).canonicalMetrics
+        .windowScoped
+    ).toBeUndefined();
+  });
+
+  it("holds the strict/consumer split INSIDE the range-scoped companion", () => {
+    // The nested companion is version-skewed on its own account: the sibling
+    // test above proves only that a KNOWN companion survives. A newer producer
+    // emitting a future state inside it must still be rejected by the producer
+    // parser and degraded — not dropped, and not passed through opaque — by the
+    // installed-client one, exactly as a top-level metric is.
+    const response = windowScopedFixture();
+    const skewed = {
+      ...response,
+      canonicalMetrics: {
+        ...response.canonicalMetrics,
+        windowScoped: {
+          ...response.canonicalMetrics.windowScoped,
+          activeBranches: { current: { state: "future_pending", value: 201 } },
+        },
+      },
+    };
+
+    expect(branchAnalyticsCohortResponseSchema.safeParse(skewed).success).toBe(
+      false
+    );
+    expect(
+      branchAnalyticsCohortConsumerResponseSchema.parse(skewed).canonicalMetrics
+        .windowScoped
+    ).toEqual({
+      activeBranches: {
+        current: { state: BranchMetricAvailability.Unavailable, value: null },
+      },
+      // The untouched sibling still carries its own value through the degrade.
+      aiSpendUsd: {
+        current: { state: BranchMetricAvailability.Complete, value: 0 },
+      },
+    });
+  });
+
   it.each([
     {
       ...responseFixture(),
@@ -171,7 +255,7 @@ describe("branchAnalyticsCohortResponseSchema", () => {
             state: BranchMetricAvailability.Partial,
             value: 12,
             coverage: { included: 2, total: 1 },
-            disclosure: BranchMetricDisclosure.DefaultIncomplete,
+            disclosure: BranchMetricDisclosure.PrIncomplete,
           },
         },
       },
@@ -226,6 +310,36 @@ describe("branchAnalyticsCohortResponseSchema", () => {
     });
   });
 });
+
+function seriesFixture() {
+  const response = responseFixture();
+  return {
+    ...response,
+    canonicalMetrics: {
+      ...response.canonicalMetrics,
+      // A gap rides the wire as `null`, which is the whole contract: a bucket
+      // the producer could not compute must not arrive as a measured zero.
+      medianPrSize: {
+        ...response.canonicalMetrics.medianPrSize,
+        series: [10, null, 30],
+      },
+    },
+  };
+}
+
+function windowScopedFixture() {
+  const complete = (value: number) => ({
+    current: { state: BranchMetricAvailability.Complete, value } as const,
+  });
+  const response = responseFixture();
+  return {
+    ...response,
+    canonicalMetrics: {
+      ...response.canonicalMetrics,
+      windowScoped: { activeBranches: complete(201), aiSpendUsd: complete(0) },
+    },
+  };
+}
 
 function responseFixture() {
   const noData = {

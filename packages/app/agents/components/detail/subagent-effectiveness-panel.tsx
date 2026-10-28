@@ -15,12 +15,6 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
 import { useMemo } from "react";
 import {
   type AgentTreeNode,
@@ -47,20 +41,7 @@ function AgentRow({ node }: { node: AgentTreeNode }) {
           {node.depth > 0 && (
             <span className="text-muted-foreground text-xs">{"└"}</span>
           )}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="cursor-default font-medium">
-                  {node.agent.name}
-                </span>
-              </TooltipTrigger>
-              {node.agent.task && (
-                <TooltipContent>
-                  <p className="max-w-xs text-xs">{node.agent.task}</p>
-                </TooltipContent>
-              )}
-            </Tooltip>
-          </TooltipProvider>
+          <span className="font-medium">{node.agent.name}</span>
         </div>
       </TableCell>
       <TableCell>

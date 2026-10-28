@@ -1,5 +1,6 @@
 "use client";
 
+import type { PrototypeRow } from "@repo/app/shell/v2/components/prototypes-preview/mock";
 import {
   buildGridTableCardFields,
   GridTable,
@@ -10,7 +11,6 @@ import type { SortDirection } from "@repo/design-system/components/ui/sortable-c
 import { useMediaQuery } from "@repo/design-system/hooks/use-media-query";
 import { FileCode2Icon } from "lucide-react";
 import type { ReactNode } from "react";
-import type { PrototypeRow } from "../mock";
 import {
   CollaboratorsCell,
   OpenCommentsCell,
@@ -181,7 +181,7 @@ function renderPrototypeCell(columnId: string, item: PrototypeRow): ReactNode {
     case "status":
       return <PrototypeStatusChip status={item.status} />;
     case "version":
-      return <span className="text-sm tabular-nums">v{item.version}</span>;
+      return <span className="text-sm tabular-nums">{item.version}</span>;
     case "comments":
       return <OpenCommentsCell count={item.openComments} />;
     case "updated":

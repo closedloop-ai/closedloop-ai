@@ -18,8 +18,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CallExpression,
+  Identifier,
   MethodDeclaration,
   Node,
+  ObjectLiteralExpression,
   SourceFile,
   Statement,
 } from "typescript6";
@@ -36,6 +38,7 @@ import {
   isFunctionExpression,
   isIdentifier,
   isMethodDeclaration,
+  isObjectLiteralExpression,
   isParameter,
   isPropertyAccessExpression,
   isPropertyAssignment,
@@ -49,6 +52,10 @@ import {
 
 const supportDir = path.dirname(fileURLToPath(import.meta.url));
 const appModulePath = path.resolve(supportDir, "../../src/main/app.ts");
+const syncLaneDepsModulePath = path.resolve(
+  supportDir,
+  "../../src/main/agent-sync/desktop-sync-lane-deps.ts"
+);
 
 /** Default for the walks below: exempt nothing, i.e. the ISS-4717 behaviour. */
 const NO_BOUNDED_SLOTS: readonly BoundedSlot[] = [];
@@ -276,32 +283,36 @@ export function isInBoundedSlot(
 }
 
 /**
- * Every name from `watched` appearing anywhere under `node`, minus the ones
+ * Every identifier under `node` naming something from `watched`, minus the ones
  * sitting in a slot `slots` declares bounded.
  *
  * The exemption exists because a wait CAN be legitimately bounded by handing it
  * to a wrapper (ISS-5990); without it, wrapping a wait would read identically to
  * awaiting it raw and the guard would forbid its own fix.
+ *
+ * Returns the NODES rather than their text because two arms of the same walk can
+ * reach one wait, and only the node tells "the same wait, found twice" apart from
+ * "two waits that happen to share a name"; see {@link distinctNames}.
  */
-function watchedNamesIn(
+function watchedIdentifiersIn(
   node: Node,
   watched: ReadonlySet<string>,
   slots: readonly BoundedSlot[],
   sourceFile: SourceFile
-): string[] {
-  const names: string[] = [];
+): Identifier[] {
+  const found: Identifier[] = [];
   const visit = (current: Node): void => {
     if (
       isIdentifier(current) &&
       watched.has(current.text) &&
       !isInBoundedSlot(current, slots, sourceFile)
     ) {
-      names.push(current.text);
+      found.push(current);
     }
     forEachChild(current, visit);
   };
   visit(node);
-  return names;
+  return found;
 }
 
 /**
@@ -341,24 +352,63 @@ export function waitsAround(
   slots: readonly BoundedSlot[] = NO_BOUNDED_SLOTS,
   sourceFile: SourceFile = parseAppModule()
 ): string[] {
-  const names: string[] = [];
+  const found: Identifier[] = [];
   let child: Node = node;
   let parent: Node | undefined = node.parent;
   while (parent) {
-    const deferring = deferringAncestorExpression(parent, child);
-    names.push(
+    // Bound per iteration: `parent` is reassigned below, so the loop's narrowing
+    // does not survive into the closure `flatMap` needs.
+    const at: Node = parent;
+    const deferring = deferringAncestorExpressions(at, child);
+    found.push(
       ...(deferring === null
-        ? precedingAwaitedWaits(parent, child, watched, slots, sourceFile)
-        : deferringNamesIn(deferring, parent, watched, slots, sourceFile))
+        ? precedingAwaitedWaits(at, child, watched, slots, sourceFile)
+        : deferring.flatMap((expression) =>
+            deferringIdentifiersIn(expression, at, watched, slots, sourceFile)
+          ))
     );
-    child = parent;
-    parent = parent.parent;
+    child = at;
+    parent = at.parent;
+  }
+  return distinctNames(found);
+}
+
+/**
+ * The names of `found`, one entry per distinct identifier NODE.
+ *
+ * TWO ARMS OF THIS WALK CAN REACH ONE WAIT, and neither may be made to look
+ * away. The `await` arm scans its whole operand — callback bodies included,
+ * which is exactly what lets a sibling argument's inlined lambda be seen — while
+ * the call and object-literal arms scan siblings on the way up. In
+ *
+ *     await outer(() => inner(gates.whenInitialRendererMounted(), () => work()))
+ *
+ * the inner call names its sibling, then the enclosing `await` names the same
+ * identifier again, and one real gate read as two (whitlockk review).
+ * {@link awaitedAncestorScans} stands a sibling scan down only when the `await`
+ * covers THAT call; a callback boundary defeats it, and widening it into a
+ * general "stop the outer scan at callback boundaries" would delete the ISS-6619
+ * sibling-argument case and the shared-options-object case with it, since both
+ * live inside a callback. So the duplicate is removed where it is a duplicate —
+ * at the report — rather than by narrowing what the walk may look at.
+ *
+ * Keyed on the node, never on the text: two DIFFERENT reads of the same gate are
+ * two facts, and collapsing them by name would trade this false red for a miss.
+ */
+function distinctNames(found: readonly Identifier[]): string[] {
+  const seen = new Set<Identifier>();
+  const names: string[] = [];
+  for (const identifier of found) {
+    if (!seen.has(identifier)) {
+      seen.add(identifier);
+      names.push(identifier.text);
+    }
   }
   return names;
 }
 
 /**
- * The expression `parent` defers `child` behind, or `null` when `parent` is not
+ * The expressions `parent` defers `child` behind, or `null` when `parent` is not
  * one of the two deferring ancestor shapes.
  *
  * ONE function, not a branch each: `await <expr>` and `<expr>(…child…)` defer
@@ -366,34 +416,130 @@ export function waitsAround(
  * the other must see too. As two branches with two bodies they drifted — round 2
  * taught only the sibling-`await` path to resolve local bindings, leaving both of
  * these blind to the very indirection it had just closed (ISS-5990 review).
+ *
+ * A call defers `child` behind its SIBLING ARGUMENTS as well as its callee. The
+ * callee alone is what `X.whenInitiallyShown().then(() => …)` needs, but it left
+ * an unawaited wrapper's other arguments unwatched entirely, so
+ * `scheduleAfterSomethingElse(() => gates.whenInitialRendererMounted(), start)`
+ * reported nothing (ISS-6619). `child` itself is excluded: a wait INSIDE the
+ * deferred callback does not defer that callback.
+ *
+ * The one case the siblings are withheld is an enclosing `await` of this exact
+ * call, whose own arm already scans the whole call — reporting from both would
+ * name the same wait twice.
  */
-function deferringAncestorExpression(parent: Node, child: Node): Node | null {
+function deferringAncestorExpressions(
+  parent: Node,
+  child: Node
+): Node[] | null {
   if (isAwaitExpression(parent)) {
-    return parent.expression;
+    return [parent.expression];
+  }
+  if (isObjectLiteralExpression(parent)) {
+    return deferringSiblingProperties(parent, child);
   }
   if (
-    isCallExpression(parent) &&
-    parent.arguments.some((argument) => argument === child)
+    !(
+      isCallExpression(parent) &&
+      parent.arguments.some((argument) => argument === child)
+    )
   ) {
-    return parent.expression;
+    return null;
   }
-  return null;
+  if (awaitedAncestorScans(parent)) {
+    return [parent.expression];
+  }
+  return [
+    parent.expression,
+    ...(parent.arguments as readonly Node[]).filter(
+      (argument) => argument !== child
+    ),
+  ];
+}
+
+/**
+ * The properties of `parent` that defer `child`, or `null` when this object
+ * literal defers nothing.
+ *
+ * A ONE-ARGUMENT WRAPPER PUTS THE GATE AND THE WORK IN THE SAME ARGUMENT.
+ * `schedule({ gate: () => gates.whenInitialRendererMounted(), work: () =>
+ * startSyncLanesAtBoot() })` reaches the call arm with the WHOLE object as
+ * `child`, and that arm excludes `child` — correctly, since a wait inside the
+ * deferred callback does not defer it — so the object was discarded entire and
+ * its `gate` property never inspected. An object-form refactor of the wrapper
+ * therefore walked straight past the guard (codex review). Siblings discriminate
+ * by position here exactly as they do across arguments: the property the walk
+ * came up through is excluded, the rest are not.
+ *
+ * WITHHELD WHEN THE OBJECT REACHES NO CALL. The deferral claim is that some
+ * wrapper could await a sibling before invoking this one, which needs a wrapper;
+ * a free-standing literal hands its properties to nobody, and reporting there
+ * would fire the guard on code that defers nothing.
+ */
+function deferringSiblingProperties(
+  parent: ObjectLiteralExpression,
+  child: Node
+): Node[] | null {
+  const properties = parent.properties as readonly Node[];
+  if (!properties.includes(child)) {
+    return null;
+  }
+  const call = parent.parent;
+  const handedToCall =
+    call &&
+    isCallExpression(call) &&
+    (call.arguments as readonly Node[]).includes(parent);
+  if (!handedToCall) {
+    return null;
+  }
+  return properties.filter((property) => property !== child);
+}
+
+/**
+ * True when some enclosing `await` already scans `call` whole, arguments
+ * included, so naming its siblings here would report the same wait twice.
+ *
+ * Matching only an IMMEDIATE `AwaitExpression` parent was defeated by one node
+ * of nesting — `await (f(gate, work))` and `await f(gate, work).then(noop)` both
+ * duplicated the wait. Walks the expression chain instead, stopping at the first
+ * statement list or function boundary, because past either the `await` no longer
+ * covers this call.
+ */
+function awaitedAncestorScans(call: Node): boolean {
+  let current: Node | undefined = call.parent;
+  while (current) {
+    if (isAwaitExpression(current)) {
+      return true;
+    }
+    if (
+      isArrowFunction(current) ||
+      isFunctionExpression(current) ||
+      isFunctionDeclaration(current) ||
+      isMethodDeclaration(current) ||
+      isBlock(current) ||
+      isSourceFile(current)
+    ) {
+      return false;
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 /**
  * The watched waits `expression` names, directly or through a local binding that
  * is in scope where `at` sits.
  */
-function deferringNamesIn(
+function deferringIdentifiersIn(
   expression: Node,
   at: Node,
   watched: ReadonlySet<string>,
   slots: readonly BoundedSlot[],
   sourceFile: SourceFile
-): string[] {
+): Identifier[] {
   return [
-    ...watchedNamesIn(expression, watched, slots, sourceFile),
-    ...aliasedWatchedNamesIn(
+    ...watchedIdentifiersIn(expression, watched, slots, sourceFile),
+    ...aliasedWatchedIdentifiersIn(
       expression,
       aliasesInScopeOf(at),
       watched,
@@ -430,12 +576,14 @@ function precedingAwaitedWaits(
   watched: ReadonlySet<string>,
   slots: readonly BoundedSlot[],
   sourceFile: SourceFile
-): string[] {
-  const names: string[] = [];
+): Identifier[] {
+  const found: Identifier[] = [];
   for (const statement of precedingStatementsOf(parent, child)) {
-    names.push(...awaitedWatchedNamesIn(statement, watched, slots, sourceFile));
+    found.push(
+      ...awaitedWatchedIdentifiersIn(statement, watched, slots, sourceFile)
+    );
   }
-  return names;
+  return found;
 }
 
 /**
@@ -534,25 +682,49 @@ function localAliasInitializers(
  * const mounted = g; await mounted;` defers boot exactly as the direct binding
  * does, and one hop was an arbitrary place to stop. `resolved` terminates a
  * `const a = b; const b = a;` cycle and keeps a name from reporting twice.
+ *
+ * BOUNDEDNESS IS JUDGED WHERE THE ALIAS IS READ, not where its initializer
+ * sits. `isInBoundedSlot` walks an ancestor chain, and the initializer's chain
+ * runs up through the `const`, never through the wrapper call, so
+ *
+ *     const reveal = () => this.desktopWindow.whenInitiallyShown();
+ *     await scheduleAfterBootAdmission(reveal, bootWork);
+ *
+ * was condemned even though the wrapper bounds it — a false RED on correct code,
+ * and the shape a future hoist of that lambda takes (ISS-6619).
+ *
+ * A read standing in a bounded slot is skipped WHOLE — before it is resolved —
+ * rather than resolved and filtered afterwards. Resolving it would consume this
+ * alias's entry in `resolved` and silence a SIBLING read of the same name
+ * standing in an UNBOUNDED slot, so `scheduleAfterBootAdmission(reveal, () =>
+ * reveal())` would go from reported to silent: the false RED traded for a false
+ * GREEN, which is strictly worse. Skipping early is what keeps the chained case
+ * right too — the outer read is judged and dismissed before the walk ever
+ * descends to the `reveal` inside `const gate = reveal;`, which stands in no
+ * slot at all.
  */
-function aliasedWatchedNamesIn(
+function aliasedWatchedIdentifiersIn(
   expression: Node,
   aliases: ReadonlyMap<string, Node>,
   watched: ReadonlySet<string>,
   slots: readonly BoundedSlot[],
   sourceFile: SourceFile,
   resolved: Set<string> = new Set<string>()
-): string[] {
+): Identifier[] {
   if (aliases.size === 0) {
     return [];
   }
-  const names: string[] = [];
+  const found: Identifier[] = [];
   const visit = (current: Node): void => {
+    if (isInBoundedSlot(current, slots, sourceFile)) {
+      forEachChild(current, visit);
+      return;
+    }
     const initializer = aliasInitializerRead(current, aliases, resolved);
     if (initializer) {
-      names.push(
-        ...watchedNamesIn(initializer, watched, slots, sourceFile),
-        ...aliasedWatchedNamesIn(
+      found.push(
+        ...watchedIdentifiersIn(initializer, watched, slots, sourceFile),
+        ...aliasedWatchedIdentifiersIn(
           initializer,
           aliases,
           watched,
@@ -565,7 +737,7 @@ function aliasedWatchedNamesIn(
     forEachChild(current, visit);
   };
   visit(expression);
-  return names;
+  return found;
 }
 
 /**
@@ -615,13 +787,13 @@ function isLocalBindingRead(id: Node): boolean {
  * `await` — not at the statement list this walk started from — so a binding
  * declared inside a nested block is seen; see {@link aliasesInScopeOf}.
  */
-function awaitedWatchedNamesIn(
+function awaitedWatchedIdentifiersIn(
   node: Node,
   watched: ReadonlySet<string>,
   slots: readonly BoundedSlot[],
   sourceFile: SourceFile
-): string[] {
-  const names: string[] = [];
+): Identifier[] {
+  const found: Identifier[] = [];
   const visit = (current: Node): void => {
     if (
       isArrowFunction(current) ||
@@ -632,8 +804,8 @@ function awaitedWatchedNamesIn(
       return;
     }
     if (isAwaitExpression(current)) {
-      names.push(
-        ...deferringNamesIn(
+      found.push(
+        ...deferringIdentifiersIn(
           current.expression,
           current,
           watched,
@@ -645,7 +817,7 @@ function awaitedWatchedNamesIn(
     forEachChild(current, visit);
   };
   visit(node);
-  return names;
+  return found;
 }
 
 /** The nearest NAMED function/method enclosing `node`, skipping anonymous callbacks. */
@@ -711,4 +883,20 @@ export function callPathFrom(
     frontier = next;
   }
   return { waits, roots };
+}
+
+/**
+ * Parse `src/main/agent-sync/desktop-sync-lane-deps.ts`, the sibling of
+ * `app.ts` that ISS-8768 moved the sync-lane dependency wiring into.
+ *
+ * A guard that scans only `app.ts` silently loses whatever leaves it. The
+ * `getSyncComputeTargetId` guard in `session-sync-identity-adapter.test.ts`
+ * caught that move by going red — its subject relocated, so the guard follows
+ * the subject rather than settling for the wirings that stayed behind.
+ */
+export function parseSyncLaneDepsModule(): SourceFile {
+  return parseModuleSource(
+    readFileSync(syncLaneDepsModulePath, "utf8"),
+    syncLaneDepsModulePath
+  );
 }

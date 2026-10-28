@@ -14,7 +14,7 @@ function detail(
 ): DesktopDeviceSessionDetails {
   return {
     userCode: "ABCD1234",
-    machineName: "Daniel-MBP",
+    machineName: "Daveth-MBP",
     platform: "darwin",
     webAppOrigin: "https://app.closedloop.ai",
     status: DesktopDeviceSessionStatus.Pending,

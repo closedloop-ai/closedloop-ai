@@ -18,17 +18,11 @@ const mocks = vi.hoisted(() => ({
   setPoolTelemetrySink: vi.fn(),
   setSchemaBootstrapHook: vi.fn(),
   emitDbPoolMetric: vi.fn(),
-  assertRunnerSecretConfigured: vi.fn(),
   logInfo: vi.fn(),
   logWarn: vi.fn(),
 }));
 
 vi.mock("@repo/observability/telemetry/origin", () => ({ ORIGIN: "api" }));
-
-vi.mock("@repo/auth/runner-jwt-base", () => ({
-  assertRunnerSecretConfigured: mocks.assertRunnerSecretConfigured,
-  RUNNER_JWT_SECRET_ENV: "RUNNER_JWT_SECRET",
-}));
 
 vi.mock("@repo/database", () => ({
   setPoolTelemetrySink: mocks.setPoolTelemetrySink,
@@ -84,8 +78,5 @@ describe("register() when the tracing module fails to load", () => {
     // best-effort; the bootstrap is what makes a preview serve at all, so it
     // must not be collateral damage of a tracing import failure.
     expect(mocks.setSchemaBootstrapHook).toHaveBeenCalledTimes(1);
-    expect(mocks.assertRunnerSecretConfigured).toHaveBeenCalledWith(
-      "RUNNER_JWT_SECRET"
-    );
   });
 });

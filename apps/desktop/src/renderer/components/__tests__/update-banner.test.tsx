@@ -8,7 +8,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PackagedUpdateInstallBlockedReason } from "../../../shared/packaged-update-install-blocked-reason";
-import { UPDATE_BANNER_READY_TEST_ID, UpdateBanner } from "../UpdateBanner";
+import { UpdateBanner } from "../UpdateBanner";
+import { UPDATE_BANNER_READY_TEST_ID } from "../update-banner-state";
 
 // Behavioral replacement for the old renderer-logs-static source-text guard:
 // mount the real UpdateBanner, drive it through the IPC-bridged window events it

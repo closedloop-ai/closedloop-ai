@@ -1,18 +1,9 @@
 "use client";
 
-import { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
-import {
-  GitHubMark,
-  GoogleGlyph,
-} from "@repo/design-system/components/ui/brand-icons";
+import type { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import { SIGN_IN_PROVIDER_MARK } from "@repo/app/shared/components/sign-in-provider-mark";
 import { Loader2 } from "lucide-react";
-import {
-  type ComponentType,
-  type ReactNode,
-  type SVGProps,
-  useEffect,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 /**
  * Hold before revealing. The happy path through these screens is a couple of
@@ -24,22 +15,6 @@ import {
  * renders, so an instant hard cut reads as a layout correcting itself.
  */
 const REVEAL_DELAY_MS = 400;
-
-/**
- * Brand mark per provider. The panel owns the sizing so every transition screen
- * renders the mark identically instead of each call site repeating the classes,
- * and so adding a provider is one entry here rather than a second boolean prop.
- *
- * Typed as an exhaustive `Record` over {@link DesktopSignInProvider}: a new
- * provider fails `tsc` here instead of silently rendering no mark.
- */
-const PROVIDER_MARK = {
-  [DesktopSignInProvider.GitHub]: GitHubMark,
-  [DesktopSignInProvider.Google]: GoogleGlyph,
-} as const satisfies Record<
-  DesktopSignInProvider,
-  ComponentType<SVGProps<SVGSVGElement>>
->;
 
 type AuthTransitionPanelProps = {
   /** Sentence-case heading. The only `h1` on these transitional routes. */
@@ -87,7 +62,7 @@ export function AuthTransitionPanel({
   provider,
 }: AuthTransitionPanelProps) {
   const [revealed, setRevealed] = useState(false);
-  const Mark = provider ? PROVIDER_MARK[provider] : null;
+  const Mark = provider ? SIGN_IN_PROVIDER_MARK[provider] : null;
 
   useEffect(() => {
     const timeoutId = setTimeout(() => setRevealed(true), REVEAL_DELAY_MS);

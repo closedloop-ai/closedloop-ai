@@ -15,6 +15,15 @@ export type { CoachingPackInfo } from "../../../shared/coaching-pack-contract";
  */
 export const AGENT_COACHING_DAILY_TIP_LIMIT = 5;
 
+/**
+ * Coaching-tip prose is hardcoded English, so every figure spliced into it is
+ * pinned to one canonical locale rather than inherited from the machine. An
+ * inherited locale renders `$1,234.56` as `$1.234,56` on a de-DE box — a cost
+ * figure a US reader misreads by three orders of magnitude (ISS-7336). Shared
+ * so the two seed builders cannot render one tip list in two number systems.
+ */
+export const COACHING_NUMBER_LOCALE = "en-US";
+
 export type AgentCoachingActionMode =
   | "read_only"
   | "draft"
@@ -258,8 +267,9 @@ export type AgentCoachingGroundedMetrics = {
    * FEA-3399: the "biggest crash out" — the single user turn in the lookback
    * with the highest heuristic frustration score (caps/repetition/"stop"/
    * "again" plus nearby error-event spikes), or null when no confident peak
-   * exists. The excerpt is redacted (see agent-coaching-redaction.ts) so no raw
-   * prompt text leaves the device. Consumed by the resilience coaching tip.
+   * exists. The excerpt is redacted (`redactSecrets` from
+   * `@repo/lib/security/redact-secrets`) so no raw credential leaves the
+   * device. Consumed by the resilience coaching tip.
    */
   peakFrustration: PeakFrustrationSignal | null;
   /**

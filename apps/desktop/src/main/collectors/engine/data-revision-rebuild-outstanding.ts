@@ -1,6 +1,6 @@
 /**
  * @file data-revision-rebuild-outstanding.ts
- * @description ISS-6241 (shafty023 review): the work the DATA_REVISION rebuild
+ * @description ISS-6241 (davetho review): the work the DATA_REVISION rebuild
  * has taken OUT of `pendingByHarness` but is not finished with.
  *
  * WHY IT EXISTS. `processed` is derived as `total - remaining`, and `remaining`

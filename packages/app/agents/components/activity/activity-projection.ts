@@ -1,6 +1,6 @@
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 
@@ -15,7 +15,7 @@ import {
  *
  * ISS-5592 then retired the spellings outright, so neither reaches a terminal
  * arm here at all: this classifier compares the RAW status and takes the
- * no-outcome-claimed fallthrough instead (wongk, #5075). Do not "restore" a
+ * no-outcome-claimed fallthrough instead (whitlockk, #5075). Do not "restore" a
  * terminal arm for them — claiming an outcome for a word this build cannot read
  * is the thing the fallthrough exists to refuse.
  */
@@ -107,7 +107,9 @@ function classifyActivityStatus(
 
   if (
     (normalizedStatus === SESSION_STATUS.ACTIVE ||
-      normalizedStatus === DISPLAYED_SESSION_STATUS.WAITING) &&
+      // ISS-10364 retired `DISPLAYED_SESSION_STATUS.WAITING`; a legacy/
+      // version-skewed producer can still serve this raw spelling.
+      normalizedStatus === LEGACY_WAITING_WIRE_STATUS) &&
     item.awaitingInputSince
   ) {
     return AgentSessionActivityStatus.AwaitingInput;

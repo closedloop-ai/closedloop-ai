@@ -59,7 +59,7 @@ function prHeadRefSourceLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionPr,
       relationTypes: [SessionPrRelationType.Created],
-      repositoryFullName: "closedloop-ai/symphony-alpha",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       prNumber,
       source: "DETERMINISTIC",
       confidence: 1.0,
@@ -69,7 +69,7 @@ function prHeadRefSourceLink({
       name: headRef,
       type: "BRANCH",
       branch: {
-        repository: { fullName: "closedloop-ai/symphony-alpha" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: {
           number: prNumber,
           title: "Linked PR",
@@ -78,7 +78,7 @@ function prHeadRefSourceLink({
           mergedAt: null,
           lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
           isCurrent: true,
-          repository: { fullName: "closedloop-ai/symphony-alpha" },
+          repository: { fullName: "closedloop-ai/closedloop-ai" },
         },
       },
     },
@@ -102,7 +102,7 @@ function sessionBranchLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionBranch,
       branchName,
-      branchRepositoryFullName: "closedloop-ai/symphony-alpha",
+      branchRepositoryFullName: "closedloop-ai/closedloop-ai",
     },
     ...(branchParticipation ? { branchParticipation } : {}),
     target: {
@@ -110,7 +110,7 @@ function sessionBranchLink({
       name: branchName,
       type: ArtifactType.Branch,
       branch: {
-        repository: { fullName: "closedloop-ai/symphony-alpha" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: null,
       },
     },
@@ -119,15 +119,14 @@ function sessionBranchLink({
 
 describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => {
   // The recurrence: session 019fa508-… showed repo PR #3837 with Branch None,
-  // associated via the cloud path AFTER #3801 shipped. With branch + baseBranch
-  // null and no branch-resolving PR source link, the cloud read boundary must
+  // associated via the cloud path AFTER #3801 shipped. With baseBranch null and
+  // no branch-resolving PR source link, the cloud read boundary must
   // SUPPRESS the orphaned PR rather than render it with Branch = None.
   it("suppresses a legacy-JSON PR when the session resolves no branch", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -169,7 +168,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -185,7 +183,7 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
               project: null,
               sourceLinks: [
                 prHeadRefSourceLink({
-                  headRef: "mikeangstadt/fea-4188-head-ref",
+                  headRef: "marisolashgrove/fea-4188-head-ref",
                   prNumber: 3143,
                 }),
               ],
@@ -201,7 +199,7 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       filters: {},
     });
 
-    expect(result.items[0]?.branch).toBe("mikeangstadt/fea-4188-head-ref");
+    expect(result.items[0]?.branch).toBe("marisolashgrove/fea-4188-head-ref");
     expect(result.items[0]?.prs).toEqual([
       {
         num: 3143,
@@ -211,7 +209,7 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
     ]);
   });
 
-  // Thread 1 (wongk): `baseBranch` is the PR's base/target ref, NOT its head.
+  // Thread 1 (whitlockk): `baseBranch` is the PR's base/target ref, NOT its head.
   // With the harness default `baseBranch: "main"` left in place — the realistic
   // launch-metadata shape — an orphaned PR that resolves no head branch must
   // still be SUPPRESSED. `baseBranch` is a display fallback only; it does not
@@ -221,7 +219,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             // baseBranch NOT overridden — harness default is "main".
             pullRequests: [
               {
@@ -256,7 +253,7 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
     expect(result.items[0]?.prsMerged).toBe(0);
   });
 
-  // Thread 2 (wongk): a branch-artifact id alone does NOT make the branch
+  // Thread 2 (whitlockk): a branch-artifact id alone does NOT make the branch
   // non-null. A legacy PR plus a session_branch link whose target resolved no
   // branch NAME lands with branch null while the id keeps the PR rendered — the
   // row shows "Branch: None" alongside a PR. The invariant must gate on the
@@ -266,7 +263,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -316,7 +312,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -333,7 +328,7 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
               sourceLinks: [
                 sessionBranchLink({
                   id: "branch-artifact-named",
-                  branchName: "mikeangstadt/fea-4188-branch-link",
+                  branchName: "marisolashgrove/fea-4188-branch-link",
                   branchParticipation: BranchParticipationKind.Wrote,
                 }),
               ],
@@ -349,7 +344,9 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       filters: {},
     });
 
-    expect(result.items[0]?.branch).toBe("mikeangstadt/fea-4188-branch-link");
+    expect(result.items[0]?.branch).toBe(
+      "marisolashgrove/fea-4188-branch-link"
+    );
     expect(result.items[0]?.branchArtifactId).toBe("branch-artifact-named");
     expect(result.items[0]?.prs).toEqual([
       {

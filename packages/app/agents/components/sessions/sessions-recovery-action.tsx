@@ -10,7 +10,7 @@ import { isModifiedClick } from "../../../shared/lib/modified-click";
  * empty state, shared by the web `/sessions` page and the desktop `SessionsView`.
  *
  * The prior round shipped a "Go to Sessions" button beside Retry, but reviewers
- * (wongk, and the design critics) landed on three problems that this component
+ * (whitlockk, and the design critics) landed on three problems that this component
  * resolves together:
  *
  * - **The label lied.** It rendered inside the Sessions list, on the Sessions
@@ -29,10 +29,21 @@ import { isModifiedClick } from "../../../shared/lib/modified-click";
  *   open `href` and leaves the current tab's scope alone.
  *
  * `onClearFilters` must reset the host's filter state to defaults (facet, date,
- * search, page). The reload is driven by the query-key change that reset produces
- * — NOT a `refetch()` on the pre-clear key, which would re-run the failing narrowed
- * scope the user is escaping. `href` is the clean Sessions list root so a middle/
- * modified click still opens a working list in a new tab.
+ * search, page) AND guarantee a read actually runs. Normally the reset itself is
+ * the reload: the query-key change re-issues it, and the host must NOT `refetch()`
+ * the pre-clear key, which would re-run the failing narrowed scope the user is
+ * escaping.
+ *
+ * ISS-7249 / ISS-7414 — the one exception, which every host owes: from an
+ * ALREADY-DEFAULT scope (no filters, first page) the reset changes nothing, React
+ * bails out of the re-render, and no key moves, so a host that only resets leaves
+ * this control inert on exactly the general read failure it exists for. There the
+ * host must refetch the unchanged key explicitly; with nothing to clear, the
+ * reload IS the whole action. Both surfaces do this — desktop in
+ * `useSessionsListRecovery`, web in the `/sessions` page's own handler.
+ *
+ * `href` is the clean Sessions list root so a middle/modified click still opens a
+ * working list in a new tab.
  */
 export function SessionsRecoveryAction({
   href,
@@ -42,7 +53,7 @@ export function SessionsRecoveryAction({
   onClearFilters: () => void;
 }): ReactNode {
   const handleClick = (event: MouseEvent<HTMLAnchorElement>): void => {
-    // wongk: a Cmd/Ctrl/Shift/Alt or non-primary click is the browser's to open
+    // whitlockk: a Cmd/Ctrl/Shift/Alt or non-primary click is the browser's to open
     // in a new tab/window — do not touch the current tab's filter scope.
     if (isModifiedClick(event)) {
       return;
